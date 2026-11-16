@@ -1,0 +1,266 @@
+//! `sprawl --mcp`: Sprawl as an MCP server (JSON-RPC over stdio) for Claude Code.
+//!
+//! Three ways to run:
+//! - from the user's own Claude Code (`claude mcp add sprawl -- sprawl.exe --mcp`): it talks to
+//!   the running app over a named pipe, so it sees the scan on screen, the Advisor's findings,
+//!   and can set the map's filter; with no app running it reads History's newest snapshot;
+//! - driven by the app (`--tree <snapshot> --out <file>`): the app runs `claude -p` with only
+//!   this server's tools; what the model reports is written to `--out`, and the app replays every
+//!   claim through its own checks before showing anything.
+//!
+//! Every tool is read-only. Nothing here deletes or runs anything.
+
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Value};
+use sprawl_core::Tree;
+
+use crate::facts::Facts;
+use crate::llm::tools::{chat_specs, specs, Tools};
+use crate::llm::ToolSpec;
+use crate::memory::Memory;
+
+/// Tools offered from a snapshot (no app): looking only.
+fn local_specs(driven: bool) -> Vec<ToolSpec> {
+    let look = ["list_children", "largest", "by_type", "owner_of", "read_manifest"];
+    let mut v: Vec<ToolSpec> = chat_specs().into_iter().filter(|t| look.contains(&t.name)).collect();
+    v.insert(0, report_spec());
+    if driven {
+        let report = ["report_finding", "remember", "propose_rule", "finish"];
+        v.extend(specs().into_iter().filter(|t| report.contains(&t.name)));
+    }
+    v
+}
+
+fn report_spec() -> ToolSpec {
+    ToolSpec { name: "scan_report", description: "Start here: the scan's totals, biggest folders, file types and what Sprawl's rules found.", schema: json!({"type": "object", "properties": {}}) }
+}
+
+/// Tools offered through the running app: looking, plus its findings and the map filter.
+pub fn bridge_specs() -> Vec<ToolSpec> {
+    let mut v = local_specs(false);
+    v.push(ToolSpec {
+        name: "findings",
+        description: "What Sprawl's Advisor found for the scan on screen: each with its risk, size, path, evidence and the PowerShell command Sprawl wrote for it.",
+        schema: json!({"type": "object", "properties": {}}),
+    });
+    v.extend(chat_specs().into_iter().filter(|t| t.name == "set_filter"));
+    v
+}
+
+fn tool_list(specs: &[ToolSpec]) -> Value {
+    Value::Array(specs.iter().map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.schema})).collect())
+}
+
+/// A tool call answered from a tree in this process (a snapshot).
+pub struct Local<'a> {
+    tree: &'a Tree,
+    facts: &'a Facts,
+    tools: Tools<'a>,
+    /// Driven mode: every report, remember, proposal and the summary go here as JSON lines.
+    out: Option<std::fs::File>,
+}
+
+impl<'a> Local<'a> {
+    pub fn new(tree: &'a Tree, facts: &'a Facts, memory: &Memory, model: &str, out: Option<std::fs::File>) -> Local<'a> {
+        Local { tree, facts, tools: Tools::new(tree, facts, model, &[], memory), out }
+    }
+
+    pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+        if name == "scan_report" {
+            return Ok(crate::llm::report::build(self.tree, self.facts, &[], None, None));
+        }
+        let allowed = local_specs(self.out.is_some());
+        if !allowed.iter().any(|t| t.name == name) {
+            return Err(format!("there is no tool called {name}"));
+        }
+        // every call is noted, so the app can show what Claude Code is doing; the reports are
+        // replayed there through its own checks, never taken from here
+        if let Some(f) = self.out.as_mut() {
+            let what: String = input["path"].as_str().or(input["title"].as_str()).unwrap_or("").chars().take(160).collect();
+            let _ = writeln!(f, "{}", json!({"progress": format!("{} {what}", name.replace('_', " "))}));
+            if matches!(name, "report_finding" | "remember" | "propose_rule" | "finish") {
+                let _ = writeln!(f, "{}", json!({"tool": name, "input": input}));
+            }
+            let _ = f.flush();
+        }
+        self.tools.call(name, input)
+    }
+}
+
+/// Answer one JSON-RPC message; `None` for a notification.
+pub fn handle(msg: &Value, specs: &[ToolSpec], call: &mut dyn FnMut(&str, &Value) -> Result<String, String>) -> Option<Value> {
+    let id = msg.get("id")?.clone();
+    let result = match msg["method"].as_str().unwrap_or("") {
+        "initialize" => {
+            let version = msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18");
+            json!({
+                "protocolVersion": version,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "sprawl", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": "Sprawl's view of the user's disk: start with scan_report, then look closer. Read-only: nothing here deletes or runs anything."
+            })
+        }
+        "ping" => json!({}),
+        "tools/list" => json!({"tools": tool_list(specs)}),
+        "tools/call" => {
+            let name = msg["params"]["name"].as_str().unwrap_or("");
+            let args = msg["params"].get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let (text, err) = match call(name, &args) {
+                Ok(t) => (t, false),
+                Err(e) => (e, true),
+            };
+            json!({"content": [{"type": "text", "text": crate::llm::clip(text, 40_000)}], "isError": err})
+        }
+        m => return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("no method {m}")}})),
+    };
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+/// Run the server on stdin and stdout until stdin closes.
+fn serve(specs: Vec<ToolSpec>, call: &mut dyn FnMut(&str, &Value) -> Result<String, String>) {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let reply = match serde_json::from_str::<Value>(&line) {
+            Ok(msg) => handle(&msg, &specs, call),
+            Err(_) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})),
+        };
+        if let Some(r) = reply {
+            if writeln!(stdout, "{r}").and_then(|_| stdout.flush()).is_err() {
+                break;
+            }
+        }
+    }
+}
+
+fn arg(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// The newest full snapshot History has (any folder), as a tree.
+fn newest_snapshot() -> Option<Tree> {
+    let base = crate::history::base_dir()?;
+    let list = crate::history::list(&base);
+    let e = list.iter().rev().find(|e| e.full).or(list.last())?;
+    crate::history::load(e).ok()
+}
+
+/// Entry point for `sprawl --mcp [--tree <file> --out <file> --model <name>]`.
+pub fn main(args: &[String]) {
+    let dbg = std::env::var_os("SPRAWL_MCP_DEBUG").is_some();
+    let step = |s: &str| if dbg { eprintln!("mcp: {s}") };
+    step("start");
+    let tree_file = arg(args, "--tree").map(PathBuf::from);
+    if tree_file.is_none() {
+        step("connecting to the app");
+        if let Some(mut client) = crate::pipe::Client::connect() {
+            // through the running app
+            let specs = bridge_specs();
+            serve(specs, &mut |name, input| {
+                let req = json!({"tool": name, "input": input}).to_string();
+                let a: Value = client.ask(&req).ok().and_then(|s| serde_json::from_str(&s).ok()).ok_or("Sprawl closed the connection")?;
+                let text = a["text"].as_str().unwrap_or("").to_string();
+                if a["ok"].as_bool() == Some(true) { Ok(text) } else { Err(text) }
+            });
+            return;
+        }
+    }
+    let tree = match &tree_file {
+        Some(f) => std::fs::File::open(f).ok().and_then(|f| crate::snapshot::read(&mut std::io::BufReader::new(f)).ok()).map(|(t, _)| t),
+        None => newest_snapshot(),
+    };
+    step("snapshot loaded");
+    let Some(tree) = tree else {
+        serve(Vec::new(), &mut |_, _| Err("Sprawl isn't running and has no saved scan yet: open Sprawl and scan a drive.".into()));
+        return;
+    };
+    let mut facts = Facts::gather();
+    step("facts gathered");
+    facts.attach_usage(&tree);
+    step("usage attached");
+    let out = arg(args, "--out").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    let model = arg(args, "--model").unwrap_or_else(|| "claude-code".into());
+    let memory = Memory::load();
+    let driven = out.is_some();
+    let mut local = Local::new(&tree, &facts, &memory, &model, out);
+    step("serving");
+    serve(local_specs(driven), &mut |name, input| local.call(name, input));
+}
+
+/// The app's side of the pipe: answer one request line against `tree`. `filter` receives a
+/// filter the model wants shown; `findings` is the Advisor's list as text.
+pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Memory, findings: &str, filter: &mut dyn FnMut(String)) -> String {
+    let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
+    let Ok(req) = serde_json::from_str::<Value>(line) else { return reply(false, "bad request".into()) };
+    let Some(tree) = tree else { return reply(false, "No scan is open in Sprawl yet.".into()) };
+    let name = req["tool"].as_str().unwrap_or("");
+    let input = &req["input"];
+    match name {
+        "findings" => reply(true, if findings.is_empty() { "The Advisor hasn't found anything (or is still looking).".into() } else { findings.to_string() }),
+        "scan_report" => reply(true, crate::llm::report::build(tree, facts, &[], None, None)),
+        _ if bridge_specs().iter().any(|t| t.name == name) => {
+            let mut tools = Tools::new(tree, facts, "claude-code", &[], memory);
+            match tools.call(name, input) {
+                Ok(t) => {
+                    if let Some(f) = tools.filter.take() {
+                        filter(f);
+                    }
+                    reply(true, t)
+                }
+                Err(e) => reply(false, e),
+            }
+        }
+        _ => reply(false, format!("there is no tool called {name}")),
+    }
+}
+
+/// The MCP config for a driven `claude -p` run: only this server, with the tree and an out file.
+pub fn driven_config(exe: &Path, tree_file: &Path, out_file: &Path, model: &str) -> String {
+    json!({"mcpServers": {"sprawl": {"command": exe, "args": ["--mcp", "--tree", tree_file, "--out", out_file, "--model", model]}}}).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol() {
+        let specs = local_specs(false);
+        let mut call = |name: &str, _: &Value| if name == "scan_report" { Ok("report".to_string()) } else { Err("nope".to_string()) };
+        let init = handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}), &specs, &mut call).unwrap();
+        assert_eq!(init["result"]["serverInfo"]["name"], "sprawl");
+        assert!(handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), &specs, &mut call).is_none());
+        let list = handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), &specs, &mut call).unwrap();
+        let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"scan_report") && names.contains(&"largest"));
+        assert!(!names.contains(&"report_finding") && !names.contains(&"set_filter") && !names.contains(&"web_lookup"), "{names:?}");
+        let r = handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "scan_report"}}), &specs, &mut call).unwrap();
+        assert_eq!(r["result"]["content"][0]["text"], "report");
+        let e = handle(&json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "x"}}), &specs, &mut call).unwrap();
+        assert_eq!(e["result"]["isError"], true);
+        assert!(handle(&json!({"jsonrpc": "2.0", "id": 5, "method": "nope"}), &specs, &mut call).unwrap()["error"]["code"] == -32601);
+        // driven mode adds the reporting tools, never anything that acts
+        let d: Vec<&str> = local_specs(true).iter().map(|t| t.name).collect();
+        assert!(d.contains(&"report_finding") && d.contains(&"finish") && !d.contains(&"web_lookup") && !d.contains(&"set_filter"));
+    }
+
+    #[test]
+    fn bridge_answers() {
+        let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
+        let facts = Facts::from_apps(Vec::new());
+        let mut shown = None;
+        let root = tree.path_of(sprawl_core::ROOT).display().to_string();
+        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), &facts, &Memory::default(), "", &mut |f| shown = Some(f));
+        assert!(a.contains("\"ok\":true") && a.contains("lib.rs"), "{a}");
+        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), &facts, &Memory::default(), "", &mut |f| shown = Some(f));
+        assert!(f.contains("\"ok\":true") && shown.as_deref() == Some("*.rs"));
+        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", &mut |_| {});
+        assert!(n.contains("no tool"), "reporting isn't offered over the bridge");
+    }
+}

@@ -10,6 +10,7 @@
 #[allow(dead_code, unused_imports, non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 mod bindings;
 mod advisor;
+mod bridge;
 mod app;
 mod commands;
 mod format;
@@ -374,6 +375,16 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 }
 
 fn main() {
+    // `sprawl --mcp`: an MCP server on stdin and stdout for Claude Code, no window
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if args.first().map(String::as_str) == Some("--mcp") {
+        sprawl_advisor::mcp::main(&args);
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        sprawl_advisor::llm::set_mcp_exe(exe);
+    }
+    bridge::start();
     sprawl_advisor::config::migrate_old_folders();
     // A panic inside a XAML callback aborts the process with no message; keep a note of it.
     std::panic::set_hook(Box::new(|info| {

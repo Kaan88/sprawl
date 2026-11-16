@@ -14,6 +14,8 @@ use super::{log_request, Chat, Turn};
 pub struct ClaudeCode {
     exe: PathBuf,
     model: String,
+    /// An MCP config with Sprawl's server alone: its tools are the only ones allowed.
+    mcp: Option<PathBuf>,
     /// Everything so far: the instructions, the report and the conversation as text.
     prompt: String,
     /// There is something new to answer.
@@ -23,8 +25,15 @@ pub struct ClaudeCode {
 /// Arguments for `claude`: print mode, JSON out, and nothing it could act with. No built-in tools,
 /// no MCP servers, the user's and project's settings files (their hooks and allow rules) not
 /// loaded, and anything that would ask for permission denied. It reads the prompt and answers.
-pub(crate) fn args(model: &str) -> Vec<String> {
+/// With `mcp`, only Sprawl's own server (read-only tools) is loaded and allowed.
+pub(crate) fn args(model: &str, mcp: Option<&Path>) -> Vec<String> {
     let mut a: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--restricted", "--permission-prompts", "none"].iter().map(|s| s.to_string()).collect();
+    if let Some(cfg) = mcp {
+        a.push("--mcp-config".into());
+        a.push(cfg.display().to_string());
+        a.push("--allowedTools".into());
+        a.push("mcp__sprawl".into());
+    }
     if !model.is_empty() && !model.starts_with('-') && model.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.') {
         a.push("--model".into());
         a.push(model.into());
@@ -41,7 +50,13 @@ fn workdir() -> PathBuf {
 
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
-        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), prompt: format!("{system}\n\n{first}"), pending: true }
+        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true }
+    }
+
+    /// Give it Sprawl's tools through the MCP config at `cfg` (and nothing else).
+    pub fn with_mcp(mut self, cfg: &Path) -> ClaudeCode {
+        self.mcp = Some(cfg.to_path_buf());
+        self
     }
 }
 
@@ -54,8 +69,9 @@ pub(crate) fn parse(out: &str) -> Result<String, String> {
     v["result"].as_str().map(str::to_string).ok_or_else(|| "Claude Code gave no result".into())
 }
 
-impl Chat for ClaudeCode {
-    fn turn(&mut self) -> Result<Turn, String> {
+impl ClaudeCode {
+    /// [`Chat::turn`], calling `tick` about every half second while Claude Code works.
+    pub fn turn_with(&mut self, tick: &mut dyn FnMut()) -> Result<Turn, String> {
         if !self.pending {
             return Ok(Turn::default());
         }
@@ -63,7 +79,7 @@ impl Chat for ClaudeCode {
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
         // Rust escapes arguments for a .cmd shim itself; the prompt goes on stdin
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args(&self.model)).current_dir(workdir());
+        cmd.args(args(&self.model, self.mcp.as_deref())).current_dir(workdir());
         // stderr isn't read: a full pipe would stall it
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         #[cfg(windows)]
@@ -88,7 +104,10 @@ impl Chat for ClaudeCode {
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
-                Ok(None) if start.elapsed() < Duration::from_secs(900) => std::thread::sleep(Duration::from_millis(200)),
+                Ok(None) if start.elapsed() < Duration::from_secs(900) => {
+                    std::thread::sleep(Duration::from_millis(500));
+                    tick();
+                }
                 _ => {
                     kill_tree(&mut child);
                     return Err("Claude Code took longer than 15 minutes".into());
@@ -102,6 +121,12 @@ impl Chat for ClaudeCode {
         // each new process gets the whole conversation
         self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
         Ok(Turn { text, ..Turn::default() })
+    }
+}
+
+impl Chat for ClaudeCode {
+    fn turn(&mut self) -> Result<Turn, String> {
+        self.turn_with(&mut || {})
     }
 
     fn answer(&mut self, _: Vec<(String, String, bool)>) {}
@@ -131,14 +156,18 @@ fn kill_tree(child: &mut std::process::Child) {
 mod tests {
     #[test]
     fn nothing_to_act_with() {
-        let a = super::args("claude-opus-5-5");
+        let a = super::args("claude-opus-5-5", None);
+        assert!(!a.contains(&"--mcp-config".to_string()));
+        let m = super::args("claude-opus-5-5", Some(std::path::Path::new(r"C:\x\mcp.json")));
+        assert_eq!(m[m.iter().position(|x| x == "--allowedTools").unwrap() + 1], "mcp__sprawl", "only Sprawl's tools");
+        assert!(m.contains(&"--strict-mcp-config".to_string()));
         let i = a.iter().position(|x| x == "--tools").unwrap();
         assert_eq!(a[i + 1], "", "no built-in tools");
         for flag in ["--strict-mcp-config", "--restricted", "-p"] {
             assert!(a.contains(&flag.to_string()), "{flag}");
         }
         assert_eq!(a[a.iter().position(|x| x == "--permission-prompts").unwrap() + 1], "none");
-        assert!(!super::args("--dangerously-skip-permissions").contains(&"--model".to_string()), "a model name can't be a flag");
+        assert!(!super::args("--dangerously-skip-permissions", None).contains(&"--model".to_string()), "a model name can't be a flag");
     }
 
     #[test]

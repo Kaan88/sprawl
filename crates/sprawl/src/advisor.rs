@@ -204,6 +204,23 @@ fn inside_another(all: &[Finding], f: &Finding) -> bool {
     })
 }
 
+/// The Advisor's findings as text, for Claude Code.
+fn findings_text(r: &Report) -> String {
+    let mut s = String::new();
+    for f in &r.findings {
+        s += &format!("- [{:?}] {} ({}): {}\n", f.risk, f.title, sprawl_core::format_size(f.bytes), f.path.display());
+        for e in &f.evidence {
+            s += &format!("    {e}\n");
+        }
+        if let Some(c) = &f.command {
+            // the functions are long and the same each time
+            let shown = c.strip_prefix(RM_FN).map(|r| format!("(Sprawl's safe-delete functions){r}")).unwrap_or_else(|| c.clone());
+            s += &format!("    PowerShell: {shown}\n");
+        }
+    }
+    s
+}
+
 /// What the goal box shows when empty, and what an empty box means.
 const GOAL_EXAMPLE: &str = "20";
 
@@ -293,7 +310,11 @@ impl State {
         if !self.advisor.memory_loaded {
             self.advisor.memory = Memory::load();
             self.advisor.memory_loaded = true;
+            crate::bridge::publish_memory(&self.advisor.memory);
         }
+        // Claude Code sees the whole scan, also while a filter is on
+        crate::bridge::publish_tree(self.full_tree.clone().or_else(|| self.tree.clone()));
+        crate::bridge::publish_findings(String::new());
         let Some(t) = self.tree.clone() else {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
             return self.advisor_changed();
@@ -341,6 +362,11 @@ impl State {
     /// Called every frame: pick up finished work.
     pub(crate) fn advisor_poll(&mut self) {
         self.chat_poll();
+        for f in crate::bridge::take_filters() {
+            if let Ok(t) = find::<TextBox>(&self.root, "FilterBox") {
+                let _ = t.SetText(&f.as_str().into());
+            }
+        }
         let Some(rx) = &self.advisor.rx else { return };
         let msgs: Vec<Msg> = rx.try_iter().collect();
         let mut changed = false;
@@ -409,6 +435,9 @@ impl State {
 
     fn advisor_changed(&mut self) {
         self.map.drawn_once = false;
+        if let Some(r) = self.advice() {
+            crate::bridge::publish_findings(findings_text(r));
+        }
         if self.view == View::Advisor {
             self.render_advisor();
         }
@@ -455,6 +484,11 @@ impl State {
                 return;
             }
             "AdvChatSend" => return self.chat_send(),
+            "AdvMcpCopy" => {
+                win32::copy_text(self.hwnd, &crate::bridge::setup_command());
+                crate::state::text(&self.root, "StatusText", "Copied. Run it once in a terminal, then ask Claude Code about your disk while Sprawl is open.");
+                return;
+            }
             "AdvEx0" | "AdvEx1" | "AdvEx2" | "AdvEx3" => {
                 let i = name[5..].parse::<usize>().unwrap_or(0);
                 return self.chat_ask(EXAMPLES.get(i).copied().unwrap_or_default().to_string());
@@ -633,7 +667,7 @@ impl State {
             }
         }
         for name in [
-            "AdvKeep", "AdvLater", "AdvUninstall", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvUninstall", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -930,6 +964,7 @@ impl State {
     }
 
     fn save_memory(&self) {
+        crate::bridge::publish_memory(&self.advisor.memory);
         if let Err(e) = self.advisor.memory.save() {
             crate::state::text(&self.root, "StatusText", &format!("Couldn't save what the advisor remembers: {e}"));
         }
@@ -1286,6 +1321,10 @@ impl State {
             }
             x += "</StackPanel></Border>";
         }
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center"/><TextBlock Text="{}" FontFamily="Consolas" FontSize="11" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
+            ui::esc(&crate::bridge::setup_command())
+        );
         x += &format!(
             r##"<Button x:Name="AdvMemShow" Padding="10,4" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="What the advisor remembers: {} preferences, {} folder labels ({})"/>"##,
             m.prefs.len(),

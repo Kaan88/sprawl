@@ -191,6 +191,70 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode) -> Result<Box<dy
     })
 }
 
+/// Claude Code drives itself through Sprawl's MCP server (read-only tools on a snapshot of this
+/// scan). What it reports is recorded by that server, then every claim is replayed here through
+/// the same checks as any other model's: nothing it wrote is taken as it is.
+#[allow(clippy::too_many_arguments)]
+fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+    let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = super::advisor_dir().ok_or("APPDATA is not set")?.join("claude-code-runs").join(format!("{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let result = (|| {
+        progress("Handing the scan to Claude Code...".into());
+        let tree_file = dir.join("scan.dtsn");
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&tree_file).map_err(|e| e.to_string())?);
+        crate::snapshot::write(tree, std::time::SystemTime::now(), 1, &mut w).map_err(|e| e.to_string())?;
+        drop(w);
+        let out_file = dir.join("out.jsonl");
+        std::fs::write(&out_file, "").map_err(|e| e.to_string())?;
+        let cfg_file = dir.join("mcp.json");
+        std::fs::write(&cfg_file, crate::mcp::driven_config(exe, &tree_file, &out_file, model)).map_err(|e| e.to_string())?;
+        let first = format!("{report}\n\nUse Sprawl's tools (mcp__sprawl__...) to look closer, report each opportunity with report_finding, and end with finish.");
+        let mut cc = ClaudeCode::new(&claude, model, SYSTEM, &first).with_mcp(&cfg_file);
+        progress(format!("Claude Code ({model}) is reading the scan..."));
+        // show what it does as it goes: the server notes every tool call
+        let started = std::time::Instant::now();
+        let mut seen = 0usize;
+        let mut last = String::new();
+        let answer = cc.turn_with(&mut || {
+            let text = std::fs::read_to_string(&out_file).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            for l in lines.iter().skip(seen) {
+                if let Some(p) = serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v["progress"].as_str().map(str::to_string)) {
+                    last = p;
+                }
+            }
+            seen = lines.len();
+            let secs = started.elapsed().as_secs();
+            progress(if last.is_empty() { format!("Claude Code ({model}) is reading the scan... {secs} s") } else { format!("Claude Code: {last} ({secs} s)") });
+        })?;
+        // replay what it reported through this process's own checks
+        let mut tools = Tools::new(tree, facts, model, already, memory);
+        let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
+        let mut turns = 1;
+        for line in recorded.lines().take(500) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let name = v["tool"].as_str().unwrap_or("");
+            if matches!(name, "report_finding" | "remember" | "propose_rule" | "finish") {
+                let _ = tools.call(name, &v["input"]);
+                turns += 1;
+            }
+        }
+        let mut run = AiRun { model: format!("{model} (Claude Code)"), with_tools: true, turns, ..AiRun::default() };
+        run.summary = super::tools::clean_text_long(&tools.summary.take().unwrap_or(answer.text), 2000);
+        run.findings = std::mem::take(&mut tools.accepted);
+        run.findings.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        run.rejected = std::mem::take(&mut tools.rejected);
+        run.prefs = std::mem::take(&mut tools.prefs);
+        run.labels = std::mem::take(&mut tools.labels);
+        run.proposals = std::mem::take(&mut tools.proposals);
+        Ok(run)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
 /// The key for an OpenAI-compatible endpoint. `OPENAI_API_KEY` from the environment goes only to
 /// OpenAI itself; no key ever goes over plain http to another machine.
 pub(crate) fn openai_key(base_url: &str) -> Result<Option<String>, String> {
@@ -229,6 +293,12 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     let mut tools = Tools::new(tree, &facts, &model, already, memory);
     let mut run = AiRun { model: model.clone(), ..AiRun::default() };
 
+    // Claude Code with Sprawl's own tools, when the app can serve them
+    if cfg.provider == Provider::ClaudeCode {
+        if let Some(exe) = super::mcp_exe() {
+            return run_driven(tree, &facts, &model, &report, already, memory, exe, progress);
+        }
+    }
     let mut mode = if cfg.provider == Provider::ClaudeCode { Mode::Single } else { Mode::Tools };
     let mut chat = open(cfg, &model, &report, &mode)?;
     progress(format!("Asking {model}..."));

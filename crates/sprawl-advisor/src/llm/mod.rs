@@ -59,6 +59,18 @@ pub trait Chat {
     fn say(&mut self, text: &str);
 }
 
+static MCP_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The program that serves `--mcp` (the app sets it to itself), so Claude Code can be given
+/// Sprawl's tools.
+pub fn set_mcp_exe(p: PathBuf) {
+    let _ = MCP_EXE.set(p);
+}
+
+pub(crate) fn mcp_exe() -> Option<&'static PathBuf> {
+    MCP_EXE.get()
+}
+
 /// Where the request log and other advisor files live.
 pub fn advisor_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Sprawl").join("advisor"))

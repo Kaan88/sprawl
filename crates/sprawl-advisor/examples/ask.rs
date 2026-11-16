@@ -25,6 +25,10 @@ fn main() {
     let (rules, _) = advise_all(&tree, &[RulePack::builtin()], &facts);
     println!("{} rule findings", rules.len());
     let started = std::time::Instant::now();
+    // SPRAWL_MCP_EXE=<sprawl.exe>: Claude Code gets Sprawl's tools, as in the app
+    if let Some(exe) = std::env::var_os("SPRAWL_MCP_EXE") {
+        sprawl_advisor::llm::set_mcp_exe(exe.into());
+    }
     let memory = sprawl_advisor::memory::Memory::load();
     match sprawl_advisor::llm::agent::run(&tree, &cfg, &rules, None, goal, &memory, "", &mut |s| println!("  .. {s}")) {
         Ok(run) => {
