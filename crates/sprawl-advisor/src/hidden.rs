@@ -151,6 +151,11 @@ fn wide_dir(root: &Path) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// (total, free) bytes of the drive holding `root`.
+pub fn free_space(root: &Path) -> Option<(u64, u64)> {
+    disk_space(root)
+}
+
 #[cfg(windows)]
 fn disk_space(root: &Path) -> Option<(u64, u64)> {
     let w = wide_dir(root);

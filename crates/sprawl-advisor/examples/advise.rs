@@ -66,6 +66,15 @@ fn main() {
     for (f, why) in &held {
         println!("  held back: {} ({}): {why}", f.title, format_size(f.bytes));
     }
+    // SPRAWL_GROWTH=1: growth from the saved snapshots (read only)
+    if std::env::var_os("SPRAWL_GROWTH").is_some() {
+        let free = sprawl_advisor::hidden::free_space(&path).map(|(_, f)| f);
+        let t0 = std::time::Instant::now();
+        match sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&tree, &b, &facts, free, std::time::SystemTime::now())) {
+            Some(g) => println!("growth in {:.2} s, {} points:{}", t0.elapsed().as_secs_f64(), g.points.len(), g.text(&tree)),
+            None => println!("no earlier snapshot of this folder"),
+        }
+    }
     // SPRAWL_EXPORT=<file.ps1> writes the clean-up script for every finding with a command
     if let Some(out) = std::env::var_os("SPRAWL_EXPORT") {
         let list: Vec<&sprawl_advisor::Finding> = ok.iter().filter(|f| f.command.is_some()).collect();

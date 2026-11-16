@@ -51,7 +51,7 @@ pub enum ChatEvent {
 
 /// "Ask your disk": answer each question from `questions` until the channel closes. Runs on its
 /// own thread with its own copy of the scan, so filtering the map doesn't end it.
-pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool) {
+pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool) {
     let Ok(first) = questions.recv() else { return };
     if cfg.provider == Provider::Off {
         events(ChatEvent::Failed("AI is off. Choose a provider with Set up AI.".into()));
@@ -61,7 +61,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, questions: std::sync::
     events(ChatEvent::Progress("Reading the scan...".into()));
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, &[], None, None) + &memory.context();
+    let report = super::report::build(tree, &facts, &[], None, None) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, &[], memory);
     tools.consent = Some(consent);
     let tools_ok = cfg.provider != Provider::ClaudeCode;
@@ -213,7 +213,8 @@ pub(crate) fn json_in(text: &str) -> Option<Value> {
 
 /// Analyse `tree` with the configured model. `already` are the rule findings (not repeated);
 /// `goal` is the space the user needs, if they said. `progress` gets short status lines.
-pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>, memory: &Memory, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+/// `notes` is added to the report (growth over time, from the app).
+pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>, memory: &Memory, notes: &str, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     if cfg.provider == Provider::Off {
         return Err("AI is off. Choose a provider in Options > AI setup.".into());
     }
@@ -224,7 +225,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     progress("Gathering what Windows knows about your apps...".into());
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, already, hidden, goal) + &memory.context();
+    let report = super::report::build(tree, &facts, already, hidden, goal) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory);
     let mut run = AiRun { model: model.clone(), ..AiRun::default() };
 
@@ -323,7 +324,7 @@ mod tests {
     #[test]
     fn off_is_refused_without_sending_anything() {
         let tree = sprawl_core::scan(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
-        let err = run(&tree, &AiConfig::default(), &[], None, None, &Memory::default(), &mut |_| {}).unwrap_err();
+        let err = run(&tree, &AiConfig::default(), &[], None, None, &Memory::default(), "", &mut |_| {}).unwrap_err();
         assert!(err.contains("AI is off"));
     }
 }

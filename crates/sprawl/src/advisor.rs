@@ -52,6 +52,8 @@ pub(crate) struct Report {
     /// Hidden by the user's decisions ("Keep it", "Not now").
     kept: Vec<(Finding, Verdict)>,
     hidden: Option<HiddenSpace>,
+    /// How this folder grew, from History's snapshots (arrives after the report).
+    growth: Option<sprawl_advisor::growth::Growth>,
     /// Owning app of every node (index into `apps`).
     owners: Vec<Option<u32>>,
     apps: Vec<String>,
@@ -65,6 +67,7 @@ pub(crate) struct Report {
 enum Msg {
     Report(Box<Report>),
     Hidden(u64, Option<HiddenSpace>),
+    Growth(u64, Option<sprawl_advisor::growth::Growth>),
     /// (tree generation, finding, answer)
     InUse(u64, usize, InUse),
     /// A status line from the model run.
@@ -227,7 +230,7 @@ fn remedy_label(r: Remedy) -> &'static str {
 }
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
-fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> Report {
+fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     let started = std::time::Instant::now();
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
@@ -249,20 +252,22 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> Report {
             stack.extend_from_slice(&tree.nodes[k].children);
         }
     }
-    Report {
+    let r = Report {
         tree: gen,
         nodes,
         counted,
         held: held.into_iter().map(|(f, why)| (f, why.to_string())).collect(),
         kept,
         hidden: None,
+        growth: None,
         owners: facts.owner_map(tree),
         apps: facts.apps.iter().map(|a| a.name.clone()).collect(),
         uninstall: facts.apps.iter().map(|a| a.uninstall()).collect(),
         lens: Arc::new(lens),
         findings,
         secs: started.elapsed().as_secs_f64(),
-    }
+    };
+    (r, facts)
 }
 
 impl State {
@@ -308,13 +313,19 @@ impl State {
         let gen = self.tree_gen;
         let memory = self.advisor.memory.clone();
         std::thread::spawn(move || {
-            let r = analyse(&t, gen, &memory);
+            let (r, facts) = analyse(&t, gen, &memory);
             let (root, allocated, errors) = (t.path_of(sprawl_core::ROOT), t.nodes[sprawl_core::ROOT].allocated, t.errors);
-            // let go of the tree before the slow part, so the app can change it without a copy
-            drop(t);
             if tx.send(Msg::Report(Box::new(r))).is_err() {
                 return;
             }
+            // growth reads a few snapshots: after the report, so that shows first
+            let free = sprawl_advisor::hidden::free_space(&root).map(|(_, f)| f);
+            let growth = sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&t, &b, &facts, free, std::time::SystemTime::now()));
+            if tx.send(Msg::Growth(gen, growth)).is_err() {
+                return;
+            }
+            // let go of the tree before the slow part, so the app can change it without a copy
+            drop(t);
             // starts PowerShell, so it follows on its own
             let shadow = sprawl_advisor::hidden::shadow_storage(&root);
             let _ = tx.send(Msg::Hidden(gen, sprawl_advisor::hidden::account_parts(&root, allocated, errors, shadow)));
@@ -344,6 +355,11 @@ impl State {
                 Msg::Hidden(key, h) => {
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
                         r.hidden = h;
+                    }
+                }
+                Msg::Growth(key, g) => {
+                    if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
+                        r.growth = g;
                     }
                 }
                 Msg::InUse(gen, i, answer) => {
@@ -603,6 +619,7 @@ impl State {
             ("AdvDismiss", m.proposals.len()),
             ("AdvForgetP", m.prefs.len()),
             ("AdvForgetL", m.labels.len()),
+            ("AdvGrow", self.advice().and_then(|r| r.growth.as_ref()).map_or(0, |g| g.grew.len())),
         ];
         for (kind, n) in counts {
             for i in 0..n {
@@ -679,6 +696,7 @@ impl State {
             );
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="16"><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FF4CC38A"/><TextBlock Text="Comes back by itself" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFF5B342"/><TextBlock Text="Costs something" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFFF7A45"/><TextBlock Text="Your own files" FontSize="11" Foreground="#FF8E97AA"/></StackPanel></StackPanel>"##;
+        x += &self.growth_card(r);
         x += &self.ai_card(r);
         x += &self.chat_card();
         if r.findings.is_empty() {
@@ -834,6 +852,7 @@ impl State {
         // only what the rules found: the model's own earlier findings are found again if still true
         let already: Vec<Finding> = r.findings.iter().filter(|f| !matches!(f.source, Source::Model(_))).cloned().collect();
         let hidden = r.hidden.clone();
+        let notes = r.growth.as_ref().zip(self.tree.as_ref()).map(|(g, t)| g.text(t)).unwrap_or_default();
         let goal = self.goal_bytes();
         let gen = self.tree_gen;
         let memory = self.advisor.memory.clone();
@@ -844,7 +863,7 @@ impl State {
                 let _ = progress_tx.send(Msg::AiProgress(gen, line));
             };
             // a panic in there still ends the run
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &mut progress)))
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &notes, &mut progress)))
                 .unwrap_or_else(|_| Err("the analysis stopped with an internal error".into()));
             let _ = tx.send(Msg::AiDone(gen, result));
         });
@@ -952,6 +971,14 @@ impl State {
 
     /// A numbered button: undo a decision, approve or dismiss a proposal, forget a memory.
     fn advisor_indexed(&mut self, kind: &str, i: usize) {
+        if kind == "AdvGrow" {
+            let n = self.advice().and_then(|r| r.growth.as_ref()).and_then(|g| g.grew.get(i)).map(|g| g.node);
+            if let Some(n) = n.filter(|&n| self.tree.as_ref().is_some_and(|t| n < t.nodes.len())) {
+                self.set_view(View::Tree);
+                self.reveal(n);
+            }
+            return;
+        }
         let m = &mut self.advisor.memory;
         match kind {
             "AdvUndo" => {
@@ -1087,6 +1114,7 @@ impl State {
             let Some(t) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
             let cfg = AiConfig::load();
             let memory = self.advisor.memory.clone();
+            let notes = self.advice().and_then(|r| r.growth.as_ref()).zip(self.tree.as_ref()).map(|(g, t)| g.text(t)).unwrap_or_default();
             let (qtx, qrx) = channel::<String>();
             let (etx, erx) = channel::<ChatMsg>();
             let web_ok = self.advisor.chat.web_ok.clone();
@@ -1106,7 +1134,7 @@ impl State {
                 let mut events = |e: ChatEvent| {
                     let _ = etx.send(ChatMsg::Event(e));
                 };
-                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, qrx, &mut events, &consent)));
+                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, &notes, qrx, &mut events, &consent)));
                 if ended.is_err() {
                     let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
                 }
@@ -1281,6 +1309,48 @@ impl State {
             }
             x += "</StackPanel>";
         }
+        x
+    }
+
+    fn growth_card(&self, r: &Report) -> String {
+        use sprawl_advisor::growth::signed;
+        let not_yet = r##"<TextBlock Text="Growth over time shows here once History has scans of this folder at least a day apart." FontSize="11" Foreground="#FF6F788C" TextWrapping="Wrap"/>"##;
+        let Some(t) = self.tree.as_ref() else { return String::new() };
+        let Some(g) = &r.growth else { return not_yet.to_string() };
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="4">"##);
+        let mut head = String::new();
+        if let Some(since) = g.since {
+            head += &format!("{} since {}", signed(g.change), sprawl_advisor::facts::month_year(since));
+        }
+        if let Some(rate) = g.per_day {
+            head += &format!("{}about {} a day", if head.is_empty() { "" } else { ", " }, signed(rate as i64));
+        }
+        if head.is_empty() {
+            return not_yet.to_string();
+        }
+        x += &format!(r##"<TextBlock Text="Growth: {}" FontSize="13" FontWeight="SemiBold"/>"##, ui::esc(&head));
+        if let Some(d) = g.full_in_days {
+            let (colour, text) = if d < 30.0 {
+                ("#FFFF7A45", format!("At this rate the drive is full in about {d:.0} days."))
+            } else if d < 365.0 {
+                ("#FFF5B342", format!("At this rate the drive is full in about {:.0} weeks.", d / 7.0))
+            } else {
+                ("#FF8E97AA", "At this rate the drive has room for over a year.".to_string())
+            };
+            x += &format!(r##"<TextBlock Text="{text}" FontSize="12" Foreground="{colour}"/>"##);
+        }
+        for (i, gr) in g.grew.iter().enumerate() {
+            if gr.node >= t.nodes.len() {
+                continue;
+            }
+            x += &format!(
+                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" VerticalAlignment="Center" Foreground="#FFF5B342"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="11" CornerRadius="4" VerticalAlignment="Center"/></Grid>"##,
+                ui::esc(&t.path_of(gr.node).display().to_string()),
+                ui::esc(&gr.why.join("; ")),
+                ui::esc(&signed(gr.delta)),
+            );
+        }
+        x += "</StackPanel></Border>";
         x
     }
 

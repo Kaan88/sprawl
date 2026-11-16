@@ -17,6 +17,7 @@ pub mod config;
 pub mod export;
 pub mod facts;
 pub mod finding;
+pub mod growth;
 pub mod hidden;
 pub mod history;
 pub mod inuse;
