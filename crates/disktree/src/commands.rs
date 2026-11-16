@@ -8,7 +8,7 @@ use disktree_core::ROOT;
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
 use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleMenuFlyoutItem};
 use crate::bindings::Microsoft::UI::Xaml::{GridLength, GridUnitType, UIElement, Visibility};
-use crate::format::{file_type, fmt_time, stamp, user_dir};
+use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
 use crate::{ui, win32};
 
@@ -146,16 +146,18 @@ impl State {
             }
             "mDelete" | "mDeleteForever" => self.delete(name == "mDeleteForever"),
             "mExportCsv" if has_tree => {
-                let t = self.tree.as_ref().unwrap();
-                let mut s = String::from("File Name,Size,Allocated,Modified,Attributes,Files,Folders\r\n");
-                for (i, n) in t.nodes.iter().enumerate() {
-                    let mut name = t.path_of(i).display().to_string();
-                    if n.is_dir && !name.ends_with('\\') {
-                        name.push('\\');
-                    }
-                    s += &format!("\"{}\",{},{},{},{},{},{}\r\n", name.replace('"', "\"\""), n.size, self.alloc[i], n.modified.map(fmt_time).unwrap_or_default(), if n.is_dir { "D" } else { "" }, n.files, n.folders);
-                }
-                self.save_text("DiskTree export", &s);
+                // WizTree's format, so the file loads back here or in WizTree.
+                let path = user_dir("Documents").join(format!("DiskTree export {}.csv", stamp()));
+                let res = std::fs::File::create(&path).and_then(|f| {
+                    let mut w = std::io::BufWriter::new(f);
+                    disktree_core::export_csv(self.tree.as_ref().unwrap(), &mut w)?;
+                    std::io::Write::flush(&mut w)
+                });
+                let msg = match res {
+                    Ok(()) => format!("Saved {}", path.display()),
+                    Err(e) => format!("Couldn't save: {e}"),
+                };
+                text(&self.root, "FootLeft", &msg);
             }
             "mExportTypes" if has_tree => {
                 let mut s = String::from("Extension,File Type,Percent,Size,Allocated,Files\r\n");

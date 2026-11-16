@@ -26,6 +26,7 @@ pub(crate) struct Live {
     /// (extension, bytes, files), biggest first.
     pub(crate) by_ext: Vec<(String, u64, u64)>,
     pub(crate) method: &'static str,
+    pub(crate) phase: &'static str,
 }
 
 const CELLS_X: usize = 60;
@@ -198,7 +199,7 @@ impl State {
         set(&els.folders, thousands(live.folders));
         set(&els.bytes, disktree_core::format_size(live.bytes));
         set(&els.rate, thousands(h.rates.back().copied().unwrap_or(0.0) as u64));
-        set(&els.method, format!("Reading {}", live.method));
+        set(&els.method, if live.phase.is_empty() { live.method.to_uppercase() } else { format!("{}  ·  {}", live.method.to_uppercase(), live.phase.to_uppercase()) });
 
         // colour of the cells read since the last frame: the biggest file type right now
         let lead = live.by_ext.first().map(|_| paint::PALETTE[0]).unwrap_or((76, 194, 255));

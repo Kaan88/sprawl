@@ -3,11 +3,10 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use disktree_core::{extension_stats, format_size, largest_files, Tree, ROOT};
+use disktree_core::{extension_stats, format_size, largest_files, Progress, Tree, ROOT};
 use windows_core::{Interface, HSTRING};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
@@ -46,7 +45,7 @@ pub(crate) struct ExtRow {
 
 pub(crate) struct Job {
     pub(crate) path: PathBuf,
-    pub(crate) count: Arc<AtomicU64>,
+    pub(crate) progress: Arc<Progress>,
     pub(crate) result: Arc<Mutex<Option<std::io::Result<Tree>>>>,
     pub(crate) started: Instant,
     pub(crate) last_layout: Instant,
@@ -55,7 +54,8 @@ pub(crate) struct Job {
 impl Job {
     /// What the scanner has found so far.
     pub(crate) fn live(&self) -> Live {
-        Live { files: self.count.load(Ordering::Relaxed), method: "folders", ..Default::default() }
+        let s = self.progress.snapshot();
+        Live { files: s.files, folders: s.folders, bytes: s.bytes, fraction: s.fraction, top: s.top, by_ext: s.by_ext, method: s.method.label(), phase: s.phase }
     }
 }
 
@@ -146,14 +146,14 @@ impl State {
         if self.job.is_some() {
             return;
         }
-        let count = Arc::new(AtomicU64::new(0));
+        let progress = Progress::new();
         let result = Arc::new(Mutex::new(None));
-        let (c2, r2, p2) = (count.clone(), result.clone(), path.clone());
+        let (g2, r2, p2) = (progress.clone(), result.clone(), path.clone());
         std::thread::spawn(move || {
-            let tree = disktree_core::scan(&p2, |n| c2.store(n, Ordering::Relaxed));
+            let tree = disktree_core::scan_auto(&p2, &g2);
             *r2.lock().unwrap() = Some(tree);
         });
-        self.job = Some(Job { path: path.clone(), count, result, started: Instant::now(), last_layout: Instant::now() });
+        self.job = Some(Job { path: path.clone(), progress, result, started: Instant::now(), last_layout: Instant::now() });
         // The map shows the scan growing; the header's used space lets the overlay estimate progress.
         self.map.scene.clear();
         self.map.live = Some(LiveMap::new());
@@ -220,13 +220,7 @@ impl State {
 
     pub(crate) fn set_tree(&mut self, tree: Tree, path: &std::path::Path) {
         // Allocated size: each file rounded up to a 4 KB cluster, folders add up their contents.
-        let mut alloc: Vec<u64> = tree.nodes.iter().map(|n| if n.is_dir { 0 } else { n.size.div_ceil(4096) * 4096 }).collect();
-        for i in (1..tree.nodes.len()).rev() {
-            if let Some(p) = tree.nodes[i].parent {
-                alloc[p] += alloc[i];
-            }
-        }
-        self.alloc = alloc;
+        self.alloc = tree.nodes.iter().map(|n| n.allocated).collect();
         self.tree = Some(tree);
         self.expanded = HashSet::from([ROOT]);
         self.selected = Some(ROOT);
@@ -239,7 +233,12 @@ impl State {
         self.sort_tree();
         self.sort_files();
         let t = self.tree.as_ref().unwrap();
-        text(&self.root, "StatusText", &format!("Scan complete in {:.2} seconds", self.scan_secs));
+        let how = match t.method {
+            disktree_core::ScanMethod::Mft => "read from the MFT",
+            disktree_core::ScanMethod::Csv => "loaded from CSV",
+            disktree_core::ScanMethod::Walk => "folder walk",
+        };
+        text(&self.root, "StatusText", &format!("Scan complete in {:.2} seconds ({how})", self.scan_secs));
         text(
             &self.root,
             "ScanInfo",

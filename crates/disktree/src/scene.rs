@@ -168,6 +168,10 @@ impl Scene {
             a.present = true;
             a.depth = d;
             a.label = label;
+            // After a rescan the same slot may now be a different kind of node.
+            a.is_dir = is_dir;
+            a.parent = parent as u32;
+            a.info = info(n);
             (a.tx, a.ty, a.tw, a.th) = (x, y, w, h);
         } else {
             let start = if self.animate { (x + w / 2.0, y + h / 2.0, 0.0, 0.0) } else { (x, y, w, h) };

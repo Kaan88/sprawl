@@ -1,29 +1,70 @@
 //! disktree-core: the parts of a WizTree-style disk analyser that don't need a UI.
 //!
-//! * `scan` walks a folder with `std::fs` (links are not followed) into a flat `Tree`.
-//! * Every folder gets its total size, item, file and folder counts.
+//! * [`scan_auto`] reads the NTFS master file table directly when it can ([`mft`], needs admin)
+//!   and otherwise lists folders with a multi-threaded `FindFirstFileExW` walk ([`walk`]).
+//!   Either way it reports live [`Progress`] that a UI can poll while the scan runs.
+//! * [`scan_many`] scans several paths under one synthetic root ("Select Multiple").
+//! * [`csv`] writes and reads WizTree-compatible CSV files; [`filter`] does WizTree-style
+//!   `*.mp4|*.mkv` filters.
+//! * Every folder gets its total size, allocated size, item, file and folder counts.
 //! * `extension_stats` groups files by extension; `largest_files` lists the biggest files.
 //! * `squarify` and `treemap` lay sizes out as rectangles (the squarified treemap).
-//!
-//! Reading the NTFS master file table directly (how WizTree is fast) is out of scope here.
 
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub mod csv;
+pub mod filter;
+pub mod mft;
+pub mod progress;
+pub mod walk;
+
+pub use csv::{export_csv, load_csv};
+pub use filter::{filter_tree, matches, Filter};
+pub use progress::{Progress, ProgressSnapshot, ScanMethod};
+
+/// `FILE_ATTRIBUTE_*` bits as found in [`Node::attributes`].
+pub mod attr {
+    pub const READONLY: u32 = 0x1;
+    pub const HIDDEN: u32 = 0x2;
+    pub const SYSTEM: u32 = 0x4;
+    pub const DIRECTORY: u32 = 0x10;
+    pub const ARCHIVE: u32 = 0x20;
+    pub const NORMAL: u32 = 0x80;
+    pub const TEMPORARY: u32 = 0x100;
+    pub const SPARSE_FILE: u32 = 0x200;
+    pub const REPARSE_POINT: u32 = 0x400;
+    pub const COMPRESSED: u32 = 0x800;
+    pub const OFFLINE: u32 = 0x1000;
+    pub const NOT_CONTENT_INDEXED: u32 = 0x2000;
+    pub const ENCRYPTED: u32 = 0x4000;
+}
 
 /// One file or folder.
-#[derive(Debug, Clone)]
+///
+/// Memory: a full system drive is ~3.4M nodes, so a node is kept to plain fields (120 bytes
+/// plus the name's heap allocation). `children` is empty (no heap) for files and shrunk to fit for folders.
+/// Index types stay `usize` so `tree.nodes[i]` indexing reads naturally.
+#[derive(Debug, Clone, Default)]
 pub struct Node {
     pub name: String,
     pub is_dir: bool,
     /// Bytes: the file's length, or the total of everything below a folder.
     pub size: u64,
+    /// Bytes on disk. From the MFT: the real allocation (0 for small files stored inside the MFT
+    /// record, the compressed size for compressed/sparse files). From a folder walk: the length
+    /// rounded up to the volume's cluster size. Folders: the total below.
+    pub allocated: u64,
     /// Files below a folder (1 for a file).
     pub files: u64,
     /// Folders below a folder, not counting itself.
     pub folders: u64,
     pub modified: Option<SystemTime>,
+    /// `FILE_ATTRIBUTE_*` bits (see [`attr`]): hidden, system, reparse point, compressed, ...
+    pub attributes: u32,
     pub parent: Option<usize>,
     pub children: Vec<usize>,
 }
@@ -38,6 +79,20 @@ impl Node {
     pub fn extension(&self) -> String {
         extension_of(&self.name)
     }
+
+    pub fn is_hidden(&self) -> bool {
+        self.attributes & attr::HIDDEN != 0
+    }
+
+    pub fn is_system(&self) -> bool {
+        self.attributes & attr::SYSTEM != 0
+    }
+
+    /// Junctions, symbolic links, mount points, cloud placeholders...: counted as themselves,
+    /// never followed.
+    pub fn is_reparse_point(&self) -> bool {
+        self.attributes & attr::REPARSE_POINT != 0
+    }
 }
 
 /// A scanned folder. Children always have higher indices than their parent.
@@ -47,9 +102,14 @@ pub struct Tree {
     pub nodes: Vec<Node>,
     /// Entries that couldn't be read (access denied and similar).
     pub errors: u64,
+    /// How the tree was produced.
+    pub method: ScanMethod,
 }
 
 pub const ROOT: usize = 0;
+
+/// Name of the synthetic root made by [`scan_many`] (and by CSV files holding several roots).
+pub const MULTIPLE: &str = "Multiple";
 
 pub fn extension_of(name: &str) -> String {
     match name.rfind('.') {
@@ -58,20 +118,190 @@ pub fn extension_of(name: &str) -> String {
     }
 }
 
-/// Walk `path` and build the tree. `progress` is called every 1000 entries with the count so far.
-pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> std::io::Result<Tree> {
+// -------------------------------------------------------------------- scanning entry points
+
+/// Scan `path` (see [`scan_auto`]) and call `progress` with the number of items seen so far,
+/// about every 30 ms. Kept for callers that only need a count; new code should use
+/// [`scan_auto`] with a shared [`Progress`].
+pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
+    let p = Progress::new();
+    std::thread::scope(|s| {
+        let job = s.spawn(|| scan_auto(path, &p));
+        while !job.is_finished() {
+            progress(p.items());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let res = job.join().unwrap_or_else(|_| Err(io::Error::other("scan thread panicked")));
+        progress(p.items());
+        res
+    })
+}
+
+/// Scan `path` the fastest way available: the NTFS MFT when the process is elevated and the
+/// path is on an NTFS volume, otherwise the multi-threaded folder walk. The method used is in
+/// `progress.snapshot().method` and in [`Tree::method`]. Cancelling via [`Progress::cancel`]
+/// returns `ErrorKind::Interrupted`.
+pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
+    if is_elevated() {
+        match mft::scan(path, progress) {
+            Ok(tree) => return Ok(tree),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
+            Err(_) => progress.reset_counts(), // not NTFS, not a folder, no access: walk instead
+        }
+    }
+    walk::walk(path, progress)
+}
+
+/// "Select Multiple": scan each path and put them under one synthetic root named
+/// [`MULTIPLE`] (`root_path` is also "Multiple"). The children's names are their full paths, so
+/// [`Tree::path_of`] still works. Paths on the same NTFS volume share one MFT read when
+/// elevated. During the scan, `snapshot().top` lists the paths themselves. A single path is
+/// just [`scan_auto`].
+pub fn scan_many(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
+    if paths.len() == 1 {
+        return scan_auto(&paths[0], progress);
+    }
+    let abs: Vec<PathBuf> = paths.iter().map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone())).collect();
+    progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
+    let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
+    if is_elevated() {
+        // Group by volume so each MFT is read once.
+        let mut groups: Vec<(PathBuf, Vec<usize>)> = Vec::new();
+        for (i, p) in abs.iter().enumerate() {
+            if let Some(vol) = mft::volume_of(p) {
+                match groups.iter_mut().find(|g| g.0 == vol) {
+                    Some(g) => g.1.push(i),
+                    None => groups.push((vol, vec![i])),
+                }
+            }
+        }
+        for (_, idx) in groups {
+            let group: Vec<PathBuf> = idx.iter().map(|&i| abs[i].clone()).collect();
+            if idx.len() == 1 {
+                progress.pin_top(None, Some(idx[0]));
+            } else {
+                progress.pin_top(None, Some(usize::MAX)); // several roots at once: no live top
+            }
+            match mft::scan_multi(&group, progress) {
+                Ok(ts) => {
+                    for (&i, t) in idx.iter().zip(ts) {
+                        trees[i] = Some(t);
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
+                Err(_) => {}
+            }
+            // The MFT reader counts whole volumes; show what was kept so far instead.
+            let kept = trees.iter().flatten().map(|t| &t.nodes[ROOT]);
+            let (f, d, b) = kept.fold((0, 0, 0), |a, r| (a.0 + r.files, a.1 + r.folders, a.2 + r.size));
+            progress.set_counts(f, d, b);
+        }
+    }
+    let (mut files, mut folders, mut bytes, mut errors) = (0u64, 0u64, 0u64, 0u64);
+    for t in trees.iter().flatten() {
+        let r = &t.nodes[ROOT];
+        files += r.files;
+        folders += r.folders;
+        bytes += r.size;
+        errors += t.errors;
+    }
+    for (i, slot) in trees.iter_mut().enumerate() {
+        if slot.is_none() {
+            // Walk the rest; counts keep adding up from the MFT results.
+            progress.set_counts(files, folders, bytes);
+            progress.pin_top(None, Some(i));
+            let t = walk::walk(&abs[i], progress)?;
+            let r = &t.nodes[ROOT];
+            files += r.files;
+            folders += r.folders;
+            bytes += r.size;
+            errors += t.errors;
+            *slot = Some(t);
+        }
+    }
+    progress.pin_top(None, None);
+    let trees: Vec<Tree> = trees.into_iter().flatten().collect();
+    let mut out = combine(trees, abs.iter().map(|p| p.display().to_string()).collect());
+    out.errors = errors;
+    let r = &out.nodes[ROOT];
+    progress.set_counts(r.files, r.folders, r.size);
+    progress.top_reset(top_of(&out));
+    progress.set_phase("Done");
+    Ok(out)
+}
+
+/// Put `trees` under a synthetic [`MULTIPLE`] root; `names` become the children's names.
+pub(crate) fn combine(trees: Vec<Tree>, names: Vec<String>) -> Tree {
+    let method = if trees.iter().all(|t| t.method == ScanMethod::Mft) { ScanMethod::Mft } else { ScanMethod::Walk };
+    let total: usize = 1 + trees.iter().map(|t| t.nodes.len()).sum::<usize>();
+    let mut nodes: Vec<Node> = Vec::with_capacity(total);
+    nodes.push(Node { name: MULTIPLE.to_string(), is_dir: true, attributes: attr::DIRECTORY, ..Default::default() });
+    for (t, name) in trees.into_iter().zip(names) {
+        let off = nodes.len();
+        nodes[ROOT].children.push(off);
+        for (i, mut n) in t.nodes.into_iter().enumerate() {
+            n.parent = Some(n.parent.map_or(ROOT, |p| p + off));
+            for c in &mut n.children {
+                *c += off;
+            }
+            if i == ROOT {
+                n.name = name.clone();
+            }
+            nodes.push(n);
+        }
+    }
+    let mut tree = Tree { root_path: PathBuf::from(MULTIPLE), nodes, errors: 0, method };
+    tree.compute_totals();
+    tree
+}
+
+/// The root's direct children with their sizes, for [`ProgressSnapshot::top`].
+pub(crate) fn top_of(tree: &Tree) -> Vec<(String, u64)> {
+    match tree.nodes.first() {
+        Some(r) => r.children.iter().map(|&c| (tree.nodes[c].name.clone(), tree.nodes[c].size)).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// True when the process runs elevated (as administrator), which reading the MFT needs.
+pub fn is_elevated() -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    // SAFETY: plain Win32 calls with valid out-pointers; the token handle is closed.
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut _ as *mut _,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+}
+
+/// The original single-threaded `std::fs` walk (one metadata call per entry). Slow; kept as a
+/// reference for tests and benchmarks.
+pub fn scan_std(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
+    use std::os::windows::fs::MetadataExt;
     let meta = fs::symlink_metadata(path)?;
-    let mut tree = Tree { root_path: path.to_path_buf(), nodes: Vec::new(), errors: 0 };
-    let name = path.display().to_string();
+    let mut tree = Tree { root_path: path.to_path_buf(), nodes: Vec::new(), errors: 0, method: ScanMethod::Walk };
     tree.nodes.push(Node {
-        name,
+        name: path.display().to_string(),
         is_dir: meta.is_dir(),
         size: if meta.is_dir() { 0 } else { meta.len() },
         files: if meta.is_dir() { 0 } else { 1 },
-        folders: 0,
         modified: meta.modified().ok(),
-        parent: None,
-        children: Vec::new(),
+        attributes: meta.file_attributes(),
+        ..Default::default()
     });
 
     let mut stack: Vec<(usize, PathBuf)> = Vec::new();
@@ -110,17 +340,17 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> std::io::Result<Tree>
                 is_dir,
                 size: if is_dir { 0 } else { m.len() },
                 files: if is_dir { 0 } else { 1 },
-                folders: 0,
                 modified: m.modified().ok(),
+                attributes: m.file_attributes(),
                 parent: Some(dir_index),
-                children: Vec::new(),
+                ..Default::default()
             });
             tree.nodes[dir_index].children.push(index);
             if is_dir {
                 stack.push((index, entry.path()));
             }
             seen += 1;
-            if seen % 1000 == 0 {
+            if seen.is_multiple_of(1000) {
                 progress(seen);
             }
         }
@@ -130,36 +360,72 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> std::io::Result<Tree>
     Ok(tree)
 }
 
+// -------------------------------------------------------------------- times
+
+/// FILETIME ticks (100 ns since 1601) to `SystemTime`; 0 means unknown.
+pub(crate) fn filetime_to_system(ft: u64) -> Option<SystemTime> {
+    const EPOCH_DIFF: u64 = 116_444_736_000_000_000;
+    if ft == 0 {
+        return None;
+    }
+    if ft >= EPOCH_DIFF {
+        let d = ft - EPOCH_DIFF;
+        Some(UNIX_EPOCH + Duration::new(d / 10_000_000, (d % 10_000_000) as u32 * 100))
+    } else {
+        let d = EPOCH_DIFF - ft;
+        UNIX_EPOCH.checked_sub(Duration::new(d / 10_000_000, (d % 10_000_000) as u32 * 100))
+    }
+}
+
+/// `SystemTime` to FILETIME ticks.
+pub(crate) fn system_to_filetime(t: SystemTime) -> u64 {
+    const EPOCH_DIFF: u64 = 116_444_736_000_000_000;
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => EPOCH_DIFF + d.as_secs() * 10_000_000 + u64::from(d.subsec_nanos() / 100),
+        Err(e) => {
+            let d = e.duration();
+            EPOCH_DIFF.saturating_sub(d.as_secs() * 10_000_000 + u64::from(d.subsec_nanos() / 100))
+        }
+    }
+}
+
+// -------------------------------------------------------------------- totals
+
 impl Tree {
-    /// Add every node's size and counts into its parent (children come after parents).
+    /// Add every node's size, allocated size and counts into its parent (children come after
+    /// parents), then sort every folder's children biggest first.
+    ///
+    /// Folders without children keep their own values (a CSV import of a folders-only export
+    /// carries sizes on folder rows; scanned empty folders are 0 anyway).
     pub fn compute_totals(&mut self) {
-        for n in self.nodes.iter_mut().filter(|n| n.is_dir) {
+        for n in self.nodes.iter_mut().filter(|n| n.is_dir && !n.children.is_empty()) {
             n.size = 0;
+            n.allocated = 0;
             n.files = 0;
             n.folders = 0;
         }
         for i in (1..self.nodes.len()).rev() {
-            let (size, files, folders, is_dir) = {
+            let (size, allocated, files, folders, is_dir) = {
                 let n = &self.nodes[i];
-                (n.size, n.files, n.folders, n.is_dir)
+                (n.size, n.allocated, n.files, n.folders, n.is_dir)
             };
             if let Some(p) = self.nodes[i].parent {
                 let parent = &mut self.nodes[p];
                 parent.size += size;
+                parent.allocated += allocated;
                 parent.files += files;
                 parent.folders += folders + u64::from(is_dir);
             }
         }
-        for n in &mut self.nodes {
-            n.children.shrink_to_fit();
-        }
-        let nodes = &self.nodes;
-        let mut sorted: Vec<Vec<usize>> = nodes.iter().map(|n| n.children.clone()).collect();
-        for c in &mut sorted {
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].children.is_empty() {
+                continue;
+            }
+            let mut c = std::mem::take(&mut self.nodes[i].children);
+            let nodes = &self.nodes;
             c.sort_by(|a, b| nodes[*b].size.cmp(&nodes[*a].size).then_with(|| nodes[*a].name.cmp(&nodes[*b].name)));
-        }
-        for (n, c) in self.nodes.iter_mut().zip(sorted) {
-            n.children = c;
+            c.shrink_to_fit();
+            self.nodes[i].children = c;
         }
     }
 
@@ -185,6 +451,27 @@ impl Tree {
             path.push(part);
         }
         path
+    }
+
+    /// A copy of the part of the tree below `index` (which becomes the root), with
+    /// `root_path` set to that node's path.
+    pub fn subtree(&self, index: usize) -> Tree {
+        let root_path = self.path_of(index);
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut queue = std::collections::VecDeque::from([(index, None::<usize>)]);
+        while let Some((old, parent)) = queue.pop_front() {
+            let n = &self.nodes[old];
+            let new = nodes.len();
+            nodes.push(Node { parent, children: Vec::with_capacity(n.children.len()), ..n.clone() });
+            if let Some(p) = parent {
+                nodes[p].children.push(new);
+            }
+            for &c in &n.children {
+                queue.push_back((c, Some(new)));
+            }
+        }
+        nodes[ROOT].name = root_path.display().to_string();
+        Tree { root_path, nodes, errors: self.errors, method: self.method }
     }
 }
 
@@ -473,5 +760,45 @@ mod tests {
         assert!(close(area, 4500.0));
 
         // Leaves the temp folder in place: deleting is left to the system's temp cleanup.
+    }
+
+    #[test]
+    fn scan_many_and_subtree() {
+        let base = std::env::temp_dir().join(format!("disktree-core-many-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        fs::create_dir_all(a.join("inner")).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("inner").join("x.bin"), vec![0u8; 700]).unwrap();
+        fs::write(b.join("y.txt"), vec![0u8; 300]).unwrap();
+
+        let p = Progress::new();
+        let t = scan_many(&[a.clone(), b.clone()], &p).unwrap();
+        let r = &t.nodes[ROOT];
+        assert_eq!(r.name, MULTIPLE);
+        assert_eq!((r.size, r.files, r.folders), (1000, 2, 3));
+        assert_eq!(t.nodes[r.children[0]].name, a.display().to_string());
+        let x = t.nodes.iter().position(|n| n.name == "x.bin").unwrap();
+        assert_eq!(t.path_of(x), a.join("inner").join("x.bin"));
+        for (i, n) in t.nodes.iter().enumerate() {
+            for &c in &n.children {
+                assert!(c > i);
+                assert_eq!(t.nodes[c].parent, Some(i));
+            }
+        }
+        let s = p.snapshot();
+        assert_eq!(s.top, vec![(a.display().to_string(), 700), (b.display().to_string(), 300)]);
+        assert_eq!((s.files, s.folders, s.bytes), (2, 3, 1000));
+
+        let sub = t.subtree(t.nodes[ROOT].children[0]);
+        assert_eq!(sub.root_path, a);
+        assert_eq!(sub.nodes[ROOT].size, 700);
+        assert_eq!(sub.path_of(sub.nodes.len() - 1), a.join("inner").join("x.bin"));
+
+        // The compatibility wrapper still reports a count.
+        let mut last = 0;
+        let t = scan(&base, |n| last = n).unwrap();
+        assert_eq!(t.nodes[ROOT].size, 1000);
+        assert_eq!(last, 5);
+        let _ = fs::remove_dir_all(&base);
     }
 }

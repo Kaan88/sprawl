@@ -378,10 +378,13 @@ impl State {
         };
         let items = if node.is_dir { thousands(node.items()) } else { String::new() };
         let files = if node.is_dir { thousands(node.files) } else { String::new() };
+        let hidden = n != ROOT && (node.is_hidden() || node.is_system());
+        let fg = if hidden { "#FF7D8494" } else { "#FFFFFFFF" };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="9" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}</Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="9" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}</Grid>"##,
             cols = col_defs(TREE),
             indent = 8 + d * 16,
+            op = if hidden { "0.55" } else { "1" },
             name = ui::esc(&self.label(n)),
             bar = pct_bar(1, pct, "#FF3A7BD5", "#FF00D2FF"),
             c2 = cell(2, &self.size(node.size)),

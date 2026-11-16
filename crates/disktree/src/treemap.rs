@@ -23,8 +23,8 @@ pub(crate) struct LiveMap {
 
 impl LiveMap {
     pub(crate) fn new() -> Self {
-        let root = Node { name: String::new(), is_dir: true, size: 0, files: 0, folders: 0, modified: None, parent: None, children: Vec::new() };
-        LiveMap { tree: Tree { root_path: Default::default(), nodes: vec![root], errors: 0 }, index: HashMap::new() }
+        let root = Node { is_dir: true, ..Default::default() };
+        LiveMap { tree: Tree { nodes: vec![root], ..Default::default() }, index: HashMap::new() }
     }
 
     /// Update sizes of the top-level entries found so far.
@@ -34,16 +34,7 @@ impl LiveMap {
                 Some(&i) => i,
                 None => {
                     let i = self.tree.nodes.len();
-                    self.tree.nodes.push(Node {
-                        name: name.clone(),
-                        is_dir: false,
-                        size: 0,
-                        files: 1,
-                        folders: 0,
-                        modified: None,
-                        parent: Some(ROOT),
-                        children: Vec::new(),
-                    });
+                    self.tree.nodes.push(Node { name: name.clone(), files: 1, parent: Some(ROOT), ..Default::default() });
                     self.tree.nodes[ROOT].children.push(i);
                     self.index.insert(name.clone(), i);
                     i
