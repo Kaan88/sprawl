@@ -66,6 +66,8 @@ pub(crate) struct MapView {
     pub(crate) free: Option<u64>,
     pub(crate) cushion_strength: f32,
     pub(crate) mirror: bool,
+    /// Antialiasing samples per pixel for the 3D views (1 = off).
+    pub(crate) aa: u32,
     pub(crate) last_pointer: (f64, f64),
     pub(crate) galaxy: crate::galaxy::Galaxy,
     pub(crate) capture: Option<std::path::PathBuf>,
@@ -89,6 +91,7 @@ impl MapView {
             free: None,
             cushion_strength: 1.0,
             mirror: true,
+            aa: 4,
             last_pointer: (0.0, 0.0),
             galaxy: crate::galaxy::Galaxy::default(),
             capture: None,
@@ -233,7 +236,12 @@ impl State {
                 None if self.map.gpu_error.is_none() => {
                     let made = p.cast::<windows_core::IUnknown>().map_err(|e| e.to_string()).and_then(|u| Gpu::new(&u, w, h, (sx, sy)));
                     match made {
-                        Ok(g) => self.map.gpu = Some(g),
+                        Ok(mut g) => {
+                            if let Err(e) = g.set_samples(self.map.aa) {
+                                eprintln!("antialiasing: {e}");
+                            }
+                            self.map.gpu = Some(g)
+                        }
                         Err(e) => {
                             eprintln!("GPU treemap unavailable: {e}");
                             text(&self.root, "FootLeft", &format!("The 3D treemap could not start: {e}"));

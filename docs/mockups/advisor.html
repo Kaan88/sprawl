@@ -63,7 +63,8 @@ nav.tabs a:hover { color: #fff; }
 .step.done .n { background: rgba(60,207,142,0.18); border-color: transparent; color: var(--green); }
 .step.on { background: rgba(58,111,224,0.18); color: #fff; }
 .step.on .n { background: var(--accent); border-color: transparent; color: #fff; }
-.wiz-main { padding: 24px 26px 18px; display: grid; grid-template-rows: 1fr auto; min-height: 480px; min-width: 0; }
+.wiz-main { padding: 24px 26px 18px; display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 540px; min-width: 0; }
+#wizpage { min-height: 0; overflow-y: auto; padding-right: 4px; }
 .page { animation: slide .35s cubic-bezier(.2,.8,.2,1); display: grid; gap: 10px; align-content: start; }
 @keyframes slide { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
 .page h2 { font-family: var(--display); font-size: 22px; margin: 0; font-weight: 600; }
@@ -212,6 +213,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
   .wiz-card { grid-template-columns: 1fr; }
   .wiz-rail { grid-auto-flow: column; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .wiz-rail .brand { display: none; }
+  .wiz-main { height: 600px; }
   .adv, .goal, .chat { grid-template-columns: 1fr; }
   .cards, .views { grid-template-columns: 1fr; }
 }

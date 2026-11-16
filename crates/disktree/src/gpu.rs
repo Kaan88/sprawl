@@ -20,7 +20,6 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::Threading::WaitForSingleObject;
 
-const SAMPLES: u32 = 4;
 const FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 const HLSL: &str = r#"
@@ -235,6 +234,8 @@ pub struct Gpu {
     cb_mirror: ID3D11Buffer,
     extra: ID3D11Buffer,
     msaa: Option<(ID3D11Texture2D, ID3D11RenderTargetView, ID3D11DepthStencilView)>,
+    /// Antialiasing: samples per pixel (1 = off).
+    samples: u32,
     d2d: ID2D1DeviceContext,
     dwrite_bold: IDWriteTextFormat,
     dwrite_normal: IDWriteTextFormat,
@@ -505,6 +506,7 @@ impl Gpu {
             cb_mirror,
             extra,
             msaa: None,
+            samples: 4,
             d2d,
             dwrite_bold,
             dwrite_normal,
@@ -520,6 +522,23 @@ impl Gpu {
         Ok(gpu)
     }
 
+    /// Antialiasing: 1 (off), 2, 4 or 8 samples per pixel. Falls back to the most the GPU supports.
+    pub fn set_samples(&mut self, want: u32) -> Result<(), String> {
+        let mut n = want.clamp(1, 8).next_power_of_two();
+        while n > 1 {
+            let ok = |fmt| unsafe { self.device.CheckMultisampleQualityLevels(fmt, n) }.is_ok_and(|q| q > 0);
+            if ok(FORMAT) && ok(DXGI_FORMAT_D24_UNORM_S8_UINT) {
+                break;
+            }
+            n /= 2;
+        }
+        if n == self.samples && self.msaa.is_some() {
+            return Ok(());
+        }
+        self.samples = n;
+        self.make_targets()
+    }
+
     fn make_targets(&mut self) -> Result<(), String> {
         self.msaa = None;
         let (w, h) = self.px;
@@ -530,7 +549,7 @@ impl Gpu {
                 MipLevels: 1,
                 ArraySize: 1,
                 Format: fmt,
-                SampleDesc: DXGI_SAMPLE_DESC { Count: SAMPLES, Quality: 0 },
+                SampleDesc: DXGI_SAMPLE_DESC { Count: self.samples, Quality: 0 },
                 Usage: D3D11_USAGE_DEFAULT,
                 BindFlags: bind.0 as u32,
                 ..Default::default()
@@ -636,7 +655,11 @@ impl Gpu {
             }
 
             let back: ID3D11Texture2D = hr(self.swap.GetBuffer(0), "GetBuffer")?;
-            ctx.ResolveSubresource(&back, 0, &msaa_tex, 0, FORMAT);
+            if self.samples > 1 {
+                ctx.ResolveSubresource(&back, 0, &msaa_tex, 0, FORMAT);
+            } else {
+                ctx.CopyResource(&back, &msaa_tex);
+            }
             ctx.OMSetRenderTargets(None, None);
 
             // Labels.

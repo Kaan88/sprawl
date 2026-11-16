@@ -284,6 +284,22 @@ impl State {
                 }
                 self.render_map();
             }
+            "aaOff" | "aaLow" | "aaMedium" | "aaHigh" => {
+                self.map.aa = match name {
+                    "aaOff" => 1,
+                    "aaLow" => 2,
+                    "aaHigh" => 8,
+                    _ => 4,
+                };
+                if let Some(g) = &mut self.map.gpu {
+                    if let Err(e) = g.set_samples(self.map.aa) {
+                        eprintln!("antialiasing: {e}");
+                    }
+                }
+                self.render_map();
+                self.settings.set("aa", name);
+                self.settings.save();
+            }
             "oPulses" => {
                 self.pulses_on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
                 self.watch();
@@ -370,6 +386,12 @@ impl State {
                 let _ = x.SetIsChecked(true);
             }
             self.command(&u);
+        }
+        if let Some(a) = self.settings.get("aa").map(str::to_string).filter(|a| ["aaOff", "aaLow", "aaMedium", "aaHigh"].contains(&a.as_str())) {
+            if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, &a) {
+                let _ = x.SetIsChecked(true);
+            }
+            self.command(&a);
         }
         if let Some(v) = self.settings.get("view").map(str::to_string) {
             self.command(&v);

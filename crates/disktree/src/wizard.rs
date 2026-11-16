@@ -108,7 +108,7 @@ pub fn xaml() -> String {
     format!(
         r##"
   <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="#B8080A10">
-    <Border Width="620" MaxHeight="680" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
+    <Border Width="620" Height="600" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
       <Border.Background><AcrylicBrush TintColor="#FF141824" TintOpacity="0.62" TintLuminosityOpacity="0.75" FallbackColor="#F2161A26"/></Border.Background>
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>

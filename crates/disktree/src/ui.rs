@@ -29,7 +29,11 @@ fn toggle(name: &str, text: &str, checked: bool, key: &str, mods: &str) -> Strin
 }
 
 fn radio(name: &str, text: &str, checked: bool) -> String {
-    format!(r##"<RadioMenuFlyoutItem x:Name="{name}" Text="{text}" GroupName="units" IsChecked="{checked}"/>"##)
+    radio_in("units", name, text, checked)
+}
+
+fn radio_in(group: &str, name: &str, text: &str, checked: bool) -> String {
+    format!(r##"<RadioMenuFlyoutItem x:Name="{name}" Text="{text}" GroupName="{group}" IsChecked="{checked}"/>"##)
 }
 
 const SEP: &str = "<MenuFlyoutSeparator/>";
@@ -136,6 +140,13 @@ pub fn page(drives: &[String]) -> String {
         toggle("oFree", "Show Free Space on Treemap", false, "", ""),
         toggle("oMirror", "Mirror Floor under 3D Treemap", true, "", ""),
         toggle("oPulses", "Live Change Pulses", true, "", ""),
+        format!(
+            r##"<MenuFlyoutSubItem Text="3D Antialiasing">{}{}{}{}</MenuFlyoutSubItem>"##,
+            radio_in("aa", "aaOff", "Off", false),
+            radio_in("aa", "aaLow", "Low (2x)", false),
+            radio_in("aa", "aaMedium", "Medium (4x)", true),
+            radio_in("aa", "aaHigh", "High (8x)", false),
+        ),
         item("mTweaks", "Colors and Tweaks...", "T", "Control"),
         item("mWizard", "Setup Wizard...", "", ""),
         SEP.to_string(),
