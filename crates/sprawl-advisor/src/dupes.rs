@@ -51,14 +51,26 @@ fn sample(f: &mut File, size: u64) -> Option<u64> {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut buf = vec![0u8; 64 << 10];
     f.seek(SeekFrom::Start(0)).ok()?;
-    let n = f.read(&mut buf).ok()?;
+    let n = fill(f, &mut buf).ok()?;
     buf[..n].hash(&mut h);
     if size > 128 << 10 {
         f.seek(SeekFrom::Start(size - (64 << 10))).ok()?;
-        let n = f.read(&mut buf).ok()?;
+        let n = fill(f, &mut buf).ok()?;
         buf[..n].hash(&mut h);
     }
     Some(h.finish())
+}
+
+/// Read until `buf` is full or the file ends (one `read` may return less).
+fn fill(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..])? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
 }
 
 /// The same bytes all the way through. Counts what it read into `read`.
@@ -70,7 +82,7 @@ fn same(a: &PathBuf, b: &PathBuf, read: &mut u64, cancel: &AtomicBool) -> bool {
         if cancel.load(Ordering::Relaxed) {
             return false;
         }
-        let (Ok(nx), Ok(ny)) = (x.read(&mut bx), y.read(&mut by)) else { return false };
+        let (Ok(nx), Ok(ny)) = (fill(&mut x, &mut bx), fill(&mut y, &mut by)) else { return false };
         *read += (nx + ny) as u64;
         if nx != ny || bx[..nx] != by[..ny] {
             return false;
