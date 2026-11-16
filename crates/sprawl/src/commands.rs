@@ -514,6 +514,8 @@ impl State {
         let parent = t.nodes[n].parent;
         detach(t, n, Some(&mut self.alloc));
         self.tree_gen += 1;
+        // its pictures are of the tree before the delete
+        self.hist_close();
         self.selected = parent;
         self.files.retain(|&f| f != n && !self.tree.as_ref().unwrap().nodes[f].is_dir);
         self.rebuild_exts();

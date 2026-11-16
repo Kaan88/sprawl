@@ -168,15 +168,27 @@ impl Facts {
         self.runs = runs;
     }
 
-    /// Whether folder `n` holds programs in its top levels.
+    /// Whether folder `n` holds a program anywhere inside (`bin\Release\net8.0\win-x64\tool.exe`),
+    /// without following links.
     pub fn has_programs(&self, tree: &Tree, n: usize) -> bool {
-        !programs_in(tree, n, 3).is_empty()
+        let mut stack = vec![n];
+        while let Some(k) = stack.pop() {
+            let node = &tree.nodes[k];
+            if !node.is_dir {
+                if node.name.to_lowercase().ends_with(".exe") {
+                    return true;
+                }
+            } else if k == n || !node.is_reparse_point() {
+                stack.extend_from_slice(&node.children);
+            }
+        }
+        false
     }
 
     /// The last start of any program in the top levels of folder `n` (a tool run from a build
     /// output), from [`Facts::attach_usage`]'s sources.
     pub fn last_run_in(&self, tree: &Tree, n: usize) -> Option<SystemTime> {
-        programs_in(tree, n, 3).iter().filter_map(|exe| self.runs.get(&run_key(exe)).map(|&(t, _)| t)).max()
+        programs_in(tree, n, 8).iter().filter_map(|exe| self.runs.get(&run_key(exe)).map(|&(t, _)| t)).max()
     }
 }
 

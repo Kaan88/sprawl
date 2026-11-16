@@ -303,9 +303,13 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             }
             // programs in it, and no way to know whether they run (Prefetch unreadable without
             // administrator rights): it may be a tool in daily use
-            if !facts.runs_complete && facts.has_programs(tree, n) {
+            let programs = facts.has_programs(tree, n);
+            if !facts.runs_complete && programs {
                 continue;
             }
+            // Prefetch remembers about a thousand programs: no record isn't proof it never ran
+            let unseen_programs = programs && facts.last_run_in(tree, n).is_none();
+            let risk = if unseen_programs { risk.max(Risk::Amber) } else { risk };
             let path = tree.path_of(n);
             let source = total.saturating_sub(p.output_bytes(tree));
             let mut evidence = vec![
@@ -313,6 +317,9 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
                 format!("The project's own files last changed in {}", month_year(changed)),
                 format!("Comes back with {how}"),
             ];
+            if unseen_programs {
+                evidence.push("Holds programs Windows has no record of starting lately; if you run one from here, keep it".into());
+            }
             if let Some(r) = ran.filter(|&r| r > changed) {
                 evidence.push(format!("A program in its output last ran in {}", month_year(r)));
             }
