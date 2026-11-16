@@ -32,15 +32,28 @@ PSIn vs(VSIn i) {
     float2 xy = i.rect.xy + i.pos.xy * i.rect.zw;
     float h = i.fx.x + i.fx.y;
     float3 w = float3(xy.x - uSize.x * 0.5, uSize.y * 0.5 - xy.y, i.pos.z * h);
+    float flip = uSize.z > 0.5 ? -1.0 : 1.0; // reflection pass: mirrored below the floor
+    w.z *= flip;
     o.sv = mul(uVP, float4(w, 1.0));
-    o.n = float3(i.nor.x, -i.nor.y, i.nor.z);
+    o.n = float3(i.nor.x, -i.nor.y, i.nor.z * flip);
     o.uv = i.pos.xy;
     o.puv = (xy - i.par.xy) / max(i.par.zw, 1e-3);
     o.col = i.col; o.fx = i.fx; o.w = w; o.wh = i.rect.zw;
     return o;
 }
 float4 ps(PSIn i) : SV_Target {
-    float3 base = i.col.rgb; float kind = i.col.a; bool top = i.n.z > 0.5;
+    float3 base = i.col.rgb; float kind = i.col.a;
+    if (kind > 1.5 && kind < 2.5) {
+        // Glossy floor: dark glass that fades out away from the map, with a soft sheen.
+        float2 d = max(abs(i.w.xy) - uSize.xy * 0.5, 0.0);
+        float a = 0.5 * exp(-length(d) / 90.0);
+        float3 V = normalize(uEye.xyz - i.w); float3 H = normalize(normalize(uLight.xyz) + V);
+        float sheen = pow(saturate(H.z), 90.0) * 0.35;
+        float3 fc = float3(0.03, 0.035, 0.055) + sheen;
+        return float4(fc * a, a);
+    }
+    bool mirrored = uSize.z > 0.5;
+    bool top = mirrored ? i.n.z < -0.5 : i.n.z > 0.5;
     float3 n;
     if (top) {
         float c1 = kind > 0.5 ? 0.2 : 0.62 * uSize.w;
@@ -58,6 +71,10 @@ float4 ps(PSIn i) : SV_Target {
     c += glow * (0.22 * base + float3(0.10, 0.13, 0.16)) + glow * edge * float3(0.75, 0.9, 1.0);
     float lum = dot(c, float3(0.3, 0.59, 0.11));
     c = lerp(c, lum.xxx * 0.32, i.fx.w);
+    if (mirrored) {
+        float a = 0.55 * exp(i.w.z / 24.0);
+        return float4(c * a, a);
+    }
     return float4(c, 1.0);
 }
 "#;
@@ -90,6 +107,10 @@ pub struct Frame<'a> {
     /// Layout size in DIPs.
     pub size: [f32; 2],
     pub cushion: f32,
+    /// Draw the reflection and the glossy floor.
+    pub mirror: bool,
+    /// The floor slab, drawn between the reflection and the tiles.
+    pub floor: Option<Instance>,
     pub instances: &'a [Instance],
     pub labels: &'a [Label],
 }
@@ -123,6 +144,9 @@ pub struct Gpu {
     cb: ID3D11Buffer,
     raster: ID3D11RasterizerState,
     depth_state: ID3D11DepthStencilState,
+    blend: ID3D11BlendState,
+    cb_mirror: ID3D11Buffer,
+    extra: ID3D11Buffer,
     msaa: Option<(ID3D11Texture2D, ID3D11RenderTargetView, ID3D11DepthStencilView)>,
     d2d: ID2D1DeviceContext,
     dwrite_bold: IDWriteTextFormat,
@@ -337,6 +361,24 @@ impl Gpu {
         let soft = brush(0.86, 0.89, 0.95, 0.78)?;
         let shadow = brush(0.0, 0.0, 0.0, 0.6)?;
 
+        // Premultiplied alpha over the transparent swap chain (tiles write alpha 1).
+        let mut bdesc = D3D11_BLEND_DESC::default();
+        bdesc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: true.into(),
+            SrcBlend: D3D11_BLEND_ONE,
+            DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+            BlendOp: D3D11_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D11_BLEND_ONE,
+            DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+            BlendOpAlpha: D3D11_BLEND_OP_ADD,
+            RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+        };
+        let mut blend = None;
+        hr(unsafe { device.CreateBlendState(&bdesc, Some(&mut blend)) }, "CreateBlendState")?;
+        let blend = blend.ok_or("blend")?;
+        let cb_mirror = buffer(&device, std::mem::size_of::<Constants>(), D3D11_BIND_CONSTANT_BUFFER, true, None)?;
+        let extra = buffer(&device, 1024 * std::mem::size_of::<Instance>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
+
         let mut gpu = Gpu {
             device,
             ctx,
@@ -352,6 +394,9 @@ impl Gpu {
             cb,
             raster: raster.ok_or("raster")?,
             depth_state: depth_state.ok_or("depth")?,
+            blend,
+            cb_mirror,
+            extra,
             msaa: None,
             d2d,
             dwrite_bold,
@@ -436,6 +481,8 @@ impl Gpu {
                 size: [f.size[0], f.size[1], 0.0, f.cushion],
             };
             write(ctx, &self.cb, std::slice::from_ref(&consts))?;
+            let mirror = Constants { size: [f.size[0], f.size[1], 1.0, f.cushion], ..consts };
+            write(ctx, &self.cb_mirror, std::slice::from_ref(&mirror))?;
             if !f.instances.is_empty() {
                 write(ctx, &self.inst, f.instances)?;
             }
@@ -448,16 +495,19 @@ impl Gpu {
             ctx.OMSetDepthStencilState(&self.depth_state, 0);
             ctx.IASetInputLayout(&self.layout);
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            let bufs = [Some(self.cube.clone()), Some(self.inst.clone())];
-            let strides = [24u32, std::mem::size_of::<Instance>() as u32];
-            let offsets = [0u32, 0];
-            ctx.IASetVertexBuffers(0, 2, Some(bufs.as_ptr()), Some(strides.as_ptr()), Some(offsets.as_ptr()));
-            ctx.VSSetShader(&self.vs, None);
-            ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb.clone())]));
+            ctx.OMSetBlendState(&self.blend, None, 0xffff_ffff);
             ctx.PSSetShader(&self.ps, None);
-            ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.clone())]));
-            if !f.instances.is_empty() {
-                ctx.DrawInstanced(self.cube_count, f.instances.len() as u32, 0, 0);
+            ctx.VSSetShader(&self.vs, None);
+            let n = f.instances.len();
+            if f.mirror && n > 0 {
+                self.pass(&self.cb_mirror, &self.inst, n);
+            }
+            if let Some(fl) = f.floor {
+                write(ctx, &self.extra, std::slice::from_ref(&fl))?;
+                self.pass(&self.cb, &self.extra, 1);
+            }
+            if n > 0 {
+                self.pass(&self.cb, &self.inst, n);
             }
 
             let back: ID3D11Texture2D = hr(self.swap.GetBuffer(0), "GetBuffer")?;
@@ -499,6 +549,20 @@ impl Gpu {
             let _ = self.swap.Present(1, DXGI_PRESENT(0));
         }
         Ok(())
+    }
+
+    /// Draw `n` instances from `buf` with constants `cb`.
+    fn pass(&self, cb: &ID3D11Buffer, buf: &ID3D11Buffer, n: usize) {
+        let ctx = &self.ctx;
+        let bufs = [Some(self.cube.clone()), Some(buf.clone())];
+        let strides = [24u32, std::mem::size_of::<Instance>() as u32];
+        let offsets = [0u32, 0];
+        unsafe {
+            ctx.IASetVertexBuffers(0, 2, Some(bufs.as_ptr()), Some(strides.as_ptr()), Some(offsets.as_ptr()));
+            ctx.VSSetConstantBuffers(0, Some(&[Some(cb.clone())]));
+            ctx.PSSetConstantBuffers(0, Some(&[Some(cb.clone())]));
+            ctx.DrawInstanced(self.cube_count, n as u32, 0, 0);
+        }
     }
 
     fn read_back(&self, back: &ID3D11Texture2D) -> Result<(u32, u32, Vec<u8>), String> {

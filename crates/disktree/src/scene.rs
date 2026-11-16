@@ -63,6 +63,8 @@ pub struct Scene {
     pub lift_scale: f32,
     /// Camera tilt in radians when 3D is on.
     pub tilt_amount: f32,
+    /// Leave room under the map for the floor reflection.
+    pub mirror: bool,
     pub animate: bool,
     tilt: f32,
     yaw: f32,
@@ -93,6 +95,7 @@ impl Default for Scene {
             cushion: 1.0,
             lift_scale: 1.0,
             tilt_amount: 0.44,
+            mirror: true,
             animate: true,
             tilt: 0.44,
             yaw: 0.0,
@@ -280,13 +283,16 @@ impl Scene {
             let e = [d * self.yaw.sin() * self.tilt.cos(), -d * self.tilt.sin(), d * self.tilt.cos() * self.yaw.cos()];
             (mul(&p, &look_at(e, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])), e)
         };
+        // With the mirror on, the map moves up a little to show its reflection underneath.
+        let room = self.mirror && self.tilt_on;
+        let (ylim, lift) = if room { (0.86, 0.11) } else { (0.965, 0.0) };
         let (mut lo, mut hi) = (w * 0.2, w * 8.0);
         for _ in 0..20 {
             let d = (lo + hi) / 2.0;
             let (m, _) = make(d);
             let ok = [[-w / 2., -h / 2.], [w / 2., -h / 2.], [w / 2., h / 2.], [-w / 2., h / 2.]].iter().all(|c| {
                 let q = xform(&m, [c[0], c[1], 0.0, 1.0]);
-                (q[0] / q[3]).abs() <= 0.985 && (q[1] / q[3]).abs() <= 0.965
+                (q[0] / q[3]).abs() <= 0.985 && (q[1] / q[3]).abs() <= ylim
             });
             if ok {
                 hi = d;
@@ -295,6 +301,10 @@ impl Scene {
             }
         }
         let (m, e) = make(hi);
+        // shift in clip space: y' = y + lift * w
+        let mut shift = IDENTITY;
+        shift[13] = lift;
+        let m = mul(&shift, &m);
         self.vp = m;
         self.ivp = invert(&m).unwrap_or(IDENTITY);
         self.eye = e;

@@ -66,7 +66,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oAlwaysAdmin", "oExplorer",
+    "mSelectMultiple", "mSelectCsv", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oAlwaysAdmin", "oExplorer",
 ];
 
 /// Right-click menu on the tree: (item name, command).

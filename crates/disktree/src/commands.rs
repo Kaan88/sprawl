@@ -13,7 +13,7 @@ use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
 
 /// Options menu switches that are remembered between runs.
-const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oAlwaysAdmin"];
+const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oAlwaysAdmin"];
 const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 use crate::state::Source;
 use crate::{dialogs, paint, ui, win32};
@@ -267,11 +267,15 @@ impl State {
                     }
                 }
             }
-            "oAlloc" | "oCushion" | "oNames" | "oTilt" | "oFree" => {
+            "oAlloc" | "oCushion" | "oNames" | "oTilt" | "oFree" | "oMirror" => {
                 let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
                 match name {
                     "oAlloc" => self.map.by_alloc = on,
                     "oFree" => self.map.show_free = on,
+                    "oMirror" => {
+                        self.map.mirror = on;
+                        self.map.scene.mirror = on;
+                    }
                     "oCushion" => self.map.scene.cushion = if on { self.map.cushion_strength } else { 0.0 },
                     "oNames" => self.map.show_labels = on,
                     _ => self.map.scene.tilt_on = on,

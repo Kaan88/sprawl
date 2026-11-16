@@ -134,6 +134,7 @@ pub fn page(drives: &[String]) -> String {
         toggle("oTilt", "3D Treemap", true, "T", "Control,Shift"),
         toggle("oCushion", "Cushion shading on Treemap", true, "", ""),
         toggle("oFree", "Show Free Space on Treemap", false, "", ""),
+        toggle("oMirror", "Mirror Floor under 3D Treemap", true, "", ""),
         item("mTweaks", "Colors and Tweaks...", "T", "Control"),
         SEP.to_string(),
         item("mAdmin", "Restart as Administrator", "", ""),

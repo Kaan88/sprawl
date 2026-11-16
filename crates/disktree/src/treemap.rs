@@ -65,6 +65,7 @@ pub(crate) struct MapView {
     /// Free bytes of the scanned drive, when a whole drive was scanned.
     pub(crate) free: Option<u64>,
     pub(crate) cushion_strength: f32,
+    pub(crate) mirror: bool,
     pub(crate) capture: Option<std::path::PathBuf>,
 }
 
@@ -85,6 +86,7 @@ impl MapView {
             show_free: false,
             free: None,
             cushion_strength: 1.0,
+            mirror: true,
             capture: None,
         }
     }
@@ -208,6 +210,16 @@ impl State {
                         light: [-0.45, 0.55, 0.75],
                         size: [m.scene.w, m.scene.h],
                         cushion: m.scene.cushion,
+                        mirror: m.mirror && m.scene.tilt_on,
+                        floor: (m.mirror && m.scene.tilt_on).then(|| {
+                            let (w, h) = (m.scene.w, m.scene.h);
+                            crate::gpu::Instance {
+                                rect: [-w * 0.6, -h * 0.3, w * 2.2, h * 1.9],
+                                parent: [0.0, 0.0, w, h],
+                                color: [0.0, 0.0, 0.0, 2.0],
+                                fx: [0.0; 4],
+                            }
+                        }),
                         instances: &m.scene.instances,
                         labels: &labels,
                     };
