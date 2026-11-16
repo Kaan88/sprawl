@@ -3,17 +3,21 @@
 //! See `docs/plans/ai-advisor.md`. Rust finds, a model (later) judges; nothing here deletes
 //! anything: the output is [`Finding`]s with a remedy and a command for the user to run.
 //!
+//! * [`facts`]: which app owns a folder and when it was last used (registry, manifests).
 //! * [`finding`]: the schema every finding follows, from rules and (later) from a model.
 //! * [`rules`]: TOML rule packs and the engine that matches them against a tree.
 //! * [`safety`]: the never-touch list and the checks every finding must pass.
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
 pub mod config;
+pub mod facts;
 pub mod finding;
 pub mod history;
 pub mod rules;
 pub mod safety;
 pub mod snapshot;
+#[cfg(windows)]
+pub(crate) mod reg;
 
 pub use finding::{Finding, Remedy, Risk, Source};
 pub use rules::{Rule, RulePack};
@@ -64,6 +68,37 @@ pub fn advise(tree: &Tree, packs: &[RulePack]) -> (Vec<Finding>, Vec<(Finding, s
     let mut ok = Vec::new();
     let mut held = Vec::new();
     for f in rules::run(tree, packs) {
+        match safety::check(&f, tree, &never) {
+            Ok(f) => ok.push(f),
+            Err(r) => held.push((f, r)),
+        }
+    }
+    ok.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    (ok, held)
+}
+
+/// Apps unused for this long are suggested for removal.
+pub const UNUSED_DAYS: u64 = 180;
+
+/// Everything Rust can say without a model: rule findings (with their owner app filled in) and
+/// apps not used for [`UNUSED_DAYS`], all through the safety checks. A path is reported once.
+pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec<Finding>, Vec<(Finding, safety::Rejection)>) {
+    let never = safety::Never::default_list();
+    let mut found = rules::run(tree, packs);
+    for f in &mut found {
+        if f.owner.is_none() {
+            f.owner = facts.owner_of(&f.path).map(|a| a.name.clone());
+        }
+    }
+    let mut seen: std::collections::HashSet<String> = found.iter().map(|f| f.path.to_string_lossy().to_lowercase()).collect();
+    for f in facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30) {
+        if seen.insert(f.path.to_string_lossy().to_lowercase()) {
+            found.push(f);
+        }
+    }
+    let mut ok = Vec::new();
+    let mut held = Vec::new();
+    for f in found {
         match safety::check(&f, tree, &never) {
             Ok(f) => ok.push(f),
             Err(r) => held.push((f, r)),

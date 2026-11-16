@@ -9,5 +9,6 @@ description = "UI-free advisor for Sprawl: findings, rule packs, safety checks a
 sprawl-core = { path = "../sprawl-core" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+serde_json = "1"
 zstd = { version = "0.13", features = ["zstdmt"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
