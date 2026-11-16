@@ -25,6 +25,7 @@ mod watch;
 mod treemap;
 mod ui;
 mod win32;
+mod wizard;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -68,7 +69,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "oExplorer",
+    "mSelectMultiple", "mSelectCsv", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -125,6 +126,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             })?);
         }
     }
+    for name in wizard::BUTTONS {
+        keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
+            with(|s| s.wizard_command(name));
+        })?);
+    }
+    keep(find::<Selector>(&root, "WizProvider")?.SelectionChanged(|_, _| {
+        with(|s| s.wizard_provider());
+    })?);
     for name in ["ScanButton", "TabTree", "TabFiles", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
@@ -291,6 +300,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         filter_text: String::new(),
         filter_pending: None,
         child_stack: Vec::new(),
+        wizard_page: 0,
         settings,
         watcher: None,
         changes: 0,
@@ -308,6 +318,15 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     STATE.with(|s| *s.borrow_mut() = Some(state));
     with(|s| {
         s.apply_settings();
+        if s.shot.is_none() && s.settings.bool("wizard_done") != Some(true) {
+            s.wizard_open();
+        }
+        // dev: --screenshot with DISKTREE_WIZARD_PAGE=n pictures the wizard on page n
+        if let Some(p) = s.shot.as_ref().and(std::env::var("DISKTREE_WIZARD_PAGE").ok()).and_then(|p| p.parse::<usize>().ok()) {
+            s.wizard_open();
+            s.wizard_page = p.min(wizard::PAGES - 1);
+            s.wizard_show();
+        }
         if let Some(f) = first {
             s.start_scan(f);
         } else if let Some(c) = s.drives.first().cloned() {

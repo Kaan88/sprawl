@@ -137,6 +137,7 @@ pub fn page(drives: &[String]) -> String {
         toggle("oMirror", "Mirror Floor under 3D Treemap", true, "", ""),
         toggle("oPulses", "Live Change Pulses", true, "", ""),
         item("mTweaks", "Colors and Tweaks...", "T", "Control"),
+        item("mWizard", "Setup Wizard...", "", ""),
         SEP.to_string(),
         item("mAdmin", "Restart as Administrator", "", ""),
         toggle("oAlwaysAdmin", "Always Run as Administrator", false, "", ""),
@@ -144,6 +145,7 @@ pub fn page(drives: &[String]) -> String {
     ]
     .concat();
     let hud = hud();
+    let wizard = crate::wizard::xaml();
     let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
     let tweaks = format!(r##"
     <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14" Width="300" CornerRadius="10" Padding="16,12,16,14" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
@@ -332,6 +334,7 @@ pub fn page(drives: &[String]) -> String {
     <TextBlock x:Name="FootLeft" Text="" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
     <TextBlock x:Name="FootRight" Text="" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
   </Grid>
+  {wizard}
 </Grid>"##
     )
 }

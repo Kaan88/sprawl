@@ -8,6 +8,7 @@
 //! * [`safety`]: the never-touch list and the checks every finding must pass.
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
+pub mod config;
 pub mod finding;
 pub mod rules;
 pub mod safety;

@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 disktree-core = { path = "../disktree-core" }
+disktree-advisor = { path = "../disktree-advisor" }
 windows-core = "0.100"
 windows-collections = "0.100"
 windows-reference = "0.100"

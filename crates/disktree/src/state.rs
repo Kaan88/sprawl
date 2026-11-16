@@ -91,6 +91,7 @@ pub(crate) struct State {
     pub(crate) filter_pending: Option<Instant>,
     /// Selections left by Select Parent, for Reselect Child.
     pub(crate) child_stack: Vec<usize>,
+    pub(crate) wizard_page: usize,
     pub(crate) settings: Settings,
     /// Live change pulses: the watcher on the scanned folder and how many changes it saw.
     pub(crate) watcher: Option<crate::watch::Watcher>,

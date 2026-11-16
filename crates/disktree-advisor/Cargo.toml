@@ -10,3 +10,4 @@ disktree-core = { path = "../disktree-core" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 zstd = { version = "0.13", features = ["zstdmt"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

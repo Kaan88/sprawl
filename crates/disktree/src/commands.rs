@@ -86,6 +86,7 @@ impl State {
                     let _ = b.Focus(FocusState::Programmatic);
                 }
             }
+            "mWizard" => self.wizard_open(),
             "mTweaks" => {
                 if let Ok(p) = find::<UIElement>(&self.root, "Tweaks") {
                     let shown = p.Visibility().map(|v| v == Visibility::Visible).unwrap_or(false);
