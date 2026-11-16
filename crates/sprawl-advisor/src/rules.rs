@@ -17,6 +17,7 @@
 //! command = "npm cache clean --force"
 //! why = "Packages npm downloaded before; it fetches them again when they are needed."
 //! min_bytes = 52428800    # findings smaller than this are skipped (default 50 MB)
+//! min_age_days = 90       # only things not modified for this long
 //! ```
 //!
 //! Paths take `%VAR%` environment variables, `*` and `?` inside one segment, and `**` for any
@@ -65,6 +66,9 @@ pub struct Rule {
     pub why: String,
     #[serde(default)]
     pub min_bytes: Option<u64>,
+    /// Only matches not modified for at least this many days (old installers, not today's).
+    #[serde(default)]
+    pub min_age_days: Option<u32>,
     /// Built-in pack only: the command may act on a never-list path (an official clean-up tool).
     #[serde(default)]
     pub allow_protected: bool,
@@ -245,6 +249,13 @@ impl Pattern {
 
 const DEFAULT_MIN: u64 = 50 * 1024 * 1024;
 
+/// Not modified for `days` (no date known counts as not old enough).
+fn old_enough(node: &sprawl_core::Node, days: Option<u32>) -> bool {
+    let Some(days) = days else { return true };
+    let Some(m) = node.modified else { return false };
+    std::time::SystemTime::now().duration_since(m).is_ok_and(|age| age.as_secs() >= u64::from(days) * 86_400)
+}
+
 /// Every place in the tree a rule matches, as findings (not yet checked for safety). A path
 /// matched by one rule isn't searched further by that rule, and a path is reported once (by the
 /// first rule that matched it).
@@ -279,7 +290,7 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
                             Kind::Any => true,
                         };
                         if pat.accepts(&s) && kind_ok {
-                            if node.size >= min && taken.insert(n) {
+                            if node.size >= min && old_enough(node, rule.min_age_days) && taken.insert(n) {
                                 out.push(finding(tree, n, rule, pack));
                             }
                             continue;
@@ -405,7 +416,24 @@ mod tests {
     #[test]
     fn builtin_pack_parses() {
         let p = RulePack::builtin();
-        assert!(p.rules.len() >= 5);
+        assert!(p.rules.len() >= 30);
+        for r in &p.rules {
+            if let Some(c) = &r.command {
+                // a command never hard-codes a path or an unexpanded variable: it names {path}
+                assert!(!c.contains(":\\") && !c.contains('%'), "{} hard-codes a path: {c}", r.id);
+                if c.contains("Remove-Item") || c.contains("Get-ChildItem") {
+                    assert!(c.contains("{path}"), "{} deletes without naming {{path}}", r.id);
+                }
+                assert_eq!(r.remedy, Remedy::Command, "{} has a command but isn't a command remedy", r.id);
+            }
+            if matches!(r.remedy, Remedy::Info) {
+                assert!(r.command.is_none(), "{} is info only", r.id);
+            }
+            if r.allow_protected {
+                assert_eq!(r.remedy, Remedy::Command, "{}: allow_protected only for official commands", r.id);
+            }
+            assert!(r.risk != Risk::Red, "{}: red rules are pointless", r.id);
+        }
     }
 
     #[test]

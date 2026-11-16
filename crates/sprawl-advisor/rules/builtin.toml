@@ -1,4 +1,7 @@
-# Built-in rule pack (starter set; Phase 1 grows it). See src/rules.rs for the format.
+# Built-in rule pack. See src/rules.rs for the format.
+#
+# Only this pack may carry command text. A command that acts on the matched path must name it as
+# {path}; a test checks that no command hard-codes a path.
 
 [pack]
 name = "builtin"
@@ -54,6 +57,173 @@ remedy = "command"
 command = "dotnet nuget locals all --clear"
 why = "Packages restored for .NET projects. The next restore downloads them again, which takes a while for big solutions."
 
+[[rule]]
+id = "dev.pnpm-store"
+title = "pnpm store"
+owner = "pnpm"
+paths = ['%SystemDrive%\Users\*\AppData\Local\pnpm\store']
+risk = "green"
+remedy = "command"
+command = "pnpm store prune"
+why = "Packages pnpm keeps for all projects. Prune removes only the ones no project uses any more."
+
+[[rule]]
+id = "dev.yarn-cache"
+title = "Yarn cache"
+owner = "Yarn"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Yarn\Cache']
+risk = "green"
+remedy = "command"
+command = "yarn cache clean"
+why = "Packages Yarn downloaded before. It downloads them again when a project needs them."
+
+[[rule]]
+id = "dev.go-build-cache"
+title = "Go build cache"
+owner = "Go"
+paths = ['%SystemDrive%\Users\*\AppData\Local\go-build']
+risk = "green"
+remedy = "command"
+command = "go clean -cache"
+why = "Compiled packages Go reuses between builds. The next build compiles them again."
+
+[[rule]]
+id = "dev.conda-pkgs"
+title = "Conda package cache"
+owner = "Conda"
+paths = ['%SystemDrive%\Users\*\anaconda3\pkgs', '%SystemDrive%\Users\*\miniconda3\pkgs', '%SystemDrive%\ProgramData\anaconda3\pkgs', '%SystemDrive%\ProgramData\miniconda3\pkgs']
+risk = "amber"
+remedy = "command"
+command = "conda clean --all -y"
+why = "Package archives and unused packages Conda keeps. Environments keep working; new installs download again."
+
+[[rule]]
+id = "dev.huggingface"
+title = "Hugging Face model cache"
+owner = "Hugging Face"
+paths = ['%SystemDrive%\Users\*\.cache\huggingface']
+risk = "amber"
+remedy = "delete"
+min_bytes = 1073741824
+why = "AI models and datasets downloaded by Python tools. They are downloaded again when used, which can be many GB."
+
+[[rule]]
+id = "dev.vscode-cache"
+title = "VS Code caches"
+owner = "Visual Studio Code"
+paths = ['%SystemDrive%\Users\*\AppData\Roaming\Code\Cache', '%SystemDrive%\Users\*\AppData\Roaming\Code\CachedData', '%SystemDrive%\Users\*\AppData\Roaming\Code\CachedExtensionVSIXs']
+risk = "green"
+remedy = "delete"
+why = "Cached web content, old builds and extension downloads. Close VS Code first; it rebuilds them."
+
+[[rule]]
+id = "dev.jetbrains-caches"
+title = "JetBrains IDE caches"
+owner = "JetBrains"
+paths = ['%SystemDrive%\Users\*\AppData\Local\JetBrains\*\caches']
+risk = "amber"
+remedy = "delete"
+why = "Indexes JetBrains IDEs build for your projects. Close the IDE first; it re-indexes on the next start, which takes a while."
+
+# ------------------------------------------------------------------ browsers and graphics
+
+[[rule]]
+id = "web.chrome-cache"
+title = "Chrome cache"
+owner = "Google Chrome"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Google\Chrome\User Data\*\Cache', '%SystemDrive%\Users\*\AppData\Local\Google\Chrome\User Data\*\Code Cache']
+risk = "green"
+remedy = "info"
+min_bytes = 209715200
+why = "Web pages and scripts Chrome saved to load sites faster. It sits inside your Chrome profile, so clear it from Chrome: Settings > Privacy > Delete browsing data > Cached images and files."
+
+[[rule]]
+id = "web.edge-cache"
+title = "Edge cache"
+owner = "Microsoft Edge"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Microsoft\Edge\User Data\*\Cache', '%SystemDrive%\Users\*\AppData\Local\Microsoft\Edge\User Data\*\Code Cache']
+risk = "green"
+remedy = "info"
+min_bytes = 209715200
+why = "Web pages and scripts Edge saved to load sites faster. It sits inside your Edge profile, so clear it from Edge: Settings > Privacy > Clear browsing data > Cached images and files."
+
+[[rule]]
+id = "web.firefox-cache"
+title = "Firefox cache"
+owner = "Mozilla Firefox"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Mozilla\Firefox\Profiles\*\cache2']
+risk = "green"
+remedy = "delete"
+min_bytes = 209715200
+why = "Web pages Firefox saved to load sites faster. Close Firefox first; it fills the cache again as you browse. Your profile (bookmarks, passwords) is elsewhere and untouched."
+
+[[rule]]
+id = "gfx.shader-caches"
+title = "Graphics shader cache"
+paths = ['%SystemDrive%\Users\*\AppData\Local\NVIDIA\DXCache', '%SystemDrive%\Users\*\AppData\Local\NVIDIA\GLCache', '%SystemDrive%\Users\*\AppData\LocalLow\NVIDIA\PerDriverVersion\DXCache', '%SystemDrive%\Users\*\AppData\Local\AMD\DxCache', '%SystemDrive%\Users\*\AppData\Local\AMD\DxcCache', '%SystemDrive%\Users\*\AppData\Local\AMD\GLCache', '%SystemDrive%\Users\*\AppData\Local\D3DSCache']
+risk = "green"
+remedy = "delete"
+min_bytes = 104857600
+why = "Compiled shaders the graphics driver keeps so games load faster. Games compile them again, so the first start of each may stutter briefly."
+
+[[rule]]
+id = "games.steam-shadercache"
+title = "Steam shader cache"
+owner = "Steam"
+paths = ['?:\**\steamapps\shadercache']
+risk = "green"
+remedy = "delete"
+min_bytes = 209715200
+why = "Shaders Steam pre-compiled for your games. Steam rebuilds them; the first start of each game may take longer."
+
+# ------------------------------------------------------------------ your downloads
+
+[[rule]]
+id = "user.old-installers"
+title = "Old installer"
+paths = ['%SystemDrive%\Users\*\Downloads\*.exe', '%SystemDrive%\Users\*\Downloads\*.msi', '%SystemDrive%\Users\*\Downloads\*.msix']
+kind = "file"
+risk = "amber"
+remedy = "delete"
+min_bytes = 52428800
+min_age_days = 90
+why = "A setup program you downloaded over three months ago. The app is installed (or not wanted); a current installer can be downloaded again."
+
+[[rule]]
+id = "user.disc-images"
+title = "Disc image"
+paths = ['%SystemDrive%\Users\*\Downloads\*.iso', '%SystemDrive%\Users\*\Downloads\*.img']
+kind = "file"
+risk = "amber"
+remedy = "delete"
+min_bytes = 524288000
+min_age_days = 30
+why = "A disc image you downloaded, usually to install something once."
+
+# ------------------------------------------------------------------ virtual disks (information only)
+
+[[rule]]
+id = "vm.wsl-disk"
+title = "WSL Linux disk"
+owner = "WSL"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Packages\*\LocalState\ext4.vhdx', '%SystemDrive%\Users\*\AppData\Local\wsl\*\ext4.vhdx']
+kind = "file"
+risk = "orange"
+remedy = "info"
+min_bytes = 2147483648
+why = "The disk of a Linux distribution. It grows but never shrinks by itself: delete files inside Linux, then run 'wsl --shutdown' and 'wsl --manage <distro> --set-sparse true' to give the space back. Never delete the file: that deletes the whole distribution."
+
+[[rule]]
+id = "vm.docker-disk"
+title = "Docker disk"
+owner = "Docker Desktop"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Docker\wsl\data\ext4.vhdx', '%SystemDrive%\Users\*\AppData\Local\Docker\wsl\disk\docker_data.vhdx', '%SystemDrive%\Users\*\AppData\Local\Docker\wsl\main\ext4.vhdx']
+kind = "file"
+risk = "amber"
+remedy = "info"
+min_bytes = 2147483648
+why = "Docker's images, containers and volumes. Run 'docker system prune' (add '-a --volumes' to remove more), then shrink the file from Docker Desktop > Troubleshoot or its disk-size setting."
+
 # ------------------------------------------------------------------ Windows
 
 [[rule]]
@@ -85,6 +255,64 @@ command = "Remove-Item -LiteralPath {path} -Recurse -Force   # as administrator"
 allow_protected = true
 min_bytes = 10485760
 why = "Memory dumps Windows wrote when it crashed (blue screens). Only useful for debugging those crashes."
+
+[[rule]]
+id = "win.system-temp"
+title = "Windows temporary files"
+owner = "Windows"
+paths = ['%SystemRoot%\Temp']
+risk = "green"
+remedy = "command"
+command = "Get-ChildItem -LiteralPath {path} -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue   # as administrator"
+allow_protected = true
+min_bytes = 104857600
+why = "Files Windows and installers left in the system temporary folder. Files still in use are skipped."
+
+[[rule]]
+id = "win.live-kernel-reports"
+title = "Kernel reports"
+owner = "Windows"
+paths = ['%SystemRoot%\LiveKernelReports']
+risk = "green"
+remedy = "command"
+command = "Get-ChildItem -LiteralPath {path} -Recurse -Force -Filter *.dmp | Remove-Item -Force   # as administrator"
+allow_protected = true
+min_bytes = 104857600
+why = "Diagnostic memory dumps Windows writes when a driver hangs. Only useful for debugging that problem."
+
+[[rule]]
+id = "win.error-reports"
+title = "Windows error reports"
+owner = "Windows"
+paths = ['%ProgramData%\Microsoft\Windows\WER\ReportArchive', '%ProgramData%\Microsoft\Windows\WER\ReportQueue']
+risk = "green"
+remedy = "command"
+command = "Get-ChildItem -LiteralPath {path} -Force | Remove-Item -Recurse -Force   # as administrator"
+allow_protected = true
+min_bytes = 52428800
+why = "Crash reports that were sent to Microsoft or are waiting to be sent. Nothing uses them afterwards."
+
+[[rule]]
+id = "win.delivery-optimization"
+title = "Delivery Optimization cache"
+owner = "Windows Update"
+paths = ['%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache', '%SystemRoot%\SoftwareDistribution\DeliveryOptimization']
+risk = "green"
+remedy = "command"
+command = "Delete-DeliveryOptimizationCache -Force   # as administrator"
+allow_protected = true
+min_bytes = 104857600
+why = "Update pieces Windows keeps to share with other PCs. Windows downloads them again only if needed."
+
+[[rule]]
+id = "win.update-downloads"
+title = "Windows Update downloads"
+owner = "Windows Update"
+paths = ['%SystemRoot%\SoftwareDistribution\Download']
+risk = "green"
+remedy = "info"
+min_bytes = 524288000
+why = "Updates already downloaded, most of them installed. Remove them with Settings > System > Storage > Temporary files > Windows Update Cleanup (or Disk Cleanup > Clean up system files). Don't delete the folder by hand while an update is pending."
 
 [[rule]]
 id = "win.recycle-bin"
