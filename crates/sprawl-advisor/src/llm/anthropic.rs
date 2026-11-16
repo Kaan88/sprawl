@@ -83,6 +83,7 @@ impl Anthropic {
         // a long server-side step: send it back as it is and the model carries on
         if stop == "pause_turn" && turn.calls.is_empty() {
             turn.text.clear();
+            turn.paused = true;
         }
         Ok(turn)
     }

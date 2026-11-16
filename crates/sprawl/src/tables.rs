@@ -398,10 +398,12 @@ impl State {
             c5 = cell(5, &files),
             // the app that owns it; dimmed where it just continues from the parent
             c6 = match self.owner_of(n) {
-                Some((name, inherited)) => format!(
-                    r##"<TextBlock Grid.Column="6" Text="{}" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}"/>"##,
+                // an uninstall mark where the app starts, when Sprawl knows where it is uninstalled
+                Some((name, inherited, can_uninstall)) => format!(
+                    r##"<TextBlock Grid.Column="6" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,
+                    if inherited { "#FF6F788C" } else { "#FFB9C2D6" },
+                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="11" Foreground="#FF8E97AA"/>"## } else { "" },
                     ui::esc(name),
-                    if inherited { "#FF6F788C" } else { "#FFB9C2D6" }
                 ),
                 None => String::new(),
             },

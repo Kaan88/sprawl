@@ -249,7 +249,31 @@ impl<'a> Tools<'a> {
                     }
                 })
             }
-            "report_finding" => self.report_finding(input),
+            "report_finding" => {
+                let before = self.rejected.len();
+                let r = self.report_finding(input);
+                // refused before the safety checks: still listed, so nothing vanishes silently
+                if let (Err(e), true) = (&r, self.rejected.len() == before) {
+                    let stub = Finding {
+                        path: input["path"].as_str().unwrap_or("(no path)").into(),
+                        owner: None,
+                        bytes: input["bytes"].as_u64().unwrap_or(0),
+                        risk: Risk::Orange,
+                        remedy: Remedy::Info,
+                        command: None,
+                        title: clean_text(input["title"].as_str().unwrap_or("")),
+                        evidence: Vec::new(),
+                        confidence: 0.0,
+                        source: Source::Model(self.model.clone()),
+                        allow_protected: false,
+                        trusted: false,
+                        builtin: false,
+                        on_path: false,
+                    };
+                    self.rejected.push((stub, e.trim_start_matches("Not accepted: ").trim_end_matches('.').to_string()));
+                }
+                r
+            }
             "set_filter" => {
                 let f = clean_text(input["filter"].as_str().unwrap_or(""));
                 self.filter = Some(f.clone());
@@ -372,16 +396,26 @@ impl<'a> Tools<'a> {
         if let Some(k) = self.known_list.iter().find(|k| segs.len() > k.len() && segs[..k.len()] == k[..]) {
             return Err(format!("it is inside {}, which is already reported", k.join("\\")));
         }
+        // nor around one: its size would be counted twice
+        if let Some(k) = self.known_list.iter().find(|k| k.len() > segs.len() && k[..segs.len()] == segs[..]) {
+            return Err(format!("it contains {}, which is already reported; report what is beside it instead", k.join("\\")));
+        }
+        // a delete in a synced folder deletes it in the cloud too, and may free nothing here
+        if remedy == Remedy::Delete && segs.iter().any(|s| s.starts_with("onedrive") || s == "dropbox" || s == "google drive" || s == "icloud drive" || s == "icloudrive") {
+            return Err("it is inside a synced folder (OneDrive, Dropbox...): deleting it there deletes it in the cloud too".into());
+        }
         if let Some(d) = self.memory.hides(&path) {
             return Err(match d.verdict {
                 memory::Verdict::Keep => format!("the user chose to keep {}", d.path.display()),
                 _ => "the user said not now to this one".into(),
             });
         }
-        let evidence: Vec<String> = input["evidence"].as_array().into_iter().flatten().filter_map(|e| e.as_str()).map(|e| clean_text_long(e, 300)).filter(|e| !e.is_empty()).take(8).collect();
+        let mut evidence: Vec<String> = input["evidence"].as_array().into_iter().flatten().filter_map(|e| e.as_str()).map(|e| clean_text_long(&e.replace('\n', " "), 300)).filter(|e| !e.is_empty()).take(8).collect();
         if evidence.is_empty() {
             return Err("give at least one point of evidence".into());
         }
+        // written by Sprawl, first, so the model's own words can't pass for a rule's
+        evidence.insert(0, format!("Suggested by the AI ({}). Sprawl checked: it is in the scan, the size matches, it isn't protected.", self.model));
         let title = clean_text(input["title"].as_str().unwrap_or(""));
         let title = if title.is_empty() { self.tree.nodes[n].name.clone() } else { title };
         // the command is written here, never taken from the model
@@ -466,7 +500,7 @@ pub(crate) fn parse_results(html: &str) -> Vec<(String, String, String)> {
 }
 
 /// [`clean_text`] with a longer limit, for evidence and summaries.
-fn clean_text_long(s: &str, max: usize) -> String {
+pub(crate) fn clean_text_long(s: &str, max: usize) -> String {
     let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     s.chars().filter(|&c| (c == '\n' || !c.is_control()) && !bidi(c)).take(max).collect::<String>().trim().to_string()
 }

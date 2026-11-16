@@ -208,7 +208,8 @@ fn listening(port: u16) -> bool {
 
 fn on_path(names: &[&str]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    // only absolute folders: an empty or relative entry would mean the current folder
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).filter(|d| d.is_absolute()).collect();
     // the native installer puts claude here even when PATH wasn't refreshed yet
     if let Some(h) = std::env::var_os("USERPROFILE") {
         dirs.push(PathBuf::from(h).join(".local").join("bin"));

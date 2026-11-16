@@ -75,7 +75,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, questions: std::sync::
                 let key = config::key(Provider::Anthropic).or_else(|| std::env::var("ANTHROPIC_API_KEY").ok()).filter(|k| !k.trim().is_empty());
                 Box::new(Anthropic::new(key.ok_or("No Anthropic API key. Add one in Options > AI setup.")?, &model, system, opening.clone(), &specs))
             }
-            Provider::OpenAi => Box::new(OpenAi::new(&cfg.base_url, config::key(Provider::OpenAi).or_else(|| std::env::var("OPENAI_API_KEY").ok()), &model, system, opening.clone(), &specs)),
+            Provider::OpenAi => Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, &model, system, opening.clone(), &specs)),
             Provider::ClaudeCode => {
                 let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
                 Box::new(ClaudeCode::new(&exe, &model, &system, &opening))
@@ -115,14 +115,14 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, questions: std::sync::
             };
             turns += 1;
             if !t.text.trim().is_empty() {
-                reply = t.text.trim().to_string();
+                reply = super::tools::clean_text_long(t.text.trim(), 6000);
             }
             if t.calls.is_empty() || turns >= 15 {
                 break;
             }
             let mut results = Vec::new();
             for c in &t.calls {
-                let what = c.input["path"].as_str().or(c.input["query"].as_str()).or(c.input["filter"].as_str()).unwrap_or("");
+                let what: String = c.input["path"].as_str().or(c.input["query"].as_str()).or(c.input["filter"].as_str()).unwrap_or("").chars().take(160).collect();
                 events(ChatEvent::Progress(format!("{} {what}", c.name.replace('_', " "))));
                 let (text, err) = match tools.call(&c.name, &c.input) {
                     Ok(t) => (t, false),
@@ -138,9 +138,8 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, questions: std::sync::
         if !tools.prefs.is_empty() || !tools.labels.is_empty() {
             events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels) });
         }
-        if !reply.is_empty() {
-            events(ChatEvent::Reply(reply));
-        }
+        // always an answer, so the app never waits for one that isn't coming
+        events(ChatEvent::Reply(if reply.is_empty() { "(No answer came back. Try asking again.)".into() } else { reply }));
     }
 }
 
@@ -183,14 +182,26 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode) -> Result<Box<dy
             if model.trim().is_empty() {
                 return Err("Set a model name in Options > AI setup.".into());
             }
-            let key = config::key(Provider::OpenAi).or_else(|| std::env::var("OPENAI_API_KEY").ok());
-            Box::new(OpenAi::new(&cfg.base_url, key, model, system, first, &tools))
+            Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, model, system, first, &tools))
         }
         Provider::ClaudeCode => {
             let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
             Box::new(ClaudeCode::new(&exe, model, &system, &first))
         }
     })
+}
+
+/// The key for an OpenAI-compatible endpoint. `OPENAI_API_KEY` from the environment goes only to
+/// OpenAI itself; no key ever goes over plain http to another machine.
+pub(crate) fn openai_key(base_url: &str) -> Result<Option<String>, String> {
+    let url = if base_url.trim().is_empty() { "https://api.openai.com/v1" } else { base_url.trim() };
+    let (secure, host, _, _) = super::http::split_url(&format!("{}/x", url.trim_end_matches('/')))?;
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1");
+    let key = config::key(Provider::OpenAi).filter(|k| !k.trim().is_empty()).or_else(|| (host == "api.openai.com").then(|| std::env::var("OPENAI_API_KEY").ok()).flatten());
+    if key.is_some() && !secure && !local {
+        return Err(format!("{host} isn't https: an API key would go over the network unencrypted. Use https, or remove the key."));
+    }
+    Ok(key)
 }
 
 /// The JSON object in a model's single answer (inside a ```json fence or bare).
@@ -247,6 +258,15 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
                 if !first.text.trim().is_empty() {
                     progress(super::short(first.text.trim()));
                 }
+                // a long server-side step, or cut off by the length limit: let it carry on
+                if first.calls.is_empty() && (first.paused || first.truncated) && run.turns < 32 {
+                    if first.truncated {
+                        chat.say("You were cut off. Carry on, briefly.");
+                    }
+                    first = chat.turn()?;
+                    run.turns += 1;
+                    continue;
+                }
                 if first.calls.is_empty() {
                     if tools.summary.is_none() && !first.text.trim().is_empty() {
                         tools.summary = Some(first.text.trim().to_string());
@@ -256,7 +276,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
                 let mut results = Vec::new();
                 for c in &first.calls {
                     if let Some(p) = c.input["path"].as_str() {
-                        progress(format!("{}: {p}", c.name.replace('_', " ")));
+                        progress(format!("{}: {}", c.name.replace('_', " "), p.chars().take(160).collect::<String>()));
                     }
                     let (text, err) = match tools.call(&c.name, &c.input) {
                         Ok(t) => (t, false),
@@ -279,7 +299,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
             }
         }
     }
-    run.summary = tools.summary.take().unwrap_or(run.summary);
+    run.summary = super::tools::clean_text_long(&tools.summary.take().unwrap_or(run.summary), 2000);
     run.findings = std::mem::take(&mut tools.accepted);
     run.rejected = std::mem::take(&mut tools.rejected);
     run.prefs = std::mem::take(&mut tools.prefs);

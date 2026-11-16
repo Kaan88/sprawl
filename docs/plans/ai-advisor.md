@@ -162,6 +162,11 @@ The in-use check (Restart Manager) moves to Phase 1.
 
 ### Later
 - Act mode: Recycle Bin and official commands only, behind confirmation.
+- Hand-off to the user's own uninstaller app, once it exists: an "Uninstall with ..." button
+  that launches it with the app's identity (name, install folder, registry key, store id).
+  Today Sprawl only opens Windows' Installed apps or Steam's own uninstall; it never runs an
+  uninstall command from the registry, since any program running as the user can write one and
+  Sprawl may run as administrator.
 - Live watching of file changes (USN journal).
 
 ## Dependencies on current work

@@ -20,6 +20,25 @@ pub struct ClaudeCode {
     pending: bool,
 }
 
+/// Arguments for `claude`: print mode, JSON out, and nothing it could act with. No built-in tools,
+/// no MCP servers, the user's and project's settings files (their hooks and allow rules) not
+/// loaded, and anything that would ask for permission denied. It reads the prompt and answers.
+pub(crate) fn args(model: &str) -> Vec<String> {
+    let mut a: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--restricted", "--permission-prompts", "none"].iter().map(|s| s.to_string()).collect();
+    if !model.is_empty() && !model.starts_with('-') && model.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.') {
+        a.push("--model".into());
+        a.push(model.into());
+    }
+    a
+}
+
+/// An empty folder to run it in, so no project CLAUDE.md or settings are picked up.
+fn workdir() -> PathBuf {
+    let d = super::advisor_dir().map(|d| d.join("claude-code")).unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
         ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), prompt: format!("{system}\n\n{first}"), pending: true }
@@ -42,20 +61,11 @@ impl Chat for ClaudeCode {
         }
         self.pending = false;
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
-        // a .cmd shim has to go through cmd; the prompt goes on stdin, so nothing is quoted
-        let is_cmd = self.exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd"));
-        let mut cmd = if is_cmd {
-            let mut c = Command::new(std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into()));
-            c.arg("/d").arg("/c").arg(&self.exe);
-            c
-        } else {
-            Command::new(&self.exe)
-        };
-        cmd.args(["-p", "--output-format", "json"]);
-        if !self.model.is_empty() && self.model.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.') {
-            cmd.args(["--model", &self.model]);
-        }
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Rust escapes arguments for a .cmd shim itself; the prompt goes on stdin
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(args(&self.model)).current_dir(workdir());
+        // stderr isn't read: a full pipe would stall it
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -68,10 +78,11 @@ impl Chat for ClaudeCode {
             let _ = stdin.write_all(prompt.as_bytes());
         });
         let mut stdout = child.stdout.take().ok_or("no stdout")?;
-        let reader = std::thread::spawn(move || {
+        let (otx, orx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let mut s = String::new();
             let _ = stdout.read_to_string(&mut s);
-            s
+            let _ = otx.send(s);
         });
         let start = Instant::now();
         loop {
@@ -79,13 +90,14 @@ impl Chat for ClaudeCode {
                 Ok(Some(_)) => break,
                 Ok(None) if start.elapsed() < Duration::from_secs(900) => std::thread::sleep(Duration::from_millis(200)),
                 _ => {
-                    let _ = child.kill();
+                    kill_tree(&mut child);
                     return Err("Claude Code took longer than 15 minutes".into());
                 }
             }
         }
         let _ = writer.join();
-        let out = reader.join().unwrap_or_default();
+        // a grandchild still holding the pipe mustn't keep this waiting
+        let out = orx.recv_timeout(Duration::from_secs(30)).unwrap_or_default();
         let text = parse(&out)?;
         // each new process gets the whole conversation
         self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
@@ -100,8 +112,35 @@ impl Chat for ClaudeCode {
     }
 }
 
+/// End the process and everything it started (a .cmd shim starts node).
+fn kill_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    let taskkill = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\taskkill.exe")).unwrap_or_else(|| "taskkill.exe".into());
+    let mut k = Command::new(taskkill);
+    k.args(["/T", "/F", "/PID", &pid]).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        k.creation_flags(0x0800_0000);
+    }
+    let _ = k.status();
+    let _ = child.kill();
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nothing_to_act_with() {
+        let a = super::args("claude-opus-5-5");
+        let i = a.iter().position(|x| x == "--tools").unwrap();
+        assert_eq!(a[i + 1], "", "no built-in tools");
+        for flag in ["--strict-mcp-config", "--restricted", "-p"] {
+            assert!(a.contains(&flag.to_string()), "{flag}");
+        }
+        assert_eq!(a[a.iter().position(|x| x == "--permission-prompts").unwrap() + 1], "none");
+        assert!(!super::args("--dangerously-skip-permissions").contains(&"--model".to_string()), "a model name can't be a flag");
+    }
+
     #[test]
     fn parses_print_mode_output() {
         assert_eq!(super::parse(r#"{"type":"result","is_error":false,"result":"hello"}"#).unwrap(), "hello");

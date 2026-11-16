@@ -14,7 +14,7 @@ use crate::rules::{ps_quote, RM_FN};
 /// a file without one as the ANSI code page, which would garble non-English paths.
 pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "<#\n  Sprawl clean-up script for {scan_root}, made {}.", month_year(made));
+    let _ = writeln!(s, "<#\n  Sprawl clean-up script for {}, made {}.", scan_root.replace("#>", "# >"), month_year(made));
     s.push_str("  Read it before running it. As it is, it only measures (a dry run):\n");
     s.push_str("      powershell -ExecutionPolicy Bypass -File <this file>\n");
     s.push_str("  To clean up, add -Run. Items marked Admin need an administrator PowerShell.\n#>\n");
@@ -22,7 +22,8 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     s.push_str("$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\n");
     s.push_str(RM_FN);
     s.push('\n');
-    s.push_str("function sprawl-size($p) { if (Test-Path -LiteralPath $p) { $m = Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum; [long]$m.Sum } else { [long]0 } }\n\n");
+    // measured without following links, like the deletes
+    s.push_str("function sprawl-size($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return [long]0 }; if (-not $i.PSIsContainer) { return [long]$i.Length }; if ($i.Attributes -band 1024) { return [long]0 }; $t = [long]0; foreach ($c in (Get-ChildItem -LiteralPath $i.FullName -Force -ErrorAction SilentlyContinue)) { $t += sprawl-size $c.FullName }; $t }\n\n");
     s.push_str("$items = @(\n");
     let mut by_hand = Vec::new();
     for f in findings {
@@ -32,12 +33,17 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
         };
         let body = cmd.strip_prefix(RM_FN).map(|r| r.trim_start_matches(';').trim_start()).unwrap_or(cmd);
         let admin = body.contains("# as administrator");
+        let from = match &f.source {
+            crate::finding::Source::Rule(id) => format!("Sprawl rule {id}"),
+            crate::finding::Source::Model(m) => format!("AI ({m}), checked by Sprawl"),
+        };
         let _ = writeln!(
             s,
-            "  @{{ Title = {}; Path = {}; Risk = '{:?}'; Admin = ${}; Planned = {}; Do = {{\n{}\n  }} }}",
+            "  @{{ Title = {}; Path = {}; Risk = '{:?}'; From = {}; Admin = ${}; Planned = {}; Do = {{\n{}\n  }} }}",
             ps_quote(&f.title),
             ps_quote(&f.path.display().to_string()),
             f.risk,
+            ps_quote(&from),
             admin,
             f.bytes,
             body
@@ -49,7 +55,7 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
 $total = [long]0\n\
 foreach ($i in $items) {\n\
   $before = sprawl-size $i.Path\n\
-  if (-not $Run) { Write-Host ('[{0}] {1}: {2:N2} GB at {3}' -f $i.Risk, $i.Title, ($before / 1GB), $i.Path); $total += $before; continue }\n\
+  if (-not $Run) { Write-Host ('[{0}] {1}: {2:N2} GB at {3} ({4})' -f $i.Risk, $i.Title, ($before / 1GB), $i.Path, $i.From); $total += $before; continue }\n\
   if ($i.Admin -and -not $isAdmin) { Write-Warning ('Skipped, needs an administrator PowerShell: ' + $i.Title); continue }\n\
   Write-Host ('Cleaning ' + $i.Title + '...')\n\
   try { & $i.Do } catch { Write-Warning ($i.Title + ': ' + $_) }\n\

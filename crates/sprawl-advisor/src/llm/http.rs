@@ -54,7 +54,11 @@ mod ffi {
         pub fn WinHttpQueryDataAvailable(h: H, avail: *mut u32) -> i32;
         pub fn WinHttpReadData(h: H, buf: *mut c_void, len: u32, read: *mut u32) -> i32;
         pub fn WinHttpCloseHandle(h: H) -> i32;
+        pub fn WinHttpSetOption(h: H, option: u32, buf: *const c_void, len: u32) -> i32;
     }
+
+    pub const OPTION_REDIRECT_POLICY: u32 = 88;
+    pub const REDIRECT_POLICY_NEVER: u32 = 0;
 
     pub const ACCESS_AUTOMATIC_PROXY: u32 = 4;
     pub const ACCESS_DEFAULT_PROXY: u32 = 0;
@@ -124,6 +128,11 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
             return Err(last_error("WinHTTP"));
         }
         WinHttpSetTimeouts(session.0, 20_000, 20_000, ms, ms);
+        // never follow a redirect: the key would go wherever it points
+        let never = REDIRECT_POLICY_NEVER;
+        if WinHttpSetOption(session.0, OPTION_REDIRECT_POLICY, (&never as *const u32).cast(), 4) == 0 {
+            return Err(last_error("turning off redirects"));
+        }
         let host_w = wide(&host);
         let connect = Handle(WinHttpConnect(session.0, host_w.as_ptr(), port, 0));
         if connect.0.is_null() {

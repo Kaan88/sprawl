@@ -62,6 +62,46 @@ pub struct App {
     pub how_to_remove: String,
 }
 
+/// Where the user can uninstall an app. Sprawl only opens these; it never runs an uninstall
+/// command from the registry (any program running as the user can write one, and Sprawl may run
+/// as administrator).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Uninstall {
+    /// Windows' Settings > Apps > Installed apps.
+    Settings,
+    /// Steam's own uninstall for this app id (it asks first).
+    Steam(String),
+}
+
+impl Uninstall {
+    /// What to open: an `ms-settings:` or `steam:` address.
+    pub fn address(&self) -> String {
+        match self {
+            Uninstall::Settings => "ms-settings:appsfeatures".into(),
+            Uninstall::Steam(id) => format!("steam://uninstall/{id}"),
+        }
+    }
+}
+
+impl App {
+    /// How this app is uninstalled, when Sprawl can take the user there.
+    pub fn uninstall(&self) -> Option<Uninstall> {
+        match self.kind {
+            AppKind::Installed | AppKind::Store | AppKind::Gog => Some(Uninstall::Settings),
+            // the id is the name of its shader cache folder (steamapps\shadercache\<id>)
+            AppKind::Steam => self
+                .locations
+                .iter()
+                .find(|l| l.parent().and_then(|p| p.file_name()).is_some_and(|n| n.eq_ignore_ascii_case("shadercache")))
+                .and_then(|l| l.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                .map(Uninstall::Steam),
+            AppKind::Epic | AppKind::Wsl => None,
+        }
+    }
+}
+
 /// The apps found on this machine, and a lookup from folder to owner.
 #[derive(Default)]
 pub struct Facts {

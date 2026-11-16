@@ -24,8 +24,135 @@ pub fn esc(s: &str) -> String {
     out
 }
 
+
+/// The bit of Markdown models write, as XAML: paragraphs, `#` headings, `-`/`*`/`1.` lists,
+/// fenced code, and inline **bold**, *italic* and `code`. Everything else is plain text, escaped.
+pub(crate) fn markdown(text: &str, size: u32, colour: &str) -> String {
+    let mut out = String::from(r##"<StackPanel Spacing="4">"##);
+    let mut para: Vec<String> = Vec::new();
+    let mut code: Option<Vec<String>> = None;
+    let block = |out: &mut String, runs: String, extra: &str| {
+        out.push_str(&format!(r##"<TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="{size}" Foreground="{colour}"{extra}>{runs}</TextBlock>"##));
+    };
+    let flush = |out: &mut String, para: &mut Vec<String>| {
+        if !para.is_empty() {
+            block(out, inline(&para.join(" ")), "");
+            para.clear();
+        }
+    };
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("```") {
+            match code.take() {
+                Some(lines) => {
+                    let body = lines.iter().map(|l| esc(l)).collect::<Vec<_>>().join("&#10;");
+                    out.push_str(&format!(r##"<Border Padding="8,6" CornerRadius="4" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="{size}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{body}"/></Border>"##));
+                }
+                None => {
+                    flush(&mut out, &mut para);
+                    code = Some(Vec::new());
+                }
+            }
+            continue;
+        }
+        if let Some(c) = code.as_mut() {
+            c.push(line.to_string());
+            continue;
+        }
+        if t.is_empty() {
+            flush(&mut out, &mut para);
+            continue;
+        }
+        let heading = t.trim_start_matches('#');
+        if heading.len() < t.len() && heading.starts_with(' ') {
+            flush(&mut out, &mut para);
+            block(&mut out, inline(heading.trim()), r##" FontWeight="SemiBold""##);
+            continue;
+        }
+        let bullet = ["- ", "* ", "+ "].iter().find_map(|b| t.strip_prefix(b));
+        let number = t.split_once(". ").filter(|(n, _)| !n.is_empty() && n.len() < 4 && n.bytes().all(|b| b.is_ascii_digit()));
+        if let Some(rest) = bullet {
+            flush(&mut out, &mut para);
+            block(&mut out, format!(r##"<Run Text="•  "/>{}"##, inline(rest)), r##" Margin="6,0,0,0""##);
+        } else if let Some((n, rest)) = number {
+            flush(&mut out, &mut para);
+            block(&mut out, format!(r##"<Run Text="{n}.  "/>{}"##, inline(rest)), r##" Margin="6,0,0,0""##);
+        } else {
+            para.push(t.to_string());
+        }
+    }
+    if let Some(lines) = code {
+        para.extend(lines);
+    }
+    flush(&mut out, &mut para);
+    out.push_str("</StackPanel>");
+    out
+}
+
+/// Runs for one paragraph: `**bold**`, `*italic*` (only around a word, so `*.mp4` stays as it
+/// is) and `` `code` ``.
+fn inline(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut cur = String::new();
+    let (mut bold, mut italic, mut code) = (false, false, false);
+    let emit = |out: &mut String, cur: &mut String, bold: bool, italic: bool, code: bool| {
+        if cur.is_empty() {
+            return;
+        }
+        let mut attrs = String::new();
+        if bold {
+            attrs.push_str(r##" FontWeight="SemiBold""##);
+        }
+        if italic {
+            attrs.push_str(r##" FontStyle="Italic""##);
+        }
+        if code {
+            attrs.push_str(r##" FontFamily="Consolas""##);
+        }
+        out.push_str(&format!(r##"<Run Text="{}"{attrs}/>"##, esc(cur)));
+        cur.clear();
+    };
+    let word = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' {
+            emit(&mut out, &mut cur, bold, italic, code);
+            code = !code;
+        } else if !code && c == '*' && chars.get(i + 1) == Some(&'*') {
+            emit(&mut out, &mut cur, bold, italic, code);
+            bold = !bold;
+            i += 1;
+        } else if !code && c == '*' && ((!italic && word(chars.get(i + 1)) && chars[i + 1..].contains(&'*')) || (italic && i > 0 && word(chars.get(i - 1)))) {
+            emit(&mut out, &mut cur, bold, italic, code);
+            italic = !italic;
+        } else {
+            cur.push(c);
+        }
+        i += 1;
+    }
+    emit(&mut out, &mut cur, bold, italic, code);
+    out
+}
+
 #[cfg(test)]
 mod esc_tests {
+
+    #[test]
+    fn markdown_to_xaml() {
+        let x = super::markdown("The biggest is **D:\\Games**, at *1.3 TB*.\n\n- one `*.mp4`\n2. two\n\n# Head", 12, "#FFFFFFFF");
+        assert!(x.contains(r#"<Run Text="D:\Games" FontWeight="SemiBold"/>"#), "{x}");
+        assert!(x.contains(r#"FontStyle="Italic""#));
+        assert!(x.contains(r#"<Run Text="*.mp4" FontFamily="Consolas"/>"#), "{x}");
+        assert!(x.contains("•") && x.contains(r#"<Run Text="2.  "/>"#));
+        assert_eq!(x.matches("<TextBlock").count(), 4);
+        // not markup: escaped
+        assert!(!super::markdown("<Button x:Name=\"a\"/>", 12, "#FFFFFFFF").contains("<Button"));
+        // a lone star stays a star
+        assert!(super::inline("files *.log and *.tmp").contains("*.log and *.tmp"));
+    }
+
     #[test]
     fn escapes_names() {
         assert_eq!(super::esc(r#"a<b>&"c'"#), "a&lt;b&gt;&amp;&quot;c&apos;");

@@ -37,6 +37,8 @@ pub struct Turn {
     pub calls: Vec<ToolCall>,
     /// The turn hit the output limit: what came back may be cut short.
     pub truncated: bool,
+    /// The server paused a long step; sending the conversation again lets it carry on.
+    pub paused: bool,
 }
 
 /// A tool the model may call, with a JSON Schema for its input.
@@ -92,15 +94,17 @@ pub(crate) fn post_json(url: &str, headers: &[(&str, String)], body: &Value, tim
                 return serde_json::from_str(&r.body).map_err(|e| format!("the answer isn't JSON ({e}): {}", short(&r.body)));
             }
             Ok(r) => {
-                if attempt < 2 && (r.status == 429 || r.status >= 500) {
+                // not 504: the request may have run, and been paid for
+                if attempt < 2 && matches!(r.status, 429 | 500 | 502 | 503 | 529) {
                     std::thread::sleep(Duration::from_secs(r.retry_after.unwrap_or(wait).min(30)));
                     wait *= 3;
                     continue;
                 }
                 return Err(format!("HTTP {}: {}", r.status, error_message(&r.body)));
             }
-            // a timeout is not retried: the request may still be running, and paid for
-            Err(e) if attempt < 2 && !e.contains("timed out") => {
+            // only when it never got there: a timeout or a dropped connection may have run, and
+            // been paid for; a bad address won't get better
+            Err(e) if attempt < 2 && e.contains("couldn't connect") => {
                 std::thread::sleep(Duration::from_secs(wait));
                 wait *= 3;
             }

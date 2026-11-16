@@ -55,6 +55,8 @@ pub(crate) struct Report {
     /// Owning app of every node (index into `apps`).
     owners: Vec<Option<u32>>,
     apps: Vec<String>,
+    /// How each app is uninstalled, when Sprawl can take the user there.
+    uninstall: Vec<Option<sprawl_advisor::facts::Uninstall>>,
     /// Risk code of every node inside a finding: 0 none, 1 green, 2 amber, 3 orange.
     pub(crate) lens: Arc<Vec<u8>>,
     secs: f64,
@@ -68,8 +70,8 @@ enum Msg {
     /// A status line from the model run.
     AiProgress(u64, String),
     AiDone(u64, Result<AiRun, String>),
-    /// (path, size planned, size now) of every exported item.
-    Verified(Vec<(PathBuf, u64, u64)>),
+    /// The script measured, and (path, size planned, size now) of every item in it.
+    Verified(PathBuf, Vec<(PathBuf, u64, u64)>),
 }
 
 /// The model run for the current report.
@@ -188,6 +190,23 @@ pub(crate) fn lens_colour(code: u8) -> [f32; 3] {
     }
 }
 
+/// `f` is below another finding in `all`.
+fn inside_another(all: &[Finding], f: &Finding) -> bool {
+    let p = f.path.to_string_lossy().to_lowercase();
+    let segs: Vec<&str> = p.split('\\').filter(|s| !s.is_empty()).collect();
+    all.iter().any(|o| {
+        let q = o.path.to_string_lossy().to_lowercase();
+        let k: Vec<&str> = q.split('\\').filter(|s| !s.is_empty()).collect();
+        k.len() < segs.len() && segs[..k.len()] == k[..]
+    })
+}
+
+/// What the goal box shows when empty, and what an empty box means.
+const GOAL_EXAMPLE: &str = "20";
+
+/// Questions offered before the first one.
+const EXAMPLES: [&str; 4] = ["What is the biggest thing here?", "Show me videos over 1 GB", "What did I download and forget?", "What can I safely clean up?"];
+
 fn risk_words(r: Risk) -> &'static str {
     match r {
         Risk::Green => "things that come back by themselves",
@@ -219,13 +238,10 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> Report {
     let (findings, kept) = memory.filter(findings);
     let nodes: Vec<Option<usize>> = findings.iter().map(|f| sprawl_advisor::find_path(tree, &f.path)).collect();
     let mut lens = vec![0u8; tree.nodes.len()];
-    let mut counted = vec![true; findings.len()];
-    for (i, (f, n)) in findings.iter().zip(&nodes).enumerate() {
+    // inside another finding: shown, but its bytes are already in that one's
+    let counted: Vec<bool> = findings.iter().map(|f| !inside_another(&findings, f)).collect();
+    for (f, n) in findings.iter().zip(&nodes) {
         let Some(n) = *n else { continue };
-        // already inside an earlier (bigger) finding: shown, but not counted twice
-        if lens[n] != 0 {
-            counted[i] = false;
-        }
         let code = risk_code(f.risk);
         let mut stack = vec![n];
         while let Some(k) = stack.pop() {
@@ -242,6 +258,7 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> Report {
         hidden: None,
         owners: facts.owner_map(tree),
         apps: facts.apps.iter().map(|a| a.name.clone()).collect(),
+        uninstall: facts.apps.iter().map(|a| a.uninstall()).collect(),
         lens: Arc::new(lens),
         findings,
         secs: started.elapsed().as_secs_f64(),
@@ -352,8 +369,8 @@ impl State {
                         };
                     }
                 }
-                Msg::Verified(v) => {
-                    if let Some(e) = &mut self.advisor.exported {
+                Msg::Verified(file, v) => {
+                    if let Some(e) = self.advisor.exported.as_mut().filter(|e| e.file == file) {
                         // what really shrank counts as done: the model learns the user is fine with it
                         for (p, before, after) in &v {
                             if after < before {
@@ -381,18 +398,20 @@ impl State {
         }
     }
 
-    /// The owner of `n` for the Owner column, and whether its parent has the same one.
-    pub(crate) fn owner_of(&self, n: usize) -> Option<(&str, bool)> {
+    /// The owner of `n` for the Owner column, whether its parent has the same one, and whether
+    /// Sprawl knows where to uninstall it.
+    pub(crate) fn owner_of(&self, n: usize) -> Option<(&str, bool, bool)> {
         let r = self.advice()?;
         let Some(o) = r.owners.get(n).copied().flatten() else {
             // no app owns it: what the user or the model said it is
             let t = self.tree.as_ref()?;
             let label = self.advisor.memory.label_for(&t.path_of(n))?;
             let parent_same = t.nodes[n].parent.is_some_and(|p| self.advisor.memory.label_for(&t.path_of(p)).is_some_and(|l| l.label == label.label));
-            return Some((label.label.as_str(), parent_same));
+            return Some((label.label.as_str(), parent_same, false));
         };
         let inherited = self.tree.as_ref().and_then(|t| t.nodes[n].parent).and_then(|p| r.owners.get(p).copied().flatten()) == Some(o);
-        Some((r.apps.get(o as usize)?.as_str(), inherited))
+        let can_uninstall = r.uninstall.get(o as usize).is_some_and(|u| u.is_some());
+        Some((r.apps.get(o as usize)?.as_str(), inherited, can_uninstall))
     }
 
     pub(crate) fn advisor_command(&mut self, name: &str) {
@@ -404,7 +423,26 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvUninstall" => {
+                let Some(owner) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)?.owner.clone()) else { return };
+                let Some(how) = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.uninstall.get(k).cloned().flatten())) else { return };
+                use std::os::windows::process::CommandExt;
+                let _ = std::process::Command::new("explorer.exe").raw_arg(how.address()).spawn();
+                let msg = match how {
+                    sprawl_advisor::facts::Uninstall::Settings => {
+                        win32::copy_text(self.hwnd, &owner);
+                        format!("Installed apps is open: search for {owner} (the name is copied).")
+                    }
+                    sprawl_advisor::facts::Uninstall::Steam(_) => format!("Steam asks before uninstalling {owner}."),
+                };
+                crate::state::text(&self.root, "StatusText", &msg);
+                return;
+            }
             "AdvChatSend" => return self.chat_send(),
+            "AdvEx0" | "AdvEx1" | "AdvEx2" | "AdvEx3" => {
+                let i = name[5..].parse::<usize>().unwrap_or(0);
+                return self.chat_ask(EXAMPLES.get(i).copied().unwrap_or_default().to_string());
+            }
             "AdvChatClear" => {
                 self.chat_reset();
             }
@@ -524,6 +562,30 @@ impl State {
         if let Ok(t) = find::<TextBox>(&fe, "AdvChatText") {
             let _ = t.SetText(&self.advisor.chat.text.as_str().into());
         }
+        // Enter in the goal box makes the plan
+        if let Ok(el) = find::<UIElement>(&fe, "AdvGoal") {
+            if let Ok(t) = el.KeyDown(|_, e| {
+                let Some(e) = e.as_ref() else { return };
+                if e.Key().is_ok_and(|k| k.0 == 13) {
+                    let _ = e.SetHandled(true);
+                    with(|s| s.advisor_command("AdvPlan"));
+                }
+            }) {
+                keep(t);
+            }
+        }
+        // Enter in the question box asks
+        if let Ok(el) = find::<UIElement>(&fe, "AdvChatText") {
+            if let Ok(t) = el.KeyDown(|_, e| {
+                let Some(e) = e.as_ref() else { return };
+                if e.Key().is_ok_and(|k| k.0 == 13) {
+                    let _ = e.SetHandled(true);
+                    with(|s| s.advisor_command("AdvChatSend"));
+                }
+            }) {
+                keep(t);
+            }
+        }
         let count = self.advice().map_or(0, |r| r.findings.len());
         for i in 0..count {
             if let Ok(b) = find::<ButtonBase>(&fe, &format!("AdvF{i}")) {
@@ -554,7 +616,7 @@ impl State {
             }
         }
         for name in [
-            "AdvKeep", "AdvLater", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvChatClear", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvUninstall", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -703,7 +765,12 @@ impl State {
     }
 
     fn goal_bytes(&self) -> Option<u64> {
-        let t = self.advisor.goal_text.trim().trim_end_matches(['G', 'g', 'B', 'b', ' ']).replace(',', ".");
+        let t = self.advisor.goal_text.trim().trim_end_matches(['G', 'g', 'B', 'b', ' ']).replace(' ', "");
+        // "1,000" is a thousand; "2,5" is two and a half
+        let t = match t.split_once(',') {
+            Some((_, after)) if t.contains('.') || (after.len() == 3 && !after.contains(',')) => t.replace(',', ""),
+            _ => t.replace(',', "."),
+        };
         let gb: f64 = t.parse().ok()?;
         (gb > 0.0 && gb < 1e6).then(|| (gb * (1u64 << 30) as f64) as u64)
     }
@@ -727,6 +794,10 @@ impl State {
     /// "Make a plan": the lowest-risk findings that free the goal, previewed on the map.
     fn advisor_plan(&mut self) {
         self.read_goal();
+        // an empty box means the example it shows
+        if self.advisor.goal_text.trim().is_empty() {
+            self.advisor_set_goal(GOAL_EXAMPLE);
+        }
         let Some(need) = self.goal_bytes() else {
             crate::state::text(&self.root, "StatusText", "Type how many GB you need, like 20.");
             return;
@@ -772,7 +843,9 @@ impl State {
             let mut progress = move |line: String| {
                 let _ = progress_tx.send(Msg::AiProgress(gen, line));
             };
-            let result = sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &mut progress);
+            // a panic in there still ends the run
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &mut progress)))
+                .unwrap_or_else(|_| Err("the analysis stopped with an internal error".into()));
             let _ = tx.send(Msg::AiDone(gen, result));
         });
     }
@@ -801,10 +874,16 @@ impl State {
             r.lens = Arc::new(lens);
         }
         let found = run.findings.len();
+        // indexes past the rules' findings change: what pointed at them goes
+        self.advisor.plan = None;
+        self.advisor.preview = false;
+        self.advisor.open = None;
+        self.advisor.in_use = None;
+        let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return Ai::Idle };
         let lens = Arc::make_mut(&mut r.lens);
         for f in run.findings {
             let n = sprawl_advisor::find_path(&t, &f.path);
-            r.counted.push(n.is_none_or(|n| lens.get(n).copied().unwrap_or(0) == 0));
+            r.counted.push(n.is_none_or(|n| lens.get(n).copied().unwrap_or(0) == 0) && !inside_another(&r.findings, &f));
             if let Some(n) = n {
                 let code = risk_code(f.risk);
                 let mut stack = vec![n];
@@ -910,9 +989,10 @@ impl State {
     /// Write the plan (or every finding with something to run) as a PowerShell script.
     fn advisor_export(&mut self) {
         let Some(r) = self.advice() else { return };
+        // a plan, or everything that comes back or costs little: orange is the user's call, one by one
         let picked: Vec<usize> = match self.current_plan() {
-            Some(p) => p.plan.picked.clone(),
-            None => (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some()).collect(),
+            Some(p) => p.plan.picked.iter().copied().filter(|&i| i < r.findings.len()).collect(),
+            None => (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber).collect(),
         };
         if picked.is_empty() {
             crate::state::text(&self.root, "StatusText", "Nothing to export: no finding has a command to run.");
@@ -922,10 +1002,15 @@ impl State {
         let root = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT).display().to_string()).unwrap_or_default();
         let text = sprawl_advisor::export::script(&list, &root, std::time::SystemTime::now());
         let items: Vec<(PathBuf, u64, String)> = list.iter().filter(|f| f.command.is_some()).map(|f| (f.path.clone(), f.bytes, f.title.clone())).collect();
-        let file = crate::format::user_dir("Documents").join(format!("Sprawl clean-up {}.ps1", crate::format::stamp()));
+        // never over a script the user may just have read
+        let dir = crate::format::user_dir("Documents");
+        let base = format!("Sprawl clean-up {}", crate::format::stamp());
+        let file = (1..100).map(|k| dir.join(if k == 1 { format!("{base}.ps1") } else { format!("{base} ({k}).ps1") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("{base}.ps1")));
         match sprawl_advisor::export::write_script(&file, &text) {
             Ok(()) => {
-                let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", file.display())).spawn();
+                use std::os::windows::process::CommandExt;
+                // quoted for Explorer itself: a comma in the path would split it
+                let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
                 crate::state::text(&self.root, "StatusText", "Script saved. Read it, then run it in PowerShell: as it is, it only measures.");
                 self.advisor.exported = Some(Exported { file, items, verify: None });
             }
@@ -939,6 +1024,7 @@ impl State {
         let Some(tx) = self.advisor.tx.clone() else { return };
         e.verify = Some(None);
         let items = e.items.clone();
+        let file = e.file.clone();
         std::thread::spawn(move || {
             let out = items
                 .into_iter()
@@ -951,7 +1037,7 @@ impl State {
                     (p, before, now)
                 })
                 .collect();
-            let _ = tx.send(Msg::Verified(out));
+            let _ = tx.send(Msg::Verified(file, out));
         });
     }
 
@@ -961,6 +1047,16 @@ impl State {
         web_ok.store(false, std::sync::atomic::Ordering::Relaxed);
         // dropping the senders ends the thread; a pending consent answers no
         self.advisor.chat = Chat { web_ok, ..Chat::default() };
+    }
+
+    /// A sample exchange with Markdown in the answer (screenshot runs).
+    pub(crate) fn advisor_chat_demo(&mut self) {
+        self.advisor.chat.log.push((true, "what is the biggest thing?".into()));
+        self.advisor.chat.log.push((
+            false,
+            "The biggest thing here is **SOLIDWORKS Corp**, at **7.9 GB**.\n\nNext come:\n- `Microsoft Visual Studio` (7.2 GB)\n- *Autodesk* (6.9 GB)\n\n```\nC:\\Program Files\\SOLIDWORKS Corp\n```".into(),
+        ));
+        self.advisor_changed();
     }
 
     /// Type a question and send it (screenshot runs).
@@ -973,9 +1069,18 @@ impl State {
 
     fn chat_send(&mut self) {
         let q = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+        self.chat_ask(q);
+    }
+
+    /// Send a question. While one is being answered the next waits its turn.
+    fn chat_ask(&mut self, q: String) {
         let q = q.trim().to_string();
-        if q.is_empty() || self.advisor.chat.status.is_some() {
+        if q.is_empty() {
             return;
+        }
+        // empty the box now, or the redraw would read the old question back into it
+        if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
+            let _ = t.SetText(&"".into());
         }
         if self.advisor.chat.tx.is_none() {
             // the whole scan, also while a filter is on
@@ -1001,7 +1106,10 @@ impl State {
                 let mut events = |e: ChatEvent| {
                     let _ = etx.send(ChatMsg::Event(e));
                 };
-                sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, qrx, &mut events, &consent);
+                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, qrx, &mut events, &consent)));
+                if ended.is_err() {
+                    let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
+                }
             });
             self.advisor.chat.tx = Some(qtx);
             self.advisor.chat.rx = Some(erx);
@@ -1076,11 +1184,23 @@ impl State {
         };
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Ask your disk" FontSize="13" FontWeight="SemiBold"/>"##);
         for (user, text) in c.log.iter().rev().take(12).rev() {
-            let (name, colour) = if *user { ("You", "#FF8FB4FF") } else { (who, "#FFD5DBE8") };
-            x += &format!(
-                r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True"><Run Text="{name}: " FontWeight="SemiBold" Foreground="{colour}"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##,
-                ui::esc(text)
-            );
+            if *user {
+                x += &format!(
+                    r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True" Margin="0,4,0,0"><Run Text="You: " FontWeight="SemiBold" Foreground="#FF8FB4FF"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##,
+                    ui::esc(text)
+                );
+            } else {
+                x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/>"##);
+                x += &ui::markdown(text, 12, "#FFD5DBE8");
+            }
+        }
+        if c.log.is_empty() {
+            // ready-made questions: one click asks
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
+            for (i, q) in EXAMPLES.iter().enumerate() {
+                x += &format!(r##"<Button x:Name="AdvEx{i}" Content="{}" Padding="10,3" FontSize="11" CornerRadius="12" Background="#142F7BF6"/>"##, ui::esc(q));
+            }
+            x += "</StackPanel>";
         }
         if let Some((q, _)) = &c.consent {
             x += &format!(
@@ -1091,7 +1211,7 @@ impl State {
         if let Some(s) = &c.status {
             x += &format!(r##"<TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##, ui::esc(s));
         }
-        x += r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="What is the biggest thing in Downloads? Show me videos over 1 GB."/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##;
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="Ask about this scan, then press Enter"/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -1175,21 +1295,21 @@ impl State {
         };
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="8">"##);
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="I need" VerticalAlignment="Center" FontSize="13"/><TextBox x:Name="AdvGoal" Width="70" PlaceholderText="20"/><TextBlock Text="GB" VerticalAlignment="Center" FontSize="13"/>{}{}{}</StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="I need" VerticalAlignment="Center" FontSize="13"/><TextBox x:Name="AdvGoal" Width="70" PlaceholderText="{GOAL_EXAMPLE}"/><TextBlock Text="GB" VerticalAlignment="Center" FontSize="13"/>{}{}{}</StackPanel>"##,
             btn("AdvPlan", "Make a plan"),
             ask,
             btn("AdvExport", if self.current_plan().is_some() { "Export plan as script" } else { "Export script" }),
         );
         if let Some(p) = self.current_plan() {
             let n = p.plan.picked.len();
-            let worst = p.plan.picked.iter().map(|&i| r.findings[i].risk).max();
+            let worst = p.plan.picked.iter().filter_map(|&i| r.findings.get(i)).map(|f| f.risk).max();
             let msg = if n == 0 {
                 "No finding has something to run, so there is no plan yet.".to_string()
             } else if p.plan.enough() {
                 let items = if n == 1 { "1 item frees".to_string() } else { format!("{n} items free") };
                 format!("{items} {} of the {} you need, at worst {}.", self.size(p.plan.bytes), self.size(p.plan.need), worst.map(risk_words).unwrap_or(""))
             } else {
-                format!("Everything found frees {}, short of the {} you need. Ask the AI to look further.", self.size(p.plan.bytes), self.size(p.plan.need))
+                format!("Green and amber findings free {}, short of the {} you need. Orange ones are your own files: decide those one by one, or ask the AI to look further.", self.size(p.plan.bytes), self.size(p.plan.need))
             };
             x += &format!(
                 r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8FB4FF" VerticalAlignment="Center"/>{}{}</StackPanel>"##,
@@ -1204,7 +1324,7 @@ impl State {
             Ai::Failed(e) => x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFFF7A45"/>"##, ui::esc(e)),
             Ai::Done { summary, model, found, rejected, with_tools, turns } => {
                 if !summary.is_empty() {
-                    x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="13" Foreground="#FFD5DBE8"/>"##, ui::esc(summary));
+                    x += &ui::markdown(summary, 13, "#FFD5DBE8");
                 }
                 let how = if *with_tools { format!("{turns} turns, looking closer with tools") } else { "one answer from the report".into() };
                 x += &format!(
@@ -1294,6 +1414,14 @@ impl State {
         }
         if r.nodes[i].is_some() {
             x += r##"<Button x:Name="AdvShow" Content="Show in tree" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvExplore" Content="Show in Explorer" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+        }
+        let how = f.owner.as_ref().and_then(|o| r.apps.iter().position(|a| a == o)).and_then(|k| r.uninstall.get(k).cloned().flatten());
+        if let (Some(how), Some(o)) = (how, &f.owner) {
+            let tip = match how {
+                sprawl_advisor::facts::Uninstall::Settings => "Opens Windows' Installed apps",
+                sprawl_advisor::facts::Uninstall::Steam(_) => "Opens Steam's uninstall, which asks first",
+            };
+            x += &format!(r##"<Button x:Name="AdvUninstall" Content="Uninstall {}..." ToolTipService.ToolTip="{tip}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(o));
         }
         x += r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="Never suggest this again" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         x += "</StackPanel></StackPanel></Border>";

@@ -17,21 +17,30 @@ impl Plan {
     }
 }
 
-/// Pick findings to free `need` bytes: green before amber before orange, the biggest of each
-/// first, then drop any that turned out not to be needed (the riskiest first). Only findings
-/// with something to run (a delete or a command) count; `counted[i]` false means finding `i` is
-/// inside another one and its bytes are already in that one's.
+/// Pick findings to free `need` bytes: green before amber, the biggest of each first, then drop
+/// any that turned out not to be needed (the riskiest first). Orange (the user's own files, and
+/// every delete a model suggested) is never planned: those are the user's call, one by one.
+/// Only findings with something to run count; `counted[i]` false means finding `i` is inside
+/// another one, and none is picked inside or around one already picked.
 pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
     let mut cand: Vec<usize> = (0..findings.len())
         .filter(|&i| counted.get(i).copied().unwrap_or(true))
-        .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk < Risk::Red)
+        .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk <= Risk::Amber)
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();
     let mut bytes = 0u64;
+    let related = |a: &Finding, b: &Finding| {
+        let (x, y) = (crate::segments(&a.path.to_string_lossy()), crate::segments(&b.path.to_string_lossy()));
+        let n = x.len().min(y.len());
+        x[..n] == y[..n]
+    };
     for i in cand {
         if bytes >= need {
             break;
+        }
+        if picked.iter().any(|&p| related(&findings[p], &findings[i])) {
+            continue;
         }
         picked.push(i);
         bytes = bytes.saturating_add(findings[i].bytes);
@@ -76,6 +85,8 @@ mod tests {
     #[test]
     fn lowest_risk_first_and_no_more_than_needed() {
         let v = vec![f(Risk::Orange, 50), f(Risk::Green, 3), f(Risk::Amber, 10), f(Risk::Green, 8)];
+        // orange is never planned
+        assert!(!plan(&v, &[true; 4], 100 << 30).picked.contains(&0));
         let all = vec![true; 4];
         let p = plan(&v, &all, 10 << 30);
         // greens (8 + 3) are enough: no amber or orange
@@ -84,9 +95,9 @@ mod tests {
         // 8 + 3 + 10 is more than 15: the small green turns out not to be needed
         let p = plan(&v, &all, 15 << 30);
         assert_eq!(p.picked, vec![3, 2]);
-        // more than everything: all of it, and not enough
+        // more than everything: all but orange, and not enough
         let p = plan(&v, &all, 100 << 30);
-        assert!(!p.enough() && p.picked.len() == 4);
+        assert!(!p.enough() && p.picked.len() == 3);
         // a finding inside another doesn't count twice
         let p = plan(&v, &[true, false, true, true], 10 << 30);
         assert!(!p.picked.contains(&1));
