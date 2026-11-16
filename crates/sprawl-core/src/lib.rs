@@ -128,7 +128,11 @@ pub fn canonical_root(path: &Path) -> PathBuf {
     let s = abs.display().to_string();
     let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
-    } else if let Some(rest) = s.strip_prefix(r"\\?\").or_else(|| s.strip_prefix(r"\\.\")) {
+    } else if let Some(rest) = s.strip_prefix(r"\\?\").or_else(|| s.strip_prefix(r"\\.\")).filter(|r| {
+        // only `\\?\C:\...`: a `\\?\Volume{guid}\` stays as it is (stripped it would be relative)
+        let b = r.as_bytes();
+        b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+    }) {
         rest.to_string()
     } else {
         s

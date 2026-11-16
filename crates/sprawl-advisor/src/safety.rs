@@ -177,11 +177,13 @@ const USER_DATA: &[&str] = &[
     r"%OneDriveCommercial%\**",
 ];
 
-/// One spelling for every path: `X:\...` with backslashes. `\\?\` and `\\.\` are dropped; a
-/// network path `\\server\share\rest` becomes `U:\rest`, so the any-drive entries still apply
-/// (an admin share `\\pc\C$\Windows` is still Windows). `None` for anything else, which
-/// callers treat as protected.
-fn drive_form(path: &str) -> Option<String> {
+/// Every `X:\...` spelling a path could stand for, with backslashes. `\\?\` and `\\.\` are
+/// dropped. A network path `\\server\share\rest` is checked both as a drive root (`U:\rest`)
+/// and as a folder on one (`U:\share\rest`, so a share named `Users` is still `Users`); an
+/// admin share `C$` is `C:\rest` and `ADMIN$` is `C:\Windows\rest`. `None` (treated as
+/// protected) for anything else, including `.` and `..` segments and names ending in a dot or
+/// space, which Windows would resolve to some other path.
+fn drive_forms(path: &str) -> Option<Vec<String>> {
     let p = path.replace('/', "\\");
     let p = if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
@@ -190,16 +192,36 @@ fn drive_form(path: &str) -> Option<String> {
     } else {
         p
     };
-    if let Some(unc) = p.strip_prefix(r"\\") {
+    let out = if let Some(unc) = p.strip_prefix(r"\\") {
         let mut it = unc.splitn(3, '\\');
         let (server, share) = (it.next()?, it.next()?);
+        let rest = it.next().unwrap_or("");
         if server.is_empty() || share.is_empty() {
             return None;
         }
-        return Some(format!(r"U:\{}", it.next().unwrap_or("")));
+        let sb = share.as_bytes();
+        if share.eq_ignore_ascii_case("admin$") {
+            vec![format!(r"C:\Windows\{rest}")]
+        } else if sb.len() == 2 && sb[0].is_ascii_alphabetic() && sb[1] == b'$' {
+            vec![format!(r"{}:\{rest}", sb[0] as char)]
+        } else if share.ends_with('$') {
+            return None; // IPC$, print$ and other hidden shares
+        } else {
+            vec![format!(r"U:\{rest}"), format!(r"U:\{share}\{rest}")]
+        }
+    } else {
+        let b = p.as_bytes();
+        if !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\')) {
+            return None;
+        }
+        vec![p]
+    };
+    for f in &out {
+        if f[2..].split('\\').filter(|s| !s.is_empty()).any(|s| s == "." || s == ".." || s.ends_with('.') || s.ends_with(' ')) {
+            return None;
+        }
     }
-    let b = p.as_bytes();
-    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\')).then_some(p)
+    Some(out)
 }
 
 impl Never {
@@ -222,27 +244,33 @@ impl Never {
     /// The never-list entry `path` falls under or holds, if any. A path in a form that isn't a
     /// drive or network path is refused outright.
     pub fn hit(&self, path: &str) -> Option<&str> {
-        let Some(p) = drive_form(path) else { return Some("(a path Sprawl can't check)") };
-        self.patterns.iter().find(|(_, pat)| pat.matches(&p) || pat.is_above(&p)).map(|(s, _)| s.as_str())
+        let Some(forms) = drive_forms(path) else { return Some("(a path Sprawl can't check)") };
+        self.patterns.iter().find(|(_, pat)| forms.iter().any(|p| pat.matches(p) || pat.is_above(p))).map(|(s, _)| s.as_str())
     }
 
     /// A never-list entry found anywhere below node `n` (a disk image, a vault) by name.
     pub fn hit_inside(&self, tree: &Tree, n: usize) -> Option<(String, &str)> {
         let names: Vec<(&str, &str)> = self.patterns.iter().filter_map(|(s, p)| p.any_depth_name().map(|m| (m, s.as_str()))).collect();
+        // what each name must end with (`*.vhdx` -> `.vhdx`), to skip the glob for most files
+        let tails: Vec<&str> = names.iter().map(|(m, _)| m.trim_start_matches('*')).collect();
         let mut stack = tree.nodes[n].children.clone();
         while let Some(k) = stack.pop() {
-            let name = tree.nodes[k].name.to_lowercase();
+            let raw = &tree.nodes[k].name;
+            stack.extend_from_slice(&tree.nodes[k].children);
+            if !tails.iter().any(|t| raw.len() >= t.len() && raw.is_char_boundary(raw.len() - t.len()) && raw[raw.len() - t.len()..].eq_ignore_ascii_case(t)) {
+                continue;
+            }
+            let name = raw.to_lowercase();
             if let Some((_, s)) = names.iter().find(|(m, _)| crate::rules::seg_match(m, &name)) {
                 return Some((tree.path_of(k).display().to_string(), s));
             }
-            stack.extend_from_slice(&tree.nodes[k].children);
         }
         None
     }
 
     pub fn is_user_data(&self, path: &str) -> bool {
-        let p = drive_form(path).unwrap_or_default();
-        self.user_data.iter().any(|pat| pat.matches(&p))
+        let forms = drive_forms(path).unwrap_or_default();
+        self.user_data.iter().any(|pat| forms.iter().any(|p| pat.matches(p)))
     }
 }
 
@@ -282,8 +310,9 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     // A curated built-in rule may run its owner's official clean-up (DISM on WinSxS) on a
     // protected path; the tool decides what goes, not a recursive delete.
     let exempt = f.allow_protected && f.builtin && f.trusted && f.remedy == Remedy::Command && !from_model;
-    // Every other command is treated as acting on the files at `path`.
-    let destructive = removes || (f.command.is_some() && !exempt);
+    // Every other command is treated as acting on the files at `path`, and so is an exempt
+    // one that names `path` itself (a recursive Remove-Item): only the never-list is waived.
+    let destructive = removes || (f.command.is_some() && (!exempt || f.on_path));
     if (destructive || from_model) && !exempt {
         if never.incomplete {
             return Err(Rejection::NeverListIncomplete);

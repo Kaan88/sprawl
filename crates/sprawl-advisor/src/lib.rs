@@ -137,6 +137,7 @@ mod tests {
             allow_protected: true,
             trusted: true,
             builtin: true,
+            on_path: false,
             ..model.clone()
         };
         assert!(safety::check(&rule, &windows, &never).is_ok(), "curated command on a protected path is allowed");
@@ -175,6 +176,25 @@ mod tests {
         assert!(never.hit("C:/Windows/System32").is_some());
         assert!(never.hit(r"\\?\Volume{1234}\x").is_some(), "unknown forms fail closed");
         assert!(never.hit(r"\\nas\media\films").is_none());
+        assert!(never.hit(r"\\pc\ADMIN$\System32").is_some());
+        assert!(never.hit(r"\\pc\Users\sam\.ssh").is_some());
+        assert!(never.hit(r"\\pc\IPC$\x").is_some());
+        assert!(never.hit(r"C:\foo\..\Windows").is_some(), ".. fails closed");
+        assert!(never.hit(r"C:\Windows.\System32").is_some(), "trailing dot fails closed");
+        assert!(never.hit(r"C:foo").is_some());
+        // an exempt built-in rule whose command names the path keeps its link checks
+        let exempt_on_path = Finding {
+            command: Some(format!("Remove-Item -LiteralPath {} -Recurse -Force", rules::ps_quote(&tree.path_of(ROOT).display().to_string()))),
+            remedy: Remedy::Command,
+            allow_protected: true,
+            trusted: true,
+            builtin: true,
+            on_path: true,
+            path: tree.path_of(ROOT),
+            bytes: tree.nodes[ROOT].size,
+            ..good.clone()
+        };
+        assert_eq!(safety::check(&exempt_on_path, &tree, &never), Err(safety::Rejection::ScanRoot));
         // a recursive remedy is refused when a disk image sits inside
         std::fs::write(dir.join("cache").join("deep").join("vm.vhdx"), b"x").unwrap();
         let t2 = sprawl_core::scan(&dir, |_| {}).unwrap();

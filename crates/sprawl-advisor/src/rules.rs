@@ -340,6 +340,7 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     } else {
         evidence.push(format!("Matched rule {} from the local pack \"{}\"", rule.id, pack.pack.name));
     }
+    let on_path = rule.command.as_deref().map_or(command.is_some(), |c| c.contains("{path}"));
     Finding {
         path,
         owner: rule.owner.clone(),
@@ -355,6 +356,7 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
         // the program's own delete command, or the built-in pack's
         trusted: pack.trusted || rule.command.is_none(),
         builtin: pack.trusted,
+        on_path,
     }
 }
 

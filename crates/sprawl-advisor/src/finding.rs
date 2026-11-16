@@ -72,4 +72,8 @@ pub struct Finding {
     /// model's deletes are raised to at least Amber or Orange.
     #[serde(skip)]
     pub builtin: bool,
+    /// The command acts on `path` itself (the rule's command has `{path}`, or it is the
+    /// program's own delete), so link and scan-root checks apply even to exempt rules.
+    #[serde(skip)]
+    pub on_path: bool,
 }
