@@ -172,14 +172,21 @@ impl Facts {
     /// (`bin\Release\net8.0\win-x64\tool.exe`), the last start of any of them, and whether one
     /// has no record of starting. Build-time programs (cargo's `build-script-build.exe`, the same
     /// name in every crate) are left out: their runs say nothing about this project.
+    ///
+    /// Copies never started under their own name (cargo's hashed `deps\app-1a2b.exe` twin of
+    /// `app.exe`, anything in `build` or `incremental`, .NET's `apphost.exe`) count for `any`
+    /// and `last_run` but not for `unseen`, which would otherwise be true for every Rust and .NET
+    /// output.
     pub fn output_programs(&self, tree: &Tree, n: usize) -> OutputPrograms {
         let mut out = OutputPrograms::default();
-        let mut stack = vec![n];
-        while let Some(k) = stack.pop() {
+        // (node, inside a folder of copies)
+        let mut stack = vec![(n, false)];
+        while let Some((k, copies)) = stack.pop() {
             let node = &tree.nodes[k];
             if node.is_dir {
                 if !node.is_reparse_point() {
-                    stack.extend_from_slice(&node.children);
+                    let copies = copies || (k != n && ["deps", "build", "incremental"].iter().any(|d| node.name.eq_ignore_ascii_case(d)));
+                    stack.extend(node.children.iter().map(|&c| (c, copies)));
                 }
                 continue;
             }
@@ -194,6 +201,7 @@ impl Facts {
             out.any = true;
             match self.runs.get(&run_key(&name)) {
                 Some(&(t, _)) => out.last_run = out.last_run.max(Some(t)),
+                None if copies || name == "apphost.exe" => {}
                 None => out.unseen = true,
             }
         }

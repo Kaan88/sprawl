@@ -285,25 +285,25 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
         if p.outputs.is_empty() || facts.owner_of(&tree.path_of(p.node)).is_some() {
             continue;
         }
-        // a tool run from target\release keeps its project in use; an unknown date is not "old"
-        let ran = p.outputs.iter().filter_map(|&(o, _, _)| facts.output_programs(tree, o).last_run).max();
-        let Some(changed) = p.last_change else { continue };
-        let last = changed.max(ran.unwrap_or(changed));
-        let Ok(age) = now.duration_since(last) else { continue };
-        if age.as_secs() < days.saturating_mul(86_400) {
+        let idle = |t: SystemTime| now.duration_since(t).is_ok_and(|age| age.as_secs() >= days.saturating_mul(86_400));
+        // an unknown date is not "old"; a recent one needs no look at the outputs
+        let Some(changed) = p.last_change.filter(|&t| idle(t)) else { continue };
+        // a tool run from target\release keeps its project in use (one walk per output)
+        let progs: Vec<_> = p.outputs.iter().map(|&(o, _, _)| facts.output_programs(tree, o)).collect();
+        let ran = progs.iter().filter_map(|g| g.last_run).max();
+        if ran.is_some_and(|r| !idle(r)) {
             continue;
         }
         let project_name = tree.nodes[p.node].name.clone();
         let total = tree.nodes[p.node].size;
         let kinds: Vec<&str> = p.kinds.iter().map(|k| k.label()).collect();
-        for &(n, how, risk) in &p.outputs {
+        for (&(n, how, risk), progs) in p.outputs.iter().zip(&progs) {
             let node = &tree.nodes[n];
             if node.size < min_bytes {
                 continue;
             }
             // programs in it, and no way to know whether they run (Prefetch unreadable without
             // administrator rights): it may be a tool in daily use
-            let progs = facts.output_programs(tree, n);
             if !facts.runs_complete && progs.any {
                 continue;
             }
@@ -407,11 +407,22 @@ mod tests {
         let script = app.join("target").join("release").join("build").join("app-1a2b");
         std::fs::create_dir_all(&script).unwrap();
         std::fs::write(script.join("build-script-build.exe"), b"x").unwrap();
+        // cargo's hashed twin of app.exe, never started under that name
+        std::fs::create_dir_all(app.join("target").join("release").join("deps")).unwrap();
+        std::fs::write(app.join("target").join("release").join("deps").join("app-9f8e7d.exe"), b"x").unwrap();
         let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
         let ps = find(&tree);
         facts.set_run("build-script-build.exe", SystemTime::now());
+        // by name: the test folder's path has `..` in it, which find_path doesn't resolve
+        let under = |n: usize, name: &str| tree.nodes[n].children.iter().copied().find(|&c| tree.nodes[c].name == name).unwrap();
+        let app_node = ps.iter().find(|p| tree.nodes[p.node].name == "app").unwrap().node;
+        let target = under(app_node, "target");
+        let script_node = under(under(under(target, "release"), "build"), "app-1a2b");
+        assert!(facts.output_programs(&tree, target).last_run.is_none(), "a build script's run is not a run of this project");
+        assert!(!facts.output_programs(&tree, script_node).any, "only a build script inside");
         let f = build_outputs(&tree, &ps, &facts, 0, 1000);
         assert_eq!(f.len(), 1, "only target is over 1000 bytes");
+        assert!(!f[0].evidence.iter().any(|e| e.contains("last ran")), "{:?}", f[0].evidence);
         assert_eq!(f[0].risk, Risk::Amber, "app.exe has no run record");
         assert!(f[0].evidence.iter().any(|e| e.contains("no record of starting")));
         // app.exe ran long ago: known, so the output keeps its own risk
