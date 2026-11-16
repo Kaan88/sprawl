@@ -24,7 +24,7 @@ const SAMPLES: u32 = 4;
 const FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 const HLSL: &str = r#"
-cbuffer Frame : register(b0) { float4x4 uVP; float4 uEye; float4 uLight; float4 uSize; };
+cbuffer Frame : register(b0) { float4x4 uVP; float4 uEye; float4 uLight; float4 uSize; float4 uRight; float4 uUp; };
 struct VSIn { float3 pos : POSITION; float3 nor : NORMAL; float4 rect : RECT; float4 par : PARENT; float4 col : COLOR; float4 fx : FX; };
 struct PSIn { float4 sv : SV_Position; float3 n : NORMAL; float2 uv : UV; float2 puv : PUV; float4 col : COLOR; float4 fx : FX; float3 w : WORLD; float2 wh : WH; float4 ex : EXTRA; };
 PSIn vs(VSIn i) {
@@ -109,6 +109,48 @@ float4 ps(PSIn i) : SV_Target {
     }
     return float4(c, 1.0);
 }
+
+struct SOut { float4 sv : SV_Position; float2 uv : UV; float4 col : COLOR; float4 fx : FX; };
+SOut vs_star(VSIn i) {
+    SOut o;
+    float2 c = i.pos.xy * 2.0 - 1.0;
+    float kind = i.fx.y;
+    // the quad is bigger than the star so the halo fits; hovered stars swell a little
+    float s = i.rect.w * (kind > 3.5 ? 1.0 : 4.0) * (1.0 + i.fx.x * 0.6);
+    float3 w = i.rect.xyz + (uRight.xyz * c.x + uUp.xyz * c.y) * s;
+    o.sv = mul(uVP, float4(w, 1.0));
+    o.uv = c; o.col = i.col; o.fx = i.fx;
+    return o;
+}
+float4 ps_star(SOut i) : SV_Target {
+    float d2 = dot(i.uv, i.uv);
+    float kind = i.fx.y;
+    if (kind > 3.5) {
+        // deep-space backdrop, a little lighter toward the middle
+        float3 sky = lerp(float3(0.035, 0.03, 0.075), float3(0.004, 0.005, 0.012), saturate(sqrt(d2) * 3.0));
+        return float4(sky * 0.94, 0.94);
+    }
+    if (d2 > 1.0) discard;
+    float glow = i.fx.x;
+    float3 col = i.col.rgb;
+    float b = i.col.a;
+    // a hot core (16x smaller than the quad) and a soft halo
+    float core = exp(-d2 * 160.0);
+    float halo = exp(-d2 * (kind > 2.5 ? 7.0 : 14.0)) * (kind > 1.5 && kind < 2.5 ? 0.6 : 0.32);
+    float3 c = lerp(col, 1.0.xxx, 0.65) * core * 1.6 + col * halo;
+    // big stars and the core get faint diffraction spikes
+    if (kind > 2.5 || (kind < 0.5 && i.col.a > 0.8)) {
+        float sp = exp(-abs(i.uv.x) * 70.0) + exp(-abs(i.uv.y) * 70.0);
+        c += col * sp * (1.0 - sqrt(d2)) * 0.35;
+    }
+    // hovered or selected: a bright ring
+    float r = sqrt(d2);
+    if (kind > 2.5) glow = 0.0;
+    c += glow * (exp(-pow((r - 0.42) * 14.0, 2.0)) * float3(0.8, 0.95, 1.0) + col * halo * 1.5);
+    c *= b;
+    float a = saturate(max(c.r, max(c.g, c.b)));
+    return float4(c, a);
+}
 "#;
 
 /// One tile: rectangle and parent rectangle in layout units (DIPs), colour + kind (0 file, 1
@@ -146,6 +188,11 @@ pub struct Frame<'a> {
     /// The floor slab, drawn between the reflection and the tiles.
     pub floor: Option<Instance>,
     pub instances: &'a [Instance],
+    /// Galaxy view: billboards, rect = (x, y, z, radius), fx = (glow, kind).
+    pub stars: &'a [Instance],
+    /// Camera right and up vectors in world space, for the billboards.
+    pub right: [f32; 3],
+    pub up: [f32; 3],
     pub labels: &'a [Label],
 }
 
@@ -156,6 +203,8 @@ struct Constants {
     eye: [f32; 4],
     light: [f32; 4],
     size: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
 }
 
 #[windows_core::interface("63aad0b8-7c24-40ff-85a8-640d944cc325")]
@@ -179,6 +228,10 @@ pub struct Gpu {
     raster: ID3D11RasterizerState,
     depth_state: ID3D11DepthStencilState,
     blend: ID3D11BlendState,
+    blend_add: ID3D11BlendState,
+    depth_off: ID3D11DepthStencilState,
+    vs_star: ID3D11VertexShader,
+    ps_star: ID3D11PixelShader,
     cb_mirror: ID3D11Buffer,
     extra: ID3D11Buffer,
     msaa: Option<(ID3D11Texture2D, ID3D11RenderTargetView, ID3D11DepthStencilView)>,
@@ -410,6 +463,22 @@ impl Gpu {
         let mut blend = None;
         hr(unsafe { device.CreateBlendState(&bdesc, Some(&mut blend)) }, "CreateBlendState")?;
         let blend = blend.ok_or("blend")?;
+        // Additive for the galaxy's glowing stars.
+        let mut adesc = bdesc;
+        adesc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+        adesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+        let mut blend_add = None;
+        hr(unsafe { device.CreateBlendState(&adesc, Some(&mut blend_add)) }, "CreateBlendState")?;
+        let blend_add = blend_add.ok_or("blend")?;
+        let off = D3D11_DEPTH_STENCIL_DESC { DepthEnable: false.into(), ..Default::default() };
+        let mut depth_off = None;
+        hr(unsafe { device.CreateDepthStencilState(&off, Some(&mut depth_off)) }, "CreateDepthStencilState")?;
+        let depth_off = depth_off.ok_or("depth")?;
+        let (svb, spb) = (compile("vs_star", "vs_5_0")?, compile("ps_star", "ps_5_0")?);
+        let (mut vs_star, mut ps_star) = (None, None);
+        hr(unsafe { device.CreateVertexShader(&svb, None, Some(&mut vs_star)) }, "CreateVertexShader")?;
+        hr(unsafe { device.CreatePixelShader(&spb, None, Some(&mut ps_star)) }, "CreatePixelShader")?;
+        let (vs_star, ps_star) = (vs_star.ok_or("vs_star")?, ps_star.ok_or("ps_star")?);
         let cb_mirror = buffer(&device, std::mem::size_of::<Constants>(), D3D11_BIND_CONSTANT_BUFFER, true, None)?;
         let extra = buffer(&device, 1024 * std::mem::size_of::<Instance>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
 
@@ -429,6 +498,10 @@ impl Gpu {
             raster: raster.ok_or("raster")?,
             depth_state: depth_state.ok_or("depth")?,
             blend,
+            blend_add,
+            depth_off,
+            vs_star,
+            ps_star,
             cb_mirror,
             extra,
             msaa: None,
@@ -503,8 +576,9 @@ impl Gpu {
     pub fn render(&mut self, f: &Frame) -> Result<(), String> {
         let Some((msaa_tex, rtv, dsv)) = self.msaa.clone() else { return Ok(()) };
         let ctx = &self.ctx;
-        if f.instances.len() > self.inst_cap {
-            self.inst_cap = f.instances.len().next_power_of_two();
+        let need = f.instances.len().max(f.stars.len());
+        if need > self.inst_cap {
+            self.inst_cap = need.next_power_of_two();
             self.inst = buffer(&self.device, self.inst_cap * std::mem::size_of::<Instance>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
         }
         unsafe {
@@ -513,6 +587,8 @@ impl Gpu {
                 eye: [f.eye[0], f.eye[1], f.eye[2], f.time],
                 light: [f.light[0], f.light[1], f.light[2], 0.0],
                 size: [f.size[0], f.size[1], 0.0, f.cushion],
+                right: [f.right[0], f.right[1], f.right[2], 0.0],
+                up: [f.up[0], f.up[1], f.up[2], 0.0],
             };
             write(ctx, &self.cb, std::slice::from_ref(&consts))?;
             let mirror = Constants { size: [f.size[0], f.size[1], 1.0, f.cushion], ..consts };
@@ -542,6 +618,21 @@ impl Gpu {
             }
             if n > 0 {
                 self.pass(&self.cb, &self.inst, n);
+            }
+            if !f.stars.is_empty() {
+                write(ctx, &self.inst, f.stars)?;
+                ctx.OMSetBlendState(&self.blend_add, None, 0xffff_ffff);
+                ctx.OMSetDepthStencilState(&self.depth_off, 0);
+                ctx.VSSetShader(&self.vs_star, None);
+                ctx.PSSetShader(&self.ps_star, None);
+                // the first face of the cube is a unit quad: enough for a billboard
+                let bufs = [Some(self.cube.clone()), Some(self.inst.clone())];
+                let strides = [24u32, std::mem::size_of::<Instance>() as u32];
+                let offsets = [0u32, 0];
+                ctx.IASetVertexBuffers(0, 2, Some(bufs.as_ptr()), Some(strides.as_ptr()), Some(offsets.as_ptr()));
+                ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb.clone())]));
+                ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.clone())]));
+                ctx.DrawInstanced(6, f.stars.len() as u32, 0, 0);
             }
 
             let back: ID3D11Texture2D = hr(self.swap.GetBuffer(0), "GetBuffer")?;

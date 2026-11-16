@@ -67,6 +67,7 @@ pub(crate) struct MapView {
     pub(crate) cushion_strength: f32,
     pub(crate) mirror: bool,
     pub(crate) last_pointer: (f64, f64),
+    pub(crate) galaxy: crate::galaxy::Galaxy,
     pub(crate) capture: Option<std::path::PathBuf>,
 }
 
@@ -89,6 +90,7 @@ impl MapView {
             cushion_strength: 1.0,
             mirror: true,
             last_pointer: (0.0, 0.0),
+            galaxy: crate::galaxy::Galaxy::default(),
             capture: None,
         }
     }
@@ -108,7 +110,23 @@ impl State {
         }
     }
 
+    /// The galaxy replaces the treemap once a scan has finished.
+    pub(crate) fn galaxy_on(&self) -> bool {
+        self.map.scene.mode == Mode::Galaxy && self.map.live.is_none() && self.tree.is_some()
+    }
+
     fn relayout(&mut self) {
+        if self.galaxy_on() {
+            let m = &mut self.map;
+            let t = self.tree.as_ref().unwrap();
+            let alloc = &self.alloc;
+            let by_alloc = m.by_alloc && alloc.len() == t.nodes.len();
+            m.scene.clear();
+            m.galaxy.relayout(t, self.map_root, &|n| if by_alloc { alloc[n] } else { t.nodes[n].size }, &|k| palette_colour(k));
+            m.dirty = false;
+            return;
+        }
+        self.map.galaxy.clear();
         let m = &mut self.map;
         if let Some(live) = &m.live {
             let lt = &live.tree;
@@ -228,22 +246,33 @@ impl State {
                 self.map.scene.set_hover_folder(t, folder);
             }
         }
-        let busy = self.map.scene.update(dt);
+        let galaxy = self.galaxy_on();
+        let busy = if galaxy {
+            let m = &mut self.map;
+            m.galaxy.w = m.scene.w;
+            m.galaxy.h = m.scene.h;
+            m.galaxy.animate = m.scene.animate;
+            m.galaxy.selected = self.selected;
+            m.galaxy.update(dt)
+        } else {
+            self.map.scene.update(dt)
+        };
         let want_capture = self.map.capture.is_some();
         if busy || !self.map.drawn_once || want_capture {
             if let Some(g) = &self.map.gpu {
                 if g.ready() || want_capture {
                     let labels = if self.map.show_labels && self.map.scene.mode == Mode::Map { self.map_labels() } else { Vec::new() };
                     let m = &mut self.map;
+                    let (vp, eye) = if galaxy { (m.galaxy.vp, m.galaxy.eye) } else { (m.scene.vp, m.scene.eye) };
                     let frame = Frame {
-                        vp: m.scene.vp,
-                        eye: m.scene.eye,
+                        vp,
+                        eye,
                         light: [-0.45, 0.55, 0.75],
                         size: [m.scene.w, m.scene.h],
                         cushion: m.scene.cushion,
                         time: { static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new(); T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f32() },
-                        mirror: m.mirror && m.scene.tilt_on,
-                        floor: (m.mirror && m.scene.tilt_on).then(|| {
+                        mirror: m.mirror && m.scene.tilt_on && !galaxy,
+                        floor: (m.mirror && m.scene.tilt_on && !galaxy).then(|| {
                             let (w, h) = (m.scene.w, m.scene.h);
                             let rect = if m.scene.mode == Mode::Map {
                                 [-w * 0.6, -h * 0.3, w * 2.2, h * 1.9]
@@ -258,7 +287,10 @@ impl State {
                                 fx: [0.0; 4],
                             }
                         }),
-                        instances: &m.scene.instances,
+                        instances: if galaxy { &[] } else { &m.scene.instances },
+                        stars: if galaxy { &m.galaxy.instances } else { &[] },
+                        right: m.galaxy.right,
+                        up: m.galaxy.up,
                         labels: &labels,
                     };
                     let g = m.gpu.as_mut().unwrap();
@@ -313,6 +345,27 @@ impl State {
         if pressed && self.map.scene.mode == Mode::City {
             self.map.scene.drag((x - px) as f32, (y - py) as f32);
         }
+        if self.galaxy_on() {
+            if pressed {
+                self.map.galaxy.drag((x - px) as f32, (y - py) as f32);
+            }
+            let n = self.map.galaxy.pick(x as f32, y as f32);
+            if n == self.map.galaxy.hover {
+                return;
+            }
+            self.map.galaxy.hover = n;
+            if let Some(t) = &self.tree {
+                let line = match n {
+                    Some(n) => {
+                        let kind = if t.nodes[n].is_dir { "" } else { "   planet" };
+                        format!("{}   ({}){kind}", t.path_of(n).display(), self.size(t.nodes[n].size))
+                    }
+                    None => format!("{}", t.path_of(self.map_root).display()),
+                };
+                text(&self.root, "MapPath", &line);
+            }
+            return;
+        }
         let before = self.map.scene.hover_leaf;
         let n = self.map.scene.pointer(x as f32, y as f32);
         if n == before {
@@ -353,6 +406,7 @@ impl State {
 
     pub(crate) fn map_leave(&mut self) {
         self.map.scene.leave();
+        self.map.galaxy.hover = None;
         if let Some(t) = &self.tree {
             text(&self.root, "MapPath", &format!("{}", t.path_of(self.map_root).display()));
         }
@@ -361,6 +415,9 @@ impl State {
     pub(crate) fn map_node_at(&self, x: f64, y: f64) -> Option<usize> {
         if self.map.live.is_some() {
             return None;
+        }
+        if self.galaxy_on() {
+            return self.map.galaxy.pick(x as f32, y as f32);
         }
         self.map.scene.hit(x as f32, y as f32).filter(|&n| n != FREE)
     }
@@ -374,6 +431,15 @@ impl State {
     pub(crate) fn map_zoom_at(&mut self, x: f64, y: f64) {
         let Some(n) = self.map_node_at(x, y) else { return };
         let Some(t) = &self.tree else { return };
+        if self.galaxy_on() {
+            // fly into the star's folder (a planet's folder for a file)
+            let target = if t.nodes[n].is_dir { Some(n) } else { t.nodes[n].parent };
+            if let Some(f) = target.filter(|&f| f != self.map_root) {
+                self.map_root = f;
+                self.render_map();
+            }
+            return;
+        }
         let mut c = n;
         while let Some(p) = t.nodes[c].parent {
             if p == self.map_root {

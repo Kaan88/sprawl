@@ -614,7 +614,7 @@ impl Scene {
 
 // ---------------------------------------------------------------- column-major 4x4 math
 
-fn perspective(fy: f32, aspect: f32, n: f32, f: f32) -> [f32; 16] {
+pub(crate) fn perspective(fy: f32, aspect: f32, n: f32, f: f32) -> [f32; 16] {
     let t = 1.0 / (fy / 2.0).tan();
     // right-handed, depth 0..1 (Direct3D)
     [t / aspect, 0., 0., 0., 0., t, 0., 0., 0., 0., f / (n - f), -1., 0., 0., n * f / (n - f), 0.]
@@ -623,23 +623,23 @@ fn perspective(fy: f32, aspect: f32, n: f32, f: f32) -> [f32; 16] {
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+pub(crate) fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
-fn norm(a: [f32; 3]) -> [f32; 3] {
+pub(crate) fn norm(a: [f32; 3]) -> [f32; 3] {
     let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-9);
     [a[0] / l, a[1] / l, a[2] / l]
 }
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn look_at(e: [f32; 3], t: [f32; 3], up: [f32; 3]) -> [f32; 16] {
+pub(crate) fn look_at(e: [f32; 3], t: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let z = norm(sub(e, t));
     let x = norm(cross(up, z));
     let y = cross(z, x);
     [x[0], y[0], z[0], 0., x[1], y[1], z[1], 0., x[2], y[2], z[2], 0., -dot(x, e), -dot(y, e), -dot(z, e), 1.]
 }
-fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+pub(crate) fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut o = [0.0; 16];
     for c in 0..4 {
         for r in 0..4 {
@@ -648,7 +648,7 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     }
     o
 }
-fn xform(m: &[f32; 16], p: [f32; 4]) -> [f32; 4] {
+pub(crate) fn xform(m: &[f32; 16], p: [f32; 4]) -> [f32; 4] {
     let mut o = [0.0; 4];
     for (r, v) in o.iter_mut().enumerate() {
         *v = m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r] * p[3];

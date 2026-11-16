@@ -13,6 +13,7 @@ mod app;
 mod commands;
 mod format;
 mod dialogs;
+mod galaxy;
 mod gpu;
 mod hud;
 mod paint;
