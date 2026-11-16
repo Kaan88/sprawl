@@ -1,0 +1,115 @@
+# Built-in rule pack (starter set; Phase 1 grows it). See src/rules.rs for the format.
+
+[pack]
+name = "builtin"
+version = 1
+
+# ------------------------------------------------------------------ developer caches
+
+[[rule]]
+id = "dev.npm-cache"
+title = "npm cache"
+owner = "npm"
+paths = ['%SystemDrive%\Users\*\AppData\Local\npm-cache']
+risk = "green"
+remedy = "command"
+command = "npm cache clean --force"
+why = "Packages npm downloaded before. npm fetches them again when a project needs them."
+
+[[rule]]
+id = "dev.pip-cache"
+title = "pip cache"
+owner = "pip"
+paths = ['%SystemDrive%\Users\*\AppData\Local\pip\Cache']
+risk = "green"
+remedy = "command"
+command = "pip cache purge"
+why = "Wheels and downloads pip keeps to install faster. They are downloaded again when needed."
+
+[[rule]]
+id = "dev.cargo-registry"
+title = "Cargo registry cache"
+owner = "Cargo"
+paths = ['%SystemDrive%\Users\*\.cargo\registry\cache', '%SystemDrive%\Users\*\.cargo\registry\src']
+risk = "green"
+remedy = "delete"
+why = "Downloaded crate archives and their unpacked sources. Cargo downloads them again on the next build."
+
+[[rule]]
+id = "dev.gradle-cache"
+title = "Gradle caches"
+owner = "Gradle"
+paths = ['%SystemDrive%\Users\*\.gradle\caches']
+risk = "green"
+remedy = "delete"
+why = "Dependencies and build outputs Gradle caches. The next build downloads and rebuilds what it needs."
+
+[[rule]]
+id = "dev.nuget-packages"
+title = "NuGet package cache"
+owner = "NuGet"
+paths = ['%SystemDrive%\Users\*\.nuget\packages']
+risk = "amber"
+remedy = "command"
+command = "dotnet nuget locals all --clear"
+why = "Packages restored for .NET projects. The next restore downloads them again, which takes a while for big solutions."
+
+# ------------------------------------------------------------------ Windows
+
+[[rule]]
+id = "win.user-temp"
+title = "Temporary files"
+paths = ['%SystemDrive%\Users\*\AppData\Local\Temp']
+risk = "green"
+remedy = "delete"
+why = "Files apps left in the temporary folder. Files still in use can't be deleted and are skipped."
+
+[[rule]]
+id = "win.crash-dumps"
+title = "Crash dumps"
+paths = ['%SystemDrive%\Users\*\AppData\Local\CrashDumps']
+risk = "green"
+remedy = "delete"
+min_bytes = 10485760
+why = "Memory dumps written when apps crashed. Only useful for debugging those crashes."
+
+[[rule]]
+id = "win.system-crash-dumps"
+title = "Windows crash dumps"
+owner = "Windows"
+paths = ['%SystemRoot%\Minidump', '%SystemRoot%\MEMORY.DMP']
+kind = "any"
+risk = "green"
+remedy = "command"
+command = "Remove-Item -LiteralPath {path} -Recurse -Force   # as administrator"
+min_bytes = 10485760
+why = "Memory dumps Windows wrote when it crashed (blue screens). Only useful for debugging those crashes."
+
+[[rule]]
+id = "win.recycle-bin"
+title = "Recycle Bin"
+paths = ['%SystemDrive%\$Recycle.Bin']
+risk = "amber"
+remedy = "command"
+command = "Clear-RecycleBin -Force"
+why = "Files you deleted. Emptying it can't be undone."
+
+[[rule]]
+id = "win.windows-old"
+title = "Previous Windows installation"
+paths = ['%SystemDrive%\Windows.old']
+risk = "amber"
+remedy = "command"
+command = "Start-Process cleanmgr -ArgumentList '/d %SystemDrive%' -Verb RunAs   # tick 'Previous Windows installation(s)'"
+why = "The Windows you upgraded from. Removing it means you can't roll back the upgrade."
+
+[[rule]]
+id = "win.component-store"
+title = "Windows component store cleanup"
+owner = "Windows"
+paths = ['%SystemRoot%\WinSxS']
+risk = "green"
+remedy = "command"
+command = "DISM /Online /Cleanup-Image /StartComponentCleanup"
+min_bytes = 4294967296
+why = "Superseded component versions. Never delete WinSxS by hand: DISM removes only what is no longer needed. Part of its size is hard links shared with System32, so the real saving is smaller than shown."

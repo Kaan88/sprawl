@@ -1,0 +1,12 @@
+[package]
+name = "disktree-advisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI-free advisor for DiskTree: findings, rule packs, safety checks and compact scan snapshots."
+
+[dependencies]
+disktree-core = { path = "../disktree-core" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zstd = { version = "0.13", features = ["zstdmt"] }

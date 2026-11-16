@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/disktree-core", "crates/disktree", "crates/bindgen"]
-default-members = ["crates/disktree-core", "crates/disktree"]
+members = ["crates/disktree-core", "crates/disktree-advisor", "crates/disktree", "crates/bindgen"]
+default-members = ["crates/disktree-core", "crates/disktree-advisor", "crates/disktree"]
 
 [workspace.package]
 edition = "2021"

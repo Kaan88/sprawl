@@ -64,11 +64,43 @@ Manager.
 
 ## Roadmap
 
-### Phase 0: foundations
+### Phase 0: foundations (done)
 - **Snapshot size test:** write the compact format (name interning, parent index, size,
   allocated, mtime, zstd) for a real full-`C:` scan (about 3.3M items). The estimate is
   15–30 MB per scan; measure it, then choose a retention policy.
 - `disktree-advisor` crate skeleton, the finding schema, the rule-pack format and the safety layer.
+
+**Measured** on a full `C:` folder walk (3,325,443 items, 1,353,402 distinct names) with
+`cargo run --release -p disktree-advisor --example snapshot_size -- C:\`:
+
+| Format | Size | Write | Notes |
+|---|---|---|---|
+| CSV (WizTree-style) | 523.5 MB | | for comparison |
+| Raw columns | 82.6 MB | 0.85 s | 24.8 bytes per item before compression |
+| Full snapshot, zstd 3 | 29.2 MB | 0.9 s | |
+| **Full snapshot, zstd 9** | **27.0 MB** | **1.2–1.4 s** | read back in 1.2 s, totals match |
+| Full snapshot, zstd 19 | 24.3 MB | 14 s | not worth the time |
+| **Folders only, zstd 9** | **4.6 MB** | 0.7 s | 820k nodes: folders plus one `<files>` total per folder; folder totals exact |
+
+Names are most of the cost (about 40% of all names are unique: hashes, GUIDs, cache keys).
+
+**Retention policy** (from these numbers):
+- Every scan saves a **folders-only** snapshot (about 5 MB for a full system drive). Kept: all
+  from the last 30 days, then one per week for 6 months, then one per month. That is at most
+  about 60 per drive, around 300 MB for a drive scanned daily. These feed growth rates, the
+  time-lapse and "what grew" at folder level.
+- The **last 3 full** snapshots per scanned root are kept (about 27 MB each) for file-level
+  "what changed since the last scan" and the scan-diff view.
+- A total cap (default 1 GB, in Settings) thins the oldest folders-only snapshots first.
+- Stored in `%LOCALAPPDATA%\DiskTree\snapshots\` (machine-local, not roaming).
+
+**Built:** `crates/disktree-advisor` with `finding` (schema), `rules` (TOML packs, `%VAR%`,
+`*`/`?`/`**` matching, junctions never followed, a starter built-in pack of 11 rules),
+`safety` (in the tree, still on disk, size within 1% or 1 MB, the never-touch list, no deletes
+through junctions, the user's folders raised to orange; a model's finding is refused anywhere
+on the never-list even as a "command") and `snapshot` (the format above). The
+`examples/advise.rs` run over the same `C:` found 10 findings, none held back by safety.
+The in-use check (Restart Manager) moves to Phase 1.
 
 ### Phase 1: Rust evidence (useful with no AI)
 - Built-in rule pack:

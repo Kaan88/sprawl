@@ -1,0 +1,353 @@
+//! Rule packs: TOML files that say where reclaimable space usually lives and what to do about
+//! it, and the engine that matches them against a scanned tree.
+//!
+//! ```toml
+//! [pack]
+//! name = "builtin"
+//! version = 1
+//!
+//! [[rule]]
+//! id = "dev.npm-cache"
+//! title = "npm cache"
+//! owner = "npm"
+//! paths = ['%LOCALAPPDATA%\npm-cache', '%SystemDrive%\Users\*\AppData\Local\npm-cache']
+//! kind = "dir"            # dir (default) | file | any
+//! risk = "green"          # green | amber | orange | red
+//! remedy = "command"      # delete | command | uninstall | move | info
+//! command = "npm cache clean --force"
+//! why = "Packages npm downloaded before; it fetches them again when they are needed."
+//! min_bytes = 52428800    # findings smaller than this are skipped (default 50 MB)
+//! ```
+//!
+//! Paths take `%VAR%` environment variables, `*` and `?` inside one segment, and `**` for any
+//! number of segments. Matching ignores case. `{path}` in a command becomes the matched path.
+
+use std::path::PathBuf;
+
+use disktree_core::{Tree, MULTIPLE, ROOT};
+use serde::Deserialize;
+
+use crate::finding::{Finding, Remedy, Risk, Source};
+use crate::segments;
+
+pub const BUILTIN: &str = include_str!("../rules/builtin.toml");
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PackInfo {
+    pub name: String,
+    #[serde(default)]
+    pub version: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Dir,
+    File,
+    Any,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub kind: Kind,
+    pub risk: Risk,
+    pub remedy: Remedy,
+    #[serde(default)]
+    pub command: Option<String>,
+    pub why: String,
+    #[serde(default)]
+    pub min_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RulePack {
+    pub pack: PackInfo,
+    #[serde(default, rename = "rule")]
+    pub rules: Vec<Rule>,
+}
+
+impl RulePack {
+    pub fn parse(text: &str) -> Result<RulePack, String> {
+        let p: RulePack = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut ids = std::collections::HashSet::new();
+        for r in &p.rules {
+            if !ids.insert(&r.id) {
+                return Err(format!("rule id {} appears twice", r.id));
+            }
+            if r.paths.is_empty() {
+                return Err(format!("rule {} has no paths", r.id));
+            }
+            if r.remedy == Remedy::Command && r.command.is_none() {
+                return Err(format!("rule {} has remedy = \"command\" but no command", r.id));
+            }
+        }
+        Ok(p)
+    }
+
+    pub fn builtin() -> RulePack {
+        RulePack::parse(BUILTIN).expect("built-in rule pack")
+    }
+}
+
+/// `%NAME%` replaced by the environment variable (left as it is when unset).
+pub fn expand(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(a) = rest.find('%') {
+        out.push_str(&rest[..a]);
+        let after = &rest[a + 1..];
+        match after.find('%') {
+            Some(b) => {
+                let name = &after[..b];
+                match std::env::var(name) {
+                    Ok(v) if !name.is_empty() => out.push_str(&v),
+                    _ => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[b + 1..];
+            }
+            None => {
+                out.push_str(&rest[a..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `*` and `?` within one segment.
+pub(crate) fn seg_match(pat: &str, name: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut i, mut j) = (0, 0);
+    let (mut star, mut mark) = (None, 0);
+    while j < n.len() {
+        if i < p.len() && (p[i] == '?' || p[i] == n[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some(i);
+            mark = j;
+            i += 1;
+        } else if let Some(s) = star {
+            i = s + 1;
+            mark += 1;
+            j = mark;
+        } else {
+            return false;
+        }
+    }
+    while i < p.len() && p[i] == '*' {
+        i += 1;
+    }
+    i == p.len()
+}
+
+/// A compiled path pattern: a small NFA over segments.
+#[derive(Clone, Debug)]
+pub(crate) struct Pattern {
+    segs: Vec<String>,
+}
+
+impl Pattern {
+    pub(crate) fn new(p: &str) -> Pattern {
+        Pattern { segs: segments(&expand(p)) }
+    }
+
+    fn close(&self, mut s: Vec<usize>) -> Vec<usize> {
+        let mut i = 0;
+        while i < s.len() {
+            let p = s[i];
+            if p < self.segs.len() && self.segs[p] == "**" && !s.contains(&(p + 1)) {
+                s.push(p + 1);
+            }
+            i += 1;
+        }
+        s.sort_unstable();
+        s.dedup();
+        s
+    }
+
+    pub(crate) fn start(&self) -> Vec<usize> {
+        self.close(vec![0])
+    }
+
+    /// States after one more path segment (lower-case).
+    pub(crate) fn step(&self, states: &[usize], name: &str) -> Vec<usize> {
+        let mut out = Vec::new();
+        for &p in states {
+            if p >= self.segs.len() {
+                continue;
+            }
+            if self.segs[p] == "**" {
+                out.push(p);
+            } else if seg_match(&self.segs[p], name) {
+                out.push(p + 1);
+            }
+        }
+        self.close(out)
+    }
+
+    pub(crate) fn accepts(&self, states: &[usize]) -> bool {
+        states.contains(&self.segs.len())
+    }
+
+    /// Whether a whole absolute path matches.
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        let mut s = self.start();
+        for part in segments(path) {
+            s = self.step(&s, &part);
+            if s.is_empty() {
+                return false;
+            }
+        }
+        self.accepts(&s)
+    }
+}
+
+const DEFAULT_MIN: u64 = 50 * 1024 * 1024;
+
+/// Every place in the tree a rule matches, as findings (not yet checked for safety). A path
+/// matched by one rule isn't searched further by that rule, and a path is reported once (by the
+/// first rule that matched it).
+pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
+    let mut out: Vec<Finding> = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    let starts: Vec<(usize, String)> = if tree.nodes[ROOT].name == MULTIPLE {
+        tree.nodes[ROOT].children.iter().map(|&c| (c, tree.nodes[c].name.clone())).collect()
+    } else {
+        vec![(ROOT, tree.path_of(ROOT).to_string_lossy().into_owned())]
+    };
+    for pack in packs {
+        for rule in &pack.rules {
+            let min = rule.min_bytes.unwrap_or(DEFAULT_MIN);
+            for pat in rule.paths.iter().map(|p| Pattern::new(p)) {
+                for (start, base) in &starts {
+                    let mut s = pat.start();
+                    for part in segments(base) {
+                        s = pat.step(&s, &part);
+                    }
+                    if s.is_empty() {
+                        continue;
+                    }
+                    let mut stack = vec![(*start, s)];
+                    while let Some((n, s)) = stack.pop() {
+                        let node = &tree.nodes[n];
+                        let kind_ok = match rule.kind {
+                            Kind::Dir => node.is_dir,
+                            Kind::File => !node.is_dir,
+                            Kind::Any => true,
+                        };
+                        if pat.accepts(&s) && kind_ok {
+                            if node.size >= min && taken.insert(n) {
+                                out.push(finding(tree, n, rule, &pack.pack.name));
+                            }
+                            continue;
+                        }
+                        // junctions and links are never followed
+                        if node.is_reparse_point() && n != *start {
+                            continue;
+                        }
+                        for &c in &node.children {
+                            let next = pat.step(&s, &tree.nodes[c].name.to_lowercase());
+                            if !next.is_empty() {
+                                stack.push((c, next));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &str) -> Finding {
+    let path: PathBuf = tree.path_of(n);
+    let quoted = format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let command = match (&rule.command, rule.remedy) {
+        (Some(c), _) => Some(c.replace("{path}", &quoted)),
+        (None, Remedy::Delete) => Some(if tree.nodes[n].is_dir {
+            format!("Get-ChildItem -LiteralPath {quoted} -Force | Remove-Item -Recurse -Force")
+        } else {
+            format!("Remove-Item -LiteralPath {quoted} -Force")
+        }),
+        _ => None,
+    };
+    let node = &tree.nodes[n];
+    let mut evidence = vec![rule.why.clone()];
+    if node.is_dir {
+        evidence.push(format!("{} files in {} folders", node.files, node.folders));
+    }
+    evidence.push(format!("Matched rule {} from the {pack} pack", rule.id));
+    Finding {
+        path,
+        owner: rule.owner.clone(),
+        bytes: node.size,
+        risk: rule.risk,
+        remedy: rule.remedy,
+        command,
+        title: rule.title.clone(),
+        evidence,
+        confidence: 0.95,
+        source: Source::Rule(rule.id.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_globs() {
+        assert!(seg_match("*.tmp", "a.tmp"));
+        assert!(seg_match("np?-cache", "npm-cache"));
+        assert!(!seg_match("*.tmp", "a.tmpx"));
+        assert!(seg_match("*", ""));
+    }
+
+    #[test]
+    fn path_patterns() {
+        let p = Pattern::new(r"C:\Users\*\AppData\Local\npm-cache");
+        assert!(p.matches(r"c:\users\sam\appdata\local\NPM-CACHE"));
+        assert!(!p.matches(r"c:\users\sam\appdata\local\npm-cache\x"));
+        let p = Pattern::new(r"C:\**\node_modules");
+        assert!(p.matches(r"C:\code\app\node_modules"));
+        assert!(p.matches(r"C:\node_modules"));
+        assert!(!p.matches(r"C:\code\app"));
+    }
+
+    #[test]
+    fn env_expansion() {
+        std::env::set_var("DT_TEST_VAR", r"C:\x");
+        assert_eq!(expand(r"%DT_TEST_VAR%\y"), r"C:\x\y");
+        assert_eq!(expand(r"%DT_UNSET_VAR_1%\y"), r"%DT_UNSET_VAR_1%\y");
+        assert_eq!(expand("100%"), "100%");
+    }
+
+    #[test]
+    fn builtin_pack_parses() {
+        let p = RulePack::builtin();
+        assert!(p.rules.len() >= 5);
+    }
+
+    #[test]
+    fn bad_packs_are_refused() {
+        let dup = "[pack]\nname='x'\n[[rule]]\nid='a'\ntitle='t'\npaths=['C:\\\\a']\nrisk='green'\nremedy='delete'\nwhy='w'\n[[rule]]\nid='a'\ntitle='t'\npaths=['C:\\\\b']\nrisk='green'\nremedy='delete'\nwhy='w'\n";
+        assert!(RulePack::parse(dup).unwrap_err().contains("twice"));
+        let cmd = "[pack]\nname='x'\n[[rule]]\nid='a'\ntitle='t'\npaths=['C:\\\\a']\nrisk='green'\nremedy='command'\nwhy='w'\n";
+        assert!(RulePack::parse(cmd).unwrap_err().contains("no command"));
+    }
+}
