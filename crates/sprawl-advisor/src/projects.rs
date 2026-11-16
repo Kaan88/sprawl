@@ -41,7 +41,9 @@ impl Kind {
         }
     }
 
-    /// Output folders this kind of project makes, how they come back, and their risk.
+    /// Output folders this kind of project makes, how they come back, and their risk. A folder
+    /// with one of these names is only taken for an output when [`proven`] finds the files its
+    /// tool leaves there.
     fn outputs(self) -> &'static [(&'static str, &'static str, Risk)] {
         match self {
             Kind::Rust => &[("target", "the next cargo build", Risk::Green)],
@@ -59,7 +61,6 @@ impl Kind {
             Kind::Python => &[
                 (".venv", "recreating the virtual environment and reinstalling its packages", Risk::Amber),
                 ("venv", "recreating the virtual environment and reinstalling its packages", Risk::Amber),
-                (".tox", "the next tox run", Risk::Green),
                 (".mypy_cache", "the next mypy run", Risk::Green),
                 (".pytest_cache", "the next pytest run", Risk::Green),
             ],
@@ -87,12 +88,72 @@ fn kind_of(name: &str) -> Option<Kind> {
 /// Folders never searched for projects: they hold other people's packages or our own output.
 const SKIP: &[&str] = &["node_modules", ".git", "target", "bin", "obj", ".venv", "venv", "site-packages", "$recycle.bin", "windows", "appdata"];
 
+const LOCKFILES: &[&str] = &["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock"];
+
+fn child(tree: &Tree, n: usize, name: &str) -> Option<usize> {
+    tree.nodes[n].children.iter().copied().find(|&c| tree.nodes[c].name.eq_ignore_ascii_case(name))
+}
+
+fn has(tree: &Tree, n: usize, name: &str) -> bool {
+    child(tree, n, name).is_some()
+}
+
+/// Whether folder `o`, named `name` in project folder `p`, holds what `kind`'s tool leaves in
+/// its output. Only then is it suggested: a `bin` or `build` folder may hold real files.
+fn proven(tree: &Tree, p: usize, o: usize, name: &str, kind: Kind) -> bool {
+    let project_file = || tree.nodes[p].children.iter().any(|&c| {
+        let n = tree.nodes[c].name.to_lowercase();
+        !tree.nodes[c].is_dir && (n.ends_with(".csproj") || n.ends_with(".fsproj") || n.ends_with(".vbproj"))
+    });
+    let lockfile = || LOCKFILES.iter().any(|l| has(tree, p, l));
+    match (kind, name) {
+        (Kind::Rust, "target") => has(tree, o, "CACHEDIR.TAG") || has(tree, o, ".rustc_info.json"),
+        (Kind::Maven, "target") => has(tree, o, "maven-status") || has(tree, o, "classes") && has(tree, p, "pom.xml"),
+        (Kind::CMake, "build") => has(tree, o, "CMakeCache.txt"),
+        (Kind::Gradle, "build") => has(tree, o, "tmp") && ["classes", "libs", "intermediates", "generated", "kotlin"].iter().any(|d| has(tree, o, d)),
+        (Kind::Gradle, ".gradle") => has(tree, o, "buildOutputCleanup") || has(tree, o, "file-system.probe"),
+        (Kind::DotNet, "obj") => project_file() && has(tree, o, "project.assets.json"),
+        (Kind::DotNet, "bin") => {
+            let obj_ok = child(tree, p, "obj").is_some_and(|obj| has(tree, obj, "project.assets.json"));
+            // only configuration folders inside: nothing hand-placed
+            let configs = !tree.nodes[o].children.is_empty()
+                && tree.nodes[o].children.iter().all(|&c| {
+                    tree.nodes[c].is_dir && ["debug", "release", "x64", "x86", "arm64", "anycpu"].contains(&tree.nodes[c].name.to_lowercase().as_str())
+                });
+            project_file() && obj_ok && configs
+        }
+        (Kind::Python, ".venv" | "venv") => has(tree, o, "pyvenv.cfg"),
+        (Kind::Python, ".mypy_cache" | ".pytest_cache") => has(tree, o, "CACHEDIR.TAG"),
+        (Kind::Node, "node_modules") => {
+            lockfile() && [".package-lock.json", ".modules.yaml", ".yarn-integrity", ".yarn-state.yml"].iter().any(|m| has(tree, o, m))
+        }
+        (Kind::Node, ".next") => lockfile() && (has(tree, o, "BUILD_ID") || has(tree, o, "cache")),
+        (Kind::Node, _) => lockfile(),
+        _ => false,
+    }
+}
+
+/// A drive, a profile or one of its top folders (Documents, Desktop, ...), a hidden tool folder
+/// in a profile (`.vscode`, `.cargo`) or anything in AppData: a stray marker file there doesn't
+/// make it a project whose folders can go.
+fn plain_folder(tree: &Tree, n: usize) -> bool {
+    let segs = crate::segments(&tree.path_of(n).to_string_lossy());
+    if segs.len() <= 1 {
+        return true;
+    }
+    if segs[1] == "users" {
+        return segs.len() <= 4 || segs[3].starts_with('.') || segs.iter().any(|s| s == "appdata");
+    }
+    false
+}
+
 #[derive(Clone, Debug)]
 pub struct Project {
     pub node: usize,
     pub kinds: Vec<Kind>,
     pub has_git: bool,
-    /// Newest change among the project's own files (not its outputs, not `.git`'s objects).
+    /// Newest change among the project's files, including the top of its outputs (a tool run
+    /// from `target\release`, or a fresh build). `None` when unknown.
     pub last_change: Option<SystemTime>,
     /// (output folder node, how it comes back, risk)
     pub outputs: Vec<(usize, &'static str, Risk)>,
@@ -132,7 +193,7 @@ pub fn find(tree: &Tree) -> Vec<Project> {
             kinds.push(Kind::Git);
         }
         let mut output_nodes = Vec::new();
-        if !kinds.is_empty() {
+        if !kinds.is_empty() && !plain_folder(tree, n) {
             let mut outputs = Vec::new();
             for &c in &node.children {
                 let child = &tree.nodes[c];
@@ -140,9 +201,9 @@ pub fn find(tree: &Tree) -> Vec<Project> {
                     continue;
                 }
                 let name = child.name.to_lowercase();
-                for k in &kinds {
+                for &k in &kinds {
                     if let Some(&(_, how, risk)) = k.outputs().iter().find(|(o, _, _)| *o == name) {
-                        if !outputs.iter().any(|&(o, _, _)| o == c) {
+                        if !outputs.iter().any(|&(o, _, _)| o == c) && proven(tree, n, c, &name, k) {
                             outputs.push((c, how, risk));
                             output_nodes.push(c);
                         }
@@ -161,44 +222,52 @@ pub fn find(tree: &Tree) -> Vec<Project> {
     out
 }
 
-/// Newest modification among the files of project `n`, leaving out its outputs and `.git`
-/// (except `.git\logs\HEAD`, which changes on every commit and checkout).
+/// Newest modification in project `n`: its own files (not inside its outputs, `node_modules`
+/// or `.git`, except `.git\logs\HEAD`, which changes on every commit and checkout), plus the
+/// top three levels of each output. `None` if the project is too big to walk.
 fn last_change(tree: &Tree, n: usize, outputs: &[usize]) -> Option<SystemTime> {
     let mut best: Option<SystemTime> = None;
-    let mut stack = vec![n];
     let mut seen = 0usize;
+    let mut stack = vec![n];
     while let Some(k) = stack.pop() {
         seen += 1;
         if seen > 2_000_000 {
-            break;
+            return None;
         }
         let node = &tree.nodes[k];
-        if node.is_dir {
-            if k != n && node.is_reparse_point() {
+        if !node.is_dir {
+            best = best.max(node.modified);
+            continue;
+        }
+        if k != n && node.is_reparse_point() {
+            continue;
+        }
+        for &c in &node.children {
+            if outputs.contains(&c) {
                 continue;
             }
-            for &c in &node.children {
-                if outputs.contains(&c) {
-                    continue;
-                }
-                let child = &tree.nodes[c];
-                let lname = child.name.to_lowercase();
-                if child.is_dir && lname == ".git" {
-                    let head = child.children.iter().find(|&&g| tree.nodes[g].name.eq_ignore_ascii_case("logs")).and_then(|&l| {
-                        tree.nodes[l].children.iter().find(|&&h| tree.nodes[h].name.eq_ignore_ascii_case("head")).copied()
-                    });
-                    if let Some(t) = head.and_then(|h| tree.nodes[h].modified) {
-                        best = best.max(Some(t));
-                    }
-                    continue;
-                }
-                if child.is_dir && SKIP.contains(&lname.as_str()) {
-                    continue;
-                }
-                stack.push(c);
+            let child = &tree.nodes[c];
+            if child.is_dir && child.name.eq_ignore_ascii_case(".git") {
+                let head = child.children.iter().find(|&&g| tree.nodes[g].name.eq_ignore_ascii_case("logs")).and_then(|&l| {
+                    tree.nodes[l].children.iter().find(|&&h| tree.nodes[h].name.eq_ignore_ascii_case("head")).copied()
+                });
+                best = best.max(head.and_then(|h| tree.nodes[h].modified));
+                continue;
             }
-        } else if let Some(t) = node.modified {
-            best = best.max(Some(t));
+            if child.is_dir && child.name.eq_ignore_ascii_case("node_modules") {
+                continue;
+            }
+            stack.push(c);
+        }
+    }
+    // a fresh build or a tool run from the output keeps the project active
+    for &o in outputs {
+        let mut stack = vec![(o, 0)];
+        while let Some((k, d)) = stack.pop() {
+            best = best.max(tree.nodes[k].modified);
+            if d < 3 && tree.nodes[k].is_dir && !tree.nodes[k].is_reparse_point() {
+                stack.extend(tree.nodes[k].children.iter().map(|&c| (c, d + 1)));
+            }
         }
     }
     best
@@ -215,7 +284,7 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], days: u64, min_bytes: u6
         // an unknown date is not "old"
         let Some(last) = p.last_change else { continue };
         let Ok(age) = now.duration_since(last) else { continue };
-        if age.as_secs() < days * 86_400 {
+        if age.as_secs() < days.saturating_mul(86_400) {
             continue;
         }
         let project_name = tree.nodes[p.node].name.clone();
@@ -240,7 +309,8 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], days: u64, min_bytes: u6
                 evidence.push(format!("{} files in {} folders", node.files, node.folders));
             }
             out.push(Finding {
-                command: Some(format!("Remove-Item -LiteralPath {} -Recurse -Force", ps_quote(&path.display().to_string()))),
+                // removes links inside without following them
+                command: Some(format!("{}; sprawl-rm (Get-Item -LiteralPath {} -Force)", crate::rules::RM_FN, ps_quote(&path.display().to_string()))),
                 path,
                 owner: Some(project_name.clone()),
                 bytes: node.size,
@@ -266,7 +336,8 @@ mod tests {
 
     #[test]
     fn finds_projects_and_outputs() {
-        let dir = std::env::temp_dir().join(format!("sprawl-proj-{}", std::process::id()));
+        // not under %TEMP%: that is in AppData, where nothing counts as a project
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("target").join(format!("sprawl-proj-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let app = dir.join("app");
         std::fs::create_dir_all(app.join("target").join("release")).unwrap();
@@ -274,6 +345,19 @@ mod tests {
         std::fs::create_dir_all(app.join("node_modules").join("leftpad")).unwrap();
         std::fs::write(app.join("Cargo.toml"), "[package]").unwrap();
         std::fs::write(app.join("package.json"), "{}").unwrap();
+        // what cargo and npm leave behind: the proof that these are outputs
+        std::fs::write(app.join("target").join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55").unwrap();
+        std::fs::write(app.join("package-lock.json"), "{}").unwrap();
+        std::fs::write(app.join("node_modules").join(".package-lock.json"), "{}").unwrap();
+        // look-alikes without proof stay: a CMake `build` with no CMakeCache.txt, a .NET `bin`
+        // next to a solution only
+        let lib = dir.join("lib");
+        std::fs::create_dir_all(lib.join("build")).unwrap();
+        std::fs::create_dir_all(lib.join("bin")).unwrap();
+        std::fs::write(lib.join("CMakeLists.txt"), "project(x)").unwrap();
+        std::fs::write(lib.join("lib.sln"), "").unwrap();
+        std::fs::write(lib.join("build").join("toolchain.cmake"), vec![1u8; 5000]).unwrap();
+        std::fs::write(lib.join("bin").join("vendor.dll"), vec![1u8; 5000]).unwrap();
         std::fs::write(app.join("src").join("main.rs"), "fn main() {}").unwrap();
         std::fs::write(app.join("target").join("release").join("app.exe"), vec![0u8; 5000]).unwrap();
         // a package inside node_modules is not a project
@@ -283,8 +367,10 @@ mod tests {
 
         let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
         let ps = find(&tree);
-        assert_eq!(ps.len(), 1, "{ps:?}");
-        let p = &ps[0];
+        assert_eq!(ps.len(), 2, "{ps:?}");
+        let lib_p = ps.iter().find(|p| tree.nodes[p.node].name == "lib").unwrap();
+        assert!(lib_p.outputs.is_empty(), "no proof, no output");
+        let p = ps.iter().find(|p| tree.nodes[p.node].name == "app").unwrap();
         assert_eq!(tree.nodes[p.node].name, "app");
         assert!(p.kinds.contains(&Kind::Rust) && p.kinds.contains(&Kind::Node));
         let outs: Vec<&str> = p.outputs.iter().map(|&(n, _, _)| tree.nodes[n].name.as_str()).collect();
@@ -294,7 +380,7 @@ mod tests {
         assert!(build_outputs(&tree, &ps, 30, 0).is_empty());
         let f = build_outputs(&tree, &ps, 0, 1000);
         assert_eq!(f.len(), 1, "only target is over 1000 bytes");
-        assert!(f[0].command.as_deref().unwrap().contains("Remove-Item -LiteralPath '"));
+        assert!(f[0].command.as_deref().unwrap().contains("; sprawl-rm (Get-Item -LiteralPath '"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -10,6 +10,7 @@ const KEY_READ: u32 = 0x20019;
 const KEY_WOW64_64KEY: u32 = 0x0100;
 const KEY_WOW64_32KEY: u32 = 0x0200;
 const RRF_RT_REG_SZ: u32 = 0x0002;
+const RRF_RT_REG_EXPAND_SZ: u32 = 0x0004;
 const RRF_RT_REG_DWORD: u32 = 0x0010;
 
 #[link(name = "advapi32")]
@@ -82,7 +83,7 @@ impl Key {
         let n = wide(name);
         let mut size = 0u32;
         unsafe {
-            if RegGetValueW(self.0, std::ptr::null(), n.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) != 0 {
+            if RegGetValueW(self.0, std::ptr::null(), n.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) != 0 {
                 return None;
             }
             if size == 0 || size > 1 << 20 {
@@ -90,7 +91,7 @@ impl Key {
             }
             let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
             let mut size2 = (buf.len() * 2) as u32;
-            if RegGetValueW(self.0, std::ptr::null(), n.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut size2) != 0 {
+            if RegGetValueW(self.0, std::ptr::null(), n.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut size2) != 0 {
                 return None;
             }
             let len = (size2 as usize / 2).min(buf.len());

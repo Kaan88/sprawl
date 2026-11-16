@@ -74,27 +74,29 @@ impl Facts {
     /// Read everything this machine says about its apps. Takes a fraction of a second; missing
     /// sources (no Steam, no admin for Prefetch) are skipped.
     pub fn gather() -> Facts {
-        let mut apps = Vec::new();
+        // Game stores first: they know when a game was last played. Each Steam game also has an
+        // Uninstall key for the same folder, which is dropped.
+        let mut apps = steam::apps();
+        apps.extend(epic());
         #[cfg(windows)]
         {
-            apps.extend(sources::uninstall_keys());
-            apps.extend(sources::store_packages());
             apps.extend(sources::gog());
+            let stores: Vec<Vec<String>> = apps.iter().flat_map(|a| a.locations.iter().map(|l| segments(&l.to_string_lossy()))).collect();
+            apps.extend(sources::store_packages());
+            apps.extend(sources::uninstall_keys().into_iter().filter(|a| !a.locations.iter().all(|l| stores.contains(&segments(&l.to_string_lossy())))));
             apps.extend(sources::wsl());
         }
-        apps.extend(steam::apps());
-        apps.extend(epic());
         Facts::from_apps(apps)
     }
 
-    pub fn from_apps(apps: Vec<App>) -> Facts {
+    pub fn from_apps(mut apps: Vec<App>) -> Facts {
         let mut index: Vec<(Vec<String>, usize)> = Vec::new();
-        for (i, a) in apps.iter().enumerate() {
+        for (i, a) in apps.iter_mut().enumerate() {
+            // names come from the registry and manifests: shown, so cleaned
+            a.name = clean_text(&a.name);
             for l in &a.locations {
                 let segs = segments(&l.to_string_lossy());
-                // A drive or a top-level folder is never one app's (an installer that says its
-                // location is C:\Program Files must not claim all of it).
-                if segs.len() >= 3 || (segs.len() == 2 && !TOP_LEVEL.contains(&segs[1].as_str())) {
+                if ownable(&segs) {
                     index.push((segs, i));
                 }
             }
@@ -144,8 +146,12 @@ impl Facts {
             let mut best: Option<(SystemTime, UsedFrom)> = None;
             for l in &app.locations {
                 let Some(n) = find_path(tree, l) else { continue };
-                for exe in programs_in(tree, n, 4) {
-                    if let Some(&(t, from)) = runs.get(&exe) {
+                for exe in programs_in(tree, n, 6) {
+                    // installers, updaters and crash reporters say nothing about use of the app
+                    if helper(&exe) {
+                        continue;
+                    }
+                    if let Some(&(t, from)) = runs.get(&run_key(&exe)) {
                         if best.is_none_or(|(b, _)| t > b) {
                             best = Some((t, from));
                         }
@@ -159,6 +165,46 @@ impl Facts {
 
 /// Top-level folders that hold many apps, never claimed by one.
 const TOP_LEVEL: &[&str] = &["program files", "program files (x86)", "programdata", "users", "windows", "games"];
+
+/// Folders inside those that are shared too.
+const SHARED: &[&str] = &["common files", "windowsapps", "windows nt", "microsoft", "microsoft shared", "package cache", "packages", "programs", "temp"];
+
+/// Whether one app can own the folder with these (lower-case) segments. Never a drive, a folder
+/// that holds many apps, a profile or its own folders (Documents, AppData, .vscode), an AppData
+/// root or anything of Windows: an installer naming one of those as its location must not
+/// claim everything in it.
+fn ownable(segs: &[String]) -> bool {
+    let s: Vec<&str> = segs.iter().map(String::as_str).collect();
+    match s.as_slice() {
+        [] | [_] => false,
+        [_, top] => !TOP_LEVEL.contains(top),
+        [_, "windows", ..] => false,
+        [_, "program files" | "program files (x86)" | "programdata", shared] => !SHARED.contains(shared),
+        [_, "users", ..] if s.len() < 5 => false,
+        [_, "users", _, "appdata", ..] if s.len() < 6 => false,
+        [_, "users", _, "appdata", _, shared] => !SHARED.contains(shared),
+        _ => true,
+    }
+}
+
+/// Text from the registry or a manifest made safe to show: no control or direction-changing
+/// characters, at most 100 characters.
+pub(crate) fn clean_text(s: &str) -> String {
+    let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    s.chars().filter(|&c| !c.is_control() && !bidi(c)).take(100).collect::<String>().trim().to_string()
+}
+
+/// Programs that run at install, update or crash time, not when the app is used.
+fn helper(exe: &str) -> bool {
+    const START: &[&str] = &["unins", "setup", "install", "vc_redist", "vcredist", "dxsetup", "dotnet", "ndp4", "oalinst", "physx", "ue4prereq", "ueprereq", "update"];
+    const ANYWHERE: &[&str] = &["uninstall", "updater", "crash", "bugreport", "redist", "prereq", "elevat", "helper", "repair"];
+    START.iter().any(|p| exe.starts_with(p)) || ANYWHERE.iter().any(|p| exe.contains(p))
+}
+
+/// Prefetch keeps the first 29 characters of a program's name; every source is matched on that.
+fn run_key(exe: &str) -> String {
+    exe.chars().take(29).collect()
+}
 
 /// Lower-case `.exe` names in the first `depth` levels below node `n`.
 fn programs_in(tree: &Tree, n: usize, depth: usize) -> Vec<String> {
@@ -183,12 +229,13 @@ fn programs_in(tree: &Tree, n: usize, depth: usize) -> Vec<String> {
 fn program_runs() -> HashMap<String, (SystemTime, UsedFrom)> {
     let mut out: HashMap<String, (SystemTime, UsedFrom)> = HashMap::new();
     let mut add = |name: String, t: SystemTime, from: UsedFrom| {
-        let e = out.entry(name).or_insert((t, from));
+        let e = out.entry(run_key(&name)).or_insert((t, from));
         if t > e.0 {
             *e = (t, from);
         }
     };
     // Prefetch: NAME.EXE-1A2B3C4D.pf, modified when the program last started
+    let mut prefetch = Vec::new();
     if let Some(dir) = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("Prefetch")) {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
@@ -196,9 +243,18 @@ fn program_runs() -> HashMap<String, (SystemTime, UsedFrom)> {
                 let Some(stem) = name.strip_suffix(".pf") else { continue };
                 let Some((exe, _)) = stem.rsplit_once('-') else { continue };
                 if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
-                    add(exe.to_string(), t, UsedFrom::Prefetch);
+                    prefetch.push((exe.to_string(), t));
                 }
             }
+        }
+    }
+    // Only while Windows keeps it up to date: with Prefetch turned off the files stop changing,
+    // and every app would look unused since then.
+    let newest = prefetch.iter().map(|&(_, t)| t).max();
+    let fresh = newest.and_then(|t| SystemTime::now().duration_since(t).ok()).is_some_and(|age| age.as_secs() < 14 * 86_400);
+    if fresh {
+        for (exe, t) in prefetch {
+            add(exe, t, UsedFrom::Prefetch);
         }
     }
     #[cfg(windows)]
@@ -271,7 +327,8 @@ mod sources {
                     let p = clean_path(icon)?;
                     let dir = p.parent()?.to_path_buf();
                     let segs = segments(&dir.to_string_lossy());
-                    (segs.len() >= 3 && segs[1] != "windows" && segs[1] != "programdata").then_some(dir)
+                    let per_user_app = segs.len() >= 7 && segs[3] == "appdata" && segs[4] == "local" && segs[5] == "programs";
+                    (segs.len() >= 3 && segs[1] != "windows" && segs[1] != "programdata" && (segs[1] != "users" || per_user_app)).then_some(dir)
                 });
                 let Some(loc) = loc else { continue };
                 if out.iter().any(|a| a.name == name && a.locations.first() == Some(&loc)) {
@@ -358,6 +415,10 @@ mod sources {
         for id in k.subkeys() {
             let Some(e) = k.sub(&id) else { continue };
             let (Some(name), Some(loc)) = (e.string("DistributionName"), e.string("BasePath").and_then(|p| clean_path(&p))) else { continue };
+            // it is put into command text, so only a plain name
+            if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
+                continue;
+            }
             out.push(App {
                 how_to_remove: format!("'wsl --unregister {name}' deletes the distribution and every file in it; back it up first with 'wsl --export {name} <file>'"),
                 name: format!("{name} (WSL)"),
@@ -447,10 +508,19 @@ pub(crate) mod steam {
     /// Every `"key" "value"` pair, keys lower-cased, first one wins.
     pub(crate) fn pairs(text: &str) -> HashMap<String, String> {
         let t = tokens(text);
+        let brace = |s: &str| s == "{" || s == "}";
         let mut out = HashMap::new();
-        for w in t.windows(2) {
-            if w[0] != "{" && w[0] != "}" && w[1] != "{" && w[1] != "}" {
-                out.entry(w[0].to_lowercase()).or_insert_with(|| w[1].clone());
+        let mut i = 0;
+        while i < t.len() {
+            if brace(&t[i]) {
+                i += 1;
+            } else if i + 1 < t.len() && !brace(&t[i + 1]) {
+                // "key" "value": a value never starts the next pair
+                out.entry(t[i].to_lowercase()).or_insert_with(|| t[i + 1].clone());
+                i += 2;
+            } else {
+                // "section" { ... }
+                i += 1;
             }
         }
         out
@@ -570,12 +640,17 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
     for app in &facts.apps {
         let Some((when, from)) = app.last_used else { continue };
         let Ok(age) = now.duration_since(when) else { continue };
-        if age.as_secs() < days * 86_400 || app.kind == AppKind::Wsl || from == UsedFrom::UserAssist {
+        if age.as_secs() < days.saturating_mul(86_400) || app.kind == AppKind::Wsl || from == UsedFrom::UserAssist {
             continue;
         }
+        // compared by lower-case segments: Steam writes its own path in lower case
+        let mine: Vec<Vec<String>> = app.locations.iter().map(|l| segments(&l.to_string_lossy())).collect();
         let holds_others = facts.apps.iter().any(|other| {
             !std::ptr::eq(other, app)
-                && other.locations.iter().any(|o| app.locations.iter().any(|l| o != l && o.starts_with(l)))
+                && other.locations.iter().any(|o| {
+                    let o = segments(&o.to_string_lossy());
+                    mine.iter().any(|l| o.len() > l.len() && o[..l.len()] == l[..])
+                })
         });
         if holds_others {
             continue;
@@ -586,7 +661,10 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
         if total < min_bytes {
             continue;
         }
-        let mut evidence = vec![format!("Last used in {} (from {})", month_year(when), from.label())];
+        let mut evidence = vec![match from {
+            UsedFrom::Steam => format!("Last played in {} (from Steam)", month_year(when)),
+            _ => format!("No program in its folder has started since {} (from {})", month_year(when), from.label()),
+        }];
         if found.len() > 1 {
             evidence.push(format!("{} folders in all; uninstalling removes them together", found.len()));
         }
@@ -639,6 +717,42 @@ mod tests {
         }
         let vdf = r#""libraryfolders" { "0" { "path" "C:\\Program Files (x86)\\Steam" } "1" { "path" "D:\\SteamLibrary" } }"#;
         assert_eq!(steam::library_paths(vdf), vec![PathBuf::from(r"C:\Program Files (x86)\Steam"), PathBuf::from(r"D:\SteamLibrary")]);
+    }
+
+    #[test]
+    fn what_an_app_can_own() {
+        let own = |p: &str| ownable(&segments(p));
+        for no in [
+            r"C:\",
+            r"C:\Program Files",
+            r"C:\Program Files\Common Files",
+            r"C:\ProgramData\Microsoft",
+            r"C:\Windows\System32",
+            r"C:\Users\sam",
+            r"C:\Users\sam\Documents",
+            r"C:\Users\sam\Downloads",
+            r"C:\Users\sam\.vscode",
+            r"C:\Users\sam\AppData\Local",
+            r"C:\Users\sam\AppData\Local\Programs",
+            r"C:\Users\sam\AppData\Roaming\Microsoft",
+        ] {
+            assert!(!own(no), "{no} must not belong to one app");
+        }
+        for yes in [r"C:\Program Files\Blender", r"D:\Tools", r"C:\Users\sam\AppData\Local\Programs\Obsidian", r"C:\Users\sam\AppData\Local\Discord", r"C:\Users\sam\Documents\My Games\X"] {
+            assert!(own(yes), "{yes} can belong to an app");
+        }
+        assert!(helper("unins000.exe") && helper("vc_redist.x64.exe") && helper("crashhandler.exe") && !helper("blender.exe"));
+        assert_eq!(run_key("averyveryverylongprogramname.exe"), "averyveryverylongprogramname.");
+        assert_eq!(clean_text("Evil\u{202e}gnp.exe\u{0007}"), "Evilgnp.exe");
+    }
+
+    #[test]
+    fn vdf_values_never_start_a_pair() {
+        // a game called "installdir" must not shift the fields after it
+        let kv = steam::pairs(r#""AppState" { "appid" "1" "name" "installdir" "installdir" "Real" "LastPlayed" "5" }"#);
+        assert_eq!(kv.get("installdir").map(String::as_str), Some("Real"));
+        assert_eq!(kv.get("name").map(String::as_str), Some("installdir"));
+        assert_eq!(kv.get("lastplayed").map(String::as_str), Some("5"));
     }
 
     #[test]

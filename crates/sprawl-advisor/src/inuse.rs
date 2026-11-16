@@ -26,9 +26,9 @@ pub fn files_under(tree: &Tree, n: usize, cap: usize) -> Vec<PathBuf> {
     out
 }
 
-/// Names of the programs that have any of `files` open (empty when none, or when Windows
-/// couldn't say).
-pub fn in_use(files: &[PathBuf]) -> Vec<String> {
+/// Names of the programs that have any of `files` open (empty when none), or `None` when
+/// Windows couldn't say.
+pub fn in_use(files: &[PathBuf]) -> Option<Vec<String>> {
     #[cfg(windows)]
     {
         rm::list(files)
@@ -36,13 +36,26 @@ pub fn in_use(files: &[PathBuf]) -> Vec<String> {
     #[cfg(not(windows))]
     {
         let _ = files;
-        Vec::new()
+        None
     }
 }
 
-/// [`in_use`] for everything under node `n` (the first 10,000 files).
-pub fn in_use_under(tree: &Tree, n: usize) -> Vec<String> {
-    in_use(&files_under(tree, n, 10_000))
+/// The answer for a folder.
+#[derive(Clone, Debug)]
+pub struct Checked {
+    pub names: Vec<String>,
+    /// Every file was asked about (there are at most [`MAX_FILES`]).
+    pub all_files: bool,
+}
+
+pub const MAX_FILES: usize = 10_000;
+
+/// [`in_use`] for everything under node `n` (the first [`MAX_FILES`] files).
+pub fn in_use_under(tree: &Tree, n: usize) -> Option<Checked> {
+    let mut files = files_under(tree, n, MAX_FILES + 1);
+    let all_files = files.len() <= MAX_FILES;
+    files.truncate(MAX_FILES);
+    in_use(&files).map(|names| Checked { names, all_files })
 }
 
 #[cfg(windows)]
@@ -85,24 +98,25 @@ mod rm {
         }
     }
 
-    pub(super) fn list(files: &[PathBuf]) -> Vec<String> {
+    pub(super) fn list(files: &[PathBuf]) -> Option<Vec<String>> {
         if files.is_empty() {
-            return Vec::new();
+            return Some(Vec::new());
         }
         let mut handle = 0u32;
         let mut key = [0u16; 33];
         if unsafe { RmStartSession(&mut handle, 0, key.as_mut_ptr()) } != 0 {
-            return Vec::new();
+            return None;
         }
         let session = Session(handle);
         let wide: Vec<Vec<u16>> = files.iter().map(|p| wide(p)).collect();
         for chunk in wide.chunks(1000) {
             let ptrs: Vec<*const u16> = chunk.iter().map(|w| w.as_ptr()).collect();
             if unsafe { RmRegisterResources(session.0, ptrs.len() as u32, ptrs.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null()) } != 0 {
-                return Vec::new();
+                return None;
             }
         }
         let mut infos: Vec<ProcessInfo> = Vec::new();
+        let mut answered = false;
         for _ in 0..3 {
             let mut needed = 0u32;
             let mut count = infos.capacity() as u32;
@@ -111,11 +125,15 @@ mod rm {
             match r {
                 0 => {
                     unsafe { infos.set_len(count.min(infos.capacity() as u32) as usize) };
+                    answered = true;
                     break;
                 }
                 234 => infos = Vec::with_capacity(needed as usize + 4), // ERROR_MORE_DATA
-                _ => return Vec::new(),
+                _ => return None,
             }
+        }
+        if !answered {
+            return None;
         }
         let mut names: Vec<String> = infos
             .iter()
@@ -127,7 +145,7 @@ mod rm {
             .collect();
         names.sort();
         names.dedup();
-        names
+        Some(names)
     }
 
     fn wide(p: &Path) -> Vec<u16> {
@@ -143,10 +161,10 @@ mod tests {
     fn open_file_is_reported() {
         let p = std::env::temp_dir().join(format!("sprawl-inuse-{}.txt", std::process::id()));
         std::fs::write(&p, b"x").unwrap();
-        assert!(in_use(&[p.clone()]).is_empty(), "nobody has it open");
+        assert!(in_use(&[p.clone()]).unwrap().is_empty(), "nobody has it open");
         let _keep = std::fs::File::open(&p).unwrap();
         // the test process itself holds it now
-        assert!(!in_use(&[p.clone()]).is_empty());
+        assert!(!in_use(&[p.clone()]).unwrap().is_empty());
         drop(_keep);
         let _ = std::fs::remove_file(&p);
         let _ = Path::new("");

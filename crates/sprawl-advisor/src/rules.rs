@@ -328,13 +328,19 @@ pub fn ps_quote(s: &str) -> String {
     out
 }
 
+/// PowerShell function that deletes one item: a junction or symbolic link is removed itself,
+/// never followed (even one made after the scan); a folder is emptied the same way first.
+/// `Remove-Item -Recurse` and .NET Framework's `Directory.Delete(path, true)` can't be trusted
+/// with links in Windows PowerShell 5.1. Built-in rules repeat it word for word (tested).
+pub const RM_FN: &str = "function sprawl-rm($i) { if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { Remove-Item -LiteralPath $i.FullName -Force } }";
+
 fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     let path: PathBuf = tree.path_of(n);
     let quoted = ps_quote(&path.display().to_string());
     let command = match (&rule.command, rule.remedy) {
         (Some(c), _) => Some(c.replace("{path}", &quoted)),
         (None, Remedy::Delete) => Some(if tree.nodes[n].is_dir {
-            format!("Get-ChildItem -LiteralPath {quoted} -Force | Remove-Item -Recurse -Force")
+            format!("{RM_FN}; Get-ChildItem -LiteralPath {quoted} -Force | ForEach-Object {{ sprawl-rm $_ }}")
         } else {
             format!("Remove-Item -LiteralPath {quoted} -Force")
         }),
@@ -425,6 +431,12 @@ mod tests {
                     assert!(c.contains("{path}"), "{} deletes without naming {{path}}", r.id);
                 }
                 assert_eq!(r.remedy, Remedy::Command, "{} has a command but isn't a command remedy", r.id);
+                // recursive deletes follow links planted later; sprawl-rm doesn't
+                let recursive_remove = c.split(['|', ';']).any(|part| part.contains("Remove-Item") && part.contains("-Recurse"));
+                assert!(!recursive_remove && !c.contains(", $true)"), "{} deletes recursively: {c}", r.id);
+                if c.contains("sprawl-rm") {
+                    assert!(c.starts_with(&format!("{RM_FN}; ")), "{}: sprawl-rm differs from RM_FN", r.id);
+                }
             }
             if matches!(r.remedy, Remedy::Info) {
                 assert!(r.command.is_none(), "{} is info only", r.id);

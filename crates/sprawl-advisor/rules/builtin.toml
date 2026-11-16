@@ -101,11 +101,11 @@ why = "Package archives and unused packages Conda keeps. Environments keep worki
 id = "dev.huggingface"
 title = "Hugging Face model cache"
 owner = "Hugging Face"
-paths = ['%SystemDrive%\Users\*\.cache\huggingface']
+paths = ['%SystemDrive%\Users\*\.cache\huggingface\hub', '%SystemDrive%\Users\*\.cache\huggingface\datasets']
 risk = "amber"
 remedy = "delete"
 min_bytes = 1073741824
-why = "AI models and datasets downloaded by Python tools. They are downloaded again when used, which can be many GB."
+why = "AI models and datasets downloaded by Python tools (your login token is kept). They are downloaded again when used, which can be many GB."
 
 [[rule]]
 id = "dev.vscode-cache"
@@ -187,18 +187,18 @@ risk = "amber"
 remedy = "delete"
 min_bytes = 52428800
 min_age_days = 90
-why = "A setup program you downloaded over three months ago. The app is installed (or not wanted); a current installer can be downloaded again."
+why = "A large program in Downloads, unchanged for over three months. If it was a setup program you ran (or don't need), a current one can be downloaded again. If it is a portable app you still use, keep it."
 
 [[rule]]
 id = "user.disc-images"
 title = "Disc image"
-paths = ['%SystemDrive%\Users\*\Downloads\*.iso', '%SystemDrive%\Users\*\Downloads\*.img']
+paths = ['%SystemDrive%\Users\*\Downloads\*.iso']
 kind = "file"
 risk = "amber"
 remedy = "delete"
 min_bytes = 524288000
 min_age_days = 30
-why = "A disc image you downloaded, usually to install something once."
+why = "A disc image in Downloads, often used once to install something. Keep it if you made it yourself or can't download it again."
 
 # ------------------------------------------------------------------ virtual disks (information only)
 
@@ -211,7 +211,7 @@ kind = "file"
 risk = "orange"
 remedy = "info"
 min_bytes = 2147483648
-why = "The disk of a Linux distribution. It grows but never shrinks by itself: delete files inside Linux, then run 'wsl --shutdown' and 'wsl --manage <distro> --set-sparse true' to give the space back. Never delete the file: that deletes the whole distribution."
+why = "The disk of a Linux distribution. It grows but never shrinks by itself: delete files inside Linux, then run 'wsl --shutdown' and compact the file with Optimize-VHD (Hyper-V) or diskpart's 'compact vdisk' to give the space back. Never delete the file: that deletes the whole distribution."
 
 [[rule]]
 id = "vm.docker-disk"
@@ -231,8 +231,9 @@ id = "win.user-temp"
 title = "Temporary files"
 paths = ['%SystemDrive%\Users\*\AppData\Local\Temp']
 risk = "green"
-remedy = "delete"
-why = "Files apps left in the temporary folder. Files still in use can't be deleted and are skipped."
+remedy = "command"
+command = "function sprawl-rm($i) { if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { Remove-Item -LiteralPath $i.FullName -Force } }; Get-ChildItem -LiteralPath {path} -Force | Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | ForEach-Object { sprawl-rm $_ }"
+why = "Files apps left in the temporary folder, untouched for a week. Newer ones may still be needed by a running installer and stay. Files in use are skipped."
 
 [[rule]]
 id = "win.crash-dumps"
@@ -251,7 +252,7 @@ paths = ['%SystemRoot%\Minidump', '%SystemRoot%\MEMORY.DMP']
 kind = "any"
 risk = "green"
 remedy = "command"
-command = "Remove-Item -LiteralPath {path} -Recurse -Force   # as administrator"
+command = "function sprawl-rm($i) { if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { Remove-Item -LiteralPath $i.FullName -Force } }; sprawl-rm (Get-Item -LiteralPath {path} -Force)   # as administrator"
 allow_protected = true
 min_bytes = 10485760
 why = "Memory dumps Windows wrote when it crashed (blue screens). Only useful for debugging those crashes."
@@ -263,10 +264,10 @@ owner = "Windows"
 paths = ['%SystemRoot%\Temp']
 risk = "green"
 remedy = "command"
-command = "Get-ChildItem -LiteralPath {path} -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue   # as administrator"
+command = "function sprawl-rm($i) { if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { Remove-Item -LiteralPath $i.FullName -Force } }; Get-ChildItem -LiteralPath {path} -Force | Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | ForEach-Object { sprawl-rm $_ }   # as administrator"
 allow_protected = true
 min_bytes = 104857600
-why = "Files Windows and installers left in the system temporary folder. Files still in use are skipped."
+why = "Files Windows and installers left in the system temporary folder, untouched for a week. Files in use are skipped."
 
 [[rule]]
 id = "win.live-kernel-reports"
@@ -287,7 +288,7 @@ owner = "Windows"
 paths = ['%ProgramData%\Microsoft\Windows\WER\ReportArchive', '%ProgramData%\Microsoft\Windows\WER\ReportQueue']
 risk = "green"
 remedy = "command"
-command = "Get-ChildItem -LiteralPath {path} -Force | Remove-Item -Recurse -Force   # as administrator"
+command = "function sprawl-rm($i) { if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { Remove-Item -LiteralPath $i.FullName -Force } }; Get-ChildItem -LiteralPath {path} -Force | ForEach-Object { sprawl-rm $_ }   # as administrator"
 allow_protected = true
 min_bytes = 52428800
 why = "Crash reports that were sent to Microsoft or are waiting to be sent. Nothing uses them afterwards."

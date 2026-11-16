@@ -50,7 +50,15 @@ pub(crate) struct Report {
 enum Msg {
     Report(Box<Report>),
     Hidden(usize, Option<HiddenSpace>),
-    InUse(usize, Vec<String>),
+    InUse(usize, InUse),
+}
+
+/// The in-use check of an opened finding.
+#[derive(Clone)]
+enum InUse {
+    Checking,
+    /// `None`: Windows couldn't say.
+    Done(Option<sprawl_advisor::inuse::Checked>),
 }
 
 #[derive(Default)]
@@ -64,7 +72,7 @@ pub(crate) struct Advisor {
     note: Option<&'static str>,
     open: Option<usize>,
     /// (finding, programs that have its files open); `None` inside while checking.
-    in_use: Option<(usize, Option<Vec<String>>)>,
+    in_use: Option<(usize, InUse)>,
     pub(crate) lens_mode: Lens,
     show_held: bool,
 }
@@ -210,9 +218,9 @@ impl State {
                         r.hidden = h;
                     }
                 }
-                Msg::InUse(i, names) => {
+                Msg::InUse(i, answer) => {
                     if self.advisor.in_use.as_ref().is_some_and(|(j, _)| *j == i) {
-                        self.advisor.in_use = Some((i, Some(names)));
+                        self.advisor.in_use = Some((i, answer));
                     }
                 }
             }
@@ -286,9 +294,9 @@ impl State {
             self.selected = Some(n);
             let removes = self.advice().is_some_and(|r| matches!(r.findings[i].remedy, Remedy::Delete | Remedy::Command));
             if let (true, Some(t), Some(tx)) = (removes, self.tree.clone(), self.advisor.tx.clone()) {
-                self.advisor.in_use = Some((i, None));
+                self.advisor.in_use = Some((i, InUse::Checking));
                 std::thread::spawn(move || {
-                    let _ = tx.send(Msg::InUse(i, sprawl_advisor::inuse::in_use_under(&t, n)));
+                    let _ = tx.send(Msg::InUse(i, InUse::Done(sprawl_advisor::inuse::in_use_under(&t, n))));
                 });
             }
         }
@@ -438,10 +446,18 @@ impl State {
             x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="• {}"/>"##, ui::esc(e));
         }
         x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
+        let line = |colour: &str, text: &str| format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{colour}" Text="{}"/>"##, ui::esc(text));
         match &self.advisor.in_use {
-            Some((j, None)) if *j == i => x += r##"<TextBlock FontSize="12" Foreground="#FF8E97AA" Text="Checking which programs use it..."/>"##,
-            Some((j, Some(names))) if *j == i && !names.is_empty() => {
-                x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342" Text="In use by {}: close it first, or files still open are skipped."/>"##, ui::esc(&names.join(", ")))
+            Some((j, state)) if *j == i => {
+                x += &match state {
+                    InUse::Checking => line("#FF8E97AA", "Checking which programs use it..."),
+                    InUse::Done(None) => line("#FF8E97AA", "Couldn't check which programs use it."),
+                    InUse::Done(Some(c)) if !c.names.is_empty() => {
+                        line("#FFF5B342", &format!("In use by {}: close it first, or files still open are skipped.", c.names.join(", ")))
+                    }
+                    InUse::Done(Some(c)) if c.all_files => line("#FF8E97AA", "No program has its files open."),
+                    InUse::Done(Some(_)) => line("#FF8E97AA", "No program has the first 10,000 of its files open."),
+                }
             }
             _ => {}
         }

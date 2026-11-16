@@ -85,8 +85,11 @@ pub fn account(tree: &Tree, shadow_bytes: Option<u64>) -> Option<HiddenSpace> {
 /// `None` otherwise. Starts PowerShell, so it takes a second or two: call it off the UI thread.
 pub fn shadow_storage(root: &Path) -> Option<u64> {
     let volume = volume_guid(root)?;
-    let script = "Get-CimInstance Win32_ShadowStorage -ErrorAction Stop | ForEach-Object { $_.Volume.DeviceID + '|' + $_.UsedSpace }";
-    let out = run_hidden("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script], 15)?;
+    // DiffVolume: the drive the copies' space is taken from
+    let script = "Get-CimInstance Win32_ShadowStorage -ErrorAction Stop | ForEach-Object { $_.DiffVolume.DeviceID + '|' + $_.UsedSpace }";
+    // by full path: Sprawl may run as administrator, so never a powershell.exe found elsewhere
+    let exe = std::path::PathBuf::from(std::env::var_os("SystemRoot")?).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let out = run_hidden(&exe.to_string_lossy(), &["-NoProfile", "-NonInteractive", "-Command", script], 15)?;
     let mut sum = None;
     for line in out.lines() {
         let Some((dev, used)) = line.trim().rsplit_once('|') else { continue };
@@ -94,8 +97,9 @@ pub fn shadow_storage(root: &Path) -> Option<u64> {
             *sum.get_or_insert(0u64) += used.trim().parse::<u64>().ok()?;
         }
     }
-    // the query worked but listed nothing for this drive: no shadow copies
-    sum.or_else(|| (!out.contains("Access denied")).then_some(0))
+    // the query worked (it fails without administrator rights) but listed nothing for this
+    // drive: no shadow copies
+    sum.or(Some(0))
 }
 
 /// Run a program without a window and return its output, or `None` after `secs` seconds.

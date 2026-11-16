@@ -595,11 +595,12 @@ mod tests {
 
     #[test]
     fn header_hit_test() {
-        // fixed 118+92+92+84+84 = 470; a 1000 wide header leaves 530 for the name column
+        // fixed 118+92+92+84+84+150 = 620; a 1000 wide header leaves 380 for the name column
         assert_eq!(col_at(TREE, 1000.0, 10.0), Some(0));
-        assert_eq!(col_at(TREE, 1000.0, 529.0), Some(0));
-        assert_eq!(col_at(TREE, 1000.0, 531.0), Some(1));
-        assert_eq!(col_at(TREE, 1000.0, 999.0), Some(5));
+        assert_eq!(col_at(TREE, 1000.0, 379.0), Some(0));
+        assert_eq!(col_at(TREE, 1000.0, 381.0), Some(1));
+        assert_eq!(col_at(TREE, 1000.0, 849.0), Some(5));
+        assert_eq!(col_at(TREE, 1000.0, 999.0), Some(6));
         assert_eq!(col_at(TREE, 1000.0, 1001.0), None);
     }
 
