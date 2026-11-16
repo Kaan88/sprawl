@@ -18,6 +18,27 @@ fn main() {
     facts.attach_usage(&tree);
     let dated = facts.apps.iter().filter(|a| a.last_used.is_some()).count();
     println!("{} apps known ({} with a last-used date) in {:.2} s", facts.apps.len(), dated, t0.elapsed().as_secs_f64());
+    let ps = sprawl_advisor::projects::find(&tree);
+    let out_bytes: u64 = ps.iter().map(|p| p.output_bytes(&tree)).sum();
+    println!("{} projects, {} of build outputs (all ages)", ps.len(), format_size(out_bytes));
+    if std::env::var_os("SPRAWL_PROJECTS").is_some() {
+        let mut outs: Vec<(u64, String)> = ps.iter().flat_map(|p| p.outputs.iter().map(|&(n, _, _)| (tree.nodes[n].size, tree.path_of(n).display().to_string()))).collect();
+        outs.sort_by(|a, b| b.0.cmp(&a.0));
+        for (b, p) in outs.iter().take(25) {
+            println!("    {:>10}  {p}", format_size(*b));
+        }
+        let mut tops: std::collections::HashMap<String, usize> = Default::default();
+        for p in &ps {
+            let path = tree.path_of(p.node).display().to_string();
+            let key: String = path.split('\\').take(3).collect::<Vec<_>>().join("\\");
+            *tops.entry(key).or_default() += 1;
+        }
+        let mut t: Vec<_> = tops.into_iter().collect();
+        t.sort_by(|a, b| b.1.cmp(&a.1));
+        for (k, c) in t.iter().take(15) {
+            println!("    {c:>6}  {k}");
+        }
+    }
     let (ok, held) = advise_all(&tree, &[RulePack::builtin()], &facts);
     let total: u64 = ok.iter().map(|f| f.bytes).sum();
     println!("{} findings, {} in total", ok.len(), format_size(total));

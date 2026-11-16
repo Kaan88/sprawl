@@ -357,7 +357,10 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
             out.evidence.push("Not from Sprawl's built-in rules, so check it yourself".into());
         }
     }
-    if never.is_user_data(&path) && out.risk < Risk::Orange {
+    // A build output found by its project's marker file is regenerable wherever it lives
+    // (projects usually sit in Documents or source); anything else in the user's folders is theirs.
+    let build_output = f.builtin && matches!(&f.source, crate::finding::Source::Rule(id) if id == "project.build-output");
+    if never.is_user_data(&path) && out.risk < Risk::Orange && !build_output {
         out.risk = Risk::Orange;
         out.evidence.push("Inside your own files, so only you can decide".into());
     }

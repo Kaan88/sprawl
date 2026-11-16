@@ -4,6 +4,7 @@
 //! anything: the output is [`Finding`]s with a remedy and a command for the user to run.
 //!
 //! * [`facts`]: which app owns a folder and when it was last used (registry, manifests).
+//! * [`projects`]: code projects, their build outputs and last activity.
 //! * [`finding`]: the schema every finding follows, from rules and (later) from a model.
 //! * [`rules`]: TOML rule packs and the engine that matches them against a tree.
 //! * [`safety`]: the never-touch list and the checks every finding must pass.
@@ -13,6 +14,7 @@ pub mod config;
 pub mod facts;
 pub mod finding;
 pub mod history;
+pub mod projects;
 pub mod rules;
 pub mod safety;
 pub mod snapshot;
@@ -80,6 +82,9 @@ pub fn advise(tree: &Tree, packs: &[RulePack]) -> (Vec<Finding>, Vec<(Finding, s
 /// Apps unused for this long are suggested for removal.
 pub const UNUSED_DAYS: u64 = 180;
 
+/// Build outputs of projects untouched for this long are suggested.
+pub const PROJECT_IDLE_DAYS: u64 = 30;
+
 /// Everything Rust can say without a model: rule findings (with their owner app filled in) and
 /// apps not used for [`UNUSED_DAYS`], all through the safety checks. A path is reported once.
 pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec<Finding>, Vec<(Finding, safety::Rejection)>) {
@@ -91,7 +96,9 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         }
     }
     let mut seen: std::collections::HashSet<String> = found.iter().map(|f| f.path.to_string_lossy().to_lowercase()).collect();
-    for f in facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30) {
+    let projects = projects::find(tree);
+    let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30).into_iter().chain(projects::build_outputs(tree, &projects, PROJECT_IDLE_DAYS, 100 << 20));
+    for f in extra {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);
         }
