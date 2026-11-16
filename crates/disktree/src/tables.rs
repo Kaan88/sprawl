@@ -441,7 +441,7 @@ impl State {
     }
 
     pub(crate) fn ext_colour_hex(&self, ext: &str) -> String {
-        let (r, g, b) = self.colours.get(ext).map(|&i| paint::PALETTE[i]).unwrap_or(paint::GREY);
+        let (r, g, b) = self.colours.get(ext).map(|&i| paint::colour(i)).unwrap_or(paint::GREY);
         format!("#FF{r:02X}{g:02X}{b:02X}")
     }
 

@@ -1,7 +1,55 @@
-//! The file-type colour palette and a small dependency-free PNG writer.
+//! The file-type colour palettes and a small dependency-free PNG writer.
 
-/// Vivid colours for the biggest file types; everything else is grey (as in the original).
-pub const PALETTE: [(u8, u8, u8); 20] = [
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// How many file types get their own colour; everything else is grey (as in the original).
+pub const COUNT: usize = 20;
+
+/// The colour scheme names, in the order of the Colors menu.
+pub const PALETTES: [&str; 5] = ["Classic", "Neon", "Pastel", "Ocean", "Sunset"];
+
+static CURRENT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_palette(i: usize) {
+    CURRENT.store(i.min(PALETTES.len() - 1), Ordering::Relaxed);
+}
+
+pub fn palette() -> usize {
+    CURRENT.load(Ordering::Relaxed)
+}
+
+/// Colour for the `i`th biggest file type in the current palette.
+pub fn colour(i: usize) -> (u8, u8, u8) {
+    let i = i % COUNT;
+    let golden = |start: f32, span: f32| start + ((i as f32 * 0.618_034) % 1.0) * span;
+    match palette() {
+        1 => hsl(i as f32 * 137.5, 1.0, 0.56),
+        2 => hsl(i as f32 * 137.5, 0.62, 0.74),
+        3 => hsl(golden(165.0, 110.0), 0.75, 0.42 + (i % 4) as f32 * 0.08),
+        4 => hsl(golden(-40.0, 95.0), 0.85, 0.48 + (i % 3) as f32 * 0.08),
+        _ => CLASSIC[i],
+    }
+}
+
+fn hsl(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let h = h.rem_euclid(360.0) / 60.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let f = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    (f(r), f(g), f(b))
+}
+
+/// WizTree's own colours.
+const CLASSIC: [(u8, u8, u8); COUNT] = [
     (235, 125, 20),
     (45, 175, 65),
     (195, 205, 25),

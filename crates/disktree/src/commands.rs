@@ -6,11 +6,17 @@ use std::path::PathBuf;
 use disktree_core::ROOT;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
-use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleMenuFlyoutItem};
-use crate::bindings::Microsoft::UI::Xaml::{GridLength, GridUnitType, UIElement, Visibility};
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
+use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleMenuFlyoutItem, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::{FocusState, GridLength, GridUnitType, UIElement, Visibility};
 use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
-use crate::{ui, win32};
+
+/// Options menu switches that are remembered between runs.
+const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oAlwaysAdmin"];
+const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
+use crate::state::Source;
+use crate::{dialogs, paint, ui, win32};
 
 impl State {
     // ------------------------------------------------------------ commands
@@ -54,10 +60,56 @@ impl State {
                 }
             }
             "mSelectFolder" => {
-                if let Some(p) = win32::pick_folder(self.hwnd) {
-                    self.start_scan(PathBuf::from(p));
+                if let Some(p) = dialogs::pick_folders(self.hwnd, false).pop() {
+                    self.start_scan(p);
                 }
             }
+            "mSelectMultiple" => {
+                let v = dialogs::pick_folders(self.hwnd, true);
+                if !v.is_empty() {
+                    self.start(Source::Folders(v));
+                }
+            }
+            "mSelectCsv" => {
+                if let Some(p) = dialogs::pick_csv(self.hwnd) {
+                    self.start(Source::Csv(p));
+                }
+            }
+            "mStop" => self.stop_scan(),
+            "mReselectChild" if has_tree => {
+                if let Some(c) = self.child_stack.pop().filter(|&c| c < self.tree.as_ref().unwrap().nodes.len()) {
+                    self.reveal(c);
+                }
+            }
+            "mFilter" => {
+                if let Ok(b) = find::<UIElement>(&self.root, "FilterBox") {
+                    let _ = b.Focus(FocusState::Programmatic);
+                }
+            }
+            "mTweaks" => {
+                if let Ok(p) = find::<UIElement>(&self.root, "Tweaks") {
+                    let shown = p.Visibility().map(|v| v == Visibility::Visible).unwrap_or(false);
+                    let _ = p.SetVisibility(if shown { Visibility::Collapsed } else { Visibility::Visible });
+                }
+            }
+            "mAdmin" => {
+                let arg = self.tree.as_ref().map(|t| dialogs::quote(&t.root_path)).unwrap_or_default();
+                if disktree_core::is_elevated() {
+                    text(&self.root, "FootLeft", "DiskTree is already running as administrator.");
+                } else if dialogs::restart_elevated(self.hwnd, &arg) {
+                    std::process::exit(0);
+                }
+            }
+            "oExplorer" => {
+                let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(false);
+                let msg = match (dialogs::set_explorer_menu(on), on) {
+                    (true, true) => "Added \"Scan with DiskTree\" to the right-click menu of folders and drives.",
+                    (true, false) => "Removed \"Scan with DiskTree\" from Explorer.",
+                    (false, _) => "Couldn't change Explorer's menu.",
+                };
+                text(&self.root, "FootLeft", msg);
+            }
+            "oAlwaysAdmin" => {}
             "mNewInstance" => {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).spawn();
@@ -81,6 +133,9 @@ impl State {
             }
             "mParent" if has_tree => {
                 if let Some(p) = self.selected.and_then(|s| self.tree.as_ref().unwrap().nodes[s].parent) {
+                    if let Some(s) = self.selected {
+                        self.child_stack.push(s);
+                    }
                     self.reveal(p);
                 }
             }
@@ -212,11 +267,12 @@ impl State {
                     }
                 }
             }
-            "oAlloc" | "oCushion" | "oNames" | "oTilt" => {
+            "oAlloc" | "oCushion" | "oNames" | "oTilt" | "oFree" => {
                 let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
                 match name {
                     "oAlloc" => self.map.by_alloc = on,
-                    "oCushion" => self.map.scene.cushion = if on { 1.0 } else { 0.0 },
+                    "oFree" => self.map.show_free = on,
+                    "oCushion" => self.map.scene.cushion = if on { self.map.cushion_strength } else { 0.0 },
                     "oNames" => self.map.show_labels = on,
                     _ => self.map.scene.tilt_on = on,
                 }
@@ -227,6 +283,101 @@ impl State {
             "TabAbout" => self.set_view(View::About),
             _ => {}
         }
+        if name.starts_with('o') || name.starts_with('u') {
+            self.save_settings();
+        }
+    }
+
+    // ------------------------------------------------------------ settings
+
+    pub(crate) fn save_settings(&mut self) {
+        for &t in TOGGLES {
+            if let Ok(on) = find::<ToggleMenuFlyoutItem>(&self.root, t).and_then(|x| x.IsChecked()) {
+                self.settings.set_bool(t, on);
+            }
+        }
+        if let Some(u) = UNITS.iter().find(|u| find::<ToggleMenuFlyoutItem>(&self.root, u).and_then(|x| x.IsChecked()).unwrap_or(false)) {
+            self.settings.set("units", u);
+        }
+        self.settings.set("palette", paint::palette());
+        self.settings.set("lift", self.map.scene.lift_scale);
+        self.settings.set("cushion", self.map.cushion_strength);
+        self.settings.set("tilt", self.map.scene.tilt_amount);
+        self.settings.set_bool("animate", self.map.scene.animate);
+        self.settings.save();
+    }
+
+    /// Put the saved options back (at start-up).
+    pub(crate) fn apply_settings(&mut self) {
+        let s = &self.settings;
+        let lift = s.num("lift").unwrap_or(1.0) as f32;
+        let cushion = s.num("cushion").unwrap_or(1.0) as f32;
+        let tilt = s.num("tilt").unwrap_or(0.44) as f32;
+        let animate = s.bool("animate").unwrap_or(true);
+        let palette = s.num("palette").unwrap_or(0.0) as usize;
+        let units = s.get("units").map(str::to_string);
+        let toggles: Vec<(&str, bool)> = TOGGLES.iter().filter_map(|&t| Some((t, s.bool(t)?))).collect();
+        self.map.scene.lift_scale = lift;
+        self.map.cushion_strength = cushion;
+        self.map.scene.cushion = cushion;
+        self.map.scene.tilt_amount = tilt;
+        self.map.scene.animate = animate;
+        paint::set_palette(palette);
+        let set_range = |name: &str, v: f64| {
+            if let Ok(r) = find::<RangeBase>(&self.root, name) {
+                let _ = r.SetValue(v);
+            }
+        };
+        set_range("LiftSlider", lift as f64 * 100.0);
+        set_range("CushionSlider", cushion as f64 * 100.0);
+        set_range("TiltSlider", tilt as f64 / 0.8 * 100.0);
+        if let Ok(t) = find::<ToggleSwitch>(&self.root, "AnimSwitch") {
+            let _ = t.SetIsOn(animate);
+        }
+        if let Ok(b) = find::<Selector>(&self.root, "PaletteBox") {
+            let _ = b.SetSelectedIndex(palette as i32);
+        }
+        for (t, on) in toggles {
+            if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, t) {
+                if x.IsChecked().unwrap_or(on) != on {
+                    let _ = x.SetIsChecked(on);
+                    self.command(t);
+                }
+            }
+        }
+        if let Some(u) = units.filter(|u| UNITS.contains(&u.as_str())) {
+            if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, &u) {
+                let _ = x.SetIsChecked(true);
+            }
+            self.command(&u);
+        }
+        if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, "oExplorer") {
+            let _ = x.SetIsChecked(dialogs::explorer_menu_installed());
+        }
+    }
+
+    /// A slider, switch or list in the Colors and Tweaks panel changed.
+    pub(crate) fn tweak(&mut self, name: &str, v: f64) {
+        match name {
+            "LiftSlider" => self.map.scene.lift_scale = (v / 100.0) as f32,
+            "CushionSlider" => {
+                self.map.cushion_strength = (v / 100.0) as f32;
+                let on = find::<ToggleMenuFlyoutItem>(&self.root, "oCushion").and_then(|t| t.IsChecked()).unwrap_or(true);
+                self.map.scene.cushion = if on { self.map.cushion_strength } else { 0.0 };
+            }
+            "TiltSlider" => self.map.scene.tilt_amount = (v / 100.0 * 0.8) as f32,
+            "AnimSwitch" => self.map.scene.animate = v > 0.5,
+            "PaletteBox" => {
+                paint::set_palette(v as usize);
+                // Colours are baked into the tiles and the tables.
+                self.map.scene.clear();
+                self.refresh_rows();
+                self.refresh_exts();
+            }
+            _ => return,
+        }
+        self.render_map();
+        self.save_settings();
     }
 
     pub(crate) fn save_text(&self, base: &str, s: &str) {

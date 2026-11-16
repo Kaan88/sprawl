@@ -12,10 +12,12 @@ mod bindings;
 mod app;
 mod commands;
 mod format;
+mod dialogs;
 mod gpu;
 mod hud;
 mod paint;
 mod scene;
+mod settings;
 mod state;
 mod tables;
 mod treemap;
@@ -33,7 +35,8 @@ use app::{App, APP};
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use bindings::Windows::Foundation::Point;
 use tables::Which;
-use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, ToggleMenuFlyoutItem};
+use bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
+use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
 use bindings::Microsoft::UI::Xaml::Media::{CompositionTarget, DesktopAcrylicBackdrop, SystemBackdrop};
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
@@ -63,6 +66,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
+    "mSelectMultiple", "mSelectCsv", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oAlwaysAdmin", "oExplorer",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -80,6 +84,14 @@ const ROW_MENU: &[(&str, &str)] = &[
 
 pub(crate) fn launch() -> windows_core::Result<()> {
     let a = args();
+    let settings = settings::Settings::load();
+    // "Always run as administrator": come back elevated (the UAC prompt shows) and quit this copy.
+    if a.shot.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !disktree_core::is_elevated() {
+        let args: Vec<String> = std::env::args_os().skip(1).map(|x| dialogs::quote(std::path::Path::new(&x))).collect();
+        if dialogs::restart_elevated(0, &args.join(" ")) {
+            std::process::exit(0);
+        }
+    }
     let drives = win32::drives();
     let labels: Vec<String> = drives.iter().map(|d| format!("[{}] {}", d.root.trim_end_matches('\\'), d.label)).collect();
 
@@ -219,6 +231,30 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             let _ = e.SetHandled(true);
         }
     })?);
+    // Filter box and the Colors and Tweaks panel.
+    keep(find::<TextBox>(&root, "FilterBox")?.TextChanged(|s, _| {
+        let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
+        let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
+        with(|st| st.filter_changed(v));
+    })?);
+    for name in ["LiftSlider", "CushionSlider", "TiltSlider"] {
+        keep(find::<RangeBase>(&root, name)?.ValueChanged(move |_, e| {
+            let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
+            with(|st| st.tweak(name, v));
+        })?);
+    }
+    keep(find::<ToggleSwitch>(&root, "AnimSwitch")?.Toggled(|s, _| {
+        let on = s.as_ref().and_then(|s| s.cast::<ToggleSwitch>().ok()).and_then(|t| t.IsOn().ok()).unwrap_or(true);
+        with(|st| st.tweak("AnimSwitch", if on { 1.0 } else { 0.0 }));
+    })?);
+    keep(find::<Selector>(&root, "PaletteBox")?.SelectionChanged(|s, _| {
+        let i = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).unwrap_or(0);
+        with(|st| st.tweak("PaletteBox", i.max(0) as f64));
+    })?);
+    keep(find::<ButtonBase>(&root, "TweaksClose")?.Click(|_, _| {
+        with(|st| st.command("mTweaks"));
+    })?);
+
     // The row menu's items reuse the File menu's commands.
     for (item, cmd) in ROW_MENU {
         if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {
@@ -250,6 +286,12 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         colours: HashMap::new(),
         ext_selected: None,
         tables: tables::Tables::default(),
+        full_tree: None,
+        filter: String::new(),
+        filter_text: String::new(),
+        filter_pending: None,
+        child_stack: Vec::new(),
+        settings,
         map_root: ROOT,
         map: treemap::MapView::new(panel),
         hud: hud::Hud::default(),
@@ -262,6 +304,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     };
     STATE.with(|s| *s.borrow_mut() = Some(state));
     with(|s| {
+        s.apply_settings();
         if let Some(f) = first {
             s.start_scan(f);
         } else if let Some(c) = s.drives.first().cloned() {

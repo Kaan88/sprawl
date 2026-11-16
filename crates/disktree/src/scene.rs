@@ -61,6 +61,8 @@ pub struct Scene {
     pub tilt_on: bool,
     pub cushion: f32,
     pub lift_scale: f32,
+    /// Camera tilt in radians when 3D is on.
+    pub tilt_amount: f32,
     pub animate: bool,
     tilt: f32,
     yaw: f32,
@@ -90,6 +92,7 @@ impl Default for Scene {
             tilt_on: true,
             cushion: 1.0,
             lift_scale: 1.0,
+            tilt_amount: 0.44,
             animate: true,
             tilt: 0.44,
             yaw: 0.0,
@@ -103,6 +106,8 @@ impl Default for Scene {
 
 const IDENTITY: [f32; 16] = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
 const HEADER: f32 = 15.0;
+/// Node id of the free-space tile shown next to a drive's contents.
+pub const FREE: usize = u32::MAX as usize;
 
 impl Scene {
     pub fn clear(&mut self) {
@@ -116,7 +121,7 @@ impl Scene {
 
     /// Lay out `root` of `tree` into the panel, weighting each node with `weight` (0 = hidden).
     /// Existing tiles glide to their new places; new ones grow from their centre.
-    pub fn relayout(&mut self, tree: &Tree, root: usize, weight: &dyn Fn(usize) -> u64, info: &dyn Fn(usize) -> Info) {
+    pub fn relayout(&mut self, tree: &Tree, root: usize, weight: &dyn Fn(usize) -> u64, info: &dyn Fn(usize) -> Info, free: Option<u64>) {
         for a in &mut self.anims {
             a.present = false;
         }
@@ -149,9 +154,19 @@ impl Scene {
             }
             let mut kids: Vec<usize> = node.children.iter().copied().filter(|&c| weight(c) > 0).collect();
             kids.sort_by_key(|&c| std::cmp::Reverse(weight(c)));
-            let sizes: Vec<f64> = kids.iter().map(|&c| weight(c) as f64).collect();
+            let mut sizes: Vec<f64> = kids.iter().map(|&c| weight(c) as f64).collect();
+            if let Some(f) = free.filter(|&f| d == 0 && f > 0) {
+                // squarify wants biggest first
+                let at = sizes.iter().position(|&s| s < f as f64).unwrap_or(sizes.len());
+                sizes.insert(at, f as f64);
+                kids.insert(at, FREE);
+            }
             let rects = squarify(&sizes, Rect::new(ix, iy, iw, ih));
             for (&c, cr) in kids.iter().zip(rects).rev() {
+                if c == FREE {
+                    self.place(FREE, n, false, 1, false, cr, info);
+                    continue;
+                }
                 if cr.w >= 0.7 && cr.h >= 0.7 {
                     stack.push((c, cr, d.saturating_add(1)));
                 }
@@ -250,11 +265,13 @@ impl Scene {
 
     // ------------------------------------------------------------ camera
 
-    fn camera(&mut self, dt: f32) {
+    /// Ease the camera towards its target; true while it is still moving.
+    fn camera(&mut self, dt: f32) -> bool {
         let (mx, my) = self.mouse_rel;
-        let tt = if self.tilt_on { 0.44 + (my - 0.5) * 0.08 } else { 0.0 };
+        let tt = if self.tilt_on { self.tilt_amount + (my - 0.5) * 0.08 } else { 0.0 };
         let ty = if self.tilt_on { (mx - 0.5) * 0.16 } else { 0.0 };
         let k = if self.animate { (dt * 4.0).min(1.0) } else { 1.0 };
+        let still = (tt - self.tilt).abs() + (ty - self.yaw).abs() > 1e-4;
         self.tilt += (tt - self.tilt) * k;
         self.yaw += (ty - self.yaw) * k;
         let (w, h) = (self.w.max(1.0), self.h.max(1.0));
@@ -281,6 +298,7 @@ impl Scene {
         self.vp = m;
         self.ivp = invert(&m).unwrap_or(IDENTITY);
         self.eye = e;
+        still
     }
 
     /// Screen DIPs of a layout point at height `z`.
@@ -355,7 +373,7 @@ impl Scene {
     /// everything has come to rest (nothing needs drawing until something changes).
     pub fn update(&mut self, dt: f32) -> bool {
         self.time += dt;
-        self.camera(dt);
+        let cam_moving = self.camera(dt);
         let k_pos = if self.animate { (dt * 9.0).min(1.0) } else { 1.0 };
         let wave_t = self.wave.map(|t0| self.time - t0);
         if wave_t.is_some_and(|t| t > 3.0) {
@@ -474,7 +492,7 @@ impl Scene {
         if self.wave.is_some() || self.mouse.is_some() && self.animate {
             moving = true;
         }
-        if moving {
+        if moving || cam_moving {
             self.settled_frames = 0;
         } else {
             self.settled_frames += 1;
@@ -604,7 +622,7 @@ mod tests {
     #[test]
     fn unproject_inverts_project() {
         let mut s = Scene { w: 1200.0, h: 400.0, ..Default::default() };
-        s.camera(1.0);
+        let _ = s.camera(1.0);
         for &(x, y) in &[(10.0, 10.0), (600.0, 200.0), (1100.0, 390.0)] {
             let (px, py) = s.project(x, y, 0.0);
             let (bx, by) = s.unproject(px, py);

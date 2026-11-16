@@ -15,6 +15,7 @@ use crate::bindings::Microsoft::UI::Xaml::Markup::XamlReader;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, Window};
 use crate::format::thousands;
 use crate::hud::{Hud, Live};
+use crate::settings::Settings;
 use crate::treemap::{LiveMap, MapView};
 use crate::{paint, win32};
 
@@ -43,8 +44,15 @@ pub(crate) struct ExtRow {
     pub(crate) percent: f64,
 }
 
+/// What to scan.
+pub(crate) enum Source {
+    Folders(Vec<PathBuf>),
+    Csv(PathBuf),
+}
+
 pub(crate) struct Job {
     pub(crate) path: PathBuf,
+    pub(crate) csv: bool,
     pub(crate) progress: Arc<Progress>,
     pub(crate) result: Arc<Mutex<Option<std::io::Result<Tree>>>>,
     pub(crate) started: Instant,
@@ -76,6 +84,14 @@ pub(crate) struct State {
     pub(crate) colours: HashMap<String, usize>,
     pub(crate) ext_selected: Option<String>,
     pub(crate) tables: crate::tables::Tables,
+    /// The unfiltered scan while a filter is on.
+    pub(crate) full_tree: Option<Tree>,
+    pub(crate) filter: String,
+    pub(crate) filter_text: String,
+    pub(crate) filter_pending: Option<Instant>,
+    /// Selections left by Select Parent, for Reselect Child.
+    pub(crate) child_stack: Vec<usize>,
+    pub(crate) settings: Settings,
     pub(crate) map_root: usize,
     pub(crate) map: MapView,
     pub(crate) hud: Hud,
@@ -143,17 +159,31 @@ impl State {
     // ------------------------------------------------------------ scanning
 
     pub(crate) fn start_scan(&mut self, path: PathBuf) {
+        self.start(Source::Folders(vec![path]));
+    }
+
+    pub(crate) fn start(&mut self, source: Source) {
         if self.job.is_some() {
             return;
         }
+        let (path, csv) = match &source {
+            Source::Folders(v) if v.len() == 1 => (v[0].clone(), false),
+            Source::Folders(v) if v.is_empty() => return,
+            Source::Folders(_) => (PathBuf::from(disktree_core::MULTIPLE), false),
+            Source::Csv(p) => (p.clone(), true),
+        };
         let progress = Progress::new();
         let result = Arc::new(Mutex::new(None));
-        let (g2, r2, p2) = (progress.clone(), result.clone(), path.clone());
+        let (g2, r2) = (progress.clone(), result.clone());
         std::thread::spawn(move || {
-            let tree = disktree_core::scan_auto(&p2, &g2);
+            let tree = match &source {
+                Source::Folders(v) if v.len() == 1 => disktree_core::scan_auto(&v[0], &g2),
+                Source::Folders(v) => disktree_core::scan_many(v, &g2),
+                Source::Csv(p) => disktree_core::load_csv(p, &g2),
+            };
             *r2.lock().unwrap() = Some(tree);
         });
-        self.job = Some(Job { path: path.clone(), progress, result, started: Instant::now(), last_layout: Instant::now() });
+        self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now() });
         // The map shows the scan growing; the header's used space lets the overlay estimate progress.
         self.map.scene.clear();
         self.map.live = Some(LiveMap::new());
@@ -209,9 +239,18 @@ impl State {
                         } else {
                             self.map.scene.clear();
                         }
-                        self.set_tree(tree, &job.path);
+                        let header = if job.csv { tree.root_path.clone() } else { job.path.clone() };
+                        // A new scan starts unfiltered; the filter box is applied again right away.
+                        self.full_tree = None;
+                        self.filter.clear();
+                        self.child_stack.clear();
+                        self.set_tree(tree, &header);
                         self.map.scene.start_wave();
+                        if !self.filter_text.trim().is_empty() {
+                            self.apply_filter();
+                        }
                     }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => text(&self.root, "StatusText", "Scan stopped."),
                     Err(e) => text(&self.root, "StatusText", &format!("Scan failed: {e}")),
                 }
             }
@@ -239,12 +278,19 @@ impl State {
             disktree_core::ScanMethod::Walk => "folder walk",
         };
         text(&self.root, "StatusText", &format!("Scan complete in {:.2} seconds ({how})", self.scan_secs));
+        if t.method == disktree_core::ScanMethod::Walk && !disktree_core::is_elevated() {
+            text(&self.root, "FootLeft", "Tip: Options > Restart as Administrator reads the MFT directly, which is much faster on big drives.");
+        }
         text(
             &self.root,
             "ScanInfo",
             &format!("{} files, {} folders, {} unreadable", thousands(t.nodes[ROOT].files), thousands(t.nodes[ROOT].folders), thousands(t.errors)),
         );
         self.update_header(path);
+        // The free-space tile only makes sense when a whole drive was scanned.
+        let s = path.display().to_string();
+        let drive_root = s.len() <= 3 && s.as_bytes().get(1) == Some(&b':');
+        self.map.free = if drive_root { win32::disk_space(path).map(|(_, f)| f) } else { None };
         self.refresh_rows();
         self.refresh_exts();
         self.render_map();
@@ -262,7 +308,7 @@ impl State {
             .into_iter()
             .map(|s| ExtRow { alloc: alloc_by.get(&s.extension).copied().unwrap_or(0), ext: s.extension, size: s.size, files: s.files, percent: s.percent })
             .collect();
-        self.colours = self.exts.iter().take(paint::PALETTE.len()).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
+        self.colours = self.exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
     }
 
     pub(crate) fn update_header(&self, path: &std::path::Path) {
@@ -278,6 +324,44 @@ impl State {
                 let _ = bar.SetWidth((w * pct(used) / 100.0).max(14.0));
             }
         }
+    }
+
+    pub(crate) fn stop_scan(&mut self) {
+        if let Some(j) = &self.job {
+            j.progress.cancel();
+            text(&self.root, "StatusText", "Stopping...");
+        }
+    }
+
+    // ------------------------------------------------------------ filter
+
+    /// The filter box changed; it's applied once typing pauses.
+    pub(crate) fn filter_changed(&mut self, text: String) {
+        self.filter_text = text;
+        self.filter_pending = Some(Instant::now());
+    }
+
+    pub(crate) fn apply_filter(&mut self) {
+        self.filter_pending = None;
+        let pattern = self.filter_text.trim().to_string();
+        if pattern == self.filter {
+            return;
+        }
+        let Some(base) = self.full_tree.take().or_else(|| self.tree.take()) else { return };
+        self.filter = pattern.clone();
+        let path = base.root_path.clone();
+        // Node numbers change, so the treemap grows afresh rather than morphing.
+        self.map.scene.clear();
+        if pattern.is_empty() {
+            self.set_tree(base, &path);
+            return;
+        }
+        let filtered = disktree_core::filter_tree(&base, &pattern);
+        let found = filtered.nodes[ROOT].files;
+        let bytes = filtered.nodes[ROOT].size;
+        self.full_tree = Some(base);
+        self.set_tree(filtered, &path);
+        text(&self.root, "StatusText", &format!("Filter \"{pattern}\": {} files, {}", thousands(found), self.size(bytes)));
     }
 
     // ------------------------------------------------------------ screenshot mode

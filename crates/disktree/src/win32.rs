@@ -31,18 +31,6 @@ struct BITMAPINFOHEADER {
 }
 
 #[repr(C)]
-struct BROWSEINFOW {
-    hwndOwner: HWND,
-    pidlRoot: *const c_void,
-    pszDisplayName: *mut u16,
-    lpszTitle: *const u16,
-    ulFlags: u32,
-    lpfn: *const c_void,
-    lParam: isize,
-    iImage: i32,
-}
-
-#[repr(C)]
 struct SHFILEOPSTRUCTW {
     hwnd: HWND,
     wFunc: u32,
@@ -92,14 +80,11 @@ extern "system" {
 
 #[link(name = "shell32")]
 extern "system" {
-    fn SHBrowseForFolderW(info: *const BROWSEINFOW) -> *mut c_void;
-    fn SHGetPathFromIDListW(pidl: *const c_void, path: *mut u16) -> i32;
     fn SHFileOperationW(op: *mut SHFILEOPSTRUCTW) -> i32;
 }
 
 #[link(name = "ole32")]
 extern "system" {
-    fn CoTaskMemFree(p: *mut c_void);
 }
 
 pub fn wide(s: &str) -> Vec<u16> {
@@ -155,31 +140,6 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
     let ok = unsafe { GetDiskFreeSpaceExW(w.as_ptr(), &mut avail, &mut total, &mut free) };
     (ok != 0).then_some((total, free))
-}
-
-pub fn pick_folder(owner: HWND) -> Option<String> {
-    let title = wide("Select a folder to scan");
-    let mut name = [0u16; 260];
-    let info = BROWSEINFOW {
-        hwndOwner: owner,
-        pidlRoot: std::ptr::null(),
-        pszDisplayName: name.as_mut_ptr(),
-        lpszTitle: title.as_ptr(),
-        ulFlags: 0x1 | 0x40,
-        lpfn: std::ptr::null(),
-        lParam: 0,
-        iImage: 0,
-    };
-    unsafe {
-        let pidl = SHBrowseForFolderW(&info);
-        if pidl.is_null() {
-            return None;
-        }
-        let mut path = [0u16; 1024];
-        let ok = SHGetPathFromIDListW(pidl, path.as_mut_ptr());
-        CoTaskMemFree(pidl);
-        (ok != 0).then(|| from_wide(&path))
-    }
 }
 
 pub fn confirm(owner: HWND, text: &str, caption: &str) -> bool {

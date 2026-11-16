@@ -202,9 +202,9 @@ impl State {
         set(&els.method, if live.phase.is_empty() { live.method.to_uppercase() } else { format!("{}  ·  {}", live.method.to_uppercase(), live.phase.to_uppercase()) });
 
         // colour of the cells read since the last frame: the biggest file type right now
-        let lead = live.by_ext.first().map(|_| paint::PALETTE[0]).unwrap_or((76, 194, 255));
+        let lead = live.by_ext.first().map(|_| paint::colour(0)).unwrap_or((76, 194, 255));
         let done = ((fraction * (CELLS_X * CELLS_Y) as f64) as usize).min(CELLS_X * CELLS_Y);
-        let rank_colour = |k: usize| paint::PALETTE[k % paint::PALETTE.len()];
+        let rank_colour = |k: usize| paint::colour(k);
         for i in 0..done {
             if h.cells[i].is_none() {
                 // pick a type weighted by size so the map's colours mirror what's being found

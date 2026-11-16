@@ -10,7 +10,7 @@ use windows_core::Interface;
 use crate::bindings::Microsoft::UI::Xaml::Controls::{ScrollViewer, SwapChainPanel};
 use crate::bindings::Microsoft::UI::Xaml::FrameworkElement;
 use crate::gpu::{Frame, Gpu};
-use crate::scene::{ext_key, Info, Scene};
+use crate::scene::{ext_key, Info, Scene, FREE};
 use crate::state::{find, text, State, View, ROW_H};
 use crate::paint;
 
@@ -61,6 +61,10 @@ pub(crate) struct MapView {
     pub(crate) live: Option<LiveMap>,
     pub(crate) by_alloc: bool,
     pub(crate) show_labels: bool,
+    pub(crate) show_free: bool,
+    /// Free bytes of the scanned drive, when a whole drive was scanned.
+    pub(crate) free: Option<u64>,
+    pub(crate) cushion_strength: f32,
     pub(crate) capture: Option<std::path::PathBuf>,
 }
 
@@ -78,13 +82,16 @@ impl MapView {
             live: None,
             by_alloc: false,
             show_labels: true,
+            show_free: false,
+            free: None,
+            cushion_strength: 1.0,
             capture: None,
         }
     }
 }
 
 fn palette_colour(i: usize) -> [f32; 3] {
-    let (r, g, b) = paint::PALETTE[i % paint::PALETTE.len()];
+    let (r, g, b) = paint::colour(i);
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
 }
 
@@ -101,19 +108,23 @@ impl State {
         let m = &mut self.map;
         if let Some(live) = &m.live {
             let lt = &live.tree;
-            m.scene.relayout(lt, ROOT, &|n| lt.nodes[n].size, &|n| Info { colour: palette_colour(n.saturating_sub(1)), ext_key: 0 });
+            m.scene.relayout(lt, ROOT, &|n| lt.nodes[n].size, &|n| Info { colour: palette_colour(n.saturating_sub(1)), ext_key: 0 }, None);
         } else if let Some(t) = &self.tree {
             let alloc = &self.alloc;
             let by_alloc = m.by_alloc && alloc.len() == t.nodes.len();
             let colours = &self.colours;
+            let free = if m.show_free && self.map_root == ROOT { m.free } else { None };
             m.scene.relayout(t, self.map_root, &|n| if by_alloc { alloc[n] } else { t.nodes[n].size }, &|n| {
+                if n == FREE {
+                    return Info { colour: [0.20, 0.23, 0.29], ext_key: u32::MAX };
+                }
                 let ext = t.nodes[n].extension();
                 let colour = colours
                     .get(&ext)
                     .map(|&i| palette_colour(i))
                     .unwrap_or([paint::GREY.0 as f32 / 255.0, paint::GREY.1 as f32 / 255.0, paint::GREY.2 as f32 / 255.0]);
                 Info { colour, ext_key: ext_key(&ext) }
-            });
+            }, free);
         } else {
             m.scene.clear();
         }
@@ -128,6 +139,9 @@ impl State {
 
         self.poll();
         self.hud_frame(dt);
+        if self.filter_pending.is_some_and(|t| t.elapsed().as_millis() > 350) {
+            self.apply_filter();
+        }
 
         // Track the panel's size and DPI.
         let p = &self.map.panel;
@@ -252,7 +266,12 @@ impl State {
         if self.map.live.is_some() {
             return;
         }
-        if let (Some(t), Some(n)) = (&self.tree, n) {
+        if n == Some(FREE) {
+            let free = self.map.free.unwrap_or(0);
+            text(&self.root, "MapPath", &format!("Free space   ({})", self.size(free)));
+            return;
+        }
+        if let (Some(t), Some(n)) = (&self.tree, n.filter(|&n| n != FREE)) {
             let v = t.nodes[n].size;
             text(&self.root, "MapPath", &format!("{}   ({})", t.path_of(n).display(), self.size(v)));
         }
@@ -269,7 +288,7 @@ impl State {
         if self.map.live.is_some() {
             return None;
         }
-        self.map.scene.hit(x as f32, y as f32)
+        self.map.scene.hit(x as f32, y as f32).filter(|&n| n != FREE)
     }
 
     pub(crate) fn map_click(&mut self, x: f64, y: f64) {

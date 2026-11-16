@@ -88,14 +88,19 @@ pub fn page(drives: &[String]) -> String {
     let file_menu = [
         item("mScan", "Scan", "F5", ""),
         item("mSelectFolder", "Select Folder...", "F3", ""),
+        item("mSelectMultiple", "Select Multiple Folders...", "F3", "Shift"),
+        item("mSelectCsv", "Open CSV File...", "O", "Control"),
+        item("mStop", "Stop Scan", "Escape", ""),
         item("mNewInstance", "New Instance", "N", "Control"),
         SEP.to_string(),
         item("mReset", "Reset tree expansion", "F4", ""),
         item("mExpandAll", "Expand All", "F4", "Shift"),
         item("mParent", "Select Parent", "F6", ""),
+        item("mReselectChild", "Reselect Child", "F6", "Shift"),
         item("mZoomIn", "Zoom in Treemap", "F10", ""),
         item("mZoomOut", "Zoom out Treemap", "F11", ""),
         item("mSavePng", "Save Treemap Image as .png file", "S", "Control"),
+        item("mFilter", "Filter...", "F", "Control,Shift"),
         SEP.to_string(),
         item("mExplore", "Explore Folder", "E", "Control"),
         item("mCmd", "Command Prompt Here", "P", "Control"),
@@ -128,9 +133,35 @@ pub fn page(drives: &[String]) -> String {
         toggle("oNames", "Show Folder and File Names on Treemap", true, "N", "Control,Shift"),
         toggle("oTilt", "3D Treemap", true, "T", "Control,Shift"),
         toggle("oCushion", "Cushion shading on Treemap", true, "", ""),
+        toggle("oFree", "Show Free Space on Treemap", false, "", ""),
+        item("mTweaks", "Colors and Tweaks...", "T", "Control"),
+        SEP.to_string(),
+        item("mAdmin", "Restart as Administrator", "", ""),
+        toggle("oAlwaysAdmin", "Always Run as Administrator", false, "", ""),
+        toggle("oExplorer", "Add &quot;Scan with DiskTree&quot; to Explorer", false, "", ""),
     ]
     .concat();
     let hud = hud();
+    let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
+    let tweaks = format!(r##"
+    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14" Width="300" CornerRadius="10" Padding="16,12,16,14" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
+      <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
+      <StackPanel Spacing="4">
+        <Grid>
+          <TextBlock Text="Colors and Tweaks" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="11"/></Button>
+        </Grid>
+        <TextBlock Text="Colors" FontSize="11" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
+        <ComboBox x:Name="PaletteBox" HorizontalAlignment="Stretch" SelectedIndex="0">{palettes}</ComboBox>
+        <TextBlock Text="Tile height when hovered" FontSize="11" Foreground="#FF8E97AA" Margin="0,8,0,0"/>
+        <Slider x:Name="LiftSlider" Minimum="0" Maximum="250" Value="100" StepFrequency="5"/>
+        <TextBlock Text="Cushion shading" FontSize="11" Foreground="#FF8E97AA"/>
+        <Slider x:Name="CushionSlider" Minimum="0" Maximum="200" Value="100" StepFrequency="5"/>
+        <TextBlock Text="Tilt" FontSize="11" Foreground="#FF8E97AA"/>
+        <Slider x:Name="TiltSlider" Minimum="0" Maximum="100" Value="55" StepFrequency="1"/>
+        <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="12"/>
+      </StackPanel>
+    </Border>"##);
 
     format!(
         r##"<Grid {NS} x:Name="Root" RequestedTheme="Dark" Background="Transparent">
@@ -227,11 +258,14 @@ pub fn page(drives: &[String]) -> String {
     </Border>
   </Grid>
 
-  <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="12,0,12,6" Spacing="4">
+  <Grid Grid.Row="3" Margin="12,0,12,6">
+  <TextBox x:Name="FilterBox" HorizontalAlignment="Right" Width="340" Height="32" PlaceholderText="Filter: *.mp4;  node_modules;  *\cache\*" FontSize="12"/>
+  <StackPanel Orientation="Horizontal" Spacing="4">
     <Button x:Name="TabTree" Content="Tree View" Padding="14,4" CornerRadius="6" Background="#FF2C3550" BorderThickness="0"/>
     <Button x:Name="TabFiles" Content="File View" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"/>
     <Button x:Name="TabAbout" Content="About" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"/>
   </StackPanel>
+  </Grid>
 
   <Grid Grid.Row="4" Margin="12,0,12,0" ColumnSpacing="10">
     <Grid.ColumnDefinitions>
@@ -282,6 +316,7 @@ pub fn page(drives: &[String]) -> String {
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
     {hud}
+    {tweaks}
   </Grid>
 
   <Grid Grid.Row="7" Margin="16,0,16,0">
