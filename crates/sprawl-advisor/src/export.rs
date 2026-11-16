@@ -121,4 +121,36 @@ mod tests {
         assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF]);
         let _ = std::fs::remove_file(&p);
     }
+
+    /// The script really runs in Windows PowerShell 5.1: a dry run changes nothing, `-Run`
+    /// empties the folder, and a junction planted inside loses nothing of its target.
+    #[cfg(windows)]
+    #[test]
+    fn runs_in_windows_powershell() {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("target").join(format!("sprawl-export-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cache = base.join("Bob's cache");
+        std::fs::create_dir_all(cache.join("sub")).unwrap();
+        std::fs::write(cache.join("sub").join("a.bin"), vec![1u8; 3000]).unwrap();
+        std::fs::create_dir_all(base.join("victim")).unwrap();
+        std::fs::write(base.join("victim").join("keep.txt"), "x").unwrap();
+        let link = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(cache.join("link")).arg(base.join("victim")).output().unwrap();
+        assert!(link.status.success());
+        let cache_s = cache.canonicalize().unwrap().display().to_string().trim_start_matches(r"\\?\").to_string();
+        let a = f("Bob's cache", &cache_s, Some(format!("{RM_FN}; sprawl-clear {} 0", ps_quote(&cache_s))));
+        let file = base.join("clean.ps1");
+        write_script(&file, &script(&[&a], "C:\\", SystemTime::now())).unwrap();
+        let ps = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let run = |extra: &[&str]| {
+            let out = std::process::Command::new(&ps).args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(&file).args(extra).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr)
+        };
+        let dry = run(&[]);
+        assert!(dry.contains("Dry run") && cache.join("sub").join("a.bin").exists(), "{dry}");
+        let real = run(&["-Run"]);
+        assert!(real.contains("Freed"), "{real}");
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none(), "emptied: {real}");
+        assert!(base.join("victim").join("keep.txt").exists(), "the junction's target is untouched");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

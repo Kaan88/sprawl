@@ -79,6 +79,11 @@ pub struct Scene {
     /// Advisor lens: risk code per node (0 = not in a finding, others dim), and whether to
     /// colour findings by risk.
     pub lens: Option<(std::sync::Arc<Vec<u8>>, bool)>,
+    /// Goal-plan preview: tiles of nodes marked non-zero shrink away toward their centres.
+    pub shrink: Option<std::sync::Arc<Vec<u8>>>,
+    /// Start the shrink again from full size (a new plan).
+    pub shrink_restart: bool,
+    shrink_now: f32,
     pub selected: Option<usize>,
     mouse: Option<(f32, f32)>,
     mouse_rel: (f32, f32),
@@ -125,6 +130,9 @@ impl Default for Scene {
             hover_folder: None,
             highlight_ext: None,
             lens: None,
+            shrink: None,
+            shrink_restart: false,
+            shrink_now: 0.0,
             selected: None,
             mouse: None,
             mouse_rel: (0.5, 0.5),
@@ -544,6 +552,16 @@ impl Scene {
         }
         let (w, h) = (self.w, self.h);
         let mut moving = false;
+        // the plan preview eases in over about two seconds
+        if self.shrink_restart {
+            self.shrink_now = 0.0;
+            self.shrink_restart = false;
+        }
+        let shrink_t = if self.shrink.is_some() { 1.0 } else { 0.0 };
+        self.shrink_now = if self.animate { self.shrink_now + (shrink_t - self.shrink_now) * (dt * 1.6).min(1.0) } else { shrink_t };
+        if (self.shrink_now - shrink_t).abs() > 0.003 {
+            moving = true;
+        }
         self.instances.clear();
         let mut i = 0;
         while i < self.anims.len() {
@@ -672,8 +690,14 @@ impl Scene {
             // A tiny height step per tile, so tiles that overlap while they glide to a new layout
             // never share a plane (no z-fighting); at most about 1.5 DIPs.
             let base_h = if city { base_h } else { base_h + (a.node.wrapping_mul(2_654_435_761) >> 25) as f32 * 0.012 };
+            // in the plan: shrink toward the centre
+            let k = match &self.shrink {
+                Some(s) if s.get(a.node as usize).copied().unwrap_or(0) != 0 => 1.0 - 0.9 * self.shrink_now,
+                _ => 1.0,
+            };
+            let (rw, rh) = ((a.w - gap * 2.0).max(0.0) * k, (a.h - gap * 2.0).max(0.0) * k);
             self.instances.push(Instance {
-                rect: [a.x + gap, a.y + gap, (a.w - gap * 2.0).max(0.0), (a.h - gap * 2.0).max(0.0)],
+                rect: [a.x + a.w / 2.0 - rw / 2.0, a.y + a.h / 2.0 - rh / 2.0, rw, rh],
                 parent: if city { a.info.extra } else { pr },
                 color: [colour[0], colour[1], colour[2], kind],
                 fx: [base_h, a.lift.max(0.0), a.glow, a.dim],

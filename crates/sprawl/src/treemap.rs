@@ -262,12 +262,15 @@ impl State {
         }
         self.map.scene.selected = self.selected;
         self.map.scene.highlight_ext = self.ext_selected.as_deref().map(ext_key);
-        self.map.scene.lens = match self.advisor.lens_mode {
+        // the plan preview: only the plan lit, its tiles shrinking away
+        let preview = if self.view == crate::state::View::Advisor && self.map.live.is_none() { self.plan_preview() } else { None };
+        self.map.scene.shrink = preview.clone();
+        self.map.scene.lens = if let Some(p) = preview { Some((p, true)) } else { match self.advisor.lens_mode {
             crate::advisor::Lens::Off => None,
             // not on the live picture of a scan: its node numbers are its own
             mode if self.view == crate::state::View::Advisor && self.map.live.is_none() => self.advice().map(|r| (r.lens.clone(), mode == crate::advisor::Lens::Risk)),
             _ => None,
-        };
+        } };
         // A selected folder lights up its whole block on the map.
         if self.map.live.is_none() {
             if let Some(t) = &self.tree {

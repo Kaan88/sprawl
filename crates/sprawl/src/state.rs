@@ -477,6 +477,9 @@ impl State {
                             self.map_hover(w * 0.5 + k as f64 * 6.0, h * 0.5, false, true);
                         }
                     }
+                    // dev: type a goal, or press an Advisor button
+                    g if g.starts_with("goal=") => self.advisor_set_goal(&g[5..]),
+                    a if a.starts_with("Adv") => self.advisor_command(a),
                     _ => self.command(&c),
                 }
             }

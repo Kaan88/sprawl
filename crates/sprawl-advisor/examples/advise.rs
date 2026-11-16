@@ -66,4 +66,11 @@ fn main() {
     for (f, why) in &held {
         println!("  held back: {} ({}): {why}", f.title, format_size(f.bytes));
     }
+    // SPRAWL_EXPORT=<file.ps1> writes the clean-up script for every finding with a command
+    if let Some(out) = std::env::var_os("SPRAWL_EXPORT") {
+        let list: Vec<&sprawl_advisor::Finding> = ok.iter().filter(|f| f.command.is_some()).collect();
+        let text = sprawl_advisor::export::script(&list, &path.display().to_string(), std::time::SystemTime::now());
+        sprawl_advisor::export::write_script(std::path::Path::new(&out), &text).unwrap();
+        println!("script for {} findings written", list.len());
+    }
 }
