@@ -27,7 +27,11 @@ pub struct ClaudeCode {
 /// loaded, and anything that would ask for permission denied. It reads the prompt and answers.
 /// With `mcp`, only Sprawl's own server (read-only tools) is loaded and allowed.
 pub(crate) fn args(model: &str, mcp: Option<&Path>) -> Vec<String> {
-    let mut a: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--restricted", "--permission-prompts", "none"].iter().map(|s| s.to_string()).collect();
+    // no transcript of the scan saved under ~/.claude, no slash commands or skills
+    let mut a: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--restricted", "--permission-prompts", "none", "--no-session-persistence", "--disable-slash-commands"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     if let Some(cfg) = mcp {
         a.push("--mcp-config".into());
         a.push(cfg.display().to_string());
@@ -163,7 +167,7 @@ mod tests {
         assert!(m.contains(&"--strict-mcp-config".to_string()));
         let i = a.iter().position(|x| x == "--tools").unwrap();
         assert_eq!(a[i + 1], "", "no built-in tools");
-        for flag in ["--strict-mcp-config", "--restricted", "-p"] {
+        for flag in ["--strict-mcp-config", "--restricted", "-p", "--no-session-persistence", "--disable-slash-commands"] {
             assert!(a.contains(&flag.to_string()), "{flag}");
         }
         assert_eq!(a[a.iter().position(|x| x == "--permission-prompts").unwrap() + 1], "none");

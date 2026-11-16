@@ -25,7 +25,8 @@ impl Plan {
 pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
     let mut cand: Vec<usize> = (0..findings.len())
         .filter(|&i| counted.get(i).copied().unwrap_or(true))
-        .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk <= Risk::Amber)
+        // only Sprawl's own rules: a local or AI-proposed rule's deletes are the user's call
+        .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk <= Risk::Amber && findings[i].builtin)
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();

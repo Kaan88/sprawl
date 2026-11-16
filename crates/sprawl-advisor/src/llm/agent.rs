@@ -64,6 +64,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
     let report = super::report::build(tree, &facts, &[], None, None) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, &[], memory);
     tools.consent = Some(consent);
+    tools.allowed = Some(chat_specs().iter().map(|t| t.name).collect());
     let tools_ok = cfg.provider != Provider::ClaudeCode;
     let opening = format!("{report}\n\n# The user asks\n{first}");
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
@@ -88,19 +89,23 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
     };
     let mut with_tools = tools_ok;
     let mut question_open = true;
+    let mut first_question = true;
     loop {
         if !question_open {
             let Ok(q) = questions.recv() else { return };
             chat.say(&q);
+            first_question = false;
         }
         question_open = false;
+        let mut failed = false;
         events(ChatEvent::Progress(format!("Asking {model}...")));
         let mut turns = 0;
         let mut reply = String::new();
         loop {
             let t = match chat.turn() {
                 Ok(t) => t,
-                Err(e) if turns == 0 && with_tools && cfg.provider == Provider::OpenAi && e.to_lowercase().contains("tool") => {
+                // only the first question can start again without tools: the opening holds it
+                Err(e) if turns == 0 && first_question && with_tools && cfg.provider == Provider::OpenAi && e.to_lowercase().contains("tool") => {
                     with_tools = false;
                     match open_chat(false) {
                         Ok(c) => chat = c,
@@ -110,6 +115,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
                 }
                 Err(e) => {
                     events(ChatEvent::Failed(e));
+                    failed = true;
                     break;
                 }
             };
@@ -117,7 +123,21 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
             if !t.text.trim().is_empty() {
                 reply = super::tools::clean_text_long(t.text.trim(), 6000);
             }
-            if t.calls.is_empty() || turns >= 15 {
+            if t.calls.is_empty() {
+                break;
+            }
+            if turns >= 15 {
+                // every call needs an answer, or the conversation can't go on: say stop, and
+                // take one last turn for the reply
+                chat.answer(t.calls.iter().map(|c| (c.id.clone(), "Turn limit reached: answer the user now with what you have.".to_string(), true)).collect());
+                if let Ok(last) = chat.turn() {
+                    if !last.text.trim().is_empty() {
+                        reply = super::tools::clean_text_long(last.text.trim(), 6000);
+                    }
+                    if !last.calls.is_empty() {
+                        chat.answer(last.calls.iter().map(|c| (c.id.clone(), "No more tools now.".to_string(), true)).collect());
+                    }
+                }
                 break;
             }
             let mut results = Vec::new();
@@ -139,7 +159,9 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
             events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels) });
         }
         // always an answer, so the app never waits for one that isn't coming
-        events(ChatEvent::Reply(if reply.is_empty() { "(No answer came back. Try asking again.)".into() } else { reply }));
+        if !failed {
+            events(ChatEvent::Reply(if reply.is_empty() { "(No answer came back. Try asking again.)".into() } else { reply }));
+        }
     }
 }
 
@@ -291,6 +313,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     facts.attach_usage(tree);
     let report = super::report::build(tree, &facts, already, hidden, goal) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory);
+    tools.allowed = Some(specs().iter().map(|t| t.name).collect());
     let mut run = AiRun { model: model.clone(), ..AiRun::default() };
 
     // Claude Code with Sprawl's own tools, when the app can serve them

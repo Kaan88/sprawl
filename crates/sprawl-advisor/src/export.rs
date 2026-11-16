@@ -34,6 +34,7 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
         let body = cmd.strip_prefix(RM_FN).map(|r| r.trim_start_matches(';').trim_start()).unwrap_or(cmd);
         let admin = body.contains("# as administrator");
         let from = match &f.source {
+            crate::finding::Source::Rule(id) if id.starts_with("local.") => format!("your rule {id}"),
             crate::finding::Source::Rule(id) => format!("Sprawl rule {id}"),
             crate::finding::Source::Model(m) => format!("AI ({m}), checked by Sprawl"),
         };

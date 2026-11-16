@@ -136,6 +136,8 @@ pub struct Tools<'a> {
     pub filter: Option<String>,
     /// Asks the user whether a web search may go out; `None`: never.
     pub consent: Option<&'a dyn Fn(&str) -> bool>,
+    /// The tools offered in this conversation; any other name is refused.
+    pub allowed: Option<Vec<&'static str>>,
 }
 
 fn path_arg(input: &Value) -> Result<PathBuf, String> {
@@ -168,6 +170,7 @@ impl<'a> Tools<'a> {
             proposals: Vec::new(),
             filter: None,
             consent: None,
+            allowed: None,
         };
         for f in already {
             t.remember(&f.path);
@@ -188,6 +191,9 @@ impl<'a> Tools<'a> {
 
     /// Run one tool. `Err` is sent back to the model as an error result.
     pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+        if self.allowed.as_ref().is_some_and(|a| !a.contains(&name)) {
+            return Err(format!("there is no tool called {name} here"));
+        }
         match name {
             "list_children" => {
                 let (n, _) = self.node(input)?;
@@ -281,7 +287,11 @@ impl<'a> Tools<'a> {
             }
             "read_manifest" => self.read_manifest(input),
             "web_lookup" => {
-                let q = clean_text(input["query"].as_str().unwrap_or(""));
+                // only visible characters: what the user is shown is what is sent
+                let q: String = clean_text(input["query"].as_str().unwrap_or(""))
+                    .chars()
+                    .filter(|&c| !matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{206f}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{e0000}'..='\u{e007f}'))
+                    .collect();
                 if q.len() < 2 {
                     return Err("give a query".into());
                 }
@@ -345,17 +355,44 @@ impl<'a> Tools<'a> {
         if node.is_dir || node.is_reparse_point() {
             return Err("that is a folder or a link; give a file".into());
         }
+        if self.tree.method == sprawl_core::ScanMethod::Csv {
+            return Err("this view came from a CSV file, not the disk".into());
+        }
         let name = node.name.to_lowercase();
-        const EXT: &[&str] = &["json", "vdf", "acf", "md", "txt", "toml", "ini", "xml", "yaml", "yml", "cfg", "nfo", "manifest", "csproj", "gradle", "inf"];
-        const PRIVATE: &[&str] = &["secret", "password", "passwd", "token", "credential", "private", "wallet", ".env", "id_rsa", "id_ed25519", "cookie", "login", "auth", "key"];
-        let ext_ok = name.rsplit_once('.').is_some_and(|(_, e)| EXT.contains(&e)) || name.starts_with("readme") || name.starts_with("license");
-        if !ext_ok || PRIVATE.iter().any(|p| name.contains(p)) {
-            return Err("only small descriptive files (manifests, READMEs, settings files without secrets) can be read".into());
+        // named manifests only: settings files hold tokens too often
+        const NAMES: &[&str] = &["package.json", "composer.json", "cargo.toml", "pyproject.toml", "go.mod", "manifest.json", "libraryfolders.vdf", "appinfo.json", "version.txt"];
+        let ok_name = NAMES.contains(&name.as_str())
+            || name.starts_with("readme")
+            || name.starts_with("license")
+            || (name.starts_with("appmanifest_") && name.ends_with(".acf"))
+            || [".csproj", ".fsproj", ".vbproj", ".sln", ".nfo"].iter().any(|e| name.ends_with(e));
+        if !ok_name {
+            return Err("only manifests can be read: package.json, Cargo.toml, a Steam appmanifest, a README or LICENSE, a project file".into());
+        }
+        let path = self.tree.path_of(n);
+        let lower = path.to_string_lossy().to_lowercase();
+        if self.never.hit(&lower).is_some() {
+            return Err("that is in a protected folder".into());
+        }
+        // not other people's profiles (an administrator Sprawl could open them)
+        let segs = segments(&lower);
+        let me = std::env::var("USERNAME").unwrap_or_default().to_lowercase();
+        if segs.get(1).is_some_and(|s| s == "users") && segs.get(2).is_some_and(|u| u != &me && u != "public") {
+            return Err("that is in another user's profile".into());
         }
         if node.size > 256 << 10 {
             return Err("over 256 KB; that isn't a manifest".into());
         }
-        let path = self.tree.path_of(n);
+        // the file and every folder on the way must still be what the scan saw: no links
+        let mut p = path.clone();
+        loop {
+            if std::fs::symlink_metadata(&p).map_err(|e| format!("couldn't open it: {e}"))?.file_type().is_symlink() {
+                return Err("it, or a folder on the way, is a link".into());
+            }
+            if !p.pop() || p.parent().is_none() {
+                break;
+            }
+        }
         let mut buf = Vec::new();
         let f = std::fs::File::open(&path).map_err(|e| format!("couldn't open it: {e}"))?;
         std::io::Read::read_to_end(&mut std::io::Read::take(f, 16 << 10), &mut buf).map_err(|e| e.to_string())?;
@@ -547,10 +584,12 @@ mod tests {
         assert!(t.call("web_lookup", &json!({"query": "what is DXCache"})).unwrap_err().contains("didn't allow"));
         std::fs::write(dir.join("package.json"), "{\"name\": \"x\"}").unwrap();
         std::fs::write(dir.join("api-key.json"), "{}").unwrap();
+        std::fs::write(dir.join("hosts.yml"), "oauth_token: x").unwrap();
         let tree2 = sprawl_core::scan(&dir, |_| {}).unwrap();
         let t2 = Tools::new(&tree2, &facts, "m", &[], &Memory::default());
         assert!(t2.read_manifest(&json!({"path": dir.join("package.json").display().to_string()})).unwrap().contains("\"name\""));
         assert!(t2.read_manifest(&json!({"path": dir.join("api-key.json").display().to_string()})).is_err(), "nothing that looks private");
+        assert!(t2.read_manifest(&json!({"path": dir.join("hosts.yml").display().to_string()})).is_err(), "named manifests only");
         assert!(t2.read_manifest(&json!({"path": cache.join("x").join("a.bin").display().to_string()})).is_err(), "only descriptive files");
         let _ = std::fs::remove_dir_all(&dir);
     }

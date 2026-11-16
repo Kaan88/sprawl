@@ -115,16 +115,52 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// A path or pattern the model may name in a rule or a label: absolute (a drive or a
-/// `%VARIABLE%`), no `..`, nothing that isn't a plain path.
+/// `%VARIABLE%`), no `..`, nothing that isn't a plain path, and narrow: at least two segments
+/// after the root that aren't wildcards (`?:\\**\\*.jpg` or `C:\\*` would reach everything).
 fn plain_pattern(p: &str) -> bool {
     let b = p.as_bytes();
     let rooted = (b.len() >= 3 && (b[0].is_ascii_alphabetic() || b[0] == b'?') && b[1] == b':' && b[2] == b'\\') || p.starts_with('%');
-    rooted && p.len() < 300 && !p.contains("..") && !p.contains(['"', '\'', '`', '|', '<', '>', ';', '\n', '\r', '{', '}', '$'])
+    if !rooted || p.len() >= 300 || p.contains("..") || p.contains(['"', '\'', '`', '|', '<', '>', ';', '\n', '\r', '{', '}', '$']) {
+        return false;
+    }
+    let literal = p.split('\\').skip(1).filter(|s| !s.is_empty() && !s.contains(['*', '?']) && !s.starts_with('%')).count();
+    literal >= 2
+}
+
+/// What a proposed rule must be, checked when proposed and again when approved (the file may
+/// have been changed in between).
+fn check_proposal(p: &Proposal) -> Result<(), String> {
+    if p.title.is_empty() || p.why.is_empty() {
+        return Err("give a title and a reason".into());
+    }
+    if p.paths.is_empty() || p.paths.len() > 8 || !p.paths.iter().all(|x| plain_pattern(x)) {
+        return Err("give 1 to 8 absolute, narrow path patterns (C:\\... or %VARIABLE%\\..., at least two named folders)".into());
+    }
+    // a delete names what it deletes: the last part is a name, not a wildcard
+    if p.remedy == Remedy::Delete && p.paths.iter().any(|x| x.rsplit('\\').next().is_none_or(|last| last.contains(['*', '?']) || last.is_empty())) {
+        return Err("a delete rule must end in a folder or file name, not a wildcard".into());
+    }
+    if matches!(p.remedy, Remedy::Command | Remedy::Move) {
+        return Err("a proposed rule can delete, suggest uninstalling, or explain (info): commands come only from Sprawl itself".into());
+    }
+    if p.risk == Risk::Red && p.remedy != Remedy::Info {
+        return Err("red is information only".into());
+    }
+    Ok(())
 }
 
 impl Memory {
     pub fn load() -> Memory {
-        file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| toml::from_str(t.trim_start_matches('\u{feff}')).ok()).unwrap_or_default()
+        let Some(f) = file() else { return Memory::default() };
+        let Ok(t) = std::fs::read_to_string(&f) else { return Memory::default() };
+        match toml::from_str(t.trim_start_matches('\u{feff}')) {
+            Ok(m) => m,
+            Err(_) => {
+                // never overwrite a file that didn't load: keep it beside, start afresh
+                let _ = std::fs::rename(&f, f.with_extension("toml.unreadable"));
+                Memory::default()
+            }
+        }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -141,6 +177,13 @@ impl Memory {
         if self.decisions.len() > 2000 {
             let extra = self.decisions.len() - 2000;
             self.decisions.drain(..extra);
+        }
+    }
+
+    /// Remove whatever decision hides `path` (its own, or a Keep on a folder above it).
+    pub fn undo_hiding(&mut self, path: &Path) {
+        if let Some(d) = self.hides(path).map(|d| d.path.clone()) {
+            self.undo(&d);
         }
     }
 
@@ -221,18 +264,7 @@ impl Memory {
         }
         p.title = clean_text(&p.title);
         p.why = clean_text(&p.why);
-        if p.title.is_empty() || p.why.is_empty() {
-            return Err("give a title and a reason".into());
-        }
-        if p.paths.is_empty() || p.paths.len() > 8 || !p.paths.iter().all(|x| plain_pattern(x)) {
-            return Err("give 1 to 8 absolute path patterns (C:\\... or %VARIABLE%\\...)".into());
-        }
-        if matches!(p.remedy, Remedy::Command | Remedy::Move) {
-            return Err("a proposed rule can delete, suggest uninstalling, or explain (info): commands come only from Sprawl itself".into());
-        }
-        if p.risk == Risk::Red && p.remedy != Remedy::Info {
-            return Err("red is information only".into());
-        }
+        check_proposal(&p)?;
         if self.proposals.iter().any(|q| q.id == p.id) || local_ids().contains(&p.id) {
             return Err(format!("there is already a rule {}", p.id));
         }
@@ -246,12 +278,13 @@ impl Memory {
     /// Move proposal `i` into the local rule pack.
     pub fn approve(&mut self, i: usize) -> Result<(), String> {
         let p = self.proposals.get(i).cloned().ok_or("no such proposal")?;
+        check_proposal(&p)?;
         let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
-        let mut pack = std::fs::read_to_string(&path).ok().and_then(|t| RulePack::parse(&t).ok()).unwrap_or(RulePack {
-            pack: PackInfo { name: "Your rules".into(), version: 1 },
-            rules: Vec::new(),
-            trusted: false,
-        });
+        let mut pack = match std::fs::read_to_string(&path) {
+            // a file that doesn't load is the user's to fix, not to overwrite
+            Ok(t) => RulePack::parse(&t).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?,
+            Err(_) => RulePack { pack: PackInfo { name: "Your rules".into(), version: 1 }, rules: Vec::new(), trusted: false },
+        };
         pack.rules.retain(|r| r.id != p.id);
         pack.rules.push(Rule {
             id: p.id,
@@ -353,6 +386,10 @@ mod tests {
     fn model_input_is_checked() {
         let mut m = Memory::default();
         assert!(m.add_label(r"C:\Tools\*\cache", "Tool caches", From::Model).is_ok());
+        // too broad to be a label or a rule
+        for broad in [r"?:\", r"?:\**\*.jpg", r"C:\*\**", r"%USERPROFILE%\*"] {
+            assert!(m.add_label(broad, "x", From::Model).is_err(), "{broad}");
+        }
         assert_eq!(m.label_for(Path::new(r"C:\Tools\x\cache")).unwrap().label, "Tool caches");
         assert!(m.add_label(r"..\x", "no", From::Model).is_err());
         assert!(m.add_label(r"C:\x'; Remove-Item", "no", From::Model).is_err());
@@ -367,6 +404,7 @@ mod tests {
         };
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\cache"], Remedy::Command)).is_err(), "no commands");
         assert!(m.propose(p(vec!["cache"], Remedy::Delete)).is_err(), "absolute only");
+        assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\*"], Remedy::Delete)).is_err(), "a delete ends in a name");
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\cache"], Remedy::Delete)).is_ok());
         assert_eq!(m.proposals[0].id, "local.MyCache");
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\cache"], Remedy::Delete)).is_err(), "not twice");

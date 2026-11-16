@@ -158,6 +158,8 @@ struct Chat {
     consent: Option<(String, Sender<bool>)>,
     /// "Allow for this session" was chosen.
     web_ok: Arc<std::sync::atomic::AtomicBool>,
+    /// The chat thread is still running (it clears this when it ends).
+    alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 enum ChatMsg {
@@ -193,11 +195,12 @@ pub(crate) fn lens_colour(code: u8) -> [f32; 3] {
     }
 }
 
-/// `f` is below another finding in `all`.
+/// `f` is below another finding in `all` that would remove it too (one with something to run;
+/// an information finding above it doesn't count).
 fn inside_another(all: &[Finding], f: &Finding) -> bool {
     let p = f.path.to_string_lossy().to_lowercase();
     let segs: Vec<&str> = p.split('\\').filter(|s| !s.is_empty()).collect();
-    all.iter().any(|o| {
+    all.iter().filter(|o| matches!(o.remedy, Remedy::Delete | Remedy::Command) && o.command.is_some()).any(|o| {
         let q = o.path.to_string_lossy().to_lowercase();
         let k: Vec<&str> = q.split('\\').filter(|s| !s.is_empty()).collect();
         k.len() < segs.len() && segs[..k.len()] == k[..]
@@ -415,7 +418,9 @@ impl State {
                     if let Some(e) = self.advisor.exported.as_mut().filter(|e| e.file == file) {
                         // what really shrank counts as done: the model learns the user is fine with it
                         for (p, before, after) in &v {
-                            if after < before {
+                            // mostly gone, and never over the user's own Keep
+                            let kept = self.advisor.memory.hides(p).is_some_and(|d| d.verdict == Verdict::Keep);
+                            if *after <= before / 2 && !kept {
                                 let title = e.items.iter().find(|(q, _, _)| q == p).map(|(_, _, t)| t.clone()).unwrap_or_default();
                                 self.advisor.memory.decide(p, &title, Verdict::Done);
                             }
@@ -1018,7 +1023,7 @@ impl State {
         match kind {
             "AdvUndo" => {
                 let Some(path) = self.advice().and_then(|r| r.kept.get(i)).map(|(f, _)| f.path.clone()) else { return };
-                self.advisor.memory.undo(&path);
+                self.advisor.memory.undo_hiding(&path);
                 self.save_memory();
                 // found again from scratch, so it comes back where it belongs
                 return self.advisor_start();
@@ -1054,7 +1059,7 @@ impl State {
         // a plan, or everything that comes back or costs little: orange is the user's call, one by one
         let picked: Vec<usize> = match self.current_plan() {
             Some(p) => p.plan.picked.iter().copied().filter(|&i| i < r.findings.len()).collect(),
-            None => (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber).collect(),
+            None => (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber && r.findings[i].builtin).collect(),
         };
         if picked.is_empty() {
             crate::state::text(&self.root, "StatusText", "Nothing to export: no finding has a command to run.");
@@ -1105,10 +1110,10 @@ impl State {
 
     /// A new scan: the chat's copy of the old one is no use any more.
     pub(crate) fn chat_reset(&mut self) {
-        let web_ok = self.advisor.chat.web_ok.clone();
-        web_ok.store(false, std::sync::atomic::Ordering::Relaxed);
+        // a new flag: the old thread may still finish its question, and must keep asking
+        self.advisor.chat.web_ok.store(false, std::sync::atomic::Ordering::Relaxed);
         // dropping the senders ends the thread; a pending consent answers no
-        self.advisor.chat = Chat { web_ok, ..Chat::default() };
+        self.advisor.chat = Chat::default();
     }
 
     /// A sample exchange with Markdown in the answer (screenshot runs).
@@ -1153,6 +1158,8 @@ impl State {
             let (qtx, qrx) = channel::<String>();
             let (etx, erx) = channel::<ChatMsg>();
             let web_ok = self.advisor.chat.web_ok.clone();
+            let alive = self.advisor.chat.alive.clone();
+            alive.store(true, std::sync::atomic::Ordering::Relaxed);
             std::thread::spawn(move || {
                 let consent_tx = etx.clone();
                 let consent = move |query: &str| -> bool {
@@ -1173,9 +1180,17 @@ impl State {
                 if ended.is_err() {
                     let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
                 }
+                alive.store(false, std::sync::atomic::Ordering::Relaxed);
             });
             self.advisor.chat.tx = Some(qtx);
             self.advisor.chat.rx = Some(erx);
+        }
+        // the thread ended (AI off, no key, an error): start a new one
+        if self.advisor.chat.tx.is_some() && !self.advisor.chat.alive.load(std::sync::atomic::Ordering::Relaxed) {
+            let log = std::mem::take(&mut self.advisor.chat.log);
+            self.chat_reset();
+            self.advisor.chat.log = log;
+            return self.chat_ask(q);
         }
         if let Some(tx) = &self.advisor.chat.tx {
             if tx.send(q.clone()).is_ok() {
@@ -1310,7 +1325,8 @@ impl State {
             for (i, p) in m.proposals.iter().enumerate() {
                 x += &format!(
                     r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="11" FontFamily="Consolas" Foreground="#FF8E97AA"/></StackPanel>"##,
-                    risk_hex(p.risk),
+                    // a local rule's deletes are at least amber, whatever it proposes
+                    risk_hex(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }),
                     ui::esc(&p.title),
                     remedy_label(p.remedy),
                     small(format!("AdvApprove{i}"), "Approve"),
@@ -1524,7 +1540,8 @@ impl State {
         if r.nodes[i].is_some() {
             x += r##"<Button x:Name="AdvShow" Content="Show in tree" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvExplore" Content="Show in Explorer" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         }
-        let how = f.owner.as_ref().and_then(|o| r.apps.iter().position(|a| a == o)).and_then(|k| r.uninstall.get(k).cloned().flatten());
+        // only where uninstalling is the suggestion, not on every cache an app owns
+        let how = (f.remedy == Remedy::Uninstall).then(|| f.owner.as_ref().and_then(|o| r.apps.iter().position(|a| a == o)).and_then(|k| r.uninstall.get(k).cloned().flatten())).flatten();
         if let (Some(how), Some(o)) = (how, &f.owner) {
             let tip = match how {
                 sprawl_advisor::facts::Uninstall::Settings => "Opens Windows' Installed apps",
@@ -1532,7 +1549,7 @@ impl State {
             };
             x += &format!(r##"<Button x:Name="AdvUninstall" Content="Uninstall {}..." ToolTipService.ToolTip="{tip}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(o));
         }
-        x += r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="Never suggest this again" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+        x += r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="Never suggest this, or anything inside it, again" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         x += "</StackPanel></StackPanel></Border>";
         x
     }
