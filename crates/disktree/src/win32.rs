@@ -67,7 +67,6 @@ extern "system" {
     fn EmptyClipboard() -> i32;
     fn SetClipboardData(format: u32, mem: isize) -> isize;
     fn CloseClipboard() -> i32;
-    fn GetDpiForWindow(h: HWND) -> u32;
 }
 
 #[link(name = "gdi32")]
@@ -283,9 +282,4 @@ pub fn capture(h: HWND) -> Option<(u32, u32, Vec<u8>)> {
         }
         Some((w as u32, hgt as u32, px))
     }
-}
-
-pub fn dpi(h: HWND) -> u32 {
-    let d = unsafe { GetDpiForWindow(h) };
-    if d == 0 { 96 } else { d }
 }

@@ -10,12 +10,13 @@ use std::time::Instant;
 use disktree_core::{extension_stats, format_size, largest_files, Tree, ROOT};
 use windows_core::{Interface, HSTRING};
 
-use crate::bindings::Microsoft::UI::Dispatching::DispatcherQueueTimer;
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
 use crate::bindings::Microsoft::UI::Xaml::Controls::{ProgressBar, TextBlock};
 use crate::bindings::Microsoft::UI::Xaml::Markup::XamlReader;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, Window};
 use crate::format::thousands;
+use crate::hud::{Hud, Live};
+use crate::treemap::{LiveMap, MapView};
 use crate::{paint, win32};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -48,11 +49,17 @@ pub(crate) struct Job {
     pub(crate) count: Arc<AtomicU64>,
     pub(crate) result: Arc<Mutex<Option<std::io::Result<Tree>>>>,
     pub(crate) started: Instant,
+    pub(crate) last_layout: Instant,
+}
+
+impl Job {
+    /// What the scanner has found so far.
+    pub(crate) fn live(&self) -> Live {
+        Live { files: self.count.load(Ordering::Relaxed), method: "folders", ..Default::default() }
+    }
 }
 
 pub(crate) const ROW_H: f64 = 24.0;
-/// Border thickness plus padding of `MapBorder` in ui.rs, per side.
-pub(crate) const MAP_INSET: f64 = 3.0;
 pub(crate) const MAX_ROWS: usize = 900;
 
 pub(crate) struct State {
@@ -70,18 +77,14 @@ pub(crate) struct State {
     pub(crate) colours: HashMap<String, usize>,
     pub(crate) ext_selected: Option<usize>,
     pub(crate) map_root: usize,
-    pub(crate) layout: Option<paint::Layout>,
-    pub(crate) map_px: (usize, usize),
-    pub(crate) map_pixels: Vec<u8>,
-    pub(crate) hover: Option<usize>,
+    pub(crate) map: MapView,
+    pub(crate) hud: Hud,
     pub(crate) units: Units,
     pub(crate) view: View,
     pub(crate) job: Option<Job>,
     pub(crate) scan_secs: f64,
     pub(crate) shot: Option<PathBuf>,
     pub(crate) shot_ticks: u32,
-    /// The poll timer; it stops when dropped.
-    pub(crate) _timer: DispatcherQueueTimer,
 }
 
 thread_local! {
@@ -150,7 +153,15 @@ impl State {
             let tree = disktree_core::scan(&p2, |n| c2.store(n, Ordering::Relaxed));
             *r2.lock().unwrap() = Some(tree);
         });
-        self.job = Some(Job { path: path.clone(), count, result, started: Instant::now() });
+        self.job = Some(Job { path: path.clone(), count, result, started: Instant::now(), last_layout: Instant::now() });
+        // The map shows the scan growing; the header's used space lets the overlay estimate progress.
+        self.map.scene.clear();
+        self.map.live = Some(LiveMap::new());
+        self.map.dirty = true;
+        let s = path.display().to_string();
+        let is_drive_root = s.len() <= 3 && s.as_bytes().get(1) == Some(&b':');
+        let expected = if is_drive_root { win32::disk_space(&path).map(|(t, f)| t.saturating_sub(f)).unwrap_or(0) } else { 0 };
+        self.hud.reset(expected);
         text(&self.root, "StatusText", &format!("Scanning {} ...", path.display()));
         if let Ok(p) = find::<ProgressBar>(&self.root, "Progress") {
             let _ = p.SetIsIndeterminate(true);
@@ -164,8 +175,21 @@ impl State {
         let done = job.result.lock().unwrap().take();
         match done {
             None => {
-                let n = job.count.load(Ordering::Relaxed);
-                text(&self.root, "StatusText", &format!("Scanning... {} items ({:.1} s)", thousands(n), job.started.elapsed().as_secs_f64()));
+                let live = job.live();
+                text(
+                    &self.root,
+                    "StatusText",
+                    &format!("Scanning... {} items ({:.1} s)", thousands(live.files + live.folders), job.started.elapsed().as_secs_f64()),
+                );
+                if !live.top.is_empty() && job.last_layout.elapsed().as_millis() > 120 {
+                    if let Some(m) = &mut self.map.live {
+                        m.update(&live.top);
+                        self.map.dirty = true;
+                    }
+                    if let Some(j) = &mut self.job {
+                        j.last_layout = Instant::now();
+                    }
+                }
             }
             Some(res) => {
                 let job = self.job.take().unwrap();
@@ -174,8 +198,20 @@ impl State {
                     let _ = p.SetIsIndeterminate(false);
                     let _ = p.cast::<RangeBase>().and_then(|r| r.SetValue(100.0));
                 }
+                let live = self.map.live.take();
                 match res {
-                    Ok(tree) => self.set_tree(tree, &job.path),
+                    Ok(tree) => {
+                        // Let the live boxes open up into the real folders.
+                        if let Some(live) = live.filter(|l| !l.index.is_empty()) {
+                            let real: HashMap<&str, usize> = tree.nodes[ROOT].children.iter().map(|&c| (tree.nodes[c].name.as_str(), c)).collect();
+                            let lt = &live.tree;
+                            self.map.scene.rekey(&|old| if old == ROOT { Some(ROOT) } else { real.get(lt.nodes[old].name.as_str()).copied() });
+                        } else {
+                            self.map.scene.clear();
+                        }
+                        self.set_tree(tree, &job.path);
+                        self.map.scene.start_wave();
+                    }
                     Err(e) => text(&self.root, "StatusText", &format!("Scan failed: {e}")),
                 }
             }
@@ -248,11 +284,12 @@ impl State {
         if self.job.is_some() {
             return;
         }
-        self.shot_ticks += 1;
-        if self.shot_ticks == 20 {
-            self.render_map();
+        if self.tree.is_none() {
+            return;
         }
-        if self.shot_ticks < 120 {
+        self.shot_ticks += 1;
+        // Let the finish wave and morphs play out first (about 3 s at 60 frames a second).
+        if self.shot_ticks < 180 {
             return;
         }
         if let Some((w, h, px)) = win32::capture(self.hwnd) {
@@ -262,7 +299,7 @@ impl State {
             let _ = std::fs::write(&path, paint::png(w, h, &px));
             std::process::exit(0);
         }
-        if self.shot_ticks > 600 {
+        if self.shot_ticks > 900 {
             eprintln!("could not capture the window");
             std::process::exit(3);
         }

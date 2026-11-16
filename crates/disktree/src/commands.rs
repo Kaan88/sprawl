@@ -10,7 +10,7 @@ use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefini
 use crate::bindings::Microsoft::UI::Xaml::{GridLength, GridUnitType, UIElement, Visibility};
 use crate::format::{file_type, fmt_time, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
-use crate::{paint, ui, win32};
+use crate::{ui, win32};
 
 impl State {
     // ------------------------------------------------------------ commands
@@ -100,17 +100,8 @@ impl State {
                 }
             }
             "mSavePng" if has_tree => {
-                let (w, h) = self.map_px;
-                let mut rgba = self.map_pixels.clone();
-                for p in rgba.chunks_exact_mut(4) {
-                    p.swap(0, 2);
-                }
-                let path = user_dir("Pictures").join(format!("DiskTree treemap {}.png", stamp()));
-                let msg = match std::fs::write(&path, paint::png(w as u32, h as u32, &rgba)) {
-                    Ok(()) => format!("Saved the treemap picture to {}", path.display()),
-                    Err(e) => format!("Couldn't save the picture: {e}"),
-                };
-                text(&self.root, "FootLeft", &msg);
+                // The next frame is read back from the GPU and written as a PNG.
+                self.map.capture = Some(user_dir("Pictures").join(format!("DiskTree treemap {}.png", stamp())));
             }
             "mExplore" => {
                 if let Some(p) = self.selected_path() {
@@ -207,7 +198,16 @@ impl State {
                     }
                 }
             }
-            "oAlloc" | "oCushion" => self.render_map(),
+            "oAlloc" | "oCushion" | "oNames" | "oTilt" => {
+                let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
+                match name {
+                    "oAlloc" => self.map.by_alloc = on,
+                    "oCushion" => self.map.scene.cushion = if on { 1.0 } else { 0.0 },
+                    "oNames" => self.map.show_labels = on,
+                    _ => self.map.scene.tilt_on = on,
+                }
+                self.render_map();
+            }
             "TabTree" => self.set_view(View::Tree),
             "TabFiles" => self.set_view(View::Files),
             "TabAbout" => self.set_view(View::About),

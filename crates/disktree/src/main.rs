@@ -12,7 +12,10 @@ mod bindings;
 mod app;
 mod commands;
 mod format;
+mod gpu;
+mod hud;
 mod paint;
+mod scene;
 mod state;
 mod tables;
 mod treemap;
@@ -27,9 +30,9 @@ use disktree_core::ROOT;
 use windows_core::{IInspectable, Interface, Ref, HSTRING};
 
 use app::{App, APP};
-use bindings::Microsoft::UI::Dispatching::DispatcherQueue;
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
-use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, ToggleMenuFlyoutItem};
+use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, ToggleMenuFlyoutItem};
+use bindings::Microsoft::UI::Xaml::Media::{CompositionTarget, DesktopAcrylicBackdrop, SystemBackdrop};
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
 use state::{find, keep, load, with, State, Units, View, ROW_H, STATE};
@@ -57,7 +60,7 @@ fn args() -> Args {
 const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
-    "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion",
+    "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
 ];
 
 pub(crate) fn launch() -> windows_core::Result<()> {
@@ -72,6 +75,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     window.SetExtendsContentIntoTitleBar(true)?;
     window.SetTitleBar(&find::<UIElement>(&root, "TitleBar")?)?;
     window.AppWindow()?.Resize(SizeInt32 { Width: 1680, Height: 1080 })?;
+    // Frosted glass: the desktop shows through the whole window, blurred.
+    if let Ok(b) = DesktopAcrylicBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()) {
+        window.SetSystemBackdrop(&b)?;
+    }
 
     let hwnd = app::hwnd_of(&window)?;
 
@@ -102,7 +109,33 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             }
         });
     })?);
-    let map: FrameworkElement = find(&root, "MapImage")?;
+    // The 3D treemap panel.
+    let panel: SwapChainPanel = find(&root, "MapPanel")?;
+    let map: UIElement = panel.cast()?;
+    let pos = |s: &Option<IInspectable>, e: &bindings::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs| -> Option<(f64, f64)> {
+        let el = s.as_ref()?.cast::<UIElement>().ok()?;
+        let p = e.GetCurrentPoint(&el).ok()?.Position().ok()?;
+        Some((p.X as f64, p.Y as f64))
+    };
+    keep(map.PointerMoved(move |s, e| {
+        let Some(e) = e.as_ref() else { return };
+        if let Some((x, y)) = pos(&s.cloned(), e) {
+            with(|st| st.map_hover(x, y));
+        }
+    })?);
+    keep(map.PointerExited(|_, _| {
+        with(|st| st.map_leave());
+    })?);
+    keep(map.PointerWheelChanged(move |s, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
+        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
+        let delta = pt.Properties().and_then(|p| p.MouseWheelDelta()).unwrap_or(0);
+        if let Ok(p) = pt.Position() {
+            with(|st| st.map_wheel(p.X as f64, p.Y as f64, delta));
+        }
+        let _ = e.SetHandled(true);
+    })?);
     keep(map.Tapped(|s, e| {
         let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
         let Ok(el) = s.cast::<UIElement>() else { return };
@@ -110,15 +143,12 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             with(|st| st.map_click(p.X as f64, p.Y as f64));
         }
     })?);
-    keep(map.PointerMoved(|s, e| {
+    keep(map.DoubleTapped(|s, e| {
         let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
         let Ok(el) = s.cast::<UIElement>() else { return };
-        if let Ok(pos) = e.GetCurrentPoint(&el).and_then(|p| p.Position()) {
-            with(|st| st.map_hover(pos.X as f64, pos.Y as f64));
+        if let Ok(p) = e.GetPosition(&el) {
+            with(|st| st.map_zoom_at(p.X as f64, p.Y as f64));
         }
-    })?);
-    keep(find::<FrameworkElement>(&root, "MapBorder")?.SizeChanged(|_, _| {
-        with(|s| s.render_map());
     })?);
 
     // Clicks on the two tables: the row comes from the position within the scrolled content.
@@ -157,17 +187,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
     }
 
-    // Polls the background scan; in screenshot mode it also counts frames.
-    let queue = DispatcherQueue::GetForCurrentThread()?;
-    let timer = queue.CreateTimer()?;
-    timer.SetInterval(windows_time::TimeSpan { duration: if a.shot.is_some() { 160_000 } else { 1_000_000 } })?;
-    keep(timer.Tick(|_, _| {
-        with(|s| {
-            s.poll();
-            s.shot_tick();
-        });
+    // Everything that moves (scan polling, the overlay, the treemap) runs once per frame.
+    keep(CompositionTarget::Rendering(|_, _| {
+        with(|s| s.frame());
     })?);
-    timer.Start()?;
 
     let shot = a.shot.clone();
     let first = a.folder.clone().or_else(|| shot.as_ref().map(|_| PathBuf::from(r"C:\Program Files")));
@@ -186,17 +209,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         colours: HashMap::new(),
         ext_selected: None,
         map_root: ROOT,
-        layout: None,
-        map_px: (0, 0),
-        map_pixels: Vec::new(),
-        hover: None,
+        map: treemap::MapView::new(panel),
+        hud: hud::Hud::default(),
         units: Units::Dynamic,
         view: View::Tree,
         job: None,
         scan_secs: 0.0,
         shot,
         shot_ticks: 0,
-        _timer: timer,
     };
     STATE.with(|s| *s.borrow_mut() = Some(state));
     with(|s| {
