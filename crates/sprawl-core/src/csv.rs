@@ -206,6 +206,23 @@ fn normalise(raw: &str) -> (String, bool) {
     (p, is_dir)
 }
 
+/// A CSV row is only data: rows whose path could mean something other than what it says
+/// (`.` or `..` segments, wildcards, names Windows would trim, absurd depth) are skipped.
+fn plausible_path(p: &str) -> bool {
+    let rl = root_len(p);
+    if rl == 0 || p.contains(['*', '?', '<', '>', '|']) {
+        return false;
+    }
+    let mut depth = 0;
+    for seg in p[rl..].split('\\').filter(|s| !s.is_empty()) {
+        depth += 1;
+        if seg == "." || seg == ".." || seg.ends_with('.') || seg.ends_with(' ') || depth > 1000 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Split one CSV line into fields (quotes, doubled quotes).
 fn parse_line(line: &str, out: &mut Vec<String>) {
     out.clear();
@@ -390,6 +407,9 @@ pub fn load_csv(path: &Path, progress: &Progress) -> io::Result<Tree> {
         let get = |i: Option<usize>| i.and_then(|i| fields.get(i)).map(String::as_str).unwrap_or("");
         let attributes = parse_attributes(get(c.attributes));
         let (path, slash) = normalise(name.trim());
+        if !plausible_path(&path) {
+            continue;
+        }
         let is_dir = slash || attributes & attr::DIRECTORY != 0;
         let size = parse_u64(get(c.size));
         let allocated = parse_u64(get(c.allocated));
@@ -479,6 +499,11 @@ mod tests {
         assert_eq!(split_parent(r"\\srv\share\a"), Some((r"\\srv\share\", "a")));
         assert_eq!(normalise(r"C:\Windows\"), (r"C:\Windows".to_string(), true));
         assert_eq!(normalise(r"C:\"), (r"C:\".to_string(), true));
+        assert!(plausible_path(r"C:\Users\sam\a.txt"));
+        assert!(!plausible_path(r"C:\a\..\..\Windows"));
+        assert!(!plausible_path(r"C:\Users\sam\Documents\*"));
+        assert!(!plausible_path(r"C:\notes."));
+        assert!(!plausible_path(r"relative\path"));
         assert_eq!(normalise("C:"), (r"C:\".to_string(), false));
         assert_eq!(normalise(r"\\?\C:\x\y.txt"), (r"C:\x\y.txt".to_string(), false));
         assert_eq!(normalise(r"\\?\UNC\srv\share\x\"), (r"\\srv\share\x".to_string(), true));

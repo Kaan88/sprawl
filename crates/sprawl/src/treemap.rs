@@ -502,10 +502,10 @@ impl State {
         if self.map.live.is_some() {
             return None;
         }
-        if self.galaxy_on() {
-            return self.map.galaxy.pick(x as f32, y as f32);
-        }
-        self.map.scene.hit(x as f32, y as f32).filter(|&n| n != FREE)
+        let len = self.tree.as_ref().map_or(0, |t| t.nodes.len());
+        let n = if self.galaxy_on() { self.map.galaxy.pick(x as f32, y as f32) } else { self.map.scene.hit(x as f32, y as f32).filter(|&n| n != FREE) };
+        // never hand out a node number the loaded tree doesn't have
+        n.filter(|&n| n < len)
     }
 
     pub(crate) fn map_click(&mut self, x: f64, y: f64) {

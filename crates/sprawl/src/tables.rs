@@ -351,7 +351,11 @@ impl State {
             Ok(chunk) => {
                 let _ = body.SetChild(&chunk);
             }
-            Err(e) => eprintln!("rows: {e:?}"),
+            Err(e) => {
+                // leave the span stale so the next scroll tries again
+                eprintln!("rows: {e:?}");
+                return;
+            }
         }
         let span = (a, b, count);
         if which == Which::Main {

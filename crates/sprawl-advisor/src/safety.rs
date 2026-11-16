@@ -23,6 +23,17 @@ pub enum Rejection {
     SizeMismatch { claimed: u64, actual: u64 },
     Never(String),
     ThroughLink(String),
+    /// A junction or link somewhere inside: a recursive delete could reach its target.
+    LinksInside(String),
+    /// The scan's own root (a whole drive or the folder the user picked).
+    ScanRoot,
+    /// Command text from a model or a local pack. Only the built-in pack's commands are run.
+    UntrustedCommand,
+    /// Red means information only.
+    RedWithAction,
+    /// The protected folders couldn't all be worked out (an environment variable is missing),
+    /// so nothing destructive is offered.
+    NeverListIncomplete,
 }
 
 impl fmt::Display for Rejection {
@@ -33,6 +44,11 @@ impl fmt::Display for Rejection {
             Rejection::SizeMismatch { claimed, actual } => write!(f, "claimed {claimed} bytes but the scan has {actual}"),
             Rejection::Never(p) => write!(f, "{p} is on the never-touch list"),
             Rejection::ThroughLink(p) => write!(f, "{p} is a junction or link"),
+            Rejection::LinksInside(p) => write!(f, "{p} contains a junction or link"),
+            Rejection::ScanRoot => write!(f, "it is the whole scanned folder or drive"),
+            Rejection::UntrustedCommand => write!(f, "its command didn't come from the built-in rules"),
+            Rejection::RedWithAction => write!(f, "it is marked never-touch but carries an action"),
+            Rejection::NeverListIncomplete => write!(f, "the protected Windows folders couldn't be worked out"),
         }
     }
 }
@@ -41,54 +57,106 @@ impl fmt::Display for Rejection {
 pub struct Never {
     patterns: Vec<(String, Pattern)>,
     user_data: Vec<Pattern>,
+    /// A pattern kept an unexpanded `%VAR%`: fail closed.
+    incomplete: bool,
 }
 
-/// Never deleted or moved by hand. `**` covers everything below.
+/// Never deleted or moved by hand. `**` covers everything below. `?:` is any drive, so the
+/// system folders of a second drive or a second Windows are covered too; the `%VAR%` entries
+/// catch relocated folders.
 const NEVER: &[&str] = &[
-    r"%SystemDrive%",
+    r"?:",
+    r"?:\Windows",
+    r"?:\Windows\**",
     r"%SystemRoot%",
     r"%SystemRoot%\**",
+    r"?:\Program Files",
+    r"?:\Program Files\**",
+    r"?:\Program Files (x86)",
+    r"?:\Program Files (x86)\**",
     r"%ProgramFiles%\**",
     r"%ProgramFiles(x86)%\**",
+    r"%ProgramW6432%\**",
+    r"?:\ProgramData",
+    r"?:\ProgramData\Microsoft\**",
+    r"?:\ProgramData\Package Cache\**",
+    r"%ProgramData%",
     r"%ProgramData%\Microsoft\**",
-    r"%SystemDrive%\System Volume Information\**",
-    r"%SystemDrive%\Recovery\**",
-    r"%SystemDrive%\Boot\**",
-    r"%SystemDrive%\$Recycle.Bin\**",
-    r"%SystemDrive%\pagefile.sys",
-    r"%SystemDrive%\hiberfil.sys",
-    r"%SystemDrive%\swapfile.sys",
-    r"%SystemDrive%\Users",
-    r"%SystemDrive%\Users\*",
-    r"%SystemDrive%\Users\*\AppData",
-    r"%SystemDrive%\Users\*\AppData\Local",
-    r"%SystemDrive%\Users\*\AppData\Roaming",
-    r"%SystemDrive%\Users\*\NTUSER.DAT*",
-    r"%SystemDrive%\Users\*\OneDrive*",
+    r"?:\System Volume Information",
+    r"?:\System Volume Information\**",
+    r"?:\Recovery\**",
+    r"?:\Boot\**",
+    r"?:\EFI\**",
+    r"?:\bootmgr",
+    r"?:\BOOTNXT",
+    r"?:\$WinREAgent\**",
+    r"?:\$Recycle.Bin",
+    r"?:\$Recycle.Bin\**",
+    r"?:\pagefile.sys",
+    r"?:\hiberfil.sys",
+    r"?:\swapfile.sys",
+    r"?:\DumpStack.log*",
+    r"?:\Users",
+    r"?:\Users\*",
+    r"?:\Users\*\AppData",
+    r"?:\Users\*\AppData\Local",
+    r"?:\Users\*\AppData\LocalLow",
+    r"?:\Users\*\AppData\Roaming",
+    r"?:\Users\*\AppData\Local\Microsoft\**",
+    r"?:\Users\*\AppData\Local\Packages\**",
+    r"?:\Users\*\AppData\Roaming\Microsoft\**",
+    r"?:\Users\*\NTUSER.DAT*",
+    r"?:\Users\*\ntuser.ini",
+    r"?:\Users\*\OneDrive*",
+    r"?:\Users\*\.ssh\**",
+    r"?:\Users\*\.gnupg\**",
+    r"?:\Users\*\AppData\Local\Google\Chrome\User Data\**",
+    r"?:\Users\*\AppData\Local\Microsoft\Edge\User Data\**",
+    r"?:\Users\*\AppData\Roaming\Mozilla\Firefox\Profiles\**",
+    r"?:\**\*.vhdx",
+    r"%USERPROFILE%",
+    r"%LOCALAPPDATA%",
+    r"%APPDATA%",
 ];
 
 /// Folders that hold the user's own work.
 const USER_DATA: &[&str] = &[
-    r"%SystemDrive%\Users\*\Documents\**",
-    r"%SystemDrive%\Users\*\Desktop\**",
-    r"%SystemDrive%\Users\*\Pictures\**",
-    r"%SystemDrive%\Users\*\Videos\**",
-    r"%SystemDrive%\Users\*\Music\**",
-    r"%SystemDrive%\Users\*\OneDrive*\**",
-    r"%SystemDrive%\Users\*\source\**",
+    r"?:\Users\*\Documents\**",
+    r"?:\Users\*\Desktop\**",
+    r"?:\Users\*\Pictures\**",
+    r"?:\Users\*\Videos\**",
+    r"?:\Users\*\Music\**",
+    r"?:\Users\*\Downloads\**",
+    r"?:\Users\*\Saved Games\**",
+    r"?:\Users\*\Favorites\**",
+    r"?:\Users\*\Contacts\**",
+    r"?:\Users\*\OneDrive*\**",
+    r"?:\Users\*\Dropbox*\**",
+    r"?:\Users\*\iCloud*\**",
+    r"?:\Users\*\Google Drive*\**",
+    r"?:\Users\*\source\**",
 ];
 
 impl Never {
     pub fn default_list() -> Never {
-        Never {
-            patterns: NEVER.iter().map(|p| (p.to_string(), Pattern::new(p))).collect(),
-            user_data: USER_DATA.iter().map(|p| Pattern::new(p)).collect(),
-        }
+        let patterns: Vec<(String, Pattern)> = NEVER.iter().map(|p| (p.to_string(), Pattern::new(p))).collect();
+        // %VAR% entries that couldn't be expanded protect nothing: fail closed. (The x86 and
+        // W6432 Program Files variables may legitimately be missing.)
+        let incomplete = NEVER
+            .iter()
+            .filter(|p| !p.contains("(x86)") && !p.contains("W6432"))
+            .any(|p| crate::rules::expand(p).contains('%'));
+        Never { patterns, user_data: USER_DATA.iter().map(|p| Pattern::new(p)).collect(), incomplete }
     }
 
     /// The never-list entry `path` falls under, if any.
     pub fn hit(&self, path: &str) -> Option<&str> {
         self.patterns.iter().find(|(_, p)| p.matches(path)).map(|(s, _)| s.as_str())
+    }
+
+    /// Every `%VAR%` entry could be worked out. When not, callers refuse destructive actions.
+    pub fn complete(&self) -> bool {
+        !self.incomplete
     }
 
     pub fn is_user_data(&self, path: &str) -> bool {
@@ -103,6 +171,9 @@ fn close_enough(claimed: u64, actual: u64) -> bool {
 
 /// Check one finding against the tree and the disk. Returns it (with its risk raised if it
 /// touches the user's own data) or the reason it was held back.
+///
+/// `tree` must be the full scan (not a filtered view, not a CSV import): sizes and links are
+/// checked against it.
 pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejection> {
     let n = find_path(tree, &f.path).ok_or(Rejection::NotInTree)?;
     if std::fs::symlink_metadata(&f.path).is_err() {
@@ -112,17 +183,38 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     if !close_enough(f.bytes, actual) {
         return Err(Rejection::SizeMismatch { claimed: f.bytes, actual });
     }
+    // Command text is only ever taken from the built-in pack; a model or a local pack names a
+    // remedy and the program writes the command.
+    if f.command.is_some() && !f.trusted {
+        return Err(Rejection::UntrustedCommand);
+    }
+    if f.risk == Risk::Red && (f.command.is_some() || !matches!(f.remedy, Remedy::Info)) {
+        return Err(Rejection::RedWithAction);
+    }
     let path = f.path.to_string_lossy();
-    let destructive = matches!(f.remedy, Remedy::Delete | Remedy::Move);
-    // Curated rules may run an official clean-up command on a protected path (DISM on WinSxS);
-    // a model may not touch one at all.
+    let on_path = f.command.as_deref().is_some_and(|c| c.contains(&crate::rules::ps_quote(&path)));
+    // Acts on the files at `path` (rather than asking their owner to clean up).
+    let removes = matches!(f.remedy, Remedy::Delete | Remedy::Move);
+    let destructive = removes || on_path;
     let from_model = matches!(f.source, crate::finding::Source::Model(_));
     if destructive || from_model {
-        if let Some(p) = never.hit(&path) {
-            return Err(Rejection::Never(p.to_string()));
+        if never.incomplete {
+            return Err(Rejection::NeverListIncomplete);
+        }
+        // Curated built-in rules may run an official clean-up command on a protected path
+        // (DISM on WinSxS); nothing else may touch one.
+        let exempt = f.allow_protected && !removes && !from_model;
+        if !exempt {
+            if let Some(p) = never.hit(&path) {
+                return Err(Rejection::Never(p.to_string()));
+            }
         }
     }
     if destructive {
+        let multi_top = tree.nodes[sprawl_core::ROOT].name == sprawl_core::MULTIPLE && tree.nodes[n].parent == Some(sprawl_core::ROOT);
+        if n == sprawl_core::ROOT || multi_top {
+            return Err(Rejection::ScanRoot);
+        }
         // no junctions on the way down from the scan root
         let mut i = Some(n);
         while let Some(k) = i {
@@ -130,6 +222,14 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
                 return Err(Rejection::ThroughLink(tree.path_of(k).display().to_string()));
             }
             i = tree.nodes[k].parent;
+        }
+        // nor anywhere inside: a recursive delete may follow one into its target
+        let mut stack = tree.nodes[n].children.clone();
+        while let Some(k) = stack.pop() {
+            if tree.nodes[k].is_reparse_point() {
+                return Err(Rejection::LinksInside(tree.path_of(k).display().to_string()));
+            }
+            stack.extend_from_slice(&tree.nodes[k].children);
         }
     }
     let mut out = f.clone();

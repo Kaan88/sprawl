@@ -148,7 +148,8 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
 
 pub fn confirm(owner: HWND, text: &str, caption: &str) -> bool {
     let (t, c) = (wide(text), wide(caption));
-    unsafe { MessageBoxW(owner, t.as_ptr(), c.as_ptr(), 0x4 | 0x30) == 6 }
+    // MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2: Enter or a stray click means No
+    unsafe { MessageBoxW(owner, t.as_ptr(), c.as_ptr(), 0x4 | 0x30 | 0x100) == 6 }
 }
 
 pub fn info(owner: HWND, text: &str, caption: &str) {
@@ -188,7 +189,10 @@ pub fn delete_path(owner: HWND, path: &Path, permanent: bool) -> bool {
         wFunc: 3,
         pFrom: from.as_ptr(),
         pTo: std::ptr::null(),
-        fFlags: if permanent { 0x10 } else { 0x40 | 0x10 },
+        // FOF_NOCONFIRMATION (we asked already); recycling adds FOF_ALLOWUNDO and
+        // FOF_WANTNUKEWARNING, so anything too big for the Recycle Bin asks again instead of
+        // being deleted for good without a word.
+        fFlags: if permanent { 0x10 } else { 0x40 | 0x10 | 0x4000 },
         fAnyOperationsAborted: 0,
         hNameMappings: std::ptr::null_mut(),
         lpszProgressTitle: std::ptr::null(),

@@ -65,6 +65,9 @@ pub struct Rule {
     pub why: String,
     #[serde(default)]
     pub min_bytes: Option<u64>,
+    /// Built-in pack only: the command may act on a never-list path (an official clean-up tool).
+    #[serde(default)]
+    pub allow_protected: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -72,6 +75,10 @@ pub struct RulePack {
     pub pack: PackInfo,
     #[serde(default, rename = "rule")]
     pub rules: Vec<Rule>,
+    /// Only the pack compiled into the program. Local and proposed packs are never trusted:
+    /// their commands and `allow_protected` are refused by the safety checks.
+    #[serde(skip)]
+    pub trusted: bool,
 }
 
 impl RulePack {
@@ -93,7 +100,9 @@ impl RulePack {
     }
 
     pub fn builtin() -> RulePack {
-        RulePack::parse(BUILTIN).expect("built-in rule pack")
+        let mut p = RulePack::parse(BUILTIN).expect("built-in rule pack");
+        p.trusted = true;
+        p
     }
 }
 
@@ -252,7 +261,7 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
                         };
                         if pat.accepts(&s) && kind_ok {
                             if node.size >= min && taken.insert(n) {
-                                out.push(finding(tree, n, rule, &pack.pack.name));
+                                out.push(finding(tree, n, rule, pack));
                             }
                             continue;
                         }
@@ -274,9 +283,24 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
     out
 }
 
-fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &str) -> Finding {
+/// A PowerShell single-quoted literal. Besides `'`, PowerShell ends a single-quoted string at
+/// the typographic quotes U+2018..U+201B, so each of those is doubled too.
+pub fn ps_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
+fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     let path: PathBuf = tree.path_of(n);
-    let quoted = format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let quoted = ps_quote(&path.display().to_string());
     let command = match (&rule.command, rule.remedy) {
         (Some(c), _) => Some(c.replace("{path}", &quoted)),
         (None, Remedy::Delete) => Some(if tree.nodes[n].is_dir {
@@ -291,7 +315,7 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &str) -> Finding {
     if node.is_dir {
         evidence.push(format!("{} files in {} folders", node.files, node.folders));
     }
-    evidence.push(format!("Matched rule {} from the {pack} pack", rule.id));
+    evidence.push(format!("Matched rule {} from the {} pack", rule.id, pack.pack.name));
     Finding {
         path,
         owner: rule.owner.clone(),
@@ -303,12 +327,26 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &str) -> Finding {
         evidence,
         confidence: 0.95,
         source: Source::Rule(rule.id.clone()),
+        allow_protected: pack.trusted && rule.allow_protected,
+        // the program's own delete command, or the built-in pack's
+        trusted: pack.trusted || rule.command.is_none(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powershell_quoting() {
+        assert_eq!(ps_quote(r"C:\a"), r"'C:\a'");
+        assert_eq!(ps_quote("it's"), "'it''s'");
+        // typographic quotes also end a single-quoted string in PowerShell
+        assert_eq!(ps_quote("a\u{2019}b"), "'a\u{2019}\u{2019}b'");
+        assert_eq!(ps_quote("\u{2018}\u{201A}\u{201B}"), "'\u{2018}\u{2018}\u{201A}\u{201A}\u{201B}\u{201B}'");
+        // inert inside single quotes: left alone
+        assert_eq!(ps_quote(r"$x`; & a\"), r"'$x`; & a\'");
+    }
 
     #[test]
     fn segment_globs() {

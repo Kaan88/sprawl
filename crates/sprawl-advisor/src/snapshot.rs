@@ -69,7 +69,7 @@ fn from_secs(s: i64) -> Option<SystemTime> {
     }
     let u = s - EPOCH_1601;
     if u >= 0 {
-        Some(UNIX_EPOCH + Duration::from_secs(u as u64))
+        UNIX_EPOCH.checked_add(Duration::from_secs(u as u64))
     } else {
         UNIX_EPOCH.checked_sub(Duration::from_secs((-u) as u64))
     }

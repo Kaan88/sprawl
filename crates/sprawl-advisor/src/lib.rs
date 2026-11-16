@@ -136,6 +136,24 @@ mod tests {
         let delete = Finding { remedy: Remedy::Delete, ..rule };
         assert!(matches!(safety::check(&delete, &windows, &never), Err(safety::Rejection::Never(_))));
 
+        // command text from a model or a local pack is never accepted
+        let sneaky = Finding { command: Some(format!("Remove-Item -Recurse {}", dir.join("keep").display())), trusted: false, ..good.clone() };
+        assert_eq!(safety::check(&sneaky, &tree, &never), Err(safety::Rejection::UntrustedCommand));
+        // red is information only
+        let red = Finding { risk: Risk::Red, ..good.clone() };
+        assert_eq!(safety::check(&red, &tree, &never), Err(safety::Rejection::RedWithAction));
+        // the scan root itself is never deleted
+        let root = Finding { path: tree.path_of(ROOT), bytes: tree.nodes[ROOT].size, ..good.clone() };
+        assert_eq!(safety::check(&root, &tree, &never), Err(safety::Rejection::ScanRoot));
+        // any drive's system folders are protected, not only the system drive's
+        assert!(never.hit(r"D:\").is_some());
+        assert!(never.hit(r"D:\System Volume Information\x").is_some());
+        assert!(never.hit(r"E:\Windows\System32").is_some());
+        assert!(never.hit(r"D:\Users\sam\.ssh\id_ed25519").is_some());
+        assert!(never.hit(r"D:\vm\disk.vhdx").is_some());
+        assert!(never.hit(r"D:\games\cache").is_none());
+        assert!(never.is_user_data(r"D:\Users\sam\Downloads\a.iso"));
+
         std::fs::remove_dir_all(dir.join("cache")).unwrap();
         assert_eq!(safety::check(&good, &tree, &never), Err(safety::Rejection::Missing));
         let _ = std::fs::remove_dir_all(&dir);

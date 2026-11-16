@@ -399,6 +399,11 @@ impl Index {
         }
         let t = target as usize;
         if t >= self.recs.len() {
+            // The index is sized from the MFT's own record count; a reference past it is a damaged
+            // record. Grow a little for safety, never by billions of entries.
+            if t > self.recs.len().saturating_mul(2).max(1 << 16) {
+                return;
+            }
             self.recs.resize(t + 1, Rec::default());
             self.names.resize(t + 1, String::new());
         }

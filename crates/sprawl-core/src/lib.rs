@@ -120,6 +120,36 @@ pub fn extension_of(name: &str) -> String {
 
 // -------------------------------------------------------------------- scanning entry points
 
+/// The one spelling of a scan root that paths, the never-touch list and deletes all agree on:
+/// absolute (a relative root would resolve against whatever folder a later step runs in),
+/// without the `\?\` prefix, and with 8.3 short names (`PROGRA~1`) expanded to long ones.
+pub fn canonical_root(path: &Path) -> PathBuf {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let s = abs.display().to_string();
+    let s = if let Some(rest) = s.strip_prefix(r"\?\UNC\") {
+        format!(r"\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\?\") {
+        rest.to_string()
+    } else {
+        s
+    };
+    long_name(&s).unwrap_or(s).into()
+}
+
+#[cfg(windows)]
+fn long_name(s: &str) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    let w: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 32_768];
+    let n = unsafe { GetLongPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n]))
+}
+
+#[cfg(not(windows))]
+fn long_name(_: &str) -> Option<String> {
+    None
+}
+
 /// Scan `path` (see [`scan_auto`]) and call `progress` with the number of items seen so far,
 /// about every 30 ms. Kept for callers that only need a count; new code should use
 /// [`scan_auto`] with a shared [`Progress`].
@@ -142,6 +172,7 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 /// `progress.snapshot().method` and in [`Tree::method`]. Cancelling via [`Progress::cancel`]
 /// returns `ErrorKind::Interrupted`.
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
+    let path = &canonical_root(path);
     if is_elevated() {
         match mft::scan(path, progress) {
             Ok(tree) => return Ok(tree),
@@ -161,7 +192,7 @@ pub fn scan_many(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
     if paths.len() == 1 {
         return scan_auto(&paths[0], progress);
     }
-    let abs: Vec<PathBuf> = paths.iter().map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone())).collect();
+    let abs: Vec<PathBuf> = paths.iter().map(|p| canonical_root(p)).collect();
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
     if is_elevated() {
@@ -370,7 +401,8 @@ pub(crate) fn filetime_to_system(ft: u64) -> Option<SystemTime> {
     }
     if ft >= EPOCH_DIFF {
         let d = ft - EPOCH_DIFF;
-        Some(UNIX_EPOCH + Duration::new(d / 10_000_000, (d % 10_000_000) as u32 * 100))
+        // a damaged or foreign timestamp must not panic the scan
+        UNIX_EPOCH.checked_add(Duration::new(d / 10_000_000, (d % 10_000_000) as u32 * 100))
     } else {
         let d = EPOCH_DIFF - ft;
         UNIX_EPOCH.checked_sub(Duration::new(d / 10_000_000, (d % 10_000_000) as u32 * 100))
@@ -411,10 +443,10 @@ impl Tree {
             };
             if let Some(p) = self.nodes[i].parent {
                 let parent = &mut self.nodes[p];
-                parent.size += size;
-                parent.allocated += allocated;
-                parent.files += files;
-                parent.folders += folders + u64::from(is_dir);
+                parent.size = parent.size.saturating_add(size);
+                parent.allocated = parent.allocated.saturating_add(allocated);
+                parent.files = parent.files.saturating_add(files);
+                parent.folders = parent.folders.saturating_add(folders + u64::from(is_dir));
             }
         }
         for i in 0..self.nodes.len() {

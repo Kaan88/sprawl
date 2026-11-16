@@ -32,7 +32,11 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let text: String = self.values.iter().map(|(k, v)| format!("{k}={v}\r\n")).collect();
-        let _ = std::fs::write(p, text);
+        // write a temporary file and swap it in, so a crash mid-write can't leave half a file
+        let tmp = p.with_extension("ini.tmp");
+        if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &p).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

@@ -133,8 +133,12 @@ mod cred {
                 return None;
             }
             let c = &*p;
-            let s = std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize);
-            let out = String::from_utf8(s.to_vec()).ok();
+            // an empty credential may come back with a null blob
+            let out = if c.CredentialBlob.is_null() || c.CredentialBlobSize == 0 {
+                None
+            } else {
+                String::from_utf8(std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize).to_vec()).ok()
+            };
             CredFree(p as *const _);
             out
         }

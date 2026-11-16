@@ -61,4 +61,11 @@ pub struct Finding {
     /// 0..1
     pub confidence: f32,
     pub source: Source,
+    /// Set only for rules from the built-in pack that may run their owner's command on a
+    /// never-list path (DISM on WinSxS). Never set for local packs or a model.
+    #[serde(skip)]
+    pub allow_protected: bool,
+    /// The command comes from the built-in pack. Commands from anywhere else are refused.
+    #[serde(skip)]
+    pub trusted: bool,
 }

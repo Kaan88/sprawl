@@ -106,9 +106,11 @@ pub fn list(base: &Path) -> Vec<Entry> {
                 continue;
             };
             let Ok(t) = stem.parse::<u64>() else { continue };
+            // a file named with an absurd time is skipped, not a panic
+            let Some(taken) = UNIX_EPOCH.checked_add(Duration::from_secs(t)) else { continue };
             out.push(Entry {
                 root: PathBuf::from(root.trim()),
-                taken: UNIX_EPOCH + Duration::from_secs(t),
+                taken,
                 file: f.path(),
                 full,
                 bytes: f.metadata().map(|m| m.len()).unwrap_or(0),

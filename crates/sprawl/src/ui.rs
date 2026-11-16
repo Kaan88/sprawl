@@ -2,8 +2,37 @@
 
 pub const NS: &str = r##"xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml""##;
 
+/// Text for a XAML attribute value. File names are anyone's choice, so besides the XML
+/// characters: control characters (not allowed in XML) become U+FFFD, and a leading `{` gets
+/// the `{}` escape so the name isn't read as a markup extension (`{Binding ...}`).
 pub fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    let mut out = String::with_capacity(s.len() + 8);
+    if s.starts_with('{') {
+        out.push_str("{}");
+    }
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c if (c as u32) < 0x20 || matches!(c, '\u{FFFE}' | '\u{FFFF}') => out.push('\u{FFFD}'),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod esc_tests {
+    #[test]
+    fn escapes_names() {
+        assert_eq!(super::esc(r#"a<b>&"c'"#), "a&lt;b&gt;&amp;&quot;c&apos;");
+        assert_eq!(super::esc("{Binding x}"), "{}{Binding x}");
+        assert_eq!(super::esc("a{b}"), "a{b}");
+        assert_eq!(super::esc("x\u{1}y"), "x\u{FFFD}y");
+    }
 }
 
 fn item(name: &str, text: &str, key: &str, mods: &str) -> String {

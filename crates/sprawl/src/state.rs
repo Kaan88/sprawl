@@ -262,8 +262,15 @@ impl State {
                             self.apply_filter();
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => text(&self.root, "StatusText", "Scan stopped."),
-                    Err(e) => text(&self.root, "StatusText", &format!("Scan failed: {e}")),
+                    Err(e) => {
+                        // The map was drawing the live preview, whose node numbers aren't the
+                        // previous tree's: start it afresh from whatever tree is still loaded.
+                        self.map.scene.clear();
+                        self.map.galaxy.clear();
+                        self.render_map();
+                        let msg = if e.kind() == std::io::ErrorKind::Interrupted { "Scan stopped.".to_string() } else { format!("Scan failed: {e}") };
+                        text(&self.root, "StatusText", &msg);
+                    }
                 }
             }
         }
@@ -402,8 +409,10 @@ impl State {
         let Some(base) = self.full_tree.take().or_else(|| self.tree.take()) else { return };
         self.filter = pattern.clone();
         let path = base.root_path.clone();
-        // Node numbers change, so the treemap grows afresh rather than morphing.
+        // Node numbers change, so the treemap grows afresh rather than morphing, and the
+        // back/forward stack of nodes no longer means anything.
         self.map.scene.clear();
+        self.child_stack.clear();
         if pattern.is_empty() {
             self.set_tree(base, &path);
             return;

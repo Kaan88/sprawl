@@ -82,6 +82,7 @@ kind = "any"
 risk = "green"
 remedy = "command"
 command = "Remove-Item -LiteralPath {path} -Recurse -Force   # as administrator"
+allow_protected = true
 min_bytes = 10485760
 why = "Memory dumps Windows wrote when it crashed (blue screens). Only useful for debugging those crashes."
 
@@ -100,7 +101,7 @@ title = "Previous Windows installation"
 paths = ['%SystemDrive%\Windows.old']
 risk = "amber"
 remedy = "command"
-command = "Start-Process cleanmgr -ArgumentList '/d %SystemDrive%' -Verb RunAs   # tick 'Previous Windows installation(s)'"
+command = "Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs   # tick 'Previous Windows installation(s)'"
 why = "The Windows you upgraded from. Removing it means you can't roll back the upgrade."
 
 [[rule]]

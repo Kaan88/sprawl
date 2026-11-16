@@ -393,7 +393,8 @@ impl State {
             }
             self.command(&a);
         }
-        if let Some(v) = self.settings.get("view").map(str::to_string) {
+        // only a view name: the settings file must never be able to run another command
+        if let Some(v) = self.settings.get("view").filter(|v| matches!(*v, "ModeMap" | "ModeCity" | "ModeGalaxy")).map(str::to_string) {
             self.command(&v);
         }
         if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, "oExplorer") {
@@ -435,10 +436,51 @@ impl State {
         text(&self.root, "FootLeft", &msg);
     }
 
+    /// Why the selected item may not be deleted from here, if it may not.
+    fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
+        let t = self.tree.as_ref()?;
+        if t.method == sprawl_core::ScanMethod::Csv {
+            return Some("This view was loaded from a CSV file, so it may not match the disk. Scan the folder to delete from it.".into());
+        }
+        if t.nodes[ROOT].name == sprawl_core::MULTIPLE && t.nodes[n].parent == Some(ROOT) {
+            return Some("That is one of the scanned folders itself.".into());
+        }
+        if self.full_tree.is_some() && t.nodes[n].is_dir {
+            return Some("A filter is on, so this folder holds more than you can see. Clear the filter to delete a whole folder.".into());
+        }
+        let s = path.display().to_string();
+        let bad_seg = s.split('\\').skip(1).any(|g| g == "." || g == ".." || g.ends_with('.') || g.ends_with(' '));
+        if !path.is_absolute() || s.contains(['*', '?']) || bad_seg {
+            return Some(format!("Sprawl won't delete a path written like this:\n{s}"));
+        }
+        let never = sprawl_advisor::safety::Never::default_list();
+        if !never.complete() {
+            return Some("Sprawl couldn't work out where Windows keeps its own folders, so it won't delete anything.".into());
+        }
+        if let Some(p) = never.hit(&s) {
+            return Some(format!("{s}\n\nis protected (it matches {p}). Deleting it could break Windows, an app or your profile."));
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.is_dir() == t.nodes[n].is_dir => None,
+            Ok(_) => Some("It changed since the scan (a file became a folder or the other way round). Scan again first.".into()),
+            Err(_) => Some("It's no longer there. Scan again to refresh.".into()),
+        }
+    }
+
     pub(crate) fn delete(&mut self, permanent: bool) {
         let Some(n) = self.selected.filter(|&n| n != ROOT) else { return };
         let Some(path) = self.selected_path() else { return };
-        let what = if permanent { "Delete this permanently? It can't be brought back." } else { "Move this to the Recycle Bin?" };
+        if let Some(why) = self.delete_refusal(n, &path) {
+            win32::info(self.hwnd, &why, "Sprawl");
+            return;
+        }
+        let node = &self.tree.as_ref().unwrap().nodes[n];
+        let what = match (node.is_dir, permanent) {
+            (true, true) => format!("Delete this folder permanently? It can't be brought back.\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
+            (true, false) => format!("Move this folder to the Recycle Bin?\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
+            (false, true) => format!("Delete this file permanently? It can't be brought back.\n\n{}", self.size(node.size)),
+            (false, false) => format!("Move this file to the Recycle Bin?\n\n{}", self.size(node.size)),
+        };
         if !win32::confirm(self.hwnd, &format!("{what}\n\n{}", path.display()), "Sprawl") {
             return;
         }
@@ -446,35 +488,54 @@ impl State {
             win32::info(self.hwnd, "It couldn't be deleted (it may be in use or protected).", "Sprawl");
             return;
         }
+        // The full tree behind a filter forgets it too, or clearing the filter brings it back.
+        if let Some(full) = self.full_tree.as_mut() {
+            if let Some(k) = sprawl_advisor::find_path(full, &path) {
+                detach(full, k, None);
+            }
+        }
         let t = self.tree.as_mut().unwrap();
-        let (size, files, folders, is_dir, alloc) = (t.nodes[n].size, t.nodes[n].files, t.nodes[n].folders, t.nodes[n].is_dir, self.alloc[n]);
         let parent = t.nodes[n].parent;
-        if let Some(p) = parent {
-            t.nodes[p].children.retain(|&c| c != n);
-        }
-        let mut p = parent;
-        while let Some(i) = p {
-            let node = &mut t.nodes[i];
-            node.size -= size;
-            node.files -= files;
-            node.folders -= folders + u64::from(is_dir);
-            self.alloc[i] -= alloc;
-            p = node.parent;
-        }
-        // Detach the whole branch so file-type totals forget it.
-        let mut stack = vec![n];
-        while let Some(i) = stack.pop() {
-            stack.extend(t.nodes[i].children.clone());
-            t.nodes[i].is_dir = true;
-            t.nodes[i].size = 0;
-            t.nodes[i].children.clear();
-            self.alloc[i] = 0;
-        }
+        detach(t, n, Some(&mut self.alloc));
         self.selected = parent;
         self.files.retain(|&f| f != n && !self.tree.as_ref().unwrap().nodes[f].is_dir);
         self.rebuild_exts();
         self.refresh_rows();
         self.refresh_exts();
         self.render_map();
+    }
+}
+
+/// Take node `n` out of the tree after it was deleted: its totals come off every parent and the
+/// whole branch is emptied so file-type totals forget it.
+fn detach(t: &mut sprawl_core::Tree, n: usize, mut alloc: Option<&mut Vec<u64>>) {
+    let (size, files, folders, is_dir) = (t.nodes[n].size, t.nodes[n].files, t.nodes[n].folders, t.nodes[n].is_dir);
+    let own_alloc = alloc.as_ref().map_or(t.nodes[n].allocated, |a| a[n]);
+    let parent = t.nodes[n].parent;
+    if let Some(p) = parent {
+        t.nodes[p].children.retain(|&c| c != n);
+    }
+    let mut p = parent;
+    while let Some(i) = p {
+        let node = &mut t.nodes[i];
+        node.size = node.size.saturating_sub(size);
+        node.files = node.files.saturating_sub(files);
+        node.folders = node.folders.saturating_sub(folders + u64::from(is_dir));
+        node.allocated = node.allocated.saturating_sub(own_alloc);
+        if let Some(a) = alloc.as_deref_mut() {
+            a[i] = a[i].saturating_sub(own_alloc);
+        }
+        p = node.parent;
+    }
+    let mut stack = vec![n];
+    while let Some(i) = stack.pop() {
+        stack.extend(t.nodes[i].children.clone());
+        t.nodes[i].is_dir = true;
+        t.nodes[i].size = 0;
+        t.nodes[i].allocated = 0;
+        t.nodes[i].children.clear();
+        if let Some(a) = alloc.as_deref_mut() {
+            a[i] = 0;
+        }
     }
 }
