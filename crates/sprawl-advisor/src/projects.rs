@@ -287,7 +287,8 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
         }
         // a tool run from target\release keeps its project in use; an unknown date is not "old"
         let ran = p.outputs.iter().filter_map(|&(o, _, _)| facts.last_run_in(tree, o)).max();
-        let Some(last) = p.last_change.max(ran).filter(|_| p.last_change.is_some()) else { continue };
+        let Some(changed) = p.last_change else { continue };
+        let last = changed.max(ran.unwrap_or(changed));
         let Ok(age) = now.duration_since(last) else { continue };
         if age.as_secs() < days.saturating_mul(86_400) {
             continue;
@@ -300,13 +301,21 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             if node.size < min_bytes {
                 continue;
             }
+            // programs in it, and no way to know whether they run (Prefetch unreadable without
+            // administrator rights): it may be a tool in daily use
+            if !facts.runs_complete && facts.has_programs(tree, n) {
+                continue;
+            }
             let path = tree.path_of(n);
             let source = total.saturating_sub(p.output_bytes(tree));
             let mut evidence = vec![
                 format!("Build output of the {} project {project_name}", kinds.join(" / ")),
-                format!("The project's own files last changed in {}", month_year(last)),
+                format!("The project's own files last changed in {}", month_year(changed)),
                 format!("Comes back with {how}"),
             ];
+            if let Some(r) = ran.filter(|&r| r > changed) {
+                evidence.push(format!("A program in its output last ran in {}", month_year(r)));
+            }
             if source > 0 {
                 evidence.push(format!("{:.0}x the size of the project's own files", node.size as f64 / source as f64));
             }
@@ -382,8 +391,11 @@ mod tests {
         assert!(outs.contains(&"target") && outs.contains(&"node_modules"));
         assert!(p.last_change.is_some());
         // just written, so not old enough to suggest
-        let facts = crate::facts::Facts::from_apps(Vec::new());
+        let mut facts = crate::facts::Facts::from_apps(Vec::new());
         assert!(build_outputs(&tree, &ps, &facts, 30, 0).is_empty());
+        // target holds app.exe: without Prefetch nobody knows whether it runs, so it stays
+        assert!(build_outputs(&tree, &ps, &facts, 0, 1000).is_empty());
+        facts.runs_complete = true;
         let f = build_outputs(&tree, &ps, &facts, 0, 1000);
         assert_eq!(f.len(), 1, "only target is over 1000 bytes");
         assert!(f[0].command.as_deref().unwrap().contains("; sprawl-rm (Get-Item -LiteralPath '"));

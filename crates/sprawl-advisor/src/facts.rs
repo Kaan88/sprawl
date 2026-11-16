@@ -70,6 +70,9 @@ pub struct Facts {
     index: Vec<(Vec<String>, usize)>,
     /// When each program last started, filled in by [`Facts::attach_usage`].
     runs: HashMap<String, (SystemTime, UsedFrom)>,
+    /// Prefetch could be read and is current, so a program missing from `runs` hasn't been
+    /// started lately (without it only Explorer starts are known).
+    pub runs_complete: bool,
 }
 
 impl Facts {
@@ -105,7 +108,7 @@ impl Facts {
         }
         // longest first; for equal locations the first source wins (Steam over its Uninstall key)
         index.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        Facts { apps, index, runs: HashMap::new() }
+        Facts { apps, index, runs: HashMap::new(), runs_complete: false }
     }
 
     /// The app whose folder holds `path`, if any (the most specific one).
@@ -137,7 +140,8 @@ impl Facts {
     /// Fill in `last_used` from program starts (Prefetch, UserAssist), matched by the names of
     /// the programs found in each app's folder.
     pub fn attach_usage(&mut self, tree: &Tree) {
-        let runs = program_runs();
+        let (runs, prefetch) = program_runs();
+        self.runs_complete = prefetch;
         if runs.is_empty() {
             return;
         }
@@ -162,6 +166,11 @@ impl Facts {
             app.last_used = best;
         }
         self.runs = runs;
+    }
+
+    /// Whether folder `n` holds programs in its top levels.
+    pub fn has_programs(&self, tree: &Tree, n: usize) -> bool {
+        !programs_in(tree, n, 3).is_empty()
     }
 
     /// The last start of any program in the top levels of folder `n` (a tool run from a build
@@ -236,7 +245,8 @@ fn programs_in(tree: &Tree, n: usize, depth: usize) -> Vec<String> {
 }
 
 /// When each program (by lower-case file name) last started, from every source available.
-fn program_runs() -> HashMap<String, (SystemTime, UsedFrom)> {
+/// Also says whether Prefetch was read and current.
+fn program_runs() -> (HashMap<String, (SystemTime, UsedFrom)>, bool) {
     let mut out: HashMap<String, (SystemTime, UsedFrom)> = HashMap::new();
     let mut add = |name: String, t: SystemTime, from: UsedFrom| {
         let e = out.entry(run_key(&name)).or_insert((t, from));
@@ -271,7 +281,7 @@ fn program_runs() -> HashMap<String, (SystemTime, UsedFrom)> {
     for (exe, t) in sources::user_assist() {
         add(exe, t, UsedFrom::UserAssist);
     }
-    out
+    (out, fresh)
 }
 
 pub(crate) fn filetime(ft: u64) -> Option<SystemTime> {

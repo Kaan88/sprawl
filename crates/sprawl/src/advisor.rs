@@ -298,11 +298,14 @@ impl State {
         if let Some(n) = node {
             self.selected = Some(n);
             let removes = self.advice().is_some_and(|r| matches!(r.findings[i].remedy, Remedy::Delete | Remedy::Command));
-            if let (true, Some(t), Some(tx)) = (removes, self.tree.clone(), self.advisor.tx.clone()) {
+            if let (true, Some(t), Some(tx)) = (removes, self.tree.as_ref(), self.advisor.tx.clone()) {
+                use sprawl_advisor::inuse;
                 self.advisor.in_use = Some((i, InUse::Checking));
                 let gen = self.tree_gen;
+                // the paths here, so the thread doesn't hold the tree
+                let files = inuse::files_under(t, n, inuse::MAX_FILES + 1);
                 std::thread::spawn(move || {
-                    let _ = tx.send(Msg::InUse(gen, i, InUse::Done(sprawl_advisor::inuse::in_use_under(&t, n))));
+                    let _ = tx.send(Msg::InUse(gen, i, InUse::Done(inuse::check_files(files))));
                 });
             }
         }

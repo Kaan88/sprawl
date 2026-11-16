@@ -211,7 +211,7 @@ impl State {
             }
             // only from the tables: the Advisor tab never deletes anything, even by keyboard
             "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files) => self.delete(name == "mDeleteForever"),
-            "mDelete" | "mDeleteForever" => {}
+            "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View and File View"),
             "mExportCsv" if has_tree => {
                 // WizTree's format, so the file loads back here or in WizTree.
                 let path = user_dir("Documents").join(format!("Sprawl export {}.csv", stamp()));

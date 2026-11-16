@@ -52,7 +52,12 @@ pub const MAX_FILES: usize = 10_000;
 
 /// [`in_use`] for everything under node `n` (the first [`MAX_FILES`] files).
 pub fn in_use_under(tree: &Tree, n: usize) -> Option<Checked> {
-    let mut files = files_under(tree, n, MAX_FILES + 1);
+    check_files(files_under(tree, n, MAX_FILES + 1))
+}
+
+/// [`in_use`] for files from [`files_under`] with a cap of `MAX_FILES + 1`, so the tree isn't
+/// needed (and kept) while Windows is asked.
+pub fn check_files(mut files: Vec<PathBuf>) -> Option<Checked> {
     let all_files = files.len() <= MAX_FILES;
     files.truncate(MAX_FILES);
     in_use(&files).map(|names| Checked { names, all_files })

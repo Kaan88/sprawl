@@ -26,7 +26,8 @@ pub(crate) struct Hist {
     pub base: Option<Rc<Vec<u64>>>,
     pub playing: bool,
     next: Instant,
-    nodes: usize,
+    /// `State::tree_gen` it was opened for.
+    gen: u64,
 }
 
 pub(crate) fn xaml() -> &'static str {
@@ -141,7 +142,7 @@ impl State {
             return;
         }
         let n = entries.len();
-        self.hist = Some(Hist { entries, pos: n, cache: HashMap::new(), display: None, base: None, playing: false, next: Instant::now(), nodes: t.nodes.len() });
+        self.hist = Some(Hist { entries, pos: n, cache: HashMap::new(), display: None, base: None, playing: false, next: Instant::now(), gen: self.tree_gen });
         if let Ok(s) = find::<RangeBase>(&self.root, "HistSlider") {
             let _ = s.SetMaximum(n as f64);
             let _ = s.SetValue(n as f64);
@@ -190,7 +191,7 @@ impl State {
 
     pub(crate) fn hist_seek(&mut self, pos: usize) {
         let Some(h) = &self.hist else { return };
-        if self.tree.as_ref().map(|t| t.nodes.len()) != Some(h.nodes) {
+        if self.tree.is_none() || self.tree_gen != h.gen {
             self.hist_close();
             return;
         }
