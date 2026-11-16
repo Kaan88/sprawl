@@ -13,11 +13,14 @@
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
 pub mod config;
+pub mod export;
 pub mod facts;
 pub mod finding;
 pub mod hidden;
 pub mod history;
 pub mod inuse;
+pub mod llm;
+pub mod plan;
 pub mod projects;
 pub mod rules;
 pub mod safety;
