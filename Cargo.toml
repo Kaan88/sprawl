@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/disktree-core", "crates/disktree", "crates/bindgen"]
+default-members = ["crates/disktree-core", "crates/disktree"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

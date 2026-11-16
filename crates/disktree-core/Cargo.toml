@@ -1,0 +1,8 @@
+[package]
+name = "disktree-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI-free part of DiskTree: disk scanning, folder totals, file-type stats and squarified treemap layout."
+
+[dependencies]

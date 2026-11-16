@@ -1,0 +1,10 @@
+[package]
+name = "disktree-bindgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Regenerates crates/disktree/src/bindings.rs (the WinUI 3 projection) from the Windows App SDK 1.8 .winmd files."
+
+[dependencies]
+windows-bindgen = "0.100.0"

@@ -1,0 +1,15 @@
+[package]
+name = "disktree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "DiskTree: WinUI 3 (Windows App SDK 1.8) desktop front end."
+build = "build.rs"
+
+[dependencies]
+disktree-core = { path = "../disktree-core" }
+windows-core = "0.100"
+windows-collections = "0.100"
+windows-reference = "0.100"
+windows-time = "0.100"
