@@ -168,28 +168,51 @@ impl Facts {
         self.runs = runs;
     }
 
-    /// Whether folder `n` holds a program anywhere inside (`bin\Release\net8.0\win-x64\tool.exe`),
-    /// without following links.
-    pub fn has_programs(&self, tree: &Tree, n: usize) -> bool {
+    /// What the build output `n` says about use: whether it holds programs anywhere inside
+    /// (`bin\Release\net8.0\win-x64\tool.exe`), the last start of any of them, and whether one
+    /// has no record of starting. Build-time programs (cargo's `build-script-build.exe`, the same
+    /// name in every crate) are left out: their runs say nothing about this project.
+    pub fn output_programs(&self, tree: &Tree, n: usize) -> OutputPrograms {
+        let mut out = OutputPrograms::default();
         let mut stack = vec![n];
         while let Some(k) = stack.pop() {
             let node = &tree.nodes[k];
-            if !node.is_dir {
-                if node.name.to_lowercase().ends_with(".exe") {
-                    return true;
+            if node.is_dir {
+                if !node.is_reparse_point() {
+                    stack.extend_from_slice(&node.children);
                 }
-            } else if k == n || !node.is_reparse_point() {
-                stack.extend_from_slice(&node.children);
+                continue;
+            }
+            let b = node.name.as_bytes();
+            if b.len() < 4 || !b[b.len() - 4..].eq_ignore_ascii_case(b".exe") {
+                continue;
+            }
+            let name = node.name.to_lowercase();
+            if name.starts_with("build-script-") || name.starts_with("build_script_") {
+                continue;
+            }
+            out.any = true;
+            match self.runs.get(&run_key(&name)) {
+                Some(&(t, _)) => out.last_run = out.last_run.max(Some(t)),
+                None => out.unseen = true,
             }
         }
-        false
+        out
     }
 
-    /// The last start of any program in the top levels of folder `n` (a tool run from a build
-    /// output), from [`Facts::attach_usage`]'s sources.
-    pub fn last_run_in(&self, tree: &Tree, n: usize) -> Option<SystemTime> {
-        programs_in(tree, n, 8).iter().filter_map(|exe| self.runs.get(&run_key(exe)).map(|&(t, _)| t)).max()
+    #[cfg(test)]
+    pub(crate) fn set_run(&mut self, exe: &str, t: SystemTime) {
+        self.runs.insert(run_key(exe), (t, UsedFrom::Prefetch));
     }
+}
+
+/// See [`Facts::output_programs`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OutputPrograms {
+    pub any: bool,
+    pub last_run: Option<SystemTime>,
+    /// At least one has no record of starting.
+    pub unseen: bool,
 }
 
 /// Top-level folders that hold many apps, never claimed by one.

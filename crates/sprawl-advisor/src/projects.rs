@@ -286,7 +286,7 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             continue;
         }
         // a tool run from target\release keeps its project in use; an unknown date is not "old"
-        let ran = p.outputs.iter().filter_map(|&(o, _, _)| facts.last_run_in(tree, o)).max();
+        let ran = p.outputs.iter().filter_map(|&(o, _, _)| facts.output_programs(tree, o).last_run).max();
         let Some(changed) = p.last_change else { continue };
         let last = changed.max(ran.unwrap_or(changed));
         let Ok(age) = now.duration_since(last) else { continue };
@@ -303,12 +303,12 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             }
             // programs in it, and no way to know whether they run (Prefetch unreadable without
             // administrator rights): it may be a tool in daily use
-            let programs = facts.has_programs(tree, n);
-            if !facts.runs_complete && programs {
+            let progs = facts.output_programs(tree, n);
+            if !facts.runs_complete && progs.any {
                 continue;
             }
-            // Prefetch remembers about a thousand programs: no record isn't proof it never ran
-            let unseen_programs = programs && facts.last_run_in(tree, n).is_none();
+            // Prefetch remembers about a thousand programs: no record isn't proof one never ran
+            let unseen_programs = progs.unseen;
             let risk = if unseen_programs { risk.max(Risk::Amber) } else { risk };
             let path = tree.path_of(n);
             let source = total.saturating_sub(p.output_bytes(tree));
@@ -403,8 +403,22 @@ mod tests {
         // target holds app.exe: without Prefetch nobody knows whether it runs, so it stays
         assert!(build_outputs(&tree, &ps, &facts, 0, 1000).is_empty());
         facts.runs_complete = true;
+        // cargo's build script ran today in some other crate: says nothing about app.exe
+        let script = app.join("target").join("release").join("build").join("app-1a2b");
+        std::fs::create_dir_all(&script).unwrap();
+        std::fs::write(script.join("build-script-build.exe"), b"x").unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let ps = find(&tree);
+        facts.set_run("build-script-build.exe", SystemTime::now());
         let f = build_outputs(&tree, &ps, &facts, 0, 1000);
         assert_eq!(f.len(), 1, "only target is over 1000 bytes");
+        assert_eq!(f[0].risk, Risk::Amber, "app.exe has no run record");
+        assert!(f[0].evidence.iter().any(|e| e.contains("no record of starting")));
+        // app.exe ran long ago: known, so the output keeps its own risk
+        facts.set_run("app.exe", SystemTime::now() - std::time::Duration::from_secs(400 * 86_400));
+        let g = build_outputs(&tree, &ps, &facts, 0, 1000);
+        assert_eq!(g[0].risk, Risk::Green);
+        assert!(!g[0].evidence.iter().any(|e| e.contains("no record of starting")));
         assert!(f[0].command.as_deref().unwrap().contains("; sprawl-rm (Get-Item -LiteralPath '"));
         let _ = std::fs::remove_dir_all(&dir);
     }
