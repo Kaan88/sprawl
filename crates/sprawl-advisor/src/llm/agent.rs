@@ -218,6 +218,14 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode) -> Result<Box<dy
 /// the same checks as any other model's: nothing it wrote is taken as it is.
 #[allow(clippy::too_many_arguments)]
 fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+    let mut run = run_driven_inner(tree, facts, model, report, already, memory, exe, progress)?;
+    let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), base_url: String::new() };
+    second_opinion(&cfg, model, &mut run, progress);
+    Ok(run)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let dir = super::advisor_dir().ok_or("APPDATA is not set")?.join("claude-code-runs").join(format!("{}-{stamp}", std::process::id()));
@@ -275,6 +283,52 @@ fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+const SECOND: &str = "You are a careful second reviewer for a disk-space advisor. Another model suggested the findings below. \
+For each, judge only from what is written: is it clearly safe to act on as described, given its risk label? Drop anything that could be the \
+user's own work, a program still in use, or that the evidence doesn't support. Answer with one JSON object and nothing else: \
+{\"verdicts\": [{\"index\": 0, \"keep\": true, \"why\": \"...\"}]}";
+
+/// A second opinion: a fresh conversation, no tools, judges each finding the first one made.
+/// Findings it drops go to `run.rejected` with its reason; if it can't answer, all are kept
+/// (they already passed Sprawl's own checks) and a note says so.
+fn second_opinion(cfg: &AiConfig, model: &str, run: &mut AiRun, progress: &mut dyn FnMut(String)) {
+    if run.findings.is_empty() {
+        return;
+    }
+    progress("Getting a second opinion on the findings...".into());
+    let mut list = String::new();
+    for (i, f) in run.findings.iter().enumerate() {
+        list.push_str(&format!("{i}. {} ({:?}, {:?}, {} bytes): {}\n   {}\n", f.title, f.risk, f.remedy, f.bytes, f.path.display(), f.evidence.join(" | ")));
+    }
+    let chat: Result<Box<dyn Chat>, String> = match cfg.provider {
+        Provider::Anthropic => config::key(Provider::Anthropic)
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+            .filter(|k| !k.trim().is_empty())
+            .map(|k| Box::new(Anthropic::new(k, model, SECOND.into(), list.clone(), &[])) as Box<dyn Chat>)
+            .ok_or_else(|| "no key".to_string()),
+        Provider::OpenAi => openai_key(&cfg.base_url).map(|k| Box::new(OpenAi::new(&cfg.base_url, k, model, SECOND.into(), list.clone(), &[])) as Box<dyn Chat>),
+        Provider::ClaudeCode => Detected::probe().claude_code.map(|exe| Box::new(ClaudeCode::new(&exe, model, SECOND, &list)) as Box<dyn Chat>).ok_or_else(|| "no claude".to_string()),
+        Provider::Off => Err("off".into()),
+    };
+    let verdicts = chat.and_then(|mut c| c.turn()).ok().and_then(|t| json_in(&t.text)).and_then(|v| v["verdicts"].as_array().cloned());
+    let Some(verdicts) = verdicts else {
+        run.summary.push_str("\n\n(The second opinion didn't answer; the findings passed Sprawl's own checks.)");
+        return;
+    };
+    let mut drop: Vec<(usize, String)> = verdicts
+        .iter()
+        .filter(|v| v["keep"].as_bool() == Some(false))
+        .filter_map(|v| Some((v["index"].as_u64()? as usize, super::tools::clean_text_long(v["why"].as_str().unwrap_or("no reason given"), 300))))
+        .filter(|(i, _)| *i < run.findings.len())
+        .collect();
+    drop.sort_by_key(|d| std::cmp::Reverse(d.0));
+    drop.dedup_by_key(|d| d.0);
+    for (i, why) in drop {
+        let f = run.findings.remove(i);
+        run.rejected.push((f, format!("second opinion: {why}")));
+    }
 }
 
 /// The key for an OpenAI-compatible endpoint. `OPENAI_API_KEY` from the environment goes only to
@@ -400,6 +454,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     run.labels = std::mem::take(&mut tools.labels);
     run.proposals = std::mem::take(&mut tools.proposals);
     run.findings.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    second_opinion(cfg, &model, &mut run, progress);
     Ok(run)
 }
 

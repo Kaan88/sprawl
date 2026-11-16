@@ -14,6 +14,7 @@
 
 pub mod anomaly;
 pub mod config;
+pub mod dupes;
 pub mod export;
 pub mod facts;
 pub mod finding;
@@ -27,6 +28,7 @@ pub mod memory;
 pub mod pipe;
 pub mod plan;
 pub mod projects;
+pub mod remedies;
 pub mod rules;
 pub mod safety;
 pub mod snapshot;
@@ -112,7 +114,10 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30)
         .into_iter()
         .chain(projects::build_outputs(tree, &projects, facts, PROJECT_IDLE_DAYS, 100 << 20))
-        .chain(anomaly::find(tree));
+        .chain(anomaly::find(tree))
+        .chain(remedies::compact(tree))
+        .chain(remedies::onedrive(tree))
+        .chain(remedies::moves(tree, &hidden::fixed_drives()));
     for f in extra {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);

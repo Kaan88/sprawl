@@ -107,7 +107,7 @@ on the never-list even as a "command") and `snapshot` (the format above). The
 `examples/advise.rs` run over the same `C:` found 10 findings, none held back by safety.
 The in-use check (Restart Manager) moves to Phase 1.
 
-### Phase 1: Rust evidence (useful with no AI)
+### Phase 1: Rust evidence (useful with no AI) (done)
 - Built-in rule pack:
   - dev caches (npm/pnpm/yarn, pip, Cargo, Gradle, NuGet)
   - browser and shader caches
@@ -123,7 +123,7 @@ The in-use check (Restart Manager) moves to Phase 1.
 - UI: an Advisor panel (findings, evidence, copy-command), an Opportunities treemap lens and an
   Owner column in the tree.
 
-### Phase 2: AI v1
+### Phase 2: AI v1 (done)
 - Providers: Anthropic, OpenAI-compatible URL and Claude Code `-p`.
 - Report builder, agent loop and tools, structured findings with validation.
 - Goal mode: "I need N GB" gives a lowest-risk plan, with an animated shrink preview on the
@@ -131,32 +131,34 @@ The in-use check (Restart Manager) moves to Phase 1.
 - PowerShell export with a dry-run section, and a verify rescan that measures how much space
   was actually freed.
 
-### Phase 3: memory and learning
+### Phase 3: memory and learning (done)
 - Prefs, decisions and the path-pattern label cache.
 - The `remember` tool.
 - Accepted and rejected findings shape later suggestions.
 - Approved rule proposals become local rule packs.
 
-### Phase 4: conversation
+### Phase 4: conversation (done)
 - "Ask your disk" chat panel.
 - Plain-English query to a Sprawl filter, highlighted on the treemap.
 - Web lookup with consent, and manifest reading.
 - Anomaly sense ("Chrome profile is 22 GB, typical is 1–3 GB").
 
-### Phase 5: time (depends on the Phase 0 size result)
+### Phase 5: time (done; reads the snapshots History saves)
 - Snapshots on every scan.
 - Growth rates, "full in about N days", and "what grew since last week" explained.
 
-### Phase 6: Claude Code integration
+### Phase 6: Claude Code integration (done)
 - `sprawl --mcp` with the named-pipe bridge to the running app, plus a one-line
   `claude mcp add` setup shown in Settings.
 - Sprawl drives `claude -p` with the same tools.
 
-### Phase 7: advanced remedies
+### Phase 7: advanced remedies (done, except free space inside WSL/Docker disks)
 - Duplicates (size, then head/tail hash, then BLAKE3) with hardlink or block-clone suggestions.
 - `compact /exe:lzx` savings estimate.
 - OneDrive "always keep on this device" files that can be made online-only.
-- Free space inside WSL/Docker disk images.
+- Free space inside WSL/Docker disk images. Not done: measuring it means starting the
+  distribution (`wsl -d <name> df`), which has side effects; the VHDX rules explain how to
+  compact instead.
 - Suggestions to move things to a drive with free space.
 - A second-opinion verifier pass and an in-use check.
 
@@ -168,6 +170,19 @@ The in-use check (Restart Manager) moves to Phase 1.
   uninstall command from the registry, since any program running as the user can write one and
   Sprawl may run as administrator.
 - Live watching of file changes (USN journal).
+
+## How it was built
+
+Every phase was reviewed for safety before it counted as done (an Opus review while Fable was
+out of limit; Fable reviews everything in `.claude/fable-review-queue.md` overall later).
+Lasting rules from those reviews:
+- The model never writes command text. Every claim it makes is replayed through
+  `safety::check` in the app, its deletes are at least orange, and orange is never planned
+  or exported by default.
+- Claude Code runs with no built-in tools and no MCP server but Sprawl's own (read-only).
+  It loads no user or project settings and saves no transcript.
+- Commands Sprawl writes start with the `sprawl-rm` functions, which never follow a link.
+  They are tested in Windows PowerShell 5.1.
 
 ## Dependencies on current work
 

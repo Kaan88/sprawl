@@ -73,6 +73,9 @@ enum Msg {
     /// A status line from the model run.
     AiProgress(u64, String),
     AiDone(u64, Result<AiRun, String>),
+    /// Duplicate files, for the tree of this generation.
+    Dupes(u64, Result<sprawl_advisor::dupes::Dupes, String>),
+    DupesProgress(u64, String),
     /// The script measured, and (path, size planned, size now) of every item in it.
     Verified(PathBuf, Vec<(PathBuf, u64, u64)>),
 }
@@ -138,6 +141,10 @@ pub(crate) struct Advisor {
     /// Preferences, decisions, labels and proposed rules (loaded on the first analysis).
     pub(crate) memory: Memory,
     memory_loaded: bool,
+    /// The duplicate search: running (its status line and a stop flag), or what it found.
+    dupes_status: Option<String>,
+    dupes_stop: Arc<std::sync::atomic::AtomicBool>,
+    dupes_note: Option<String>,
     show_kept: bool,
     show_memory: bool,
     chat: Chat,
@@ -310,6 +317,9 @@ impl State {
         self.advisor.ai = Ai::Idle;
         self.advisor.plan = None;
         self.advisor.preview = false;
+        self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.advisor.dupes_status = None;
+        self.advisor.dupes_note = None;
         if !self.advisor.memory_loaded {
             self.advisor.memory = Memory::load();
             self.advisor.memory_loaded = true;
@@ -384,6 +394,32 @@ impl State {
                 Msg::Hidden(key, h) => {
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
                         r.hidden = h;
+                    }
+                }
+                Msg::DupesProgress(gen, line) => {
+                    if gen == self.tree_gen && self.advisor.dupes_status.is_some() {
+                        if let Some(p) = &self.advisor.panel {
+                            crate::state::text(p, "AdvDupesStatus", &line);
+                        }
+                        self.advisor.dupes_status = Some(line);
+                    }
+                    continue;
+                }
+                Msg::Dupes(gen, result) => {
+                    self.advisor.dupes_status = None;
+                    if gen == self.tree_gen {
+                        match result {
+                            Ok(d) => {
+                                let n = d.findings.len();
+                                self.advisor.dupes_note = Some(match (n, d.partial) {
+                                    (0, false) => "No duplicate files of 50 MB or more.".to_string(),
+                                    (0, true) => "Stopped before finding duplicates.".to_string(),
+                                    (_, p) => format!("{n} sets of duplicates: {} in copies beyond one of each{}.", sprawl_core::format_size(d.wasted), if p { " (stopped early: there may be more)" } else { "" }),
+                                });
+                                self.append_findings(d.findings);
+                            }
+                            Err(e) => self.advisor.dupes_note = Some(e),
+                        }
                     }
                 }
                 Msg::Growth(key, g) => {
@@ -473,6 +509,8 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvDupes" => self.advisor_dupes(),
+            "AdvDupesStop" => self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed),
             "AdvUninstall" => {
                 let Some(owner) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)?.owner.clone()) else { return };
                 let Some(how) = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.uninstall.get(k).cloned().flatten())) else { return };
@@ -672,7 +710,7 @@ impl State {
             }
         }
         for name in [
-            "AdvKeep", "AdvLater", "AdvUninstall", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -736,6 +774,16 @@ impl State {
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="16"><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FF4CC38A"/><TextBlock Text="Comes back by itself" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFF5B342"/><TextBlock Text="Costs something" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFFF7A45"/><TextBlock Text="Your own files" FontSize="11" Foreground="#FF8E97AA"/></StackPanel></StackPanel>"##;
         x += &self.growth_card(r);
+        x += &match &self.advisor.dupes_status {
+            Some(s) => format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="AdvDupesStatus" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvDupesStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
+                ui::esc(s)
+            ),
+            None => format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
+                ui::esc(self.advisor.dupes_note.as_deref().unwrap_or("Copies are confirmed byte for byte; hard links aren't copies."))
+            ),
+        };
         x += &self.ai_card(r);
         x += &self.chat_card();
         if r.findings.is_empty() {
@@ -913,11 +961,14 @@ impl State {
         let gen = self.tree_gen;
         let (Some(t), Some(r)) = (self.tree.clone(), self.advisor.report.as_mut().filter(|r| r.tree == gen)) else { return Ai::Idle };
         // the model's findings from an earlier ask go; this answer replaces them
-        let keep = r.findings.iter().position(|f| matches!(f.source, Source::Model(_))).unwrap_or(r.findings.len());
-        if keep < r.findings.len() {
-            r.findings.truncate(keep);
-            r.nodes.truncate(keep);
-            r.counted.truncate(keep);
+        if r.findings.iter().any(|f| matches!(f.source, Source::Model(_))) {
+            let keep: Vec<bool> = r.findings.iter().map(|f| !matches!(f.source, Source::Model(_))).collect();
+            let mut k = keep.iter();
+            r.findings.retain(|_| *k.next().unwrap_or(&true));
+            let mut k = keep.iter();
+            r.nodes.retain(|_| *k.next().unwrap_or(&true));
+            let mut k = keep.iter();
+            r.counted.retain(|_| *k.next().unwrap_or(&true));
             // rebuild the lens from the rules' findings alone
             let mut lens = vec![0u8; t.nodes.len()];
             for (f, n) in r.findings.iter().zip(&r.nodes) {
@@ -966,6 +1017,55 @@ impl State {
         }
         self.save_memory();
         Ai::Done { summary: run.summary, model: run.model, found, rejected: run.rejected, with_tools: run.with_tools, turns: run.turns }
+    }
+
+    /// Add findings found later (duplicates) after the others, so indexes stay.
+    fn append_findings(&mut self, list: Vec<Finding>) {
+        let gen = self.tree_gen;
+        let Some(t) = self.tree.clone() else { return };
+        let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return };
+        // the duplicates of an earlier search go
+        let keep: Vec<bool> = r.findings.iter().map(|f| f.source != Source::Rule("remedy.duplicates".into())).collect();
+        let mut k = keep.iter();
+        r.findings.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        r.nodes.retain(|_| *k.next().unwrap_or(&true));
+        let mut k = keep.iter();
+        r.counted.retain(|_| *k.next().unwrap_or(&true));
+        for f in list {
+            r.nodes.push(sprawl_advisor::find_path(&t, &f.path));
+            r.counted.push(true);
+            r.findings.push(f);
+        }
+        self.advisor.plan = None;
+        self.advisor.preview = false;
+        self.advisor.open = None;
+        self.advisor.in_use = None;
+    }
+
+    /// Look for duplicate files of 50 MB or more, in the background (reads up to 40 GB).
+    fn advisor_dupes(&mut self) {
+        if self.advisor.dupes_status.is_some() {
+            return;
+        }
+        let (Some(t), Some(tx)) = (self.tree.clone(), self.advisor.tx.clone()) else { return };
+        if self.advice().is_none() {
+            return;
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.advisor.dupes_stop = stop.clone();
+        self.advisor.dupes_status = Some("Looking for files of the same size...".into());
+        self.advisor.dupes_note = None;
+        let gen = self.tree_gen;
+        std::thread::spawn(move || {
+            let ptx = tx.clone();
+            let mut progress = move |s: String| {
+                let _ = ptx.send(Msg::DupesProgress(gen, s));
+            };
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::dupes::find(&t, 50 << 20, 40 << 30, &stop, &mut progress)))
+                .map_err(|_| "The duplicate search stopped with an internal error.".to_string());
+            let _ = tx.send(Msg::Dupes(gen, r));
+        });
     }
 
     fn save_memory(&self) {

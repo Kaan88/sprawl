@@ -151,6 +151,38 @@ fn wide_dir(root: &Path) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// Fixed drives: (letter, total, free) bytes.
+#[cfg(windows)]
+pub fn fixed_drives() -> Vec<(char, u64, u64)> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLogicalDrives() -> u32;
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    let mask = unsafe { GetLogicalDrives() };
+    let mut out = Vec::new();
+    for i in 0..26u8 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+        let letter = (b'A' + i) as char;
+        let root = format!("{letter}:\\");
+        let w: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+        // 3: a fixed disk (not removable, network or optical)
+        if unsafe { GetDriveTypeW(w.as_ptr()) } == 3 {
+            if let Some((t, f)) = disk_space(Path::new(&root)) {
+                out.push((letter, t, f));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn fixed_drives() -> Vec<(char, u64, u64)> {
+    Vec::new()
+}
+
 /// (total, free) bytes of the drive holding `root`.
 pub fn free_space(root: &Path) -> Option<(u64, u64)> {
     disk_space(root)
