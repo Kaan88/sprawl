@@ -202,10 +202,11 @@ pub fn page(drives: &[String]) -> String {
           </LinearGradientBrush>
         </Border.Background>
         <Grid Width="12" Height="9" Margin="0,1,0,0">
-          <Rectangle Fill="White" Width="2.5" Height="4" HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
-          <Rectangle Fill="White" Width="3" Height="9" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="3,0,0,0"/>
-          <Rectangle Fill="White" Width="2.5" Height="6" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6.5,0,0,0"/>
-          <Rectangle Fill="White" Width="2" Height="3" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="9.5,0,0,0"/>
+          <Rectangle Fill="White" RadiusX="0.4" RadiusY="0.4" Width="2.4" Height="5.1" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="0,0,0,0"/>
+          <Rectangle Fill="White" RadiusX="0.4" RadiusY="0.4" Width="2.4" Height="8.1" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="2.3,0,0,0"/>
+          <Rectangle Fill="White" RadiusX="0.4" RadiusY="0.4" Width="2.6" Height="6.4" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="4.5,0,0,0"/>
+          <Rectangle Fill="White" RadiusX="0.4" RadiusY="0.4" Width="2.4" Height="9" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="7,0,0,0"/>
+          <Rectangle Fill="White" RadiusX="0.4" RadiusY="0.4" Width="2.8" Height="4.3" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="9.2,0,0,0"/>
         </Grid>
       </Border>
       <TextBlock x:Name="TitleText" Text="Sprawl" FontSize="12" VerticalAlignment="Center" Foreground="#FFC9CFDC"/>
@@ -272,11 +273,11 @@ pub fn page(drives: &[String]) -> String {
           </Border.Background>
           <Grid Width="34" Height="30" VerticalAlignment="Center" HorizontalAlignment="Center">
             <!-- the app icon's skyline -->
-            <Rectangle Fill="White" RadiusX="1.5" RadiusY="1.5" Width="7" Height="11" HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
-            <Rectangle Fill="White" RadiusX="1.5" RadiusY="1.5" Width="9" Height="21" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="8.5,0,0,0"/>
-            <Rectangle Fill="White" Width="1.5" Height="5" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12.2,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.5" RadiusY="1.5" Width="8" Height="15" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="19,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.5" RadiusY="1.5" Width="6.5" Height="8" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="27.5,0,0,0"/>
+            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="12" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="0,0,0,0"/>
+            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="19" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6.4,0,0,0"/>
+            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="7.4" Height="15" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12.9,0,0,0"/>
+            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="21" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="19.8,0,0,0"/>
+            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="7.8" Height="10" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="26.2,0,0,0"/>
           </Grid>
         </Border>
         <StackPanel VerticalAlignment="Center" Spacing="2">
