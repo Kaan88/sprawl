@@ -13,7 +13,7 @@ use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
 
 /// Options menu switches that are remembered between runs.
-const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oAlwaysAdmin"];
+const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oAlwaysAdmin"];
 const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 use crate::state::Source;
 use crate::{dialogs, paint, ui, win32};
@@ -281,6 +281,10 @@ impl State {
                     _ => self.map.scene.tilt_on = on,
                 }
                 self.render_map();
+            }
+            "oPulses" => {
+                self.pulses_on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
+                self.watch();
             }
             "ModeMap" | "ModeCity" | "ModeGalaxy" => {
                 let mode = match name {

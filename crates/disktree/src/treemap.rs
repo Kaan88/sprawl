@@ -246,6 +246,7 @@ impl State {
                 self.map.scene.set_hover_folder(t, folder);
             }
         }
+        self.drain_changes();
         let galaxy = self.galaxy_on();
         let busy = if galaxy {
             let m = &mut self.map;

@@ -39,10 +39,13 @@ struct Body {
     /// Planets: index of the star they circle, orbit radius, speed and phase.
     orbit: (usize, f32, f32, f32),
     glow: f32,
+    pulse: f32,
 }
 
 pub struct Galaxy {
     bodies: Vec<Body>,
+    /// node -> body, for stars and planets
+    index: HashMap<usize, usize>,
     pub instances: Vec<Instance>,
     pub vp: [f32; 16],
     pub eye: [f32; 3],
@@ -63,6 +66,7 @@ impl Default for Galaxy {
     fn default() -> Self {
         Galaxy {
             bodies: Vec::new(),
+            index: HashMap::new(),
             instances: Vec::new(),
             vp: [0.0; 16],
             eye: [0.0, 0.0, 1.0],
@@ -113,6 +117,7 @@ impl Galaxy {
             bright: 1.0,
             orbit: (0, 0.0, 0.0, 0.0),
             glow: 0.0,
+            pulse: 0.0,
         });
 
         // Arms: the biggest folders directly under the root; the rest join the arm with least weight.
@@ -180,6 +185,7 @@ impl Galaxy {
                     bright: 0.45 + 0.55 * frac.powf(0.25),
                     orbit: (0, 0.0, 0.0, 0.0),
                     glow: 0.0,
+                    pulse: 0.0,
                 });
             }
             // Planets (the biggest files of each star's folder) and dust (a sample of everything else).
@@ -205,6 +211,7 @@ impl Galaxy {
                         bright: 0.9,
                         orbit: (si, star_r * 1.6 + 8.0 + j as f32 * 7.0, 0.25 + hash(f, 5) * 0.35, hash(f, 6) * TAU),
                         glow: 0.0,
+                        pulse: 0.0,
                     });
                 }
                 let small = t.nodes[n].children.iter().filter(|&&c| !t.nodes[c].is_dir).count();
@@ -226,6 +233,7 @@ impl Galaxy {
                         bright: 0.25 + hash(seed, 11) * 0.3,
                         orbit: (0, 0.0, 0.0, 0.0),
                         glow: 0.0,
+                        pulse: 0.0,
                     });
                 }
             }
@@ -243,7 +251,20 @@ impl Galaxy {
                     .unwrap_or([b.target[0] * 0.05, b.target[1] * 0.05, 0.0]),
             };
         }
+        self.index = bodies.iter().enumerate().filter(|(_, b)| b.kind != Kind::Dust).map(|(i, b)| (b.node, i)).collect();
         self.bodies = bodies;
+    }
+
+    /// Make the star or planet for `node` (or the nearest one above it) flare up.
+    pub fn pulse(&mut self, t: &Tree, node: usize) {
+        let mut n = Some(node);
+        while let Some(i) = n {
+            if let Some(&b) = self.index.get(&i) {
+                self.bodies[b].pulse = 1.0;
+                return;
+            }
+            n = t.nodes[i].parent;
+        }
     }
 
     pub fn drag(&mut self, dx: f32, dy: f32) {
@@ -322,6 +343,7 @@ impl Galaxy {
             let lit = (self.hover == Some(b.node) || self.selected == Some(b.node)) && b.kind != Kind::Dust;
             let target = if lit { 1.0 } else { 0.0 };
             b.glow += (target - b.glow) * ease;
+            b.pulse = (b.pulse - dt / 1.8).max(0.0);
         }
 
         self.instances.clear();
@@ -338,8 +360,8 @@ impl Galaxy {
             self.instances.push(Instance {
                 rect: [b.pos[0], b.pos[1], b.pos[2], b.radius],
                 parent: [0.0; 4],
-                color: [b.colour[0], b.colour[1], b.colour[2], b.bright * twinkle],
-                fx: [b.glow, kind, 0.0, 0.0],
+                color: [b.colour[0], b.colour[1], b.colour[2], b.bright * twinkle * (1.0 + b.pulse * 2.5)],
+                fx: [b.glow.max((b.pulse * 9.0).sin().abs() * b.pulse), kind, 0.0, 0.0],
             });
         }
         moving

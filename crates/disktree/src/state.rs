@@ -92,6 +92,10 @@ pub(crate) struct State {
     /// Selections left by Select Parent, for Reselect Child.
     pub(crate) child_stack: Vec<usize>,
     pub(crate) settings: Settings,
+    /// Live change pulses: the watcher on the scanned folder and how many changes it saw.
+    pub(crate) watcher: Option<crate::watch::Watcher>,
+    pub(crate) changes: u64,
+    pub(crate) pulses_on: bool,
     pub(crate) map_root: usize,
     pub(crate) map: MapView,
     pub(crate) hud: Hud,
@@ -159,6 +163,7 @@ impl State {
     // ------------------------------------------------------------ scanning
 
     pub(crate) fn start_scan(&mut self, path: PathBuf) {
+        self.watcher = None;
         self.start(Source::Folders(vec![path]));
     }
 
@@ -246,6 +251,7 @@ impl State {
                         self.child_stack.clear();
                         self.set_tree(tree, &header);
                         self.map.scene.start_wave();
+                        self.watch();
                         if !self.filter_text.trim().is_empty() {
                             self.apply_filter();
                         }
@@ -255,6 +261,45 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Start (or stop) watching the scanned folder for live change pulses.
+    pub(crate) fn watch(&mut self) {
+        self.watcher = None;
+        self.changes = 0;
+        if !self.pulses_on {
+            return;
+        }
+        let Some(t) = &self.tree else { return };
+        if t.method == disktree_core::ScanMethod::Csv {
+            return;
+        }
+        let root = t.path_of(ROOT);
+        self.watcher = crate::watch::Watcher::start(&root);
+    }
+
+    /// Pulse the map where files changed since the last frame.
+    pub(crate) fn drain_changes(&mut self) {
+        let Some(w) = &self.watcher else { return };
+        let mut seen = HashSet::new();
+        while let Ok(p) = w.rx.try_recv() {
+            seen.insert(p);
+            if seen.len() > 400 {
+                break;
+            }
+        }
+        if seen.is_empty() || self.map.live.is_some() {
+            return;
+        }
+        let Some(t) = &self.tree else { return };
+        for p in &seen {
+            let n = crate::watch::find(t, p);
+            self.map.scene.pulse(t, n);
+            self.map.galaxy.pulse(t, n);
+        }
+        self.changes += seen.len() as u64;
+        let c = self.changes;
+        text(&self.root, "FootLeft", &format!("Live: {} change{} in this folder since the scan", thousands(c), if c == 1 { "" } else { "s" }));
     }
 
     pub(crate) fn set_tree(&mut self, tree: Tree, path: &std::path::Path) {

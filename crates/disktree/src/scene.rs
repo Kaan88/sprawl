@@ -64,6 +64,8 @@ pub struct Scene {
     pub h: f32,
     anims: Vec<Anim>,
     slot: HashMap<u32, usize>,
+    /// Live change pulses: node -> strength, fading from 1 to 0.
+    pulses: HashMap<u32, f32>,
     pub instances: Vec<Instance>,
     // interaction
     pub hover_leaf: Option<usize>,
@@ -103,6 +105,7 @@ impl Default for Scene {
             w: 1.0,
             h: 1.0,
             anims: Vec::new(),
+            pulses: HashMap::new(),
             slot: HashMap::new(),
             instances: Vec::new(),
             hover_leaf: None,
@@ -410,6 +413,18 @@ impl Scene {
         self.settled_frames = 0;
     }
 
+    /// Pulse the tile showing `node` (the nearest drawn tile above it).
+    pub fn pulse(&mut self, tree: &Tree, node: usize) {
+        let mut n = Some(node);
+        while let Some(i) = n {
+            if self.slot.contains_key(&(i as u32)) {
+                self.pulses.insert(i as u32, 1.0);
+                return;
+            }
+            n = tree.nodes[i].parent;
+        }
+    }
+
     pub fn leave(&mut self) {
         self.mouse = None;
         self.mouse_rel = (0.5, 0.5);
@@ -445,6 +460,13 @@ impl Scene {
     /// Advance animations by `dt` seconds and rebuild the instance list. Returns false once
     /// everything has come to rest (nothing needs drawing until something changes).
     pub fn update(&mut self, dt: f32) -> bool {
+        if !self.pulses.is_empty() {
+            self.pulses.retain(|_, p| {
+                *p -= dt / 1.8;
+                *p > 0.0
+            });
+            self.settled_frames = 0;
+        }
         self.time += dt;
         let cam_moving = self.camera(dt);
         let k_pos = if self.animate { (dt * 9.0).min(1.0) } else { 1.0 };
@@ -525,6 +547,12 @@ impl Scene {
             } else if hover_folder == Some(a.node) {
                 glow_t = 0.35;
             }
+            if let Some(&p) = self.pulses.get(&a.node) {
+                // a quick double beat that fades
+                let beat = (p * 9.0).sin().abs() * p;
+                target += 20.0 * beat * if a.is_dir { 0.0 } else { 1.0 };
+                glow_t = glow_t.max(beat * 1.2);
+            }
             if Some(a.node) == selected {
                 glow_t = glow_t.max(0.6);
                 target = target.max(10.0);
@@ -577,7 +605,7 @@ impl Scene {
                 fx: [base_h, a.lift.max(0.0), a.glow, a.dim],
             });
         }
-        if self.wave.is_some() || self.mouse.is_some() && self.animate {
+        if self.wave.is_some() || self.mouse.is_some() && self.animate || !self.pulses.is_empty() {
             moving = true;
         }
         if moving || cam_moving {
