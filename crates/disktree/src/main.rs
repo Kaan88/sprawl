@@ -353,6 +353,17 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 }
 
 fn main() {
+    // A panic inside a XAML callback aborts the process with no message; keep a note of it.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("{info}
+{}
+", std::backtrace::Backtrace::force_capture());
+        eprintln!("{msg}");
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("DiskTree")) {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("crash.log"), msg);
+        }
+    }));
     #[cfg(has_bootstrap)]
     if let Err(hr) = app::bootstrap::start() {
         eprintln!("Could not load the Windows App Runtime 1.8 (error 0x{:08X}).", hr as u32);

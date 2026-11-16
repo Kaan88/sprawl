@@ -646,6 +646,25 @@ impl Scene {
         out
     }
 
+    /// City view: district names on the street in front of each top-level folder, and of big
+    /// blocks inside them, biggest first.
+    pub fn city_labels(&self, tree: &Tree, text: &dyn Fn(usize) -> String) -> Vec<Label> {
+        let mut ds: Vec<&Anim> = self.anims.iter().filter(|a| a.present && a.is_dir && (a.depth == 1 || a.depth == 2 && a.w * a.h > 40_000.0) && a.w > 50.0).collect();
+        ds.sort_by(|a, b| (a.depth, -(a.w * a.h) as i64).cmp(&(b.depth, -(b.w * b.h) as i64)));
+        let mut out = Vec::new();
+        for a in ds {
+            let n = a.node as usize;
+            if n >= tree.nodes.len() {
+                continue;
+            }
+            let (sx, sy) = self.project(a.x + a.w / 2.0, a.y + a.h - 3.0, 0.5);
+            let t = text(n);
+            let w = t.chars().count() as f32 * if a.depth == 1 { 7.4 } else { 6.6 } + 8.0;
+            out.push(Label { x: sx - w / 2.0, y: sy - 2.0, max_w: w, text: t, strong: a.depth == 1 });
+        }
+        out
+    }
+
 }
 
 // ---------------------------------------------------------------- column-major 4x4 math

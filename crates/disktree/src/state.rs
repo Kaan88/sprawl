@@ -434,6 +434,17 @@ impl State {
                 self.hist_seek(p);
             }
         }
+        // dev: DISKTREE_SWITCH=ModeCity,ModeGalaxy,... runs those commands 30 frames apart,
+        // hovering the map in between
+        if self.shot_ticks % 30 == 0 {
+            if let Some(c) = std::env::var("DISKTREE_SWITCH").ok().and_then(|v| v.split(',').nth(self.shot_ticks as usize / 30 - 1).map(str::to_string)) {
+                let (w, h) = (self.map.scene.w as f64, self.map.scene.h as f64);
+                for k in 0..40 {
+                    self.map_hover(w * (0.3 + k as f64 * 0.01), h * 0.5, false);
+                }
+                self.command(&c);
+            }
+        }
         // Let the finish wave and morphs play out first (about 3 s at 60 frames a second).
         if self.shot_ticks < 180 {
             return;

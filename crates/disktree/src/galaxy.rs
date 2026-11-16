@@ -107,6 +107,7 @@ fn hash(n: usize, salt: u32) -> f32 {
 impl Galaxy {
     pub fn clear(&mut self) {
         self.bodies.clear();
+        self.index.clear();
         self.instances.clear();
     }
 
@@ -265,12 +266,47 @@ impl Galaxy {
         self.bodies = bodies;
     }
 
+    /// Names next to the biggest stars, and the hovered or selected one.
+    pub fn labels(&self, t: &Tree, text: &dyn Fn(usize) -> String) -> Vec<crate::gpu::Label> {
+        let mut stars: Vec<&Body> = self.bodies.iter().filter(|b| matches!(b.kind, Kind::Star | Kind::Planet) && b.node < t.nodes.len()).collect();
+        stars.sort_by(|a, b| b.radius.total_cmp(&a.radius));
+        let pinned: Vec<&Body> = stars.iter().copied().filter(|b| Some(b.node) == self.hover || Some(b.node) == self.selected).collect();
+        let screen = |p: [f32; 3]| {
+            let q = xform(&self.vp, [p[0], p[1], p[2], 1.0]);
+            (q[3] > 0.0).then(|| ((q[0] / q[3] * 0.5 + 0.5) * self.w, (0.5 - q[1] / q[3] * 0.5) * self.h))
+        };
+        let core = screen([0.0; 3]).unwrap_or((-1e4, -1e4));
+        let big = stars.iter().copied().filter(|b| b.kind == Kind::Star);
+        let mut out = Vec::new();
+        let mut taken: Vec<(f32, f32)> = Vec::new();
+        let n_pinned = pinned.len();
+        for (i, b) in pinned.into_iter().chain(big).enumerate() {
+            let Some((x, y)) = screen(b.pos) else { continue };
+            if x < 0.0 || y < 0.0 || x > self.w || y > self.h {
+                continue;
+            }
+            // spread the names out: none on the bright core, none crowding another
+            if i >= n_pinned {
+                let near = |p: (f32, f32), r: f32| (p.0 - x).hypot((p.1 - y) * 1.8) < r;
+                if out.len() >= n_pinned + 12 || near(core, 70.0) || taken.iter().any(|&t| near(t, 120.0)) {
+                    continue;
+                }
+            }
+            taken.push((x, y));
+            let s = text(b.node);
+            let w = s.chars().count() as f32 * 6.8 + 8.0;
+            let lit = Some(b.node) == self.hover || Some(b.node) == self.selected;
+            out.push(crate::gpu::Label { x: x + 9.0, y: y - 9.0, max_w: w, text: s, strong: lit });
+        }
+        out
+    }
+
     /// Make the star or planet for `node` (or the nearest one above it) flare up.
     pub fn pulse(&mut self, t: &Tree, node: usize) {
         let mut n = Some(node);
         while let Some(i) = n {
-            if let Some(&b) = self.index.get(&i) {
-                self.bodies[b].pulse = 1.0;
+            if let Some(b) = self.index.get(&i).and_then(|&b| self.bodies.get_mut(b)) {
+                b.pulse = 1.0;
                 return;
             }
             n = t.nodes[i].parent;

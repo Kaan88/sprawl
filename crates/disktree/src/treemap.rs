@@ -282,7 +282,7 @@ impl State {
         if busy || !self.map.drawn_once || want_capture {
             if let Some(g) = &self.map.gpu {
                 if g.ready() || want_capture {
-                    let labels = if self.map.show_labels && self.map.scene.mode == Mode::Map { self.map_labels() } else { Vec::new() };
+                    let labels = if self.map.show_labels { self.map_labels(galaxy) } else { Vec::new() };
                     let m = &mut self.map;
                     let (vp, eye) = if galaxy { (m.galaxy.vp, m.galaxy.eye) } else { (m.scene.vp, m.scene.eye) };
                     let frame = Frame {
@@ -342,17 +342,36 @@ impl State {
         self.shot_tick();
     }
 
-    fn map_labels(&self) -> Vec<crate::gpu::Label> {
+    fn map_labels(&self, galaxy: bool) -> Vec<crate::gpu::Label> {
         let m = &self.map;
         if let Some(live) = &m.live {
+            if m.scene.mode != Mode::Map {
+                return Vec::new();
+            }
             return m.scene.labels(&live.tree, &|_| String::new()).into_iter().filter(|l| !l.text.is_empty()).collect();
         }
         let Some(t) = &self.tree else { return Vec::new() };
         let by_alloc = m.by_alloc && self.alloc.len() == t.nodes.len();
-        m.scene.labels(t, &|n| {
+        let text = |n: usize| {
             let v = if by_alloc { self.alloc[n] } else { t.nodes[n].size };
-            format!("{}\\ ({})", t.nodes[n].name, self.size(v))
-        })
+            let slash = if t.nodes[n].is_dir { "\\" } else { "" };
+            format!("{}{slash} ({})", t.nodes[n].name, self.size(v))
+        };
+        let ls = if galaxy {
+            m.galaxy.labels(t, &text)
+        } else if m.scene.mode == Mode::City {
+            m.scene.city_labels(t, &text)
+        } else {
+            return m.scene.labels(t, &text);
+        };
+        // keep the first of any labels that would overlap
+        let mut kept: Vec<crate::gpu::Label> = Vec::new();
+        for l in ls {
+            if !kept.iter().any(|k| l.x < k.x + k.max_w && k.x < l.x + l.max_w && (l.y - k.y).abs() < 16.0) {
+                kept.push(l);
+            }
+        }
+        kept
     }
 
     // ------------------------------------------------------------ pointer
