@@ -1,16 +1,16 @@
-# DiskTree
+# Sprawl
 
 A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8), modelled on
 [WizTree](https://diskanalyzer.com/): a 1:1 feature match, with a more modern look.
 
-![DiskTree](docs/screenshots/disktree.png)
+![Sprawl](docs/screenshots/sprawl.png)
 
 ## Layout
 
 ```
 crates/
-  disktree-core/   UI-free logic: scanning, folder totals, file-type stats, squarified treemap layout (+ tests)
-  disktree/        the WinUI 3 app (XAML loaded at run time, treemap painted into a WriteableBitmap)
+  sprawl-core/   UI-free logic: scanning, folder totals, file-type stats, squarified treemap layout (+ tests)
+  sprawl/        the WinUI 3 app (XAML loaded at run time, treemap painted into a WriteableBitmap)
     src/main.rs      start-up: arguments, window, event wiring
     src/app.rs       Windows App Runtime bootstrap, the composed XAML Application, COM interop helpers
     src/state.rs     window state + shared helpers; scanning and the header card
@@ -28,7 +28,7 @@ tools/
 docs/
   reference/screenshots/   the original WizTree 4.33 (main window, File and Options menus)
   reference/analysis/      static analysis of WizTree64.exe (triage, strings)
-  screenshots/             DiskTree screenshots
+  screenshots/             Sprawl screenshots
 ```
 
 ## Building
@@ -39,16 +39,16 @@ Requirements: Rust (MSVC toolchain), Visual Studio Build Tools, and the
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\setup.ps1   # once: fetch SDK packages into sdk\
 cargo build --release
-.\target\release\disktree.exe [folder]
+.\target\release\sprawl.exe [folder]
 ```
 
-`cargo test -p disktree-core` runs the core tests.
+`cargo test -p sprawl-core` runs the core tests.
 
-`disktree --screenshot out.png [folder]` scans (default `C:\Program Files`), saves a picture of the
+`sprawl --screenshot out.png [folder]` scans (default `C:\Program Files`), saves a picture of the
 window and exits - handy for checking the look without clicking around.
 
 To use a WinUI type or member that isn't projected yet, add it to `crates/bindgen/types.txt` and
-run `cargo run -p disktree-bindgen` (needs the Windows SDK 10.0.26100 metadata).
+run `cargo run -p sprawl-bindgen` (needs the Windows SDK 10.0.26100 metadata).
 
 ## Status
 

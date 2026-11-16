@@ -1,4 +1,4 @@
-# DiskTree: crazy ideas backlog
+# Sprawl: crazy ideas backlog
 
 Baseline already in progress: acrylic window, D3D11 instanced lit-box treemap in a SwapChainPanel (cushion shading, hover lift + ripple, DirectWrite labels, click-to-zoom morph), scan HUD (MFT block map, counters, sparkline, file-type race), virtualized sortable tables, MFT scanning.
 
@@ -82,7 +82,7 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 ### B2. Extruded sunburst ("vinyl record") view
 - **Sees:** Concentric rings, one per depth level, arcs sized by bytes, extruded and glossy like a record. Click a segment and the disc zooms into it; during scans it slowly spins like a hard drive platter.
 - **Useful:** Sunburst shows hierarchy depth better than a treemap, and people love the DaisyDisk look.
-- **Build:** Instanced annular sectors generated in the vertex shader from (r0, r1, a0, a1) per instance; same picking path as the treemap. Layout in `disktree-core` (new `sunburst.rs`).
+- **Build:** Instanced annular sectors generated in the vertex shader from (r0, r1, a0, a1) per instance; same picking path as the treemap. Layout in `sprawl-core` (new `sunburst.rs`).
 - **Effort:** M. **Wow:** 4
 
 ### B3. Galaxy / solar-system view
@@ -116,7 +116,7 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 ### C1. Live treemap that grows as the scan runs
 - **Sees:** Blocks pop into existence with a springy overshoot as folders are discovered; the layout continuously re-squarifies with cells sliding to new positions rather than jumping. Big finds flash briefly.
 - **Useful:** Immediate feedback and early insight: you often spot the culprit folder at 20% and can cancel.
-- **Build:** Throttled snapshots from the scanner (lock-free double buffer of folder totals); layout at about 10 Hz in `disktree-core`; each instance stores (rect_prev, rect_next, t0) and the vertex shader springs between them.
+- **Build:** Throttled snapshots from the scanner (lock-free double buffer of folder totals); layout at about 10 Hz in `sprawl-core`; each instance stores (rect_prev, rect_next, t0) and the vertex shader springs between them.
 - **Effort:** M. **Wow:** 5
 
 ### C2. MFT radar with a physical-disk sweep
@@ -162,7 +162,7 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 ### D3. Scan diff animation: what changed since last time
 - **Sees:** Load a previous snapshot (saved automatically) and the map morphs between then and now: growth in glowing red-orange, shrinkage in cool blue, new files as sparks, vanished files as ghost outlines. A top-10 "movers" list updates with the animation.
 - **Useful:** "Where did my 40 GB go this week?" is the number-one real question.
-- **Build:** Compact columnar snapshot (path hash, parent, size, mtime) via `bincode`/`rkyv` + zstd. Join by path hash in `disktree-core`; per-instance (size_old, size_new) lerped in the shader; diverging colour ramp.
+- **Build:** Compact columnar snapshot (path hash, parent, size, mtime) via `bincode`/`rkyv` + zstd. Join by path hash in `sprawl-core`; per-instance (size_old, size_new) lerped in the shader; diverging colour ramp.
 - **Effort:** L. **Wow:** 5
 
 ### D4. Live file-system watcher: the map breathes
@@ -186,7 +186,7 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 ### D7. Cleanup what-if basket with ghost preview
 - **Sees:** Tick several folders into a basket; the treemap ghosts them and a big free-space bar animates to the predicted result ("+86 GB free, 71% -> 48%"). Commit sends them to the Recycle Bin in one operation with an undo toast.
 - **Useful:** Turns browsing into decisions with a clear payoff, and prevents regret.
-- **Build:** Basket in `disktree-core`; ghost = per-instance flag + alpha. Delete via `IFileOperation` (`FOF_ALLOWUNDO`) for Recycle Bin and native progress UI; undo by restoring from the bin.
+- **Build:** Basket in `sprawl-core`; ghost = per-instance flag + alpha. Delete via `IFileOperation` (`FOF_ALLOWUNDO`) for Recycle Bin and native progress UI; undo by restoring from the bin.
 - **Effort:** M. **Wow:** 3
 
 ### D8. Compare two drives or machines (split scene)
@@ -220,7 +220,7 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 ### E4. Command palette with live filter (Ctrl+K)
 - **Sees:** A frosted search box; typing `*.iso >1gb` filters the map live: non-matches sink and fade, matches rise and glow, with count and total size updating each keystroke. Phrases like "videos older than 2 years" work.
 - **Useful:** Search, filter and a visual answer in one place; the fastest way to find space hogs.
-- **Build:** Query parser in `disktree-core` (nom) over columnar arrays with SIMD size/time compares; results as a bitset uploaded as a `StructuredBuffer<uint>` mask; palette overlay with an acrylic brush. Optional natural-language parse via the local model (D6).
+- **Build:** Query parser in `sprawl-core` (nom) over columnar arrays with SIMD size/time compares; results as a bitset uploaded as a `StructuredBuffer<uint>` mask; palette overlay with an acrylic brush. Optional natural-language parse via the local model (D6).
 - **Effort:** M. **Wow:** 4
 
 ### E5. Magnifier lens (hold Alt)
@@ -256,13 +256,13 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 - **Effort:** S. **Wow:** 3
 
 ### G3. Windows 11 widget with live drive rings
-- **Sees:** A widget-board tile with a ring per drive (used/free, trend "+2.1 GB today") and a "Top 3 space hogs" button that deep-links into DiskTree at that folder.
+- **Sees:** A widget-board tile with a ring per drive (used/free, trend "+2.1 GB today") and a "Top 3 space hogs" button that deep-links into Sprawl at that folder.
 - **Useful:** Passive awareness that keeps users returning.
 - **Build:** Windows App SDK widget provider (COM server implementing `IWidgetProvider`, Adaptive Cards JSON), data from the cached snapshot and `GetDiskFreeSpaceExW`. Requires MSIX packaging.
 - **Effort:** L. **Wow:** 3
 
-### G4. Explorer integration: "Analyse with DiskTree"
-- **Sees:** Right-click any folder in Explorer: "DiskTree this folder" opens straight into the zoomed treemap. Optionally a tiny treemap thumbnail appears in the Details pane.
+### G4. Explorer integration: "Analyse with Sprawl"
+- **Sees:** Right-click any folder in Explorer: "Sprawl this folder" opens straight into the zoomed treemap. Optionally a tiny treemap thumbnail appears in the Details pane.
 - **Useful:** Entry point from where users already are.
 - **Build:** Windows 11 `IExplorerCommand` COM verb via MSIX sparse package (`com.microsoft.windows.fileExplorerContextMenus`); `IThumbnailProvider` serving a cached PNG. CLI already accepts a folder argument.
 - **Effort:** M. **Wow:** 3
@@ -296,9 +296,9 @@ Shorthand: D3D11 = `windows` crate `Win32::Graphics::Direct3D11`, D2D = Direct2D
 - **Effort:** S (given B1/B3). **Wow:** 4
 
 ### H3. Terminal treemap and headless report
-- **Sees:** `disktree --report C:\` prints a coloured block treemap in Windows Terminal (24-bit ANSI) plus a JSON of top folders for scripts, using the same layout engine.
+- **Sees:** `sprawl --report C:\` prints a coloured block treemap in Windows Terminal (24-bit ANSI) plus a JSON of top folders for scripts, using the same layout engine.
 - **Useful:** Servers, SSH, CI and bug reports; widens the audience.
-- **Build:** `disktree-core` squarify onto a character grid using half-block glyphs and truecolor escapes (`crossterm`); no UI dependencies.
+- **Build:** `sprawl-core` squarify onto a character grid using half-block glyphs and truecolor escapes (`crossterm`); no UI dependencies.
 - **Effort:** S. **Wow:** 2
 
 ---

@@ -1,0 +1,866 @@
+<title>Sprawl Interface Mockup</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: a dark "desktop" stage with an animated wallpaper; the app window floats on it as frosted glass,
+   scaled to fit; short build notes sit underneath. Single dark look on purpose (it mocks a dark-mode app). */
+:root {
+  color-scheme: dark;
+  --page: #0a0b0f;
+  --ink: #e8eaf1;
+  --ink-2: #a8afc1;
+  --ink-3: #6f778c;
+  --accent: #4cc2ff;
+  --accent-2: #9b7bff;
+  --glass: rgba(24, 26, 36, 0.56);
+  --layer: rgba(255, 255, 255, 0.045);
+  --layer-2: rgba(255, 255, 255, 0.075);
+  --stroke: rgba(255, 255, 255, 0.085);
+  --stroke-2: rgba(255, 255, 255, 0.14);
+  --sel: rgba(76, 194, 255, 0.16);
+  --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", Inter, system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", Inter, system-ui, sans-serif;
+}
+html, body { height: auto; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+}
+.page { max-width: 1400px; margin: 0 auto; display: grid; gap: 18px; }
+.page-head { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; }
+.page-head h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.6rem; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+.page-head p { margin: 4px 0 0; color: var(--ink-2); max-width: 70ch; line-height: 1.5; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn {
+  font: inherit; font-size: 0.875rem; color: var(--ink); background: var(--layer-2); border: 1px solid var(--stroke-2);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; transition: background .15s;
+}
+.btn:hover { background: rgba(255,255,255,.12); }
+.btn:focus-visible, .row:focus-visible, .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.accent { background: var(--accent); border-color: transparent; color: #04121b; font-weight: 600; }
+.btn.accent:hover { background: #7ad3ff; }
+.btn[aria-pressed="true"] { background: var(--sel); border-color: rgba(76,194,255,.5); }
+
+/* ---------- stage + wallpaper ---------- */
+.stage { position: relative; border-radius: 14px; overflow: hidden; background: #07080c; }
+.wall { position: absolute; inset: 0; overflow: hidden; }
+.blob { position: absolute; border-radius: 50%; filter: blur(70px); opacity: .9; will-change: transform; }
+.b1 { width: 55%; height: 70%; left: -8%; top: -10%; background: radial-gradient(circle at 40% 40%, #ff7a3d, #b8213f 60%, transparent 70%); animation: drift1 22s ease-in-out infinite alternate; }
+.b2 { width: 50%; height: 65%; right: -10%; top: 5%; background: radial-gradient(circle at 50% 50%, #3b6bff, #2a1b8f 60%, transparent 72%); animation: drift2 26s ease-in-out infinite alternate; }
+.b3 { width: 45%; height: 55%; left: 30%; bottom: -20%; background: radial-gradient(circle, #19c6a7, #0b5f73 60%, transparent 72%); animation: drift3 30s ease-in-out infinite alternate; }
+.b4 { width: 25%; height: 30%; left: 55%; top: 20%; background: radial-gradient(circle, #ff4fd8, transparent 70%); animation: drift1 18s ease-in-out infinite alternate-reverse; }
+@keyframes drift1 { to { transform: translate(18%, 12%) scale(1.15); } }
+@keyframes drift2 { to { transform: translate(-16%, 18%) scale(.9); } }
+@keyframes drift3 { to { transform: translate(-10%, -22%) scale(1.2); } }
+.fit { position: relative; padding: 28px; }
+.scaler { transform-origin: 0 0; width: 1360px; }
+
+/* ---------- the app window ---------- */
+.win {
+  position: relative; width: 1360px; height: 900px; border-radius: 10px; overflow: hidden;
+  background: var(--glass);
+  backdrop-filter: blur(48px) saturate(170%); -webkit-backdrop-filter: blur(48px) saturate(170%);
+  border: 1px solid rgba(255,255,255,.12);
+  box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 .5px rgba(0,0,0,.6);
+  display: grid; grid-template-rows: 40px 34px 112px 40px 296px 28px 1fr 26px;
+  font-size: 12.5px;
+}
+.win::before { /* acrylic noise */
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .05; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+.titlebar { display: flex; align-items: center; gap: 10px; padding-left: 14px; }
+.appicon { width: 18px; height: 18px; border-radius: 5px; background: linear-gradient(135deg, #ffb347, #ff5e62 55%, #8e54e9); display: grid; place-items: center; }
+.appicon i { width: 8px; height: 8px; border: 1.5px solid #fff; border-radius: 2px; border-top-left-radius: 0; }
+.titlebar .t { color: var(--ink-2); font-size: 12px; }
+.caps { margin-left: auto; display: flex; height: 100%; }
+.caps span { width: 46px; display: grid; place-items: center; color: var(--ink-2); font-size: 11px; }
+.caps span:last-child:hover { background: #c42b1c; color: #fff; }
+.menubar { display: flex; gap: 2px; padding-left: 6px; align-items: center; }
+.menubar span { padding: 5px 11px; border-radius: 5px; color: var(--ink); }
+.menubar span:hover { background: var(--layer-2); }
+
+.head { display: grid; grid-template-columns: 360px 1fr 330px; gap: 10px; padding: 4px 12px 8px; }
+.card { background: var(--layer); border: 1px solid var(--stroke); border-radius: 8px; padding: 11px 14px; min-width: 0; position: relative; overflow: hidden; }
+.sel-row { display: flex; gap: 8px; align-items: center; }
+.combo { flex: 1; display: flex; align-items: center; justify-content: space-between; background: var(--layer-2); border: 1px solid var(--stroke); border-bottom-color: rgba(255,255,255,.22); border-radius: 5px; padding: 5px 10px; }
+.combo b { font-weight: 400; }
+.scanbtn { background: var(--accent); color: #04121b; border-radius: 5px; padding: 5px 14px; font-weight: 600; cursor: pointer; border: 0; font: inherit; font-weight: 600; }
+.status { margin-top: 10px; color: var(--ink-2); display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+.pbar { margin-top: 8px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+.pbar i { display: block; height: 100%; width: 0; border-radius: 2px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); box-shadow: 0 0 12px var(--accent); }
+.space { display: grid; grid-template-columns: auto auto 1fr; gap: 3px 16px; align-items: center; font-variant-numeric: tabular-nums; }
+.space .k { color: var(--ink-3); }
+.space .v { font-weight: 600; }
+.ring { grid-row: 1 / span 4; grid-column: 3; justify-self: end; width: 84px; height: 84px; }
+.brand { display: flex; gap: 14px; align-items: center; background: linear-gradient(135deg, rgba(255,255,255,.07), rgba(255,255,255,.02)); }
+.logo { width: 54px; height: 54px; border-radius: 13px; background: linear-gradient(135deg, #ffb347, #ff5e62 55%, #8e54e9); box-shadow: 0 8px 24px rgba(255,94,98,.35); display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 12px; }
+.logo i { background: rgba(255,255,255,.9); border-radius: 2px; }
+.logo i:nth-child(1) { grid-row: span 2; }
+.brand h3 { margin: 0; font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+.brand p { margin: 2px 0 0; color: var(--ink-3); font-size: 11.5px; }
+
+.tabs { display: flex; gap: 4px; padding: 4px 12px; align-items: center; }
+.tab { font: inherit; color: var(--ink-2); background: transparent; border: 0; padding: 6px 14px; border-radius: 6px; cursor: pointer; position: relative; }
+.tab[aria-selected="true"] { color: var(--ink); background: var(--layer-2); }
+.tab[aria-selected="true"]::after { content: ""; position: absolute; left: 40%; right: 40%; bottom: 2px; height: 3px; border-radius: 2px; background: var(--accent); }
+.method { margin-left: auto; color: var(--ink-3); font-size: 11.5px; display: flex; gap: 8px; align-items: center; }
+.chip { border: 1px solid var(--stroke-2); border-radius: 99px; padding: 2px 9px; color: var(--ink-2); }
+.chip.on { border-color: rgba(76,194,255,.45); color: var(--accent); background: rgba(76,194,255,.08); }
+
+.tables { display: grid; grid-template-columns: 1.35fr 1fr; gap: 10px; padding: 0 12px; min-height: 0; }
+.pane { background: var(--layer); border: 1px solid var(--stroke); border-radius: 8px; overflow: hidden; display: grid; grid-template-rows: 28px 1fr; min-height: 0; }
+.thead, .row { display: grid; align-items: center; }
+.thead { color: var(--ink-2); font-weight: 600; font-size: 11.5px; border-bottom: 1px solid var(--stroke); background: rgba(255,255,255,.025); }
+.thead span, .row span { padding: 0 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r { text-align: right; }
+.sorted::after { content: " \2193"; color: var(--accent); }
+.tbody { overflow: hidden; }
+.row { height: 24px; font-variant-numeric: tabular-nums; cursor: default; border-radius: 4px; margin: 0 3px; transition: background .12s; }
+.row:hover { background: var(--layer-2); }
+.row.sel { background: var(--sel); }
+.row.hidden-attr .nm { color: var(--ink-3); }
+.cols-tree { grid-template-columns: minmax(0,1fr) 116px 84px 84px 80px 80px; }
+.cols-ext { grid-template-columns: 26px 72px minmax(0,1fr) 92px 76px 76px 62px; }
+.cols-files { grid-template-columns: minmax(0,1.2fr) 84px minmax(0,1.6fr); }
+.nm { display: flex; align-items: center; gap: 6px; }
+.chev { width: 12px; color: var(--ink-3); font-size: 9px; text-align: center; flex: none; }
+.ico { width: 15px; height: 12px; border-radius: 2px; flex: none; background: linear-gradient(180deg, #ffd66b, #f0a92e); position: relative; }
+.ico::before { content: ""; position: absolute; left: 0; top: -2px; width: 7px; height: 3px; border-radius: 2px 2px 0 0; background: #ffd66b; }
+.ico.drive { background: linear-gradient(180deg, #c9d3e6, #8592ad); }
+.ico.drive::before { display: none; }
+.ico.file { width: 11px; height: 14px; background: #d9dee8; }
+.ico.file::before { display: none; }
+.pct { position: relative; height: 16px; border-radius: 4px; background: rgba(255,255,255,.05); overflow: hidden; margin: 0 6px; padding: 0 !important; }
+.pct i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: linear-gradient(90deg, rgba(76,194,255,.55), rgba(155,123,255,.75)); transition: width .35s cubic-bezier(.2,.8,.2,1); }
+.pct b { position: relative; display: block; text-align: right; padding-right: 6px; font-weight: 400; line-height: 16px; font-size: 11.5px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; margin-left: 4px; padding: 0 !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+.crumb { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink-2); font-size: 12px; }
+.crumb a { color: var(--ink-2); cursor: pointer; padding: 1px 6px; border-radius: 4px; }
+.crumb a:hover { background: var(--layer-2); color: var(--ink); }
+.crumb .sep { color: var(--ink-3); }
+
+.mapwrap { position: relative; margin: 0 12px; border-radius: 8px; border: 1px solid var(--stroke); background: rgba(0,0,0,.22); overflow: hidden; min-height: 0; }
+.mapwrap > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#gl { cursor: pointer; }
+#labels { pointer-events: none; }
+.tip {
+  position: absolute; pointer-events: none; min-width: 220px; max-width: 360px; padding: 9px 12px; border-radius: 8px;
+  background: rgba(30, 32, 44, .72); backdrop-filter: blur(24px) saturate(160%); -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid var(--stroke-2); box-shadow: 0 10px 30px rgba(0,0,0,.45); opacity: 0; transition: opacity .12s; z-index: 3;
+}
+.tip .p { color: var(--ink-2); font-size: 11.5px; word-break: break-all; }
+.tip .s { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.tip .s i { width: 10px; height: 10px; border-radius: 3px; }
+
+.hud {
+  position: absolute; right: 12px; top: 12px; width: 330px; padding: 12px 14px; border-radius: 10px; z-index: 2;
+  background: rgba(22, 24, 34, .62); backdrop-filter: blur(26px) saturate(160%); -webkit-backdrop-filter: blur(26px) saturate(160%);
+  border: 1px solid var(--stroke-2); box-shadow: 0 16px 40px rgba(0,0,0,.45);
+  transition: opacity .6s, transform .6s cubic-bezier(.2,.8,.2,1);
+}
+.hud.gone { opacity: 0; transform: translateY(-10px) scale(.97); pointer-events: none; }
+.hud h4 { margin: 0 0 8px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; display: flex; justify-content: space-between; }
+.hud h4 em { font-style: normal; color: var(--accent); letter-spacing: 0; text-transform: none; }
+#mftmap { width: 100%; height: 54px; display: block; border-radius: 4px; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 10px 0; font-variant-numeric: tabular-nums; }
+.stats div { display: grid; }
+.stats small { color: var(--ink-3); font-size: 10.5px; }
+.stats b { font-size: 16px; font-weight: 600; font-family: var(--font-display); }
+#spark { width: 100%; height: 38px; display: block; }
+.race { position: relative; height: 132px; margin-top: 8px; }
+.lane { position: absolute; left: 0; right: 0; height: 20px; display: grid; grid-template-columns: 52px 1fr 64px; gap: 8px; align-items: center; transition: transform .45s cubic-bezier(.2,.8,.2,1); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.lane .bar { height: 8px; border-radius: 4px; transition: width .3s; box-shadow: 0 0 10px currentColor; }
+.lane .v { text-align: right; color: var(--ink-2); }
+
+.statusbar { display: flex; justify-content: space-between; align-items: center; padding: 0 16px; color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+.about { padding: 18px 22px; color: var(--ink-2); line-height: 1.6; overflow: auto; }
+.about h3 { color: var(--ink); margin: 0 0 6px; font-family: var(--font-display); }
+
+/* ---------- notes ---------- */
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 14px 28px; }
+.notes section { min-width: 0; }
+.notes h2 { font-family: var(--font-display); font-size: 1.05rem; margin: 0 0 6px; font-weight: 600; }
+.notes ul { margin: 0; padding-left: 1.1em; color: var(--ink-2); line-height: 1.6; }
+.notes li { margin: 2px 0; max-width: 68ch; }
+.notes code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .86em; color: var(--ink); background: var(--layer-2); padding: 1px 5px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { .blob { animation: none; } }
+</style>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>Sprawl interface mockup</h1>
+      <p>The planned WinUI 3 look, running live: frosted acrylic window, a scan you can watch fill in, and a lit 3D treemap that rises under the cursor. Hover tiles and rows, click a tile to zoom into its folder, click the path above the map to zoom back out. Sample data.</p>
+    </div>
+    <div class="controls">
+      <button class="btn accent" id="replay" type="button">Replay scan</button>
+      <button class="btn" id="tilt" type="button" aria-pressed="true">3D tilt</button>
+      <button class="btn" id="labelsBtn" type="button" aria-pressed="true">Folder names</button>
+    </div>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="wall" aria-hidden="true"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><div class="blob b4"></div></div>
+    <div class="fit" id="fit">
+      <div class="scaler" id="scaler">
+        <div class="win" id="win">
+          <div class="titlebar"><div class="appicon"><i></i></div><span class="t" id="wtitle">[C:] Local Disk  -  Sprawl</span>
+            <div class="caps" aria-hidden="true"><span>&#x2014;</span><span>&#x2610;</span><span>&#x2715;</span></div></div>
+          <div class="menubar"><span>File</span><span>Search</span><span>Options</span><span>Help</span></div>
+
+          <div class="head">
+            <div class="card">
+              <div class="sel-row"><span style="color:var(--ink-2)">Select:</span>
+                <div class="combo"><b>[C:] Local Disk</b><span style="color:var(--ink-3)">&#x2304;</span></div>
+                <button class="scanbtn" id="scan2" type="button">Scan</button></div>
+              <div class="status"><span id="stext">Ready</span><span id="stime"></span></div>
+              <div class="pbar"><i id="pfill"></i></div>
+            </div>
+            <div class="card">
+              <div class="space">
+                <span class="k">Selection</span><span class="v">[C:] Local Disk</span>
+                <svg class="ring" viewBox="0 0 84 84" aria-hidden="true">
+                  <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4cc2ff"/><stop offset="1" stop-color="#9b7bff"/></linearGradient></defs>
+                  <circle cx="42" cy="42" r="34" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="9"/>
+                  <circle id="ringArc" cx="42" cy="42" r="34" fill="none" stroke="url(#rg)" stroke-width="9" stroke-linecap="round" stroke-dasharray="0 214" transform="rotate(-90 42 42)"/>
+                  <text x="42" y="46" text-anchor="middle" fill="#e8eaf1" font-size="13" font-weight="600" id="ringTxt">97.7%</text>
+                </svg>
+                <span class="k">Total Space</span><span class="v">929.1 GB</span>
+                <span class="k">Space Used</span><span class="v">907.5 GB <span style="color:var(--ink-3);font-weight:400">(97.7%)</span></span>
+                <span class="k">Space Free</span><span class="v">21.6 GB <span style="color:var(--ink-3);font-weight:400">(2.3%)</span></span>
+              </div>
+            </div>
+            <div class="card brand"><div class="logo" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div><h3>Sprawl 1.0 x64</h3><p>Rust + WinUI 3 disk space analyser</p><p>Reads the NTFS file table directly</p></div></div>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" aria-selected="true" data-tab="tree" type="button">Tree View</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="files" type="button">File View</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="about" type="button">About</button>
+            <div class="method"><span>Scan method</span><span class="chip on">MFT (admin)</span><span class="chip">Folder walk</span></div>
+          </div>
+
+          <div class="tables">
+            <div class="pane" id="leftPane">
+              <div class="thead cols-tree" id="lhead"></div>
+              <div class="tbody" id="lbody"></div>
+            </div>
+            <div class="pane">
+              <div class="thead cols-ext"><span></span><span>Extension</span><span>File Type</span><span class="r">Percent</span><span class="r sorted">Size</span><span class="r">Allocated</span><span class="r">Files</span></div>
+              <div class="tbody" id="ebody"></div>
+            </div>
+          </div>
+
+          <div class="crumb" id="crumb"></div>
+          <div class="mapwrap" id="mapwrap">
+            <canvas id="gl"></canvas>
+            <canvas id="labels"></canvas>
+            <div class="tip" id="tip"><div class="p" id="tipPath"></div><div class="s"><i id="tipSw"></i><b id="tipSize"></b><span id="tipType" style="color:var(--ink-3)"></span></div></div>
+            <div class="hud gone" id="hud">
+              <h4>Reading $MFT <em id="hudPct">0%</em></h4>
+              <canvas id="mftmap"></canvas>
+              <div class="stats">
+                <div><small>Files</small><b id="hFiles">0</b></div>
+                <div><small>Folders</small><b id="hFolders">0</b></div>
+                <div><small>Data found</small><b id="hBytes">0 bytes</b></div>
+                <div><small>Records / s</small><b id="hRate">0</b></div>
+              </div>
+              <canvas id="spark"></canvas>
+              <div class="race" id="race"></div>
+            </div>
+          </div>
+          <div class="statusbar"><span id="foot">Ready</span><span id="footR"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <section>
+      <h2>What the mockup shows</h2>
+      <ul>
+        <li>The whole window is acrylic: the moving wallpaper behind it stays visible through a blurred, tinted layer, and panels are lighter glass on top.</li>
+        <li>While scanning, the treemap builds itself as data arrives. A glass overlay shows the file-table read as a block map, live counters, throughput, and file types racing for the top spot.</li>
+        <li>When the scan finishes, a wave runs across the map. Tiles are lit boxes with cushion shading. The one under the cursor rises and glows, its folder lifts with it, and nearby tiles ripple.</li>
+        <li>Folder names sit on the map like WizTree's. Clicking a tile zooms into its folder, and every tile glides to its new place.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>How it maps to WinUI 3</h2>
+      <ul>
+        <li>Window: <code>DesktopAcrylicBackdrop</code> as the system backdrop, with an extended title bar and translucent <code>AcrylicBrush</code> cards.</li>
+        <li>Treemap: a <code>SwapChainPanel</code> drawn with Direct3D 11. Each tile is an instanced box, lighting runs in a pixel shader, labels use DirectWrite, and it animates at the display's refresh rate.</li>
+        <li>Scan: the drive's file table is read directly when running as admin, otherwise a multi-threaded folder walk. Progress is polled every frame to drive the overlay.</li>
+        <li>Tables: virtualized lists with sortable columns and right-click menus, so millions of rows stay smooth.</li>
+      </ul>
+    </section>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// ------------------------------------------------------------------ sample data
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry32(20261116);
+const GB = 1024 ** 3, MB = 1024 ** 2;
+
+const TYPES = { dll: "Application extension", exe: "Application", sys: "System file", pdb: "Program Debug Database", lib: "Object File Library",
+  rlib: "RLIB File", rmeta: "RMETA File", o: "O File", bin: "BIN File", gguf: "GGUF File", safetensors: "SAFETENSORS File", qcow2: "QCOW2 File",
+  iso: "Disc Image File", img: "IMG File", zip: "ZIP archive", gz: "GZip archive", msi: "Windows Installer Package", pak: "PAK File", bik: "BIK File",
+  dat: "DAT File", mp4: "MP4 Video", jpg: "JPEG image", png: "PNG image", nvph: "NVPH File", "": "(No Extension)", json: "JSON File", mui: "MUI File" };
+const BIAS = {
+  sys: [["dll", 45], ["sys", 10], ["exe", 9], ["mui", 8], ["dat", 8], ["", 8], ["msi", 6], ["pdb", 3], ["png", 3]],
+  apps: [["dll", 40], ["exe", 14], ["pak", 10], ["bin", 8], ["dat", 7], ["png", 6], ["json", 4], ["lib", 4], ["", 7]],
+  dev: [["rlib", 24], ["rmeta", 10], ["pdb", 14], ["lib", 10], ["o", 10], ["dll", 8], ["exe", 6], ["", 10], ["bin", 4], ["json", 4]],
+  media: [["mp4", 38], ["jpg", 30], ["png", 20], ["nvph", 12]],
+  games: [["bin", 26], ["pak", 26], ["bik", 10], ["dat", 16], ["dll", 10], ["exe", 4], ["", 8]],
+  ai: [["gguf", 44], ["safetensors", 26], ["bin", 22], ["json", 4], ["", 4]],
+  vm: [["qcow2", 52], ["img", 22], ["iso", 20], ["", 6]],
+  dl: [["zip", 28], ["iso", 18], ["msi", 14], ["exe", 16], ["mp4", 10], ["gz", 10], ["png", 4]],
+};
+const POOLS = {
+  sys: ["System32", "WinSxS", "SysWOW64", "Installer", "assembly", "servicing", "DriverStore", "Fonts", "Microsoft.NET", "Logs"],
+  apps: ["bin", "lib", "resources", "plugins", "x64", "runtimes", "assets", "locales", "Common", "Shared", "Data", "Tools"],
+  dev: ["target", "node_modules", "build", ".git", "deps", "release", "debug", "src", "obj", "incremental", "packages", "cache"],
+  media: ["Camera", "2024", "2025", "Exports", "Raw", "Projects", "Renders", "Screenshots", "Clips"],
+  games: ["Content", "Paks", "Movies", "Shaders", "Data", "Binaries", "Saves", "Mods", "Cache"],
+  ai: ["models", "checkpoints", "lora", "cache", "datasets", "hub", "blobs", "snapshots"],
+  vm: ["avd", "images", "disks", "snapshots", "system-images"],
+  dl: ["installers", "isos", "archive", "old", "drivers", "videos", "tools"],
+};
+const STEMS = { dll: ["core", "ui", "net", "d3d", "media", "crypt", "shell", "vk", "cuda", "runtime"], exe: ["setup", "launcher", "app", "helper", "update"],
+  sys: ["driver", "nvlddmkm", "storport", "ntfs"], gguf: ["Qwen3-32B-Q4_K_M", "Llama-3.3-70B-Q3", "Mistral-Small", "gemma-3-27b"], safetensors: ["model-00001", "model-00002", "diffusion_pytorch_model", "vae"],
+  mp4: ["clip", "render", "capture", "export"], jpg: ["IMG_", "DSC_", "photo_"], png: ["shot_", "icon", "texture"], qcow2: ["system", "userdata", "cache"], iso: ["Win11_24H2", "ubuntu-24.04", "kali"],
+  zip: ["backup", "archive", "sdk", "assets"], pak: ["pakchunk0", "pakchunk1", "global"], rlib: ["libwindows", "libserde", "libtokio", "libsyn"], default: ["data", "file", "blob", "chunk", "part"] };
+
+let leafBudget = 2700;
+let nodeId = 0;
+function pick(bias) { const list = BIAS[bias]; let t = list.reduce((s, x) => s + x[1], 0) * rnd(); for (const [e, w] of list) { if ((t -= w) <= 0) return e; } return list[0][0]; }
+function split(total, n, skew) { const w = []; for (let i = 0; i < n; i++) w.push(Math.pow(rnd(), skew) + 0.02); const s = w.reduce((a, b) => a + b, 0); return w.map(x => x / s * total); }
+function mk(name, parent, isDir) { const n = { id: nodeId++, name, parent, isDir, size: 0, files: 0, folders: 0, children: [], ext: null, hidden: false }; if (parent) parent.children.push(n); return n; }
+function fileName(ext, i) { const st = STEMS[ext] || STEMS.default; let s = st[(i + Math.floor(rnd() * 7)) % st.length]; if (/_$/.test(s)) s += String(1000 + Math.floor(rnd() * 8999)); else if (rnd() < .5) s += "_" + Math.floor(rnd() * 40); return ext ? s + "." + ext : s.toUpperCase(); }
+function genFiles(dir, bytes, bias, k) {
+  const sizes = split(bytes, k, 2.6);
+  sizes.forEach((sz, i) => { const ext = pick(bias); const f = mk(fileName(ext, i), dir, false); f.ext = ext; f.size = Math.max(4096, Math.round(sz)); f.weight = Math.max(1, Math.round(Math.pow(rnd(), 2) * 2600)); leafBudget--; });
+}
+function gen(dir, bytes, bias, depth) {
+  if (depth >= 4 || bytes < 900 * MB || leafBudget < 40) { genFiles(dir, bytes, bias, Math.max(2, Math.min(18, Math.round(3 + rnd() * 12 * Math.min(1, bytes / (8 * GB)))))); return; }
+  const nSub = 2 + Math.floor(rnd() * 5);
+  const loose = bytes * (0.06 + rnd() * 0.12);
+  const parts = split(bytes - loose, nSub, 2.2);
+  const pool = POOLS[bias]; const used = new Set();
+  parts.forEach(p => { let nm; do { nm = pool[Math.floor(rnd() * pool.length)]; if (used.has(nm)) nm += " " + (used.size + 1); } while (used.has(nm)); used.add(nm); gen(mk(nm, dir, true), p, bias, depth + 1); });
+  genFiles(dir, loose, bias, 2 + Math.floor(rnd() * 5));
+}
+function build(spec, parent, depth) {
+  if (spec.file) { const f = mk(spec.n, parent, false); f.ext = spec.file; f.size = spec.g * GB; f.weight = 1; return f; }
+  const d = mk(spec.n, parent, true); d.hidden = !!spec.h;
+  let rest = spec.g * GB;
+  for (const c of spec.c || []) { build(c, d, depth + 1); rest -= (c.g * GB); }
+  if (rest > 50 * MB) gen(d, rest, spec.b || "apps", depth + 1);
+  return d;
+}
+const SPEC = { n: "C:\\", g: 924, b: "sys", c: [
+  { n: "Users", g: 646, b: "apps", c: [{ n: "sam", g: 628, b: "apps", c: [
+    { n: "Desktop", g: 177, b: "dev", c: [{ n: "emulator-qt", g: 54, b: "games" }, { n: "notes", g: 45, b: "dev" }, { n: "games", g: 54, b: "games" }] },
+    { n: "AppData", g: 172, b: "apps", c: [{ n: "Local", g: 153, b: "apps", c: [{ n: "NVIDIA", g: 42, b: "ai" }, { n: "D3DSCache", g: 42, b: "games" }, { n: "Temp", g: 39, b: "dl" }] }, { n: "Roaming", g: 19, b: "apps" }] },
+    { n: "Downloads", g: 97, b: "dl" },
+    { n: "Documents", g: 85, b: "ai", c: [{ n: "Projects", g: 35, b: "ai" }, { n: "Models", g: 29, b: "ai" }] },
+    { n: "Pictures", g: 41, b: "media" },
+    { n: ".android", g: 20, b: "vm" },
+    { n: "Videos", g: 14, b: "media" } ] }] },
+  { n: "Program Files", g: 80, b: "apps", c: [{ n: "NVIDIA Corporation", g: 14, b: "apps" }, { n: "Autodesk", g: 7, b: "apps" }, { n: "Adobe", g: 5.2, b: "apps" }, { n: "Microsoft Office", g: 4.1, b: "apps" }] },
+  { n: "Windows", g: 52, b: "sys", c: [{ n: "System32", g: 12, b: "sys" }, { n: "WinSxS", g: 12.4, b: "sys" }, { n: "Installer", g: 10.6, b: "sys" }] },
+  { n: "Emulators", g: 46.6, b: "games" },
+  { n: "pagefile.sys", g: 27, file: "sys" },
+  { n: "Program Files (x86)", g: 28.6, b: "games" },
+  { n: "ProgramData", g: 23.6, b: "apps", h: true },
+  { n: "Autodesk", g: 5.6, b: "apps" },
+  { n: "build-tools", g: 1.1, b: "dev" },
+  { n: "$Recycle.Bin", g: 0.94, b: "dl", h: true },
+  { n: "Qt", g: 0.6, b: "dev" },
+] };
+const ROOT = build(SPEC, null, 0);
+const ALL = []; (function walk(n) { ALL.push(n); n.children.forEach(walk); })(ROOT);
+const LEAVES = ALL.filter(n => !n.isDir);
+function totals(n) { if (!n.isDir) { n.files = n.weight; return; } n.size = 0; n.files = 0; n.folders = 0; for (const c of n.children) { totals(c); n.size += c.size; n.files += c.files; n.folders += c.isDir ? 1 + c.folders : 0; } n.children.sort((a, b) => b.size - a.size); }
+totals(ROOT);
+for (const n of ALL) n.alloc = n.isDir ? 0 : Math.ceil(n.size / 4096) * 4096 * (n.ext === "sys" ? 1 : 1.002);
+(function alloc(n) { if (!n.isDir) return n.alloc; n.alloc = n.children.reduce((s, c) => s + alloc(c), 0); return n.alloc; })(ROOT);
+
+// file types, colours (WizTree-style: vivid for the biggest types, grey for the rest)
+const PALETTE = [[235,125,20],[45,175,65],[195,205,25],[205,45,150],[25,145,235],[150,65,215],[125,115,245],[225,45,205],[235,25,35],[135,165,45],[25,205,175],[160,95,35],[60,70,225],[245,185,45],[35,130,130],[205,105,155],[105,205,245],[175,175,65],[245,95,95],[95,145,65]];
+const GREY = [96, 98, 108];
+const EXT = new Map();
+for (const f of LEAVES) { const e = EXT.get(f.ext) || { ext: f.ext, size: 0, alloc: 0, files: 0 }; e.size += f.size; e.alloc += f.alloc; e.files += f.weight; EXT.set(f.ext, e); }
+const EXTS = [...EXT.values()].sort((a, b) => b.size - a.size);
+EXTS.forEach((e, i) => { e.col = i < PALETTE.length ? PALETTE[i] : GREY; });
+const colOf = ext => EXT.get(ext).col;
+const css = c => `rgb(${c[0]},${c[1]},${c[2]})`;
+
+// ------------------------------------------------------------------ formatting
+function fsize(b) { if (b < 1024) return Math.round(b) + " bytes"; const u = ["KB", "MB", "GB", "TB"]; let v = b / 1024, i = 0; while (v >= 1024 && i < 3) { v /= 1024; i++; } return v.toFixed(1) + " " + u[i]; }
+const nf = new Intl.NumberFormat("en-US");
+const num = v => nf.format(Math.round(v));
+function pathOf(n) { const p = []; for (let x = n; x; x = x.parent) p.push(x === ROOT ? "C:" : x.name); return p.reverse().join("\\") + (n.isDir ? "\\" : ""); }
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ------------------------------------------------------------------ scan simulation
+const SCAN_MS = 6400;
+let scan = { active: false, t0: 0, p: 1, shownBytes: 0 };
+LEAVES.forEach(f => { f.t = Math.pow(rnd(), 1.05) * 0.97; });
+const BY_T = [...LEAVES].sort((a, b) => a.t - b.t);
+function applyDiscovered(p) {
+  for (const n of ALL) { n.found = 0; n.ffiles = 0; }
+  for (const f of BY_T) { if (f.t > p) break; for (let x = f; x; x = x.parent) { x.found += f.size; x.ffiles += f.weight; } }
+}
+const vsize = n => (scan.active ? n.found : n.size);
+
+// ------------------------------------------------------------------ squarified layout
+function squarify(items, x, y, w, h, place) {
+  let total = 0; for (const it of items) total += it.v;
+  if (total <= 0 || w <= 0 || h <= 0) return;
+  const scale = (w * h) / total;
+  let i = 0;
+  while (i < items.length) {
+    const side = Math.min(w, h), side2 = side * side;
+    let sum = 0, worst = Infinity, start = i;
+    while (i < items.length) {
+      const a = items[i].v * scale, ns = sum + a, mx = items[start].v * scale, s2 = ns * ns;
+      const nw = Math.max(side2 * mx / s2, s2 / (side2 * a));
+      if (i > start && nw > worst) break;
+      sum = ns; worst = nw; i++;
+    }
+    if (w >= h) { const t = sum / h; let yy = y; for (let k = start; k < i; k++) { const hh = items[k].v * scale / t; place(items[k].n, x, yy, t, hh); yy += hh; } x += t; w -= t; }
+    else { const t = sum / w; let xx = x; for (let k = start; k < i; k++) { const ww = items[k].v * scale / t; place(items[k].n, xx, y, ww, t); xx += ww; } y += t; h -= t; }
+  }
+}
+let viewRoot = ROOT;
+let LAYOUT = new Map();
+function layout(W, H) {
+  const out = new Map();
+  (function rec(n, x, y, w, h, d) {
+    const e = { x, y, w, h, d, label: false }; out.set(n, e);
+    if (!n.isDir) return;
+    let ix = x, iy = y, iw = w, ih = h;
+    if (d > 0) {
+      const pad = w > 10 && h > 10 ? 1.6 : 0; ix += pad; iy += pad; iw -= pad * 2; ih -= pad * 2;
+      if (d <= 2 && iw > 64 && ih > 44) { e.label = true; iy += 15; ih -= 15; }
+    }
+    const kids = []; for (const c of n.children) { const v = vsize(c); if (v > 0) kids.push({ n: c, v }); }
+    kids.sort((a, b) => b.v - a.v);
+    squarify(kids, ix, iy, iw, ih, (c, a, b, cw, ch) => { if (cw >= 0.7 && ch >= 0.7) rec(c, a, b, cw, ch, d + 1); });
+  })(viewRoot, 0, 0, W, H, 0);
+  return out;
+}
+
+// ------------------------------------------------------------------ WebGL renderer
+const glc = document.getElementById("gl");
+const lab = document.getElementById("labels");
+const gl = glc.getContext("webgl2", { antialias: true, premultipliedAlpha: true, alpha: true });
+const lctx = lab.getContext("2d");
+let W = 1300, H = 300, DPR = 1;
+
+const VS = `#version 300 es
+layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor;
+layout(location=2) in vec4 aRect; layout(location=3) in vec4 aPar; layout(location=4) in vec4 aCol; layout(location=5) in vec4 aFx;
+uniform mat4 uVP; uniform vec2 uSize;
+out vec3 vN; out vec2 vUV; out vec2 vPUV; out vec4 vCol; out vec4 vFx; out vec3 vW; out vec2 vWH;
+void main(){
+  vec2 xy = aRect.xy + aPos.xy * aRect.zw;
+  float h = aFx.x + aFx.y;
+  vec3 w = vec3(xy.x - uSize.x*0.5, uSize.y*0.5 - xy.y, aPos.z * h);
+  vN = vec3(aNor.x, -aNor.y, aNor.z); vUV = aPos.xy; vPUV = (xy - aPar.xy) / max(aPar.zw, vec2(1e-3));
+  vCol = aCol; vFx = aFx; vW = w; vWH = aRect.zw;
+  gl_Position = uVP * vec4(w, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 vN; in vec2 vUV; in vec2 vPUV; in vec4 vCol; in vec4 vFx; in vec3 vW; in vec2 vWH;
+uniform vec3 uLight; uniform vec3 uEye; uniform float uTime;
+out vec4 o;
+void main(){
+  vec3 base = vCol.rgb; float kind = vCol.a; bool top = vN.z > 0.5;
+  vec3 n;
+  if (top) {
+    float c1 = kind > 0.5 ? 0.25 : 1.15;
+    vec2 g = (1.0 - 2.0*vUV)*c1 + (1.0 - 2.0*clamp(vPUV, 0.0, 1.0))*0.5;
+    n = normalize(vec3(-g.x, g.y, 1.0));
+  } else n = normalize(vN);
+  vec3 L = normalize(uLight); vec3 V = normalize(uEye - vW); vec3 Hh = normalize(L + V);
+  float diff = max(dot(n, L), 0.0);
+  float spec = pow(max(dot(n, Hh), 0.0), 48.0) * (kind > 0.5 ? 0.05 : 0.38);
+  vec3 c = base * (0.24 + 0.92*diff) * (top ? 1.0 : 0.5) + spec;
+  vec2 e = min(vUV, 1.0 - vUV) * vWH;
+  float edge = top ? 1.0 - smoothstep(0.0, 1.4, min(e.x, e.y)) : 0.0;
+  c *= 1.0 - edge * 0.45 * (1.0 - vFx.z);
+  float glow = vFx.z;
+  c += glow * (0.22*base + vec3(0.10, 0.13, 0.16)) + glow * edge * vec3(0.75, 0.9, 1.0);
+  float lum = dot(c, vec3(0.3, 0.59, 0.11));
+  c = mix(c, vec3(lum) * 0.32, vFx.w);
+  o = vec4(c, 1.0);
+}`;
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+let prog, uVP, uSize, uLight, uEye, uTime, cubeBuf, instBuf, vao, cubeCount;
+const FLOATS = 20;
+let inst = new Float32Array(FLOATS * 4096);
+function initGL() {
+  prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  uVP = gl.getUniformLocation(prog, "uVP"); uSize = gl.getUniformLocation(prog, "uSize"); uLight = gl.getUniformLocation(prog, "uLight"); uEye = gl.getUniformLocation(prog, "uEye"); uTime = gl.getUniformLocation(prog, "uTime");
+  // unit box 0..1 without a bottom: top + 4 sides, position + normal
+  const v = [];
+  const quad = (a, b, c, d, nrm) => { for (const p of [a, b, c, a, c, d]) v.push(...p, ...nrm); };
+  quad([0,0,1],[1,0,1],[1,1,1],[0,1,1],[0,0,1]);
+  quad([0,0,0],[0,0,1],[0,1,1],[0,1,0],[-1,0,0]);
+  quad([1,0,0],[1,1,0],[1,1,1],[1,0,1],[1,0,0]);
+  quad([0,0,0],[1,0,0],[1,0,1],[0,0,1],[0,-1,0]);
+  quad([0,1,0],[0,1,1],[1,1,1],[1,1,0],[0,1,0]);
+  cubeCount = v.length / 6;
+  vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  cubeBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+  instBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+  for (let i = 0; i < 4; i++) { gl.enableVertexAttribArray(2 + i); gl.vertexAttribPointer(2 + i, 4, gl.FLOAT, false, FLOATS * 4, i * 16); gl.vertexAttribDivisor(2 + i, 1); }
+  gl.enable(gl.DEPTH_TEST);
+}
+
+// matrices (column-major)
+function persp(fy, asp, n, f) { const t = 1 / Math.tan(fy / 2), nf = 1 / (n - f); return [t / asp,0,0,0, 0,t,0,0, 0,0,(f + n) * nf,-1, 0,0,2 * f * n * nf,0]; }
+function sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+function norm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; }
+function dot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+function lookAt(e, t, up) { const z = norm(sub(e, t)), x = norm(cross(up, z)), y = cross(z, x); return [x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0, -dot(x,e),-dot(y,e),-dot(z,e),1]; }
+function mul(a, b) { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; }
+function xform(m, p) { const x = p[0], y = p[1], z = p[2], w = p[3] ?? 1; return [m[0]*x+m[4]*y+m[8]*z+m[12]*w, m[1]*x+m[5]*y+m[9]*z+m[13]*w, m[2]*x+m[6]*y+m[10]*z+m[14]*w, m[3]*x+m[7]*y+m[11]*z+m[15]*w]; }
+function inv(m) { const a = m, o = new Array(16);
+  const b00=a[0]*a[5]-a[1]*a[4], b01=a[0]*a[6]-a[2]*a[4], b02=a[0]*a[7]-a[3]*a[4], b03=a[1]*a[6]-a[2]*a[5], b04=a[1]*a[7]-a[3]*a[5], b05=a[2]*a[7]-a[3]*a[6];
+  const b06=a[8]*a[13]-a[9]*a[12], b07=a[8]*a[14]-a[10]*a[12], b08=a[8]*a[15]-a[11]*a[12], b09=a[9]*a[14]-a[10]*a[13], b10=a[9]*a[15]-a[11]*a[13], b11=a[10]*a[15]-a[11]*a[14];
+  const d = 1 / (b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06);
+  o[0]=(a[5]*b11-a[6]*b10+a[7]*b09)*d; o[1]=(a[2]*b10-a[1]*b11-a[3]*b09)*d; o[2]=(a[13]*b05-a[14]*b04+a[15]*b03)*d; o[3]=(a[10]*b04-a[9]*b05-a[11]*b03)*d;
+  o[4]=(a[6]*b08-a[4]*b11-a[7]*b07)*d; o[5]=(a[0]*b11-a[2]*b08+a[3]*b07)*d; o[6]=(a[14]*b02-a[12]*b05-a[15]*b01)*d; o[7]=(a[8]*b05-a[10]*b02+a[11]*b01)*d;
+  o[8]=(a[4]*b10-a[5]*b08+a[7]*b06)*d; o[9]=(a[1]*b08-a[0]*b10-a[3]*b06)*d; o[10]=(a[12]*b04-a[13]*b02+a[15]*b00)*d; o[11]=(a[9]*b02-a[8]*b04-a[11]*b00)*d;
+  o[12]=(a[5]*b07-a[4]*b09-a[6]*b06)*d; o[13]=(a[0]*b09-a[1]*b07+a[2]*b06)*d; o[14]=(a[13]*b01-a[12]*b03-a[14]*b00)*d; o[15]=(a[8]*b03-a[9]*b01+a[10]*b00)*d;
+  return o; }
+
+let tiltOn = true, labelsOn = true;
+const cam = { tilt: 0.5, yaw: 0, D: 1000, eye: [0, 0, 1000], vp: null, ivp: null };
+function camera(mx, my, dt) {
+  const tt = tiltOn ? 0.44 + (my - 0.5) * 0.08 : 0.0;
+  const ty = tiltOn ? (mx - 0.5) * 0.16 : 0.0;
+  const k = Math.min(1, dt * 4);
+  cam.tilt += (tt - cam.tilt) * k; cam.yaw += (ty - cam.yaw) * k;
+  const P = persp(30 * Math.PI / 180, W / H, 10, 20000);
+  const make = D => { const e = [D * Math.sin(cam.yaw) * Math.cos(cam.tilt), -D * Math.sin(cam.tilt), D * Math.cos(cam.tilt) * Math.cos(cam.yaw)]; return [mul(P, lookAt(e, [0, 0, 0], [0, 1, 0])), e]; };
+  let lo = W * 0.2, hi = W * 6;
+  for (let i = 0; i < 18; i++) { const D = (lo + hi) / 2; const [m] = make(D); let ok = true;
+    for (const c of [[-W/2,-H/2],[W/2,-H/2],[W/2,H/2],[-W/2,H/2]]) { const q = xform(m, [c[0], c[1], 0, 1]); if (Math.abs(q[0]/q[3]) > 0.985 || Math.abs(q[1]/q[3]) > 0.965) { ok = false; break; } }
+    if (ok) hi = D; else lo = D; }
+  const [m, e] = make(hi); cam.vp = m; cam.ivp = inv(m); cam.eye = e;
+}
+function project(x, y, z) { const q = xform(cam.vp, [x - W / 2, H / 2 - y, z, 1]); return [(q[0] / q[3] * 0.5 + 0.5) * W, (0.5 - q[1] / q[3] * 0.5) * H]; }
+function unproject(px, py) {
+  const nx = px / W * 2 - 1, ny = 1 - py / H * 2;
+  const a = xform(cam.ivp, [nx, ny, -1, 1]), b = xform(cam.ivp, [nx, ny, 1, 1]);
+  const p0 = [a[0]/a[3], a[1]/a[3], a[2]/a[3]], p1 = [b[0]/b[3], b[1]/b[3], b[2]/b[3]];
+  const t = p0[2] / (p0[2] - p1[2]); const X = p0[0] + (p1[0] - p0[0]) * t, Y = p0[1] + (p1[1] - p0[1]) * t;
+  return [X + W / 2, H / 2 - Y];
+}
+
+// ------------------------------------------------------------------ animated state per node
+const anim = new Map(); // node -> {x,y,w,h, lift, vel, glow, dim}
+function relayout() {
+  LAYOUT = layout(W, H);
+  for (const [n, e] of LAYOUT) if (!anim.has(n)) anim.set(n, { x: e.x + e.w / 2, y: e.y + e.h / 2, w: 0, h: 0, lift: 0, vel: 0, glow: 0, dim: 0, wave: 0 });
+}
+let hoverLeaf = null, hoverFolder = null, hoverExt = null, mouse = null, mouseRel = [0.5, 0.5];
+let wave = { t0: -1 };
+function containing(n) { // the child of viewRoot that holds n
+  let x = n; while (x && x.parent !== viewRoot) x = x.parent; return x;
+}
+function underAncestor(n, a) { for (let x = n; x; x = x.parent) if (x === a) return true; return false; }
+
+function step(dt, now) {
+  const kPos = reduce ? 1 : Math.min(1, dt * 9);
+  let count = 0;
+  const hoverParent = hoverLeaf ? hoverLeaf.parent : null;
+  const waveT = wave.t0 >= 0 ? (now - wave.t0) / 1000 : -1;
+  for (const [n, a] of anim) {
+    const e = LAYOUT.get(n);
+    let tx, ty, tw, th;
+    if (e) { tx = e.x; ty = e.y; tw = e.w; th = e.h; }
+    else { tx = a.x + a.w / 2; ty = a.y + a.h / 2; tw = 0; th = 0; }
+    a.x += (tx - a.x) * kPos; a.y += (ty - a.y) * kPos; a.w += (tw - a.w) * kPos; a.h += (th - a.h) * kPos;
+    if (!e && a.w < 0.4) { anim.delete(n); continue; }
+    if (n.isDir && (!e || e.d === 0)) continue;
+    // lift target
+    let target = 0, glowT = 0;
+    if (!n.isDir) {
+      if (n === hoverLeaf) { target = 26; glowT = 1; }
+      else if (hoverParent && n.parent === hoverParent) { target = 8; glowT = 0.22; }
+      if (hoverFolder && underAncestor(n, hoverFolder)) { target = Math.max(target, 12); glowT = Math.max(glowT, 0.3); }
+      if (mouse && !reduce) { const dx = a.x + a.w / 2 - mouse[0], dy = a.y + a.h / 2 - mouse[1]; target += 7 * Math.exp(-(dx * dx + dy * dy) / (2 * 70 * 70)); }
+      if (waveT >= 0) { const d = (a.x + a.y * 1.6) / (W + H * 1.6); const ph = waveT * 1.4 - d; if (ph > 0 && ph < 0.35) target += 18 * Math.sin(ph / 0.35 * Math.PI); }
+    } else if (hoverFolder === n) glowT = 0.35;
+    if (reduce) { a.lift = target; a.vel = 0; }
+    else { a.vel += ((target - a.lift) * 170 - a.vel * 15) * dt; a.lift += a.vel * dt; }
+    a.glow += (glowT - a.glow) * Math.min(1, dt * 10);
+    const dimT = hoverExt !== null && (n.isDir || n.ext !== hoverExt) ? 1 : 0;
+    a.dim += (dimT - a.dim) * Math.min(1, dt * 8);
+    // instance
+    if (count >= 4096) continue;
+    const o = count * FLOATS;
+    const gap = !n.isDir && a.w > 3 && a.h > 3 ? 0.45 : 0;
+    inst[o] = a.x + gap; inst[o + 1] = a.y + gap; inst[o + 2] = Math.max(0, a.w - gap * 2); inst[o + 3] = Math.max(0, a.h - gap * 2);
+    const pa = n.parent && anim.get(n.parent);
+    if (pa) { inst[o + 4] = pa.x; inst[o + 5] = pa.y; inst[o + 6] = pa.w; inst[o + 7] = pa.h; } else { inst[o + 4] = a.x; inst[o + 5] = a.y; inst[o + 6] = a.w; inst[o + 7] = a.h; }
+    let c, kind;
+    if (n.isDir) { const dd = e ? e.d : 1; const v = dd === 1 ? 0.15 : 0.12; c = [v, v * 1.04, v * 1.25]; kind = 1; }
+    else { const col = colOf(n.ext); c = [col[0] / 255, col[1] / 255, col[2] / 255]; kind = 0; }
+    inst[o + 8] = c[0]; inst[o + 9] = c[1]; inst[o + 10] = c[2]; inst[o + 11] = kind;
+    const baseH = n.isDir ? 0.6 + (e ? (3 - Math.min(3, e.d)) * 0.4 : 0) : 3.2 + Math.min(4, Math.sqrt(a.w * a.h) * 0.03);
+    inst[o + 12] = baseH; inst[o + 13] = Math.max(0, a.lift); inst[o + 14] = a.glow; inst[o + 15] = a.dim;
+    count++;
+  }
+  return count;
+}
+
+function draw(count, now) {
+  gl.viewport(0, 0, glc.width, glc.height);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(uVP, false, cam.vp); gl.uniform2f(uSize, W, H);
+  gl.uniform3f(uLight, -0.45, 0.55, 0.75); gl.uniform3f(uEye, cam.eye[0], cam.eye[1], cam.eye[2]); gl.uniform1f(uTime, now / 1000);
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst, 0, count * FLOATS);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, cubeCount, count);
+}
+
+function drawLabels() {
+  lctx.setTransform(DPR, 0, 0, DPR, 0, 0); lctx.clearRect(0, 0, W, H);
+  if (!labelsOn) return;
+  lctx.font = "600 11px 'Segoe UI Variable Text','Segoe UI',Inter,sans-serif"; lctx.textBaseline = "top";
+  for (const [n, e] of LAYOUT) {
+    if (!e.label) continue;
+    const a = anim.get(n); if (!a || a.w < 60) continue;
+    const [sx, sy] = project(a.x + 4, a.y + 2, 2);
+    const [ex] = project(a.x + a.w - 4, a.y + 2, 2);
+    const maxw = ex - sx; if (maxw < 40) continue;
+    let t = `${n.name}\\ (${fsize(vsize(n))})`;
+    if (lctx.measureText(t).width > maxw) { t = n.name + "\\"; if (lctx.measureText(t).width > maxw) continue; }
+    lctx.fillStyle = "rgba(0,0,0,.55)"; lctx.fillText(t, sx + 1, sy + 1);
+    lctx.fillStyle = e.d === 1 ? "rgba(255,255,255,.92)" : "rgba(220,226,240,.75)"; lctx.fillText(t, sx, sy);
+  }
+}
+
+// ------------------------------------------------------------------ tables + HUD (DOM)
+const $ = id => document.getElementById(id);
+let tab = "tree", selected = null;
+function treeRows() {
+  const rows = [viewRoot, ...viewRoot.children.filter(c => vsize(c) > 0).sort((a, b) => vsize(b) - vsize(a)).slice(0, 11)];
+  const parentSize = vsize(viewRoot) || 1;
+  $("lhead").className = "thead cols-tree";
+  $("lhead").innerHTML = `<span>Folder</span><span class="r">% of Parent</span><span class="r sorted">Size</span><span class="r">Allocated</span><span class="r">Items</span><span class="r">Files</span>`;
+  $("lbody").innerHTML = rows.map((n, i) => {
+    const root = i === 0; const sz = vsize(n); const pct = root ? 100 : sz * 100 / parentSize;
+    const files = scan.active ? n.ffiles : n.files;
+    const icon = !n.isDir ? `<i class="ico file" style="background:${css(colOf(n.ext))}"></i>` : n === ROOT ? `<i class="ico drive"></i>` : `<i class="ico"></i>`;
+    const name = root ? (n === ROOT ? "[C:] Local Disk" : pathOf(n)) : n.name;
+    const alloc = scan.active ? sz * 1.01 : n.alloc;
+    return `<div class="row cols-tree${n.hidden ? " hidden-attr" : ""}${selected === n ? " sel" : ""}" data-id="${n.id}" tabindex="0">
+      <span class="nm" style="padding-left:${root ? 6 : 22}px"><span class="chev">${n.isDir ? (root ? "&#x2335;" : "&#x203A;") : ""}</span>${icon}${esc(name)}</span>
+      <span class="pct"><i style="width:${pct.toFixed(1)}%"></i><b>${pct.toFixed(1)} %</b></span>
+      <span class="r">${fsize(sz)}</span><span class="r">${fsize(alloc)}</span><span class="r">${n.isDir ? num(files + (n.folders || 0)) : ""}</span><span class="r">${n.isDir ? num(files) : ""}</span></div>`;
+  }).join("");
+}
+function fileRows() {
+  $("lhead").className = "thead cols-files";
+  $("lhead").innerHTML = `<span>File Name</span><span class="r sorted">Size</span><span>Folder</span>`;
+  const top = LEAVES.filter(f => underAncestor(f, viewRoot)).sort((a, b) => b.size - a.size).slice(0, 11);
+  $("lbody").innerHTML = top.map(f => `<div class="row cols-files" data-id="${f.id}" tabindex="0"><span class="nm"><i class="ico file" style="background:${css(colOf(f.ext))}"></i>${esc(f.name)}</span><span class="r">${fsize(f.size)}</span><span style="color:var(--ink-3)">${esc(pathOf(f.parent))}</span></div>`).join("");
+}
+function aboutPane() {
+  $("lhead").className = "thead"; $("lhead").innerHTML = "<span>About</span>";
+  $("lbody").innerHTML = `<div class="about"><h3>Sprawl</h3>Finds what fills your drive. Reads the NTFS file table directly when run as administrator, otherwise walks folders on every core. Hover the map to see files, click to zoom, and hover a file type to light up where it lives.</div>`;
+}
+function extRows() {
+  let list;
+  if (scan.active) {
+    const m = new Map(); for (const f of BY_T) { if (f.t > scan.p) break; const e = m.get(f.ext) || { ext: f.ext, size: 0, files: 0 }; e.size += f.size; e.files += f.weight; m.set(f.ext, e); }
+    list = [...m.values()].sort((a, b) => b.size - a.size);
+  } else list = EXTS;
+  const total = list.reduce((s, e) => s + e.size, 0) || 1;
+  $("ebody").innerHTML = list.slice(0, 11).map(e => {
+    const pct = e.size * 100 / total;
+    return `<div class="row cols-ext${hoverExt === e.ext ? " sel" : ""}" data-ext="${e.ext}" tabindex="0"><span class="sw" style="background:${css(colOf(e.ext))}"></span><span>${e.ext ? "." + e.ext : ""}</span><span style="color:var(--ink-2)">${TYPES[e.ext] || e.ext.toUpperCase() + " File"}</span>
+      <span class="pct"><i style="width:${Math.min(100, pct * 2.2).toFixed(1)}%;background:linear-gradient(90deg,${css(colOf(e.ext))}aa,${css(colOf(e.ext))})"></i><b>${pct.toFixed(1)} %</b></span>
+      <span class="r">${fsize(e.size)}</span><span class="r">${fsize(e.size * 1.004)}</span><span class="r">${num(e.files)}</span></div>`;
+  }).join("");
+}
+function leftPane() { if (tab === "tree") treeRows(); else if (tab === "files") fileRows(); else aboutPane(); }
+function crumb() {
+  const chain = []; for (let x = viewRoot; x; x = x.parent) chain.unshift(x);
+  $("crumb").innerHTML = chain.map((n, i) => `${i ? '<span class="sep">&#x203A;</span>' : ""}<a data-id="${n.id}">${esc(n === ROOT ? "C:" : n.name)}</a>`).join("") + `<span class="sep">&nbsp;(${fsize(vsize(viewRoot))})</span>`;
+}
+const BYID = new Map(ALL.map(n => [n.id, n]));
+
+// HUD: MFT block map, counters, sparkline, file-type race
+const mft = $("mftmap"), mctx = mft.getContext("2d");
+const spark = $("spark"), sctx = spark.getContext("2d");
+const CELLS_X = 60, CELLS_Y = 7;
+const cellCol = []; for (let i = 0; i < CELLS_X * CELLS_Y; i++) { const f = BY_T[Math.floor(i / (CELLS_X * CELLS_Y) * BY_T.length)]; cellCol.push(colOf(f.ext)); }
+let rateHist = [];
+function hiDPI(c) { const r = c.getBoundingClientRect(); const w = c.clientWidth, h = c.clientHeight; if (c.width !== w * 2) { c.width = w * 2; c.height = h * 2; } return [w, h]; }
+function drawHUD(now) {
+  const p = scan.p;
+  const [mw, mh] = hiDPI(mft); mctx.setTransform(2, 0, 0, 2, 0, 0); mctx.clearRect(0, 0, mw, mh);
+  const cw = mw / CELLS_X, ch = mh / CELLS_Y, done = Math.floor(p * CELLS_X * CELLS_Y);
+  for (let i = 0; i < CELLS_X * CELLS_Y; i++) {
+    const x = (i % CELLS_X) * cw, y = Math.floor(i / CELLS_X) * ch;
+    if (i < done) { const c = cellCol[i]; mctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},.85)`; }
+    else if (i === done) { const pulse = 0.5 + 0.5 * Math.sin(now / 70); mctx.fillStyle = `rgba(255,255,255,${0.4 + 0.6 * pulse})`; }
+    else mctx.fillStyle = "rgba(255,255,255,.06)";
+    mctx.fillRect(x + 0.6, y + 0.6, cw - 1.2, ch - 1.2);
+  }
+  const files = ROOT.ffiles, folders = Math.round(files * 0.087);
+  $("hFiles").textContent = num(files); $("hFolders").textContent = num(folders); $("hBytes").textContent = fsize(ROOT.found);
+  const rate = scan.active ? 690000 * (0.75 + 0.25 * Math.sin(now / 260) + 0.15 * Math.sin(now / 97)) : 0;
+  if (scan.active) { rateHist.push(rate); if (rateHist.length > 90) rateHist.shift(); }
+  $("hRate").textContent = num(rate); $("hudPct").textContent = Math.round(p * 100) + "%";
+  const [sw, shh] = hiDPI(spark); sctx.setTransform(2, 0, 0, 2, 0, 0); sctx.clearRect(0, 0, sw, shh);
+  if (rateHist.length > 1) {
+    const max = 1000000; sctx.beginPath();
+    rateHist.forEach((v, i) => { const x = i / 89 * sw, y = shh - v / max * (shh - 4) - 2; i ? sctx.lineTo(x, y) : sctx.moveTo(x, y); });
+    const last = rateHist.length - 1;
+    sctx.strokeStyle = "#4cc2ff"; sctx.lineWidth = 1.5; sctx.stroke();
+    sctx.lineTo(last / 89 * sw, shh); sctx.lineTo(0, shh); sctx.closePath();
+    const g = sctx.createLinearGradient(0, 0, 0, shh); g.addColorStop(0, "rgba(76,194,255,.35)"); g.addColorStop(1, "rgba(76,194,255,0)"); sctx.fillStyle = g; sctx.fill();
+    const ly = shh - rateHist[last] / max * (shh - 4) - 2; sctx.fillStyle = "#fff"; sctx.beginPath(); sctx.arc(last / 89 * sw, ly, 2.5, 0, 7); sctx.fill();
+  }
+}
+const lanes = new Map();
+function drawRace() {
+  const m = new Map(); for (const f of BY_T) { if (f.t > scan.p) break; m.set(f.ext, (m.get(f.ext) || 0) + f.size); }
+  const top = [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6); const max = top.length ? top[0][1] : 1;
+  const race = $("race"); const keep = new Set(top.map(t => t[0]));
+  for (const [k, el] of lanes) if (!keep.has(k)) { el.remove(); lanes.delete(k); }
+  top.forEach(([ext, b], i) => {
+    let el = lanes.get(ext);
+    if (!el) { el = document.createElement("div"); el.className = "lane"; el.innerHTML = `<span>${ext ? "." + ext : "(none)"}</span><span><i class="bar" style="display:block;width:0;background:${css(colOf(ext))};color:${css(colOf(ext))}"></i></span><span class="v"></span>`; el.style.transform = `translateY(${6 * 22}px)`; race.appendChild(el); lanes.set(ext, el); }
+    el.style.transform = `translateY(${i * 22}px)`; el.querySelector(".bar").style.width = (b / max * 100).toFixed(1) + "%"; el.querySelector(".v").textContent = fsize(b);
+  });
+}
+
+// ------------------------------------------------------------------ status, ring
+function setStatus(p, done) {
+  $("pfill").style.width = (p * 100).toFixed(1) + "%";
+  const used = 907.5 / 929.1;
+  const arc = 214 * used * (done ? 1 : p);
+  $("ringArc").setAttribute("stroke-dasharray", `${arc.toFixed(1)} 214`);
+  $("ringTxt").textContent = (97.7 * (done ? 1 : p)).toFixed(1) + "%";
+}
+
+// ------------------------------------------------------------------ main loop
+let last = performance.now(), lastLayout = 0, lastTable = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (scan.active) {
+    scan.p = Math.min(1, (now - scan.t0) / SCAN_MS);
+    const eased = scan.p;
+    if (now - lastLayout > 110) { applyDiscovered(eased); relayout(); lastLayout = now; }
+    if (now - lastTable > 160) { leftPane(); extRows(); crumb(); drawRace(); lastTable = now; }
+    $("stext").textContent = `Reading $MFT... ${Math.round(scan.p * 100)}%`;
+    $("stime").textContent = ((now - scan.t0) / 1000).toFixed(1) + " s";
+    $("foot").textContent = `Scanning C:\\  ${num(ROOT.ffiles)} files found`;
+    setStatus(scan.p, false);
+    drawHUD(now);
+    if (scan.p >= 1) finishScan(now);
+  }
+  camera(mouseRel[0], mouseRel[1], dt);
+  const count = step(dt, now);
+  draw(count, now);
+  drawLabels();
+  requestAnimationFrame(frame);
+}
+function startScan() {
+  scan.active = true; scan.t0 = performance.now(); scan.p = 0; rateHist = [];
+  viewRoot = ROOT; selected = null; hoverExt = null; anim.clear(); applyDiscovered(0); relayout();
+  for (const [, el] of lanes) el.remove(); lanes.clear();
+  $("hud").classList.remove("gone"); $("pfill").style.boxShadow = "";
+  leftPane(); extRows(); crumb();
+}
+function finishScan(now) {
+  scan.active = false; scan.p = 1; relayout();
+  $("stext").textContent = "Scan complete in 4.80 seconds"; $("stime").textContent = "";
+  $("foot").textContent = `${num(ROOT.files)} files, ${num(ROOT.folders)} folders`;
+  $("footR").textContent = `${num(ROOT.files + ROOT.folders)} items  |  ${fsize(ROOT.size)}`;
+  setStatus(1, true);
+  setTimeout(() => $("hud").classList.add("gone"), 500);
+  wave.t0 = now + 250;
+  leftPane(); extRows(); crumb();
+}
+function zoomTo(n) { if (!n || !n.isDir) return; viewRoot = n; relayout(); leftPane(); crumb(); }
+
+// ------------------------------------------------------------------ input
+const wrap = $("mapwrap"), tip = $("tip");
+let scale = 1;
+function local(e) { const r = glc.getBoundingClientRect(); return [(e.clientX - r.left) / scale, (e.clientY - r.top) / scale]; }
+function hitLeaf(x, y) { let best = null; for (const [n, e] of LAYOUT) { if (n.isDir) continue; if (x >= e.x && x < e.x + e.w && y >= e.y && y < e.y + e.h) { best = n; break; } } return best; }
+glc.addEventListener("pointermove", e => {
+  const [px, py] = local(e); mouseRel = [px / W, py / H];
+  const [x, y] = unproject(px, py); mouse = [x, y];
+  hoverLeaf = hitLeaf(x, y);
+  if (hoverLeaf) {
+    $("tipPath").textContent = pathOf(hoverLeaf); $("tipSize").textContent = fsize(hoverLeaf.size);
+    $("tipType").textContent = TYPES[hoverLeaf.ext] || ""; $("tipSw").style.background = css(colOf(hoverLeaf.ext));
+    tip.style.opacity = 1;
+    const tx = Math.min(px + 16, W - 370), ty = py > H - 70 ? py - 64 : py + 18; tip.style.left = tx + "px"; tip.style.top = ty + "px";
+    $("foot").textContent = pathOf(hoverLeaf) + "   " + fsize(hoverLeaf.size);
+  } else tip.style.opacity = 0;
+});
+glc.addEventListener("pointerleave", () => { hoverLeaf = null; mouse = null; tip.style.opacity = 0; mouseRel = [0.5, 0.5]; });
+glc.addEventListener("click", () => { if (scan.active || !hoverLeaf) return; const c = containing(hoverLeaf); if (c && c.isDir) zoomTo(c); });
+$("crumb").addEventListener("click", e => { const a = e.target.closest("a"); if (a && !scan.active) zoomTo(BYID.get(+a.dataset.id)); });
+$("lbody").addEventListener("pointerover", e => { const r = e.target.closest(".row"); hoverFolder = r ? BYID.get(+r.dataset.id) : null; if (hoverFolder === viewRoot) hoverFolder = null; });
+$("lbody").addEventListener("pointerleave", () => { hoverFolder = null; });
+$("lbody").addEventListener("click", e => {
+  const r = e.target.closest(".row"); if (!r || scan.active) return; const n = BYID.get(+r.dataset.id); if (!n) return;
+  if (n === viewRoot) { if (n.parent) zoomTo(n.parent); } else if (n.isDir) { selected = n; zoomTo(n); } else { selected = n; leftPane(); }
+});
+$("ebody").addEventListener("pointerover", e => { const r = e.target.closest(".row"); const x = r ? r.dataset.ext : null; if (x !== hoverExt) { hoverExt = x; } });
+$("ebody").addEventListener("pointerleave", () => { hoverExt = null; });
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t ? "true" : "false")); tab = t.dataset.tab; leftPane();
+}));
+$("replay").addEventListener("click", startScan); $("scan2").addEventListener("click", startScan);
+$("tilt").addEventListener("click", e => { tiltOn = !tiltOn; e.currentTarget.setAttribute("aria-pressed", tiltOn); });
+$("labelsBtn").addEventListener("click", e => { labelsOn = !labelsOn; e.currentTarget.setAttribute("aria-pressed", labelsOn); });
+
+// ------------------------------------------------------------------ sizing
+function resize() {
+  const avail = $("stage").clientWidth - 56;
+  scale = Math.min(1, avail / 1360);
+  $("scaler").style.transform = `scale(${scale})`;
+  $("fit").style.height = (900 * scale + 56) + "px";
+  W = wrap.clientWidth; H = wrap.clientHeight; DPR = Math.min(2, window.devicePixelRatio || 1) * Math.max(scale, 0.6);
+  for (const c of [glc, lab]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
+  relayout();
+}
+addEventListener("resize", resize);
+
+if (!gl) { wrap.insertAdjacentHTML("beforeend", '<p style="position:absolute;inset:0;display:grid;place-items:center;color:var(--ink-2)">This mockup needs WebGL 2 to draw the 3D treemap.</p>'); }
+else { initGL(); resize(); startScan(); requestAnimationFrame(frame); }
+})();
+</script>

@@ -12,7 +12,7 @@ Decisions so far:
 | When it runs | On demand |
 | Paths sent to the model | As they are (an outgoing-request log is viewable in the app) |
 | Learning the user's choices | Yes: preferences, decisions, labels and approved rules are remembered |
-| Claude Code | Both: DiskTree drives `claude -p`, and DiskTree is an MCP server for the user's own sessions |
+| Claude Code | Both: Sprawl drives `claude -p`, and Sprawl is an MCP server for the user's own sessions |
 | Web lookup | Allowed, but asks the user each time (allow once / allow for the session) |
 | Reading small manifests | Allowed (`package.json`, Steam `.vdf`, README and similar, size-capped) |
 | Snapshots | Measure the size first, then choose a retention policy |
@@ -23,7 +23,7 @@ Decisions so far:
    plus tools to drill down.
 2. **Every claim is checked.** A cited path must exist and its size must match, or the finding is
    dropped. A hard never-touch list can't be overridden by the model.
-3. **Advise only.** Nothing is executed by DiskTree for now.
+3. **Advise only.** Nothing is executed by Sprawl for now.
 4. **Useful without AI.** The rules engine on its own already produces most findings. The model
    adds judgement, identifies unknown folders, plans, and answers questions.
 
@@ -31,20 +31,20 @@ Decisions so far:
 
 ```
 crates/
-  disktree-core       (exists) scan, MFT, tree
-  disktree-advisor    NEW, no UI
+  sprawl-core       (exists) scan, MFT, tree
+  sprawl-advisor    NEW, no UI
     facts/      app attribution, last-used, projects, hidden space, cloud placeholders
     rules/      TOML rule packs + engine -> Findings
     safety/     never-list, path/size validation, in-use check (Restart Manager)
     snapshot/   compact per-scan store (only if the size test passes)
-    memory/     prefs, decisions, label cache, approved rules  (%APPDATA%\DiskTree\advisor\)
+    memory/     prefs, decisions, label cache, approved rules  (%APPDATA%\Sprawl\advisor\)
     llm/        Provider trait + agent loop + tools
       anthropic.rs    Messages API over raw HTTP, claude-opus-5-5, adaptive thinking, streaming
       openai.rs       any OpenAI-compatible URL (OpenAI, OpenRouter, Ollama, LM Studio, vLLM)
       claude_code.rs  spawns `claude -p --output-format stream-json --mcp-config <ours>`
     plan.rs     goal mode (lowest-risk set of findings that reaches N GB), PowerShell export
-  disktree            UI: Advisor panel, Opportunities treemap lens, chat
-  disktree --mcp      stdio MCP server: talks to the running app over a named pipe,
+  sprawl            UI: Advisor panel, Opportunities treemap lens, chat
+  sprawl --mcp      stdio MCP server: talks to the running app over a named pipe,
                       or falls back to the latest snapshot
 ```
 
@@ -68,10 +68,10 @@ Manager.
 - **Snapshot size test:** write the compact format (name interning, parent index, size,
   allocated, mtime, zstd) for a real full-`C:` scan (about 3.3M items). The estimate is
   15–30 MB per scan; measure it, then choose a retention policy.
-- `disktree-advisor` crate skeleton, the finding schema, the rule-pack format and the safety layer.
+- `sprawl-advisor` crate skeleton, the finding schema, the rule-pack format and the safety layer.
 
 **Measured** on a full `C:` folder walk (3,325,443 items, 1,353,402 distinct names) with
-`cargo run --release -p disktree-advisor --example snapshot_size -- C:\`:
+`cargo run --release -p sprawl-advisor --example snapshot_size -- C:\`:
 
 | Format | Size | Write | Notes |
 |---|---|---|---|
@@ -92,9 +92,9 @@ Names are most of the cost (about 40% of all names are unique: hashes, GUIDs, ca
 - The **last 3 full** snapshots per scanned root are kept (about 27 MB each) for file-level
   "what changed since the last scan" and the scan-diff view.
 - A total cap (default 1 GB, in Settings) thins the oldest folders-only snapshots first.
-- Stored in `%LOCALAPPDATA%\DiskTree\snapshots\` (machine-local, not roaming).
+- Stored in `%LOCALAPPDATA%\Sprawl\snapshots\` (machine-local, not roaming).
 
-**Built:** `crates/disktree-advisor` with `finding` (schema), `rules` (TOML packs, `%VAR%`,
+**Built:** `crates/sprawl-advisor` with `finding` (schema), `rules` (TOML packs, `%VAR%`,
 `*`/`?`/`**` matching, junctions never followed, a starter built-in pack of 11 rules),
 `safety` (in the tree, still on disk, size within 1% or 1 MB, the never-touch list, no deletes
 through junctions, the user's folders raised to orange; a model's finding is refused anywhere
@@ -134,7 +134,7 @@ The in-use check (Restart Manager) moves to Phase 1.
 
 ### Phase 4: conversation
 - "Ask your disk" chat panel.
-- Plain-English query to a DiskTree filter, highlighted on the treemap.
+- Plain-English query to a Sprawl filter, highlighted on the treemap.
 - Web lookup with consent, and manifest reading.
 - Anomaly sense ("Chrome profile is 22 GB, typical is 1–3 GB").
 
@@ -143,9 +143,9 @@ The in-use check (Restart Manager) moves to Phase 1.
 - Growth rates, "full in about N days", and "what grew since last week" explained.
 
 ### Phase 6: Claude Code integration
-- `disktree --mcp` with the named-pipe bridge to the running app, plus a one-line
+- `sprawl --mcp` with the named-pipe bridge to the running app, plus a one-line
   `claude mcp add` setup shown in Settings.
-- DiskTree drives `claude -p` with the same tools.
+- Sprawl drives `claude -p` with the same tools.
 
 ### Phase 7: advanced remedies
 - Duplicates (size, then head/tail hash, then BLAKE3) with hardlink or block-clone suggestions.

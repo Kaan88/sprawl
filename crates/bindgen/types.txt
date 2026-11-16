@@ -103,6 +103,7 @@ Microsoft.UI.Xaml.Input.KeyRoutedEventArgs::Handled
 Microsoft.UI.Xaml.Input.PointerRoutedEventArgs::Handled
 Microsoft.UI.Input.PointerPoint::Properties
 Microsoft.UI.Input.PointerPointProperties::IsLeftButtonPressed
+Microsoft.UI.Input.PointerPointProperties::IsMiddleButtonPressed
 Microsoft.UI.Input.PointerPointProperties::IsRightButtonPressed
 Microsoft.UI.Input.PointerPointProperties::IsXButton1Pressed
 Microsoft.UI.Input.PointerPointProperties::MouseWheelDelta

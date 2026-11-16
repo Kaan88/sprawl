@@ -1,7 +1,7 @@
-<title>DiskTree Advisor</title>
+<title>Sprawl Advisor</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
-/* Layout: one app window per tab, drawn in DiskTree's own dark acrylic look (single dark theme by design). */
+/* Layout: one app window per tab, drawn in Sprawl's own dark acrylic look (single dark theme by design). */
 :root {
   color-scheme: dark;
   --bg: #0b0d13;
@@ -223,7 +223,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
 <div class="wrap">
   <header class="top">
     <div>
-      <h1>DiskTree Advisor</h1>
+      <h1>Sprawl Advisor</h1>
       <p>Interactive mockups of the setup wizard and the AI advisor that follows it. Example data for a user called sam; nothing here touches a real disk.</p>
     </div>
     <nav class="tabs" aria-label="Mockups">
@@ -238,7 +238,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
   <!-- ================================================================ wizard -->
   <section class="view" id="v-wizard">
     <div class="window">
-      <div class="titlebar"><i></i>DiskTree<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="titlebar"><i></i>Sprawl<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
       <div class="wiz-stage">
         <canvas class="bgmap" id="bgmap"></canvas>
         <div class="wiz-card">
@@ -261,7 +261,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
   <!-- ================================================================ advisor -->
   <section class="view" id="v-advisor" hidden>
     <div class="window">
-      <div class="titlebar"><i></i>[C:\] - DiskTree · Advisor<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="titlebar"><i></i>[C:\] - Sprawl · Advisor<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
       <div class="body">
         <div class="adv">
           <div class="panel">
@@ -294,7 +294,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
   <!-- ================================================================ goal -->
   <section class="view" id="v-goal" hidden>
     <div class="window">
-      <div class="titlebar"><i></i>[C:\] - DiskTree · Free up space<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="titlebar"><i></i>[C:\] - Sprawl · Free up space<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
       <div class="body">
         <div class="goal">
           <div class="panel">
@@ -321,7 +321,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
   <!-- ================================================================ chat -->
   <section class="view" id="v-chat" hidden>
     <div class="window">
-      <div class="titlebar"><i></i>[C:\] - DiskTree · Ask your disk<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="titlebar"><i></i>[C:\] - Sprawl · Ask your disk<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
       <div class="body">
         <div class="chat">
           <div class="panel">
@@ -339,7 +339,7 @@ table.log tr.r:hover td { background: rgba(255,255,255,.03); }
   <!-- ================================================================ log -->
   <section class="view" id="v-log" hidden>
     <div class="window">
-      <div class="titlebar"><i></i>DiskTree · Advisor request log<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="titlebar"><i></i>Sprawl · Advisor request log<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
       <div class="body">
         <p class="note">Every request that leaves the PC, in full. Paths are sent as they are (your choice in setup). Click a row to see exactly what was sent.</p>
         <div class="tblwrap"><table class="log" id="logt"></table></div>
@@ -483,7 +483,7 @@ function wizInit() {
   wiz();
 }
 function wiz() {
-  $("#rail").innerHTML = `<div class="brand"><i></i>DiskTree setup</div>` + STEPS.map((s, i) =>
+  $("#rail").innerHTML = `<div class="brand"><i></i>Sprawl setup</div>` + STEPS.map((s, i) =>
     `<button class="step ${i < W.page ? "done" : ""} ${i === W.page ? "on" : ""}" data-i="${i}"><span class="n">${i < W.page ? "✓" : i + 1}</span>${s}</button>`).join("");
   $("#rail").querySelectorAll(".step").forEach(b => b.onclick = () => { W.page = +b.dataset.i; wiz(); });
   $("#wback").disabled = W.page === 0;
@@ -493,7 +493,7 @@ function wiz() {
   const sw = (k, t, s) => `<div class="sw"><b>${t}</b><button class="toggle" role="switch" aria-checked="${W[k]}" data-k="${k}" aria-label="${t}"></button><span>${s}</span></div>`;
   let h = "";
   switch (W.page) {
-    case 0: h = `<h2>Welcome to DiskTree</h2><p class="sub">Five quick choices before your first scan. All of them live under Options later.</p>
+    case 0: h = `<h2>Welcome to Sprawl</h2><p class="sub">Five quick choices before your first scan. All of them live under Options later.</p>
       <div class="cards">
         <div class="pcard"><b>AI advisor</b><span>Optional. Explains what is using your space and plans what to remove.</span></div>
         <div class="pcard"><b>Scanning</b><span>Seconds instead of minutes, and a right-click entry in Explorer.</span></div>
@@ -502,7 +502,7 @@ function wiz() {
       </div>`; break;
     case 1: {
       const p = W.provider;
-      h = `<h2>AI advisor</h2><p class="sub">The rules already find caches and leftovers. An AI can judge the rest. It only advises; DiskTree never deletes anything by itself.</p>
+      h = `<h2>AI advisor</h2><p class="sub">The rules already find caches and leftovers. An AI can judge the rest. It only advises; Sprawl never deletes anything by itself.</p>
       <div class="det"><span class="pulse"></span>Found on this PC: Claude Code, Ollama (port 11434)</div>
       <div class="cards">${PROV.map(x => `<button class="pcard" aria-pressed="${x.id === p}" data-p="${x.id}"><b>${x.t}</b><span>${x.s}</span>${x.found ? `<em class="tag">${x.found}</em>` : ""}</button>`).join("")}</div>
       ${p === "anthropic" ? `<label class="f">API key, kept in Windows Credential Manager<input class="t" id="k" type="password" value="sk-ant-xxxxxxxxxxxxxxxx"></label>` : ""}
@@ -511,9 +511,9 @@ function wiz() {
       ${p !== "off" ? `<div class="row"><button class="btn" id="test">Test</button><span class="test ${W.tested ? "ok" : ""}" id="tres">${W.tested ? "✓ Connected. Replied in 1.4 s." : "Sends one short request to check the setup."}</span></div>` : ""}
       <p class="note">When the advisor runs, paths from your scan are sent as they are. Every request is listed in the request log. Web lookups always ask first.</p>`;
       break; }
-    case 2: h = `<h2>Scanning</h2><p class="sub">How DiskTree reads your drives.</p>
+    case 2: h = `<h2>Scanning</h2><p class="sub">How Sprawl reads your drives.</p>
       ${sw("admin", "Always run as administrator", "Reads the NTFS master file table directly: C: in about 4 seconds instead of 50. Windows asks for permission at each start.")}
-      ${sw("explorer", "Add “Scan with DiskTree” to Explorer", "Right-click any folder or drive to scan it. Only for your account.")}`; break;
+      ${sw("explorer", "Add “Scan with Sprawl” to Explorer", "Right-click any folder or drive to scan it. Only for your account.")}`; break;
     case 3: h = `<h2>Look</h2><p class="sub">Pick how the map is drawn. You can switch any time above the map.</p>
       <div class="views">${["Treemap", "City", "Galaxy"].map((v, i) => `<button class="pcard" aria-pressed="${W.view === i}" data-v="${i}" style="padding:6px"><canvas width="240" height="150" data-prev="${i}"></canvas><b style="padding:4px 4px 0">${v}</b></button>`).join("")}</div>
       ${sw("mirror", "Mirror floor", "A glossy reflection under the map.")}
@@ -707,9 +707,9 @@ function goalUpdate(target) {
 }
 function script(pick) {
   const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  let o = `<span class="c"># DiskTree plan: free ${pick.reduce((s, k) => s + FIND[k].gb, 0).toFixed(1)} GB on C:  (made ${new Date().toISOString().slice(0, 10)})\n# Run with -WhatIf first to see what would happen without changing anything.</span>\n<span class="k">param</span>([switch]$WhatIf)\n\n`;
+  let o = `<span class="c"># Sprawl plan: free ${pick.reduce((s, k) => s + FIND[k].gb, 0).toFixed(1)} GB on C:  (made ${new Date().toISOString().slice(0, 10)})\n# Run with -WhatIf first to see what would happen without changing anything.</span>\n<span class="k">param</span>([switch]$WhatIf)\n\n`;
   pick.forEach((k, i) => { const f = FIND[k]; o += `<span class="c"># ${i + 1}. ${esc(f.t)}  (${fmt(f.gb * GB)}, ${RLABEL[f.risk].toLowerCase()})\n#    ${esc(f.ev[0])}</span>\n<span class="k">if</span> ($WhatIf) { Write-Host <span class="s">"would run: ${esc(f.cmd.replace(/"/g, "'"))}"</span> } <span class="k">else</span> { ${esc(f.cmd)} }\n\n`; });
-  o += `<span class="c"># Then rescan in DiskTree (F5): it measures what was actually freed.</span>`;
+  o += `<span class="c"># Then rescan in Sprawl (F5): it measures what was actually freed.</span>`;
   return o;
 }
 function goalLoop() {
@@ -784,7 +784,7 @@ function logInit() {
 function show(i) {
   const k = LOG[i][7];
   const bodies = {
-    report: `{\n  "model": "claude-opus-5-5",\n  "system": "You are DiskTree's advisor. Advise only. Cite paths exactly...",\n  "tools": ["list_children", "largest", "by_type", "owner_of", "app_last_used", "diff_since", "read_manifest", "report_finding"],\n  "messages": [{ "role": "user", "content": "Scan of C: (NTFS, 929 GB, 59 GB free)\\n\\nTop folders:\\n  C:\\\\Users\\\\sam  412.6 GB\\n  C:\\\\Games\\\\Steam  210.0 GB\\n  C:\\\\Program Files  140.0 GB\\n  ...\\nRule findings already made (13):\\n  win.user-temp  C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Temp  38.2 GB\\n  ...\\nUnexplained over 5 GB:\\n  C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Docker\\\\wsl  61.0 GB\\n  ..." }]\n}`,
+    report: `{\n  "model": "claude-opus-5-5",\n  "system": "You are Sprawl's advisor. Advise only. Cite paths exactly...",\n  "tools": ["list_children", "largest", "by_type", "owner_of", "app_last_used", "diff_since", "read_manifest", "report_finding"],\n  "messages": [{ "role": "user", "content": "Scan of C: (NTFS, 929 GB, 59 GB free)\\n\\nTop folders:\\n  C:\\\\Users\\\\sam  412.6 GB\\n  C:\\\\Games\\\\Steam  210.0 GB\\n  C:\\\\Program Files  140.0 GB\\n  ...\\nRule findings already made (13):\\n  win.user-temp  C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Temp  38.2 GB\\n  ...\\nUnexplained over 5 GB:\\n  C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Docker\\\\wsl  61.0 GB\\n  ..." }]\n}`,
     tool: `{\n  "type": "tool_result",\n  "tool_use_id": "toolu_01",\n  "content": "C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Docker\\\\wsl\\n  disk\\\\docker_data.vhdx  61.0 GB  modified today\\n  main\\\\ext4.vhdx  0.3 GB"\n}`,
     ask: `{\n  "role": "user",\n  "content": "What is the 61 GB in AppData\\\\Local\\\\Docker?"\n}`,
     web: `Query sent to the search provider, nothing else:\n  "NVIDIA DXCache folder safe to delete"\nAllowed once by you at 21:44:28.`,

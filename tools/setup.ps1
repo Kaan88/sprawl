@@ -3,7 +3,7 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\setup.ps1
 #
-# The versions must match the paths in crates/disktree/build.rs and crates/bindgen/src/main.rs.
+# The versions must match the paths in crates/sprawl/build.rs and crates/bindgen/src/main.rs.
 $ErrorActionPreference = 'Stop'
 $packages = @(
   @{ Id = 'microsoft.windowsappsdk.foundation';              Version = '1.8.260803002' },  # bootstrap lib/dll + metadata

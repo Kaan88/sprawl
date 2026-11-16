@@ -1,7 +1,7 @@
-//! Regenerates `crates/disktree/src/bindings.rs`: the Rust projection of the WinUI 3
+//! Regenerates `crates/sprawl/src/bindings.rs`: the Rust projection of the WinUI 3
 //! (Windows App SDK 1.8) types the app uses.
 //!
-//! Run from the repository root with `cargo run -p disktree-bindgen` after `tools/setup.ps1`
+//! Run from the repository root with `cargo run -p sprawl-bindgen` after `tools/setup.ps1`
 //! has unpacked the SDK packages into `sdk/`. The output is checked in, so normal builds don't
 //! need this step. To use a new WinUI type or member, add it to `types.txt` and rerun.
 
@@ -12,7 +12,7 @@ const INTERACTIVE: &str = "sdk/microsoft.windowsappsdk.interactiveexperiences-1.
 const FOUNDATION: &str = "sdk/microsoft.windowsappsdk.foundation-1.8.260803002/x/metadata";
 const WEBVIEW2: &str = "sdk/microsoft.web.webview2-1.0.3179.45/x/lib/Microsoft.Web.WebView2.Core.winmd";
 const WINDOWS_SDK: &str = r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
-const OUTPUT: &str = "crates/disktree/src/bindings.rs";
+const OUTPUT: &str = "crates/sprawl/src/bindings.rs";
 
 /// Types and members the app touches, one per line (`Namespace.Type` or `Namespace.Type::Member`).
 const FILTERS: &str = include_str!("../types.txt");
