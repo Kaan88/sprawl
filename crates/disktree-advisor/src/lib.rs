@@ -10,6 +10,7 @@
 
 pub mod config;
 pub mod finding;
+pub mod history;
 pub mod rules;
 pub mod safety;
 pub mod snapshot;

@@ -12199,6 +12199,27 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn Maximum(&self) -> windows_core::Result<f64> {
+                        let this = &windows_core::Interface::cast::<Primitives::IRangeBase>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Maximum)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
+                    pub fn SetMaximum(&self, value: f64) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<Primitives::IRangeBase>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetMaximum)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Value(&self) -> windows_core::Result<f64> {
                         let this = &windows_core::Interface::cast::<Primitives::IRangeBase>(self)?;
                         unsafe {
@@ -18063,8 +18084,16 @@ pub mod Microsoft {
                         pub base__: windows_core::IInspectable_Vtbl,
                         Minimum: usize,
                         SetMinimum: usize,
-                        Maximum: usize,
-                        SetMaximum: usize,
+                        pub Maximum: unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            *mut f64,
+                        )
+                            -> windows_core::HRESULT,
+                        pub SetMaximum: unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            f64,
+                        )
+                            -> windows_core::HRESULT,
                         SmallChange: usize,
                         SetSmallChange: usize,
                         LargeChange: usize,
@@ -18403,6 +18432,25 @@ pub mod Microsoft {
                                     &mut result__,
                                 )
                                 .and_then(|| windows_core::imp::Type::from_abi(result__))
+                            }
+                        }
+                        pub fn Maximum(&self) -> windows_core::Result<f64> {
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(self).Maximum)(
+                                    windows_core::Interface::as_raw(self),
+                                    &mut result__,
+                                )
+                                .map(|| result__)
+                            }
+                        }
+                        pub fn SetMaximum(&self, value: f64) -> windows_core::Result<()> {
+                            unsafe {
+                                (windows_core::Interface::vtable(self).SetMaximum)(
+                                    windows_core::Interface::as_raw(self),
+                                    value,
+                                )
+                                .ok()
                             }
                         }
                         pub fn Value(&self) -> windows_core::Result<f64> {

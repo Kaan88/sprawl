@@ -87,6 +87,7 @@ impl State {
                 }
             }
             "mWizard" => self.wizard_open(),
+            "ModeHist" | "mHistory" => self.hist_toggle(),
             "mTweaks" => {
                 if let Ok(p) = find::<UIElement>(&self.root, "Tweaks") {
                     let shown = p.Visibility().map(|v| v == Visibility::Visible).unwrap_or(false);

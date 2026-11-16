@@ -1,0 +1,4 @@
+# Keep builds from swamping the machine: at most 4 compiler processes at once
+# (release builds use full LTO, which is memory-hungry).
+[build]
+jobs = 4

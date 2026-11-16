@@ -116,13 +116,16 @@ impl State {
     }
 
     fn relayout(&mut self) {
+        // History panel: sizes as they were then, colours by what changed since the snapshot before.
+        let (hist_display, hist_base) = self.hist_view().unwrap_or((None, None));
         if self.galaxy_on() {
             let m = &mut self.map;
             let t = self.tree.as_ref().unwrap();
             let alloc = &self.alloc;
             let by_alloc = m.by_alloc && alloc.len() == t.nodes.len();
             m.scene.clear();
-            m.galaxy.relayout(t, self.map_root, &|n| if by_alloc { alloc[n] } else { t.nodes[n].size }, &|k| palette_colour(k));
+            let hd = hist_display.as_deref();
+            m.galaxy.relayout(t, self.map_root, &|n| hd.map_or(if by_alloc { alloc[n] } else { t.nodes[n].size }, |d| d[n]), &|k| palette_colour(k));
             m.dirty = false;
             return;
         }
@@ -141,7 +144,11 @@ impl State {
             let hmax = m.scene.w.min(m.scene.h) * 0.5;
             let span = (t.nodes[self.map_root].items().max(1) as f32 * 0.25).max(10.0).log10();
             let now = std::time::SystemTime::now();
-            m.scene.relayout(t, self.map_root, &|n| if by_alloc { alloc[n] } else { t.nodes[n].size }, &|n| {
+            let hd = hist_display.as_deref();
+            let hb = hist_base.as_deref();
+            let size_now = |n: usize| hd.map_or(t.nodes[n].size, |d| d[n]);
+            let free = if hd.is_some() { None } else { free };
+            m.scene.relayout(t, self.map_root, &|n| if n == FREE { 0 } else { hd.map_or(if by_alloc { alloc[n] } else { t.nodes[n].size }, |d| d[n]) }, &|n| {
                 if n == FREE {
                     return Info { colour: [0.20, 0.23, 0.29], ext_key: u32::MAX, height: 1.0, ..Default::default() };
                 }
@@ -168,6 +175,9 @@ impl State {
                         height,
                         extra: [seed, 0.82 - 0.62 * (age / 500.0).min(1.0), (age / 420.0).min(1.0), if age < 60.0 { 1.0 } else { 0.35 }],
                     };
+                }
+                if let Some(b) = hb {
+                    return Info { colour: crate::history::change_colour(b[n], size_now(n)), ext_key: ext_key(&t.nodes[n].extension()), ..Default::default() };
                 }
                 let ext = t.nodes[n].extension();
                 let colour = colours
@@ -247,6 +257,7 @@ impl State {
             }
         }
         self.drain_changes();
+        self.hist_tick();
         let galaxy = self.galaxy_on();
         let busy = if galaxy {
             let m = &mut self.map;

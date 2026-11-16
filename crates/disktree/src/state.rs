@@ -92,6 +92,9 @@ pub(crate) struct State {
     /// Selections left by Select Parent, for Reselect Child.
     pub(crate) child_stack: Vec<usize>,
     pub(crate) wizard_page: usize,
+    pub(crate) hist: Option<crate::history::Hist>,
+    /// When the current tree's scan finished (its snapshot carries this time).
+    pub(crate) scan_taken: std::time::SystemTime,
     pub(crate) settings: Settings,
     /// Live change pulses: the watcher on the scanned folder and how many changes it saw.
     pub(crate) watcher: Option<crate::watch::Watcher>,
@@ -250,9 +253,11 @@ impl State {
                         self.full_tree = None;
                         self.filter.clear();
                         self.child_stack.clear();
+                        self.scan_taken = std::time::SystemTime::now();
                         self.set_tree(tree, &header);
                         self.map.scene.start_wave();
                         self.watch();
+                        self.save_snapshot();
                         if !self.filter_text.trim().is_empty() {
                             self.apply_filter();
                         }
@@ -304,6 +309,7 @@ impl State {
     }
 
     pub(crate) fn set_tree(&mut self, tree: Tree, path: &std::path::Path) {
+        self.hist_close();
         // Allocated size: each file rounded up to a 4 KB cluster, folders add up their contents.
         self.alloc = tree.nodes.iter().map(|n| n.allocated).collect();
         self.tree = Some(tree);
@@ -421,6 +427,13 @@ impl State {
             return;
         }
         self.shot_ticks += 1;
+        // dev: DISKTREE_HISTORY=n opens the History panel at slider position n for the picture
+        if self.shot_ticks == 1 {
+            if let Some(p) = std::env::var("DISKTREE_HISTORY").ok().and_then(|v| v.parse::<usize>().ok()) {
+                self.hist_toggle();
+                self.hist_seek(p);
+            }
+        }
         // Let the finish wave and morphs play out first (about 3 s at 60 frames a second).
         if self.shot_ticks < 180 {
             return;

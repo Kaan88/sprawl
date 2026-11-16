@@ -802,3 +802,8 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 }
+
+/// A time as local date and time text, e.g. `2026/11/16 21:04:05`.
+pub fn local_time(t: SystemTime) -> String {
+    csv::local_time_string(system_to_filetime(t))
+}

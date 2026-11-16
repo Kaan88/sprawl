@@ -142,12 +142,17 @@ pub fn encode(tree: &Tree, taken: SystemTime) -> Vec<u8> {
 
 /// Write a snapshot. `level` is the zstd level (3 is fast, 19 is small).
 pub fn write(tree: &Tree, taken: SystemTime, level: i32, w: &mut impl Write) -> io::Result<()> {
+    write_body(&encode(tree, taken), level, w)
+}
+
+/// Compress and write a body made by [`encode`] (so encoding can happen on one thread and the
+/// slower compression on another).
+pub fn write_body(body: &[u8], level: i32, w: &mut impl Write) -> io::Result<()> {
     w.write_all(MAGIC)?;
     w.write_all(&VERSION.to_le_bytes())?;
-    let body = encode(tree, taken);
     let mut z = zstd::stream::Encoder::new(w, level)?;
     z.multithread(std::thread::available_parallelism().map_or(1, |n| n.get() as u32))?;
-    z.write_all(&body)?;
+    z.write_all(body)?;
     z.finish()?;
     Ok(())
 }

@@ -15,6 +15,7 @@ mod format;
 mod dialogs;
 mod galaxy;
 mod gpu;
+mod history;
 mod hud;
 mod paint;
 mod scene;
@@ -134,7 +135,20 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     keep(find::<Selector>(&root, "WizProvider")?.SelectionChanged(|_, _| {
         with(|s| s.wizard_provider());
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy"] {
+    for name in ["HistClose", "HistPlay"] {
+        keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
+            with(|s| if name == "HistPlay" { s.hist_play() } else { s.hist_close() });
+        })?);
+    }
+    keep(find::<RangeBase>(&root, "HistSlider")?.ValueChanged(|_, e| {
+        let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
+        with(|st| {
+            if st.hist.as_ref().is_some_and(|h| h.pos != v.round() as usize) {
+                st.hist_seek(v.round().max(0.0) as usize);
+            }
+        });
+    })?);
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -301,6 +315,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         filter_pending: None,
         child_stack: Vec::new(),
         wizard_page: 0,
+        hist: None,
+        scan_taken: std::time::SystemTime::now(),
         settings,
         watcher: None,
         changes: 0,

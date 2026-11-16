@@ -133,3 +133,4 @@ Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::Hide
 Microsoft.UI.Xaml.Controls.PasswordBox::Password
 Microsoft.UI.Xaml.Controls.Control::IsEnabled
 Microsoft.UI.Xaml.Controls.PasswordBox::PlaceholderText
+Microsoft.UI.Xaml.Controls.Primitives.RangeBase::Maximum
