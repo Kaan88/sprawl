@@ -45,9 +45,8 @@ pub fn header_cells(cols: &str, names: &[(&str, bool)]) -> String {
     let mut s = format!(r##"<Grid {NS} Height="30" Background="#FF1F2129">{cols}"##);
     for (i, (n, right)) in names.iter().enumerate() {
         let align = if *right { "Right" } else { "Left" };
-        let span = if i == 0 && names.len() == 6 { "" } else { "" };
         s += &format!(
-            r##"<TextBlock Grid.Column="{i}" {span}Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center" HorizontalAlignment="{align}" Margin="10,0,10,0"/>"##,
+            r##"<TextBlock Grid.Column="{i}" Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center" HorizontalAlignment="{align}" Margin="10,0,10,0"/>"##,
             esc(n)
         );
     }

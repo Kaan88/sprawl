@@ -11,6 +11,14 @@ A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8), m
 crates/
   disktree-core/   UI-free logic: scanning, folder totals, file-type stats, squarified treemap layout (+ tests)
   disktree/        the WinUI 3 app (XAML loaded at run time, treemap painted into a WriteableBitmap)
+    src/main.rs      start-up: arguments, window, event wiring
+    src/app.rs       Windows App Runtime bootstrap, the composed XAML Application, COM interop helpers
+    src/state.rs     window state + shared helpers; scanning and the header card
+    src/tables.rs    tree view, file view and file-type table
+    src/treemap.rs   treemap rendering and mouse handling (pixels come from paint.rs)
+    src/commands.rs  menu/button commands
+    src/ui.rs        XAML markup for the window and table rows
+    src/format.rs, paint.rs, win32.rs   formatting, treemap painting + PNG, plain Win32 calls
     src/bindings.rs  generated WinUI projection - do not edit by hand
   bindgen/         regenerates bindings.rs from the SDK .winmd files (types.txt lists what is projected)
 tools/
