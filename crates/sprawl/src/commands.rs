@@ -27,12 +27,16 @@ impl State {
         if let Ok(a) = find::<UIElement>(&self.root, "AboutPanel") {
             let _ = a.SetVisibility(vis(v == View::About));
         }
-        for (name, on) in [("TreeScroll", v != View::About), ("TreeHeader", v != View::About)] {
+        if let Ok(a) = find::<UIElement>(&self.root, "AdvisorPanel") {
+            let _ = a.SetVisibility(vis(v == View::Advisor));
+        }
+        let table = v == View::Tree || v == View::Files;
+        for (name, on) in [("TreeScroll", table), ("TreeHeader", table)] {
             if let Ok(e) = find::<UIElement>(&self.root, name) {
                 let _ = e.SetVisibility(vis(on));
             }
         }
-        for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabAbout", View::About)] {
+        for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabAdvisor", View::Advisor), ("TabAbout", View::About)] {
             if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
                 let brush: windows_core::Result<crate::bindings::Microsoft::UI::Xaml::Media::Brush> =
                     load(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if me == v { "#FF2C3550" } else { "Transparent" }));
@@ -41,9 +45,13 @@ impl State {
                 }
             }
         }
-        if v != View::About {
+        if table {
             self.refresh_rows();
         }
+        if v == View::Advisor {
+            self.render_advisor();
+        }
+        self.map.drawn_once = false;
     }
 
     pub(crate) fn selected_path(&self) -> Option<PathBuf> {
@@ -316,6 +324,7 @@ impl State {
             }
             "TabTree" => self.set_view(View::Tree),
             "TabFiles" => self.set_view(View::Files),
+            "TabAdvisor" => self.set_view(View::Advisor),
             "TabAbout" => self.set_view(View::About),
             _ => {}
         }
@@ -494,12 +503,12 @@ impl State {
             return;
         }
         // The full tree behind a filter forgets it too, or clearing the filter brings it back.
-        if let Some(full) = self.full_tree.as_mut() {
+        if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
             if let Some(k) = sprawl_advisor::find_path(full, &path) {
                 detach(full, k, None);
             }
         }
-        let t = self.tree.as_mut().unwrap();
+        let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
         let parent = t.nodes[n].parent;
         detach(t, n, Some(&mut self.alloc));
         self.selected = parent;
@@ -508,6 +517,8 @@ impl State {
         self.refresh_rows();
         self.refresh_exts();
         self.render_map();
+        // what was found there may be gone, and the totals changed
+        self.advisor_start();
     }
 }
 

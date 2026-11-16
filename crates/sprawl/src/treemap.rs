@@ -262,6 +262,11 @@ impl State {
         }
         self.map.scene.selected = self.selected;
         self.map.scene.highlight_ext = self.ext_selected.as_deref().map(ext_key);
+        self.map.scene.lens = match self.advisor.lens_mode {
+            crate::advisor::Lens::Off => None,
+            mode if self.view == crate::state::View::Advisor => self.advice().map(|r| (r.lens.clone(), mode == crate::advisor::Lens::Risk)),
+            _ => None,
+        };
         // A selected folder lights up its whole block on the map.
         if self.map.live.is_none() {
             if let Some(t) = &self.tree {

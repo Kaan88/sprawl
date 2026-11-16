@@ -33,6 +33,7 @@ pub(crate) enum Units {
 pub(crate) enum View {
     Tree,
     Files,
+    Advisor,
     About,
 }
 
@@ -74,7 +75,8 @@ pub(crate) struct State {
     pub(crate) hwnd: isize,
     pub(crate) root: FrameworkElement,
     pub(crate) drives: Vec<String>,
-    pub(crate) tree: Option<Tree>,
+    /// Shared so the advisor can read it on another thread; changed through `Arc::make_mut`.
+    pub(crate) tree: Option<Arc<Tree>>,
     pub(crate) alloc: Vec<u64>,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) selected: Option<usize>,
@@ -85,7 +87,8 @@ pub(crate) struct State {
     pub(crate) ext_selected: Option<String>,
     pub(crate) tables: crate::tables::Tables,
     /// The unfiltered scan while a filter is on.
-    pub(crate) full_tree: Option<Tree>,
+    pub(crate) full_tree: Option<Arc<Tree>>,
+    pub(crate) advisor: crate::advisor::Advisor,
     pub(crate) filter: String,
     pub(crate) filter_text: String,
     pub(crate) filter_pending: Option<Instant>,
@@ -210,6 +213,7 @@ impl State {
     }
 
     pub(crate) fn poll(&mut self) {
+        self.advisor_poll();
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {
@@ -254,13 +258,14 @@ impl State {
                         self.filter.clear();
                         self.child_stack.clear();
                         self.scan_taken = std::time::SystemTime::now();
-                        self.set_tree(tree, &header);
+                        self.set_tree(Arc::new(tree), &header);
                         self.map.scene.start_wave();
                         self.watch();
                         self.save_snapshot();
                         if !self.filter_text.trim().is_empty() {
                             self.apply_filter();
                         }
+                        self.advisor_start();
                     }
                     Err(e) => {
                         // The map was drawing the live preview, whose node numbers aren't the
@@ -315,7 +320,7 @@ impl State {
         text(&self.root, "FootLeft", &format!("Live: {} change{} in this folder since the scan", thousands(c), if c == 1 { "" } else { "s" }));
     }
 
-    pub(crate) fn set_tree(&mut self, tree: Tree, path: &std::path::Path) {
+    pub(crate) fn set_tree(&mut self, tree: Arc<Tree>, path: &std::path::Path) {
         self.hist_close();
         // Allocated size: each file rounded up to a 4 KB cluster, folders add up their contents.
         self.alloc = tree.nodes.iter().map(|n| n.allocated).collect();
@@ -420,13 +425,15 @@ impl State {
         self.child_stack.clear();
         if pattern.is_empty() {
             self.set_tree(base, &path);
+            self.advisor_refresh();
             return;
         }
         let filtered = sprawl_core::filter_tree(&base, &pattern);
         let found = filtered.nodes[ROOT].files;
         let bytes = filtered.nodes[ROOT].size;
         self.full_tree = Some(base);
-        self.set_tree(filtered, &path);
+        self.set_tree(Arc::new(filtered), &path);
+        self.advisor_refresh();
         text(&self.root, "StatusText", &format!("Filter \"{pattern}\": {} files, {}", thousands(found), self.size(bytes)));
     }
 

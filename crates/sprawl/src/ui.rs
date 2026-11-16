@@ -323,6 +323,7 @@ pub fn page(drives: &[String]) -> String {
   <StackPanel Orientation="Horizontal" Spacing="4">
     <Button x:Name="TabTree" Content="Tree View" Padding="14,4" CornerRadius="6" Background="#FF2C3550" BorderThickness="0"/>
     <Button x:Name="TabFiles" Content="File View" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"/>
+    <Button x:Name="TabAdvisor" Content="Advisor" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"/>
     <Button x:Name="TabAbout" Content="About" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"/>
   </StackPanel>
   </Grid>
@@ -353,6 +354,7 @@ pub fn page(drives: &[String]) -> String {
             </MenuFlyout>
           </FlyoutBase.AttachedFlyout>
         </ScrollViewer>
+        <ScrollViewer x:Name="AdvisorPanel" Grid.RowSpan="2" Visibility="Collapsed" HorizontalScrollBarVisibility="Disabled"><Border x:Name="AdvHost"/></ScrollViewer>
         <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="2" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="Sprawl" FontSize="26" FontWeight="SemiBold"/>

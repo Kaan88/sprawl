@@ -76,6 +76,9 @@ pub struct Scene {
     hover_parent: Option<u32>,
     pub hover_folder: Option<usize>,
     pub highlight_ext: Option<u32>,
+    /// Advisor lens: risk code per node (0 = not in a finding, others dim), and whether to
+    /// colour findings by risk.
+    pub lens: Option<(std::sync::Arc<Vec<u8>>, bool)>,
     pub selected: Option<usize>,
     mouse: Option<(f32, f32)>,
     mouse_rel: (f32, f32),
@@ -121,6 +124,7 @@ impl Default for Scene {
             hover_parent: None,
             hover_folder: None,
             highlight_ext: None,
+            lens: None,
             selected: None,
             mouse: None,
             mouse_rel: (0.5, 0.5),
@@ -633,7 +637,8 @@ impl Scene {
                 a.vel = 0.0;
                 a.glow = glow_t;
             }
-            let dim_t = if hl.is_some() && (a.is_dir || Some(a.info.ext_key) != hl) { 1.0 } else { 0.0 };
+            let lens_v = self.lens.as_ref().map(|(v, _)| v.get(a.node as usize).copied().unwrap_or(0));
+            let dim_t = if hl.is_some() && (a.is_dir || Some(a.info.ext_key) != hl) || lens_v == Some(0) { 1.0 } else { 0.0 };
             a.dim += (dim_t - a.dim) * if self.animate { (dt * 8.0).min(1.0) } else { 1.0 };
             if a.vel.abs() > 0.05 || (a.lift - target).abs() > 0.05 || (a.glow - glow_t).abs() > 0.01 || (a.dim - dim_t).abs() > 0.01 {
                 moving = true;
@@ -652,6 +657,8 @@ impl Scene {
             } else if a.is_dir {
                 let v = if a.depth == 1 { 0.15 } else { 0.12 };
                 ([v, v * 1.04, v * 1.25], 1.0)
+            } else if let (Some(code), Some((_, true))) = (lens_v.filter(|&c| c > 0), &self.lens) {
+                (crate::advisor::lens_colour(code), 0.0)
             } else {
                 (a.info.colour, 0.0)
             };

@@ -47,6 +47,7 @@ pub(crate) const TREE: &[Col] = &[
     col("Allocated", 92.0, true, Key::Alloc),
     col("Items", 84.0, true, Key::Items),
     col("Files", 84.0, true, Key::Files),
+    col("Owner", 150.0, false, Key::None),
 ];
 pub(crate) const FILES: &[Col] = &[
     col("File Name", -2.0, false, Key::Name),
@@ -189,7 +190,7 @@ impl State {
     pub(crate) fn sort_tree(&mut self) {
         let (c, desc) = self.tables.tree_sort;
         let key = TREE[c].key;
-        let Some(t) = self.tree.as_mut() else { return };
+        let Some(t) = self.tree.as_mut().map(std::sync::Arc::make_mut) else { return };
         let alloc = &self.alloc;
         for i in 0..t.nodes.len() {
             if t.nodes[i].children.len() < 2 {
@@ -385,7 +386,7 @@ impl State {
         let hidden = n != ROOT && (node.is_hidden() || node.is_system());
         let fg = if hidden { "#FF7D8494" } else { "#FFFFFFFF" };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="9" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}</Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="9" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(TREE),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
@@ -395,6 +396,15 @@ impl State {
             c3 = cell(3, &self.size(self.alloc[n])),
             c4 = cell(4, &items),
             c5 = cell(5, &files),
+            // the app that owns it; dimmed where it just continues from the parent
+            c6 = match self.owner_of(n) {
+                Some((name, inherited)) => format!(
+                    r##"<TextBlock Grid.Column="6" Text="{}" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}"/>"##,
+                    ui::esc(name),
+                    if inherited { "#FF6F788C" } else { "#FFB9C2D6" }
+                ),
+                None => String::new(),
+            },
         )
     }
 

@@ -39,7 +39,12 @@ fn main() {
             println!("    {c:>6}  {k}");
         }
     }
+    let t1 = std::time::Instant::now();
     let (ok, held) = advise_all(&tree, &[RulePack::builtin()], &facts);
+    let t_adv = t1.elapsed().as_secs_f64();
+    let t2 = std::time::Instant::now();
+    let owners = facts.owner_map(&tree);
+    println!("advise_all {t_adv:.2} s, owner_map {:.2} s ({} nodes owned)", t2.elapsed().as_secs_f64(), owners.iter().filter(|o| o.is_some()).count());
     let total: u64 = ok.iter().map(|f| f.bytes).sum();
     println!("{} findings, {} in total", ok.len(), format_size(total));
     for f in &ok {

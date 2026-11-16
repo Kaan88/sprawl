@@ -9,6 +9,7 @@
 #![allow(non_snake_case)]
 #[allow(dead_code, unused_imports, non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 mod bindings;
+mod advisor;
 mod app;
 mod commands;
 mod format;
@@ -149,7 +150,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             }
         });
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist"] {
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabAdvisor", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -328,6 +329,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         ext_selected: None,
         tables: tables::Tables::default(),
         full_tree: None,
+        advisor: Default::default(),
         filter: String::new(),
         filter_text: String::new(),
         filter_pending: None,
