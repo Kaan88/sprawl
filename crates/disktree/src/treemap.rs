@@ -140,8 +140,9 @@ impl State {
             let colours = &self.colours;
             let free = if m.show_free && self.map_root == ROOT { m.free } else { None };
             let city = m.scene.mode == Mode::City;
-            // City heights: item counts on a log scale, the busiest building about half the map's height.
-            let hmax = m.scene.w.min(m.scene.h) * 0.5;
+            // City heights: item counts on a log scale, the busiest building about a seventh of the
+            // city's width, so the skyline reads as streets and blocks instead of a wall of towers.
+            let hmax = (m.scene.w * m.scene.h).sqrt() * 0.18;
             let span = (t.nodes[self.map_root].items().max(1) as f32 * 0.25).max(10.0).log10();
             let now = std::time::SystemTime::now();
             let hd = hist_display.as_deref();
@@ -289,12 +290,12 @@ impl State {
                             let rect = if m.scene.mode == Mode::Map {
                                 [-w * 0.6, -h * 0.3, w * 2.2, h * 1.9]
                             } else {
-                                let side = (w * h).sqrt() * 2.4;
-                                [(w - side) / 2.0, (h - side) / 2.0, side, side]
+                                let l = w.max(h) * 1.2;
+                                [w / 2.0 - l, h / 2.0 - l, l * 2.0, l * 2.0]
                             };
                             crate::gpu::Instance {
                                 rect,
-                                parent: if m.scene.mode == Mode::Map { [w / 2.0, h / 2.0, 0.0, 0.0] } else { [(w * h).sqrt() / 2.0; 4] },
+                                parent: if m.scene.mode == Mode::Map { [w / 2.0, h / 2.0, 0.0, 0.0] } else { [w / 2.0, h / 2.0, 0.0, 0.0] },
                                 color: [0.0, 0.0, 0.0, 2.0],
                                 fx: [0.0; 4],
                             }
@@ -467,6 +468,10 @@ impl State {
 
     /// Mouse wheel over the map: up zooms into the folder under the pointer, down zooms out.
     pub(crate) fn map_wheel(&mut self, x: f64, y: f64, delta: i32) {
+        if self.galaxy_on() {
+            self.map.galaxy.zoom(x as f32, y as f32, delta);
+            return;
+        }
         if delta > 0 {
             self.map_zoom_at(x, y);
         } else if let Some(p) = self.tree.as_ref().and_then(|t| t.nodes[self.map_root].parent) {

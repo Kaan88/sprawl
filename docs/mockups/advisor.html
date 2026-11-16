@@ -1,0 +1,796 @@
+<title>DiskTree Advisor</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one app window per tab, drawn in DiskTree's own dark acrylic look (single dark theme by design). */
+:root {
+  color-scheme: dark;
+  --bg: #0b0d13;
+  --win: #141824;
+  --pane: rgba(255,255,255,0.035);
+  --line: rgba(255,255,255,0.09);
+  --fg: #e6eaf3;
+  --soft: #aab3c7;
+  --mute: #7d879c;
+  --accent: #3a6fe0;
+  --accent-2: #8fb4ff;
+  --green: #3ccf8e;
+  --amber: #f2b23c;
+  --orange: #ff7a45;
+  --red: #ff4d5e;
+  --grew: #ff5a45;
+  --new: #2ad9ff;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  background: radial-gradient(1200px 600px at 20% -10%, #1b2440 0%, transparent 60%), radial-gradient(900px 500px at 110% 10%, #2a1a3a 0%, transparent 55%), var(--bg);
+  color: var(--fg); font-family: var(--font); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 22px 40px;
+  min-height: 100%;
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 16px; }
+header.top { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; }
+header.top h1 { font-family: var(--display); font-weight: 600; font-size: 26px; margin: 0; letter-spacing: -0.01em; }
+header.top p { margin: 2px 0 0; color: var(--soft); max-width: 62ch; }
+nav.tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 9px; background: rgba(255,255,255,0.05); }
+nav.tabs a { padding: 6px 13px; border-radius: 7px; color: var(--soft); text-decoration: none; font-size: 13px; }
+nav.tabs a[aria-current="page"] { background: #2c3b63; color: #fff; }
+nav.tabs a:hover { color: #fff; }
+
+.window { border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(30,36,52,0.92), rgba(18,21,30,0.96)); box-shadow: 0 30px 80px -30px rgba(0,0,0,0.8); overflow: hidden; }
+.titlebar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; font-size: 12px; color: var(--soft); border-bottom: 1px solid var(--line); }
+.titlebar i { width: 14px; height: 14px; border-radius: 4px; background: linear-gradient(135deg, #ff5f6d, #ffc371); display: inline-block; }
+.titlebar .dots { margin-left: auto; display: flex; gap: 14px; color: var(--mute); }
+.body { padding: 16px; display: grid; gap: 14px; }
+.note { color: var(--mute); font-size: 12.5px; max-width: 80ch; }
+.note b { color: var(--soft); font-weight: 600; }
+.view[hidden] { display: none !important; }
+
+/* ---------- wizard */
+.wiz-stage { position: relative; min-height: 560px; border-radius: 10px; overflow: hidden; background: #10131c; }
+.wiz-stage canvas.bgmap { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.32; filter: blur(1.5px); }
+.wiz-card { position: relative; margin: 34px auto; width: min(760px, calc(100% - 24px)); display: grid; grid-template-columns: 210px 1fr; border-radius: 14px; border: 1px solid rgba(255,255,255,0.16); background: rgba(22,26,38,0.86); backdrop-filter: blur(18px) saturate(1.3); box-shadow: 0 40px 90px -30px rgba(0,0,0,0.9); overflow: hidden; }
+.wiz-rail { padding: 22px 16px; background: rgba(255,255,255,0.03); border-right: 1px solid var(--line); display: grid; align-content: start; gap: 4px; }
+.wiz-rail .brand { display: flex; gap: 10px; align-items: center; font-weight: 600; margin-bottom: 14px; }
+.wiz-rail .brand i { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, #ff5f6d, #ffc371); display: inline-block; }
+.step { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; color: var(--mute); font-size: 13px; cursor: pointer; border: 0; background: none; text-align: left; }
+.step .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; border: 1px solid rgba(255,255,255,0.2); flex: none; }
+.step.done { color: var(--soft); }
+.step.done .n { background: rgba(60,207,142,0.18); border-color: transparent; color: var(--green); }
+.step.on { background: rgba(58,111,224,0.18); color: #fff; }
+.step.on .n { background: var(--accent); border-color: transparent; color: #fff; }
+.wiz-main { padding: 24px 26px 18px; display: grid; grid-template-rows: 1fr auto; min-height: 480px; min-width: 0; }
+.page { animation: slide .35s cubic-bezier(.2,.8,.2,1); display: grid; gap: 10px; align-content: start; }
+@keyframes slide { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+.page h2 { font-family: var(--display); font-size: 22px; margin: 0; font-weight: 600; }
+.page .sub { color: var(--soft); margin: -6px 0 4px; }
+.cards { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+.pcard { text-align: left; border: 1px solid var(--line); background: rgba(255,255,255,0.03); border-radius: 10px; padding: 11px 12px; cursor: pointer; display: grid; gap: 3px; position: relative; }
+.pcard:hover { border-color: rgba(143,180,255,0.4); }
+.pcard[aria-pressed="true"] { border-color: var(--accent); background: rgba(58,111,224,0.14); }
+.pcard b { font-size: 13.5px; }
+.pcard span { color: var(--mute); font-size: 12px; }
+.pcard .tag { position: absolute; top: 9px; right: 10px; font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(60,207,142,0.16); color: var(--green); }
+.det { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: #bfd4ff; background: rgba(143,180,255,0.1); border-radius: 8px; padding: 8px 10px; }
+.det .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 0 rgba(60,207,142,.6); animation: ping 1.8s infinite; flex: none; }
+@keyframes ping { 70% { box-shadow: 0 0 0 8px rgba(60,207,142,0); } 100% { box-shadow: 0 0 0 0 rgba(60,207,142,0); } }
+label.f { display: grid; gap: 4px; font-size: 12px; color: var(--soft); }
+input.t { font: inherit; color: var(--fg); background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.14); border-bottom-color: rgba(255,255,255,0.35); border-radius: 6px; padding: 7px 10px; width: 100%; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.btn { border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); padding: 6px 16px; border-radius: 6px; cursor: pointer; }
+.btn:hover { background: rgba(255,255,255,0.1); }
+.btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+.btn.primary:hover { background: #4a7df0; }
+.btn.ghost { background: none; border-color: transparent; color: var(--soft); }
+.btn:disabled { opacity: .4; cursor: default; }
+.test { font-size: 12.5px; color: var(--mute); display: flex; gap: 6px; align-items: center; }
+.test.ok { color: var(--green); }
+.spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent-2); animation: rot .8s linear infinite; }
+@keyframes rot { to { transform: rotate(1turn); } }
+.sw { display: grid; grid-template-columns: 1fr auto; gap: 2px 14px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: center; }
+.sw:last-child { border-bottom: 0; }
+.sw b { font-weight: 600; font-size: 13.5px; }
+.sw span { grid-column: 1; color: var(--mute); font-size: 12px; }
+.toggle { grid-row: 1 / span 2; grid-column: 2; width: 40px; height: 20px; border-radius: 99px; border: 1px solid rgba(255,255,255,.35); background: none; position: relative; cursor: pointer; }
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--soft); transition: transform .2s, background .2s; }
+.toggle[aria-checked="true"] { background: var(--accent); border-color: transparent; }
+.toggle[aria-checked="true"]::after { transform: translateX(20px); background: #fff; }
+.views { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+.views canvas { width: 100%; aspect-ratio: 16/10; border-radius: 6px; background: #0c0f16; display: block; }
+.footer-w { display: flex; gap: 8px; align-items: center; padding-top: 14px; border-top: 1px solid var(--line); margin-top: 14px; }
+.footer-w .sp { flex: 1; }
+.budget { display: grid; gap: 6px; }
+.budget .bar { height: 10px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; display: flex; }
+.budget .bar i { display: block; height: 100%; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.done-art { display: grid; place-items: center; padding: 26px 0 8px; }
+.done-art svg { width: 90px; height: 90px; }
+.check { stroke-dasharray: 60; stroke-dashoffset: 60; animation: draw .7s .2s ease-out forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+.summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+.summary dt { color: var(--mute); }
+.summary dd { margin: 0; }
+
+/* ---------- advisor */
+.adv { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 14px; }
+.panel { border: 1px solid var(--line); background: var(--pane); border-radius: 10px; padding: 12px; min-width: 0; }
+.kpis { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; }
+.kpis .big { font-family: var(--display); font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpis .lbl { color: var(--mute); font-size: 12px; }
+.riskbar { display: flex; height: 8px; border-radius: 99px; overflow: hidden; margin: 8px 0 4px; background: rgba(255,255,255,.06); }
+.riskbar i { height: 100%; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--mute); }
+.legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 8px; }
+.chip { border: 1px solid var(--line); background: none; border-radius: 99px; padding: 3px 10px; font-size: 12px; color: var(--soft); cursor: pointer; }
+.chip[aria-pressed="true"] { background: rgba(58,111,224,.2); border-color: var(--accent); color: #fff; }
+.flist { display: grid; gap: 6px; max-height: 520px; overflow: auto; padding-right: 4px; }
+.find { border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.025); display: grid; grid-template-columns: 4px 1fr auto; overflow: hidden; cursor: pointer; }
+.find:hover, .find.hl { border-color: rgba(143,180,255,.45); background: rgba(143,180,255,.06); }
+.find .stripe { background: var(--c); }
+.find .main { padding: 8px 10px; min-width: 0; display: grid; gap: 2px; }
+.find .t { font-weight: 600; font-size: 13.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.find .p { font-family: var(--mono); font-size: 11.5px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find .sz { padding: 8px 12px; font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; display: grid; align-content: center; gap: 2px; }
+.find .sz small { font-weight: 400; color: var(--mute); font-size: 11px; }
+.pill { font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--c); letter-spacing: .02em; }
+.src { font-size: 10.5px; color: var(--mute); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-weight: 400; }
+.detail { grid-column: 1 / -1; padding: 0 12px 10px 16px; display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; cursor: default; }
+.detail ul { margin: 0; padding-left: 18px; color: var(--soft); font-size: 12.5px; display: grid; gap: 2px; }
+.cmd { display: flex; gap: 8px; align-items: center; background: #0a0c12; border: 1px solid var(--line); border-radius: 6px; padding: 6px 6px 6px 10px; min-width: 0; }
+.cmd code { font-family: var(--mono); font-size: 12px; color: #cfe0ff; overflow-x: auto; white-space: nowrap; flex: 1; min-width: 0; }
+.cmd button { flex: none; border: 0; background: rgba(255,255,255,.08); border-radius: 4px; padding: 3px 9px; font-size: 11.5px; cursor: pointer; }
+.held { margin-top: 10px; font-size: 12px; color: var(--mute); border-top: 1px dashed var(--line); padding-top: 8px; }
+.held b { color: var(--red); font-weight: 600; }
+.mapwrap { position: relative; perspective: 1100px; }
+.mapwrap canvas { width: 100%; aspect-ratio: 4/3; display: block; border-radius: 8px; transform: rotateX(28deg) scale(.98); transform-origin: 50% 70%; transition: transform .6s; box-shadow: 0 30px 50px -20px rgba(0,0,0,.8); }
+.mapcap { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--mute); margin-bottom: 8px; flex-wrap: wrap; }
+.lens { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: rgba(255,255,255,.06); }
+.lens button { border: 0; background: none; padding: 3px 10px; border-radius: 5px; font-size: 12px; color: var(--soft); cursor: pointer; }
+.lens button[aria-pressed="true"] { background: #2c3b63; color: #fff; }
+.tip { position: absolute; pointer-events: none; background: rgba(12,15,22,.95); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -120%); }
+
+/* ---------- goal */
+.goal { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 14px; }
+.target { font-family: var(--display); font-size: 44px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+.target small { font-size: 16px; color: var(--soft); font-weight: 400; }
+.plan { display: grid; gap: 6px; margin-top: 8px; }
+.pstep { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: center; padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,.03); border: 1px solid var(--line); animation: slide .3s ease-out; }
+.pstep .k { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; background: color-mix(in srgb, var(--c) 22%, transparent); color: var(--c); font-weight: 700; }
+.pstep b { font-size: 13px; }
+.pstep span { color: var(--mute); font-size: 11.5px; display: block; }
+.pstep .v { font-variant-numeric: tabular-nums; font-weight: 600; }
+.verdict { margin-top: 10px; padding: 10px 12px; border-radius: 8px; font-size: 13px; background: rgba(60,207,142,.1); color: #a9f0cf; }
+.verdict.warn { background: rgba(242,178,60,.1); color: #f6d38f; }
+pre.ps { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.55; background: #0a0c12; border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 300px; color: #c9d6ee; }
+pre.ps .c { color: #6f7a90; }
+pre.ps .k { color: #ff9e64; }
+pre.ps .s { color: #9ece6a; }
+
+/* ---------- chat */
+.chat { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; }
+.convo { display: grid; gap: 10px; align-content: start; min-height: 470px; max-height: 560px; overflow: auto; padding: 4px; }
+.msg { max-width: 86%; padding: 9px 12px; border-radius: 12px; font-size: 13.5px; animation: slide .3s ease-out; }
+.msg.me { justify-self: end; background: #2c3b63; border-bottom-right-radius: 4px; }
+.msg.ai { background: rgba(255,255,255,.05); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.ai p { margin: 0 0 6px; }
+.msg.ai p:last-child { margin: 0; }
+.tools { display: flex; flex-wrap: wrap; gap: 5px; }
+.tool { font-family: var(--mono); font-size: 11px; color: var(--accent-2); background: rgba(143,180,255,.08); border: 1px solid rgba(143,180,255,.2); border-radius: 5px; padding: 2px 7px; animation: slide .25s ease-out; }
+.tool.ok::before { content: "✓ "; color: var(--green); }
+.consent { border: 1px solid rgba(242,178,60,.4); background: rgba(242,178,60,.07); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; font-size: 13px; }
+.consent code { font-family: var(--mono); font-size: 12px; color: #f6d38f; }
+.mini { display: grid; grid-template-columns: 4px 1fr auto; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; margin-top: 4px; font-size: 12.5px; }
+.mini i { background: var(--c); }
+.mini span { padding: 5px 9px; }
+.mini b { padding: 5px 9px; font-variant-numeric: tabular-nums; }
+.typing { display: inline-flex; gap: 4px; padding: 4px 2px; }
+.typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--soft); animation: bob 1s infinite; }
+.typing i:nth-child(2) { animation-delay: .15s; } .typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes bob { 50% { transform: translateY(-4px); opacity: .5; } }
+.asks { display: grid; gap: 6px; align-content: start; }
+.ask { text-align: left; border: 1px solid var(--line); background: rgba(255,255,255,.03); border-radius: 9px; padding: 9px 11px; cursor: pointer; font-size: 13px; }
+.ask:hover { border-color: rgba(143,180,255,.45); }
+.ask:disabled { opacity: .45; cursor: default; }
+.composer { display: flex; gap: 8px; margin-top: 8px; }
+.composer input { flex: 1; }
+
+/* ---------- log */
+table.log { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.log th { text-align: left; color: var(--mute); font-weight: 600; font-size: 11.5px; padding: 6px 10px; border-bottom: 1px solid var(--line); letter-spacing: .03em; }
+table.log td { padding: 7px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; vertical-align: top; }
+table.log tr.r { cursor: pointer; }
+table.log tr.r:hover td { background: rgba(255,255,255,.03); }
+.tblwrap { overflow-x: auto; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 4px; background: rgba(255,255,255,.07); }
+
+@media (max-width: 860px) {
+  .wiz-card { grid-template-columns: 1fr; }
+  .wiz-rail { grid-auto-flow: column; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .wiz-rail .brand { display: none; }
+  .adv, .goal, .chat { grid-template-columns: 1fr; }
+  .cards, .views { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>DiskTree Advisor</h1>
+      <p>Interactive mockups of the setup wizard and the AI advisor that follows it. Example data for a user called sam; nothing here touches a real disk.</p>
+    </div>
+    <nav class="tabs" aria-label="Mockups">
+      <a href="#wizard">Setup wizard</a>
+      <a href="#advisor">Advisor</a>
+      <a href="#goal">Free up space</a>
+      <a href="#chat">Ask your disk</a>
+      <a href="#log">Request log</a>
+    </nav>
+  </header>
+
+  <!-- ================================================================ wizard -->
+  <section class="view" id="v-wizard">
+    <div class="window">
+      <div class="titlebar"><i></i>DiskTree<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="wiz-stage">
+        <canvas class="bgmap" id="bgmap"></canvas>
+        <div class="wiz-card">
+          <div class="wiz-rail" id="rail"></div>
+          <div class="wiz-main">
+            <div id="wizpage"></div>
+            <div class="footer-w">
+              <button class="btn ghost" id="wskip">Skip setup</button>
+              <span class="sp"></span>
+              <button class="btn" id="wback">Back</button>
+              <button class="btn primary" id="wnext">Next</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note"><b>Changes from the version in the app:</b> a step rail instead of dots, providers as cards with a "found on this PC" tag, a Test button that makes one tiny request before you finish, small live previews of the three map styles, a bar that shows what the history space limit buys, and a summary page at the end.</p>
+  </section>
+
+  <!-- ================================================================ advisor -->
+  <section class="view" id="v-advisor" hidden>
+    <div class="window">
+      <div class="titlebar"><i></i>[C:\] - DiskTree · Advisor<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="body">
+        <div class="adv">
+          <div class="panel">
+            <div class="kpis">
+              <div><div class="big" id="kpi-total">0 GB</div><div class="lbl">can be won back on C:</div></div>
+              <div><div class="big" id="kpi-green" style="color:var(--green)">0 GB</div><div class="lbl">of it regenerates by itself</div></div>
+            </div>
+            <div class="riskbar" id="riskbar"></div>
+            <div class="legend">
+              <span style="--c:var(--green)">Comes back by itself</span>
+              <span style="--c:var(--amber)">Costs something</span>
+              <span style="--c:var(--orange)">Your own files</span>
+            </div>
+            <div class="filters" id="filters"></div>
+            <div class="flist" id="flist"></div>
+            <div class="held"><b>Held back by safety:</b> the model suggested <code>C:\Windows\Installer</code> (9.8 GB). It is on the never-touch list: removing it breaks repairs and uninstalls.</div>
+          </div>
+          <div class="panel">
+            <div class="mapcap"><span>Treemap lens: findings light up, everything else dims</span>
+              <div class="lens" id="lens"><button aria-pressed="true" data-l="opp">Opportunities</button><button aria-pressed="false" data-l="risk">By risk</button><button aria-pressed="false" data-l="off">Normal</button></div>
+            </div>
+            <div class="mapwrap"><canvas id="advmap" width="900" height="675"></canvas><div class="tip" id="tip" hidden></div></div>
+            <p class="note" style="margin-top:12px">Hover a finding to find it on the map; hover a tile to see its finding. Owner column, "last used" and the evidence come from Rust (Steam manifests, Prefetch, Uninstall keys, git); the model adds judgement and names what the rules don't know.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================ goal -->
+  <section class="view" id="v-goal" hidden>
+    <div class="window">
+      <div class="titlebar"><i></i>[C:\] - DiskTree · Free up space<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="body">
+        <div class="goal">
+          <div class="panel">
+            <div class="lbl note" style="margin-bottom:6px">I need to free</div>
+            <div class="target"><span id="tg">60</span> <small>GB</small></div>
+            <input type="range" id="goal" min="10" max="220" step="5" value="60" aria-label="Space to free">
+            <div class="plan" id="plan"></div>
+            <div class="verdict" id="verdict"></div>
+            <div class="row" style="margin-top:12px">
+              <button class="btn primary" id="export">Export as PowerShell script</button>
+              <span class="note">Advise only: you run it. It starts with a dry run.</span>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="mapcap"><span>Preview: the chosen items shrink away and the map closes the gap</span><span id="after"></span></div>
+            <div class="mapwrap"><canvas id="goalmap" width="900" height="600"></canvas></div>
+            <pre class="ps" id="ps" hidden></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================ chat -->
+  <section class="view" id="v-chat" hidden>
+    <div class="window">
+      <div class="titlebar"><i></i>[C:\] - DiskTree · Ask your disk<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="body">
+        <div class="chat">
+          <div class="panel">
+            <div class="convo" id="convo"></div>
+            <div class="composer"><input class="t" id="say" placeholder="Ask about your disk…" aria-label="Message"><button class="btn primary" id="send">Ask</button></div>
+          </div>
+          <div class="asks" id="asks">
+            <div class="note">Try one. Answers are scripted for this mockup; tool calls show what the model looks at.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================ log -->
+  <section class="view" id="v-log" hidden>
+    <div class="window">
+      <div class="titlebar"><i></i>DiskTree · Advisor request log<span class="dots"><span>—</span><span>☐</span><span>✕</span></span></div>
+      <div class="body">
+        <p class="note">Every request that leaves the PC, in full. Paths are sent as they are (your choice in setup). Click a row to see exactly what was sent.</p>
+        <div class="tblwrap"><table class="log" id="logt"></table></div>
+        <pre class="ps" id="logbody"></pre>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+const GB = 1024 ** 3;
+const fmt = b => b >= GB ? (b / GB).toFixed(b >= 100 * GB ? 0 : 1) + " GB" : (b / 1024 ** 2).toFixed(0) + " MB";
+const RISK = { green: "var(--green)", amber: "var(--amber)", orange: "var(--orange)" };
+const RISKHEX = { green: "#3ccf8e", amber: "#f2b23c", orange: "#ff7a45" };
+const RLABEL = { green: "REGENERATES", amber: "COSTS SOMETHING", orange: "YOUR FILES" };
+
+/* ------------------------------------------------------------ example disk */
+// [name, GB, children] ; leaves may carry a finding id
+const DISK = ["C:", 0, [
+  ["Users\\sam", 0, [
+    ["AppData\\Local", 0, [["Temp", 38.2, null, "temp"], ["Docker\\wsl", 61, null, "docker"], ["npm-cache", 6.1, null, "npm"], ["NVIDIA\\DXCache", 4.2, null, "dx"], ["Google\\Chrome", 3.4], ["Packages", 8.8], ["Programs", 11.5]]],
+    ["source\\repos", 0, [["*\\target (7 projects)", 26.1, null, "target"], ["*\\node_modules (12)", 18.4, null, "nodem"], ["sources", 9.6]]],
+    ["Downloads", 0, [["ISOs", 22.0, null, "iso"], ["installers", 9.1, null, "inst"], ["other", 4.4]]],
+    ["Videos", 120], ["Documents", 31], ["Pictures", 46], [".cargo", 7.2, null, "cargo"], [".gradle", 5.0, null, "gradle"]]],
+  ["Games\\Steam", 0, [["Orbital Drift", 125, null, "game"], ["Hollow Pines", 48], ["Tidewater", 37]]],
+  ["Program Files", 140],
+  ["Windows", 0, [["WinSxS", 14.2, null, "sxs"], ["System32", 8.1], ["Installer", 9.8], ["other", 16]]],
+  ["hiberfil.sys", 13.1, null, "hiber"], ["pagefile.sys", 16]
+]];
+
+const FIND = {
+  docker: { t: "Docker Desktop disk image", p: "C:\\Users\\sam\\AppData\\Local\\Docker\\wsl\\disk\\docker_data.vhdx", gb: 23, of: 61, risk: "amber", owner: "Docker Desktop", src: "model", cmd: "wsl --shutdown; Optimize-VHD -Path \"$env:LOCALAPPDATA\\Docker\\wsl\\disk\\docker_data.vhdx\" -Mode Full", ev: ["The image is 61 GB but holds 38 GB of data: 23 GB is free space inside it", "Compacting keeps every image and container", "Docker Desktop must be closed while it runs"] },
+  temp: { t: "Temporary files", p: "C:\\Users\\sam\\AppData\\Local\\Temp", gb: 38.2, risk: "green", src: "rule win.user-temp", cmd: "Get-ChildItem -LiteralPath $env:TEMP -Force | Remove-Item -Recurse -Force", ev: ["412,880 files left by apps; 96% are older than 30 days", "Files still in use can't be deleted and are skipped"] },
+  target: { t: "Rust build output in 7 idle projects", p: "C:\\Users\\sam\\source\\repos\\*\\target", gb: 26.1, risk: "green", owner: "Cargo", src: "rule dev.cargo-target", cmd: "Get-ChildItem C:\\Users\\sam\\source\\repos -Directory | % { cargo clean --manifest-path \"$_\\Cargo.toml\" }", ev: ["No commits in these projects for 90+ days (git)", "Rebuilt by the next cargo build", "Skipped: 2 projects with commits this week"] },
+  nodem: { t: "node_modules in 12 idle projects", p: "C:\\Users\\sam\\source\\repos\\*\\node_modules", gb: 18.4, risk: "green", owner: "npm", src: "rule dev.node-modules", cmd: "Get-ChildItem C:\\Users\\sam\\source\\repos -Directory -Recurse -Filter node_modules -Depth 2 | Remove-Item -Recurse -Force", ev: ["Each project has a package-lock.json, so npm ci restores it exactly", "Last commit in each is older than 60 days"] },
+  game: { t: "Orbital Drift (Steam)", p: "C:\\Games\\Steam\\steamapps\\common\\Orbital Drift", gb: 125, risk: "amber", owner: "Steam", src: "model", cmd: "Start-Process steam://uninstall/1874220", ev: ["Last played 14 months ago (Steam LastPlayed)", "Saves are in Steam Cloud", "Re-downloading takes about 25 minutes at your usual speed"] },
+  iso: { t: "Disk images in Downloads", p: "C:\\Users\\sam\\Downloads\\ISOs", gb: 22, risk: "orange", src: "rule dl.iso", cmd: "explorer.exe C:\\Users\\sam\\Downloads\\ISOs", ev: ["4 .iso files, the newest from March", "Your own downloads: only you can say whether they can go"] },
+  inst: { t: "Old installers in Downloads", p: "C:\\Users\\sam\\Downloads\\installers", gb: 9.1, risk: "amber", src: "rule dl.installers", cmd: "explorer.exe C:\\Users\\sam\\Downloads\\installers", ev: ["31 setup files; 24 of those apps are already installed", "The vendors still offer newer versions"] },
+  npm: { t: "npm cache", p: "C:\\Users\\sam\\AppData\\Local\\npm-cache", gb: 6.1, risk: "green", owner: "npm", src: "rule dev.npm-cache", cmd: "npm cache clean --force", ev: ["Packages npm downloaded before. It fetches them again when a project needs them."] },
+  dx: { t: "NVIDIA shader cache", p: "C:\\Users\\sam\\AppData\\Local\\NVIDIA\\DXCache", gb: 4.2, risk: "green", owner: "NVIDIA driver", src: "model + web", cmd: "Get-ChildItem \"$env:LOCALAPPDATA\\NVIDIA\\DXCache\" -Force | Remove-Item -Recurse -Force", ev: ["Compiled shaders; games rebuild them, with a few stutters the first time", "Confirmed by an NVIDIA support article (web lookup you allowed)"] },
+  cargo: { t: "Cargo registry cache", p: "C:\\Users\\sam\\.cargo\\registry", gb: 7.2, risk: "green", owner: "Cargo", src: "rule dev.cargo-registry", cmd: "Remove-Item C:\\Users\\sam\\.cargo\\registry\\cache, C:\\Users\\sam\\.cargo\\registry\\src -Recurse -Force", ev: ["Downloaded crates; Cargo downloads them again on the next build"] },
+  gradle: { t: "Gradle caches", p: "C:\\Users\\sam\\.gradle\\caches", gb: 5.0, risk: "green", owner: "Gradle", src: "rule dev.gradle-cache", cmd: "Remove-Item C:\\Users\\sam\\.gradle\\caches -Recurse -Force", ev: ["Dependencies and build outputs Gradle caches"] },
+  sxs: { t: "Windows component store", p: "C:\\Windows\\WinSxS", gb: 3.1, of: 14.2, risk: "green", owner: "Windows", src: "rule win.component-store", cmd: "DISM /Online /Cleanup-Image /StartComponentCleanup", ev: ["Shown as 14.2 GB, but 11.1 GB of it is hard links shared with System32", "DISM removes only superseded versions: about 3.1 GB"] },
+  hiber: { t: "Hibernation file", p: "C:\\hiberfil.sys", gb: 13.1, risk: "amber", owner: "Windows", src: "rule win.hiberfil", cmd: "powercfg /hibernate off", ev: ["You never hibernate (no hibernate events in 90 days)", "Turns off Fast Startup too: cold boots get a few seconds slower"] },
+};
+const ORDER = Object.keys(FIND).sort((a, b) => FIND[b].gb - FIND[a].gb);
+for (const k in FIND) FIND[k].id = k;
+
+/* tree -> nodes with sizes */
+function build(n, parent) {
+  const [name, gb, kids, fid] = n;
+  const node = { name, parent, fid, kids: [] };
+  if (kids) { node.kids = kids.map(k => build(k, node)); node.size = node.kids.reduce((s, k) => s + k.size, 0); }
+  else node.size = gb;
+  return node;
+}
+const ROOT = build(DISK, null);
+
+/* squarified treemap */
+function squarify(items, x, y, w, h, out) {
+  items = items.filter(i => i.v > 0).sort((a, b) => b.v - a.v);
+  const total = items.reduce((s, i) => s + i.v, 0);
+  if (!total || w <= 0 || h <= 0) return;
+  const scale = (w * h) / total;
+  let rest = items.map(i => ({ ...i, a: i.v * scale }));
+  while (rest.length) {
+    const side = Math.min(w, h);
+    let row = [rest[0]], best = worst(row, side);
+    let i = 1;
+    for (; i < rest.length; i++) {
+      const r2 = row.concat(rest[i]), wv = worst(r2, side);
+      if (wv > best) break;
+      row = r2; best = wv;
+    }
+    const sum = row.reduce((s, r) => s + r.a, 0);
+    if (w >= h) { const cw = sum / h; let cy = y; for (const r of row) { const rh = r.a / cw; out.push({ ...r, x, y: cy, w: cw, h: rh }); cy += rh; } x += cw; w -= cw; }
+    else { const ch = sum / w; let cx = x; for (const r of row) { const rw = r.a / ch; out.push({ ...r, x: cx, y, w: rw, h: ch }); cx += rw; } y += ch; h -= ch; }
+    rest = rest.slice(i);
+  }
+}
+function worst(row, side) {
+  const s = row.reduce((t, r) => t + r.a, 0), mx = Math.max(...row.map(r => r.a)), mn = Math.min(...row.map(r => r.a));
+  return Math.max(side * side * mx / (s * s), (s * s) / (side * side * mn));
+}
+function layout(node, x, y, w, h, weight, out, depth = 0) {
+  const kids = node.kids.map(k => ({ v: weight(k), node: k }));
+  const rects = [];
+  squarify(kids, x, y, w, h, rects);
+  for (const r of rects) {
+    if (r.node.kids.length && r.w > 6 && r.h > 6) {
+      out.push({ ...r, depth, frame: true });
+      const pad = depth === 0 ? 3 : 2, top = depth === 0 ? 14 : 0;
+      layout(r.node, r.x + pad, r.y + pad + top, r.w - pad * 2, r.h - pad * 2 - top, weight, out, depth + 1);
+    } else out.push({ ...r, depth, frame: false });
+  }
+}
+function findOf(node) { for (let n = node; n; n = n.parent) if (n.fid) return FIND[n.fid]; return null; }
+const PAL = ["#5b8def", "#b06ef3", "#2fc7b8", "#f0a43a", "#ef6b8a", "#7cc95a", "#e8d24a", "#8a97ad"];
+function hueOf(node) { let n = node; while (n.parent && n.parent.parent) n = n.parent; return PAL[ROOT.kids.indexOf(n) % PAL.length] || "#8a97ad"; }
+
+function cushion(ctx, r, col, alpha) {
+  const g = ctx.createRadialGradient(r.x + r.w * 0.35, r.y + r.h * 0.3, 1, r.x + r.w / 2, r.y + r.h / 2, Math.max(r.w, r.h) * 0.75);
+  g.addColorStop(0, shade(col, 1.25)); g.addColorStop(1, shade(col, 0.55));
+  ctx.globalAlpha = alpha; ctx.fillStyle = g; ctx.fillRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); ctx.globalAlpha = 1;
+}
+function shade(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  const c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.max(0, Math.min(255, Math.round(v * k))));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+/* ------------------------------------------------------------ routing */
+const VIEWS = ["wizard", "advisor", "goal", "chat", "log"];
+let started = {};
+function route() {
+  const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "wizard";
+  for (const x of VIEWS) $("#v-" + x).hidden = x !== v;
+  document.querySelectorAll("nav.tabs a").forEach(a => a.setAttribute("aria-current", a.getAttribute("href") === "#" + v ? "page" : "false"));
+  if (!started[v]) { started[v] = true; ({ wizard: wizInit, advisor: advInit, goal: goalInit, chat: chatInit, log: logInit })[v](); }
+}
+addEventListener("hashchange", route);
+
+/* ------------------------------------------------------------ wizard */
+const W = { page: 0, provider: "claude-code", tested: false, admin: true, explorer: true, view: 0, mirror: true, pulses: true, anim: true, history: true, cap: 1 };
+const PROV = [
+  { id: "off", t: "Off", s: "Rules only. Nothing leaves this PC." },
+  { id: "claude-code", t: "Claude Code", s: "Uses your claude login. No key needed.", found: "Found on this PC" },
+  { id: "anthropic", t: "Claude API", s: "Your Anthropic API key." },
+  { id: "openai", t: "OpenAI-compatible", s: "OpenAI, OpenRouter, Ollama, LM Studio.", found: "Ollama is running" },
+];
+const STEPS = ["Welcome", "AI advisor", "Scanning", "Look", "History", "Ready"];
+const CAPS = [["500 MB", 0.5], ["1 GB", 1], ["2 GB", 2], ["5 GB", 5]];
+function wizInit() {
+  drawBg();
+  $("#wnext").onclick = () => { if (W.page < STEPS.length - 1) { W.page++; wiz(); } else { W.page = 0; wiz(); } };
+  $("#wback").onclick = () => { if (W.page > 0) { W.page--; wiz(); } };
+  $("#wskip").onclick = () => { W.page = STEPS.length - 1; wiz(); };
+  wiz();
+}
+function wiz() {
+  $("#rail").innerHTML = `<div class="brand"><i></i>DiskTree setup</div>` + STEPS.map((s, i) =>
+    `<button class="step ${i < W.page ? "done" : ""} ${i === W.page ? "on" : ""}" data-i="${i}"><span class="n">${i < W.page ? "✓" : i + 1}</span>${s}</button>`).join("");
+  $("#rail").querySelectorAll(".step").forEach(b => b.onclick = () => { W.page = +b.dataset.i; wiz(); });
+  $("#wback").disabled = W.page === 0;
+  $("#wnext").textContent = W.page === STEPS.length - 1 ? "Start scanning" : W.page === STEPS.length - 2 ? "Finish" : "Next";
+  $("#wskip").hidden = W.page === STEPS.length - 1;
+  const P = $("#wizpage");
+  const sw = (k, t, s) => `<div class="sw"><b>${t}</b><button class="toggle" role="switch" aria-checked="${W[k]}" data-k="${k}" aria-label="${t}"></button><span>${s}</span></div>`;
+  let h = "";
+  switch (W.page) {
+    case 0: h = `<h2>Welcome to DiskTree</h2><p class="sub">Five quick choices before your first scan. All of them live under Options later.</p>
+      <div class="cards">
+        <div class="pcard"><b>AI advisor</b><span>Optional. Explains what is using your space and plans what to remove.</span></div>
+        <div class="pcard"><b>Scanning</b><span>Seconds instead of minutes, and a right-click entry in Explorer.</span></div>
+        <div class="pcard"><b>Look</b><span>Treemap, city or galaxy; mirror floor; live pulses.</span></div>
+        <div class="pcard"><b>History</b><span>Compact snapshots so you can see what grew and when.</span></div>
+      </div>`; break;
+    case 1: {
+      const p = W.provider;
+      h = `<h2>AI advisor</h2><p class="sub">The rules already find caches and leftovers. An AI can judge the rest. It only advises; DiskTree never deletes anything by itself.</p>
+      <div class="det"><span class="pulse"></span>Found on this PC: Claude Code, Ollama (port 11434)</div>
+      <div class="cards">${PROV.map(x => `<button class="pcard" aria-pressed="${x.id === p}" data-p="${x.id}"><b>${x.t}</b><span>${x.s}</span>${x.found ? `<em class="tag">${x.found}</em>` : ""}</button>`).join("")}</div>
+      ${p === "anthropic" ? `<label class="f">API key, kept in Windows Credential Manager<input class="t" id="k" type="password" value="sk-ant-xxxxxxxxxxxxxxxx"></label>` : ""}
+      ${p === "openai" ? `<div class="row" style="align-items:end"><label class="f" style="flex:2;min-width:180px">Base URL<input class="t" id="u" value="http://localhost:11434/v1"></label><label class="f" style="flex:1;min-width:120px">Model<input class="t" id="m" value="qwen3:32b"></label></div>` : ""}
+      ${p === "claude-code" || p === "anthropic" ? `<label class="f">Model<input class="t" id="m2" value="claude-opus-5-5"></label>` : ""}
+      ${p !== "off" ? `<div class="row"><button class="btn" id="test">Test</button><span class="test ${W.tested ? "ok" : ""}" id="tres">${W.tested ? "✓ Connected. Replied in 1.4 s." : "Sends one short request to check the setup."}</span></div>` : ""}
+      <p class="note">When the advisor runs, paths from your scan are sent as they are. Every request is listed in the request log. Web lookups always ask first.</p>`;
+      break; }
+    case 2: h = `<h2>Scanning</h2><p class="sub">How DiskTree reads your drives.</p>
+      ${sw("admin", "Always run as administrator", "Reads the NTFS master file table directly: C: in about 4 seconds instead of 50. Windows asks for permission at each start.")}
+      ${sw("explorer", "Add “Scan with DiskTree” to Explorer", "Right-click any folder or drive to scan it. Only for your account.")}`; break;
+    case 3: h = `<h2>Look</h2><p class="sub">Pick how the map is drawn. You can switch any time above the map.</p>
+      <div class="views">${["Treemap", "City", "Galaxy"].map((v, i) => `<button class="pcard" aria-pressed="${W.view === i}" data-v="${i}" style="padding:6px"><canvas width="240" height="150" data-prev="${i}"></canvas><b style="padding:4px 4px 0">${v}</b></button>`).join("")}</div>
+      ${sw("mirror", "Mirror floor", "A glossy reflection under the map.")}
+      ${sw("pulses", "Live change pulses", "Tiles pulse when their files change.")}
+      ${sw("anim", "Animations", "Turn off for a calmer, lighter map.")}`; break;
+    case 4: {
+      const cap = CAPS[W.cap][1], full = 0.081, perDay = 0.0046, days = Math.max(0, Math.floor((cap - full) / perDay));
+      h = `<h2>History</h2><p class="sub">Keep compact snapshots to see growth, compare scans and play a time-lapse.</p>
+      ${sw("history", "Keep scan history", "About 5 MB per scan of a whole system drive, plus the last 3 in full detail (27 MB each). Stored on this PC only.")}
+      <div class="budget" style="opacity:${W.history ? 1 : .35}">
+        <label class="f">Space for history: <b id="capv" style="color:var(--fg)">${CAPS[W.cap][0]}</b><input type="range" id="cap" min="0" max="3" step="1" value="${W.cap}"></label>
+        <div class="bar"><i style="width:${Math.min(100, full / cap * 100)}%;background:var(--accent)"></i><i style="width:${100 - Math.min(100, full / cap * 100)}%;background:#2c3b63"></i></div>
+        <div class="legend"><span style="--c:var(--accent)">3 full scans (81 MB)</span><span style="--c:#2c3b63">daily history for ${days > 365 ? "over a year" : days + " days"} of C: scans</span></div>
+      </div>`; break; }
+    case 5: h = `<div class="done-art"><svg viewBox="0 0 90 90" aria-hidden="true"><circle cx="45" cy="45" r="40" fill="rgba(60,207,142,.12)" stroke="#3ccf8e" stroke-width="2"/><path class="check" d="M27 46 l12 12 l24 -26" fill="none" stroke="#3ccf8e" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <h2 style="text-align:center">You're set</h2>
+      <dl class="summary">
+        <dt>AI advisor</dt><dd>${PROV.find(x => x.id === W.provider).t}${W.provider !== "off" ? (W.tested ? " · tested" : " · not tested yet") : ""}</dd>
+        <dt>Scanning</dt><dd>${W.admin ? "Master file table (administrator)" : "Folder walk"}${W.explorer ? " · Explorer menu" : ""}</dd>
+        <dt>Look</dt><dd>${["Treemap", "City", "Galaxy"][W.view]}${W.mirror ? " · mirror floor" : ""}${W.pulses ? " · live pulses" : ""}</dd>
+        <dt>History</dt><dd>${W.history ? "On, up to " + CAPS[W.cap][0] : "Off"}</dd>
+      </dl>`; break;
+  }
+  P.innerHTML = `<div class="page">${h}</div>`;
+  P.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { W.provider = b.dataset.p; W.tested = false; wiz(); });
+  P.querySelectorAll("[data-v]").forEach(b => b.onclick = () => { W.view = +b.dataset.v; wiz(); });
+  P.querySelectorAll(".toggle").forEach(b => b.onclick = () => { W[b.dataset.k] = !W[b.dataset.k]; wiz(); });
+  const cap = $("#cap", P); if (cap) cap.oninput = () => { W.cap = +cap.value; wiz(); };
+  const test = $("#test", P);
+  if (test) test.onclick = () => { const r = $("#tres"); r.className = "test"; r.innerHTML = `<span class="spin"></span>Asking ${PROV.find(x => x.id === W.provider).t}…`; setTimeout(() => { W.tested = true; r.className = "test ok"; r.textContent = "✓ Connected. Replied in 1.4 s."; }, 1300); };
+  P.querySelectorAll("canvas[data-prev]").forEach(c => preview(c, +c.dataset.prev));
+}
+let bgT = 0;
+function drawBg() {
+  const c = $("#bgmap"), ctx = c.getContext("2d");
+  const fit = () => { c.width = c.clientWidth; c.height = c.clientHeight; };
+  fit(); addEventListener("resize", fit);
+  const out = []; layout(ROOT, 0, 0, 1, 1, n => n.size, out);
+  (function frame() {
+    bgT += 0.004;
+    ctx.clearRect(0, 0, c.width, c.height);
+    for (const r of out) if (!r.frame) {
+      const R = { x: r.x * c.width, y: r.y * c.height, w: r.w * c.width, h: r.h * c.height };
+      cushion(ctx, R, hueOf(r.node), 0.6 + 0.4 * Math.sin(bgT * 3 + r.x * 6 + r.y * 4));
+    }
+    if (!$("#v-wizard").hidden) requestAnimationFrame(frame); else started.wizard = false;
+  })();
+}
+function preview(c, kind) {
+  const ctx = c.getContext("2d"), w = c.width, h = c.height;
+  let t = 0;
+  const out = []; layout(ROOT, 10, 10, w - 20, h - 20, n => n.size, out);
+  const stars = Array.from({ length: 260 }, (_, i) => { const arm = i % 4, s = Math.random(); return { a: arm * Math.PI / 2 + s * 3 + (Math.random() - .5) * .5, r: 8 + s * 62, c: PAL[arm], z: Math.random() }; });
+  (function f() {
+    if (!c.isConnected) return;
+    t += 0.016;
+    ctx.fillStyle = "#0c0f16"; ctx.fillRect(0, 0, w, h);
+    if (kind === 0) {
+      for (const r of out) if (!r.frame) { const lift = Math.max(0, Math.sin(t * 2 - r.x / 30)) * 0.25; cushion(ctx, r, hueOf(r.node), 0.7 + lift); }
+    } else if (kind === 1) {
+      const cx = w / 2, cy = h * 0.62, rot = t * 0.3;
+      const blds = out.filter(r => !r.frame).slice(0, 60).map(r => ({ x: (r.x + r.w / 2 - w / 2) * 0.55, y: (r.y + r.h / 2 - h / 2) * 0.55, s: Math.max(3, Math.sqrt(r.w * r.h) * 0.4), hgt: 8 + Math.sqrt(r.node.size) * 3.2 }));
+      blds.forEach(b => { const ca = Math.cos(rot), sa = Math.sin(rot); b.px = cx + (b.x * ca - b.y * sa); b.py = cy + (b.x * sa + b.y * ca) * 0.45; });
+      blds.sort((a, b) => a.py - b.py);
+      for (const b of blds) {
+        ctx.fillStyle = "#1b2440"; ctx.fillRect(b.px - b.s / 2, b.py - b.hgt, b.s, b.hgt);
+        ctx.fillStyle = "#2c3b63"; ctx.fillRect(b.px - b.s / 2, b.py - b.hgt - b.s * 0.3, b.s, b.s * 0.3);
+        ctx.fillStyle = "rgba(143,220,255,.75)";
+        for (let yy = b.py - b.hgt + 4; yy < b.py - 3; yy += 5) for (let xx = b.px - b.s / 2 + 2; xx < b.px + b.s / 2 - 2; xx += 4) if ((xx * 7 + yy * 13 + Math.floor(t)) % 5 < 2) ctx.fillRect(xx, yy, 1.5, 2);
+      }
+    } else {
+      ctx.globalCompositeOperation = "lighter";
+      const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, 26); g.addColorStop(0, "rgba(255,230,190,.9)"); g.addColorStop(1, "rgba(255,200,150,0)");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+      for (const s of stars) { const a = s.a + t * 0.25; const x = w / 2 + Math.cos(a) * s.r * 1.3, y = h / 2 + Math.sin(a) * s.r * 0.55; ctx.fillStyle = s.c; ctx.globalAlpha = .5 + .5 * Math.sin(t * 3 + s.z * 9); ctx.fillRect(x, y, 1.6, 1.6); }
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+    }
+    requestAnimationFrame(f);
+  })();
+}
+
+/* ------------------------------------------------------------ advisor */
+let advHover = null, lensMode = "opp", filt = "all", openF = null, advRects = [];
+function advInit() {
+  const tot = ORDER.reduce((s, k) => s + FIND[k].gb, 0);
+  const by = r => ORDER.filter(k => FIND[k].risk === r).reduce((s, k) => s + FIND[k].gb, 0);
+  count($("#kpi-total"), tot); count($("#kpi-green"), by("green"));
+  $("#riskbar").innerHTML = ["green", "amber", "orange"].map(r => `<i style="width:${by(r) / tot * 100}%;background:${RISK[r]}"></i>`).join("");
+  const F = [["all", "All"], ["green", "Comes back by itself"], ["amber", "Costs something"], ["orange", "Your files"]];
+  $("#filters").innerHTML = F.map(([k, t]) => `<button class="chip" aria-pressed="${k === filt}" data-f="${k}">${t}</button>`).join("");
+  $("#filters").onclick = e => { const b = e.target.closest("[data-f]"); if (!b) return; filt = b.dataset.f; $("#filters").querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === b)); flist(); };
+  $("#lens").onclick = e => { const b = e.target.closest("[data-l]"); if (!b) return; lensMode = b.dataset.l; $("#lens").querySelectorAll("button").forEach(c => c.setAttribute("aria-pressed", c === b)); };
+  const cv = $("#advmap");
+  cv.onmousemove = e => {
+    const b = cv.getBoundingClientRect(), x = (e.clientX - b.left) / b.width * cv.width, y = (e.clientY - b.top) / b.height * cv.height;
+    const r = advRects.find(r => !r.frame && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+    const f = r && findOf(r.node), tip = $("#tip");
+    advHover = f ? f.id : null;
+    document.querySelectorAll(".find").forEach(el => el.classList.toggle("hl", el.dataset.id === advHover));
+    if (r) { tip.hidden = false; tip.style.left = (e.clientX - b.left) + "px"; tip.style.top = (e.clientY - b.top) + "px"; tip.textContent = f ? `${f.t} · ${fmt(f.gb * GB)}` : `${r.node.name} · ${fmt(r.node.size * GB)}`; } else tip.hidden = true;
+  };
+  cv.onmouseleave = () => { advHover = null; $("#tip").hidden = true; document.querySelectorAll(".find").forEach(el => el.classList.remove("hl")); };
+  flist();
+  advLoop();
+}
+function count(el, to) { const t0 = performance.now(); (function s(t) { const k = Math.min(1, (t - t0) / 900), e = 1 - Math.pow(1 - k, 3); el.textContent = (to * e).toFixed(0) + " GB"; if (k < 1) requestAnimationFrame(s); })(t0); }
+function flist() {
+  const L = $("#flist");
+  L.innerHTML = ORDER.filter(k => filt === "all" || FIND[k].risk === filt).map(k => {
+    const f = FIND[k];
+    return `<div class="find" data-id="${k}" style="--c:${RISK[f.risk]}">
+      <div class="stripe"></div>
+      <div class="main"><div class="t">${f.t}<span class="pill" style="--c:${RISK[f.risk]}">${RLABEL[f.risk]}</span><span class="src">${f.src}</span></div><div class="p">${f.p}</div></div>
+      <div class="sz">${fmt(f.gb * GB)}${f.of ? `<small>of ${fmt(f.of * GB)}</small>` : f.owner ? `<small>${f.owner}</small>` : ""}</div>
+      ${openF === k ? `<div class="detail"><ul>${f.ev.map(e => `<li>${e}</li>`).join("")}</ul><div class="cmd"><code>${f.cmd.replace(/</g, "&lt;")}</code><button data-copy="${k}">Copy</button></div></div>` : ""}
+    </div>`;
+  }).join("");
+  L.querySelectorAll(".find").forEach(el => {
+    el.onmouseenter = () => advHover = el.dataset.id;
+    el.onmouseleave = () => advHover = null;
+    el.onclick = e => {
+      if (e.target.closest(".detail")) {
+        const c = e.target.closest("[data-copy]");
+        if (c) { const txt = FIND[c.dataset.copy].cmd; navigator.clipboard?.writeText(txt).then(() => c.textContent = "Copied", () => c.textContent = "Select it"); }
+        return;
+      }
+      openF = openF === el.dataset.id ? null : el.dataset.id; flist();
+    };
+  });
+}
+let advT = 0;
+function advLoop() {
+  const cv = $("#advmap"), ctx = cv.getContext("2d");
+  advRects = []; layout(ROOT, 6, 6, cv.width - 12, cv.height - 12, n => n.size, advRects);
+  (function f() {
+    if ($("#v-advisor").hidden) { started.advisor = false; return; }
+    advT += 0.016;
+    ctx.fillStyle = "#0c0f16"; ctx.fillRect(0, 0, cv.width, cv.height);
+    for (const r of advRects) {
+      if (r.frame) { if (r.depth === 0) { ctx.fillStyle = "#151a26"; ctx.fillRect(r.x, r.y, r.w, r.h); ctx.fillStyle = "#aab3c7"; ctx.font = "11px Segoe UI, sans-serif"; ctx.fillText(r.node.name + "\\", r.x + 5, r.y + 12); } continue; }
+      const f = findOf(r.node);
+      let col = hueOf(r.node), a = 1;
+      if (lensMode !== "off") {
+        if (f) { col = lensMode === "risk" ? RISKHEX[f.risk] : "#ffb347"; a = 1; }
+        else { col = "#3a3f4c"; a = 0.55; }
+      }
+      cushion(ctx, r, col, a);
+      if (f && lensMode !== "off") {
+        const on = advHover === f.id, pulse = 0.5 + 0.5 * Math.sin(advT * 4);
+        ctx.strokeStyle = on ? "#fff" : `rgba(255,255,255,${0.15 + 0.25 * pulse})`; ctx.lineWidth = on ? 3 : 1.5;
+        ctx.strokeRect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3);
+        if (r.w > 70 && r.h > 26) { ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(r.x + 4, r.y + r.h - 20, Math.min(r.w - 8, ctx.measureText(f.t).width + 12), 16); ctx.fillStyle = "#fff"; ctx.font = "600 11px Segoe UI, sans-serif"; ctx.fillText(f.t, r.x + 10, r.y + r.h - 8, r.w - 20); }
+      }
+    }
+    requestAnimationFrame(f);
+  })();
+}
+
+/* ------------------------------------------------------------ goal */
+const RANK = { green: 0, amber: 1, orange: 2 };
+let goalAnim = { from: null, to: null, t: 1 }, goalChosen = new Set();
+function choose(target) {
+  // lowest risk first; within a risk, biggest first so the plan stays short
+  const c = ORDER.slice().sort((a, b) => RANK[FIND[a].risk] - RANK[FIND[b].risk] || FIND[b].gb - FIND[a].gb);
+  const pick = []; let sum = 0;
+  for (const k of c) { if (sum >= target) break; pick.push(k); sum += FIND[k].gb; }
+  // drop steps that turned out not to be needed (a later big one may cover earlier small ones)
+  for (let i = pick.length - 2; i >= 0; i--) { const k = pick[i]; if (sum - FIND[k].gb >= target && FIND[k].risk !== "green") { sum -= FIND[k].gb; pick.splice(i, 1); } }
+  return { pick, sum };
+}
+function goalInit() {
+  const s = $("#goal");
+  s.oninput = () => goalUpdate(+s.value);
+  $("#export").onclick = () => { const ps = $("#ps"); ps.hidden = !ps.hidden; $("#export").textContent = ps.hidden ? "Export as PowerShell script" : "Hide script"; };
+  goalUpdate(+s.value);
+  goalLoop();
+}
+function goalUpdate(target) {
+  $("#tg").textContent = target;
+  const { pick, sum } = choose(target);
+  goalChosen = new Set(pick);
+  $("#plan").innerHTML = pick.map((k, i) => { const f = FIND[k]; return `<div class="pstep" style="--c:${RISK[f.risk]}"><span class="k">${i + 1}</span><div><b>${f.t}</b><span>${f.ev[0]}</span></div><span class="v">${fmt(f.gb * GB)}</span></div>`; }).join("");
+  const worst = pick.reduce((m, k) => Math.max(m, RANK[FIND[k].risk]), 0);
+  const v = $("#verdict");
+  if (sum < target) { v.className = "verdict warn"; v.textContent = `Everything found adds up to ${fmt(sum * GB)}. To reach ${target} GB you'd have to look at your own files (Videos is 120 GB).`; }
+  else if (worst === 0) { v.className = "verdict"; v.textContent = `${fmt(sum * GB)} in ${pick.length} steps, all of it things that come back by themselves.`; }
+  else { v.className = "verdict warn"; v.textContent = `${fmt(sum * GB)} in ${pick.length} steps. ${pick.filter(k => FIND[k].risk !== "green").length} of them cost something: read their notes first.`; }
+  $("#after").textContent = `Free after: ${fmt((59 + sum) * GB)} of 929 GB`;
+  goalAnim = { t0: performance.now() };
+  $("#ps").innerHTML = script(pick);
+}
+function script(pick) {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  let o = `<span class="c"># DiskTree plan: free ${pick.reduce((s, k) => s + FIND[k].gb, 0).toFixed(1)} GB on C:  (made ${new Date().toISOString().slice(0, 10)})\n# Run with -WhatIf first to see what would happen without changing anything.</span>\n<span class="k">param</span>([switch]$WhatIf)\n\n`;
+  pick.forEach((k, i) => { const f = FIND[k]; o += `<span class="c"># ${i + 1}. ${esc(f.t)}  (${fmt(f.gb * GB)}, ${RLABEL[f.risk].toLowerCase()})\n#    ${esc(f.ev[0])}</span>\n<span class="k">if</span> ($WhatIf) { Write-Host <span class="s">"would run: ${esc(f.cmd.replace(/"/g, "'"))}"</span> } <span class="k">else</span> { ${esc(f.cmd)} }\n\n`; });
+  o += `<span class="c"># Then rescan in DiskTree (F5): it measures what was actually freed.</span>`;
+  return o;
+}
+function goalLoop() {
+  const cv = $("#goalmap"), ctx = cv.getContext("2d");
+  (function f() {
+    if ($("#v-goal").hidden) { started.goal = false; return; }
+    const k = Math.min(1, (performance.now() - (goalAnim.t0 || 0)) / 900), e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    const weight = n => { let fid = null; for (let m = n; m; m = m.parent) if (m.fid) { fid = m.fid; break; } if (fid && goalChosen.has(fid)) { const f = FIND[fid]; const keep = f.of ? (f.of - f.gb) / f.of : 0; return n.size * (1 - e * (1 - keep)) + 1e-6; } return n.size; };
+    const out = []; layout(ROOT, 6, 6, cv.width - 12, cv.height - 12, weight, out);
+    ctx.fillStyle = "#0c0f16"; ctx.fillRect(0, 0, cv.width, cv.height);
+    for (const r of out) {
+      if (r.frame) { if (r.depth === 0) { ctx.fillStyle = "#151a26"; ctx.fillRect(r.x, r.y, r.w, r.h); } continue; }
+      const f = findOf(r.node), hit = f && goalChosen.has(f.id);
+      cushion(ctx, r, hit ? RISKHEX[f.risk] : "#4a5266", hit ? 1 : 0.75);
+    }
+    requestAnimationFrame(f);
+  })();
+}
+
+/* ------------------------------------------------------------ chat */
+const ASKS = [
+  { q: "What is the 61 GB in AppData\\Local\\Docker?", tools: ["list_children(C:\\Users\\sam\\AppData\\Local\\Docker)", "owner_of(…\\docker_data.vhdx)", "read_manifest(…\\Docker\\settings.json)"],
+    a: [`<p>It's Docker Desktop's virtual disk, <b>docker_data.vhdx</b>. All your images, containers and volumes live inside it.</p>`, `<p>The file is 61 GB, but Docker reports 38 GB of data in it. Disk images grow but never shrink by themselves, so <b>23 GB is empty space</b> you can get back without losing anything.</p>`, `<div class="mini" style="--c:var(--amber)"><i></i><span>Compact Docker Desktop disk image</span><b>23 GB</b></div><p style="margin-top:6px">I added it to your findings with the command. Docker has to be closed while it runs.</p>`] },
+  { q: "What grew since last week?", tools: ["diff_since(7 days)", "largest(new, 5)", "owner_of(C:\\Users\\sam\\source\\repos\\vision\\checkpoints)"],
+    a: [`<p>C: grew by <b>+31.4 GB</b> since last Monday's scan. Almost all of it is in one place:</p>`, `<div class="mini" style="--c:var(--grew)"><i></i><span>source\\repos\\vision\\checkpoints</span><b>+24.0 GB</b></div><div class="mini" style="--c:var(--grew)"><i></i><span>AppData\\Local\\Temp</span><b>+5.1 GB</b></div><div class="mini" style="--c:var(--new)"><i></i><span>Downloads\\Hollow Pines DLC</span><b>+2.3 GB</b></div>`, `<p style="margin-top:6px">The checkpoints are 60 model files of 400 MB from a training run that ended Thursday. If you only need the final one, the other 59 are 23.6 GB. Want me to open the History panel at last week?</p>`] },
+  { q: "Is NVIDIA\\DXCache safe to delete?", consent: "NVIDIA DXCache folder safe to delete",
+    tools: ["web_lookup(\"NVIDIA DXCache folder safe to delete\")"],
+    a: [`<p>Yes. It holds compiled shaders. The driver rebuilds them when a game needs them, so the first launch of each game may stutter for a minute.</p>`, `<p>Source: NVIDIA's own support article on the shader cache. It's 4.2 GB on your PC.</p>`] },
+  { q: "Find 50 GB I won't miss", tools: ["largest(findings)", "app_last_used(Steam)", "diff_since(30 days)"],
+    a: [`<p>Here's a plan for <b>51.7 GB</b> where everything comes back by itself:</p>`, `<div class="mini" style="--c:var(--green)"><i></i><span>Temporary files</span><b>38.2 GB</b></div><div class="mini" style="--c:var(--green)"><i></i><span>Rust build output in 7 idle projects</span><b>26.1 GB</b></div>`, `<p style="margin-top:6px">That's actually 64.3 GB. If you'd rather keep your build caches, swap the Rust step for <b>node_modules in idle projects</b> (18.4 GB). Open it in Free up space to export the script.</p>`] },
+];
+function chatInit() {
+  const box = $("#asks");
+  ASKS.forEach((a, i) => { const b = document.createElement("button"); b.className = "ask"; b.textContent = a.q; b.onclick = () => run(i, b); box.appendChild(b); });
+  const send = () => { const v = $("#say").value.trim(); if (!v) return; $("#say").value = ""; bubble("me", v); const t = typing(); setTimeout(() => { t.remove(); bubble("ai", `<p>In the app this goes to the model with your scan's tools. For the mockup, try one of the questions on the right.</p>`); }, 900); };
+  $("#send").onclick = send; $("#say").onkeydown = e => { if (e.key === "Enter") send(); };
+  bubble("ai", `<p>Hi sam. I've read the scan of C: (3.3 million files). Ask me about anything on the map.</p>`);
+}
+function bubble(who, html) { const d = document.createElement("div"); d.className = "msg " + who; d.innerHTML = html; $("#convo").appendChild(d); $("#convo").scrollTop = 1e9; return d; }
+function typing() { return bubble("ai", `<span class="typing"><i></i><i></i><i></i></span>`); }
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function run(i, btn) {
+  const A = ASKS[i];
+  document.querySelectorAll(".ask").forEach(b => b.disabled = true);
+  bubble("me", A.q.replace(/</g, "&lt;"));
+  if (A.consent) {
+    const c = bubble("ai", `<div class="consent">The model wants to search the web for:<code>${A.consent}</code><div class="row"><button class="btn primary" data-a="once">Allow once</button><button class="btn" data-a="session">Allow for this session</button><button class="btn ghost" data-a="no">Don't search</button></div></div>`);
+    const choice = await new Promise(r => c.querySelectorAll("[data-a]").forEach(b => b.onclick = () => r(b.dataset.a)));
+    c.innerHTML = choice === "no" ? `<p>Not searched. Answering from what I know.</p>` : `<p style="color:var(--mute);font-size:12.5px">Web search allowed ${choice === "once" ? "once" : "for this session"}.</p>`;
+  }
+  const holder = bubble("ai", `<div class="tools"></div>`);
+  for (const t of A.tools) { await wait(500); const s = document.createElement("span"); s.className = "tool"; s.textContent = t; holder.firstChild.appendChild(s); await wait(350); s.classList.add("ok"); $("#convo").scrollTop = 1e9; }
+  const ty = typing(); await wait(700); ty.remove();
+  const ans = bubble("ai", "");
+  for (const part of A.a) { ans.insertAdjacentHTML("beforeend", part); $("#convo").scrollTop = 1e9; await wait(450); }
+  document.querySelectorAll(".ask").forEach(b => b.disabled = false);
+}
+
+/* ------------------------------------------------------------ log */
+const LOG = [
+  ["21:42:07", "Claude Code", "claude-opus-5-5", "Report + 3 tools", 18420, 1960, 214, "report"],
+  ["21:42:19", "Claude Code", "claude-opus-5-5", "list_children", 2210, 340, 61, "tool"],
+  ["21:43:02", "Claude Code", "claude-opus-5-5", "Ask: 61 GB in Docker", 21980, 610, 9, "ask"],
+  ["21:44:30", "Web search", "—", "NVIDIA DXCache folder safe to delete", 0, 0, 0, "web"],
+];
+function logInit() {
+  $("#logt").innerHTML = `<thead><tr><th>Time</th><th>Sent to</th><th>Model</th><th>What</th><th style="text-align:right">Tokens in</th><th style="text-align:right">Out</th><th style="text-align:right">Paths sent</th></tr></thead><tbody>` +
+    LOG.map((r, i) => `<tr class="r" data-i="${i}"><td>${r[0]}</td><td><span class="badge">${r[1]}</span></td><td>${r[2]}</td><td>${r[3]}</td><td style="text-align:right">${r[4].toLocaleString("en")}</td><td style="text-align:right">${r[5].toLocaleString("en")}</td><td style="text-align:right">${r[6]}</td></tr>`).join("") + `</tbody>`;
+  $("#logt").onclick = e => { const tr = e.target.closest("tr.r"); if (tr) show(+tr.dataset.i); };
+  show(0);
+}
+function show(i) {
+  const k = LOG[i][7];
+  const bodies = {
+    report: `{\n  "model": "claude-opus-5-5",\n  "system": "You are DiskTree's advisor. Advise only. Cite paths exactly...",\n  "tools": ["list_children", "largest", "by_type", "owner_of", "app_last_used", "diff_since", "read_manifest", "report_finding"],\n  "messages": [{ "role": "user", "content": "Scan of C: (NTFS, 929 GB, 59 GB free)\\n\\nTop folders:\\n  C:\\\\Users\\\\sam  412.6 GB\\n  C:\\\\Games\\\\Steam  210.0 GB\\n  C:\\\\Program Files  140.0 GB\\n  ...\\nRule findings already made (13):\\n  win.user-temp  C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Temp  38.2 GB\\n  ...\\nUnexplained over 5 GB:\\n  C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Docker\\\\wsl  61.0 GB\\n  ..." }]\n}`,
+    tool: `{\n  "type": "tool_result",\n  "tool_use_id": "toolu_01",\n  "content": "C:\\\\Users\\\\sam\\\\AppData\\\\Local\\\\Docker\\\\wsl\\n  disk\\\\docker_data.vhdx  61.0 GB  modified today\\n  main\\\\ext4.vhdx  0.3 GB"\n}`,
+    ask: `{\n  "role": "user",\n  "content": "What is the 61 GB in AppData\\\\Local\\\\Docker?"\n}`,
+    web: `Query sent to the search provider, nothing else:\n  "NVIDIA DXCache folder safe to delete"\nAllowed once by you at 21:44:28.`,
+  };
+  $("#logbody").textContent = bodies[k];
+  document.querySelectorAll("#logt tr.r").forEach(tr => tr.style.background = +tr.dataset.i === i ? "rgba(58,111,224,.12)" : "");
+}
+
+route();
+})();
+</script>

@@ -33,6 +33,10 @@ pub enum Mode {
 
 /// Folder depth (below the treemap root) that becomes a building in the city view.
 pub const CITY_DEPTH: u8 = 3;
+/// A folder whose block is narrower than this (DIPs) becomes a single building.
+const CITY_MIN_BLOCK: f64 = 80.0;
+/// Items whose lot is narrower than this (DIPs) are left out of the city.
+const CITY_MIN_LOT: f64 = 10.0;
 
 #[derive(Clone, Copy)]
 struct Anim {
@@ -159,13 +163,7 @@ impl Scene {
             a.present = false;
         }
         let (w, h) = (self.w, self.h);
-        // The city is laid out on a square of the same area, so it stays large as it turns.
-        let start = if self.mode == Mode::City {
-            let side = (w * h).sqrt() as f64;
-            Rect::new((w as f64 - side) / 2.0, (h as f64 - side) / 2.0, side, side)
-        } else {
-            Rect::new(0.0, 0.0, w as f64, h as f64)
-        };
+        let start = Rect::new(0.0, 0.0, w as f64, h as f64);
         let mut stack: Vec<(usize, Rect, u8)> = vec![(root, start, 0)];
         let mut count = 0usize;
         while let Some((n, r, d)) = stack.pop() {
@@ -177,7 +175,9 @@ impl Scene {
             let mut label = false;
             let (mut ix, mut iy, mut iw, mut ih) = (r.x, r.y, r.w, r.h);
             if node.is_dir && d > 0 {
-                let pad = if r.w > 10.0 && r.h > 10.0 { 1.6 } else { 0.0 };
+                // the city gets wide streets between districts and blocks
+                let street = if self.mode == Mode::City { if d == 1 { 7.0 } else { 3.5 } } else { 1.6 };
+                let pad = if r.w > street * 6.0 && r.h > street * 6.0 { street } else if r.w > 10.0 && r.h > 10.0 { 1.6 } else { 0.0 };
                 ix += pad;
                 iy += pad;
                 iw -= pad * 2.0;
@@ -188,7 +188,9 @@ impl Scene {
                     ih -= HEADER as f64;
                 }
             }
-            let building = self.mode == Mode::City && node.is_dir && d >= CITY_DEPTH;
+            // In the city a folder becomes one building three levels down, or sooner when its block
+            // is too small to hold readable buildings of its own.
+            let building = self.mode == Mode::City && node.is_dir && d > 0 && (d >= CITY_DEPTH || r.w.min(r.h) < CITY_MIN_BLOCK);
             self.place(n, node.parent.unwrap_or(n), node.is_dir && !building, d, label, r, info);
             if building || !node.is_dir || iw <= 0.0 || ih <= 0.0 {
                 continue;
@@ -208,7 +210,9 @@ impl Scene {
                     self.place(FREE, n, false, 1, false, cr, info);
                     continue;
                 }
-                if cr.w >= 0.7 && cr.h >= 0.7 {
+                // the city leaves tiny lots empty instead of filling them with needles
+                let min = if self.mode == Mode::City { CITY_MIN_LOT } else { 0.7 };
+                if cr.w >= min && cr.h >= min {
                     stack.push((c, cr, d.saturating_add(1)));
                 }
             }
@@ -316,13 +320,16 @@ impl Scene {
         self.tilt += (tt - self.tilt) * k;
         self.yaw += (ty - self.yaw) * k;
         let (w, h) = (self.w.max(1.0), self.h.max(1.0));
-        let p = perspective(30f32.to_radians(), w / h, 10.0, 40_000.0);
         let city = self.mode == Mode::City;
         if city && self.animate {
             self.orbit += dt * 0.07;
         }
-        let (oy, ot) = (self.orbit + self.drag_yaw + self.yaw * 2.0, (1.02 + self.drag_tilt).clamp(0.35, 1.3));
+        // The city sways gently instead of turning all the way, so it can fill the panel.
+        let (oy, ot) = (0.4 * self.orbit.sin() + self.drag_yaw + self.yaw * 2.0, (1.02 + self.drag_tilt).clamp(0.35, 1.3));
+        // Near and far planes follow the camera distance, so the depth buffer keeps its precision
+        // for the thin gaps between tile tops.
         let make = |d: f32| {
+            let p = perspective(30f32.to_radians(), w / h, d * 0.15, d * 8.0);
             if city {
                 // orbit around the middle of the map, looking a little above the floor
                 let e = [d * ot.sin() * oy.sin(), -d * ot.sin() * oy.cos(), d * ot.cos()];
@@ -340,12 +347,10 @@ impl Scene {
             let d = (lo + hi) / 2.0;
             let (m, _) = make(d);
             let ok = if city {
-                // the whole turning city stays in view: test its bounding circle
-                let r = (w * h).sqrt() * 0.68;
-                (0..16).all(|k| {
-                    let a = k as f32 / 16.0 * std::f32::consts::TAU;
-                    let q = xform(&m, [r * a.cos(), r * a.sin(), 0.0, 1.0]);
-                    (q[0] / q[3]).abs() <= 0.97 && (q[1] / q[3]).abs() <= ylim
+                // the city's corners stay in view at its current angle
+                [[-w / 2., -h / 2.], [w / 2., -h / 2.], [w / 2., h / 2.], [-w / 2., h / 2.]].iter().all(|c| {
+                    let q = xform(&m, [c[0], c[1], 0.0, 1.0]);
+                    q[3] > 0.0 && (q[0] / q[3]).abs() <= 0.97 && (q[1] / q[3]).abs() <= ylim
                 })
             } else {
                 [[-w / 2., -h / 2.], [w / 2., -h / 2.], [w / 2., h / 2.], [-w / 2., h / 2.]].iter().all(|c| {
@@ -577,7 +582,7 @@ impl Scene {
 
             let city = self.mode == Mode::City && !a.is_dir;
             let gap = if city && a.w > 6.0 && a.h > 6.0 {
-                1.6
+                (a.w.min(a.h) * 0.12).clamp(1.6, 5.0)
             } else if !a.is_dir && a.w > 3.0 && a.h > 3.0 {
                 0.45
             } else {
@@ -598,6 +603,9 @@ impl Scene {
             } else {
                 3.2 + ((a.w * a.h).sqrt() * 0.03).min(4.0)
             };
+            // A tiny height step per tile, so tiles that overlap while they glide to a new layout
+            // never share a plane (no z-fighting); at most about 1.5 DIPs.
+            let base_h = if city { base_h } else { base_h + (a.node.wrapping_mul(2_654_435_761) >> 25) as f32 * 0.012 };
             self.instances.push(Instance {
                 rect: [a.x + gap, a.y + gap, (a.w - gap * 2.0).max(0.0), (a.h - gap * 2.0).max(0.0)],
                 parent: if city { a.info.extra } else { pr },
@@ -683,7 +691,7 @@ pub(crate) fn xform(m: &[f32; 16], p: [f32; 4]) -> [f32; 4] {
     }
     o
 }
-fn invert(m: &[f32; 16]) -> Option<[f32; 16]> {
+pub(crate) fn invert(m: &[f32; 16]) -> Option<[f32; 16]> {
     // Gauss-Jordan on a row-major copy.
     let mut a = [[0f64; 8]; 4];
     for r in 0..4 {

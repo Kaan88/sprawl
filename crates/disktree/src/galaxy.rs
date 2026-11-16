@@ -60,6 +60,12 @@ pub struct Galaxy {
     drag_yaw: f32,
     drag_tilt: f32,
     time: f32,
+    /// Wheel zoom: current and target magnification (1 = whole galaxy), and the point on the
+    /// disc the camera looks at (current and target).
+    zoom: f32,
+    zoom_t: f32,
+    focus: [f32; 2],
+    focus_t: [f32; 2],
 }
 
 impl Default for Galaxy {
@@ -81,6 +87,10 @@ impl Default for Galaxy {
             drag_yaw: 0.0,
             drag_tilt: 0.0,
             time: 0.0,
+            zoom: 1.0,
+            zoom_t: 1.0,
+            focus: [0.0; 2],
+            focus_t: [0.0; 2],
         }
     }
 }
@@ -272,7 +282,45 @@ impl Galaxy {
         self.drag_tilt = (self.drag_tilt - dy * 0.004).clamp(-0.9, 0.4);
     }
 
-    fn camera(&mut self, dt: f32) {
+    /// Wheel zoom toward the point under the cursor (screen DIPs). Zooming all the way out
+    /// centres the galaxy again.
+    pub fn zoom(&mut self, x: f32, y: f32, delta: i32) {
+        let step = 1.25f32.powf(delta as f32 / 120.0);
+        let old = self.zoom_t;
+        self.zoom_t = (old * step).clamp(1.0, 14.0);
+        if self.zoom_t <= 1.0001 {
+            self.focus_t = [0.0; 2];
+            return;
+        }
+        if let Some(p) = self.on_disc(x, y) {
+            // move the focus toward the point under the cursor, so it stays roughly in place
+            let k = 1.0 - old / self.zoom_t;
+            for i in 0..2 {
+                self.focus_t[i] += (p[i] - self.focus_t[i]) * k;
+            }
+            let r = self.focus_t[0].hypot(self.focus_t[1]).max(1e-3);
+            if r > R {
+                self.focus_t = [self.focus_t[0] / r * R, self.focus_t[1] / r * R];
+            }
+        }
+    }
+
+    /// Where a screen point meets the galaxy's plane (z = 0).
+    fn on_disc(&self, x: f32, y: f32) -> Option<[f32; 2]> {
+        let inv = crate::scene::invert(&self.vp)?;
+        let (nx, ny) = (x / self.w.max(1.0) * 2.0 - 1.0, 1.0 - y / self.h.max(1.0) * 2.0);
+        let a = xform(&inv, [nx, ny, 0.0, 1.0]);
+        let b = xform(&inv, [nx, ny, 1.0, 1.0]);
+        let (a, b) = ([a[0] / a[3], a[1] / a[3], a[2] / a[3]], [b[0] / b[3], b[1] / b[3], b[2] / b[3]]);
+        let dz = b[2] - a[2];
+        if dz.abs() < 1e-6 {
+            return None;
+        }
+        let t = -a[2] / dz;
+        (t > 0.0).then(|| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+    }
+
+    fn camera(&mut self, dt: f32) -> bool {
         if self.animate {
             self.spin += dt * 0.035;
         }
@@ -299,20 +347,31 @@ impl Galaxy {
                 lo = d;
             }
         }
-        let (m, e) = make(hi);
+        // wheel zoom: glide toward the target magnification and focus
+        let kz = if self.animate { 1.0 - (-dt * 8.0).exp() } else { 1.0 };
+        self.zoom += (self.zoom_t - self.zoom) * kz;
+        for i in 0..2 {
+            self.focus[i] += (self.focus_t[i] - self.focus[i]) * kz;
+        }
+        let gliding = (self.zoom_t - self.zoom).abs() > 1e-3 || (self.focus_t[0] - self.focus[0]).abs() + (self.focus_t[1] - self.focus[1]).abs() > 0.05;
+        let (_, e0) = make(hi / self.zoom);
+        let c = [self.focus[0], self.focus[1], 0.0];
+        let e = [e0[0] + c[0], e0[1] + c[1], e0[2]];
+        let m = mul(&p, &look_at(e, c, [0.0, 0.0, 1.0]));
         self.vp = m;
         self.eye = e;
         let f = norm([-e[0], -e[1], -e[2]]);
         self.right = norm(cross(f, [0.0, 0.0, 1.0]));
         self.up = cross(self.right, f);
+        gliding
     }
 
     /// Advance springs, orbits and the camera, and rebuild the instances. True while anything moves.
     pub fn update(&mut self, dt: f32) -> bool {
         self.time += dt;
-        self.camera(dt);
+        let gliding = self.camera(dt);
         let k = if self.animate { 1.0 - (-dt * 5.0).exp() } else { 1.0 };
-        let mut moving = self.animate;
+        let mut moving = self.animate || gliding;
         // stars and dust glide to their targets
         for b in &mut self.bodies {
             if b.kind == Kind::Planet {

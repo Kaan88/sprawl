@@ -64,7 +64,7 @@ float4 ps(PSIn i) : SV_Target {
         float glow = i.fx.z;
         if (!top) {
             float face = abs(i.n.x) > 0.5 ? i.w.y : i.w.x;
-            float2 cell = float2(face / 7.0, abs(i.w.z) / 8.0);
+            float2 cell = float2(face / 9.5, abs(i.w.z) / 10.5);
             float2 id = floor(cell); float2 f = frac(cell);
             float win = step(0.22, f.x) * step(f.x, 0.78) * step(0.25, f.y) * step(f.y, 0.75);
             float h1 = frac(sin(dot(id + i.ex.x * 57.0 + (abs(i.n.x) > 0.5 ? 3.1 : 0.0), float2(12.9898, 78.233))) * 43758.5453);
