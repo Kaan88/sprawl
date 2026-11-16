@@ -89,6 +89,10 @@ pub(crate) struct State {
     /// The unfiltered scan while a filter is on.
     pub(crate) full_tree: Option<Arc<Tree>>,
     pub(crate) advisor: crate::advisor::Advisor,
+    /// Changes whenever the tree on screen is replaced or loses nodes, so work done for an
+    /// earlier tree (the advisor's report) is never applied to this one. Sorting doesn't change
+    /// node numbers and keeps it.
+    pub(crate) tree_gen: u64,
     pub(crate) filter: String,
     pub(crate) filter_text: String,
     pub(crate) filter_pending: Option<Instant>,
@@ -325,6 +329,7 @@ impl State {
         // Allocated size: each file rounded up to a 4 KB cluster, folders add up their contents.
         self.alloc = tree.nodes.iter().map(|n| n.allocated).collect();
         self.tree = Some(tree);
+        self.tree_gen += 1;
         self.expanded = HashSet::from([ROOT]);
         self.selected = Some(ROOT);
         self.map_root = ROOT;

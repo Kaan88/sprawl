@@ -328,11 +328,15 @@ pub fn ps_quote(s: &str) -> String {
     out
 }
 
-/// PowerShell function that deletes one item: a junction or symbolic link is removed itself,
-/// never followed (even one made after the scan); a folder is emptied the same way first.
+/// PowerShell functions every delete command starts with, tested in Windows PowerShell 5.1:
+/// - `sprawl-rm item`: a junction or symbolic link is removed itself, never followed (even one
+///   made after the scan); a folder is emptied the same way first; a read-only file goes too.
+///   A name ending in a dot or space is skipped: Windows would act on its namesake without one.
+/// - `sprawl-clear path days`: what is inside `path`, leaving anything (a folder by its newest
+///   file) changed within `days`; nothing at all if `path` itself is now a link.
 /// `Remove-Item -Recurse` and .NET Framework's `Directory.Delete(path, true)` can't be trusted
-/// with links in Windows PowerShell 5.1. Built-in rules repeat it word for word (tested).
-pub const RM_FN: &str = "function sprawl-rm($i) { if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { Remove-Item -LiteralPath $i.FullName -Force } }";
+/// with links in 5.1. Built-in rules repeat this word for word (tested).
+pub const RM_FN: &str = "function sprawl-rm($i) { if (-not $i) { return }; if ($i.Name -match '[. ]$') { Write-Warning ('Skipped, odd name: ' + $i.FullName); return }; if ($i.Attributes -band 1024) { if ($i.PSIsContainer) { [IO.Directory]::Delete($i.FullName) } else { $i.Delete() } } elseif ($i.PSIsContainer) { Get-ChildItem -LiteralPath $i.FullName -Force | ForEach-Object { sprawl-rm $_ }; [IO.Directory]::Delete($i.FullName) } else { $i.IsReadOnly = $false; $i.Delete() } }; function sprawl-new($i, $cut) { $i.LastWriteTime -gt $cut -or ($i.PSIsContainer -and -not ($i.Attributes -band 1024) -and $null -ne (Get-ChildItem -LiteralPath $i.FullName -Recurse -Force -ErrorAction SilentlyContinue | Where-Object LastWriteTime -gt $cut | Select-Object -First 1)) }; function sprawl-clear($p, $days) { $d = Get-Item -LiteralPath $p -Force; if (-not $d -or ($d.Attributes -band 1024)) { Write-Warning ('Not a plain folder: ' + $p); return }; $cut = (Get-Date).AddDays(-$days); Get-ChildItem -LiteralPath $d.FullName -Force | Where-Object { -not (sprawl-new $_ $cut) } | ForEach-Object { sprawl-rm $_ } }";
 
 fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     let path: PathBuf = tree.path_of(n);
@@ -340,9 +344,9 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     let command = match (&rule.command, rule.remedy) {
         (Some(c), _) => Some(c.replace("{path}", &quoted)),
         (None, Remedy::Delete) => Some(if tree.nodes[n].is_dir {
-            format!("{RM_FN}; Get-ChildItem -LiteralPath {quoted} -Force | ForEach-Object {{ sprawl-rm $_ }}")
+            format!("{RM_FN}; sprawl-clear {quoted} 0")
         } else {
-            format!("Remove-Item -LiteralPath {quoted} -Force")
+            format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath {quoted} -Force)")
         }),
         _ => None,
     };

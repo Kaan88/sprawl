@@ -30,8 +30,8 @@ pub(crate) enum Lens {
 }
 
 pub(crate) struct Report {
-    /// The tree this was made from (`Arc::as_ptr`); stale once the app holds another.
-    tree: usize,
+    /// `State::tree_gen` of the tree this was made from; stale once that changes.
+    tree: u64,
     pub(crate) findings: Vec<Finding>,
     /// The node of each finding.
     nodes: Vec<Option<usize>>,
@@ -49,8 +49,9 @@ pub(crate) struct Report {
 
 enum Msg {
     Report(Box<Report>),
-    Hidden(usize, Option<HiddenSpace>),
-    InUse(usize, InUse),
+    Hidden(u64, Option<HiddenSpace>),
+    /// (tree generation, finding, answer)
+    InUse(u64, usize, InUse),
 }
 
 /// The in-use check of an opened finding.
@@ -116,7 +117,7 @@ fn remedy_label(r: Remedy) -> &'static str {
 }
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
-fn analyse(tree: &Arc<Tree>) -> Report {
+fn analyse(tree: &Arc<Tree>, gen: u64) -> Report {
     let started = std::time::Instant::now();
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
@@ -138,7 +139,7 @@ fn analyse(tree: &Arc<Tree>) -> Report {
         }
     }
     Report {
-        tree: Arc::as_ptr(tree) as usize,
+        tree: gen,
         nodes,
         counted,
         held: held.into_iter().map(|(f, why)| (f, why.to_string())).collect(),
@@ -154,12 +155,17 @@ fn analyse(tree: &Arc<Tree>) -> Report {
 impl State {
     /// The report for the tree on screen, if it is current.
     pub(crate) fn advice(&self) -> Option<&Report> {
-        let t = self.tree.as_ref()?;
-        self.advisor.report.as_ref().filter(|r| r.tree == Arc::as_ptr(t) as usize)
+        self.tree.as_ref()?;
+        self.advisor.report.as_ref().filter(|r| r.tree == self.tree_gen)
     }
 
     /// Analyse the tree in the background (after a scan, a delete, or on Refresh).
     pub(crate) fn advisor_start(&mut self) {
+        // whatever was shown is for an earlier tree, and earlier jobs' answers are dropped
+        self.advisor.report = None;
+        self.advisor.rx = None;
+        self.advisor.tx = None;
+        self.advisor.running = false;
         self.advisor.open = None;
         self.advisor.in_use = None;
         self.advisor.note = None;
@@ -179,28 +185,25 @@ impl State {
         self.advisor.rx = Some(rx);
         self.advisor.tx = Some(tx.clone());
         self.advisor.running = true;
+        let gen = self.tree_gen;
         std::thread::spawn(move || {
-            let r = analyse(&t);
-            let key = r.tree;
+            let r = analyse(&t, gen);
+            let (root, allocated, errors) = (t.path_of(sprawl_core::ROOT), t.nodes[sprawl_core::ROOT].allocated, t.errors);
+            // let go of the tree before the slow part, so the app can change it without a copy
+            drop(t);
             if tx.send(Msg::Report(Box::new(r))).is_err() {
                 return;
             }
-            // slow (starts PowerShell), so it follows on its own
-            let root = t.path_of(sprawl_core::ROOT);
+            // starts PowerShell, so it follows on its own
             let shadow = sprawl_advisor::hidden::shadow_storage(&root);
-            let _ = tx.send(Msg::Hidden(key, sprawl_advisor::hidden::account(&t, shadow)));
+            let _ = tx.send(Msg::Hidden(gen, sprawl_advisor::hidden::account_parts(&root, allocated, errors, shadow)));
         });
         self.advisor_changed();
     }
 
-    /// After the tree on screen changed without a new scan (a filter on or off): reuse the
-    /// report if it is for this tree, otherwise work it out again.
+    /// After the tree on screen changed without a new scan (a filter on or off).
     pub(crate) fn advisor_refresh(&mut self) {
-        if self.advice().is_some() {
-            self.advisor_changed();
-        } else {
-            self.advisor_start();
-        }
+        self.advisor_start();
     }
 
     /// Called every frame: pick up finished work.
@@ -212,14 +215,16 @@ impl State {
                 Msg::Report(r) => {
                     self.advisor.report = Some(*r);
                     self.advisor.running = false;
+                    self.advisor.open = None;
+                    self.advisor.in_use = None;
                 }
                 Msg::Hidden(key, h) => {
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
                         r.hidden = h;
                     }
                 }
-                Msg::InUse(i, answer) => {
-                    if self.advisor.in_use.as_ref().is_some_and(|(j, _)| *j == i) {
+                Msg::InUse(gen, i, answer) => {
+                    if gen == self.tree_gen && self.advisor.in_use.as_ref().is_some_and(|(j, _)| *j == i) {
                         self.advisor.in_use = Some((i, answer));
                     }
                 }
@@ -295,8 +300,9 @@ impl State {
             let removes = self.advice().is_some_and(|r| matches!(r.findings[i].remedy, Remedy::Delete | Remedy::Command));
             if let (true, Some(t), Some(tx)) = (removes, self.tree.clone(), self.advisor.tx.clone()) {
                 self.advisor.in_use = Some((i, InUse::Checking));
+                let gen = self.tree_gen;
                 std::thread::spawn(move || {
-                    let _ = tx.send(Msg::InUse(i, InUse::Done(sprawl_advisor::inuse::in_use_under(&t, n))));
+                    let _ = tx.send(Msg::InUse(gen, i, InUse::Done(sprawl_advisor::inuse::in_use_under(&t, n))));
                 });
             }
         }
@@ -337,11 +343,16 @@ impl State {
         let mut x = format!(r##"<StackPanel {} Spacing="10" Padding="18,16,18,18">"##, ui::NS);
         let Some(r) = self.advice() else {
             let msg = if self.advisor.running { "Looking for space to win back..." } else { self.advisor.note.unwrap_or("Scan a drive or folder, and the advisor shows what can be won back.") };
-            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/></StackPanel>"##, ui::esc(msg));
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/>"##, ui::esc(msg));
+            if !self.advisor.running && self.tree.is_some() {
+                x += r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again"/>"##;
+            }
+            x += "</StackPanel>";
             return x;
         };
         let sum = |pred: &dyn Fn(&Finding) -> bool| -> u64 { r.findings.iter().zip(&r.counted).filter(|(f, c)| **c && pred(f)).map(|(f, _)| f.bytes).sum() };
-        let actionable = |f: &Finding| f.remedy != Remedy::Info;
+        // what deleting or a command wins back; uninstalling is the user's call, shown below
+        let actionable = |f: &Finding| matches!(f.remedy, Remedy::Delete | Remedy::Command);
         let total = sum(&|f| actionable(f));
         let green = sum(&|f| actionable(f) && f.risk == Risk::Green);
         let amber = sum(&|f| actionable(f) && f.risk == Risk::Amber);

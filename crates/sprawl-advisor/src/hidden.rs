@@ -33,15 +33,19 @@ pub struct HiddenSpace {
 /// root). `shadow_bytes` is what [`shadow_storage`] returned, passed in so callers can run that
 /// slow query off the UI thread.
 pub fn account(tree: &Tree, shadow_bytes: Option<u64>) -> Option<HiddenSpace> {
-    let root = tree.path_of(ROOT);
+    account_parts(&tree.path_of(ROOT), tree.nodes[ROOT].allocated, tree.errors, shadow_bytes)
+}
+
+/// [`account`] from just what it needs of the tree: its root, the space it accounted for and
+/// how many folders couldn't be read.
+pub fn account_parts(root: &Path, scanned: u64, errors: u64, shadow_bytes: Option<u64>) -> Option<HiddenSpace> {
     let s = root.to_string_lossy();
     let b = s.as_bytes();
     if !(b.len() <= 3 && b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
         return None;
     }
-    let (total, free) = disk_space(&root)?;
+    let (total, free) = disk_space(root)?;
     let used = total.saturating_sub(free);
-    let scanned = tree.nodes[ROOT].allocated;
     let gap = used as i64 - scanned as i64;
     let mut parts = Vec::new();
     parts.push(Part {
@@ -52,11 +56,11 @@ pub fn account(tree: &Tree, shadow_bytes: Option<u64>) -> Option<HiddenSpace> {
             None => "Old versions of files kept by System Restore and backups. Their size can only be read as administrator.".into(),
         },
     });
-    if tree.errors > 0 {
+    if errors > 0 {
         parts.push(Part {
             label: "Folders Sprawl couldn't open",
             bytes: None,
-            note: format!("{} folders refused access; their contents aren't in the map. Restart as administrator to see inside them.", tree.errors),
+            note: format!("{errors} folders refused access; their contents aren't in the map. Restart as administrator to see inside them."),
         });
     }
     if gap > 0 {

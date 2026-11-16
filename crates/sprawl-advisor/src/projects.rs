@@ -56,7 +56,8 @@ impl Kind {
                 (".angular", "the next build", Risk::Green),
             ],
             Kind::DotNet => &[("bin", "the next build", Risk::Green), ("obj", "the next build", Risk::Green)],
-            Kind::Gradle => &[("build", "the next Gradle build", Risk::Green), (".gradle", "the next Gradle build", Risk::Green)],
+            // release builds (signed APKs, mapping files) can live in build
+            Kind::Gradle => &[("build", "the next Gradle build", Risk::Amber), (".gradle", "the next Gradle build", Risk::Green)],
             Kind::Maven => &[("target", "the next Maven build", Risk::Green)],
             Kind::Python => &[
                 (".venv", "recreating the virtual environment and reinstalling its packages", Risk::Amber),
@@ -64,7 +65,8 @@ impl Kind {
                 (".mypy_cache", "the next mypy run", Risk::Green),
                 (".pytest_cache", "the next pytest run", Risk::Green),
             ],
-            Kind::CMake => &[("build", "running CMake and building again", Risk::Green)],
+            // its cache keeps the options it was configured with, and _deps downloads
+            Kind::CMake => &[("build", "running CMake with the same options and building again", Risk::Amber)],
             Kind::Go | Kind::Git => &[],
         }
     }
@@ -274,15 +276,18 @@ fn last_change(tree: &Tree, n: usize, outputs: &[usize]) -> Option<SystemTime> {
 }
 
 /// Build outputs of projects unchanged for `days`, each at least `min_bytes`.
-pub fn build_outputs(tree: &Tree, projects: &[Project], days: u64, min_bytes: u64) -> Vec<Finding> {
+/// `facts` says which folders belong to installed apps (an app shipped with its `node_modules`
+/// is not a project) and when programs in the outputs last ran.
+pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Facts, days: u64, min_bytes: u64) -> Vec<Finding> {
     let now = SystemTime::now();
     let mut out = Vec::new();
     for p in projects {
-        if p.outputs.is_empty() {
+        if p.outputs.is_empty() || facts.owner_of(&tree.path_of(p.node)).is_some() {
             continue;
         }
-        // an unknown date is not "old"
-        let Some(last) = p.last_change else { continue };
+        // a tool run from target\release keeps its project in use; an unknown date is not "old"
+        let ran = p.outputs.iter().filter_map(|&(o, _, _)| facts.last_run_in(tree, o)).max();
+        let Some(last) = p.last_change.max(ran).filter(|_| p.last_change.is_some()) else { continue };
         let Ok(age) = now.duration_since(last) else { continue };
         if age.as_secs() < days.saturating_mul(86_400) {
             continue;
@@ -377,8 +382,9 @@ mod tests {
         assert!(outs.contains(&"target") && outs.contains(&"node_modules"));
         assert!(p.last_change.is_some());
         // just written, so not old enough to suggest
-        assert!(build_outputs(&tree, &ps, 30, 0).is_empty());
-        let f = build_outputs(&tree, &ps, 0, 1000);
+        let facts = crate::facts::Facts::from_apps(Vec::new());
+        assert!(build_outputs(&tree, &ps, &facts, 30, 0).is_empty());
+        let f = build_outputs(&tree, &ps, &facts, 0, 1000);
         assert_eq!(f.len(), 1, "only target is over 1000 bytes");
         assert!(f[0].command.as_deref().unwrap().contains("; sprawl-rm (Get-Item -LiteralPath '"));
         let _ = std::fs::remove_dir_all(&dir);

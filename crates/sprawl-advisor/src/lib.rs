@@ -101,7 +101,7 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     }
     let mut seen: std::collections::HashSet<String> = found.iter().map(|f| f.path.to_string_lossy().to_lowercase()).collect();
     let projects = projects::find(tree);
-    let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30).into_iter().chain(projects::build_outputs(tree, &projects, PROJECT_IDLE_DAYS, 100 << 20));
+    let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30).into_iter().chain(projects::build_outputs(tree, &projects, facts, PROJECT_IDLE_DAYS, 100 << 20));
     for f in extra {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);
@@ -152,7 +152,7 @@ mod tests {
         let f = &ok[0];
         assert_eq!(f.bytes, 300_000);
         assert_eq!(f.source, Source::Rule("t.cache".into()));
-        assert!(f.command.as_deref().unwrap().contains("Remove-Item"));
+        assert!(f.command.as_deref().unwrap().contains("; sprawl-clear '"));
         assert_eq!(find_path(&tree, &dir.join("keep").join("doc.txt")).map(|n| tree.nodes[n].size), Some(4));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -68,6 +68,8 @@ pub struct Facts {
     pub apps: Vec<App>,
     /// (lower-case segments of a location, app index), longest first.
     index: Vec<(Vec<String>, usize)>,
+    /// When each program last started, filled in by [`Facts::attach_usage`].
+    runs: HashMap<String, (SystemTime, UsedFrom)>,
 }
 
 impl Facts {
@@ -103,7 +105,7 @@ impl Facts {
         }
         // longest first; for equal locations the first source wins (Steam over its Uninstall key)
         index.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        Facts { apps, index }
+        Facts { apps, index, runs: HashMap::new() }
     }
 
     /// The app whose folder holds `path`, if any (the most specific one).
@@ -140,10 +142,9 @@ impl Facts {
             return;
         }
         for app in &mut self.apps {
-            if app.last_used.is_some() {
-                continue;
-            }
-            let mut best: Option<(SystemTime, UsedFrom)> = None;
+            // the newest of all sources: a game started by a mod launcher, outside Steam, is
+            // still in use
+            let mut best: Option<(SystemTime, UsedFrom)> = app.last_used;
             for l in &app.locations {
                 let Some(n) = find_path(tree, l) else { continue };
                 for exe in programs_in(tree, n, 6) {
@@ -160,6 +161,13 @@ impl Facts {
             }
             app.last_used = best;
         }
+        self.runs = runs;
+    }
+
+    /// The last start of any program in the top levels of folder `n` (a tool run from a build
+    /// output), from [`Facts::attach_usage`]'s sources.
+    pub fn last_run_in(&self, tree: &Tree, n: usize) -> Option<SystemTime> {
+        programs_in(tree, n, 3).iter().filter_map(|exe| self.runs.get(&run_key(exe)).map(|&(t, _)| t)).max()
     }
 }
 
@@ -196,9 +204,11 @@ pub(crate) fn clean_text(s: &str) -> String {
 
 /// Programs that run at install, update or crash time, not when the app is used.
 fn helper(exe: &str) -> bool {
-    const START: &[&str] = &["unins", "setup", "install", "vc_redist", "vcredist", "dxsetup", "dotnet", "ndp4", "oalinst", "physx", "ue4prereq", "ueprereq", "update"];
-    const ANYWHERE: &[&str] = &["uninstall", "updater", "crash", "bugreport", "redist", "prereq", "elevat", "helper", "repair"];
-    START.iter().any(|p| exe.starts_with(p)) || ANYWHERE.iter().any(|p| exe.contains(p))
+    // narrow on purpose: dropping an app's real program would let an older one decide
+    const START: &[&str] = &["unins", "setup", "install", "vc_redist", "vcredist", "dxsetup", "ndp4", "oalinst", "ue4prereq", "ueprereq"];
+    const EXACT: &[&str] = &["update.exe", "updater.exe"];
+    const ANYWHERE: &[&str] = &["uninstall", "crashhandler", "crashreport", "crashpad", "bugreport", "redist", "prereq"];
+    START.iter().any(|p| exe.starts_with(p)) || EXACT.contains(&exe) || ANYWHERE.iter().any(|p| exe.contains(p))
 }
 
 /// Prefetch keeps the first 29 characters of a program's name; every source is matched on that.
@@ -676,7 +686,11 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
             risk: Risk::Amber,
             remedy: Remedy::Uninstall,
             command: None,
-            title: format!("Unused: {}", app.name),
+            // what is known, not a verdict: an app can be used through its libraries alone
+            title: match from {
+                UsedFrom::Steam => format!("Not played since {}: {}", month_year(when), app.name),
+                _ => format!("Not started since {}: {}", month_year(when), app.name),
+            },
             evidence,
             confidence: if from == UsedFrom::Steam { 0.9 } else { 0.7 },
             source: Source::Rule("app.unused".into()),

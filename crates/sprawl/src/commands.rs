@@ -209,7 +209,9 @@ impl State {
                 win32::copy_text(self.hwnd, &s);
                 text(&self.root, "FootLeft", "Copied the visible rows to the clipboard");
             }
-            "mDelete" | "mDeleteForever" => self.delete(name == "mDeleteForever"),
+            // only from the tables: the Advisor tab never deletes anything, even by keyboard
+            "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files) => self.delete(name == "mDeleteForever"),
+            "mDelete" | "mDeleteForever" => {}
             "mExportCsv" if has_tree => {
                 // WizTree's format, so the file loads back here or in WizTree.
                 let path = user_dir("Documents").join(format!("Sprawl export {}.csv", stamp()));
@@ -511,6 +513,7 @@ impl State {
         let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
         let parent = t.nodes[n].parent;
         detach(t, n, Some(&mut self.alloc));
+        self.tree_gen += 1;
         self.selected = parent;
         self.files.retain(|&f| f != n && !self.tree.as_ref().unwrap().nodes[f].is_dir);
         self.rebuild_exts();
