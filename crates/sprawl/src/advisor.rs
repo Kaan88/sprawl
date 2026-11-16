@@ -17,6 +17,7 @@ use sprawl_advisor::config::{AiConfig, Provider};
 use sprawl_advisor::facts::Facts;
 use sprawl_advisor::hidden::HiddenSpace;
 use sprawl_advisor::llm::agent::AiRun;
+use sprawl_advisor::memory::{self, Memory, Verdict};
 use sprawl_advisor::plan::Plan;
 use sprawl_advisor::rules::RM_FN;
 use sprawl_advisor::{Finding, Remedy, Risk, RulePack, Source};
@@ -48,6 +49,8 @@ pub(crate) struct Report {
     /// Not inside another finding, so its bytes count toward the total.
     counted: Vec<bool>,
     held: Vec<(Finding, String)>,
+    /// Hidden by the user's decisions ("Keep it", "Not now").
+    kept: Vec<(Finding, Verdict)>,
     hidden: Option<HiddenSpace>,
     /// Owning app of every node (index into `apps`).
     owners: Vec<Option<u32>>,
@@ -90,8 +93,8 @@ struct Planned {
 /// The last script written, and what verifying it found.
 struct Exported {
     file: PathBuf,
-    /// (path, size when exported)
-    items: Vec<(PathBuf, u64)>,
+    /// (path, size when exported, title)
+    items: Vec<(PathBuf, u64, String)>,
     verify: Option<Option<Vec<(PathBuf, u64, u64)>>>,
 }
 
@@ -127,6 +130,11 @@ pub(crate) struct Advisor {
     pub(crate) preview: bool,
     exported: Option<Exported>,
     show_rejected: bool,
+    /// Preferences, decisions, labels and proposed rules (loaded on the first analysis).
+    pub(crate) memory: Memory,
+    memory_loaded: bool,
+    show_kept: bool,
+    show_memory: bool,
 }
 
 fn risk_code(r: Risk) -> u8 {
@@ -177,11 +185,15 @@ fn remedy_label(r: Remedy) -> &'static str {
 }
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
-fn analyse(tree: &Arc<Tree>, gen: u64) -> Report {
+fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> Report {
     let started = std::time::Instant::now();
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let (findings, held) = sprawl_advisor::advise_all(tree, &[RulePack::builtin()], &facts);
+    // the built-in rules, then the user's own (approved proposals): never trusted
+    let mut packs = vec![RulePack::builtin()];
+    packs.extend(memory::local_packs());
+    let (findings, held) = sprawl_advisor::advise_all(tree, &packs, &facts);
+    let (findings, kept) = memory.filter(findings);
     let nodes: Vec<Option<usize>> = findings.iter().map(|f| sprawl_advisor::find_path(tree, &f.path)).collect();
     let mut lens = vec![0u8; tree.nodes.len()];
     let mut counted = vec![true; findings.len()];
@@ -203,6 +215,7 @@ fn analyse(tree: &Arc<Tree>, gen: u64) -> Report {
         nodes,
         counted,
         held: held.into_iter().map(|(f, why)| (f, why.to_string())).collect(),
+        kept,
         hidden: None,
         owners: facts.owner_map(tree),
         apps: facts.apps.iter().map(|a| a.name.clone()).collect(),
@@ -232,6 +245,10 @@ impl State {
         self.advisor.ai = Ai::Idle;
         self.advisor.plan = None;
         self.advisor.preview = false;
+        if !self.advisor.memory_loaded {
+            self.advisor.memory = Memory::load();
+            self.advisor.memory_loaded = true;
+        }
         let Some(t) = self.tree.clone() else {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
             return self.advisor_changed();
@@ -249,8 +266,9 @@ impl State {
         self.advisor.tx = Some(tx.clone());
         self.advisor.running = true;
         let gen = self.tree_gen;
+        let memory = self.advisor.memory.clone();
         std::thread::spawn(move || {
-            let r = analyse(&t, gen);
+            let r = analyse(&t, gen, &memory);
             let (root, allocated, errors) = (t.path_of(sprawl_core::ROOT), t.nodes[sprawl_core::ROOT].allocated, t.errors);
             // let go of the tree before the slow part, so the app can change it without a copy
             drop(t);
@@ -312,8 +330,16 @@ impl State {
                 }
                 Msg::Verified(v) => {
                     if let Some(e) = &mut self.advisor.exported {
+                        // what really shrank counts as done: the model learns the user is fine with it
+                        for (p, before, after) in &v {
+                            if after < before {
+                                let title = e.items.iter().find(|(q, _, _)| q == p).map(|(_, _, t)| t.clone()).unwrap_or_default();
+                                self.advisor.memory.decide(p, &title, Verdict::Done);
+                            }
+                        }
                         e.verify = Some(Some(v));
                     }
+                    self.save_memory();
                 }
             }
             changed = true;
@@ -334,7 +360,13 @@ impl State {
     /// The owner of `n` for the Owner column, and whether its parent has the same one.
     pub(crate) fn owner_of(&self, n: usize) -> Option<(&str, bool)> {
         let r = self.advice()?;
-        let o = (*r.owners.get(n)?)?;
+        let Some(o) = r.owners.get(n).copied().flatten() else {
+            // no app owns it: what the user or the model said it is
+            let t = self.tree.as_ref()?;
+            let label = self.advisor.memory.label_for(&t.path_of(n))?;
+            let parent_same = t.nodes[n].parent.is_some_and(|p| self.advisor.memory.label_for(&t.path_of(p)).is_some_and(|l| l.label == label.label));
+            return Some((label.label.as_str(), parent_same));
+        };
         let inherited = self.tree.as_ref().and_then(|t| t.nodes[n].parent).and_then(|p| r.owners.get(p).copied().flatten()) == Some(o);
         Some((r.apps.get(o as usize)?.as_str(), inherited))
     }
@@ -347,6 +379,16 @@ impl State {
             "AdvRefresh" => return self.advisor_start(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
+            "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvMemShow" => self.advisor.show_memory = !self.advisor.show_memory,
+            "AdvKeep" | "AdvLater" => return self.advisor_decide(if name == "AdvKeep" { Verdict::Keep } else { Verdict::Later }),
+            "AdvPrefAdd" => {
+                let text = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvPrefText").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+                if let Err(e) = self.advisor.memory.add_pref(&text, memory::From::You) {
+                    crate::state::text(&self.root, "StatusText", &format!("Not added: {e}."));
+                }
+                self.save_memory();
+            }
             "AdvAsk" => self.advisor_ask(),
             "AdvSetup" => return self.command("mWizard"),
             "AdvPlan" => self.advisor_plan(),
@@ -393,7 +435,7 @@ impl State {
     }
 
     /// A finding was clicked: open (or close) its details and light it up on the map.
-    fn advisor_open(&mut self, i: usize) {
+    pub(crate) fn advisor_open(&mut self, i: usize) {
         if self.advisor.open == Some(i) {
             self.advisor.open = None;
             self.advisor.in_use = None;
@@ -448,7 +490,27 @@ impl State {
                 }
             }
         }
+        let m = &self.advisor.memory;
+        let counts = [
+            ("AdvUndo", self.advice().map_or(0, |r| r.kept.len())),
+            ("AdvApprove", m.proposals.len()),
+            ("AdvDismiss", m.proposals.len()),
+            ("AdvForgetP", m.prefs.len()),
+            ("AdvForgetL", m.labels.len()),
+        ];
+        for (kind, n) in counts {
+            for i in 0..n {
+                if let Ok(b) = find::<ButtonBase>(&fe, &format!("{kind}{i}")) {
+                    if let Ok(t) = b.Click(move |_, _| {
+                        with(|s| s.advisor_indexed(kind, i));
+                    }) {
+                        keep(t);
+                    }
+                }
+            }
+        }
         for name in [
+            "AdvKeep", "AdvLater", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -573,6 +635,7 @@ impl State {
                 }
             }
         }
+        x += &self.memory_cards(r);
         x += &format!(
             r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Sprawl only suggests: nothing is deleted or run from this tab. Commands are for PowerShell. Checked in {:.1} s."/>"##,
             r.secs
@@ -654,13 +717,14 @@ impl State {
         let hidden = r.hidden.clone();
         let goal = self.goal_bytes();
         let gen = self.tree_gen;
+        let memory = self.advisor.memory.clone();
         self.advisor.ai = Ai::Running("Starting...".into());
         std::thread::spawn(move || {
             let progress_tx = tx.clone();
             let mut progress = move |line: String| {
                 let _ = progress_tx.send(Msg::AiProgress(gen, line));
             };
-            let result = sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &mut progress);
+            let result = sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &mut progress);
             let _ = tx.send(Msg::AiDone(gen, result));
         });
     }
@@ -704,7 +768,95 @@ impl State {
             r.nodes.push(n);
             r.findings.push(f);
         }
+        // what the model asked to remember, and its proposed rules (checked again here)
+        let m = &mut self.advisor.memory;
+        for p in &run.prefs {
+            let _ = m.add_pref(&p.text, memory::From::Model);
+        }
+        for l in &run.labels {
+            let _ = m.add_label(&l.pattern, &l.label, memory::From::Model);
+        }
+        for p in run.proposals {
+            let _ = m.propose(p);
+        }
+        self.save_memory();
         Ai::Done { summary: run.summary, model: run.model, found, rejected: run.rejected, with_tools: run.with_tools, turns: run.turns }
+    }
+
+    fn save_memory(&self) {
+        if let Err(e) = self.advisor.memory.save() {
+            crate::state::text(&self.root, "StatusText", &format!("Couldn't save what the advisor remembers: {e}"));
+        }
+    }
+
+    /// "Keep it" / "Not now" on the open finding: remembered, and taken out of the list.
+    fn advisor_decide(&mut self, verdict: Verdict) {
+        let gen = self.tree_gen;
+        let Some(i) = self.advisor.open else { return };
+        let (Some(t), Some(r)) = (self.tree.clone(), self.advisor.report.as_mut().filter(|r| r.tree == gen)) else { return };
+        if i >= r.findings.len() {
+            return;
+        }
+        let f = r.findings.remove(i);
+        r.nodes.remove(i);
+        r.counted.remove(i);
+        self.advisor.memory.decide(&f.path, &f.title, verdict);
+        r.kept.push((f, verdict));
+        // the lens without it
+        let mut lens = vec![0u8; t.nodes.len()];
+        for (f, n) in r.findings.iter().zip(&r.nodes) {
+            let Some(n) = *n else { continue };
+            let code = risk_code(f.risk);
+            let mut stack = vec![n];
+            while let Some(k) = stack.pop() {
+                lens[k] = lens[k].max(code);
+                stack.extend_from_slice(&t.nodes[k].children);
+            }
+        }
+        r.lens = Arc::new(lens);
+        // indexes moved: the open finding and any plan go
+        self.advisor.open = None;
+        self.advisor.in_use = None;
+        self.advisor.plan = None;
+        self.advisor.preview = false;
+        self.save_memory();
+        self.advisor_changed();
+    }
+
+    /// A numbered button: undo a decision, approve or dismiss a proposal, forget a memory.
+    fn advisor_indexed(&mut self, kind: &str, i: usize) {
+        let m = &mut self.advisor.memory;
+        match kind {
+            "AdvUndo" => {
+                let Some(path) = self.advice().and_then(|r| r.kept.get(i)).map(|(f, _)| f.path.clone()) else { return };
+                self.advisor.memory.undo(&path);
+                self.save_memory();
+                // found again from scratch, so it comes back where it belongs
+                return self.advisor_start();
+            }
+            "AdvApprove" => {
+                match m.approve(i) {
+                    Ok(()) => {
+                        self.save_memory();
+                        crate::state::text(&self.root, "StatusText", "Rule added to your rules. Checking again with it...");
+                        return self.advisor_start();
+                    }
+                    Err(e) => crate::state::text(&self.root, "StatusText", &format!("Couldn't add the rule: {e}")),
+                }
+            }
+            "AdvDismiss" if i < m.proposals.len() => {
+                m.proposals.remove(i);
+            }
+            "AdvForgetP" if i < m.prefs.len() => {
+                m.prefs.remove(i);
+            }
+            "AdvForgetL" if i < m.labels.len() => {
+                m.labels.remove(i);
+            }
+            _ => return,
+        }
+        self.save_memory();
+        self.advisor_changed();
     }
 
     /// Write the plan (or every finding with something to run) as a PowerShell script.
@@ -721,7 +873,7 @@ impl State {
         let list: Vec<&Finding> = picked.iter().map(|&i| &r.findings[i]).collect();
         let root = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT).display().to_string()).unwrap_or_default();
         let text = sprawl_advisor::export::script(&list, &root, std::time::SystemTime::now());
-        let items: Vec<(PathBuf, u64)> = list.iter().filter(|f| f.command.is_some()).map(|f| (f.path.clone(), f.bytes)).collect();
+        let items: Vec<(PathBuf, u64, String)> = list.iter().filter(|f| f.command.is_some()).map(|f| (f.path.clone(), f.bytes, f.title.clone())).collect();
         let file = crate::format::user_dir("Documents").join(format!("Sprawl clean-up {}.ps1", crate::format::stamp()));
         match sprawl_advisor::export::write_script(&file, &text) {
             Ok(()) => {
@@ -742,7 +894,7 @@ impl State {
         std::thread::spawn(move || {
             let out = items
                 .into_iter()
-                .map(|(p, before)| {
+                .map(|(p, before, _)| {
                     let now = if std::fs::symlink_metadata(&p).is_err() {
                         0
                     } else {
@@ -753,6 +905,74 @@ impl State {
                 .collect();
             let _ = tx.send(Msg::Verified(out));
         });
+    }
+
+    fn memory_cards(&self, r: &Report) -> String {
+        let m = &self.advisor.memory;
+        let small = |name: String, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,1" FontSize="11" CornerRadius="4"/>"##);
+        let mut x = String::new();
+        if !r.kept.is_empty() {
+            x += &format!(
+                r##"<Button x:Name="AdvKeptShow" Padding="10,4" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} hidden by your choices ({})"/>"##,
+                r.kept.len(),
+                if self.advisor.show_kept { "hide" } else { "show" }
+            );
+            if self.advisor.show_kept {
+                for (i, (f, v)) in r.kept.iter().enumerate() {
+                    let why = match v {
+                        Verdict::Keep => "kept",
+                        Verdict::Later => "not now",
+                        Verdict::Done => "done",
+                    };
+                    x += &format!(
+                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{} ({}, {why})"/>{}</StackPanel>"##,
+                        ui::esc(&f.title),
+                        self.size(f.bytes),
+                        small(format!("AdvUndo{i}"), "Undo")
+                    );
+                }
+            }
+        }
+        if !m.proposals.is_empty() {
+            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##;
+            for (i, p) in m.proposals.iter().enumerate() {
+                x += &format!(
+                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="11" FontFamily="Consolas" Foreground="#FF8E97AA"/></StackPanel>"##,
+                    risk_hex(p.risk),
+                    ui::esc(&p.title),
+                    remedy_label(p.remedy),
+                    small(format!("AdvApprove{i}"), "Approve"),
+                    small(format!("AdvDismiss{i}"), "Dismiss"),
+                    ui::esc(&p.why),
+                    ui::esc(&p.paths.join("   ")),
+                );
+            }
+            x += "</StackPanel></Border>";
+        }
+        x += &format!(
+            r##"<Button x:Name="AdvMemShow" Padding="10,4" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="What the advisor remembers: {} preferences, {} folder labels ({})"/>"##,
+            m.prefs.len(),
+            m.labels.len(),
+            if self.advisor.show_memory { "hide" } else { "show" }
+        );
+        if self.advisor.show_memory {
+            x += r##"<StackPanel Spacing="4" Margin="10,0,0,0">"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="AdvPrefText" Width="360" PlaceholderText="A preference, like: I still play my Steam games"/><Button x:Name="AdvPrefAdd" Content="Remember" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##;
+            for (i, p) in m.prefs.iter().enumerate() {
+                let who = if p.from == memory::From::Model { " (from the AI)" } else { "" };
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
+            }
+            for (i, l) in m.labels.iter().enumerate() {
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{}: {}"/>{}</StackPanel>"##,
+                    ui::esc(&l.pattern),
+                    ui::esc(&l.label),
+                    small(format!("AdvForgetL{i}"), "Forget")
+                );
+            }
+            x += "</StackPanel>";
+        }
+        x
     }
 
     fn ai_card(&self, r: &Report) -> String {
@@ -822,7 +1042,7 @@ impl State {
             }
         }
         if let Some(e) = &self.advisor.exported {
-            let planned: u64 = e.items.iter().map(|(_, b)| *b).sum();
+            let planned: u64 = e.items.iter().map(|(_, b, _)| *b).sum();
             let line = match &e.verify {
                 None => format!("Saved {} ({} items, {}). After running it with -Run, check what it freed.", e.file.display(), e.items.len(), self.size(planned)),
                 Some(None) => "Measuring the exported items...".to_string(),
@@ -886,6 +1106,7 @@ impl State {
         if r.nodes[i].is_some() {
             x += r##"<Button x:Name="AdvShow" Content="Show in tree" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvExplore" Content="Show in Explorer" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         }
+        x += r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="Never suggest this again" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         x += "</StackPanel></StackPanel></Border>";
         x
     }

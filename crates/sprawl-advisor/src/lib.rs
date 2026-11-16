@@ -20,6 +20,7 @@ pub mod hidden;
 pub mod history;
 pub mod inuse;
 pub mod llm;
+pub mod memory;
 pub mod plan;
 pub mod projects;
 pub mod rules;

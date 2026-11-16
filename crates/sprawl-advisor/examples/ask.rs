@@ -25,7 +25,8 @@ fn main() {
     let (rules, _) = advise_all(&tree, &[RulePack::builtin()], &facts);
     println!("{} rule findings", rules.len());
     let started = std::time::Instant::now();
-    match sprawl_advisor::llm::agent::run(&tree, &cfg, &rules, None, goal, &mut |s| println!("  .. {s}")) {
+    let memory = sprawl_advisor::memory::Memory::load();
+    match sprawl_advisor::llm::agent::run(&tree, &cfg, &rules, None, goal, &memory, &mut |s| println!("  .. {s}")) {
         Ok(run) => {
             println!("{} in {:.0} s, {} turns, tools: {}", run.model, started.elapsed().as_secs_f64(), run.turns, run.with_tools);
             println!("summary: {}", run.summary);

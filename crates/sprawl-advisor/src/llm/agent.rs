@@ -14,6 +14,7 @@ use crate::config::{self, AiConfig, Detected, Provider};
 use crate::facts::Facts;
 use crate::finding::Finding;
 use crate::hidden::HiddenSpace;
+use crate::memory::{Label, Memory, Pref, Proposal};
 
 const SYSTEM: &str = "You are the disk-space advisor inside Sprawl, a disk analyser for Windows. \
 The user is a power user who wants to win back space safely. You get a compact report of one scan and tools to look closer. \
@@ -43,6 +44,10 @@ pub struct AiRun {
     pub turns: usize,
     /// The model had tools (or answered once from the report).
     pub with_tools: bool,
+    /// What it asked to remember, and the rules it proposed: for the app to add to its memory.
+    pub prefs: Vec<Pref>,
+    pub labels: Vec<Label>,
+    pub proposals: Vec<Proposal>,
 }
 
 enum Mode {
@@ -86,7 +91,7 @@ pub(crate) fn json_in(text: &str) -> Option<Value> {
 
 /// Analyse `tree` with the configured model. `already` are the rule findings (not repeated);
 /// `goal` is the space the user needs, if they said. `progress` gets short status lines.
-pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>, memory: &Memory, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     if cfg.provider == Provider::Off {
         return Err("AI is off. Choose a provider in Options > AI setup.".into());
     }
@@ -97,8 +102,8 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     progress("Gathering what Windows knows about your apps...".into());
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, already, hidden, goal);
-    let mut tools = Tools::new(tree, &facts, &model, already);
+    let report = super::report::build(tree, &facts, already, hidden, goal) + &memory.context();
+    let mut tools = Tools::new(tree, &facts, &model, already, memory);
     let mut run = AiRun { model: model.clone(), ..AiRun::default() };
 
     let mut mode = if cfg.provider == Provider::ClaudeCode { Mode::Single } else { Mode::Tools };
@@ -166,6 +171,9 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     run.summary = tools.summary.take().unwrap_or(run.summary);
     run.findings = std::mem::take(&mut tools.accepted);
     run.rejected = std::mem::take(&mut tools.rejected);
+    run.prefs = std::mem::take(&mut tools.prefs);
+    run.labels = std::mem::take(&mut tools.labels);
+    run.proposals = std::mem::take(&mut tools.proposals);
     run.findings.sort_by(|a, b| b.bytes.cmp(&a.bytes));
     Ok(run)
 }
@@ -184,7 +192,7 @@ mod tests {
     #[test]
     fn off_is_refused_without_sending_anything() {
         let tree = sprawl_core::scan(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
-        let err = run(&tree, &AiConfig::default(), &[], None, None, &mut |_| {}).unwrap_err();
+        let err = run(&tree, &AiConfig::default(), &[], None, None, &Memory::default(), &mut |_| {}).unwrap_err();
         assert!(err.contains("AI is off"));
     }
 }

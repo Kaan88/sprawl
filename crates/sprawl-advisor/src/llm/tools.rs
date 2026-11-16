@@ -16,6 +16,7 @@ use super::report::{node_line, types_below};
 use super::ToolSpec;
 use crate::facts::{clean_text, month_year, Facts};
 use crate::finding::{Finding, Remedy, Risk, Source};
+use crate::memory::{self, Label, Memory, Pref, Proposal};
 use crate::rules::{ps_quote, RM_FN};
 use crate::safety::{self, Never};
 use crate::{find_path, segments};
@@ -61,6 +62,28 @@ pub fn specs() -> Vec<ToolSpec> {
             }, "required": ["path", "bytes", "title", "risk", "remedy", "evidence", "confidence"]}),
         },
         ToolSpec {
+            name: "remember",
+            description: "Remember something for next time: a preference the user stated, or what a folder is (a label for a path pattern,                 absolute, with * for one level and ** for any depth). Labels save working it out again. Don't store guesses.",
+            schema: json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["preference", "label"]},
+                "text": {"type": "string", "description": "The preference, or the label"},
+                "pattern": {"type": "string", "description": "For a label: the path pattern it applies to"}
+            }, "required": ["kind", "text"]}),
+        },
+        ToolSpec {
+            name: "propose_rule",
+            description: "Propose a rule for a kind of folder that will keep coming back (an app's cache, a tool's logs), so Sprawl finds it                 by itself next time. The user approves it first. Rules can delete, suggest uninstalling, or explain; never run commands.",
+            schema: json!({"type": "object", "properties": {
+                "id": {"type": "string", "description": "Short id, letters and dashes"},
+                "title": {"type": "string"},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute patterns, e.g. %LOCALAPPDATA%\\Tool\\cache or ?:\\**\\.tool-cache"},
+                "risk": {"type": "string", "enum": ["green", "amber", "orange", "red"]},
+                "remedy": {"type": "string", "enum": ["delete", "uninstall", "info"]},
+                "why": {"type": "string", "description": "What it is and why it can go"},
+                "min_bytes": {"type": "integer"}
+            }, "required": ["id", "title", "paths", "risk", "remedy", "why"]}),
+        },
+        ToolSpec {
             name: "finish",
             description: "End the analysis with a short summary for the user (a few sentences: the main opportunities and anything they should know).",
             schema: json!({"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}),
@@ -79,6 +102,12 @@ pub struct Tools<'a> {
     pub accepted: Vec<Finding>,
     pub rejected: Vec<(Finding, String)>,
     pub summary: Option<String>,
+    /// The user's memory as it was: kept folders are refused. Also a scratch copy that checks
+    /// what the model asks to remember; the app adds the new entries to its own copy.
+    memory: Memory,
+    pub prefs: Vec<Pref>,
+    pub labels: Vec<Label>,
+    pub proposals: Vec<Proposal>,
 }
 
 fn path_arg(input: &Value) -> Result<PathBuf, String> {
@@ -94,7 +123,7 @@ fn limit(input: &Value, default: u64, max: u64) -> usize {
 }
 
 impl<'a> Tools<'a> {
-    pub fn new(tree: &'a Tree, facts: &'a Facts, model: &str, already: &[Finding]) -> Tools<'a> {
+    pub fn new(tree: &'a Tree, facts: &'a Facts, model: &str, already: &[Finding], memory: &Memory) -> Tools<'a> {
         let mut t = Tools {
             tree,
             facts,
@@ -105,6 +134,10 @@ impl<'a> Tools<'a> {
             accepted: Vec::new(),
             rejected: Vec::new(),
             summary: None,
+            memory: memory.clone(),
+            prefs: Vec::new(),
+            labels: Vec::new(),
+            proposals: Vec::new(),
         };
         for f in already {
             t.remember(&f.path);
@@ -187,6 +220,45 @@ impl<'a> Tools<'a> {
                 })
             }
             "report_finding" => self.report_finding(input),
+            "remember" => {
+                let text = input["text"].as_str().unwrap_or("");
+                match input["kind"].as_str() {
+                    Some("preference") => {
+                        self.memory.add_pref(text, memory::From::Model)?;
+                        if let Some(p) = self.memory.prefs.last().filter(|p| p.from == memory::From::Model).cloned() {
+                            self.prefs.push(p);
+                        }
+                        Ok("Remembered.".into())
+                    }
+                    Some("label") => {
+                        let pattern = input["pattern"].as_str().ok_or("a label needs a `pattern`")?;
+                        self.memory.add_label(pattern, text, memory::From::Model)?;
+                        if let Some(l) = self.memory.labels.last().cloned() {
+                            self.labels.push(l);
+                        }
+                        Ok("Remembered.".into())
+                    }
+                    _ => Err("kind must be preference or label".into()),
+                }
+            }
+            "propose_rule" => {
+                let risk = serde_json::from_value::<Risk>(input["risk"].clone()).map_err(|_| "risk must be green, amber, orange or red")?;
+                let remedy = serde_json::from_value::<Remedy>(input["remedy"].clone()).map_err(|_| "remedy must be delete, uninstall or info")?;
+                let p = Proposal {
+                    id: input["id"].as_str().unwrap_or("").to_string(),
+                    title: input["title"].as_str().unwrap_or("").to_string(),
+                    paths: input["paths"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).map(|x| x.replace('/', "\\")).collect(),
+                    risk,
+                    remedy,
+                    why: input["why"].as_str().unwrap_or("").to_string(),
+                    min_bytes: input["min_bytes"].as_u64(),
+                };
+                self.memory.propose(p)?;
+                if let Some(p) = self.memory.proposals.last().cloned() {
+                    self.proposals.push(p);
+                }
+                Ok("Proposed. The user will see it and decide.".into())
+            }
             "finish" => {
                 self.summary = Some(clean_text_long(input["summary"].as_str().unwrap_or(""), 1500));
                 Ok("Thanks, done.".into())
@@ -225,6 +297,12 @@ impl<'a> Tools<'a> {
         }
         if let Some(k) = self.known_list.iter().find(|k| segs.len() > k.len() && segs[..k.len()] == k[..]) {
             return Err(format!("it is inside {}, which is already reported", k.join("\\")));
+        }
+        if let Some(d) = self.memory.hides(&path) {
+            return Err(match d.verdict {
+                memory::Verdict::Keep => format!("the user chose to keep {}", d.path.display()),
+                _ => "the user said not now to this one".into(),
+            });
         }
         let evidence: Vec<String> = input["evidence"].as_array().into_iter().flatten().filter_map(|e| e.as_str()).map(|e| clean_text_long(e, 300)).filter(|e| !e.is_empty()).take(8).collect();
         if evidence.is_empty() {
@@ -286,7 +364,7 @@ mod tests {
         let dir = std::path::PathBuf::from(dir.to_string_lossy().trim_start_matches(r"\\?\"));
         let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
         let facts = Facts::from_apps(Vec::new());
-        let mut t = Tools::new(&tree, &facts, "test-model", &[]);
+        let mut t = Tools::new(&tree, &facts, "test-model", &[], &Memory::default());
         let cache = dir.join("cache");
         let size = tree.nodes[find_path(&tree, &cache).unwrap()].size;
         assert!(t.call("list_children", &json!({"path": dir.display().to_string()})).unwrap().contains("cache [folder]"));

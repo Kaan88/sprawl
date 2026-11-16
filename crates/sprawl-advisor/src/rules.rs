@@ -33,14 +33,14 @@ use crate::segments;
 
 pub const BUILTIN: &str = include_str!("../rules/builtin.toml");
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct PackInfo {
     pub name: String,
     #[serde(default)]
     pub version: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     #[default]
@@ -49,7 +49,7 @@ pub enum Kind {
     Any,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub id: String,
@@ -74,7 +74,7 @@ pub struct Rule {
     pub allow_protected: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct RulePack {
     pub pack: PackInfo,
     #[serde(default, rename = "rule")]
