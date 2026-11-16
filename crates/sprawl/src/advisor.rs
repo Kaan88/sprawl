@@ -16,7 +16,7 @@ use std::sync::Arc;
 use sprawl_advisor::config::{AiConfig, Provider};
 use sprawl_advisor::facts::Facts;
 use sprawl_advisor::hidden::HiddenSpace;
-use sprawl_advisor::llm::agent::AiRun;
+use sprawl_advisor::llm::agent::{AiRun, ChatEvent};
 use sprawl_advisor::memory::{self, Memory, Verdict};
 use sprawl_advisor::plan::Plan;
 use sprawl_advisor::rules::RM_FN;
@@ -135,6 +135,29 @@ pub(crate) struct Advisor {
     memory_loaded: bool,
     show_kept: bool,
     show_memory: bool,
+    chat: Chat,
+}
+
+/// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
+#[derive(Default)]
+struct Chat {
+    /// Questions to the chat thread.
+    tx: Option<Sender<String>>,
+    rx: Option<Receiver<ChatMsg>>,
+    /// (from the user, text)
+    log: Vec<(bool, String)>,
+    status: Option<String>,
+    /// What is typed in the question box, kept across redraws.
+    text: String,
+    /// A web search waiting for the user's yes or no.
+    consent: Option<(String, Sender<bool>)>,
+    /// "Allow for this session" was chosen.
+    web_ok: Arc<std::sync::atomic::AtomicBool>,
+}
+
+enum ChatMsg {
+    Event(ChatEvent),
+    Consent(String, Sender<bool>),
 }
 
 fn risk_code(r: Risk) -> u8 {
@@ -289,6 +312,7 @@ impl State {
 
     /// Called every frame: pick up finished work.
     pub(crate) fn advisor_poll(&mut self) {
+        self.chat_poll();
         let Some(rx) = &self.advisor.rx else { return };
         let msgs: Vec<Msg> = rx.try_iter().collect();
         let mut changed = false;
@@ -380,6 +404,18 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvChatSend" => return self.chat_send(),
+            "AdvChatClear" => {
+                self.chat_reset();
+            }
+            "AdvWebOnce" | "AdvWebSession" | "AdvWebDeny" => {
+                if let Some((_, reply)) = self.advisor.chat.consent.take() {
+                    if name == "AdvWebSession" {
+                        self.advisor.chat.web_ok.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let _ = reply.send(name != "AdvWebDeny");
+                }
+            }
             "AdvMemShow" => self.advisor.show_memory = !self.advisor.show_memory,
             "AdvKeep" | "AdvLater" => return self.advisor_decide(if name == "AdvKeep" { Verdict::Keep } else { Verdict::Later }),
             "AdvPrefAdd" => {
@@ -462,10 +498,15 @@ impl State {
     }
 
     pub(crate) fn render_advisor(&mut self) {
-        // keep what was typed in the goal box across the redraw
+        // keep what was typed in the goal and question boxes across the redraw
         if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
             if let Ok(h) = t.Text() {
                 self.advisor.goal_text = h.to_string_lossy();
+            }
+        }
+        if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
+            if let Ok(h) = t.Text() {
+                self.advisor.chat.text = h.to_string_lossy();
             }
         }
         let Ok(host) = find::<Border>(&self.root, "AdvHost") else { return };
@@ -479,6 +520,9 @@ impl State {
         self.advisor.panel = Some(fe.clone());
         if let Ok(t) = find::<TextBox>(&fe, "AdvGoal") {
             let _ = t.SetText(&self.advisor.goal_text.as_str().into());
+        }
+        if let Ok(t) = find::<TextBox>(&fe, "AdvChatText") {
+            let _ = t.SetText(&self.advisor.chat.text.as_str().into());
         }
         let count = self.advice().map_or(0, |r| r.findings.len());
         for i in 0..count {
@@ -510,7 +554,7 @@ impl State {
             }
         }
         for name in [
-            "AdvKeep", "AdvLater", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd",
+            "AdvKeep", "AdvLater", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvChatClear", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -531,6 +575,9 @@ impl State {
             x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/>"##, ui::esc(msg));
             if !self.advisor.running && self.tree.is_some() {
                 x += r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again"/>"##;
+            }
+            if self.tree.is_some() {
+                x += &self.chat_card();
             }
             x += "</StackPanel>";
             return x;
@@ -571,6 +618,7 @@ impl State {
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="16"><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FF4CC38A"/><TextBlock Text="Comes back by itself" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFF5B342"/><TextBlock Text="Costs something" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFFF7A45"/><TextBlock Text="Your own files" FontSize="11" Foreground="#FF8E97AA"/></StackPanel></StackPanel>"##;
         x += &self.ai_card(r);
+        x += &self.chat_card();
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
@@ -905,6 +953,147 @@ impl State {
                 .collect();
             let _ = tx.send(Msg::Verified(out));
         });
+    }
+
+    /// A new scan: the chat's copy of the old one is no use any more.
+    pub(crate) fn chat_reset(&mut self) {
+        let web_ok = self.advisor.chat.web_ok.clone();
+        web_ok.store(false, std::sync::atomic::Ordering::Relaxed);
+        // dropping the senders ends the thread; a pending consent answers no
+        self.advisor.chat = Chat { web_ok, ..Chat::default() };
+    }
+
+    /// Type a question and send it (screenshot runs).
+    pub(crate) fn advisor_chat_dev(&mut self, q: &str) {
+        if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
+            let _ = t.SetText(&q.into());
+        }
+        self.chat_send();
+    }
+
+    fn chat_send(&mut self) {
+        let q = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+        let q = q.trim().to_string();
+        if q.is_empty() || self.advisor.chat.status.is_some() {
+            return;
+        }
+        if self.advisor.chat.tx.is_none() {
+            // the whole scan, also while a filter is on
+            let Some(t) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
+            let cfg = AiConfig::load();
+            let memory = self.advisor.memory.clone();
+            let (qtx, qrx) = channel::<String>();
+            let (etx, erx) = channel::<ChatMsg>();
+            let web_ok = self.advisor.chat.web_ok.clone();
+            std::thread::spawn(move || {
+                let consent_tx = etx.clone();
+                let consent = move |query: &str| -> bool {
+                    if web_ok.load(std::sync::atomic::Ordering::Relaxed) {
+                        return true;
+                    }
+                    let (rtx, rrx) = channel();
+                    if consent_tx.send(ChatMsg::Consent(query.to_string(), rtx)).is_err() {
+                        return false;
+                    }
+                    // no answer in ten minutes, or the chat ended: no
+                    rrx.recv_timeout(std::time::Duration::from_secs(600)).unwrap_or(false)
+                };
+                let mut events = |e: ChatEvent| {
+                    let _ = etx.send(ChatMsg::Event(e));
+                };
+                sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, qrx, &mut events, &consent);
+            });
+            self.advisor.chat.tx = Some(qtx);
+            self.advisor.chat.rx = Some(erx);
+        }
+        if let Some(tx) = &self.advisor.chat.tx {
+            if tx.send(q.clone()).is_ok() {
+                self.advisor.chat.log.push((true, q));
+                self.advisor.chat.status = Some("Thinking...".into());
+                self.advisor.chat.text.clear();
+            }
+        }
+        self.advisor_changed();
+    }
+
+    fn chat_poll(&mut self) {
+        let Some(rx) = &self.advisor.chat.rx else { return };
+        let msgs: Vec<ChatMsg> = rx.try_iter().collect();
+        if msgs.is_empty() {
+            return;
+        }
+        let mut redraw = false;
+        for m in msgs {
+            match m {
+                ChatMsg::Event(ChatEvent::Progress(s)) => {
+                    if let Some(p) = &self.advisor.panel {
+                        crate::state::text(p, "AdvChatStatus", &s);
+                    }
+                    self.advisor.chat.status = Some(s);
+                }
+                ChatMsg::Event(ChatEvent::Reply(s)) => {
+                    self.advisor.chat.log.push((false, s));
+                    self.advisor.chat.status = None;
+                    redraw = true;
+                }
+                ChatMsg::Event(ChatEvent::Failed(e)) => {
+                    self.advisor.chat.log.push((false, format!("(failed: {e})")));
+                    self.advisor.chat.status = None;
+                    redraw = true;
+                }
+                ChatMsg::Event(ChatEvent::Filter(f)) => {
+                    // through the filter box, as if typed: it applies a moment later
+                    if let Ok(t) = find::<TextBox>(&self.root, "FilterBox") {
+                        let _ = t.SetText(&f.as_str().into());
+                    }
+                }
+                ChatMsg::Event(ChatEvent::Remember { prefs, labels }) => {
+                    for p in &prefs {
+                        let _ = self.advisor.memory.add_pref(&p.text, memory::From::Model);
+                    }
+                    for l in &labels {
+                        let _ = self.advisor.memory.add_label(&l.pattern, &l.label, memory::From::Model);
+                    }
+                    self.save_memory();
+                }
+                ChatMsg::Consent(q, reply) => {
+                    self.advisor.chat.consent = Some((q, reply));
+                    redraw = true;
+                }
+            }
+        }
+        if redraw && self.view == View::Advisor {
+            self.render_advisor();
+        }
+    }
+
+    fn chat_card(&self) -> String {
+        let c = &self.advisor.chat;
+        let who = match AiConfig::load().provider {
+            Provider::ClaudeCode => "Claude Code",
+            Provider::Anthropic => "Claude",
+            _ => "AI",
+        };
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Ask your disk" FontSize="13" FontWeight="SemiBold"/>"##);
+        for (user, text) in c.log.iter().rev().take(12).rev() {
+            let (name, colour) = if *user { ("You", "#FF8FB4FF") } else { (who, "#FFD5DBE8") };
+            x += &format!(
+                r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True"><Run Text="{name}: " FontWeight="SemiBold" Foreground="{colour}"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##,
+                ui::esc(text)
+            );
+        }
+        if let Some((q, _)) = &c.consent {
+            x += &format!(
+                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="11" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebSession" Content="Allow for this session" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebDeny" Content="Don't search" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##,
+                ui::esc(q)
+            );
+        }
+        if let Some(s) = &c.status {
+            x += &format!(r##"<TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##, ui::esc(s));
+        }
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="What is the biggest thing in Downloads? Show me videos over 1 GB."/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##;
+        x += "</StackPanel></Border>";
+        x
     }
 
     fn memory_cards(&self, r: &Report) -> String {

@@ -12,6 +12,7 @@
 //! * [`safety`]: the never-touch list and the checks every finding must pass.
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
+pub mod anomaly;
 pub mod config;
 pub mod export;
 pub mod facts;
@@ -105,7 +106,10 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     }
     let mut seen: std::collections::HashSet<String> = found.iter().map(|f| f.path.to_string_lossy().to_lowercase()).collect();
     let projects = projects::find(tree);
-    let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30).into_iter().chain(projects::build_outputs(tree, &projects, facts, PROJECT_IDLE_DAYS, 100 << 20));
+    let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30)
+        .into_iter()
+        .chain(projects::build_outputs(tree, &projects, facts, PROJECT_IDLE_DAYS, 100 << 20))
+        .chain(anomaly::find(tree));
     for f in extra {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);

@@ -313,6 +313,46 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
     out
 }
 
+/// Every node any of `patterns` matches (the first match on a path; links never followed).
+pub(crate) fn matching_nodes(tree: &Tree, patterns: &[Pattern]) -> Vec<usize> {
+    let starts: Vec<(usize, String)> = if tree.nodes[ROOT].name == MULTIPLE {
+        tree.nodes[ROOT].children.iter().map(|&c| (c, tree.nodes[c].name.clone())).collect()
+    } else {
+        vec![(ROOT, tree.path_of(ROOT).to_string_lossy().into_owned())]
+    };
+    let mut out = Vec::new();
+    for pat in patterns {
+        for (start, base) in &starts {
+            let mut s = pat.start();
+            for part in segments(base) {
+                s = pat.step(&s, &part);
+            }
+            if s.is_empty() {
+                continue;
+            }
+            let mut stack = vec![(*start, s)];
+            while let Some((n, s)) = stack.pop() {
+                if pat.accepts(&s) {
+                    if !out.contains(&n) {
+                        out.push(n);
+                    }
+                    continue;
+                }
+                if tree.nodes[n].is_reparse_point() && n != *start {
+                    continue;
+                }
+                for &c in &tree.nodes[n].children {
+                    let next = pat.step(&s, &tree.nodes[c].name.to_lowercase());
+                    if !next.is_empty() {
+                        stack.push((c, next));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A PowerShell single-quoted literal. Besides `'`, PowerShell ends a single-quoted string at
 /// the typographic quotes U+2018..U+201B, so each of those is doubled too.
 pub fn ps_quote(s: &str) -> String {

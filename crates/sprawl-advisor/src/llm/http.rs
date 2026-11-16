@@ -96,9 +96,18 @@ fn last_error(what: &str) -> String {
     format!("{what}: {why}")
 }
 
-/// POST `body` to `url` with `headers` ("Name: value" each).
-#[cfg(windows)]
+/// POST `body` (JSON) to `url` with `headers`.
 pub fn post(url: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<Response, String> {
+    request("POST", url, headers, Some(body), timeout)
+}
+
+/// GET `url`.
+pub fn get(url: &str, headers: &[(&str, String)], timeout: Duration) -> Result<Response, String> {
+    request("GET", url, headers, None, timeout)
+}
+
+#[cfg(windows)]
+fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]>, timeout: Duration) -> Result<Response, String> {
     use ffi::*;
     use std::ptr::null;
 
@@ -120,21 +129,24 @@ pub fn post(url: &str, headers: &[(&str, String)], body: &[u8], timeout: Duratio
         if connect.0.is_null() {
             return Err(last_error(&format!("connecting to {host}")));
         }
-        let verb = wide("POST");
+        let verb = wide(verb);
         let path_w = wide(&path);
         let request = Handle(WinHttpOpenRequest(connect.0, verb.as_ptr(), path_w.as_ptr(), null(), null(), null(), if secure { FLAG_SECURE } else { 0 }));
         if request.0.is_null() {
             return Err(last_error("opening the request"));
         }
-        let mut all = String::from("Content-Type: application/json\r\n");
+        let mut all = String::from(if body.is_some() { "Content-Type: application/json\r\n" } else { "" });
         for (k, v) in headers {
             // a header value can't break into another header
             all.push_str(&format!("{k}: {}\r\n", v.replace(['\r', '\n'], "")));
         }
-        let hw = wide(&all);
-        if WinHttpAddRequestHeaders(request.0, hw.as_ptr(), u32::MAX, ADDREQ_ADD_REPLACE) == 0 {
-            return Err(last_error("adding headers"));
+        if !all.is_empty() {
+            let hw = wide(&all);
+            if WinHttpAddRequestHeaders(request.0, hw.as_ptr(), u32::MAX, ADDREQ_ADD_REPLACE) == 0 {
+                return Err(last_error("adding headers"));
+            }
         }
+        let body = body.unwrap_or(&[]);
         let len = u32::try_from(body.len()).map_err(|_| "request too big".to_string())?;
         if WinHttpSendRequest(request.0, null(), 0, body.as_ptr().cast(), len, len, 0) == 0 {
             return Err(last_error(&format!("sending to {host}")));
@@ -186,7 +198,7 @@ pub fn post(url: &str, headers: &[(&str, String)], body: &[u8], timeout: Duratio
 }
 
 #[cfg(not(windows))]
-pub fn post(_: &str, _: &[(&str, String)], _: &[u8], _: Duration) -> Result<Response, String> {
+fn request(_: &str, _: &str, _: &[(&str, String)], _: Option<&[u8]>, _: Duration) -> Result<Response, String> {
     Err("HTTP is only built for Windows".into())
 }
 

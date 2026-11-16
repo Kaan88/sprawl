@@ -21,6 +21,30 @@ use crate::rules::{ps_quote, RM_FN};
 use crate::safety::{self, Never};
 use crate::{find_path, segments};
 
+/// The tools of the "Ask your disk" chat: looking, remembering, filtering the map, reading small
+/// manifests and (with the user's consent each time) searching the web. No findings here.
+pub fn chat_specs() -> Vec<ToolSpec> {
+    let keep = ["list_children", "largest", "by_type", "owner_of", "remember"];
+    let mut v: Vec<ToolSpec> = specs().into_iter().filter(|t| keep.contains(&t.name)).collect();
+    let path = json!({"type": "string", "description": "Absolute Windows path"});
+    v.push(ToolSpec {
+        name: "set_filter",
+        description: "Show something on the user's map and tables by setting Sprawl's filter. Patterns separated by |, * and ? as wildcards,             case-insensitive. A pattern with a backslash matches the full path (C:\\Users\\*\\Downloads\\*), one without matches names (*.mp4).             A pattern without wildcards matches anywhere in the name. Empty clears the filter.",
+        schema: json!({"type": "object", "properties": {"filter": {"type": "string"}}, "required": ["filter"]}),
+    });
+    v.push(ToolSpec {
+        name: "read_manifest",
+        description: "Read the start of a small text file that says what something is: package.json, a Steam .acf or .vdf, a README,             a .toml, .ini, .xml, .json or .yaml. Up to 16 KB. Not for logs, keys or anything private.",
+        schema: json!({"type": "object", "properties": {"path": path}, "required": ["path"]}),
+    });
+    v.push(ToolSpec {
+        name: "web_lookup",
+        description: "Search the web to find out what a folder, file or app is. The user sees the exact query and must allow it,             so keep it short and leave out personal names and paths.",
+        schema: json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+    });
+    v
+}
+
 pub fn specs() -> Vec<ToolSpec> {
     let path = json!({"type": "string", "description": "Absolute Windows path, as it appears in the report or a tool answer"});
     vec![
@@ -108,6 +132,10 @@ pub struct Tools<'a> {
     pub prefs: Vec<Pref>,
     pub labels: Vec<Label>,
     pub proposals: Vec<Proposal>,
+    /// A filter the model asked to show (chat), for the app to apply.
+    pub filter: Option<String>,
+    /// Asks the user whether a web search may go out; `None`: never.
+    pub consent: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 fn path_arg(input: &Value) -> Result<PathBuf, String> {
@@ -138,6 +166,8 @@ impl<'a> Tools<'a> {
             prefs: Vec::new(),
             labels: Vec::new(),
             proposals: Vec::new(),
+            filter: None,
+            consent: None,
         };
         for f in already {
             t.remember(&f.path);
@@ -220,6 +250,23 @@ impl<'a> Tools<'a> {
                 })
             }
             "report_finding" => self.report_finding(input),
+            "set_filter" => {
+                let f = clean_text(input["filter"].as_str().unwrap_or(""));
+                self.filter = Some(f.clone());
+                Ok(if f.is_empty() { "Filter cleared.".into() } else { format!("The map now shows only what matches {f}.") })
+            }
+            "read_manifest" => self.read_manifest(input),
+            "web_lookup" => {
+                let q = clean_text(input["query"].as_str().unwrap_or(""));
+                if q.len() < 2 {
+                    return Err("give a query".into());
+                }
+                let allowed = self.consent.is_some_and(|ask| ask(&q));
+                if !allowed {
+                    return Err("The user didn't allow this search.".into());
+                }
+                web_search(&q)
+            }
             "remember" => {
                 let text = input["text"].as_str().unwrap_or("");
                 match input["kind"].as_str() {
@@ -265,6 +312,33 @@ impl<'a> Tools<'a> {
             }
             other => Err(format!("there is no tool called {other}")),
         }
+    }
+
+    /// The start of a small, plainly descriptive text file in the scan.
+    fn read_manifest(&self, input: &Value) -> Result<String, String> {
+        let (n, _) = self.node(input)?;
+        let node = &self.tree.nodes[n];
+        if node.is_dir || node.is_reparse_point() {
+            return Err("that is a folder or a link; give a file".into());
+        }
+        let name = node.name.to_lowercase();
+        const EXT: &[&str] = &["json", "vdf", "acf", "md", "txt", "toml", "ini", "xml", "yaml", "yml", "cfg", "nfo", "manifest", "csproj", "gradle", "inf"];
+        const PRIVATE: &[&str] = &["secret", "password", "passwd", "token", "credential", "private", "wallet", ".env", "id_rsa", "id_ed25519", "cookie", "login", "auth", "key"];
+        let ext_ok = name.rsplit_once('.').is_some_and(|(_, e)| EXT.contains(&e)) || name.starts_with("readme") || name.starts_with("license");
+        if !ext_ok || PRIVATE.iter().any(|p| name.contains(p)) {
+            return Err("only small descriptive files (manifests, READMEs, settings files without secrets) can be read".into());
+        }
+        if node.size > 256 << 10 {
+            return Err("over 256 KB; that isn't a manifest".into());
+        }
+        let path = self.tree.path_of(n);
+        let mut buf = Vec::new();
+        let f = std::fs::File::open(&path).map_err(|e| format!("couldn't open it: {e}"))?;
+        std::io::Read::read_to_end(&mut std::io::Read::take(f, 16 << 10), &mut buf).map_err(|e| e.to_string())?;
+        if buf.contains(&0) {
+            return Err("it isn't text".into());
+        }
+        Ok(format!("{}:\n{}", path.display(), String::from_utf8_lossy(&buf)))
     }
 
     /// Turn a model's claim into a finding, or say why not.
@@ -344,6 +418,53 @@ impl<'a> Tools<'a> {
     }
 }
 
+/// A web search through DuckDuckGo's HTML page: the first results' titles, addresses and
+/// snippets, as text.
+pub(crate) fn web_search(q: &str) -> Result<String, String> {
+    let enc: String = q
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else if b == b' ' { "+".into() } else { format!("%{b:02X}") })
+        .collect();
+    let url = format!("https://html.duckduckgo.com/html/?q={enc}");
+    super::log_request("GET (web lookup)", &url);
+    let r = super::http::get(&url, &[("Accept", "text/html".into())], std::time::Duration::from_secs(20))?;
+    if r.status != 200 {
+        return Err(format!("the search answered HTTP {}", r.status));
+    }
+    let results = parse_results(&r.body);
+    if results.is_empty() {
+        return Ok("No results (the search may have refused an automated request).".into());
+    }
+    Ok(results.into_iter().take(6).map(|(t, u, s)| format!("- {t} ({u})\n  {s}")).collect::<Vec<_>>().join("\n"))
+}
+
+/// (title, address, snippet) of each result on a DuckDuckGo HTML page.
+pub(crate) fn parse_results(html: &str) -> Vec<(String, String, String)> {
+    let text = |s: &str| -> String {
+        let mut out = String::new();
+        let mut tag = false;
+        for c in s.chars() {
+            match c {
+                '<' => tag = true,
+                '>' => tag = false,
+                c if !tag => out.push(c),
+                _ => {}
+            }
+        }
+        out.replace("&amp;", "&").replace("&quot;", "\"").replace("&#x27;", "'").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").trim().to_string()
+    };
+    let mut out = Vec::new();
+    for block in html.split("class=\"result__a\"").skip(1) {
+        let title = block.split_once('>').map(|(_, r)| r.split("</a>").next().unwrap_or("")).map(text).unwrap_or_default();
+        let url = block.split("href=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+        let snippet = block.split("class=\"result__snippet\"").nth(1).and_then(|r| r.split_once('>')).map(|(_, r)| r.split("</a>").next().unwrap_or("")).map(text).unwrap_or_default();
+        if !title.is_empty() {
+            out.push((clean_text_long(&title, 200), clean_text_long(&url, 300), clean_text_long(&snippet, 400)));
+        }
+    }
+    out
+}
+
 /// [`clean_text`] with a longer limit, for evidence and summaries.
 fn clean_text_long(s: &str, max: usize) -> String {
     let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
@@ -387,6 +508,24 @@ mod tests {
         assert!(t.call("report_finding", &root).unwrap_err().contains("whole scan"));
         assert!(t.call("nope", &json!({})).is_err());
         assert!(t.call("finish", &json!({"summary": "done"})).is_ok() && t.summary.as_deref() == Some("done"));
+        // chat tools: a filter is passed on; a web search without consent never goes out
+        assert!(t.call("set_filter", &json!({"filter": "*.bin"})).is_ok() && t.filter.as_deref() == Some("*.bin"));
+        assert!(t.call("web_lookup", &json!({"query": "what is DXCache"})).unwrap_err().contains("didn't allow"));
+        std::fs::write(dir.join("package.json"), "{\"name\": \"x\"}").unwrap();
+        std::fs::write(dir.join("api-key.json"), "{}").unwrap();
+        let tree2 = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let t2 = Tools::new(&tree2, &facts, "m", &[], &Memory::default());
+        assert!(t2.read_manifest(&json!({"path": dir.join("package.json").display().to_string()})).unwrap().contains("\"name\""));
+        assert!(t2.read_manifest(&json!({"path": dir.join("api-key.json").display().to_string()})).is_err(), "nothing that looks private");
+        assert!(t2.read_manifest(&json!({"path": cache.join("x").join("a.bin").display().to_string()})).is_err(), "only descriptive files");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_results_parse() {
+        let html = r#"<div><a rel="nofollow" class="result__a" href="https://example.com/a">What is <b>DXCache</b> &amp; why</a>
+            <a class="result__snippet" href="x">NVIDIA&#x27;s shader cache.</a></div>"#;
+        let r = parse_results(html);
+        assert_eq!(r, vec![("What is DXCache & why".into(), "https://example.com/a".into(), "NVIDIA's shader cache.".into())]);
     }
 }

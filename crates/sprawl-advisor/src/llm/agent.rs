@@ -8,7 +8,7 @@ use sprawl_core::Tree;
 use super::anthropic::Anthropic;
 use super::claude_code::ClaudeCode;
 use super::openai::OpenAi;
-use super::tools::{specs, Tools};
+use super::tools::{chat_specs, specs, Tools};
 use super::{clip, Chat};
 use crate::config::{self, AiConfig, Detected, Provider};
 use crate::facts::Facts;
@@ -32,6 +32,117 @@ const SINGLE: &str = "You have no tools in this conversation. Answer with one JS
 \"remedy\": \"delete|uninstall|move|info\", \"evidence\": [\"...\"], \"confidence\": 0.8}]}
 Only report paths that appear in the report, with the exact bytes shown there. Risk: green = comes back by itself, amber = costs something, \
 orange = the user's own files, red = never touch. Sprawl writes any command itself.";
+
+const CHAT: &str = "You answer questions about the user's disk inside Sprawl, a disk analyser for Windows. \
+You get a compact report of the scan and tools to look closer; use them before you answer, and answer briefly and concretely, with sizes. \
+To show something on the user's map, call set_filter. You can't delete anything: to win back space, point the user to the Advisor's findings, \
+its 'I need N GB' plan, or 'Ask Claude'. If you learn what a folder is, or the user states a preference, call remember.";
+
+/// Something the chat has for the app.
+#[derive(Debug)]
+pub enum ChatEvent {
+    Progress(String),
+    Reply(String),
+    /// Show this filter on the map (empty clears it).
+    Filter(String),
+    Remember { prefs: Vec<Pref>, labels: Vec<Label> },
+    Failed(String),
+}
+
+/// "Ask your disk": answer each question from `questions` until the channel closes. Runs on its
+/// own thread with its own copy of the scan, so filtering the map doesn't end it.
+pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool) {
+    let Ok(first) = questions.recv() else { return };
+    if cfg.provider == Provider::Off {
+        events(ChatEvent::Failed("AI is off. Choose a provider with Set up AI.".into()));
+        return;
+    }
+    let model = if cfg.model.trim().is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.trim().to_string() };
+    events(ChatEvent::Progress("Reading the scan...".into()));
+    let mut facts = Facts::gather();
+    facts.attach_usage(tree);
+    let report = super::report::build(tree, &facts, &[], None, None) + &memory.context();
+    let mut tools = Tools::new(tree, &facts, &model, &[], memory);
+    tools.consent = Some(consent);
+    let tools_ok = cfg.provider != Provider::ClaudeCode;
+    let opening = format!("{report}\n\n# The user asks\n{first}");
+    let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
+        let specs = if with_tools { chat_specs() } else { Vec::new() };
+        let system = if with_tools { CHAT.to_string() } else { format!("{CHAT}\nYou have no tools in this conversation: answer from the report.") };
+        Ok(match cfg.provider {
+            Provider::Off => return Err("AI is off".into()),
+            Provider::Anthropic => {
+                let key = config::key(Provider::Anthropic).or_else(|| std::env::var("ANTHROPIC_API_KEY").ok()).filter(|k| !k.trim().is_empty());
+                Box::new(Anthropic::new(key.ok_or("No Anthropic API key. Add one in Options > AI setup.")?, &model, system, opening.clone(), &specs))
+            }
+            Provider::OpenAi => Box::new(OpenAi::new(&cfg.base_url, config::key(Provider::OpenAi).or_else(|| std::env::var("OPENAI_API_KEY").ok()), &model, system, opening.clone(), &specs)),
+            Provider::ClaudeCode => {
+                let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
+                Box::new(ClaudeCode::new(&exe, &model, &system, &opening))
+            }
+        })
+    };
+    let mut chat = match open_chat(tools_ok) {
+        Ok(c) => c,
+        Err(e) => return events(ChatEvent::Failed(e)),
+    };
+    let mut with_tools = tools_ok;
+    let mut question_open = true;
+    loop {
+        if !question_open {
+            let Ok(q) = questions.recv() else { return };
+            chat.say(&q);
+        }
+        question_open = false;
+        events(ChatEvent::Progress(format!("Asking {model}...")));
+        let mut turns = 0;
+        let mut reply = String::new();
+        loop {
+            let t = match chat.turn() {
+                Ok(t) => t,
+                Err(e) if turns == 0 && with_tools && cfg.provider == Provider::OpenAi && e.to_lowercase().contains("tool") => {
+                    with_tools = false;
+                    match open_chat(false) {
+                        Ok(c) => chat = c,
+                        Err(e) => return events(ChatEvent::Failed(e)),
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    events(ChatEvent::Failed(e));
+                    break;
+                }
+            };
+            turns += 1;
+            if !t.text.trim().is_empty() {
+                reply = t.text.trim().to_string();
+            }
+            if t.calls.is_empty() || turns >= 15 {
+                break;
+            }
+            let mut results = Vec::new();
+            for c in &t.calls {
+                let what = c.input["path"].as_str().or(c.input["query"].as_str()).or(c.input["filter"].as_str()).unwrap_or("");
+                events(ChatEvent::Progress(format!("{} {what}", c.name.replace('_', " "))));
+                let (text, err) = match tools.call(&c.name, &c.input) {
+                    Ok(t) => (t, false),
+                    Err(e) => (e, true),
+                };
+                if let Some(f) = tools.filter.take() {
+                    events(ChatEvent::Filter(f));
+                }
+                results.push((c.id.clone(), clip(text, 12_000), err));
+            }
+            chat.answer(results);
+        }
+        if !tools.prefs.is_empty() || !tools.labels.is_empty() {
+            events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels) });
+        }
+        if !reply.is_empty() {
+            events(ChatEvent::Reply(reply));
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct AiRun {

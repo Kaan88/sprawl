@@ -14,13 +14,15 @@ use super::{log_request, Chat, Turn};
 pub struct ClaudeCode {
     exe: PathBuf,
     model: String,
+    /// Everything so far: the instructions, the report and the conversation as text.
     prompt: String,
-    answered: bool,
+    /// There is something new to answer.
+    pending: bool,
 }
 
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
-        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), prompt: format!("{system}\n\n{first}"), answered: false }
+        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), prompt: format!("{system}\n\n{first}"), pending: true }
     }
 }
 
@@ -35,10 +37,10 @@ pub(crate) fn parse(out: &str) -> Result<String, String> {
 
 impl Chat for ClaudeCode {
     fn turn(&mut self) -> Result<Turn, String> {
-        if self.answered {
+        if !self.pending {
             return Ok(Turn::default());
         }
-        self.answered = true;
+        self.pending = false;
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
         // a .cmd shim has to go through cmd; the prompt goes on stdin, so nothing is quoted
         let is_cmd = self.exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd"));
@@ -84,12 +86,18 @@ impl Chat for ClaudeCode {
         }
         let _ = writer.join();
         let out = reader.join().unwrap_or_default();
-        Ok(Turn { text: parse(&out)?, ..Turn::default() })
+        let text = parse(&out)?;
+        // each new process gets the whole conversation
+        self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
+        Ok(Turn { text, ..Turn::default() })
     }
 
     fn answer(&mut self, _: Vec<(String, String, bool)>) {}
 
-    fn say(&mut self, _: &str) {}
+    fn say(&mut self, text: &str) {
+        self.prompt.push_str(&format!("\n\nThe user:\n{text}"));
+        self.pending = true;
+    }
 }
 
 #[cfg(test)]

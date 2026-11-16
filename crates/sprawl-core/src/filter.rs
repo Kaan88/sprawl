@@ -1,7 +1,8 @@
 //! WizTree-style name/path filters.
 //!
 //! * `*` matches any run of characters, `?` exactly one; matching is case-insensitive.
-//! * Several patterns separated by `|` match when any of them does: `*.mp4|*.mkv`.
+//! * Several patterns separated by `|` (or `;`, as the filter box suggests) match when any of
+//!   them does: `*.mp4|*.mkv`.
 //! * A pattern containing `\` is matched against the full path (`C:\Users\*\Downloads\*`),
 //!   otherwise against the name only (`*.log`).
 //! * A pattern without `*` or `?` matches anywhere inside the name/path (`setup` finds
@@ -30,7 +31,7 @@ pub struct Filter {
 impl Filter {
     pub fn new(pattern: &str) -> Self {
         let alts = pattern
-            .split('|')
+            .split(['|', ';'])
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .map(|p| {
