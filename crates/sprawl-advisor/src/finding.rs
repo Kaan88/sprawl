@@ -68,4 +68,8 @@ pub struct Finding {
     /// The command comes from the built-in pack. Commands from anywhere else are refused.
     #[serde(skip)]
     pub trusted: bool,
+    /// From Sprawl's own built-in rules. Only these are trusted on risk; a local pack's or a
+    /// model's deletes are raised to at least Amber or Orange.
+    #[serde(skip)]
+    pub builtin: bool,
 }

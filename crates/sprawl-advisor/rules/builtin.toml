@@ -93,7 +93,8 @@ paths = ['%SystemDrive%\$Recycle.Bin']
 risk = "amber"
 remedy = "command"
 command = "Clear-RecycleBin -Force"
-why = "Files you deleted. Emptying it can't be undone."
+allow_protected = true
+why = "Files you deleted. The command empties your Recycle Bin on every drive (the size shown is this drive's, for all users). Emptying it can't be undone."
 
 [[rule]]
 id = "win.windows-old"
@@ -102,6 +103,7 @@ paths = ['%SystemDrive%\Windows.old']
 risk = "amber"
 remedy = "command"
 command = "Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs   # tick 'Previous Windows installation(s)'"
+allow_protected = true
 why = "The Windows you upgraded from. Removing it means you can't roll back the upgrade."
 
 [[rule]]
@@ -112,5 +114,6 @@ paths = ['%SystemRoot%\WinSxS']
 risk = "green"
 remedy = "command"
 command = "DISM /Online /Cleanup-Image /StartComponentCleanup"
+allow_protected = true
 min_bytes = 4294967296
 why = "Superseded component versions. Never delete WinSxS by hand: DISM removes only what is no longer needed. Part of its size is hard links shared with System32, so the real saving is smaller than shown."

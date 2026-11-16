@@ -122,13 +122,13 @@ pub fn extension_of(name: &str) -> String {
 
 /// The one spelling of a scan root that paths, the never-touch list and deletes all agree on:
 /// absolute (a relative root would resolve against whatever folder a later step runs in),
-/// without the `\?\` prefix, and with 8.3 short names (`PROGRA~1`) expanded to long ones.
+/// without the `\\?\` prefix, and with 8.3 short names (`PROGRA~1`) expanded to long ones.
 pub fn canonical_root(path: &Path) -> PathBuf {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let s = abs.display().to_string();
-    let s = if let Some(rest) = s.strip_prefix(r"\?\UNC\") {
-        format!(r"\{rest}")
-    } else if let Some(rest) = s.strip_prefix(r"\?\") {
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\").or_else(|| s.strip_prefix(r"\\.\")) {
         rest.to_string()
     } else {
         s

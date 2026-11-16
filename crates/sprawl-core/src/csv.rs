@@ -210,7 +210,11 @@ fn normalise(raw: &str) -> (String, bool) {
 /// (`.` or `..` segments, wildcards, names Windows would trim, absurd depth) are skipped.
 fn plausible_path(p: &str) -> bool {
     let rl = root_len(p);
-    if rl == 0 || p.contains(['*', '?', '<', '>', '|']) {
+    if rl == 0 || p.contains(['*', '?', '<', '>', '|']) || p.chars().any(|c| (c as u32) < 0x20) {
+        return false;
+    }
+    // a `:` past the drive is an alternate data stream, not a file
+    if p[rl..].contains(':') {
         return false;
     }
     let mut depth = 0;
@@ -504,6 +508,8 @@ mod tests {
         assert!(!plausible_path(r"C:\Users\sam\Documents\*"));
         assert!(!plausible_path(r"C:\notes."));
         assert!(!plausible_path(r"relative\path"));
+        assert!(!plausible_path(r"C:\a.txt:hidden"));
+        assert!(!plausible_path("C:\\a\u{7}b"));
         assert_eq!(normalise("C:"), (r"C:\".to_string(), false));
         assert_eq!(normalise(r"\\?\C:\x\y.txt"), (r"C:\x\y.txt".to_string(), false));
         assert_eq!(normalise(r"\\?\UNC\srv\share\x\"), (r"\\srv\share\x".to_string(), true));

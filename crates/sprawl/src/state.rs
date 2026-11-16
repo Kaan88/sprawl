@@ -372,7 +372,12 @@ impl State {
 
     pub(crate) fn update_header(&self, path: &std::path::Path) {
         text(&self.root, "SelText", &path.display().to_string());
-        if let Some((total, free)) = win32::disk_space(path) {
+        // A CSV file names any path it likes: asking a network path for its free space would
+        // connect to that server just because the file was opened.
+        let from_csv = self.tree.as_ref().is_some_and(|t| t.method == sprawl_core::ScanMethod::Csv);
+        let remote = path.to_string_lossy().starts_with(r"\\");
+        let space = if from_csv && remote { None } else { win32::disk_space(path) };
+        if let Some((total, free)) = space {
             let used = total.saturating_sub(free);
             let pct = |v: u64| if total == 0 { 0.0 } else { v as f64 * 100.0 / total as f64 };
             text(&self.root, "TotalText", &self.size(total));

@@ -460,8 +460,13 @@ impl State {
         if let Some(p) = never.hit(&s) {
             return Some(format!("{s}\n\nis protected (it matches {p}). Deleting it could break Windows, an app or your profile."));
         }
+        if let Some((at, p)) = never.hit_inside(t, n) {
+            return Some(format!("This folder holds\n{at}\n\nwhich is protected ({p}). Delete the things around it one by one instead."));
+        }
         match std::fs::symlink_metadata(path) {
             Ok(m) if m.is_dir() == t.nodes[n].is_dir => None,
+            // a junction or folder link: deleting it removes the link, not what it points to
+            Ok(m) if m.file_type().is_symlink() && t.nodes[n].is_reparse_point() => None,
             Ok(_) => Some("It changed since the scan (a file became a folder or the other way round). Scan again first.".into()),
             Err(_) => Some("It's no longer there. Scan again to refresh.".into()),
         }

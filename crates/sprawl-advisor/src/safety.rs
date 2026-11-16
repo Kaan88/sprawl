@@ -31,6 +31,8 @@ pub enum Rejection {
     UntrustedCommand,
     /// Red means information only.
     RedWithAction,
+    /// A CSV import isn't the disk: nothing is offered from one.
+    NotAScan,
     /// The protected folders couldn't all be worked out (an environment variable is missing),
     /// so nothing destructive is offered.
     NeverListIncomplete,
@@ -47,6 +49,7 @@ impl fmt::Display for Rejection {
             Rejection::LinksInside(p) => write!(f, "{p} contains a junction or link"),
             Rejection::ScanRoot => write!(f, "it is the whole scanned folder or drive"),
             Rejection::UntrustedCommand => write!(f, "its command didn't come from the built-in rules"),
+            Rejection::NotAScan => write!(f, "the tree was loaded from a CSV file, not scanned"),
             Rejection::RedWithAction => write!(f, "it is marked never-touch but carries an action"),
             Rejection::NeverListIncomplete => write!(f, "the protected Windows folders couldn't be worked out"),
         }
@@ -61,9 +64,10 @@ pub struct Never {
     incomplete: bool,
 }
 
-/// Never deleted or moved by hand. `**` covers everything below. `?:` is any drive, so the
-/// system folders of a second drive or a second Windows are covered too; the `%VAR%` entries
-/// catch relocated folders.
+/// Never deleted or moved by hand, nor anything that holds one of them. `**` covers everything
+/// below. `?:` is any drive, so the system folders of a second drive or a second Windows are
+/// covered too; the `%VAR%` entries catch relocated folders and profiles. `?:\**\<name>` entries
+/// are also looked for inside any folder about to go.
 const NEVER: &[&str] = &[
     r"?:",
     r"?:\Windows",
@@ -110,13 +114,39 @@ const NEVER: &[&str] = &[
     r"?:\Users\*\OneDrive*",
     r"?:\Users\*\.ssh\**",
     r"?:\Users\*\.gnupg\**",
+    r"?:\Users\*\.aws\**",
+    r"?:\Users\*\.azure\**",
+    r"?:\Users\*\.kube\**",
+    r"?:\Users\*\.docker\**",
     r"?:\Users\*\AppData\Local\Google\Chrome\User Data\**",
     r"?:\Users\*\AppData\Local\Microsoft\Edge\User Data\**",
+    r"?:\Users\*\AppData\Local\BraveSoftware\Brave-Browser\User Data\**",
     r"?:\Users\*\AppData\Roaming\Mozilla\Firefox\Profiles\**",
-    r"?:\**\*.vhdx",
+    r"?:\Users\*\AppData\Roaming\Thunderbird\Profiles\**",
+    r"?:\Users\*\AppData\Roaming\Bitcoin\**",
+    r"?:\Users\*\AppData\Roaming\Ethereum\**",
+    r"?:\Users\*\AppData\Roaming\Exodus\**",
+    r"?:\Users\*\AppData\Roaming\Electrum\**",
+    // a relocated profile
     r"%USERPROFILE%",
+    r"%USERPROFILE%\AppData",
+    r"%USERPROFILE%\NTUSER.DAT*",
+    r"%USERPROFILE%\.ssh\**",
+    r"%USERPROFILE%\.gnupg\**",
     r"%LOCALAPPDATA%",
+    r"%LOCALAPPDATA%\Microsoft\**",
+    r"%LOCALAPPDATA%\Packages\**",
     r"%APPDATA%",
+    r"%APPDATA%\Microsoft\**",
+    // anywhere: disk images, password vaults, mail stores, wallets
+    r"?:\**\*.vhdx",
+    r"?:\**\*.vhd",
+    r"?:\**\*.avhdx",
+    r"?:\**\*.vmdk",
+    r"?:\**\*.vdi",
+    r"?:\**\*.kdbx",
+    r"?:\**\*.pst",
+    r"?:\**\wallet.dat",
 ];
 
 /// Folders that hold the user's own work.
@@ -135,7 +165,42 @@ const USER_DATA: &[&str] = &[
     r"?:\Users\*\iCloud*\**",
     r"?:\Users\*\Google Drive*\**",
     r"?:\Users\*\source\**",
+    // a relocated profile or redirected folders (unset variables simply match nothing)
+    r"%USERPROFILE%\Documents\**",
+    r"%USERPROFILE%\Desktop\**",
+    r"%USERPROFILE%\Pictures\**",
+    r"%USERPROFILE%\Videos\**",
+    r"%USERPROFILE%\Music\**",
+    r"%USERPROFILE%\Downloads\**",
+    r"%OneDrive%\**",
+    r"%OneDriveConsumer%\**",
+    r"%OneDriveCommercial%\**",
 ];
+
+/// One spelling for every path: `X:\...` with backslashes. `\\?\` and `\\.\` are dropped; a
+/// network path `\\server\share\rest` becomes `U:\rest`, so the any-drive entries still apply
+/// (an admin share `\\pc\C$\Windows` is still Windows). `None` for anything else, which
+/// callers treat as protected.
+fn drive_form(path: &str) -> Option<String> {
+    let p = path.replace('/', "\\");
+    let p = if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = p.strip_prefix(r"\\?\").or_else(|| p.strip_prefix(r"\\.\")) {
+        rest.to_string()
+    } else {
+        p
+    };
+    if let Some(unc) = p.strip_prefix(r"\\") {
+        let mut it = unc.splitn(3, '\\');
+        let (server, share) = (it.next()?, it.next()?);
+        if server.is_empty() || share.is_empty() {
+            return None;
+        }
+        return Some(format!(r"U:\{}", it.next().unwrap_or("")));
+    }
+    let b = p.as_bytes();
+    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\')).then_some(p)
+}
 
 impl Never {
     pub fn default_list() -> Never {
@@ -149,18 +214,35 @@ impl Never {
         Never { patterns, user_data: USER_DATA.iter().map(|p| Pattern::new(p)).collect(), incomplete }
     }
 
-    /// The never-list entry `path` falls under, if any.
-    pub fn hit(&self, path: &str) -> Option<&str> {
-        self.patterns.iter().find(|(_, p)| p.matches(path)).map(|(s, _)| s.as_str())
-    }
-
     /// Every `%VAR%` entry could be worked out. When not, callers refuse destructive actions.
     pub fn complete(&self) -> bool {
         !self.incomplete
     }
 
+    /// The never-list entry `path` falls under or holds, if any. A path in a form that isn't a
+    /// drive or network path is refused outright.
+    pub fn hit(&self, path: &str) -> Option<&str> {
+        let Some(p) = drive_form(path) else { return Some("(a path Sprawl can't check)") };
+        self.patterns.iter().find(|(_, pat)| pat.matches(&p) || pat.is_above(&p)).map(|(s, _)| s.as_str())
+    }
+
+    /// A never-list entry found anywhere below node `n` (a disk image, a vault) by name.
+    pub fn hit_inside(&self, tree: &Tree, n: usize) -> Option<(String, &str)> {
+        let names: Vec<(&str, &str)> = self.patterns.iter().filter_map(|(s, p)| p.any_depth_name().map(|m| (m, s.as_str()))).collect();
+        let mut stack = tree.nodes[n].children.clone();
+        while let Some(k) = stack.pop() {
+            let name = tree.nodes[k].name.to_lowercase();
+            if let Some((_, s)) = names.iter().find(|(m, _)| crate::rules::seg_match(m, &name)) {
+                return Some((tree.path_of(k).display().to_string(), s));
+            }
+            stack.extend_from_slice(&tree.nodes[k].children);
+        }
+        None
+    }
+
     pub fn is_user_data(&self, path: &str) -> bool {
-        self.user_data.iter().any(|p| p.matches(path))
+        let p = drive_form(path).unwrap_or_default();
+        self.user_data.iter().any(|pat| pat.matches(&p))
     }
 }
 
@@ -170,11 +252,14 @@ fn close_enough(claimed: u64, actual: u64) -> bool {
 }
 
 /// Check one finding against the tree and the disk. Returns it (with its risk raised if it
-/// touches the user's own data) or the reason it was held back.
+/// touches the user's own data or doesn't come from the built-in rules) or the reason it was
+/// held back.
 ///
-/// `tree` must be the full scan (not a filtered view, not a CSV import): sizes and links are
-/// checked against it.
+/// `tree` must be the full scan (not a filtered view): sizes and links are checked against it.
 pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejection> {
+    if tree.method == sprawl_core::ScanMethod::Csv {
+        return Err(Rejection::NotAScan);
+    }
     let n = find_path(tree, &f.path).ok_or(Rejection::NotInTree)?;
     if std::fs::symlink_metadata(&f.path).is_err() {
         return Err(Rejection::Missing);
@@ -192,28 +277,28 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
         return Err(Rejection::RedWithAction);
     }
     let path = f.path.to_string_lossy();
-    let on_path = f.command.as_deref().is_some_and(|c| c.contains(&crate::rules::ps_quote(&path)));
-    // Acts on the files at `path` (rather than asking their owner to clean up).
-    let removes = matches!(f.remedy, Remedy::Delete | Remedy::Move);
-    let destructive = removes || on_path;
     let from_model = matches!(f.source, crate::finding::Source::Model(_));
-    if destructive || from_model {
+    let removes = matches!(f.remedy, Remedy::Delete | Remedy::Move);
+    // A curated built-in rule may run its owner's official clean-up (DISM on WinSxS) on a
+    // protected path; the tool decides what goes, not a recursive delete.
+    let exempt = f.allow_protected && f.builtin && f.trusted && f.remedy == Remedy::Command && !from_model;
+    // Every other command is treated as acting on the files at `path`.
+    let destructive = removes || (f.command.is_some() && !exempt);
+    if (destructive || from_model) && !exempt {
         if never.incomplete {
             return Err(Rejection::NeverListIncomplete);
         }
-        // Curated built-in rules may run an official clean-up command on a protected path
-        // (DISM on WinSxS); nothing else may touch one.
-        let exempt = f.allow_protected && !removes && !from_model;
-        if !exempt {
-            if let Some(p) = never.hit(&path) {
-                return Err(Rejection::Never(p.to_string()));
-            }
+        if let Some(p) = never.hit(&path) {
+            return Err(Rejection::Never(p.to_string()));
         }
     }
     if destructive {
         let multi_top = tree.nodes[sprawl_core::ROOT].name == sprawl_core::MULTIPLE && tree.nodes[n].parent == Some(sprawl_core::ROOT);
         if n == sprawl_core::ROOT || multi_top {
             return Err(Rejection::ScanRoot);
+        }
+        if let Some((at, p)) = never.hit_inside(tree, n) {
+            return Err(Rejection::Never(format!("{at} ({p})")));
         }
         // no junctions on the way down from the scan root
         let mut i = Some(n);
@@ -234,6 +319,15 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     }
     let mut out = f.clone();
     out.bytes = actual;
+    // Risk is only taken on trust from the built-in rules: anything else that removes files is
+    // at least Amber (a local pack) or Orange (a model), whatever it claims.
+    if removes && !f.builtin {
+        let floor = if from_model { Risk::Orange } else { Risk::Amber };
+        if out.risk < floor {
+            out.risk = floor;
+            out.evidence.push("Not from Sprawl's built-in rules, so check it yourself".into());
+        }
+    }
     if never.is_user_data(&path) && out.risk < Risk::Orange {
         out.risk = Risk::Orange;
         out.evidence.push("Inside your own files, so only you can decide".into());

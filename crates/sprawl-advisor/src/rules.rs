@@ -213,6 +213,23 @@ impl Pattern {
         states.contains(&self.segs.len())
     }
 
+    /// Whether `path` is a folder above something the pattern names, so deleting it would take
+    /// that with it: `C:\Users\sam\AppData\Local\Google` for `...\Google\Chrome\User Data\**`.
+    /// Only the fixed part before the first `**` counts (`?:\**\*.vhdx` contains nothing fixed).
+    pub(crate) fn is_above(&self, path: &str) -> bool {
+        let fixed = self.segs.iter().position(|s| s == "**").unwrap_or(self.segs.len());
+        let parts = segments(path);
+        parts.len() < fixed && parts.iter().zip(&self.segs).all(|(p, s)| seg_match(s, p))
+    }
+
+    /// For `?:\**\<name>`: the name pattern (`*.vhdx`), checked against every name in a tree.
+    pub(crate) fn any_depth_name(&self) -> Option<&str> {
+        match self.segs.as_slice() {
+            [d, s, n] if d == "?:" && s == "**" && !n.contains('\\') => Some(n.as_str()),
+            _ => None,
+        }
+    }
+
     /// Whether a whole absolute path matches.
     pub(crate) fn matches(&self, path: &str) -> bool {
         let mut s = self.start();
@@ -239,7 +256,9 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
     } else {
         vec![(ROOT, tree.path_of(ROOT).to_string_lossy().into_owned())]
     };
-    for pack in packs {
+    // The built-in pack first, so a local pack can't shadow its findings by matching first.
+    let ordered: Vec<&RulePack> = packs.iter().filter(|p| p.trusted).chain(packs.iter().filter(|p| !p.trusted)).collect();
+    for pack in ordered {
         for rule in &pack.rules {
             let min = rule.min_bytes.unwrap_or(DEFAULT_MIN);
             for pat in rule.paths.iter().map(|p| Pattern::new(p)) {
@@ -315,7 +334,12 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     if node.is_dir {
         evidence.push(format!("{} files in {} folders", node.files, node.folders));
     }
-    evidence.push(format!("Matched rule {} from the {} pack", rule.id, pack.pack.name));
+    // provenance from where the pack was loaded, never from the name it gives itself
+    if pack.trusted {
+        evidence.push(format!("Matched built-in rule {}", rule.id));
+    } else {
+        evidence.push(format!("Matched rule {} from the local pack \"{}\"", rule.id, pack.pack.name));
+    }
     Finding {
         path,
         owner: rule.owner.clone(),
@@ -330,6 +354,7 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
         allow_protected: pack.trusted && rule.allow_protected,
         // the program's own delete command, or the built-in pack's
         trusted: pack.trusted || rule.command.is_none(),
+        builtin: pack.trusted,
     }
 }
 

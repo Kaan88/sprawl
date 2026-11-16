@@ -131,8 +131,18 @@ mod tests {
         let windows = sprawl_core::scan(Path::new(r"C:\Windows\Web"), |_| {}).unwrap();
         let model = Finding { path: windows.path_of(ROOT), bytes: windows.nodes[ROOT].size, remedy: Remedy::Command, source: Source::Model("m".into()), ..good.clone() };
         assert!(matches!(safety::check(&model, &windows, &never), Err(safety::Rejection::Never(_))));
-        let rule = Finding { source: Source::Rule("r".into()), ..model.clone() };
+        let rule = Finding {
+            source: Source::Rule("r".into()),
+            command: Some("DISM /Online /Cleanup-Image /StartComponentCleanup".into()),
+            allow_protected: true,
+            trusted: true,
+            builtin: true,
+            ..model.clone()
+        };
         assert!(safety::check(&rule, &windows, &never).is_ok(), "curated command on a protected path is allowed");
+        // the same command from a local pack or a model is not
+        let local = Finding { builtin: false, ..rule.clone() };
+        assert!(matches!(safety::check(&local, &windows, &never), Err(safety::Rejection::Never(_))));
         let delete = Finding { remedy: Remedy::Delete, ..rule };
         assert!(matches!(safety::check(&delete, &windows, &never), Err(safety::Rejection::Never(_))));
 
@@ -153,6 +163,27 @@ mod tests {
         assert!(never.hit(r"D:\vm\disk.vhdx").is_some());
         assert!(never.hit(r"D:\games\cache").is_none());
         assert!(never.is_user_data(r"D:\Users\sam\Downloads\a.iso"));
+        // folders that hold protected things are protected
+        assert!(never.hit(r"C:\Users\sam\AppData\Local\Google").is_some());
+        assert!(never.hit(r"C:\Users\sam\AppData\Roaming\Mozilla\Firefox").is_some());
+        assert!(never.hit(r"C:\Users\sam\AppData\Local\Google\DriveFS").is_none());
+        // other spellings of the same places
+        assert!(never.hit(r"\\?\C:\Windows\System32").is_some());
+        assert!(never.hit(r"\\.\C:\Windows").is_some());
+        assert!(never.hit(r"\\localhost\C$\Windows\System32").is_some());
+        assert!(never.hit(r"\\?\UNC\pc\share\Users\sam\.ssh").is_some());
+        assert!(never.hit("C:/Windows/System32").is_some());
+        assert!(never.hit(r"\\?\Volume{1234}\x").is_some(), "unknown forms fail closed");
+        assert!(never.hit(r"\\nas\media\films").is_none());
+        // a recursive remedy is refused when a disk image sits inside
+        std::fs::write(dir.join("cache").join("deep").join("vm.vhdx"), b"x").unwrap();
+        let t2 = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let n = find_path(&t2, &dir.join("cache")).unwrap();
+        assert!(never.hit_inside(&t2, n).is_some());
+        let with_image = Finding { bytes: t2.nodes[n].size, ..good.clone() };
+        assert!(matches!(safety::check(&with_image, &t2, &never), Err(safety::Rejection::Never(_))));
+        // a local pack's delete is never shown as green
+        assert!(good.risk >= Risk::Amber);
 
         std::fs::remove_dir_all(dir.join("cache")).unwrap();
         assert_eq!(safety::check(&good, &tree, &never), Err(safety::Rejection::Missing));

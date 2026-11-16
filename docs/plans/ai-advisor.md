@@ -26,6 +26,11 @@ Decisions so far:
 3. **Advise only.** Nothing is executed by Sprawl for now.
 4. **Useful without AI.** The rules engine on its own already produces most findings. The model
    adds judgement, identifies unknown folders, plans, and answers questions.
+5. **Commands come from Rust.** A model or a local rule pack names a remedy; only the built-in
+   pack carries command text, and only it is trusted on risk (`safety::check`). Generated
+   commands are quoted for PowerShell only: the UI must label them "PowerShell" (or launch them
+   in PowerShell itself), since pasted into cmd.exe a folder named `a & b` would run `b`.
+6. **Every new safety-relevant layer gets an independent review** before it counts as done.
 
 ## Architecture
 
