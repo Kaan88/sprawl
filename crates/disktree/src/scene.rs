@@ -147,7 +147,8 @@ impl Scene {
             if !node.is_dir || iw <= 0.0 || ih <= 0.0 {
                 continue;
             }
-            let kids: Vec<usize> = node.children.iter().copied().filter(|&c| weight(c) > 0).collect();
+            let mut kids: Vec<usize> = node.children.iter().copied().filter(|&c| weight(c) > 0).collect();
+            kids.sort_by_key(|&c| std::cmp::Reverse(weight(c)));
             let sizes: Vec<f64> = kids.iter().map(|&c| weight(c) as f64).collect();
             let rects = squarify(&sizes, Rect::new(ix, iy, iw, ih));
             for (&c, cr) in kids.iter().zip(rects).rev() {

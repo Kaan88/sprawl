@@ -27,15 +27,17 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use disktree_core::ROOT;
-use windows_core::{IInspectable, Interface, Ref, HSTRING};
+use windows_core::{IInspectable, Interface, HSTRING};
 
 use app::{App, APP};
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
+use bindings::Windows::Foundation::Point;
+use tables::Which;
 use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, ToggleMenuFlyoutItem};
 use bindings::Microsoft::UI::Xaml::Media::{CompositionTarget, DesktopAcrylicBackdrop, SystemBackdrop};
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
-use state::{find, keep, load, with, State, Units, View, ROW_H, STATE};
+use state::{find, keep, load, with, State, Units, View, STATE};
 
 // ---------------------------------------------------------------- start-up
 
@@ -61,6 +63,19 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
+];
+
+/// Right-click menu on the tree: (item name, command).
+const ROW_MENU: &[(&str, &str)] = &[
+    ("cOpen", "mOpen"),
+    ("cExplore", "mExplore"),
+    ("cCmd", "mCmd"),
+    ("cCopyPath", "mCopyPath"),
+    ("cMapHere", "mMapHere"),
+    ("cExpandAll", "mExpandAll"),
+    ("cCopyInfo", "mCopyInfo"),
+    ("cDelete", "mDelete"),
+    ("cDeleteForever", "mDeleteForever"),
 ];
 
 pub(crate) fn launch() -> windows_core::Result<()> {
@@ -151,38 +166,64 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
     })?);
 
-    // Clicks on the two tables: the row comes from the position within the scrolled content.
-    for (name, ext) in [("TreeScroll", false), ("ExtScroll", true)] {
+    // The two tables. Positions are taken relative to the scrolled content, so row = y / ROW_H.
+    let content_pos = |sv: &IInspectable, get: &dyn Fn(&UIElement) -> windows_core::Result<Point>| -> Option<(f64, f64)> {
+        let c = sv.cast::<ScrollViewer>().ok()?.Content().ok()?.cast::<UIElement>().ok()?;
+        let p = get(&c).ok()?;
+        Some((p.X as f64, p.Y as f64))
+    };
+    for (name, which) in [("TreeScroll", Which::Main), ("ExtScroll", Which::Exts)] {
         let sv: ScrollViewer = find(&root, name)?;
-        let handler = move |s: Ref<IInspectable>, x: f64, y: f64, double: bool| {
-            let _ = s;
-            with(|st| {
-                if ext {
-                    let k = (y / ROW_H) as usize;
-                    if k < st.exts.len() {
-                        st.ext_selected = if st.ext_selected == Some(k) { None } else { Some(k) };
-                        st.refresh_exts();
-                        st.render_map();
-                    }
-                } else {
-                    st.row_tapped(x, y, double);
-                }
-            });
-        };
         keep(sv.Tapped(move |s, e| {
-            let (Some(sv), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-            let Some(content) = sv.cast::<ScrollViewer>().ok().and_then(|v| v.Content().ok()).and_then(|c| c.cast::<UIElement>().ok()) else { return };
-            if let Ok(p) = e.GetPosition(&content) {
-                handler(s, p.X as f64, p.Y as f64, false);
+            let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+            if let Some((x, y)) = content_pos(s, &|c| e.GetPosition(c)) {
+                with(|st| match which {
+                    Which::Main => st.row_tapped(x, y, false),
+                    Which::Exts => st.ext_tapped(y),
+                });
             }
         })?);
-        if !ext {
-            keep(sv.DoubleTapped(move |s, e| {
-                let (Some(sv), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-                let Some(content) = sv.cast::<ScrollViewer>().ok().and_then(|v| v.Content().ok()).and_then(|c| c.cast::<UIElement>().ok()) else { return };
-                if let Ok(p) = e.GetPosition(&content) {
-                    with(|st| st.row_tapped(p.X as f64, p.Y as f64, true));
-                }
+        keep(sv.ViewChanged(move |_, _| {
+            with(|st| st.fill(which));
+        })?);
+        keep(sv.cast::<FrameworkElement>()?.SizeChanged(move |_, _| {
+            with(|st| st.fill(which));
+        })?);
+        let header: FrameworkElement = find(&root, if which == Which::Main { "TreeHeader" } else { "ExtHeader" })?;
+        keep(header.Tapped(move |s, e| {
+            let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+            let Ok(el) = s.cast::<UIElement>() else { return };
+            let w = s.cast::<FrameworkElement>().and_then(|f| f.ActualWidth()).unwrap_or(0.0);
+            if let Ok(p) = e.GetPosition(&el) {
+                with(|st| st.header_clicked(which, p.X as f64, w));
+            }
+        })?);
+    }
+    let tree_sv: UIElement = find(&root, "TreeScroll")?;
+    keep(tree_sv.DoubleTapped(move |s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        if let Some((x, y)) = content_pos(s, &|c| e.GetPosition(c)) {
+            with(|st| st.row_tapped(x, y, true));
+        }
+    })?);
+    keep(tree_sv.RightTapped(move |s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        let Some((_, y)) = content_pos(s, &|c| e.GetPosition(c)) else { return };
+        let Ok(at) = s.cast::<UIElement>().and_then(|el| e.GetPosition(&el)) else { return };
+        with(|st| st.row_menu(y, at));
+    })?);
+    keep(tree_sv.KeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.table_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
+    // The row menu's items reuse the File menu's commands.
+    for (item, cmd) in ROW_MENU {
+        if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {
+            keep(i.Click(move |_, _| {
+                with(|s| s.command(cmd));
             })?);
         }
     }
@@ -208,6 +249,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         exts: Vec::new(),
         colours: HashMap::new(),
         ext_selected: None,
+        tables: tables::Tables::default(),
         map_root: ROOT,
         map: treemap::MapView::new(panel),
         hud: hud::Hud::default(),

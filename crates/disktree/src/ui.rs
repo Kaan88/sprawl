@@ -34,26 +34,6 @@ fn radio(name: &str, text: &str, checked: bool) -> String {
 
 const SEP: &str = "<MenuFlyoutSeparator/>";
 
-/// Column layout of the tree table: name, % of parent, size, allocated, items, files.
-pub const TREE_COLS: &str = r##"<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="118"/><ColumnDefinition Width="92"/><ColumnDefinition Width="92"/><ColumnDefinition Width="84"/><ColumnDefinition Width="84"/></Grid.ColumnDefinitions>"##;
-/// File view: name, size, allocated, modified, folder.
-pub const FILE_COLS: &str = r##"<Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="92"/><ColumnDefinition Width="92"/><ColumnDefinition Width="130"/><ColumnDefinition Width="3*"/></Grid.ColumnDefinitions>"##;
-/// Extension table: swatch, extension, file type, percent, size, allocated, files.
-pub const EXT_COLS: &str = r##"<Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/><ColumnDefinition Width="96"/><ColumnDefinition Width="80"/><ColumnDefinition Width="80"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>"##;
-
-pub fn header_cells(cols: &str, names: &[(&str, bool)]) -> String {
-    let mut s = format!(r##"<Grid {NS} Height="30" Background="#FF1F2129">{cols}"##);
-    for (i, (n, right)) in names.iter().enumerate() {
-        let align = if *right { "Right" } else { "Left" };
-        s += &format!(
-            r##"<TextBlock Grid.Column="{i}" Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center" HorizontalAlignment="{align}" Margin="10,0,10,0"/>"##,
-            esc(n)
-        );
-    }
-    s += r##"<Border Grid.ColumnSpan="9" Height="1" VerticalAlignment="Bottom" Background="#FF34384A"/></Grid>"##;
-    s
-}
-
 /// Glass surfaces over the acrylic window.
 const CARD: &str = r##"CornerRadius="8" Background="#12FFFFFF" BorderBrush="#1CFFFFFF" BorderThickness="1""##;
 const PANE: &str = r##"CornerRadius="8" Background="#0DFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1""##;
@@ -262,7 +242,23 @@ pub fn page(drives: &[String]) -> String {
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Border x:Name="TreeHeader"/>
-        <ScrollViewer x:Name="TreeScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled"/>
+        <ScrollViewer x:Name="TreeScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" IsTabStop="True" UseSystemFocusVisuals="False">
+          <FlyoutBase.AttachedFlyout>
+            <MenuFlyout x:Name="RowMenu">
+              <MenuFlyoutItem x:Name="cOpen" Text="Open"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8E5;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cExplore" Text="Show in Explorer"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEC50;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cCmd" Text="Command Prompt Here"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE756;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cCopyPath" Text="Copy Path"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8C8;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutSeparator/>
+              <MenuFlyoutItem x:Name="cMapHere" Text="Show on Treemap"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE80A;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cExpandAll" Text="Expand All"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A9;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cCopyInfo" Text="Copy Name and Size"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE16F;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutSeparator/>
+              <MenuFlyoutItem x:Name="cDelete" Text="Delete (to Recycle Bin)"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cDeleteForever" Text="Delete Permanently"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;" Foreground="#FFFF6B6B"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+            </MenuFlyout>
+          </FlyoutBase.AttachedFlyout>
+        </ScrollViewer>
         <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="2" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="DiskTree" FontSize="26" FontWeight="SemiBold"/>

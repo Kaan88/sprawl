@@ -182,6 +182,7 @@ impl State {
             self.map.drawn_once = false;
         }
         self.map.scene.selected = self.selected;
+        self.map.scene.highlight_ext = self.ext_selected.as_deref().map(ext_key);
         // A selected folder lights up its whole block on the map.
         if self.map.live.is_none() {
             if let Some(t) = &self.tree {

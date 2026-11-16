@@ -126,3 +126,7 @@ Microsoft.UI.Xaml.UIElement::IsHitTestVisible
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::ShowAtWithOptions
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::CreateInstance
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::Position
+Microsoft.UI.Xaml.UIElement::Focus
+Microsoft.UI.Xaml.FocusState
+Microsoft.UI.Xaml.Controls.ScrollViewer::ViewportWidth
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::Hide

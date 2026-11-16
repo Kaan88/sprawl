@@ -830,6 +830,26 @@ pub mod Microsoft {
             unsafe impl Send for DependencyObject {}
             unsafe impl Sync for DependencyObject {}
             #[repr(transparent)]
+            #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+            pub struct FocusState(pub i32);
+            impl FocusState {
+                pub const Unfocused: Self = Self(0);
+                pub const Pointer: Self = Self(1);
+                pub const Keyboard: Self = Self(2);
+                pub const Programmatic: Self = Self(3);
+            }
+            impl windows_core::imp::TypeKind for FocusState {
+                type TypeKind = windows_core::imp::CopyType;
+            }
+            impl windows_core::RuntimeType for FocusState {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"enum(Microsoft.UI.Xaml.FocusState;i4)",
+                    );
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(b"Microsoft.UI.Xaml.FocusState");
+            }
+            #[repr(transparent)]
             #[derive(Clone, Debug, Eq, PartialEq)]
             pub struct FrameworkElement(windows_core::IUnknown);
             windows_core::imp::interface_hierarchy!(
@@ -1300,6 +1320,18 @@ pub mod Microsoft {
                             token__,
                             windows_core::Interface::vtable(this).RemoveRightTapped,
                         ))
+                    }
+                }
+                pub fn Focus(&self, value: FocusState) -> windows_core::Result<bool> {
+                    let this = &windows_core::Interface::cast::<IUIElement>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).Focus)(
+                            windows_core::Interface::as_raw(this),
+                            value,
+                            &mut result__,
+                        )
+                        .map(|| result__)
                     }
                 }
 
@@ -1992,6 +2024,57 @@ pub mod Microsoft {
                     -> windows_core::HRESULT,
                 pub RemoveRightTapped:
                     unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
+                ManipulationStarting: usize,
+                RemoveManipulationStarting: usize,
+                ManipulationInertiaStarting: usize,
+                RemoveManipulationInertiaStarting: usize,
+                ManipulationStarted: usize,
+                RemoveManipulationStarted: usize,
+                ManipulationDelta: usize,
+                RemoveManipulationDelta: usize,
+                ManipulationCompleted: usize,
+                RemoveManipulationCompleted: usize,
+                AccessKeyDisplayRequested: usize,
+                RemoveAccessKeyDisplayRequested: usize,
+                AccessKeyDisplayDismissed: usize,
+                RemoveAccessKeyDisplayDismissed: usize,
+                AccessKeyInvoked: usize,
+                RemoveAccessKeyInvoked: usize,
+                ProcessKeyboardAccelerators: usize,
+                RemoveProcessKeyboardAccelerators: usize,
+                GettingFocus: usize,
+                RemoveGettingFocus: usize,
+                LosingFocus: usize,
+                RemoveLosingFocus: usize,
+                NoFocusCandidateFound: usize,
+                RemoveNoFocusCandidateFound: usize,
+                PreviewKeyDown: usize,
+                RemovePreviewKeyDown: usize,
+                PreviewKeyUp: usize,
+                RemovePreviewKeyUp: usize,
+                BringIntoViewRequested: usize,
+                RemoveBringIntoViewRequested: usize,
+                Measure: usize,
+                Arrange: usize,
+                CapturePointer: usize,
+                ReleasePointerCapture: usize,
+                ReleasePointerCaptures: usize,
+                AddHandler: usize,
+                RemoveHandler: usize,
+                TransformToVisual: usize,
+                InvalidateMeasure: usize,
+                InvalidateArrange: usize,
+                UpdateLayout: usize,
+                CancelDirectManipulations: usize,
+                StartDragAsync: usize,
+                StartBringIntoView: usize,
+                StartBringIntoViewWithOptions: usize,
+                TryInvokeKeyboardAccelerator: usize,
+                pub Focus: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    FocusState,
+                    *mut bool,
+                ) -> windows_core::HRESULT,
             }
             windows_core::imp::define_interface!(
                 IWindow,
@@ -2805,6 +2888,17 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn Focus(&self, value: FocusState) -> windows_core::Result<bool> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).Focus)(
+                            windows_core::Interface::as_raw(self),
+                            value,
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
 
             }
             impl windows_core::RuntimeType for UIElement {
@@ -3589,6 +3683,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
                 }
                 impl windows_core::RuntimeType for Border {
@@ -4157,6 +4263,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -4816,6 +4934,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -5379,6 +5509,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -5948,6 +6090,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -6491,6 +6645,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -7050,7 +7216,11 @@ pub mod Microsoft {
                     ZoomSnapPointsType: usize,
                     SetZoomSnapPointsType: usize,
                     HorizontalOffset: usize,
-                    ViewportWidth: usize,
+                    pub ViewportWidth: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut f64,
+                    )
+                        -> windows_core::HRESULT,
                     ScrollableWidth: usize,
                     ComputedHorizontalScrollBarVisibility: usize,
                     ExtentWidth: usize,
@@ -7971,6 +8141,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
                 }
                 impl windows_core::RuntimeType for IconElement {
@@ -8525,6 +8707,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -9095,6 +9289,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -9153,6 +9359,15 @@ pub mod Microsoft {
                                 windows_core::Interface::as_raw(this),
                                 placementtarget.param().abi(),
                                 showoptions.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn Hide(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<Primitives::IFlyoutBase>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).Hide)(
+                                windows_core::Interface::as_raw(this),
                             )
                             .ok()
                         }
@@ -9757,6 +9972,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -10327,6 +10554,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                 }
                 impl windows_core::RuntimeType for MenuFlyoutItemBase {
                     const SIGNATURE: windows_core::imp::ConstBuffer =
@@ -10866,6 +11105,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -11510,6 +11761,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -11829,6 +12092,16 @@ pub mod Microsoft {
                                 &mut result__,
                             )
                             .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn ViewportWidth(&self) -> windows_core::Result<f64> {
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(self).ViewportWidth)(
+                                windows_core::Interface::as_raw(self),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn VerticalOffset(&self) -> windows_core::Result<f64> {
@@ -12253,6 +12526,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -13034,6 +13319,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -13612,6 +13909,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -14232,6 +14541,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -14983,6 +15304,18 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
 
 
                 }
@@ -15615,6 +15948,18 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
                             ))
+                        }
+                    }
+                    pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).Focus)(
+                                windows_core::Interface::as_raw(this),
+                                value,
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
 
@@ -16405,6 +16750,22 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn Focus(
+                            &self,
+                            value: super::super::FocusState,
+                        ) -> windows_core::Result<bool> {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).Focus)(
+                                    windows_core::Interface::as_raw(this),
+                                    value,
+                                    &mut result__,
+                                )
+                                .map(|| result__)
+                            }
+                        }
 
 
                     }
@@ -16462,6 +16823,14 @@ pub mod Microsoft {
                                     windows_core::Interface::as_raw(self),
                                     placementtarget.param().abi(),
                                     showoptions.param().abi(),
+                                )
+                                .ok()
+                            }
+                        }
+                        pub fn Hide(&self) -> windows_core::Result<()> {
+                            unsafe {
+                                (windows_core::Interface::vtable(self).Hide)(
+                                    windows_core::Interface::as_raw(self),
                                 )
                                 .ok()
                             }
@@ -16673,6 +17042,10 @@ pub mod Microsoft {
                         pub ShowAtWithOptions: unsafe extern "system" fn(
                             *mut core::ffi::c_void,
                             *mut core::ffi::c_void,
+                            *mut core::ffi::c_void,
+                        )
+                            -> windows_core::HRESULT,
+                        pub Hide: unsafe extern "system" fn(
                             *mut core::ffi::c_void,
                         )
                             -> windows_core::HRESULT,
@@ -17496,6 +17869,22 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn Focus(
+                            &self,
+                            value: super::super::FocusState,
+                        ) -> windows_core::Result<bool> {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).Focus)(
+                                    windows_core::Interface::as_raw(this),
+                                    value,
+                                    &mut result__,
+                                )
+                                .map(|| result__)
+                            }
+                        }
 
 
                     }
@@ -18317,6 +18706,22 @@ pub mod Microsoft {
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveRightTapped,
                                 ))
+                            }
+                        }
+                        pub fn Focus(
+                            &self,
+                            value: super::super::FocusState,
+                        ) -> windows_core::Result<bool> {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).Focus)(
+                                    windows_core::Interface::as_raw(this),
+                                    value,
+                                    &mut result__,
+                                )
+                                .map(|| result__)
                             }
                         }
 

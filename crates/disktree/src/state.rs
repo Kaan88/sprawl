@@ -60,7 +60,6 @@ impl Job {
 }
 
 pub(crate) const ROW_H: f64 = 24.0;
-pub(crate) const MAX_ROWS: usize = 900;
 
 pub(crate) struct State {
     pub(crate) window: Window,
@@ -75,7 +74,8 @@ pub(crate) struct State {
     pub(crate) files: Vec<usize>,
     pub(crate) exts: Vec<ExtRow>,
     pub(crate) colours: HashMap<String, usize>,
-    pub(crate) ext_selected: Option<usize>,
+    pub(crate) ext_selected: Option<String>,
+    pub(crate) tables: crate::tables::Tables,
     pub(crate) map_root: usize,
     pub(crate) map: MapView,
     pub(crate) hud: Hud,
@@ -233,8 +233,12 @@ impl State {
         self.map_root = ROOT;
         self.ext_selected = None;
         self.rebuild_exts();
+        self.sort_exts();
         let t = self.tree.as_ref().unwrap();
-        self.files = largest_files(t, 1000);
+        self.files = largest_files(t, usize::MAX);
+        self.sort_tree();
+        self.sort_files();
+        let t = self.tree.as_ref().unwrap();
         text(&self.root, "StatusText", &format!("Scan complete in {:.2} seconds", self.scan_secs));
         text(
             &self.root,

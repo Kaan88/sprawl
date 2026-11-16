@@ -103,6 +103,18 @@ impl State {
                 // The next frame is read back from the GPU and written as a PNG.
                 self.map.capture = Some(user_dir("Pictures").join(format!("DiskTree treemap {}.png", stamp())));
             }
+            "mOpen" => {
+                if let Some(p) = self.selected_path() {
+                    let _ = std::process::Command::new("explorer.exe").arg(&p).spawn();
+                }
+            }
+            "mMapHere" if has_tree => {
+                if let Some(n) = self.selected {
+                    let t = self.tree.as_ref().unwrap();
+                    self.map_root = if t.nodes[n].is_dir { n } else { t.nodes[n].parent.unwrap_or(ROOT) };
+                    self.render_map();
+                }
+            }
             "mExplore" => {
                 if let Some(p) = self.selected_path() {
                     let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", p.display())).spawn();
