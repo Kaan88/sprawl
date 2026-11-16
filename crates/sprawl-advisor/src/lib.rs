@@ -4,6 +4,8 @@
 //! anything: the output is [`Finding`]s with a remedy and a command for the user to run.
 //!
 //! * [`facts`]: which app owns a folder and when it was last used (registry, manifests).
+//! * [`hidden`]: used space the scan can't see (shadow copies, reserved storage, ...).
+//! * [`inuse`]: which programs have files open (Restart Manager).
 //! * [`projects`]: code projects, their build outputs and last activity.
 //! * [`finding`]: the schema every finding follows, from rules and (later) from a model.
 //! * [`rules`]: TOML rule packs and the engine that matches them against a tree.
@@ -13,7 +15,9 @@
 pub mod config;
 pub mod facts;
 pub mod finding;
+pub mod hidden;
 pub mod history;
+pub mod inuse;
 pub mod projects;
 pub mod rules;
 pub mod safety;

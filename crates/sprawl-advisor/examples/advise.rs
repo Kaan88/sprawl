@@ -52,6 +52,12 @@ fn main() {
             println!("              {}", f.path.display());
         }
     }
+    if let Some(h) = sprawl_advisor::hidden::account(&tree, sprawl_advisor::hidden::shadow_storage(&path)) {
+        println!("drive used {}, scanned {}, gap {}", format_size(h.used), format_size(h.scanned), h.gap / (1 << 20));
+        for p in &h.parts {
+            println!("  {:<34} {:>10}  {}", p.label, p.bytes.map(format_size).unwrap_or_default(), p.note);
+        }
+    }
     for (f, why) in &held {
         println!("  held back: {} ({}): {why}", f.title, format_size(f.bytes));
     }
