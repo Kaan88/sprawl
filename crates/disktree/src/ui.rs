@@ -313,7 +313,14 @@ pub fn page(drives: &[String]) -> String {
     </Border>
   </Grid>
 
-  <TextBlock x:Name="MapPath" Grid.Row="5" Text=" " HorizontalAlignment="Center" FontSize="12" Margin="0,7,0,5" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/>
+  <Grid Grid.Row="5" Margin="12,6,12,6">
+    <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" Padding="2" CornerRadius="7" Background="#14FFFFFF">
+      <Button x:Name="ModeMap" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF2C3B63" ToolTipService.ToolTip="Treemap"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeCity" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="12"/><TextBlock Text="City" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeGalaxy" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
+    </StackPanel>
+    <TextBlock x:Name="MapPath" Text=" " HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" Margin="300,0,300,0" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/>
+  </Grid>
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
     {hud}

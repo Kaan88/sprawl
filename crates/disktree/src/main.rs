@@ -123,7 +123,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             })?);
         }
     }
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabAbout"] {
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -139,15 +139,13 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     // The 3D treemap panel.
     let panel: SwapChainPanel = find(&root, "MapPanel")?;
     let map: UIElement = panel.cast()?;
-    let pos = |s: &Option<IInspectable>, e: &bindings::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs| -> Option<(f64, f64)> {
-        let el = s.as_ref()?.cast::<UIElement>().ok()?;
-        let p = e.GetCurrentPoint(&el).ok()?.Position().ok()?;
-        Some((p.X as f64, p.Y as f64))
-    };
     keep(map.PointerMoved(move |s, e| {
         let Some(e) = e.as_ref() else { return };
-        if let Some((x, y)) = pos(&s.cloned(), e) {
-            with(|st| st.map_hover(x, y));
+        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
+        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
+        let pressed = pt.Properties().and_then(|p| p.IsLeftButtonPressed()).unwrap_or(false);
+        if let Ok(p) = pt.Position() {
+            with(|st| st.map_hover(p.X as f64, p.Y as f64, pressed));
         }
     })?);
     keep(map.PointerExited(|_, _| {

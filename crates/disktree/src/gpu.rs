@@ -26,7 +26,7 @@ const FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 const HLSL: &str = r#"
 cbuffer Frame : register(b0) { float4x4 uVP; float4 uEye; float4 uLight; float4 uSize; };
 struct VSIn { float3 pos : POSITION; float3 nor : NORMAL; float4 rect : RECT; float4 par : PARENT; float4 col : COLOR; float4 fx : FX; };
-struct PSIn { float4 sv : SV_Position; float3 n : NORMAL; float2 uv : UV; float2 puv : PUV; float4 col : COLOR; float4 fx : FX; float3 w : WORLD; float2 wh : WH; };
+struct PSIn { float4 sv : SV_Position; float3 n : NORMAL; float2 uv : UV; float2 puv : PUV; float4 col : COLOR; float4 fx : FX; float3 w : WORLD; float2 wh : WH; float4 ex : EXTRA; };
 PSIn vs(VSIn i) {
     PSIn o;
     float2 xy = i.rect.xy + i.pos.xy * i.rect.zw;
@@ -38,14 +38,14 @@ PSIn vs(VSIn i) {
     o.n = float3(i.nor.x, -i.nor.y, i.nor.z * flip);
     o.uv = i.pos.xy;
     o.puv = (xy - i.par.xy) / max(i.par.zw, 1e-3);
-    o.col = i.col; o.fx = i.fx; o.w = w; o.wh = i.rect.zw;
+    o.col = i.col; o.fx = i.fx; o.w = w; o.wh = i.rect.zw; o.ex = i.par;
     return o;
 }
 float4 ps(PSIn i) : SV_Target {
     float3 base = i.col.rgb; float kind = i.col.a;
     if (kind > 1.5 && kind < 2.5) {
         // Glossy floor: dark glass that fades out away from the map, with a soft sheen.
-        float2 d = max(abs(i.w.xy) - uSize.xy * 0.5, 0.0);
+        float2 d = max(abs(i.w.xy) - i.ex.xy, 0.0); // ex.xy: half size of what stands on the floor
         float a = 0.5 * exp(-length(d) / 90.0);
         float3 V = normalize(uEye.xyz - i.w); float3 H = normalize(normalize(uLight.xyz) + V);
         float sheen = pow(saturate(H.z), 90.0) * 0.35;
@@ -54,6 +54,38 @@ float4 ps(PSIn i) : SV_Target {
     }
     bool mirrored = uSize.z > 0.5;
     bool top = mirrored ? i.n.z < -0.5 : i.n.z > 0.5;
+    if (kind > 2.5) {
+        // A building of the city view. ex = (seed, share of lit windows, warmth, accent strength).
+        float3 L = normalize(uLight.xyz); float3 V = normalize(uEye.xyz - i.w); float3 H = normalize(L + V);
+        float3 nn = normalize(i.n);
+        float diff = max(dot(nn, L), 0.0);
+        float3 c = base * (0.25 + 0.9 * diff) * (top ? 1.0 : 0.62) + pow(max(dot(nn, H), 0.0), 40.0) * (top ? 0.12 : 0.03);
+        float3 acc = lerp(float3(0.35, 0.85, 1.0), float3(1.0, 0.62, 0.3), i.ex.z);
+        float glow = i.fx.z;
+        if (!top) {
+            float face = abs(i.n.x) > 0.5 ? i.w.y : i.w.x;
+            float2 cell = float2(face / 7.0, abs(i.w.z) / 8.0);
+            float2 id = floor(cell); float2 f = frac(cell);
+            float win = step(0.22, f.x) * step(f.x, 0.78) * step(0.25, f.y) * step(f.y, 0.75);
+            float h1 = frac(sin(dot(id + i.ex.x * 57.0 + (abs(i.n.x) > 0.5 ? 3.1 : 0.0), float2(12.9898, 78.233))) * 43758.5453);
+            float tw = floor(uEye.w * 0.18 + h1 * 13.0);
+            float h2 = frac(sin(dot(id * 1.7 + tw * 0.37 + i.ex.x * 91.0, float2(39.346, 11.135))) * 43758.5453);
+            float lit = step(h2, i.ex.y);
+            float3 wc = lerp(float3(0.55, 0.82, 1.0), float3(1.0, 0.72, 0.36), i.ex.z) * (0.75 + 0.6 * h1);
+            c *= 1.0 - 0.3 * win * (1.0 - lit);
+            c += wc * win * lit * (1.1 + glow * 2.0);
+        }
+        float2 e = min(i.uv, 1.0 - i.uv) * i.wh;
+        float edge = top ? 1.0 - smoothstep(0.0, 1.5, min(e.x, e.y)) : 0.0;
+        c += acc * edge * i.ex.w * 0.9 + glow * acc * (top ? 0.8 : 0.3);
+        float lum = dot(c, float3(0.3, 0.59, 0.11));
+        c = lerp(c, lum.xxx * 0.32, i.fx.w);
+        if (mirrored) {
+            float a = 0.55 * exp(i.w.z / 40.0);
+            return float4(c * a, a);
+        }
+        return float4(c, 1.0);
+    }
     float3 n;
     if (top) {
         float c1 = kind > 0.5 ? 0.2 : 0.62 * uSize.w;
@@ -107,6 +139,8 @@ pub struct Frame<'a> {
     /// Layout size in DIPs.
     pub size: [f32; 2],
     pub cushion: f32,
+    /// Seconds since start (window flicker in the city view).
+    pub time: f32,
     /// Draw the reflection and the glossy floor.
     pub mirror: bool,
     /// The floor slab, drawn between the reflection and the tiles.
@@ -476,7 +510,7 @@ impl Gpu {
         unsafe {
             let consts = Constants {
                 vp: f.vp,
-                eye: [f.eye[0], f.eye[1], f.eye[2], 1.0],
+                eye: [f.eye[0], f.eye[1], f.eye[2], f.time],
                 light: [f.light[0], f.light[1], f.light[2], 0.0],
                 size: [f.size[0], f.size[1], 0.0, f.cushion],
             };

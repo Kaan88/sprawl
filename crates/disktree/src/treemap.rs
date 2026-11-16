@@ -10,7 +10,7 @@ use windows_core::Interface;
 use crate::bindings::Microsoft::UI::Xaml::Controls::{ScrollViewer, SwapChainPanel};
 use crate::bindings::Microsoft::UI::Xaml::FrameworkElement;
 use crate::gpu::{Frame, Gpu};
-use crate::scene::{ext_key, Info, Scene, FREE};
+use crate::scene::{ext_key, Info, Mode, Scene, CITY_DEPTH, FREE};
 use crate::state::{find, text, State, View, ROW_H};
 use crate::paint;
 
@@ -66,6 +66,7 @@ pub(crate) struct MapView {
     pub(crate) free: Option<u64>,
     pub(crate) cushion_strength: f32,
     pub(crate) mirror: bool,
+    pub(crate) last_pointer: (f64, f64),
     pub(crate) capture: Option<std::path::PathBuf>,
 }
 
@@ -87,6 +88,7 @@ impl MapView {
             free: None,
             cushion_strength: 1.0,
             mirror: true,
+            last_pointer: (0.0, 0.0),
             capture: None,
         }
     }
@@ -110,22 +112,51 @@ impl State {
         let m = &mut self.map;
         if let Some(live) = &m.live {
             let lt = &live.tree;
-            m.scene.relayout(lt, ROOT, &|n| lt.nodes[n].size, &|n| Info { colour: palette_colour(n.saturating_sub(1)), ext_key: 0 }, None);
+            m.scene.relayout(lt, ROOT, &|n| lt.nodes[n].size, &|n| Info { colour: palette_colour(n.saturating_sub(1)), height: 4.0, ..Default::default() }, None);
         } else if let Some(t) = &self.tree {
             let alloc = &self.alloc;
             let by_alloc = m.by_alloc && alloc.len() == t.nodes.len();
             let colours = &self.colours;
             let free = if m.show_free && self.map_root == ROOT { m.free } else { None };
+            let city = m.scene.mode == Mode::City;
+            // City heights: item counts on a log scale, the busiest building about half the map's height.
+            let hmax = m.scene.w.min(m.scene.h) * 0.5;
+            let span = (t.nodes[self.map_root].items().max(1) as f32 * 0.25).max(10.0).log10();
+            let now = std::time::SystemTime::now();
             m.scene.relayout(t, self.map_root, &|n| if by_alloc { alloc[n] } else { t.nodes[n].size }, &|n| {
                 if n == FREE {
-                    return Info { colour: [0.20, 0.23, 0.29], ext_key: u32::MAX };
+                    return Info { colour: [0.20, 0.23, 0.29], ext_key: u32::MAX, height: 1.0, ..Default::default() };
+                }
+                if city {
+                    let node = &t.nodes[n];
+                    let items = if node.is_dir { node.items() } else { 1 };
+                    let height = 3.0 + hmax * ((1.0 + items as f32).log10() / span).min(1.0).powf(1.3);
+                    let age = node.modified.and_then(|m| now.duration_since(m).ok()).map(|d| d.as_secs_f32() / 86_400.0).unwrap_or(365.0);
+                    let accent = if age < 14.0 {
+                        [0.30, 0.82, 1.0]
+                    } else if age < 60.0 {
+                        [0.55, 0.5, 1.0]
+                    } else if age < 180.0 {
+                        [0.95, 0.45, 0.8]
+                    } else if age < 400.0 {
+                        [1.0, 0.65, 0.3]
+                    } else {
+                        [0.55, 0.6, 0.75]
+                    };
+                    let seed = ((n as u32).wrapping_mul(2_654_435_761) >> 8) as f32 / 16_777_216.0;
+                    return Info {
+                        colour: [accent[0] * 0.17 + 0.035, accent[1] * 0.17 + 0.04, accent[2] * 0.17 + 0.055],
+                        ext_key: u32::MAX - 1,
+                        height,
+                        extra: [seed, 0.82 - 0.62 * (age / 500.0).min(1.0), (age / 420.0).min(1.0), if age < 60.0 { 1.0 } else { 0.35 }],
+                    };
                 }
                 let ext = t.nodes[n].extension();
                 let colour = colours
                     .get(&ext)
                     .map(|&i| palette_colour(i))
                     .unwrap_or([paint::GREY.0 as f32 / 255.0, paint::GREY.1 as f32 / 255.0, paint::GREY.2 as f32 / 255.0]);
-                Info { colour, ext_key: ext_key(&ext) }
+                Info { colour, ext_key: ext_key(&ext), ..Default::default() }
             }, free);
         } else {
             m.scene.clear();
@@ -202,7 +233,7 @@ impl State {
         if busy || !self.map.drawn_once || want_capture {
             if let Some(g) = &self.map.gpu {
                 if g.ready() || want_capture {
-                    let labels = if self.map.show_labels { self.map_labels() } else { Vec::new() };
+                    let labels = if self.map.show_labels && self.map.scene.mode == Mode::Map { self.map_labels() } else { Vec::new() };
                     let m = &mut self.map;
                     let frame = Frame {
                         vp: m.scene.vp,
@@ -210,12 +241,19 @@ impl State {
                         light: [-0.45, 0.55, 0.75],
                         size: [m.scene.w, m.scene.h],
                         cushion: m.scene.cushion,
+                        time: { static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new(); T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f32() },
                         mirror: m.mirror && m.scene.tilt_on,
                         floor: (m.mirror && m.scene.tilt_on).then(|| {
                             let (w, h) = (m.scene.w, m.scene.h);
+                            let rect = if m.scene.mode == Mode::Map {
+                                [-w * 0.6, -h * 0.3, w * 2.2, h * 1.9]
+                            } else {
+                                let side = (w * h).sqrt() * 2.4;
+                                [(w - side) / 2.0, (h - side) / 2.0, side, side]
+                            };
                             crate::gpu::Instance {
-                                rect: [-w * 0.6, -h * 0.3, w * 2.2, h * 1.9],
-                                parent: [0.0, 0.0, w, h],
+                                rect,
+                                parent: if m.scene.mode == Mode::Map { [w / 2.0, h / 2.0, 0.0, 0.0] } else { [(w * h).sqrt() / 2.0; 4] },
                                 color: [0.0, 0.0, 0.0, 2.0],
                                 fx: [0.0; 4],
                             }
@@ -266,9 +304,14 @@ impl State {
 
     // ------------------------------------------------------------ pointer
 
-    pub(crate) fn map_hover(&mut self, x: f64, y: f64) {
+    pub(crate) fn map_hover(&mut self, x: f64, y: f64, pressed: bool) {
         if self.shot.is_some() {
             return;
+        }
+        let (px, py) = self.map.last_pointer;
+        self.map.last_pointer = (x, y);
+        if pressed && self.map.scene.mode == Mode::City {
+            self.map.scene.drag((x - px) as f32, (y - py) as f32);
         }
         let before = self.map.scene.hover_leaf;
         let n = self.map.scene.pointer(x as f32, y as f32);
@@ -287,6 +330,25 @@ impl State {
             let v = t.nodes[n].size;
             text(&self.root, "MapPath", &format!("{}   ({})", t.path_of(n).display(), self.size(v)));
         }
+    }
+
+    /// Switch between the treemap, the city and the galaxy.
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        if self.map.scene.mode == mode {
+            return;
+        }
+        self.map.scene.mode = mode;
+        // Tiles change shape (folders become buildings), so start the layout afresh.
+        self.map.scene.clear();
+        self.render_map();
+        for (name, m) in [("ModeMap", Mode::Map), ("ModeCity", Mode::City), ("ModeGalaxy", Mode::Galaxy)] {
+            if let Ok(b) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
+                if let Some(br) = crate::hud::brush(if m == mode { (44, 59, 99) } else { (30, 33, 44) }) {
+                    let _ = b.SetBackground(&br);
+                }
+            }
+        }
+        let _ = CITY_DEPTH;
     }
 
     pub(crate) fn map_leave(&mut self) {

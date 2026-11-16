@@ -17,7 +17,7 @@ impl Settings {
     pub fn load() -> Self {
         let mut values = BTreeMap::new();
         if let Some(text) = path().and_then(|p| std::fs::read_to_string(p).ok()) {
-            for line in text.lines() {
+            for line in text.trim_start_matches('\u{feff}').lines() {
                 if let Some((k, v)) = line.split_once('=') {
                     values.insert(k.trim().to_string(), v.trim().to_string());
                 }

@@ -9,12 +9,30 @@ use disktree_core::{squarify, Rect, Tree};
 use crate::gpu::{Instance, Label};
 
 /// Per-node facts the scene needs, looked up once when a node first appears.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Info {
     pub colour: [f32; 3],
     /// Identifies the file type, for highlighting one type.
     pub ext_key: u32,
+    /// City view: building height in DIPs, and (seed, lit windows, warmth, accent strength).
+    pub height: f32,
+    pub extra: [f32; 4],
 }
+
+/// How the scanned tree is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum Mode {
+    /// Lit, tilted treemap.
+    #[default]
+    Map,
+    /// Folders three levels down become buildings: footprint is size, height is item count.
+    City,
+    /// Folders as star systems.
+    Galaxy,
+}
+
+/// Folder depth (below the treemap root) that becomes a building in the city view.
+pub const CITY_DEPTH: u8 = 3;
 
 #[derive(Clone, Copy)]
 struct Anim {
@@ -65,6 +83,11 @@ pub struct Scene {
     pub tilt_amount: f32,
     /// Leave room under the map for the floor reflection.
     pub mirror: bool,
+    pub mode: Mode,
+    /// City view: automatic orbit plus what the user dragged.
+    orbit: f32,
+    drag_yaw: f32,
+    drag_tilt: f32,
     pub animate: bool,
     tilt: f32,
     yaw: f32,
@@ -96,6 +119,10 @@ impl Default for Scene {
             lift_scale: 1.0,
             tilt_amount: 0.44,
             mirror: true,
+            mode: Mode::Map,
+            orbit: 0.6,
+            drag_yaw: 0.0,
+            drag_tilt: 0.0,
             animate: true,
             tilt: 0.44,
             yaw: 0.0,
@@ -129,7 +156,14 @@ impl Scene {
             a.present = false;
         }
         let (w, h) = (self.w, self.h);
-        let mut stack: Vec<(usize, Rect, u8)> = vec![(root, Rect::new(0.0, 0.0, w as f64, h as f64), 0)];
+        // The city is laid out on a square of the same area, so it stays large as it turns.
+        let start = if self.mode == Mode::City {
+            let side = (w * h).sqrt() as f64;
+            Rect::new((w as f64 - side) / 2.0, (h as f64 - side) / 2.0, side, side)
+        } else {
+            Rect::new(0.0, 0.0, w as f64, h as f64)
+        };
+        let mut stack: Vec<(usize, Rect, u8)> = vec![(root, start, 0)];
         let mut count = 0usize;
         while let Some((n, r, d)) = stack.pop() {
             count += 1;
@@ -151,8 +185,9 @@ impl Scene {
                     ih -= HEADER as f64;
                 }
             }
-            self.place(n, node.parent.unwrap_or(n), node.is_dir, d, label, r, info);
-            if !node.is_dir || iw <= 0.0 || ih <= 0.0 {
+            let building = self.mode == Mode::City && node.is_dir && d >= CITY_DEPTH;
+            self.place(n, node.parent.unwrap_or(n), node.is_dir && !building, d, label, r, info);
+            if building || !node.is_dir || iw <= 0.0 || ih <= 0.0 {
                 continue;
             }
             let mut kids: Vec<usize> = node.children.iter().copied().filter(|&c| weight(c) > 0).collect();
@@ -279,9 +314,20 @@ impl Scene {
         self.yaw += (ty - self.yaw) * k;
         let (w, h) = (self.w.max(1.0), self.h.max(1.0));
         let p = perspective(30f32.to_radians(), w / h, 10.0, 40_000.0);
+        let city = self.mode == Mode::City;
+        if city && self.animate {
+            self.orbit += dt * 0.07;
+        }
+        let (oy, ot) = (self.orbit + self.drag_yaw + self.yaw * 2.0, (1.02 + self.drag_tilt).clamp(0.35, 1.3));
         let make = |d: f32| {
-            let e = [d * self.yaw.sin() * self.tilt.cos(), -d * self.tilt.sin(), d * self.tilt.cos() * self.yaw.cos()];
-            (mul(&p, &look_at(e, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])), e)
+            if city {
+                // orbit around the middle of the map, looking a little above the floor
+                let e = [d * ot.sin() * oy.sin(), -d * ot.sin() * oy.cos(), d * ot.cos()];
+                (mul(&p, &look_at(e, [0.0, 0.0, h * 0.06], [0.0, 0.0, 1.0])), e)
+            } else {
+                let e = [d * self.yaw.sin() * self.tilt.cos(), -d * self.tilt.sin(), d * self.tilt.cos() * self.yaw.cos()];
+                (mul(&p, &look_at(e, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])), e)
+            }
         };
         // With the mirror on, the map moves up a little to show its reflection underneath.
         let room = self.mirror && self.tilt_on;
@@ -290,10 +336,20 @@ impl Scene {
         for _ in 0..20 {
             let d = (lo + hi) / 2.0;
             let (m, _) = make(d);
-            let ok = [[-w / 2., -h / 2.], [w / 2., -h / 2.], [w / 2., h / 2.], [-w / 2., h / 2.]].iter().all(|c| {
-                let q = xform(&m, [c[0], c[1], 0.0, 1.0]);
-                (q[0] / q[3]).abs() <= 0.985 && (q[1] / q[3]).abs() <= ylim
-            });
+            let ok = if city {
+                // the whole turning city stays in view: test its bounding circle
+                let r = (w * h).sqrt() * 0.68;
+                (0..16).all(|k| {
+                    let a = k as f32 / 16.0 * std::f32::consts::TAU;
+                    let q = xform(&m, [r * a.cos(), r * a.sin(), 0.0, 1.0]);
+                    (q[0] / q[3]).abs() <= 0.97 && (q[1] / q[3]).abs() <= ylim
+                })
+            } else {
+                [[-w / 2., -h / 2.], [w / 2., -h / 2.], [w / 2., h / 2.], [-w / 2., h / 2.]].iter().all(|c| {
+                    let q = xform(&m, [c[0], c[1], 0.0, 1.0]);
+                    (q[0] / q[3]).abs() <= 0.985 && (q[1] / q[3]).abs() <= ylim
+                })
+            };
             if ok {
                 hi = d;
             } else {
@@ -308,7 +364,7 @@ impl Scene {
         self.vp = m;
         self.ivp = invert(&m).unwrap_or(IDENTITY);
         self.eye = e;
-        still
+        still || (city && self.animate)
     }
 
     /// Screen DIPs of a layout point at height `z`.
@@ -345,6 +401,13 @@ impl Scene {
         }
         self.settled_frames = 0;
         hit
+    }
+
+    /// Drag with the left button in the city view turns and tilts the camera.
+    pub fn drag(&mut self, dx: f32, dy: f32) {
+        self.drag_yaw -= dx * 0.006;
+        self.drag_tilt = (self.drag_tilt - dy * 0.004).clamp(-0.55, 0.3);
+        self.settled_frames = 0;
     }
 
     pub fn leave(&mut self) {
@@ -484,17 +547,32 @@ impl Scene {
                 moving = true;
             }
 
-            let gap = if !a.is_dir && a.w > 3.0 && a.h > 3.0 { 0.45 } else { 0.0 };
-            let (colour, kind) = if a.is_dir {
+            let city = self.mode == Mode::City && !a.is_dir;
+            let gap = if city && a.w > 6.0 && a.h > 6.0 {
+                1.6
+            } else if !a.is_dir && a.w > 3.0 && a.h > 3.0 {
+                0.45
+            } else {
+                0.0
+            };
+            let (colour, kind) = if city {
+                (a.info.colour, 3.0)
+            } else if a.is_dir {
                 let v = if a.depth == 1 { 0.15 } else { 0.12 };
                 ([v, v * 1.04, v * 1.25], 1.0)
             } else {
                 (a.info.colour, 0.0)
             };
-            let base_h = if a.is_dir { 0.6 + (3.0 - a.depth.min(3) as f32) * 0.4 } else { 3.2 + ((a.w * a.h).sqrt() * 0.03).min(4.0) };
+            let base_h = if city {
+                a.info.height
+            } else if a.is_dir {
+                0.6 + (3.0 - a.depth.min(3) as f32) * 0.4
+            } else {
+                3.2 + ((a.w * a.h).sqrt() * 0.03).min(4.0)
+            };
             self.instances.push(Instance {
                 rect: [a.x + gap, a.y + gap, (a.w - gap * 2.0).max(0.0), (a.h - gap * 2.0).max(0.0)],
-                parent: pr,
+                parent: if city { a.info.extra } else { pr },
                 color: [colour[0], colour[1], colour[2], kind],
                 fx: [base_h, a.lift.max(0.0), a.glow, a.dim],
             });

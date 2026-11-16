@@ -282,6 +282,16 @@ impl State {
                 }
                 self.render_map();
             }
+            "ModeMap" | "ModeCity" | "ModeGalaxy" => {
+                let mode = match name {
+                    "ModeCity" => crate::scene::Mode::City,
+                    "ModeGalaxy" => crate::scene::Mode::Galaxy,
+                    _ => crate::scene::Mode::Map,
+                };
+                self.set_mode(mode);
+                self.settings.set("view", name);
+                self.settings.save();
+            }
             "TabTree" => self.set_view(View::Tree),
             "TabFiles" => self.set_view(View::Files),
             "TabAbout" => self.set_view(View::About),
@@ -354,6 +364,9 @@ impl State {
                 let _ = x.SetIsChecked(true);
             }
             self.command(&u);
+        }
+        if let Some(v) = self.settings.get("view").map(str::to_string) {
+            self.command(&v);
         }
         if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, "oExplorer") {
             let _ = x.SetIsChecked(dialogs::explorer_menu_installed());
