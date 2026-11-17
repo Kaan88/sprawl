@@ -40,6 +40,18 @@ pub mod rules;
 pub mod safety;
 pub mod snapshot;
 pub mod tuning;
+
+/// "Work offline" (Settings > Network): while set, nothing leaves this PC. Every HTTP request
+/// (update check, community cleaners, AI providers, web lookups) and Claude Code are refused.
+pub static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a refused request says while working offline.
+pub const OFFLINE_MSG: &str = "Sprawl is working offline (Settings > Network): nothing is sent.";
+
+/// Whether "Work offline" is on.
+pub fn offline() -> bool {
+    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+}
 #[cfg(windows)]
 pub(crate) mod reg;
 

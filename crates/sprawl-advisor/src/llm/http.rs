@@ -186,6 +186,11 @@ fn request_raw(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&
     use ffi::*;
     use std::ptr::null;
 
+    // every request passes here: while working offline, none goes out
+    if crate::offline() {
+        return Err(crate::OFFLINE_MSG.into());
+    }
+
     let (secure, host, port, path) = split_url(url)?;
     let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
     unsafe {
@@ -310,6 +315,27 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
 
+    /// The tests that make requests, one at a time: one of them turns "Work offline" on.
+    static NET: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// While working offline nothing goes out: the local server never sees a connection.
+    #[test]
+    fn offline_sends_nothing() {
+        let _one = NET.lock().unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        crate::OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+        let p = post(&format!("http://127.0.0.1:{port}/v1/x"), &[], b"{}", Duration::from_secs(5));
+        let g = get(&format!("http://127.0.0.1:{port}/"), &[], Duration::from_secs(5));
+        let d = download(&format!("https://127.0.0.1:{port}/"), &["127.0.0.1"], &[], 100, Duration::from_secs(5));
+        crate::OFFLINE.store(false, std::sync::atomic::Ordering::Relaxed);
+        for r in [p.err(), g.err(), d.err()] {
+            assert_eq!(r.as_deref(), Some(crate::OFFLINE_MSG));
+        }
+        assert!(listener.accept().is_err(), "no connection was made");
+    }
+
     #[test]
     fn sse_lines() {
         let mut s = Sse::default();
@@ -327,6 +353,7 @@ mod tests {
 
     #[test]
     fn posts_to_a_local_server() {
+        let _one = NET.lock().unwrap_or_else(|e| e.into_inner());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {

@@ -110,6 +110,9 @@ impl ClaudeCode {
         if let Some(why) = elevated_refusal(sprawl_core::is_elevated()) {
             return Err(why.into());
         }
+        if crate::offline() {
+            return Err(crate::OFFLINE_MSG.into());
+        }
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
         // Rust escapes arguments for a .cmd shim itself; the prompt goes on stdin
         let mut cmd = Command::new(&self.exe);
