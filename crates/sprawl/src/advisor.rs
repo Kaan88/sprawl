@@ -75,6 +75,8 @@ impl Report {
 
 enum Msg {
     Report(Box<Report>),
+    /// The analysis of this tree generation stopped on an error (a panic, noted in crash.log).
+    Failed(u64),
     Hidden(u64, Option<HiddenSpace>),
     /// (tree generation, scan id, growth)
     Growth(u64, u64, Option<sprawl_advisor::growth::Growth>),
@@ -547,7 +549,11 @@ impl State {
         let scan_id = self.scan_id;
         let want_growth = self.advisor.growth_cache.as_ref().is_none_or(|(id, _)| *id != scan_id);
         std::thread::spawn(move || {
-            let (r, facts) = analyse(&t, gen, &memory);
+            // a fault in the rules ends this check, not the tab: it says so and offers Check again
+            let Some((r, facts)) = caught(|| analyse(&t, gen, &memory)) else {
+                let _ = tx.send(Msg::Failed(gen));
+                return;
+            };
             let (root, allocated, errors) = (t.path_of(sprawl_core::ROOT), t.nodes[sprawl_core::ROOT].allocated, t.errors);
             if tx.send(Msg::Report(Box::new(r))).is_err() {
                 return;
@@ -610,6 +616,12 @@ impl State {
                     self.advisor.running = false;
                     self.advisor.open = None;
                     self.advisor.in_use = None;
+                }
+                Msg::Failed(gen) => {
+                    if gen == self.tree_gen {
+                        self.advisor.running = false;
+                        self.advisor.note = Some("The check stopped on an error inside Sprawl (written to crash.log). Press Check again.");
+                    }
                 }
                 Msg::Hidden(key, h) => {
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
@@ -2637,5 +2649,20 @@ mod script_tests {
         assert_eq!(out.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), vec![r"C:\a"]);
         assert_eq!(guesses, 1);
         assert!(script_items(Vec::new()).0.is_empty(), "nothing ticked: nothing written");
+    }
+}
+
+/// `f`'s answer, or None when it panicked (the panic hook has already noted it).
+fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
+#[cfg(test)]
+mod caught_tests {
+    #[test]
+    fn a_panic_in_the_analysis_is_an_answer() {
+        assert_eq!(super::caught(|| 7), Some(7));
+        let r: Option<u8> = super::caught(|| panic!("a rule went wrong"));
+        assert_eq!(r, None);
     }
 }
