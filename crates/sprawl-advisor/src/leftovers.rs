@@ -174,7 +174,7 @@ fn holds_chromium(tree: &Tree, n: usize) -> bool {
 
 /// Folder names that hold the user's own work, not an application's.
 pub const WORK_FOLDERS: &[&str] = &[
-    "sketches", "projects", "documents", "worlds", "maps", "profiles", "screenshots", "recordings", "replays", "backups", "exports", "library", "libraries", "workspace",
+    "sketches", "projects", "documents", "worlds", "maps", "profiles", "screenshots", "recordings", "replays", "backups", "exports", "workspace",
 ];
 
 /// What in the first levels of `n` is the user's own work: saved games (a folder whose name
@@ -484,6 +484,10 @@ mod tests {
         let t2 = sprawl_core::scan(&base, |_| {}).unwrap();
         assert!(work_in(&t2, crate::find_path(&t2, &doc).unwrap()).is_some_and(|(r, s)| r == "notes.docx" && !s));
         assert!(work_in(&t2, crate::find_path(&t2, &roaming.join("GoneApp")).unwrap()).is_none());
+        // "library" is where many applications keep what they ship: not the user's work
+        big(&roaming.join("Shipped").join("library").join("presets.bin"), true);
+        let t3 = sprawl_core::scan(&base, |_| {}).unwrap();
+        assert!(work_in(&t3, crate::find_path(&t3, &roaming.join("Shipped")).unwrap()).is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 }
