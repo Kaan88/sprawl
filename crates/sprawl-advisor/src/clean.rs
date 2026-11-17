@@ -132,6 +132,9 @@ pub struct Outcome {
     pub kept_chosen: u64,
     /// Items left because they are on the never-list (a mail store, a disk image).
     pub kept_protected: u64,
+    /// Bytes sent to the Recycle Bin (freed only when the bin is emptied), and their files.
+    pub recycled: u64,
+    pub recycled_files: u64,
 }
 
 /// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
@@ -198,10 +201,20 @@ const NAME_SURROGATE: u32 = 0x2000_0000;
 /// and deleted through that handle, and each folder stays open (and so can't be renamed or
 /// swapped for a link) while what is in it goes. The root's real path is checked once open.
 pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
+    run_with(path, action, spare, None, stop, progress)
+}
+
+/// [`run`], sending what would be deleted to the Recycle Bin when `bin` is given (the user's own
+/// files). The same items are left as for a delete: new since the scan, kept, never-list names,
+/// odd names, a path that leads elsewhere; links are still removed as links. A folder goes to the
+/// bin whole only when nothing inside it must stay; otherwise what can go goes, one by one. What
+/// can't go to the bin (none for this volume, too big for it) stays as it is, with the reason:
+/// it is never deleted instead. `progress` gets the bytes freed and sent to the bin so far.
+pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result<crate::recycle::Bin, String>>, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
     let mut o = Outcome::default();
     match action {
         Action::Tool { command } => tool(command, stop, &mut o),
-        _ => tree(path, action, spare, stop, &mut o, progress),
+        _ => tree(path, action, spare, bin.as_deref_mut(), stop, &mut o, progress),
     }
     if stop.load(Ordering::Relaxed) {
         o.stopped = true;
@@ -309,7 +322,7 @@ struct Frame {
     remove: bool,
 }
 
-fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
+fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result<crate::recycle::Bin, String>>, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
     if odd_name(path) {
         return o.problem(path, "skipped, its name ends in a dot or space");
     }
@@ -342,11 +355,30 @@ fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut 
     };
     if !plain_dir {
         if matches!(action, Action::Remove) {
-            delete_one(path, &h, &info, o, progress);
+            match bin.as_deref_mut() {
+                // a file to the bin; a link is removed as a link (what it points to stays)
+                Some(b) if info.attrs & REPARSE == 0 => {
+                    if let Err(why) = recycle_one(path, &h, info.size, 1, b, o, progress) {
+                        o.problem(path, why);
+                    }
+                }
+                _ => delete_one(path, &h, &info, o, progress),
+            }
         } else {
             o.problem(path, "not a plain folder any more");
         }
         return;
+    }
+    // to the bin: the whole folder when nothing in it must stay
+    if let (Some(b), Action::Remove) = (bin.as_deref_mut(), action) {
+        if let Some((bytes, files)) = whole(path, spare) {
+            match recycle_one(path, &h, bytes, files, b, o, progress) {
+                Ok(()) => return,
+                Err(Moved::Held(why)) => return o.problem(path, why),
+                // it couldn't be moved as one (a file in it is open): one by one below
+                Err(Moved::Failed(_)) => {}
+            }
+        }
     }
     let kids = match list(path) {
         Ok(k) => k,
@@ -357,7 +389,10 @@ fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut 
         Some(cut) => kids.into_iter().filter(|k| !is_new(k, cut)).collect(),
         None => kids,
     };
-    let mut stack = vec![Frame { h, path: path.to_path_buf(), kids: kids.into_iter(), remove: matches!(action, Action::Remove) }];
+    // what goes to the bin goes as files and whole folders: a folder left holding something
+    // that must stay is never removed
+    let recycling = bin.is_some();
+    let mut stack = vec![Frame { h, path: path.to_path_buf(), kids: kids.into_iter(), remove: matches!(action, Action::Remove) && !recycling }];
     while let Some(top) = stack.last_mut() {
         if stop.load(Ordering::Relaxed) {
             o.stopped = true;
@@ -403,8 +438,22 @@ fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut 
             continue;
         }
         if info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0 {
+            if pattern.is_none() {
+                if let Some(b) = bin.as_deref_mut() {
+                    if let Some((bytes, files)) = whole(&k, spare) {
+                        match recycle_one(&k, &h, bytes, files, b, o, progress) {
+                            Ok(()) => continue,
+                            Err(Moved::Held(why)) => {
+                                o.problem(&k, why);
+                                continue;
+                            }
+                            Err(Moved::Failed(_)) => {}
+                        }
+                    }
+                }
+            }
             match list(&k) {
-                Ok(kids) => stack.push(Frame { h, path: k, kids: kids.into_iter(), remove: pattern.is_none() }),
+                Ok(kids) => stack.push(Frame { h, path: k, kids: kids.into_iter(), remove: pattern.is_none() && !recycling }),
                 Err(e) => o.problem(&k, e),
             }
         } else if info.attrs & REPARSE != 0 && info.attrs & DIRECTORY != 0 {
@@ -413,7 +462,14 @@ fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut 
                 delete_one(&k, &h, &info, o, progress);
             }
         } else if pattern.is_none_or(|p| like(&name, p)) {
-            delete_one(&k, &h, &info, o, progress);
+            match bin.as_deref_mut() {
+                Some(b) if info.attrs & REPARSE == 0 => {
+                    if let Err(why) = recycle_one(&k, &h, info.size, 1, b, o, progress) {
+                        o.problem(&k, why);
+                    }
+                }
+                _ => delete_one(&k, &h, &info, o, progress),
+            }
         }
     }
 }
@@ -435,6 +491,105 @@ fn delete_one(p: &Path, h: &win::Handle, info: &win::Info, o: &mut Outcome, prog
         Err(e) if e.raw_os_error() == Some(145) => {}
         Err(e) => o.problem(p, e),
     }
+}
+
+/// Why an item didn't go to the bin.
+enum Moved {
+    /// It can't (no bin, too big): it stays, with this reason.
+    Held(String),
+    /// Moving it failed (a file in it is open): a folder can still go one item at a time.
+    Failed(String),
+}
+
+impl std::fmt::Display for Moved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Moved::Held(s) | Moved::Failed(s) => f.write_str(s),
+        }
+    }
+}
+
+/// Everything in folder `p` would go by a Remove: nothing in it is new since the scan, kept,
+/// on the never-list or oddly named, and all of it can be read. Its bytes and files (links are
+/// moved as they are and count nothing).
+fn whole(p: &Path, spare: &Spare) -> Option<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let since = spare.since.map(filetime);
+    let (mut bytes, mut files) = (0u64, 0u64);
+    let mut stack = list(p).ok()?;
+    while let Some(k) = stack.pop() {
+        if odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
+            return None;
+        }
+        let m = std::fs::symlink_metadata(&k).ok()?;
+        let born = m.creation_time() as i64;
+        if attrs(&m) & REPARSE != 0 {
+            if since.is_some_and(|s| born > s) {
+                return None;
+            }
+            continue;
+        }
+        if m.is_dir() {
+            if since.is_some_and(|s| born > s) {
+                return None;
+            }
+            stack.extend(list(&k).ok()?);
+        } else {
+            if since.is_some_and(|s| born > s || m.last_write_time() as i64 > s) {
+                return None;
+            }
+            bytes += m.len();
+            files += 1;
+        }
+    }
+    Some((bytes, files))
+}
+
+/// Move one opened item (a file, or a folder with everything in it) into `bin`, with the bin's
+/// record beside it so Explorer can put it back.
+fn recycle_one(p: &Path, h: &win::Handle, bytes: u64, files: u64, bin: &mut Result<crate::recycle::Bin, String>, o: &mut Outcome, progress: &mut dyn FnMut(u64)) -> Result<(), Moved> {
+    let b = match bin {
+        Ok(b) => b,
+        Err(why) => return Err(Moved::Held(format!("not sent to the Recycle Bin, {why}; left as it is"))),
+    };
+    if bytes > b.room {
+        return Err(Moved::Held(format!("too big for the Recycle Bin on {} ({} MB is all it can still take); left as it is", b.drive, b.room >> 20)));
+    }
+    static SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = filetime(SystemTime::now());
+    for _ in 0..8 {
+        let seed = (now as u64).wrapping_add(SEED.fetch_add(0x1_0001, Ordering::Relaxed)).wrapping_add(std::process::id() as u64);
+        let (r, i) = crate::recycle::names(p, seed);
+        let (to, rec) = (b.dir.join(&r), b.dir.join(&i));
+        if to.exists() {
+            continue;
+        }
+        // the record first (a record without its item is ignored by Explorer; an item without
+        // its record would be hidden in the bin)
+        let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&rec).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(&crate::recycle::record(p, bytes, now))
+        });
+        match written {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(Moved::Held(format!("not sent to the Recycle Bin, its record couldn't be written ({e}); left as it is"))),
+        }
+        return match win::rename(h, &to) {
+            Ok(()) => {
+                b.room = b.room.saturating_sub(bytes);
+                o.recycled += bytes;
+                o.recycled_files += files;
+                progress(o.freed + o.recycled);
+                Ok(())
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&rec);
+                Err(Moved::Failed(format!("couldn't be sent to the Recycle Bin ({e}); left as it is")))
+            }
+        };
+    }
+    Err(Moved::Held("not sent to the Recycle Bin, no free name in it; left as it is".into()))
 }
 
 fn list(p: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -669,6 +824,26 @@ mod win {
         }
         let yes: u8 = 1;
         if unsafe { SetFileInformationByHandle(h.0, 4, (&yes as *const u8).cast(), 1) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Move the opened item to `to` (same volume), never over something already there.
+    pub(super) fn rename(h: &Handle, to: &Path) -> std::io::Result<()> {
+        // FILE_RENAME_INFO: flags (4), padding, root handle (pointer), name length (4), name
+        let name: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{}", to.display())).encode_wide().collect();
+        let head = 8 + std::mem::size_of::<usize>() + 4;
+        let size = head + name.len() * 2 + 2;
+        let mut buf = vec![0u64; size.div_ceil(8)];
+        let bytes: &mut [u8] = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), buf.len() * 8) };
+        // ReplaceIfExists stays 0, RootDirectory null
+        bytes[8 + std::mem::size_of::<usize>()..head].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
+        for (k, c) in name.iter().enumerate() {
+            bytes[head + 2 * k..head + 2 * k + 2].copy_from_slice(&c.to_le_bytes());
+        }
+        if unsafe { SetFileInformationByHandle(h.0, 3, buf.as_ptr().cast(), size as u32) } != 0 {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error())
@@ -1303,6 +1478,128 @@ mod tests {
         assert!(prof.join("Inbox").exists(), "the mail stays");
         assert!(!base.join("old").join("junk.tmp").exists());
         assert_eq!(o.kept_protected, 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A bin of the fixture's own (on the same volume), never the user's Recycle Bin.
+    fn test_bin(base: &Path, room: u64) -> Result<crate::recycle::Bin, String> {
+        let dir = base.join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        Ok(crate::recycle::Bin { dir, drive: "C:".into(), room })
+    }
+
+    /// What is in the test bin: the `$R` items, by their record's original path.
+    fn in_bin(base: &Path) -> Vec<(PathBuf, u64, PathBuf)> {
+        let dir = base.join("bin");
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if let Some(rest) = n.strip_prefix("$I") {
+                let r = std::fs::read(e.path()).unwrap();
+                let len = u32::from_le_bytes(r[24..28].try_into().unwrap()) as usize;
+                let w: Vec<u16> = r[28..28 + 2 * (len - 1)].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                let item = dir.join(format!("$R{rest}"));
+                assert!(item.exists(), "a record without its item: {n}");
+                out.push((PathBuf::from(String::from_utf16_lossy(&w)), u64::from_le_bytes(r[8..16].try_into().unwrap()), item));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn own_files_go_to_the_bin_whole_or_one_by_one() {
+        let base = std::env::temp_dir().join(format!("sprawl-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let proj = base.join("Old project");
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::write(proj.join("src").join("main.rs"), vec![1u8; 300]).unwrap();
+        std::fs::write(proj.join("notes.txt"), vec![1u8; 200]).unwrap();
+        std::fs::set_permissions(proj.join("notes.txt"), {
+            let mut p = std::fs::metadata(proj.join("notes.txt")).unwrap().permissions();
+            p.set_readonly(true);
+            p
+        })
+        .unwrap();
+        let stop = AtomicBool::new(false);
+
+        // a folder with nothing in it to spare goes whole, with a record Explorer reads
+        let mut bin = test_bin(&base, 1 << 30);
+        let o = run_with(&proj, &Action::Remove, &Spare::default(), Some(&mut bin), &stop, &mut |_| {});
+        assert!(o.problems.is_empty(), "{:?}", o.problems);
+        assert_eq!((o.freed, o.recycled, o.recycled_files), (0, 500, 2), "nothing is freed until the bin is emptied");
+        assert!(!proj.exists());
+        let got = in_bin(&base);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].0.clone(), got[0].1), (proj.clone(), 500));
+        assert!(got[0].2.join("src").join("main.rs").exists() && got[0].2.join("notes.txt").exists(), "all of it, read-only files too");
+        assert_eq!(bin.as_ref().unwrap().room, (1 << 30) - 500);
+        let _ = std::fs::remove_dir_all(base.join("bin"));
+
+        // something to spare inside: the rest goes one by one, what must stay stays where it is
+        let mine = base.join("Mine");
+        std::fs::create_dir_all(mine.join("keep")).unwrap();
+        std::fs::create_dir_all(mine.join("old")).unwrap();
+        std::fs::write(mine.join("keep").join("k.txt"), vec![0u8; 10]).unwrap();
+        std::fs::write(mine.join("old").join("o.txt"), vec![0u8; 20]).unwrap();
+        std::fs::write(mine.join("vault.kdbx"), vec![0u8; 30]).unwrap();
+        std::fs::write(mine.join("a.bin"), vec![0u8; 40]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let scan = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(mine.join("old").join("new.txt"), vec![0u8; 5]).unwrap();
+        let spare = Spare { since: Some(scan), keep: vec![mine.join("keep")] };
+        let mut bin = test_bin(&base, 1 << 30);
+        let o = run_with(&mine, &Action::Remove, &spare, Some(&mut bin), &stop, &mut |_| {});
+        assert!(o.problems.is_empty(), "{:?}", o.problems);
+        assert_eq!((o.recycled, o.freed), (60, 0), "a.bin and old\\o.txt");
+        assert_eq!((o.kept_chosen, o.kept_protected, o.kept_new), (1, 1, 1));
+        assert!(mine.join("keep").join("k.txt").exists() && mine.join("vault.kdbx").exists() && mine.join("old").join("new.txt").exists());
+        assert!(!mine.join("a.bin").exists() && !mine.join("old").join("o.txt").exists());
+        let got: Vec<PathBuf> = in_bin(&base).into_iter().map(|g| g.0).collect();
+        assert_eq!(got, vec![mine.join("a.bin"), mine.join("old").join("o.txt")]);
+        let _ = std::fs::remove_dir_all(base.join("bin"));
+
+        // too big for the bin, or no bin: held back with the reason, never deleted instead
+        let big = base.join("Big");
+        std::fs::create_dir_all(&big).unwrap();
+        std::fs::write(big.join("x.iso2"), vec![0u8; 1000]).unwrap();
+        let mut bin = test_bin(&base, 999);
+        let o = run_with(&big, &Action::Remove, &Spare::default(), Some(&mut bin), &stop, &mut |_| {});
+        assert_eq!((o.freed, o.recycled), (0, 0));
+        assert!(o.problems.iter().any(|p| p.contains("too big for the Recycle Bin")), "{:?}", o.problems);
+        assert!(big.join("x.iso2").exists());
+        let mut none: Result<crate::recycle::Bin, String> = Err("a network folder has no Recycle Bin".into());
+        let o = run_with(&big.join("x.iso2"), &Action::Remove, &Spare::default(), Some(&mut none), &stop, &mut |_| {});
+        assert_eq!((o.freed, o.recycled), (0, 0));
+        assert!(o.problems.iter().any(|p| p.contains("not sent to the Recycle Bin")), "{:?}", o.problems);
+        assert!(big.join("x.iso2").exists());
+
+        // a link inside goes as a link: what it points to stays where it is
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("precious.txt"), b"keep").unwrap();
+        let withlink = base.join("WithLink");
+        std::fs::create_dir_all(&withlink).unwrap();
+        std::fs::write(withlink.join("f.txt"), vec![0u8; 7]).unwrap();
+        if std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(withlink.join("link")).arg(&outside).output().is_ok_and(|o| o.status.success()) {
+            let mut bin = test_bin(&base, 1 << 30);
+            let o = run_with(&withlink, &Action::Remove, &Spare::default(), Some(&mut bin), &stop, &mut |_| {});
+            assert!(o.problems.is_empty(), "{:?}", o.problems);
+            assert_eq!(o.recycled, 7, "the link counts nothing");
+            assert!(outside.join("precious.txt").exists());
+            let _ = std::fs::remove_dir_all(base.join("bin"));
+        }
+
+        // a pattern sends only the files it names
+        let cache = base.join("Downloads");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("a.msi"), vec![0u8; 11]).unwrap();
+        std::fs::write(cache.join("b.txt"), vec![0u8; 12]).unwrap();
+        let mut bin = test_bin(&base, 1 << 30);
+        let o = run_with(&cache, &Action::Match { pattern: "*.msi".into() }, &Spare::default(), Some(&mut bin), &stop, &mut |_| {});
+        assert_eq!((o.recycled, o.freed), (11, 0), "{:?}", o.problems);
+        assert!(!cache.join("a.msi").exists() && cache.join("b.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 

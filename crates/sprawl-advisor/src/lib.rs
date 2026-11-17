@@ -40,6 +40,7 @@ pub mod rules;
 pub mod safety;
 pub mod snapshot;
 pub mod tuning;
+pub mod recycle;
 
 /// "Work offline" (Settings > Network): while set, nothing leaves this PC. Every HTTP request
 /// (update check, community cleaners, AI providers, web lookups) and Claude Code are refused.

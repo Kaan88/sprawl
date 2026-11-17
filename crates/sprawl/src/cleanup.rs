@@ -48,6 +48,8 @@ pub(crate) struct Item {
     pub state: ItemState,
     /// The rule (a cleaner part) it came from, if any: what it freed is remembered for it.
     pub rule: Option<String>,
+    /// It goes to the Recycle Bin (the user's own files, with the setting on).
+    pub recycle: bool,
 }
 
 pub(crate) enum ItemState {
@@ -71,6 +73,9 @@ pub(crate) struct Done {
     pub freed: u64,
     /// Items that freed something.
     pub items: usize,
+    /// Sent to the Recycle Bin (freed when the bin is emptied), and the items that sent some.
+    pub recycled: u64,
+    pub recycled_items: usize,
     /// Left because they were new since the scan, or kept by the user.
     pub kept_new: u64,
     pub kept_chosen: u64,
@@ -153,6 +158,14 @@ pub(crate) fn scan_age_words_after(began: std::time::SystemTime, now: std::time:
         120..=2879 => Some(format!("{} hours", mins / 60)),
         _ => Some(format!("{} days", mins / 1440)),
     }
+}
+
+/// Whether `f` goes to the Recycle Bin instead of being deleted: the user's own files (orange),
+/// with Settings > Cleaning's "Send my own files to the Recycle Bin" on (`on`). Caches (green,
+/// amber) are deleted: recycling them would free nothing. A program's own clean-up command
+/// decides for itself.
+pub(crate) fn goes_to_bin(f: &Finding, on: bool) -> bool {
+    on && f.risk >= Risk::Orange && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
 }
 
 /// It needs administrator rights and this Sprawl doesn't have them: it can be ticked (for a
@@ -314,7 +327,8 @@ impl State {
         let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
-        let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>)> = Vec::new();
+        let bin_on = self.recycle_on();
+        let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>, bool)> = Vec::new();
         let mut items = Vec::new();
         let mut held = Vec::new();
         for (_, f) in picked {
@@ -344,7 +358,8 @@ impl State {
                 held.push(format!("{}: not cleaned, {app} is open. Close it, then clean up again.", f.title));
                 continue;
             }
-            work.push((f.path.clone(), action, f.bytes, gate));
+            let recycle = goes_to_bin(&f, bin_on);
+            work.push((f.path.clone(), action, f.bytes, gate, recycle));
             items.push(Item {
                 path: f.path.clone(),
                 title: f.title.clone(),
@@ -354,6 +369,7 @@ impl State {
                     sprawl_advisor::Source::Rule(r) => Some(r.clone()),
                     sprawl_advisor::Source::Model(_) => None,
                 },
+                recycle,
             });
         }
         if items.is_empty() {
@@ -368,7 +384,9 @@ impl State {
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         std::thread::spawn(move || {
-            for (i, (path, action, before, gate)) in work.into_iter().enumerate() {
+            // each volume's Recycle Bin, found once; what this run sends counts against its room
+            let mut bins: std::collections::HashMap<String, Result<sprawl_advisor::recycle::Bin, String>> = Default::default();
+            for (i, (path, action, before, gate, recycle)) in work.into_iter().enumerate() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
                 }
@@ -384,7 +402,11 @@ impl State {
                     }
                 }
                 let mut last = Instant::now();
-                let mut out = clean::run(&path, &action, &spare, &stop2, &mut |freed| {
+                let bin = recycle.then(|| {
+                    let vol = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase();
+                    bins.entry(vol).or_insert_with(|| sprawl_advisor::recycle::bin_for(&path))
+                });
+                let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
                         last = Instant::now();
                         let _ = tx.send(Msg::Progress(i, freed));
@@ -529,13 +551,17 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
                 if o.freed > 0 {
                     done.items += 1;
                 }
+                if o.recycled > 0 {
+                    done.recycled_items += 1;
+                }
                 done.freed += o.freed;
+                done.recycled += o.recycled;
                 done.kept_new += o.kept_new;
                 done.kept_chosen += o.kept_chosen;
                 done.kept_protected += o.kept_protected;
@@ -546,7 +572,7 @@ impl State {
                 done.output.extend(o.output.iter().cloned());
                 // remembered as done when most of it went, never over the user's own Keep
                 let kept = self.advisor.memory.hides(&it.path).is_some_and(|d| d.verdict == sprawl_advisor::memory::Verdict::Keep);
-                if o.freed >= it.bytes / 2 && !kept {
+                if o.freed + o.recycled >= it.bytes / 2 && !kept {
                     self.advisor.memory.decide(&it.path, &it.title, sprawl_advisor::memory::Verdict::Done);
                 }
             }
@@ -581,7 +607,7 @@ impl State {
         let c = &self.advisor.cleanup;
         let mut x = String::new();
         if let Some(run) = &c.running {
-            let freed: u64 = run.items.iter().map(|it| match &it.state {
+            let freed: u64 = run.items.iter().filter(|it| !it.recycle).map(|it| match &it.state {
                 ItemState::Running(f) => *f,
                 ItemState::Done(o) => o.freed,
                 ItemState::Waiting => 0,
@@ -593,7 +619,10 @@ impl State {
             for (i, it) in run.items.iter().enumerate() {
                 let (glyph, colour, state) = match &it.state {
                     ItemState::Waiting => ("&#xE823;", "#FF8E97AA", "Waiting".to_string()),
+                    ItemState::Running(f) if it.recycle => ("&#xE895;", "#FF8FB4FF", format!("To the Recycle Bin... {}", self.size(*f))),
                     ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", format!("Removing... {}", self.size(*f))),
+                    ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("{} to the Recycle Bin", self.size(o.recycled))),
+                    ItemState::Done(o) if it.recycle => ("&#xE7BA;", "#FFF5B342", format!("{} to the Recycle Bin; some couldn't go", self.size(o.recycled))),
                     ItemState::Done(o) if o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("Freed {}", self.size(o.freed))),
                     ItemState::Done(o) => ("&#xE7BA;", "#FFF5B342", format!("Freed {}; some couldn't go", self.size(o.freed))),
                 };
@@ -605,22 +634,35 @@ impl State {
             }
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
-            let fine = d.problems.is_empty() && !d.stopped && d.freed > 0;
+            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled > 0;
             let (bg, border, glyph, colour) = if fine { ("#144CC38A", "#554CC38A", "&#xE73E;", "#FF4CC38A") } else { ("#14F5B342", "#55F5B342", "&#xE7BA;", "#FFF5B342") };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = match (d.stopped, d.items) {
-                (true, 0) => "Stopped. Nothing was freed.".to_string(),
+                (true, 0) if d.recycled == 0 => "Stopped. Nothing was freed.".to_string(),
+                (false, 0) if d.recycled == 0 => "Nothing was freed.".to_string(),
+                (true, 0) => "Stopped.".to_string(),
+                (false, 0) => String::new(),
                 (true, _) => format!("Stopped. Freed {} from {items}.", self.size(d.freed)),
-                (false, 0) => "Nothing was freed.".to_string(),
                 (false, _) => format!("Freed {} from {items}.", self.size(d.freed)),
             };
+            let binned = if d.recycled_items == 1 { "1 item".to_string() } else { format!("{} items", d.recycled_items) };
+            let head = match d.recycled {
+                0 => head,
+                r => format!("{head} {} ({binned}) sent to the Recycle Bin.", self.size(r)).trim().to_string(),
+            };
+            // what happened to them, in plain words
+            let gone = match (d.items > 0, d.recycled > 0) {
+                (true, true) => "Caches were deleted for good; your own files are in the Recycle Bin, and their space is freed when the bin is emptied.",
+                (false, true) => "They are in the Recycle Bin: Explorer can put them back, and their space is freed when the bin is emptied.",
+                _ => "They were deleted for good.",
+            };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvCleanLog" Content="See what was removed" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="{gone} The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvCleanLog" Content="See what was removed" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
                 ui::esc(&head),
                 self.tree.as_ref().and_then(|t| crate::win32::disk_space(&t.path_of(sprawl_core::ROOT))).map_or(String::new(), |(_, free)| ui::esc(&format!(" The disk now has {} free.", self.size(free))))
             );
             if !d.problems.is_empty() {
-                x += r##"<TextBlock Text="Some things couldn't go (in use, or no access): they stay as they were." FontSize="12" Foreground="#FFF5B342"/>"##;
+                x += r##"<TextBlock Text="Some things couldn't go (in use, no access, or no room in the Recycle Bin): they stay as they were." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##;
                 for p in d.problems.iter().take(8) {
                     x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(p));
                 }
@@ -690,10 +732,21 @@ impl State {
         let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
         let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
+        let bin_on = self.recycle_on();
         let mut x = format!(
-            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {}, {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Deleted for good, not sent to the Recycle Bin." FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {}, {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
             if picked.len() == 1 { "1 item".to_string() } else { format!("{} items", picked.len()) },
             if up_to { format!("up to {}", self.size(bytes)) } else { format!("about {}", self.size(bytes)) },
+            {
+                let binned = picked.iter().filter(|(_, f)| goes_to_bin(f, bin_on)).count();
+                if binned == 0 {
+                    "Deleted for good, not sent to the Recycle Bin.".to_string()
+                } else if binned == picked.len() {
+                    "Sent to the Recycle Bin: Explorer can put them back. Their space is freed when the bin is emptied. What can't go to the bin (too big for it, or a drive without one) is left as it is.".to_string()
+                } else {
+                    "Your own files (marked below) go to the Recycle Bin, and their space is freed when the bin is emptied; the rest is deleted for good.".to_string()
+                }
+            },
             {
                 let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
                 let own = format!(
@@ -721,6 +774,7 @@ impl State {
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
                     Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
+                    _ if goes_to_bin(f, bin_on) => format!("{what} · to the Recycle Bin · {}", f.path.display()),
                     _ => format!("{what} · {}", f.path.display()),
                 }),
                 match self.review_size(f) {
@@ -744,7 +798,7 @@ impl State {
                 r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE823;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="The scan is {age} old. What changed since it began is left alone, so this may free less than shown. Scan again first for a full clean-up." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" MaxWidth="760" VerticalAlignment="Center"/><Button x:Name="AdvRescanOld" Content="Scan again" Padding="10,2" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/></StackPanel>"##
             );
         }
-        for (_, f) in picked.iter().filter(|(_, f)| crate::advisor::gone_for_good(f)) {
+        for (_, f) in picked.iter().filter(|(_, f)| crate::advisor::gone_for_good(f) && !goes_to_bin(f, bin_on)) {
             x += &format!(r##"<TextBlock Text="{}: what is in it now cannot be brought back afterwards." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&f.title));
         }
         // what the user keeps inside a ticked folder stays: say which
@@ -794,9 +848,12 @@ impl State {
             x += r##"<Button x:Name="AdvClCheck" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
         }
         if own {
+            // all of the user's own go to the bin: they can be brought back from there
+            let all_binned = picked.iter().filter(|(_, f)| f.risk >= Risk::Orange).all(|(_, f)| goes_to_bin(f, bin_on));
             x += &format!(
-                r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="These are my own files, I want them gone, and I know they can't be brought back" FontSize="13"/>"##,
-                if self.advisor.cleanup.own_ok { "True" } else { "False" }
+                r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="{}" FontSize="13"/>"##,
+                if self.advisor.cleanup.own_ok { "True" } else { "False" },
+                if all_binned { "These are my own files and I want them gone (to the Recycle Bin)" } else { "These are my own files, I want them gone, and I know they can't be brought back" }
             );
         }
         x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if picked.is_empty() || (own && !self.advisor.cleanup.own_ok) { "False" } else { "True" });
@@ -807,6 +864,11 @@ impl State {
 }
 
 impl State {
+    /// Settings > Cleaning, "Send my own files to the Recycle Bin" (on unless switched off).
+    pub(crate) fn recycle_on(&self) -> bool {
+        self.settings.bool("recycleOwn") != Some(false)
+    }
+
     /// Draw the Advisor again when it is on screen.
     pub(crate) fn advisor_redraw(&mut self) {
         if self.view == crate::state::View::Advisor {
@@ -872,6 +934,9 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
         match &it.state {
             ItemState::Done(o) => {
                 s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
+                if o.recycled > 0 {
+                    s += &format!("\t  sent to the Recycle Bin: {} bytes, {} files\r\n", o.recycled, o.recycled_files);
+                }
                 if o.kept_new > 0 {
                     s += &format!("\t  left {} items new since the scan\r\n", o.kept_new);
                 }
@@ -901,6 +966,42 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
 mod admin_tests {
     use super::*;
     use sprawl_advisor::finding::Source;
+
+    /// Only the user's own files go to the Recycle Bin, and only with the setting on; caches and
+    /// a program's own clean-up command are not recycled.
+    #[test]
+    fn only_own_files_go_to_the_bin() {
+        let mk = |risk: Risk, action: Action| {
+            let mut f = Finding {
+                path: PathBuf::from(r"C:\Users\Sam\Old project"),
+                owner: None,
+                bytes: 1 << 20,
+                risk,
+                remedy: Remedy::Delete,
+                command: None,
+                title: "x".into(),
+                evidence: vec![],
+                confidence: 1.0,
+                source: Source::Rule("t".into()),
+                allow_protected: false,
+                trusted: true,
+                builtin: true,
+                on_path: true,
+                action: None,
+                admin: false,
+                carved: Vec::new(),
+                gain: None,
+            };
+            f.set_action(action, false);
+            f
+        };
+        assert!(goes_to_bin(&mk(Risk::Orange, Action::Remove), true));
+        assert!(goes_to_bin(&mk(Risk::Orange, Action::Match { pattern: "*.iso".into() }), true));
+        assert!(!goes_to_bin(&mk(Risk::Orange, Action::Remove), false), "the setting off: deleted");
+        assert!(!goes_to_bin(&mk(Risk::Green, Action::Remove), true), "a cache frees nothing in the bin");
+        assert!(!goes_to_bin(&mk(Risk::Amber, Action::Clear { days: 0 }), true));
+        assert!(!goes_to_bin(&mk(Risk::Orange, Action::Tool { command: "npm cache clean --force".into() }), true), "a tool decides itself");
+    }
 
     #[test]
     fn an_item_that_needs_administrator_can_be_ticked_for_a_script() {
