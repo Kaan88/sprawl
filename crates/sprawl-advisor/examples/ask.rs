@@ -30,9 +30,9 @@ fn main() {
         sprawl_advisor::llm::set_mcp_exe(exe.into());
     }
     let memory = sprawl_advisor::memory::Memory::load();
-    match sprawl_advisor::llm::agent::run(&tree, &cfg, &rules, None, goal, &memory, "", &mut |s| println!("  .. {s}")) {
+    match sprawl_advisor::llm::agent::run(&tree, &cfg, &rules, None, goal, &memory, "", Default::default(), &mut |s| println!("  .. {s}")) {
         Ok(run) => {
-            println!("{} in {:.0} s, {} turns, tools: {}", run.model, started.elapsed().as_secs_f64(), run.turns, run.with_tools);
+            println!("{} in {:.0} s, {} turns, tools: {}, {}", run.model, started.elapsed().as_secs_f64(), run.turns, run.with_tools, run.usage.text());
             println!("summary: {}", run.summary);
             for f in &run.findings {
                 println!("  {:>10}  {:?}  {}  {}", format_size(f.bytes), f.risk, f.title, f.path.display());

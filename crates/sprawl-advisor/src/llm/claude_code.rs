@@ -20,6 +20,8 @@ pub struct ClaudeCode {
     prompt: String,
     /// There is something new to answer.
     pending: bool,
+    /// Set by the user's Stop: the process tree is ended.
+    stop: Option<super::Stop>,
 }
 
 /// Arguments for `claude`: print mode, JSON out, and nothing it could act with. No built-in tools,
@@ -54,13 +56,31 @@ fn workdir() -> PathBuf {
 
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
-        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true }
+        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true, stop: None }
+    }
+
+    /// End the run when `stop` is set.
+    pub fn with_stop(mut self, stop: super::Stop) -> ClaudeCode {
+        self.stop = Some(stop);
+        self
     }
 
     /// Give it Sprawl's tools through the MCP config at `cfg` (and nothing else).
     pub fn with_mcp(mut self, cfg: &Path) -> ClaudeCode {
         self.mcp = Some(cfg.to_path_buf());
         self
+    }
+}
+
+/// What a print-mode run used: its tokens and the cost it reports.
+pub(crate) fn usage_of(out: &str) -> super::Usage {
+    let v: Value = serde_json::from_str(out.trim()).unwrap_or(Value::Null);
+    let u = &v["usage"];
+    super::Usage {
+        input: u["input_tokens"].as_u64().unwrap_or(0) + u["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+        cached: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+        output: u["output_tokens"].as_u64().unwrap_or(0),
+        cost_usd: v["total_cost_usd"].as_f64(),
     }
 }
 
@@ -108,6 +128,10 @@ impl ClaudeCode {
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
+                Ok(None) if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
+                    kill_tree(&mut child);
+                    return Err(super::STOPPED.into());
+                }
                 Ok(None) if start.elapsed() < Duration::from_secs(900) => {
                     std::thread::sleep(Duration::from_millis(500));
                     tick();
@@ -124,7 +148,7 @@ impl ClaudeCode {
         let text = parse(&out)?;
         // each new process gets the whole conversation
         self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
-        Ok(Turn { text, ..Turn::default() })
+        Ok(Turn { text, usage: usage_of(&out), ..Turn::default() })
     }
 }
 

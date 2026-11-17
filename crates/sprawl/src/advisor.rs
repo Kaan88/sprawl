@@ -87,7 +87,19 @@ enum Ai {
     #[default]
     Idle,
     Running(String),
-    Done { summary: String, model: String, found: usize, rejected: Vec<(Finding, String)>, with_tools: bool, turns: usize },
+    Done {
+        summary: String,
+        model: String,
+        found: usize,
+        rejected: Vec<(Finding, String)>,
+        with_tools: bool,
+        turns: usize,
+        /// "12.3k tokens, about $0.04"
+        usage: String,
+        stopped: bool,
+        /// A result kept from an earlier scan, checked again against this one.
+        from: Option<std::time::SystemTime>,
+    },
     Failed(String),
 }
 
@@ -151,6 +163,8 @@ pub(crate) struct Advisor {
     chat: Chat,
     /// When the AI run started, and when its status line last showed the time.
     ai_started: Option<std::time::Instant>,
+    /// The running AI's Stop.
+    ai_stop: sprawl_advisor::llm::Stop,
     /// Growth of the last scan (by `State::scan_id`): snapshots are read once per scan.
     growth_cache: Option<(u64, Option<sprawl_advisor::growth::Growth>)>,
     ai_tick: Option<std::time::Instant>,
@@ -171,6 +185,8 @@ struct Chat {
     text: String,
     /// When the current question was asked.
     asked: Option<std::time::Instant>,
+    /// Stops the question being answered.
+    stop: sprawl_advisor::llm::Stop,
     /// A web search waiting for the user's yes or no.
     consent: Option<(String, Sender<bool>)>,
     /// "Allow for this session" was chosen.
@@ -237,6 +253,23 @@ fn findings_text(r: &Report) -> String {
         }
     }
     s
+}
+
+/// "2 hours ago"
+fn ago(t: std::time::SystemTime) -> String {
+    let s = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    match s {
+        0..=89 => "just now".into(),
+        90..=5399 => format!("{} minutes ago", (s + 30) / 60),
+        5400..=129_599 => format!("{} hours ago", (s + 1800) / 3600),
+        _ => format!("{} days ago", (s + 43_200) / 86_400),
+    }
+}
+
+/// Where the last AI result for a scanned folder is kept.
+fn run_file(root: &std::path::Path) -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(base).join("Sprawl").join("advisor").join("runs").join(format!("{}.json", sprawl_advisor::history::key(root))))
 }
 
 /// What the goal box shows when empty, and what an empty box means.
@@ -405,6 +438,7 @@ impl State {
                         r.growth = g.clone();
                     }
                     self.advisor.report = Some(r);
+                    self.load_run();
                     self.advisor.running = false;
                     self.advisor.open = None;
                     self.advisor.in_use = None;
@@ -464,7 +498,10 @@ impl State {
                 Msg::AiDone(gen, result) => {
                     if gen == self.tree_gen && self.advice().is_some() {
                         self.advisor.ai = match result {
-                            Ok(run) => self.merge_ai(run),
+                            Ok(run) => {
+                                self.save_run(&run);
+                                self.merge_ai(run)
+                            }
                             Err(e) => Ai::Failed(e),
                         };
                     }
@@ -570,6 +607,19 @@ impl State {
                 return;
             }
             "AdvChatSend" => return self.chat_send(),
+            "AdvStop" => {
+                self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                if let (Ai::Running(_), Some(p)) = (&self.advisor.ai, &self.advisor.panel) {
+                    crate::state::text(p, "AdvAiStatus", "Stopping after this step");
+                }
+                self.advisor.ai = Ai::Running("Stopping after this step".into());
+                return;
+            }
+            "AdvChatStop" => {
+                self.advisor.chat.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.advisor.chat.status = Some("Stopping after this step".into());
+                return;
+            }
             "AdvMcpCopy" => {
                 win32::copy_text(self.hwnd, &crate::bridge::setup_command());
                 crate::state::text(&self.root, "StatusText", "Copied. Run it once in a terminal, then ask Claude Code about your disk while Sprawl is open.");
@@ -753,7 +803,7 @@ impl State {
             }
         }
         for name in [
-            "AdvKeep", "AdvLater", "AdvPick", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvPick", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -965,13 +1015,15 @@ impl State {
         let memory = self.advisor.memory.clone();
         self.advisor.ai = Ai::Running("Starting".into());
         self.advisor.ai_started = Some(std::time::Instant::now());
+        let stop = sprawl_advisor::llm::Stop::default();
+        self.advisor.ai_stop = stop.clone();
         std::thread::spawn(move || {
             let progress_tx = tx.clone();
             let mut progress = move |line: String| {
                 let _ = progress_tx.send(Msg::AiProgress(gen, line));
             };
             // a panic in there still ends the run
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &notes, &mut progress)))
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &notes, stop, &mut progress)))
                 .unwrap_or_else(|_| Err("the analysis stopped with an internal error".into()));
             let _ = tx.send(Msg::AiDone(gen, result));
         });
@@ -1040,7 +1092,17 @@ impl State {
             let _ = m.propose(p);
         }
         self.save_memory();
-        Ai::Done { summary: run.summary, model: run.model, found, rejected: run.rejected, with_tools: run.with_tools, turns: run.turns }
+        Ai::Done {
+            summary: run.summary,
+            model: run.model,
+            found,
+            rejected: run.rejected,
+            with_tools: run.with_tools,
+            turns: run.turns,
+            usage: run.usage.text(),
+            stopped: run.stopped,
+            from: None,
+        }
     }
 
     /// Add findings found later (duplicates) after the others, so indexes stay.
@@ -1094,6 +1156,73 @@ impl State {
                 .map_err(|_| "The duplicate search stopped with an internal error.".to_string());
             let _ = tx.send(Msg::Dupes(gen, r));
         });
+    }
+
+    /// Keep this AI result for the next scan of the same folder: its claims as the model made
+    /// them, to be checked again then (never trusted as they are).
+    fn save_run(&self, run: &AiRun) {
+        let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)) else { return };
+        let Some(file) = run_file(&root) else { return };
+        let claims: Vec<serde_json::Value> = run
+            .findings
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "path": f.path, "bytes": f.bytes, "title": f.title, "risk": f.risk, "remedy": f.remedy,
+                    // the first line is Sprawl's own provenance note, written again on replay
+                    "evidence": f.evidence.iter().skip(1).collect::<Vec<_>>(), "confidence": f.confidence,
+                })
+            })
+            .collect();
+        let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let v = serde_json::json!({"when": when, "model": run.model, "summary": run.summary, "with_tools": run.with_tools, "turns": run.turns, "usage": run.usage.text(), "claims": claims});
+        if let Some(d) = file.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(file, v.to_string());
+    }
+
+    /// The last AI result for this folder, if there is one from the last 30 days: each claim
+    /// goes through the same checks as a fresh one, against this scan (sizes are taken from it).
+    fn load_run(&mut self) {
+        if !matches!(self.advisor.ai, Ai::Idle) {
+            return;
+        }
+        let (Some(t), Some(_)) = (self.tree.clone(), self.advice()) else { return };
+        let Some(text) = run_file(&t.path_of(sprawl_core::ROOT)).and_then(|f| std::fs::read_to_string(f).ok()) else { return };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(v["when"].as_u64().unwrap_or(0));
+        if when.elapsed().map_or(true, |d| d.as_secs() > 30 * 86_400) {
+            return;
+        }
+        let model = v["model"].as_str().unwrap_or("the AI").to_string();
+        let facts = Facts::from_apps(Vec::new());
+        let already: Vec<Finding> = self.advice().map(|r| r.findings.iter().filter(|f| !matches!(f.source, Source::Model(_))).cloned().collect()).unwrap_or_default();
+        let mut tools = sprawl_advisor::llm::tools::Tools::new(&t, &facts, &model, &already, &self.advisor.memory);
+        for c in v["claims"].as_array().into_iter().flatten().take(200) {
+            let mut c = c.clone();
+            // the size now, from this scan: what changed since is checked like anything else
+            if let Some(n) = c["path"].as_str().and_then(|p| sprawl_advisor::find_path(&t, std::path::Path::new(p))) {
+                c["bytes"] = serde_json::json!(t.nodes[n].size);
+            }
+            let _ = tools.report_finding(&c);
+        }
+        let run = AiRun {
+            findings: std::mem::take(&mut tools.accepted),
+            rejected: std::mem::take(&mut tools.rejected),
+            summary: v["summary"].as_str().unwrap_or("").to_string(),
+            model,
+            turns: v["turns"].as_u64().unwrap_or(0) as usize,
+            with_tools: v["with_tools"].as_bool().unwrap_or(false),
+            ..AiRun::default()
+        };
+        let usage = v["usage"].as_str().unwrap_or("").to_string();
+        let mut ai = self.merge_ai(run);
+        if let Ai::Done { usage: u, from, .. } = &mut ai {
+            *u = usage;
+            *from = Some(when);
+        }
+        self.advisor.ai = ai;
     }
 
     fn save_memory(&self) {
@@ -1240,6 +1369,8 @@ impl State {
 
     /// A new scan: the chat's copy of the old one is no use any more.
     pub(crate) fn chat_reset(&mut self) {
+        // the old thread stops the question it is on, instead of finishing it unseen
+        self.advisor.chat.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         // a new flag: the old thread may still finish its question, and must keep asking
         self.advisor.chat.web_ok.store(false, std::sync::atomic::Ordering::Relaxed);
         // dropping the senders ends the thread; a pending consent answers no
@@ -1289,6 +1420,7 @@ impl State {
             let (etx, erx) = channel::<ChatMsg>();
             let web_ok = self.advisor.chat.web_ok.clone();
             let alive = self.advisor.chat.alive.clone();
+            let stop = self.advisor.chat.stop.clone();
             alive.store(true, std::sync::atomic::Ordering::Relaxed);
             std::thread::spawn(move || {
                 let consent_tx = etx.clone();
@@ -1306,7 +1438,7 @@ impl State {
                 let mut events = |e: ChatEvent| {
                     let _ = etx.send(ChatMsg::Event(e));
                 };
-                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, &notes, qrx, &mut events, &consent)));
+                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, &notes, qrx, &mut events, &consent, stop.clone())));
                 if ended.is_err() {
                     let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
                 }
@@ -1419,7 +1551,7 @@ impl State {
         }
         if let Some(s) = &c.status {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6" VerticalAlignment="Center"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvChatStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
                 ui::esc(s)
             );
         }
@@ -1582,13 +1714,22 @@ impl State {
             Ai::Idle => {}
             Ai::Running(s) => {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/></StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
                     ui::esc(s)
                 )
             }
             Ai::Failed(e) => x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFFF7A45"/>"##, ui::esc(e)),
-            Ai::Done { summary, model, found, rejected, with_tools, turns } => {
-                let how = if *with_tools { format!("{turns} steps with tools") } else { "one answer from the report".into() };
+            Ai::Done { summary, model, found, rejected, with_tools, turns, usage, stopped, from } => {
+                let mut how = if *with_tools { format!("{turns} steps with tools") } else { "one answer from the report".into() };
+                if !usage.is_empty() {
+                    how += &format!(" · {usage}");
+                }
+                if *stopped {
+                    how += " · stopped";
+                }
+                if let Some(t) = from {
+                    how += &format!(" · {}, checked against this scan", ago(*t));
+                }
                 x += &format!(
                     r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {how}" Foreground="#FF8E97AA" FontSize="11"/></TextBlock>"##,
                     match found {

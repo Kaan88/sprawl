@@ -39,6 +39,102 @@ pub struct Turn {
     pub truncated: bool,
     /// The server paused a long step; sending the conversation again lets it carry on.
     pub paused: bool,
+    /// What this turn used, when the provider says.
+    pub usage: Usage,
+}
+
+/// Tokens a run used, and its cost when the provider reports it (Claude Code) or Sprawl can
+/// work it out (the Anthropic API, from published prices).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Usage {
+    pub input: u64,
+    /// Read from the prompt cache (much cheaper).
+    pub cached: u64,
+    pub output: u64,
+    pub cost_usd: Option<f64>,
+}
+
+impl Usage {
+    pub fn add(&mut self, o: Usage) {
+        self.input += o.input;
+        self.cached += o.cached;
+        self.output += o.output;
+        self.cost_usd = match (self.cost_usd, o.cost_usd) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+    }
+
+    /// "12.3k tokens, about $0.04"
+    pub fn text(&self) -> String {
+        let t = self.input + self.cached + self.output;
+        if t == 0 && self.cost_usd.is_none() {
+            return String::new();
+        }
+        let tokens = if t >= 1000 { format!("{:.1}k tokens", t as f64 / 1000.0) } else { format!("{t} tokens") };
+        match self.cost_usd {
+            Some(c) if c >= 0.01 => format!("{tokens}, about ${c:.2}"),
+            Some(_) => format!("{tokens}, under $0.01"),
+            None => tokens,
+        }
+    }
+}
+
+/// Dollars per million tokens (input, output) of Anthropic models, from the published prices.
+/// Cache reads cost about 5% of input.
+pub(crate) fn anthropic_price(model: &str) -> Option<(f64, f64)> {
+    Some(match model {
+        "claude-opus-5-5" => (4.0, 20.0),
+        "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" => (5.0, 25.0),
+        "claude-sonnet-5-5" | "claude-sonnet-5" => (2.0, 10.0),
+        "claude-sonnet-4-6" => (3.0, 15.0),
+        "claude-haiku-5-5" => (0.10, 0.50),
+        "claude-haiku-4-5" => (1.0, 5.0),
+        "claude-fable-5-2" => (8.0, 40.0),
+        "claude-fable-5-1" | "claude-fable-5" => (10.0, 50.0),
+        _ => return None,
+    })
+}
+
+/// What the user's Stop button sets. Checked before every step.
+pub type Stop = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
+/// The error a stopped run ends with.
+pub const STOPPED: &str = "Stopped.";
+
+/// A conversation that stops when asked and adds up what it used.
+pub struct Metered {
+    inner: Box<dyn Chat>,
+    stop: Stop,
+    pub usage: std::rc::Rc<std::cell::RefCell<Usage>>,
+}
+
+impl Metered {
+    pub fn new(inner: Box<dyn Chat>, stop: Stop, usage: std::rc::Rc<std::cell::RefCell<Usage>>) -> Metered {
+        Metered { inner, stop, usage }
+    }
+}
+
+impl Chat for Metered {
+    fn turn(&mut self) -> Result<Turn, String> {
+        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(STOPPED.into());
+        }
+        let t = self.inner.turn()?;
+        self.usage.borrow_mut().add(t.usage);
+        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(STOPPED.into());
+        }
+        Ok(t)
+    }
+
+    fn answer(&mut self, results: Vec<(String, String, bool)>) {
+        self.inner.answer(results)
+    }
+
+    fn say(&mut self, text: &str) {
+        self.inner.say(text)
+    }
 }
 
 /// A tool the model may call, with a JSON Schema for its input.

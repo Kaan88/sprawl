@@ -45,7 +45,12 @@ impl OpenAi {
         if msg.is_null() {
             return Err(format!("no answer in the response: {}", super::short(&resp.to_string())));
         }
-        let mut turn = Turn { text: msg["content"].as_str().unwrap_or("").to_string(), truncated: choice["finish_reason"] == "length", ..Turn::default() };
+        let usage = super::Usage {
+            input: resp["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
+            output: resp["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+            ..super::Usage::default()
+        };
+        let mut turn = Turn { text: msg["content"].as_str().unwrap_or("").to_string(), truncated: choice["finish_reason"] == "length", usage, ..Turn::default() };
         for c in msg["tool_calls"].as_array().into_iter().flatten() {
             let args = c["function"]["arguments"].as_str().unwrap_or("{}");
             // a malformed argument string still gets an answer: an error saying so

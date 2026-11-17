@@ -61,7 +61,15 @@ impl Anthropic {
             return Err(format!("the model declined: {why}"));
         }
         let content = resp["content"].as_array().cloned().unwrap_or_default();
-        let mut turn = Turn { truncated: stop == "max_tokens", ..Turn::default() };
+        let u = &resp["usage"];
+        let input = u["input_tokens"].as_u64().unwrap_or(0) + u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+        let cached = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        let output = u["output_tokens"].as_u64().unwrap_or(0);
+        // the model that answered (a fallback may have)
+        let model = resp["model"].as_str().unwrap_or(&self.model);
+        let cost_usd = super::anthropic_price(model).map(|(i, o)| (input as f64 * i + cached as f64 * i * 0.05 + output as f64 * o) / 1e6);
+        let usage = super::Usage { input, cached, output, cost_usd };
+        let mut turn = Turn { truncated: stop == "max_tokens", usage, ..Turn::default() };
         for block in &content {
             match block["type"].as_str() {
                 Some("text") => {
