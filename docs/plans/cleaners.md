@@ -378,6 +378,18 @@ Only one cargo runs at a time.
 With five phases in use: registry MRU lists (own plan or dropped), and whether any of "Left
 out" below is worth its risk.
 
+## Wanted later (the user's note, 2026-11-17)
+
+Three things below are left out of this plan, not dropped. The user wants them kept in view
+for a later milestone, each with its own plan and its own safety review:
+
+- **Registry cleaning** (MRU lists and the like). Needs a registry write with a backup and an
+  undo, and a fixed list of keys; never Prefetch or UserAssist.
+- **Secure wiping** (shredding files, wiping free space). Has to say plainly what it can't
+  promise on SSDs and with copy-on-write or cloud-synced folders.
+- **Editing browser databases** (selective cookies, Firefox history, autofill). Needs the
+  browser closed, a backup of each file, and a check that the file is the format expected.
+
 ## Left out, on purpose
 
 - **Wiping, shredding, wiping free space.** Not what Sprawl is, and not reliable on SSDs.
