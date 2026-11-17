@@ -502,7 +502,11 @@ impl State {
             } else {
                 String::new()
             },
-            size = if bytes > 0 { self.size(bytes) } else { "-".into() },
+            size = match bytes {
+                0 => "-".into(),
+                b if p.findings.iter().any(|&i| r.findings[i].estimate()) => format!("up to {}", self.size(b)),
+                b => self.size(b),
+            },
         );
         if shown {
             x += &self.part_files(r, p);

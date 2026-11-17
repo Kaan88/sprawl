@@ -113,6 +113,12 @@ impl Finding {
         matches!(&self.source, Source::Rule(id) if id == crate::cleaners::SHAPE)
     }
 
+    /// Its size is the whole folder's, while the clean-up takes only part of it (files a
+    /// pattern names, or what is older than some days): shown as "up to".
+    pub fn estimate(&self) -> bool {
+        matches!(&self.action, Some(Action::Match { .. }) | Some(Action::Clear { days: 1.. }))
+    }
+
     /// Inside the profile of the account Sprawl runs as (`%USERPROFILE%`). What is outside it
     /// (another account's folders, Windows' own) is never ticked for the user.
     pub fn in_profile(&self) -> bool {

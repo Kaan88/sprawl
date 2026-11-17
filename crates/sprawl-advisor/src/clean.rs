@@ -206,6 +206,54 @@ pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progr
     o
 }
 
+/// What [`run`] would free on `path` now, by the same tests and without deleting anything: the
+/// files a pattern names, or the children a keep-days clear would take. Links are not followed
+/// and count nothing; never-list names, kept paths and anything new since the scan count
+/// nothing either. For Remove and a plain Clear the scan's size is the answer (None).
+pub fn would_free(path: &Path, action: &Action, spare: &Spare) -> Option<u64> {
+    let cut = match action {
+        Action::Clear { days } if *days > 0 => Some(SystemTime::now().checked_sub(Duration::from_secs(*days as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH)),
+        Action::Match { .. } => None,
+        _ => return None,
+    };
+    let pattern = match action {
+        Action::Match { pattern } => Some(pattern.as_str()),
+        _ => None,
+    };
+    use std::os::windows::fs::MetadataExt;
+    let since = spare.since.map(filetime);
+    // as the run sees it (it also counts a later rename or move as new, which this can't see)
+    let new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s || m.last_write_time() as i64 > s);
+    let born_new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s);
+    let top = std::fs::symlink_metadata(path).ok()?;
+    if !top.is_dir() || attrs(&top) & REPARSE != 0 {
+        return Some(0);
+    }
+    let mut total = 0u64;
+    let mut stack: Vec<PathBuf> = list(path).ok()?;
+    if let Some(cut) = cut {
+        stack.retain(|k| !is_new(k, cut));
+    }
+    while let Some(k) = stack.pop() {
+        let name = k.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if odd_name(&k) || never().name_hit(&name).is_some() || spare.keeps(&k) {
+            continue;
+        }
+        let Ok(m) = std::fs::symlink_metadata(&k) else { continue };
+        if attrs(&m) & REPARSE != 0 {
+            continue;
+        }
+        if m.is_dir() {
+            if !born_new(&m) {
+                stack.extend(list(&k).unwrap_or_default());
+            }
+        } else if pattern.is_none_or(|p| like(&name, p)) && !new(&m) {
+            total += m.len();
+        }
+    }
+    Some(total)
+}
+
 /// One open folder and what is left to do in it.
 struct Frame {
     h: win::Handle,
@@ -1045,6 +1093,34 @@ mod tests {
         // a lookalike folder name is not Program Files
         let near = |_: &str| Some(PathBuf::from(r"C:\Program Files Evil\x.exe"));
         assert!(elevated_tool_ok("x", &near, &roots).is_err());
+    }
+
+    #[test]
+    fn what_would_go_is_counted_by_the_run_s_own_tests() {
+        let base = std::env::temp_dir().join(format!("sprawl-would-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let logs = base.join("logs");
+        std::fs::create_dir_all(logs.join("sub")).unwrap();
+        std::fs::write(logs.join("a.log"), vec![0u8; 100]).unwrap();
+        std::fs::write(logs.join("sub").join("b.log"), vec![0u8; 20]).unwrap();
+        std::fs::write(logs.join("c.txt"), vec![0u8; 5]).unwrap();
+        // modified 40 days ago, but created just now: "new" to keep-days, as to the run
+        let old = std::fs::File::options().write(true).open(logs.join("a.log")).unwrap();
+        old.set_modified(SystemTime::now() - Duration::from_secs(40 * 86_400)).unwrap();
+        drop(old);
+        let none = Spare::default();
+        let m = Action::Match { pattern: "*.log".into() };
+        assert_eq!(would_free(&logs, &m, &none), Some(120));
+        let keep7 = Action::Clear { days: 7 };
+        assert_eq!(would_free(&logs, &keep7, &none), Some(0), "the old-logs case: nothing would go");
+        assert_eq!(run(&logs, &keep7, &none, &AtomicBool::new(false), &mut |_| {}).freed, 0, "and nothing does");
+        assert_eq!(would_free(&logs, &Action::Remove, &none), None);
+        // what the user keeps is not counted
+        let kept = Spare { since: None, keep: vec![logs.join("sub")] };
+        assert_eq!(would_free(&logs, &m, &kept), Some(100));
+        let freed = run(&logs, &m, &kept, &AtomicBool::new(false), &mut |_| {}).freed;
+        assert_eq!(freed, 100, "the count and the run agree");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

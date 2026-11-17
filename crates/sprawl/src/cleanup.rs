@@ -36,6 +36,9 @@ pub(crate) struct Cleanup {
     pub running: Option<Running>,
     /// The last clean-up's result, shown until dismissed.
     pub done: Option<Done>,
+    /// What a pattern or keep-days item would free now, counted when the review opens (by path key).
+    pub measured: std::collections::HashMap<String, u64>,
+    measuring: Option<Receiver<(String, u64)>>,
 }
 
 pub(crate) struct Item {
@@ -361,8 +364,49 @@ impl State {
         self.advisor_redraw();
     }
 
+    /// The review opened: count what each pattern or keep-days item would free now, by the
+    /// clean-up's own tests, off the UI thread.
+    pub(crate) fn cleanup_measure(&mut self) {
+        let spare = clean::Spare { since: Some(self.scan_began), keep: self.advisor.memory.kept_paths() };
+        let work: Vec<(PathBuf, Action)> = self.ticked_findings().into_iter().filter(|(_, f)| f.estimate()).filter_map(|(_, f)| Some((f.path.clone(), clean::action(&f)?.0))).collect();
+        let c = &mut self.advisor.cleanup;
+        c.measured.clear();
+        if work.is_empty() {
+            c.measuring = None;
+            return;
+        }
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            for (p, a) in work {
+                if let Some(b) = clean::would_free(&p, &a, &spare) {
+                    if tx.send((key(&p), b)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        c.measuring = Some(rx);
+    }
+
+    /// The size the review shows for a ticked finding: counted now, or "up to" the scan's.
+    fn review_size(&self, f: &Finding) -> (u64, bool) {
+        match self.advisor.cleanup.measured.get(&key(&f.path)) {
+            Some(&b) => (b, false),
+            None => (f.bytes, f.estimate()),
+        }
+    }
+
     /// Progress from the clean-up thread; at the end, the tree is updated in place.
     pub(crate) fn cleanup_poll(&mut self) {
+        if let Some(rx) = &self.advisor.cleanup.measuring {
+            let got: Vec<(String, u64)> = rx.try_iter().collect();
+            if !got.is_empty() {
+                self.advisor.cleanup.measured.extend(got);
+                if self.advisor.cleanup.review && self.advisor.cleanup.running.is_none() {
+                    self.advisor_redraw();
+                }
+            }
+        }
         let Some(run) = self.advisor.cleanup.running.as_mut() else { return };
         let mut redraw = false;
         let mut ended = false;
@@ -530,12 +574,13 @@ impl State {
     /// The review before anything goes.
     pub(crate) fn cleanup_review_xaml(&self) -> String {
         let picked = self.ticked_findings();
-        let bytes: u64 = picked.iter().map(|(_, f)| f.bytes).sum();
+        let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
+        let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         let mut x = format!(
-            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {}, about {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Deleted for good, not sent to the Recycle Bin." FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {}, {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Deleted for good, not sent to the Recycle Bin." FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
             if picked.len() == 1 { "1 item".to_string() } else { format!("{} items", picked.len()) },
-            self.size(bytes),
+            if up_to { format!("up to {}", self.size(bytes)) } else { format!("about {}", self.size(bytes)) },
             {
                 let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
                 let own = format!(
@@ -565,7 +610,11 @@ impl State {
                     Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
                     _ => format!("{what} · {}", f.path.display()),
                 }),
-                self.size(f.bytes)
+                match self.review_size(f) {
+                    (b, true) => format!("up to {}", self.size(b)),
+                    (b, false) if f.estimate() => format!("{} now", self.size(b)),
+                    (b, false) => self.size(b),
+                }
             );
         }
         x += "</StackPanel></ScrollViewer>";

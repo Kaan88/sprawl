@@ -807,6 +807,7 @@ impl State {
                 self.advisor.cleanup.single = Some(k);
                 self.advisor.cleanup.review = true;
                 self.advisor.cleanup.own_ok = false;
+                self.cleanup_measure();
             }
             "AdvClean" => {
                 if self.ticked_findings().is_empty() {
@@ -815,6 +816,7 @@ impl State {
                 self.advisor.cleanup.single = None;
                 self.advisor.cleanup.review = true;
                 self.advisor.cleanup.own_ok = false;
+                self.cleanup_measure();
             }
             "AdvReviewBack" => {
                 self.advisor.cleanup.review = false;
@@ -2493,7 +2495,7 @@ impl State {
             sub = ui::esc(&sub),
             remedy = remedy_label(f.remedy),
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
-            size = self.size(f.bytes),
+            size = if f.estimate() { format!("up to {}", self.size(f.bytes)) } else { self.size(f.bytes) },
             op = if r.counted[i] { "1" } else { "0.55" },
         );
         if open {
