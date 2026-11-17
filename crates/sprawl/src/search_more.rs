@@ -514,11 +514,14 @@ impl State {
         };
         let line = if !elevated && busy { format!("{line}   ·   folder by folder; as administrator it takes seconds") } else { line };
         // the same buttons as last time: only the words change
-        let shape = format!("{busy}|{}", offer.iter().map(|d| format!("{}{}", d.root, m.drives_on.contains(&d.root))).collect::<Vec<_>>().join(","));
+        let shape = format!("{}", offer.iter().map(|d| format!("{}{}", d.root, m.drives_on.contains(&d.root))).collect::<Vec<_>>().join(","));
         let built = host.Child().ok().and_then(|c| c.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>().ok());
         if let Some(fe) = built.filter(|_| shape == m.strip_shape) {
             crate::state::text(&fe, "SxHead", head);
             crate::state::text(&fe, "SxLine", &line);
+            if let Ok(r) = find::<UIElement>(&fe, "SxRing") {
+                let _ = r.SetVisibility(if busy { Visibility::Visible } else { Visibility::Collapsed });
+            }
             let _ = host.cast::<UIElement>().and_then(|u| u.SetVisibility(Visibility::Visible));
             return;
         }
@@ -537,9 +540,12 @@ impl State {
                 root = ui::esc(&d.root),
             );
         }
-        if busy {
-            x += r##"<ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center" Margin="6,0,0,0"/>"##;
-        }
+        // shown and hidden in place: a rebuilt strip has no height for a frame, and the rows
+        // above it would reach over it
+        x += &format!(
+            r##"<ProgressRing x:Name="SxRing" IsActive="True" Visibility="{}" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center" Margin="6,0,0,0"/>"##,
+            if busy { "Visible" } else { "Collapsed" }
+        );
         x += &format!(r##"<TextBlock x:Name="SxHead" Text="{head}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>"##);
         x += &format!(r##"<TextBlock x:Name="SxLine" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="760"/>"##, ui::esc(&line));
         x += "</StackPanel>";
