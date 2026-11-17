@@ -91,22 +91,24 @@ fn app_name(tree: &Tree, n: usize, facts: &crate::facts::Facts) -> String {
     if let Some(a) = facts.owner_of(&tree.path_of(n)) {
         return a.name.clone();
     }
+    // a folder's own name (a scan of several folders names its tops by their full paths)
+    let own = |p: usize| -> String { tree.nodes[p].name.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or_default().to_string() };
     let mut k = n;
     for _ in 0..3 {
-        let name = tree.nodes[k].name.to_lowercase();
+        let name = own(k).to_lowercase();
         let generic = ["user data", "default", "saved", "electron", "ebwebview", "webview2", "cefcache", "cef", "client", "browser", "htmlcache", "browsercache", "chromium-cache", "web", "webview"].contains(&name.as_str())
             || name.starts_with("profile ")
             || name.starts_with("webcache")
             || name.starts_with("wv2profile")
             || name.chars().all(|c| c.is_ascii_digit());
         // never up to AppData's own folders: "Roaming" names nothing
-        let top = |p: usize| ["roaming", "local", "locallow", "appdata"].contains(&tree.nodes[p].name.to_lowercase().as_str());
+        let top = |p: usize| ["roaming", "local", "locallow", "appdata"].contains(&own(p).to_lowercase().as_str());
         match tree.nodes[k].parent {
             Some(p) if generic && p != ROOT && !top(p) => k = p,
             _ => break,
         }
     }
-    tree.nodes[k].name.clone()
+    own(k)
 }
 
 /// In a profile's AppData (`X:\Users\<name>\AppData\...`), where programs keep their data. A

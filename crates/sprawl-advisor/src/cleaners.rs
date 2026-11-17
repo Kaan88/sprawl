@@ -453,7 +453,10 @@ pub fn scan_roots(catalogue: &[CleanerDef]) -> Vec<std::path::PathBuf> {
         }
         let path = std::path::PathBuf::from(format!("{}\\{}", fixed[0], fixed[1..].join("\\")));
         if path.is_dir() {
-            roots.push(path);
+            // a part that is this whole folder: read its parent, since the safety checks never
+            // offer a scan's own top folder; not when that is a drive's own folder (C:\Windows)
+            let parent = path.parent().filter(|p| !wild && p.components().count() > 3 && p.is_dir());
+            roots.push(parent.map_or(path.clone(), |p| p.to_path_buf()));
         } else if let Some(parent) = path.parent().filter(|p| p.components().count() > 3 && p.is_dir() && path.extension().is_some()) {
             // a file the part names: its folder, when that isn't a drive's own folder
             // (C:\Windows\MEMORY.DMP is left to a scan of the drive)
@@ -609,7 +612,7 @@ mod tests {
             builtin: true,
             pack: "p".into(),
             parts: vec![
-                part(vec![format!(r"{b}\app\Cache"), format!(r"{b}\app\User Data\*\Cache"), format!(r"{b}\app")]),
+                part(vec![format!(r"{b}\app\Cache"), format!(r"{b}\app\User Data\*\Cache")]),
                 part(vec![format!(r"{b}\other\logs\*.log"), format!(r"{b}\missing\x"), r"?:\**\Thumbs.db".into(), r"%NOPE_NOT_SET%\x".into(), r"%SystemDrive%\Windows\*.log".into()]),
                 // any account's folder: this user's
                 part(vec![r"%SystemDrive%\Users\*\AppData\Local\sprawl-roots-test-none".into(), r"%SystemDrive%\Users\*\AppData\Local".into()]),
@@ -618,14 +621,14 @@ mod tests {
         };
         let roots = scan_roots(&[def]);
         let mine: Vec<String> = roots.iter().filter(|p| p.starts_with(&base)).map(|p| p.strip_prefix(&base).unwrap().display().to_string()).collect();
-        // app's own parts inside app; the drive's root and unset names left out; missing ones dropped
-        assert_eq!(mine, ["app", r"other\logs"], "{roots:?}");
-        // only where the application is: not read
+        // a part that is a whole folder (app\Cache): its parent is read, since a scan's own top
+        // folder is never offered; the drive's root and unset names left out; missing ones dropped
+        assert_eq!(mine, ["app", r"other\logs"], "{roots:?}");        // only where the application is: not read
         assert!(!roots.iter().any(|p| p.ends_with("alone")));
         assert!(!roots.iter().any(|p| p.components().count() < 3), "never a drive's root: {roots:?}");
         assert!(!roots.iter().any(|p| p.to_string_lossy().eq_ignore_ascii_case(r"C:\Windows")), "nor a wildcard straight under a drive's folder: {roots:?}");
         // a profile's AppData, whichever profile the tests run as (others change USERPROFILE)
-        assert!(roots.iter().any(|p| p.ends_with(std::path::Path::new("AppData").join("Roaming")) && p.to_string_lossy().to_lowercase().contains(r"\users\")), "{roots:?}");
+        assert!(roots.iter().any(|p| p.ends_with("AppData") && p.to_string_lossy().to_lowercase().contains(r"\users\")), "{roots:?}");
         assert!(!roots.iter().any(|p| p.ends_with("Users")), "{roots:?}");
         let _ = std::fs::remove_dir_all(&base);
     }

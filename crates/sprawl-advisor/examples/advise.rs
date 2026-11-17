@@ -12,7 +12,16 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let show = args.iter().any(|a| a == "--paths");
     let path = PathBuf::from(args.iter().find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| r"C:\".into()));
-    let tree = scan_auto(&path, &Progress::default()).expect("scan");
+    // --cleaners: only the folders the cleaners look at, as the Cleaners tab reads them with no scan
+    let cleaners_only = args.iter().any(|a| a == "--cleaners");
+    let ts = std::time::Instant::now();
+    let tree = if cleaners_only {
+        let roots = sprawl_advisor::cleaners::scan_roots(&sprawl_advisor::cleaners::catalogue(&[RulePack::builtin()]));
+        sprawl_core::scan_many(&roots, &Progress::default()).expect("scan")
+    } else {
+        scan_auto(&path, &Progress::default()).expect("scan")
+    };
+    println!("scanned {} in {:.2} s", format_size(tree.nodes[sprawl_core::ROOT].size), ts.elapsed().as_secs_f64());
     let t0 = std::time::Instant::now();
     let mut facts = Facts::gather();
     facts.attach_usage(&tree);
