@@ -364,7 +364,20 @@ impl State {
         }
     }
 
-    /// Enter or a double-click on a result: show it in the tree.
+    /// Enter or a double-click on a result: a file opens with its program, a folder in
+    /// Explorer, if it is still there.
+    pub(crate) fn search_open(&mut self, path: &std::path::Path) {
+        let Ok(m) = std::fs::metadata(path) else {
+            text(&self.root, "StatusText", &format!("{} isn't there any more. Scan again to update the results.", path.display()));
+            return;
+        };
+        let explorer = std::env::var_os("SystemRoot").map(|w| std::path::PathBuf::from(w).join("explorer.exe")).unwrap_or_else(|| "explorer.exe".into());
+        // Explorer opens a folder in a window and a file with its default program
+        let _ = std::process::Command::new(explorer).arg(path).spawn();
+        text(&self.root, "StatusText", &format!("{} {}", if m.is_dir() { "Opened" } else { "Opening" }, path.display()));
+    }
+
+    /// Ctrl+Enter or "Show in the Tree" on a result: show it in the tree.
     pub(crate) fn search_reveal(&mut self, n: usize) {
         self.set_view(View::Tree);
         self.reveal(n);

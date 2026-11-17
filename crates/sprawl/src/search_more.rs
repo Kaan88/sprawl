@@ -376,13 +376,13 @@ impl State {
     }
 
     /// A click on a row from another drive: picked (never part of the scan's picks); a
-    /// double-click shows it in Explorer.
+    /// double-click opens it (a file with its program, a folder in Explorer).
     pub(crate) fn more_tapped(&mut self, k: usize, n: usize, double: bool) {
         self.search.more.sel = Some((k, n));
         self.selected = None;
         self.marked.clear();
         if double {
-            self.more_command('E', k, n);
+            self.more_command('O', k, n);
         }
         self.focus_main();
         self.refresh_rows();
@@ -456,6 +456,7 @@ impl State {
                     None => crate::state::text(&self.root, "SearchInfo", "That path is gone."),
                 }
             }
+            'O' => self.search_open(&path),
             'C' => {
                 crate::win32::copy_text(self.hwnd, &path.display().to_string());
                 crate::state::text(&self.root, "SearchInfo", "Path copied.");

@@ -560,7 +560,12 @@ impl State {
             return;
         }
         if double && self.view == View::Search {
-            self.search_reveal(n);
+            self.marked.clear();
+            self.selected = Some(n);
+            self.refresh_rows();
+            if let Some(p) = self.tree.as_ref().map(|t| t.path_of(n)) {
+                self.search_open(&p);
+            }
             return;
         }
         self.marked.clear();
@@ -650,6 +655,9 @@ impl State {
         self.selected = Some(n);
         self.refresh_rows();
         self.show_selection();
+        if let Ok(i) = find::<UIElement>(&self.root, "cInTree") {
+            let _ = i.SetVisibility(if self.view == View::Search { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
+        }
         let shown = || -> windows_core::Result<()> {
             let menu: FlyoutBase = find(&self.root, "RowMenu")?;
             let target: DependencyObject = find(&self.root, "TreeScroll")?;
@@ -752,10 +760,17 @@ impl State {
             34 => target = (k + page).min(last),    // page down
             36 => target = 0,                       // home
             35 => target = last,                    // end
+            // Enter opens; Ctrl+Enter shows it in the tree (another drive's row: in Explorer)
             13 if self.view == View::Search => {
                 match self.rows.get(k) {
-                    Some(&(n, 0)) => self.search_reveal(n),
-                    Some(&(n, d)) => self.more_command('E', d - 1, n),
+                    Some(&(n, 0)) if ctrl => self.search_reveal(n),
+                    Some(&(n, 0)) => {
+                        if let Some(p) = self.tree.as_ref().map(|t| t.path_of(n)) {
+                            self.search_open(&p);
+                        }
+                    }
+                    Some(&(n, d)) if ctrl => self.more_command('E', d - 1, n),
+                    Some(&(n, d)) => self.more_command('O', d - 1, n),
                     None => {}
                 }
                 return true;

@@ -549,6 +549,7 @@ pub fn page(drives: &[String]) -> String {
           <FlyoutBase.AttachedFlyout>
             <MenuFlyout x:Name="RowMenu">
               <MenuFlyoutItem x:Name="cOpen" Text="Open"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8E5;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cInTree" Text="Show in the Tree (Ctrl+Enter)" Visibility="Collapsed"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A9;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutItem x:Name="cExplore" Text="Show in Explorer"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEC50;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutItem x:Name="cCmd" Text="Command Prompt Here"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE756;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutItem x:Name="cCopyPath" Text="Copy Path"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8C8;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>

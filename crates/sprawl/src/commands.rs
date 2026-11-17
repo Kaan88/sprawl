@@ -227,6 +227,11 @@ impl State {
                     let _ = std::process::Command::new("explorer.exe").arg(&p).spawn();
                 }
             }
+            "mInTree" if self.view == View::Search => {
+                if let Some(n) = self.selected {
+                    self.search_reveal(n);
+                }
+            }
             "mMapHere" if has_tree => {
                 if let Some(n) = self.selected {
                     let t = self.tree.as_ref().unwrap();

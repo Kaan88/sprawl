@@ -93,6 +93,7 @@ const COMMANDS: &[&str] = &[
 /// Right-click menu on the tree: (item name, command).
 const ROW_MENU: &[(&str, &str)] = &[
     ("cOpen", "mOpen"),
+    ("cInTree", "mInTree"),
     ("cExplore", "mExplore"),
     ("cCmd", "mCmd"),
     ("cCopyPath", "mCopyPath"),
