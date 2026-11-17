@@ -92,8 +92,6 @@ pub(crate) struct More {
     pub(crate) sel: Option<(usize, usize)>,
     /// When the strip last showed the reading progress.
     drawn: Option<Instant>,
-    /// What the indexing note in the main window says now ("" hidden).
-    busy_shown: String,
     /// The drive toggles and the strip as built: while they stay the same only texts change,
     /// so buttons don't move or flicker.
     toggles_shape: String,
@@ -132,6 +130,16 @@ impl More {
 
     pub(crate) fn is_reading(&self) -> bool {
         !self.reading.is_empty()
+    }
+
+    /// The drives and saved scans being read now, by name (for the activity indicator).
+    pub(crate) fn reading_now(&self) -> Vec<String> {
+        self.reading.iter().map(|r| r.label.clone()).collect()
+    }
+
+    /// Matches from other drives being sorted again on a worker.
+    pub(crate) fn sorting_now(&self) -> bool {
+        self.resorting.is_some()
     }
 
     pub(crate) fn has_places(&self) -> bool {
@@ -517,29 +525,8 @@ impl State {
         m.running = Some(rx);
     }
 
-    /// The note in the main window while names are being indexed: the drives being read, or
-    /// the scan's names, on any tab.
-    fn index_note(&mut self) {
-        let m = &self.search.more;
-        // on the Search tab the strip under the results shows the drives being read
-        let mut what: Vec<String> = if self.view == View::Search { Vec::new() } else { m.reading.iter().map(reading_label).collect() };
-        if self.search.building.is_some() {
-            what.insert(0, "this scan".into());
-        }
-        let note = if what.is_empty() { String::new() } else { format!("Indexing {} for search...", what.join(", ")) };
-        if note == self.search.more.busy_shown {
-            return;
-        }
-        self.search.more.busy_shown = note.clone();
-        crate::state::text(&self.root, "IndexText", &note);
-        if let Ok(b) = find::<Border>(&self.root, "IndexBusy") {
-            let _ = b.cast::<UIElement>().and_then(|u| u.SetVisibility(if note.is_empty() { Visibility::Collapsed } else { Visibility::Visible }));
-        }
-    }
-
     /// Each frame: places that arrived, results that arrived.
     pub(crate) fn more_poll(&mut self) {
-        self.index_note();
         let mut changed = false;
         let mut i = 0;
         while i < self.search.more.reading.len() {

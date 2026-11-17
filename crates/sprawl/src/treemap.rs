@@ -210,6 +210,7 @@ impl State {
         self.map.last = now;
 
         self.poll();
+        self.busy_poll();
         self.welcome_frame();
         self.hud_frame(dt);
         if self.filter_pending.is_some_and(|t| t.elapsed().as_millis() > 350) {

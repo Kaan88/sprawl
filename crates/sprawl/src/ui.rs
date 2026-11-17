@@ -267,6 +267,8 @@ pub fn page(drives: &[String]) -> String {
     let num = crate::look::NUM;
     use crate::look::{pick, pick_drop, Pick};
     let (tab_on, tab_off) = (pick(Pick::Tab, true), pick(Pick::Tab, false));
+    // the activity indicator: the selectable look on its own blue
+    let busy_style = r##"Style="{StaticResource SprawlPick}" Background="#332F6BFF""##;
     let (mode_on, mode_off, drop_off) = (pick(Pick::Mode, true), pick(Pick::Mode, false), pick_drop(Pick::Mode, false));
     let drive_items: String = drives
         .iter()
@@ -513,7 +515,14 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
 
   <Grid Grid.Row="3" Margin="12,0,12,6">
-  <Border x:Name="IndexBusy" Visibility="Collapsed" HorizontalAlignment="Right" Margin="0,0,352,0" Padding="10,4" CornerRadius="6" Background="#332F6BFF" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0"/><TextBlock x:Name="IndexText" FontSize="12" Foreground="#FFCFE0FF" VerticalAlignment="Center" MaxWidth="380" TextTrimming="CharacterEllipsis"/></StackPanel></Border>
+  <Button x:Name="BusyPill" Visibility="Collapsed" {busy_style} HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,352,0" Width="300" Height="32" Padding="10,0" HorizontalContentAlignment="Stretch" ToolTipService.ToolTip="What is running now. Click for the list; an entry opens its tab.">
+    <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>
+      <TextBlock x:Name="BusyText" Grid.Column="1" FontSize="12" Foreground="#FFCFE0FF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+      <TextBlock x:Name="BusyMore" Grid.Column="2" {num} FontSize="12" FontWeight="SemiBold" Foreground="#FFCFE0FF" VerticalAlignment="Center"/>
+    </Grid>
+    <Button.Flyout><Flyout x:Name="BusyFly" Placement="BottomEdgeAlignedRight"><Border x:Name="BusyList" MinWidth="320" MaxWidth="520"/></Flyout></Button.Flyout>
+  </Button>
   <TextBox x:Name="FilterBox" HorizontalAlignment="Right" Width="340" Height="32" PlaceholderText="Filter: *.mp4;  node_modules;  *\cache\*" FontSize="12"/>
   <StackPanel Orientation="Horizontal" Spacing="4">
     <Button x:Name="TabTree" Content="Tree View" {tab_on} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>

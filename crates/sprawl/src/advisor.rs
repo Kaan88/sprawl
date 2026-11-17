@@ -256,6 +256,15 @@ impl Advisor {
     pub(crate) fn cleaners_tab_on(&self) -> bool {
         self.cleaners_tab
     }
+
+    /// The AI is looking at the scan, or the duplicate search is on (for the activity indicator).
+    pub(crate) fn ai_busy(&self) -> bool {
+        matches!(self.ai, Ai::Running(_))
+    }
+
+    pub(crate) fn dupes_busy(&self) -> bool {
+        self.dupes_status.is_some()
+    }
 }
 
 /// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
