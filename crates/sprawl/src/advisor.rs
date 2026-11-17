@@ -757,7 +757,10 @@ impl State {
             }
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecAsk" => self.advisor.section = Section::Ask,
-            "AdvSecGrowth" => self.advisor.section = Section::Growth,
+            "AdvSecGrowth" | "AdvGrowOpen" => self.advisor.section = Section::Growth,
+            "AdvGrowPaint" => return self.command("PaintGrowth"),
+            "AdvGrowHist" => return self.command("ModeHist"),
+            "AdvGrowTide" => return self.command("ViewTideline"),
             "AdvSecMemory" => self.advisor.section = Section::Memory,
             "AdvSortSize" => self.advisor.sort = Sort::Size,
             "AdvSortRisk" => self.advisor.sort = Sort::Risk,
@@ -1103,7 +1106,7 @@ impl State {
             "AdvSecFindings", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
+            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
@@ -1153,14 +1156,13 @@ impl State {
         if orange > 0 {
             line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="#FFFF9A70" FontWeight="SemiBold"/><Run Text=" your own files" Foreground="#FFB9C2D6"/>"##, self.size(orange));
         }
-        if let Some(d) = r.growth.as_ref().and_then(|g| g.full_in_days) {
-            line += &format!(r##"<Run Text="   ·   {}" Foreground="#FFB9C2D6"/>"##, if d < 365.0 { format!("full in about {d:.0} days") } else { "room for over a year".into() });
-        }
+        let full = r.growth.as_ref().and_then(|g| g.full_in_days).map(|d| if d < 365.0 { format!("Full in about {d:.0} days") } else { "Room for over a year".into() });
         let _ = now;
         x += &format!(
             r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 <TextBlock FontSize="15" TextWrapping="Wrap" VerticalAlignment="Center">{line}</TextBlock>
-<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/></StackPanel></Grid>"##,
+<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/></StackPanel></Grid>"##,
+            full.map_or(String::new(), |f| format!(r##"<Button x:Name="AdvGrowOpen" Padding="10,3" FontSize="12" CornerRadius="5" Content="{}" ToolTipService.ToolTip="At the rate this folder grew between scans: see Growth"/>"##, ui::esc(&f))),
         );
         if total > 0 {
             let share = |v: u64| (v as f64 * 1000.0 / total as f64).max(if v > 0 { 4.0 } else { 0.0 });
@@ -1187,7 +1189,7 @@ impl State {
             tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
             tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
             tab("AdvSecGrowth", "Growth".into(), Section::Growth),
-            tab("AdvSecMemory", format!("Memory ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len()), Section::Memory),
+            tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len()), Section::Memory),
         );
         match self.advisor.section {
             Section::Ask => {
@@ -2057,7 +2059,7 @@ impl State {
 
     fn growth_card(&self, r: &Report) -> String {
         use sprawl_advisor::growth::signed;
-        let not_yet = r##"<TextBlock Text="Growth over time shows here once History has scans of this folder at least a day apart." FontSize="11" Foreground="#FF6F788C" TextWrapping="Wrap"/>"##;
+        let not_yet = r##"<TextBlock Text="Growth over time shows here once History has scans of this folder at least a day apart. Everything about growth is gathered here: the map colours, the History time-lapse and the Tideline view start from this tab." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
         let Some(t) = self.tree.as_ref() else { return String::new() };
         let Some(g) = &r.growth else { return not_yet.to_string() };
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="4">"##);
@@ -2072,6 +2074,8 @@ impl State {
             return not_yet.to_string();
         }
         x += &format!(r##"<TextBlock Text="Growth: {}" FontSize="13" FontWeight="SemiBold"/>"##, ui::esc(&head));
+        // every other place growth shows, one click away
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,2,0,4"><Button x:Name="AdvGrowPaint" Content="Colour the map by growth" Padding="8,2" FontSize="12" CornerRadius="4"/><Button x:Name="AdvGrowHist" Content="Play it in History" Padding="8,2" FontSize="12" CornerRadius="4"/><Button x:Name="AdvGrowTide" Content="See it as Tideline" Padding="8,2" FontSize="12" CornerRadius="4"/></StackPanel>"##;
         if let Some(d) = g.full_in_days {
             let (colour, text) = if d < 30.0 {
                 ("#FFFF7A45", format!("At this rate the drive is full in about {d:.0} days."))

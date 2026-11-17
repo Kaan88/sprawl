@@ -157,6 +157,12 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl")
     keep(find::<Selector>(&root, "WizProvider")?.SelectionChanged(|_, _| {
         with(|s| s.wizard_provider());
     })?);
+    keep(find::<ButtonBase>(&root, "HistGrowth")?.Click(|_, _| {
+        with(|s| {
+            s.command("TabAdvisor");
+            s.advisor_command("AdvGrowOpen");
+        });
+    })?);
     for name in ["HistClose", "HistPlay"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| if name == "HistPlay" { s.hist_play() } else { s.hist_close() });

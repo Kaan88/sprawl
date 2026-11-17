@@ -47,6 +47,7 @@ pub(crate) fn xaml() -> &'static str {
           <Slider x:Name="HistSlider" Grid.Column="1" Minimum="0" Maximum="1" Value="1" StepFrequency="1" TickFrequency="1" TickPlacement="Outside" SnapsTo="Ticks" VerticalAlignment="Center"/>
         </Grid>
         <TextBlock x:Name="HistGrew" Text=" " FontSize="12" Foreground="#FFE8EDF7" TextWrapping="Wrap"/>
+        <HyperlinkButton x:Name="HistGrowth" Content="What grew, and when the drive fills: Advisor &gt; Growth" FontSize="12" Padding="0"/>
         <StackPanel Orientation="Horizontal" Spacing="14" Margin="0,4,0,0">
           <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="2" Background="#FFFF5A45"/><TextBlock Text="grew" FontSize="11" Foreground="#FF9AA3B8"/></StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="2" Background="#FF4A8CFF"/><TextBlock Text="shrank" FontSize="11" Foreground="#FF9AA3B8"/></StackPanel>

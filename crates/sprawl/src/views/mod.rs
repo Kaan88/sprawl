@@ -1,4 +1,4 @@
-//! The other views of the map panel (from the View Lab): each one builds coloured triangles,
+﻿//! The other views of the map panel (from the View Lab): each one builds coloured triangles,
 //! lines, labels and hit shapes every frame from the scanned tree, drawn by the GPU's mesh pass.
 //! The treemap, the city and the galaxy stay in `scene` and `galaxy`.
 
@@ -447,7 +447,7 @@ impl State {
             Paint::Owner if !report => note("Owner needs the Advisor's check: open the Advisor tab."),
             Paint::Owner => note("One colour per app") + &swatch(grey, "No known owner"),
             Paint::Growth if !report || self.advice().is_some_and(|r| r.growth.is_none()) => note("Growth needs an earlier scan of this folder."),
-            Paint::Growth => note("Lit: what grew since the scan before"),
+            Paint::Growth => note("Lit: what grew since the scan before. More in Advisor > Growth."),
         };
         let xaml = format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="12">{body}</StackPanel>"##, crate::ui::NS);
         if self.map.views.key_shown == xaml {
@@ -742,7 +742,7 @@ impl Views {
     fn out_note(&self, n: usize, _t: &Tree, fmt: &dyn Fn(u64) -> String) -> String {
         let r = self.cache.as_ref().and_then(|c| c.4.get(n).copied()).unwrap_or(0);
         if r > 0 {
-            format!("   ·   {} can be won back", fmt(r))
+            format!("   Â·   {} can be won back", fmt(r))
         } else {
             String::new()
         }
