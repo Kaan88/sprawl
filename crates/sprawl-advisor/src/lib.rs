@@ -33,6 +33,7 @@ pub mod mcp;
 pub mod memory;
 pub mod pipe;
 pub mod plan;
+pub mod privacy;
 pub mod procs;
 pub mod projects;
 pub mod remedies;
@@ -181,6 +182,43 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     }
     ok.sort_by(|a, b| b.bytes.cmp(&a.bytes));
     (ok, held)
+}
+
+/// What the Advisor shows for one scan.
+#[derive(Clone, Debug, Default)]
+pub struct Advice {
+    /// [`advise_all`]'s findings: everything that frees space. Never a privacy part.
+    pub findings: Vec<Finding>,
+    pub held: Vec<(Finding, safety::Rejection)>,
+    /// Privacy parts (cookies, history), checked: empty unless the setting was on. Kept apart so
+    /// no sum of what can be freed, no tick, plan or script takes them by accident.
+    pub privacy: Vec<Finding>,
+    pub privacy_held: Vec<(Finding, safety::Rejection)>,
+}
+
+/// [`advise_all`], and with `privacy_cleaners` on (the setting [`privacy::SETTING`],
+/// `privacyCleaners`, off by default) the privacy parts in this account's browser profiles, in
+/// a list of their own. With it off, nothing about them is read or computed.
+pub fn advise_report(tree: &Tree, packs: &[RulePack], facts: &facts::Facts, privacy_cleaners: bool) -> Advice {
+    let places = if privacy_cleaners { privacy::Places::current() } else { None };
+    advise_report_in(tree, packs, facts, privacy_cleaners, places.as_ref(), std::env::var_os("USERPROFILE").as_deref().map(Path::new))
+}
+
+pub(crate) fn advise_report_in(tree: &Tree, packs: &[RulePack], facts: &facts::Facts, privacy_cleaners: bool, places: Option<&privacy::Places>, home: Option<&Path>) -> Advice {
+    let (findings, held) = advise_all(tree, packs, facts);
+    let mut out = Advice { findings, held, ..Advice::default() };
+    if !privacy_cleaners {
+        return out;
+    }
+    let Some(places) = places else { return out };
+    let never = safety::Never::default_list();
+    for f in privacy::find_in(tree, places) {
+        match safety::check_in(&f, tree, &never, safety::CACHE_CARVE_OUTS, home, Some(places)) {
+            Ok(f) => out.privacy.push(f),
+            Err(r) => out.privacy_held.push((f, r)),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

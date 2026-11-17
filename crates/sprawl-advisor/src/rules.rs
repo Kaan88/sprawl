@@ -237,6 +237,10 @@ impl RulePack {
 
     pub fn parse(text: &str) -> Result<RulePack, String> {
         let mut p: RulePack = toml::from_str(text).map_err(|e| e.to_string())?;
+        // the privacy cleaners' ids are Sprawl's own (crate::privacy), in no pack
+        if let Some(id) = p.rules.iter().map(|r| &r.id).chain(p.cleaners.iter().map(|c| &c.id)).find(|id| id.to_lowercase().starts_with("privacy.")) {
+            return Err(format!("{id}: ids starting with privacy. are kept for the privacy cleaners built into Sprawl"));
+        }
         p.part_rules = crate::cleaners::expand(&p)?;
         let mut ids = std::collections::HashSet::new();
         for r in &p.rules {

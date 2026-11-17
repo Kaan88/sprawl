@@ -30,6 +30,13 @@ pub fn action(f: &Finding) -> Option<(Action, bool)> {
     if matches!(a, Action::Tool { .. }) && !(f.trusted && f.builtin) {
         return None;
     }
+    // a privacy part's set: only as the privacy module made it, for its own part
+    if let Action::Set { part, .. } = &a {
+        let own = matches!(&f.source, crate::finding::Source::Rule(id) if id == part);
+        if !(own && f.trusted && f.builtin && f.command.is_none() && crate::privacy::is_privacy_id(part)) {
+            return None;
+        }
+    }
     if let Action::Match { pattern } = &a {
         if pattern.is_empty() || pattern.contains(['\\', '/']) {
             return None;
@@ -47,6 +54,8 @@ pub fn script(path: &Path, action: &Action, admin: bool) -> String {
         Action::Clear { days } => format!("{RM_FN}; sprawl-clear {q} {days}"),
         Action::Match { pattern } => format!("{RM_FN}; sprawl-match {q} {}", crate::rules::ps_quote(pattern)),
         Action::Tool { command } => command.clone(),
+        // never run from a script: the browser must be closed, checked by Sprawl
+        Action::Set { .. } => "# Not in a script: privacy parts are cleaned only inside Sprawl, with the browser closed.".to_string(),
     };
     if admin && !crate::export::needs_admin(&s) {
         format!("{s}   # as administrator")
@@ -214,6 +223,14 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     let mut o = Outcome::default();
     match action {
         Action::Tool { command } => tool(command, stop, &mut o),
+        Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
+            (Some(p), Some(places)) if same_path(path, files.first().map_or(Path::new(""), |f| f.as_path())) => {
+                let now = crate::procs::running();
+                set(p, files, spare, stop, &places, now.as_ref(), &crate::inuse::in_use, &mut o, progress)
+            }
+            (Some(_), None) => o.problem(path, "left alone: this account's AppData folders couldn't be worked out"),
+            _ => o.problem(path, "left alone: not a privacy part Sprawl knows"),
+        },
         _ => tree(path, action, spare, bin.as_deref_mut(), stop, &mut o, progress),
     }
     if stop.load(Ordering::Relaxed) {
@@ -247,6 +264,14 @@ pub struct Preview {
 }
 
 pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Option<Preview> {
+    // a privacy part's set: every file listed (there are a few), whatever `keep` says
+    if let Action::Set { part, files } = action {
+        let (Some(p), Some(places)) = (crate::privacy::part(part), crate::privacy::Places::current()) else { return Some(Preview::default()) };
+        if !same_path(path, files.first().map_or(Path::new(""), |f| f.as_path())) {
+            return Some(Preview::default());
+        }
+        return Some(set_preview(p, files, spare, &places));
+    }
     let cut = match action {
         Action::Clear { days } if *days > 0 => Some(SystemTime::now().checked_sub(Duration::from_secs(*days as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH)),
         Action::Tool { .. } => return None,
@@ -311,6 +336,200 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
     drop(take);
     out.biggest = heap.into_sorted_vec().into_iter().map(|std::cmp::Reverse((b, p))| (p, b)).collect();
     Some(out)
+}
+
+/// A privacy part's files on disk now: those listed (each must be one of the part's own files,
+/// in one profile, the part's first file among them, none twice) and every side file of theirs
+/// (`-journal`, `-wal`, `-shm`) there is now, whether or not the scan saw it.
+pub(crate) fn set_members(part: &crate::privacy::PrivacyPart, files: &[PathBuf], places: &crate::privacy::Places) -> Result<Vec<PathBuf>, String> {
+    if files.is_empty() {
+        return Err("no files named".into());
+    }
+    let mut profile: Option<PathBuf> = None;
+    let mut main = false;
+    let mut out: Vec<PathBuf> = Vec::new();
+    for f in files {
+        let m = crate::privacy::member(part, f, places).ok_or_else(|| format!("{} is not one of this part's files", f.display()))?;
+        if m.side.is_some() {
+            return Err(format!("{}: a side file goes with its database, not on its own", f.display()));
+        }
+        match &profile {
+            Some(p) if !same_path(p, &m.profile) => return Err("the files are in different profiles".into()),
+            _ => profile = Some(m.profile.clone()),
+        }
+        main |= m.file == 0;
+        if out.iter().any(|o| same_path(o, f)) {
+            return Err(format!("{} is named twice", f.display()));
+        }
+        out.push(f.clone());
+    }
+    if !main {
+        return Err(format!("{} isn't among the files", part.files[0]));
+    }
+    for f in files {
+        for sfx in crate::privacy::SIDE_FILES {
+            let side = PathBuf::from(format!("{}{sfx}", f.display()));
+            match std::fs::symlink_metadata(&side) {
+                Ok(_) => out.push(side),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // can't tell whether it is there: the set can't be known to be complete
+                Err(e) => return Err(format!("{}: {e}", side.display())),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// What [`set`] would delete now, by its tests other than "is the browser open" and "can each
+/// file be opened alone": all the files of the set, or nothing.
+pub(crate) fn set_preview(part: &crate::privacy::PrivacyPart, files: &[PathBuf], spare: &Spare, places: &crate::privacy::Places) -> Preview {
+    use std::os::windows::fs::MetadataExt;
+    let Ok(members) = set_members(part, files, places) else { return Preview::default() };
+    let since = spare.since.map(filetime);
+    let mut all = Vec::new();
+    for m in &members {
+        let Ok(md) = std::fs::symlink_metadata(m) else { return Preview::default() };
+        let new = since.is_some_and(|s| md.creation_time() as i64 > s || md.last_write_time() as i64 > s);
+        if md.is_dir() || attrs(&md) & REPARSE != 0 || spare.keeps(m) || new || has_link_above(m, places) {
+            return Preview::default();
+        }
+        all.push((m.clone(), md.len()));
+    }
+    all.sort_by(|a, b| b.1.cmp(&a.1));
+    Preview { bytes: all.iter().map(|x| x.1).sum(), files: all.len() as u64, biggest: all }
+}
+
+/// A folder between this account's AppData and `p` is a junction or link (or `p` isn't below
+/// AppData at all).
+fn has_link_above(p: &Path, places: &crate::privacy::Places) -> bool {
+    let roots = [lower(&places.local), lower(&places.roaming)];
+    let mut cur = p.parent();
+    while let Some(d) = cur {
+        if roots.iter().any(|r| *r == lower(d)) {
+            return false;
+        }
+        match std::fs::symlink_metadata(d) {
+            Ok(m) if attrs(&m) & REPARSE == 0 => {}
+            _ => return true,
+        }
+        cur = d.parent();
+    }
+    true
+}
+
+/// Delete a privacy part's set: every file listed and their side files, all or none.
+///
+/// In order, and the whole set left as it is at the first "no":
+/// 1. the files are the part's own, in one profile of this account ([`set_members`]), each
+///    listed one still there, none kept by the user, no link in the folders above them;
+/// 2. the browser is not running (`now`, its process names; no answer counts as running);
+/// 3. no program has any of the files open (`in_use`, the Restart Manager; no answer counts as
+///    in use);
+/// 4. every file opens alone (no sharing: fails if anything else has it open, and nothing else
+///    can open it while Sprawl holds it), is a plain file, is where its path says (no folder
+///    above it swapped for a link) and didn't change since the scan;
+/// 5. every file is marked to be deleted when its handle closes; if one can't be, the marks
+///    already made are taken back;
+/// 6. the handles close, and the files go.
+///
+/// Steps 2 and 3 are the "just before" check; the app makes the same check when the review opens.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set(
+    part: &crate::privacy::PrivacyPart,
+    files: &[PathBuf],
+    spare: &Spare,
+    stop: &AtomicBool,
+    places: &crate::privacy::Places,
+    now: Option<&std::collections::HashSet<String>>,
+    in_use: &dyn Fn(&[PathBuf]) -> Option<Vec<String>>,
+    o: &mut Outcome,
+    progress: &mut dyn FnMut(u64),
+) {
+    let browser = part.browser();
+    let at = files.first().cloned().unwrap_or_default();
+    let whole = "nothing in this set was deleted";
+    let members = match set_members(part, files, places) {
+        Ok(m) => m,
+        Err(e) => return o.problem(&at, format!("{e}; {whole}")),
+    };
+    if let Some(gone) = files.iter().find(|f| std::fs::symlink_metadata(f).is_err()) {
+        return o.problem(gone, format!("no longer there, so the set changed since the scan; {whole}"));
+    }
+    if let Some(k) = members.iter().find(|m| spare.keeps(m)) {
+        o.kept_chosen += 1;
+        return o.problem(k, format!("you chose to keep it; {whole}"));
+    }
+    if let Some(m) = members.iter().find(|m| has_link_above(m, places)) {
+        return o.problem(m, format!("a folder above it is a junction or link; {whole}"));
+    }
+    let exes: Vec<String> = browser.running.iter().map(|r| r.to_string()).collect();
+    match crate::procs::any_running(&exes, now) {
+        Some(false) => {}
+        Some(true) => return o.problem(&at, format!("{} is open; {whole}", browser.short)),
+        None => return o.problem(&at, format!("Windows couldn't say whether {} is open; {whole}", browser.short)),
+    }
+    match in_use(&members) {
+        Some(names) if names.is_empty() => {}
+        Some(names) => return o.problem(&at, format!("in use by {}; {whole}", names.join(", "))),
+        None => return o.problem(&at, format!("Windows couldn't say which programs use these files; {whole}")),
+    }
+    if stop.load(Ordering::Relaxed) {
+        o.stopped = true;
+        return;
+    }
+    let mut open: Vec<(PathBuf, win::Handle, win::Info)> = Vec::new();
+    for m in &members {
+        let (h, info) = match win::open_alone(m) {
+            Ok(x) => x,
+            Err(e) => return o.problem(m, format!("couldn't be opened alone ({e}): in use or locked; {whole}")),
+        };
+        if info.attrs & (DIRECTORY | REPARSE) != 0 {
+            return o.problem(m, format!("not a plain file; {whole}"));
+        }
+        match win::final_path(&h) {
+            Some(real) if same_path(&real, m) => {}
+            _ => return o.problem(m, format!("doesn't lead where its path says; {whole}")),
+        }
+        if spare.is_new(&info) {
+            o.kept_new += 1;
+            return o.problem(m, format!("changed since the scan; scan again; {whole}"));
+        }
+        open.push((m.clone(), h, info));
+    }
+    // Side files first, databases last (`open` has the databases first): should a mark ever fail
+    // to be taken back, or the run stop between two closes, a database left without its journal
+    // is opened fresh by the browser, while a journal or log left beside a new database could
+    // be replayed into it.
+    open.reverse();
+    let mut marked = 0;
+    for (m, h, _) in &open {
+        if let Err(e) = win::mark_delete(h, true) {
+            for (p, h2, _) in &open[..marked] {
+                if let Err(e2) = win::mark_delete(h2, false) {
+                    o.problem(p, format!("its delete mark couldn't be taken back ({e2})"));
+                }
+            }
+            return o.problem(m, format!("couldn't be marked for deleting ({e}); {whole}"));
+        }
+        marked += 1;
+    }
+    let sizes: Vec<(PathBuf, u64, u32)> = open.iter().map(|(p, _, i)| (p.clone(), i.size, i.links)).collect();
+    // the handles close, side files first: the files go
+    for x in open {
+        drop(x);
+    }
+    for (p, size, links) in sizes {
+        match std::fs::symlink_metadata(&p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                o.files += 1;
+                if links <= 1 {
+                    o.freed += size;
+                }
+            }
+            _ => o.problem(&p, "still there after its handle closed"),
+        }
+    }
+    progress(o.freed);
 }
 
 /// One open folder and what is left to do in it.
@@ -771,16 +990,25 @@ mod win {
     /// The item itself (a link is not followed), open for deleting. Others may keep reading and
     /// writing it, but nobody can rename or delete it (or a folder above it) while it is open.
     pub(super) fn open(p: &Path) -> std::io::Result<(Handle, Info)> {
+        open_with(p, 0x1 | 0x2)
+    }
+
+    /// The item itself, open for deleting, shared with nobody: fails when any program has it
+    /// open, and no program can open it while this handle is held.
+    pub(super) fn open_alone(p: &Path) -> std::io::Result<(Handle, Info)> {
+        open_with(p, 0)
+    }
+
+    fn open_with(p: &Path, share: u32) -> std::io::Result<(Handle, Info)> {
         const DELETE: u32 = 0x0001_0000;
         const READ_ATTRIBUTES: u32 = 0x80;
         const WRITE_ATTRIBUTES: u32 = 0x100;
         const SYNCHRONIZE: u32 = 0x0010_0000;
-        const SHARE_READ_WRITE: u32 = 0x1 | 0x2;
         const OPEN_EXISTING: u32 = 3;
         const BACKUP_SEMANTICS: u32 = 0x0200_0000;
         const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         let w = wide(p);
-        let h = unsafe { CreateFileW(w.as_ptr(), DELETE | READ_ATTRIBUTES | WRITE_ATTRIBUTES | SYNCHRONIZE, SHARE_READ_WRITE, std::ptr::null_mut(), OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, std::ptr::null_mut()) };
+        let h = unsafe { CreateFileW(w.as_ptr(), DELETE | READ_ATTRIBUTES | WRITE_ATTRIBUTES | SYNCHRONIZE, share, std::ptr::null_mut(), OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, std::ptr::null_mut()) };
         if h as isize == -1 {
             return Err(std::io::Error::last_os_error());
         }
@@ -844,6 +1072,27 @@ mod win {
             bytes[head + 2 * k..head + 2 * k + 2].copy_from_slice(&c.to_le_bytes());
         }
         if unsafe { SetFileInformationByHandle(h.0, 3, buf.as_ptr().cast(), size as u32) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Mark the opened item to be deleted when its handle closes (`on`), or take the mark back.
+    /// Not POSIX semantics: the name stays until the handle closes, so the mark can be undone.
+    pub(super) fn mark_delete(h: &Handle, on: bool) -> std::io::Result<()> {
+        // FILE_DISPOSITION_INFO_EX: DELETE and IGNORE_READONLY, or DO_NOT_DELETE (0)
+        let flags: u32 = if on { 0x1 | 0x10 } else { 0 };
+        if unsafe { SetFileInformationByHandle(h.0, 21, (&flags as *const u32).cast(), 4) } != 0 {
+            return Ok(());
+        }
+        let first = std::io::Error::last_os_error();
+        if first.raw_os_error() != Some(87) && first.raw_os_error() != Some(1) {
+            return Err(first);
+        }
+        // an older Windows: FILE_DISPOSITION_INFO (a read-only file can't be marked this way)
+        let yes: u8 = on.into();
+        if unsafe { SetFileInformationByHandle(h.0, 4, (&yes as *const u8).cast(), 1) } != 0 {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error())
@@ -1150,6 +1399,41 @@ mod tests {
         let mut m = f(p, String::new());
         m.set_action(Action::Match { pattern: r"..\*".into() }, false);
         assert_eq!(action(&m), None);
+    }
+
+    /// What a privacy set stands on: a file opens alone only when nobody else has it open, and a
+    /// delete mark can be taken back until the handle closes.
+    #[test]
+    fn a_delete_mark_can_be_taken_back() {
+        let base = std::env::temp_dir().join(format!("sprawl-mark-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let (a, b) = (base.join("a.db"), base.join("b.db"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        // marked, then taken back: it stays
+        let (h, _) = win::open_alone(&a).unwrap();
+        win::mark_delete(&h, true).unwrap();
+        win::mark_delete(&h, false).unwrap();
+        drop(h);
+        assert!(a.exists());
+        // read-only files too
+        let mut perm = std::fs::metadata(&b).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&b, perm).unwrap();
+        let (h, _) = win::open_alone(&b).unwrap();
+        // held alone: nobody else can open it meanwhile
+        assert!(std::fs::File::open(&b).is_err());
+        win::mark_delete(&h, true).unwrap();
+        assert!(b.exists(), "nothing goes before the handle closes");
+        drop(h);
+        assert!(!b.exists());
+        // anyone else holding it: it doesn't open alone
+        let other = std::fs::File::open(&a).unwrap();
+        assert!(win::open_alone(&a).is_err());
+        drop(other);
+        assert!(win::open_alone(&a).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

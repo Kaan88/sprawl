@@ -194,8 +194,10 @@ pub(crate) fn expand(pack: &RulePack) -> Result<Vec<Rule>, String> {
             if p.risk == Risk::Red {
                 return Err(format!("cleaner {}: part {} is red; a part is something that can go", c.id, p.id));
             }
-            if p.class == Class::Privacy && (p.risk < Risk::Amber || p.closed != Closed::Must) {
-                return Err(format!("cleaner {}: privacy part {} must be at least amber and closed = \"must\"", c.id, p.id));
+            // privacy parts are compiled into Sprawl (crate::privacy), in no pack: not a file on
+            // disk, not an import, not a model's proposal, not the built-in TOML either
+            if p.class == Class::Privacy {
+                return Err(format!("cleaner {}: part {} is class privacy; privacy cleaners come only built into Sprawl, never from a rule pack", c.id, p.id));
             }
             // "only with the app closed" needs a program to look for: without one nothing is checked
             if p.closed == Closed::Must && c.running.is_empty() {
@@ -335,8 +337,19 @@ pub fn as_text(rows: &[(String, Vec<PartText>)]) -> String {
 /// The id of the "found by shape" cleaner, and of its findings' rule.
 pub const SHAPE: &str = "shape.cache";
 
+/// [`catalogue`], and with `privacy_cleaners` on (the setting [`crate::privacy::SETTING`], off by
+/// default) the privacy cleaners after it. With it off, nothing about them is listed.
+pub fn catalogue_with(packs: &[RulePack], privacy_cleaners: bool) -> Vec<CleanerDef> {
+    let mut out = catalogue(packs);
+    if privacy_cleaners {
+        out.extend(crate::privacy::catalogue());
+    }
+    out
+}
+
 /// Every cleaner of `packs`, the built-in pack first. Local cleaners whose id is taken are left
-/// out (a local pack can't stand in for a built-in cleaner).
+/// out (a local pack can't stand in for a built-in cleaner). No privacy cleaner: no pack can
+/// hold one (see [`catalogue_with`]).
 pub fn catalogue(packs: &[RulePack]) -> Vec<CleanerDef> {
     let mut out: Vec<CleanerDef> = Vec::new();
     let ordered = packs.iter().filter(|p| p.trusted).chain(packs.iter().filter(|p| !p.trusted));
@@ -708,8 +721,9 @@ mod tests {
         assert_eq!(again.rules.len(), 1, "parts aren't written out as rules");
     }
 
-    /// Every built-in part that deletes names a place the never-list allows: a part on it would
-    /// only ever be held back. (Browser caches inside protected profiles wait for the carve-outs.)
+    /// Every built-in part that deletes names a place the never-list allows (a part on it would
+    /// only ever be held back), or exactly one of the cache carve-outs of its own cleaner, then
+    /// clearing it with the browser closed.
     #[test]
     fn builtin_parts_are_outside_the_never_list() {
         std::env::set_var("SystemDrive", "C:");
@@ -721,14 +735,28 @@ mod tests {
         let never = crate::safety::Never::default_list();
         let pack = RulePack::builtin();
         assert!(pack.cleaners.len() >= 12);
-        for r in &pack.part_rules {
-            for p in &r.paths {
-                let sample = crate::memory::sample_path(p);
-                assert!(never.hit(&sample).is_none(), "{} {p} -> {sample}", r.id);
-                assert!(!crate::rules::expand(p).contains('%'), "{p}");
+        let mut carved = 0;
+        for c in &pack.cleaners {
+            for part in &c.parts {
+                let r = part.rule(c);
+                for p in &r.paths {
+                    // a profile as Chromium names one, for `Profile *`
+                    let sample = crate::memory::sample_path(&p.replace(r"\Profile *\", r"\Profile 1\"));
+                    assert!(!crate::rules::expand(p).contains('%'), "{p}");
+                    if never.hit(&sample).is_none() {
+                        continue;
+                    }
+                    let co = crate::safety::cache_carve_out(&sample).unwrap_or_else(|| panic!("{} {p} -> {sample} is on the never-list", r.id));
+                    assert_eq!(co.cleaner, c.id, "{p}: another cleaner's carve-out");
+                    assert_eq!(part.closed, Closed::Must, "{}: a carve-out part needs the browser closed", r.id);
+                    assert_eq!(part.action, Some(Act::Clear), "{}: a carve-out is cleared, never removed", r.id);
+                    assert!(part.class == Class::Space && part.risk >= Risk::Amber && part.keep_days.is_none(), "{}", r.id);
+                    carved += 1;
+                }
+                assert!(r.command.is_none() && !r.allow_protected, "{}", r.id);
             }
-            assert!(r.command.is_none() && !r.allow_protected, "{}", r.id);
         }
+        assert_eq!(carved, 18, "Chrome, Edge and Brave: three caches, Default and Profile N");
         // every rule is in at most one cleaner, and the cleaners' text loads again
         for d in catalogue(&[pack.clone()]) {
             let text = format!("[pack]\nname = 'x'\n{}", d.text);

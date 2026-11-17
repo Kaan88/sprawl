@@ -427,6 +427,12 @@ impl<'a> Tools<'a> {
             }
             "suggest_ticks" => {
                 let parts: Vec<String> = input["parts"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(200).collect()).unwrap_or_default();
+                // a privacy part is ticked by the user alone, never on a suggestion
+                let all = parts.len();
+                let parts: Vec<String> = parts.into_iter().filter(|s| !crate::privacy::is_privacy_id(s) && !s.to_lowercase().starts_with("privacy.")).collect();
+                if parts.is_empty() && all > 0 {
+                    return Err("privacy parts (cookies, history) are never suggested: only the user ticks them".into());
+                }
                 if parts.is_empty() {
                     return Err("give `parts`: ids from the cleaners list".into());
                 }
@@ -756,6 +762,10 @@ mod tests {
         assert!(t.call("finish", &json!({"summary": "done"})).is_ok() && t.summary.as_deref() == Some("done"));
         // chat tools: a filter is passed on; a web search without consent never goes out
         assert!(t.call("set_filter", &json!({"filter": "*.bin"})).is_ok() && t.filter.as_deref() == Some("*.bin"));
+        // a privacy part is never suggested for ticking: dropped, or refused when it is all
+        assert!(t.call("suggest_ticks", &json!({"parts": ["privacy.chrome/cookies", "PRIVACY.firefox/cookies"], "why": "x"})).is_err());
+        assert!(t.call("suggest_ticks", &json!({"parts": ["privacy.chrome/history", "app.discord/cache"], "why": "x"})).is_ok());
+        assert_eq!(t.suggest.as_ref().map(|s| s.0.clone()), Some(vec!["app.discord/cache".to_string()]));
         assert!(t.call("web_lookup", &json!({"query": "what is DXCache"})).unwrap_err().contains("no tool"), "off unless switched on");
         t.web = true;
         assert!(t.call("web_lookup", &json!({"query": "what is DXCache"})).unwrap_err().contains("didn't allow"));

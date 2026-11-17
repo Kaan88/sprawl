@@ -157,6 +157,10 @@ pub enum Action {
     Match { pattern: String },
     /// A built-in rule's own tool command, run by PowerShell without a window.
     Tool { command: String },
+    /// A privacy part's files (`part` is its rule id, as `privacy.chrome/cookies`), each with its
+    /// database side files (`-journal`, `-wal`, `-shm`), deleted all together or not at all, only
+    /// while the browser is closed. Made only by [`crate::privacy`]; never written to a script.
+    Set { part: String, files: Vec<PathBuf> },
 }
 
 impl Finding {
@@ -221,9 +225,16 @@ impl Finding {
         }
     }
 
-    /// Give the finding its action, and the command text "Save as script" writes for it.
+    /// A privacy part (cookies, history): never ticked for the user, planned, written to a
+    /// script or counted in what can be freed. Known by its action or its rule's id.
+    pub fn privacy(&self) -> bool {
+        matches!(self.action, Some(Action::Set { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id))
+    }
+
+    /// Give the finding its action, and the command text "Save as script" writes for it (none
+    /// for a privacy part's set: those run only inside Sprawl).
     pub fn set_action(&mut self, action: Action, admin: bool) {
-        self.command = Some(crate::clean::script(&self.path, &action, admin));
+        self.command = (!matches!(action, Action::Set { .. })).then(|| crate::clean::script(&self.path, &action, admin));
         self.admin = admin;
         self.action = Some(action);
     }

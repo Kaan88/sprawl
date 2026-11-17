@@ -43,7 +43,8 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     s.push_str("function sprawl-size($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return [long]0 }; if (-not $i.PSIsContainer) { return [long]$i.Length }; if ($i.Attributes -band 1024) { return [long]0 }; $t = [long]0; foreach ($c in (Get-ChildItem -LiteralPath $i.FullName -Force -ErrorAction SilentlyContinue)) { $t += sprawl-size $c.FullName }; $t }\n\n");
     s.push_str("$items = @(\n");
     let mut by_hand = Vec::new();
-    for f in findings {
+    // privacy parts are cleaned only inside Sprawl, with the browser closed: not even listed
+    for f in findings.iter().filter(|f| !f.privacy()) {
         let Some(cmd) = &f.command else {
             by_hand.push(f);
             continue;

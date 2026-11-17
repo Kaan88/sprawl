@@ -30,6 +30,8 @@ pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
         // nor a guess by shape, nor anything in another account's profile, nor the build output
         // of a project the user is working on
         .filter(|&i| !findings[i].heuristic() && !findings[i].other_account() && !findings[i].in_active_project())
+        // nor a privacy part: it frees almost nothing, and only the user ticks one
+        .filter(|&i| !findings[i].privacy())
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();
