@@ -36,6 +36,8 @@ pub enum Rejection {
     /// The protected folders couldn't all be worked out (an environment variable is missing),
     /// so nothing destructive is offered.
     NeverListIncomplete,
+    /// A privacy part's set that isn't exactly one of Sprawl's own (see [`crate::privacy`]).
+    Privacy(String),
 }
 
 impl fmt::Display for Rejection {
@@ -52,6 +54,7 @@ impl fmt::Display for Rejection {
             Rejection::NotAScan => write!(f, "the tree was loaded from a CSV file, not scanned"),
             Rejection::RedWithAction => write!(f, "it is marked never-touch but carries an action"),
             Rejection::NeverListIncomplete => write!(f, "the protected Windows folders couldn't be worked out"),
+            Rejection::Privacy(why) => write!(f, "{why}"),
         }
     }
 }
@@ -476,13 +479,21 @@ fn close_enough(claimed: u64, actual: u64) -> bool {
 /// `tree` must be the full scan (not a filtered view): sizes and links are checked against it.
 pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejection> {
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
-    check_in(f, tree, never, CACHE_CARVE_OUTS, home.as_deref())
+    let places = crate::privacy::Places::current();
+    check_in(f, tree, never, CACHE_CARVE_OUTS, home.as_deref(), places.as_ref())
 }
 
 /// [`check`] with the cache carve-outs given (the tests' fixtures can't sit in `X:\Users\...`).
-fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[CacheCarveOut], home: Option<&std::path::Path>) -> Result<Finding, Rejection> {
+pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[CacheCarveOut], home: Option<&std::path::Path>, places: Option<&crate::privacy::Places>) -> Result<Finding, Rejection> {
     if tree.method == sprawl_core::ScanMethod::Csv {
         return Err(Rejection::NotAScan);
+    }
+    // a privacy part: checked as a set of its own files, by its own rules
+    if let Some(crate::finding::Action::Set { part, files }) = &f.action {
+        return check_set(f, tree, never, part, files, places, home);
+    }
+    if f.privacy() {
+        return Err(Rejection::Privacy("a privacy part is only ever a set of its own files".into()));
     }
     let n = find_path(tree, &f.path).ok_or(Rejection::NotInTree)?;
     if std::fs::symlink_metadata(&f.path).is_err() {
@@ -604,6 +615,94 @@ fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[CacheCarveOut
         out.evidence.push("Inside your own files, so only you can decide".into());
     }
     let _ = segments;
+    Ok(out)
+}
+
+/// A privacy part's set ([`crate::finding::Action::Set`]): Sprawl's own, every file one of the
+/// part's own in one profile of this account, as the scan has them with their side files, no
+/// link on the way, and on the never-list only by the browser's whole folder or by the names the
+/// part waives. Its size is the set's.
+fn check_set(f: &Finding, tree: &Tree, never: &Never, part_id: &str, files: &[std::path::PathBuf], places: Option<&crate::privacy::Places>, home: Option<&std::path::Path>) -> Result<Finding, Rejection> {
+    let refuse = |why: String| Err(Rejection::Privacy(why));
+    let from_model = matches!(f.source, crate::finding::Source::Model(_));
+    if from_model || !f.builtin || !f.trusted || f.allow_protected || f.remedy != Remedy::Delete || f.command.is_some() {
+        return refuse("not one of Sprawl's own privacy parts".into());
+    }
+    let Some(part) = crate::privacy::part(part_id) else { return refuse(format!("{part_id} is not a privacy part Sprawl knows")) };
+    if !matches!(&f.source, crate::finding::Source::Rule(id) if id == part_id) {
+        return refuse("its rule and its set are not the same part".into());
+    }
+    let Some(places) = places else { return refuse("this account's AppData folders couldn't be worked out".into()) };
+    if never.incomplete {
+        return Err(Rejection::NeverListIncomplete);
+    }
+    let low = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
+    if files.first().is_none_or(|first| low(first) != low(&f.path)) {
+        return refuse("its path is not the set's first file".into());
+    }
+    let mut profile: Option<std::path::PathBuf> = None;
+    let mut nodes: Vec<usize> = Vec::new();
+    for (i, file) in files.iter().enumerate() {
+        let Some(m) = crate::privacy::member(part, file, places) else { return refuse(format!("{} is not one of this part's files", file.display())) };
+        if m.side.is_some() || (i == 0) != (m.file == 0) {
+            return refuse(format!("{} is not where it belongs in the set", file.display()));
+        }
+        if profile.as_ref().is_some_and(|p| low(p) != low(&m.profile)) {
+            return refuse("the files are in different profiles".into());
+        }
+        profile = Some(m.profile);
+        let n = find_path(tree, file).ok_or(Rejection::NotInTree)?;
+        if nodes.contains(&n) {
+            return refuse(format!("{} is named twice", file.display()));
+        }
+        if std::fs::symlink_metadata(file).is_err() {
+            return Err(Rejection::Missing);
+        }
+        nodes.push(n);
+        // its side files, as the scan has them
+        let parent = tree.nodes[n].parent.ok_or(Rejection::ScanRoot)?;
+        for sfx in crate::privacy::SIDE_FILES {
+            let name = format!("{}{sfx}", tree.nodes[n].name);
+            if let Some(k) = tree.nodes[parent].children.iter().copied().find(|&k| tree.nodes[k].name.eq_ignore_ascii_case(&name)) {
+                nodes.push(k);
+            }
+        }
+    }
+    for &n in &nodes {
+        let path = tree.path_of(n);
+        let ps = path.to_string_lossy();
+        if n == sprawl_core::ROOT {
+            return Err(Rejection::ScanRoot);
+        }
+        if tree.nodes[n].is_dir {
+            return refuse(format!("{} is a folder", path.display()));
+        }
+        // no junction or link on the way down from the scan's root, the file itself included
+        let mut i = Some(n);
+        while let Some(k) = i {
+            if tree.nodes[k].is_reparse_point() {
+                return Err(Rejection::ThroughLink(tree.path_of(k).display().to_string()));
+            }
+            i = tree.nodes[k].parent;
+        }
+        if crate::privacy::member(part, &path, places).is_none() {
+            return refuse(format!("{} is not one of this part's files", path.display()));
+        }
+        if let Some(h) = never.all_hits(&ps).into_iter().find(|h| !is_folder_cover(h) && !part.waives.contains(h)) {
+            return Err(Rejection::Never(format!("{} ({h})", path.display())));
+        }
+        if crate::finding::other_account(&path, home) {
+            return refuse(format!("{} is in another account's profile", path.display()));
+        }
+    }
+    let actual: u64 = nodes.iter().map(|&n| tree.nodes[n].size).sum();
+    if !close_enough(f.bytes, actual) {
+        return Err(Rejection::SizeMismatch { claimed: f.bytes, actual });
+    }
+    let mut out = f.clone();
+    out.bytes = actual;
+    out.risk = out.risk.max(Risk::Amber);
+    out.carved = Vec::new();
     Ok(out)
 }
 
@@ -856,21 +955,21 @@ mod tests {
         let clear = Some(Action::Clear { days: 0 });
         let cache = ud.join("Default").join("Cache");
         let good = finding(cache.clone(), "app.test/cache", clear.clone());
-        let ok = check_in(&good, &tree, &never, &list, home).expect("its own part, clearing the cache");
+        let ok = check_in(&good, &tree, &never, &list, home, None).expect("its own part, clearing the cache");
         assert_eq!(ok.carved.len(), 1, "the protected name inside is carved out");
         assert_eq!(ok.bytes, 3000);
-        assert!(check_in(&finding(ud.join("Profile 2").join("Code Cache"), "app.test/cache", clear.clone()), &tree, &never, &list, home).is_ok());
+        assert!(check_in(&finding(ud.join("Profile 2").join("Code Cache"), "app.test/cache", clear.clone()), &tree, &never, &list, home, None).is_ok());
         // everything else stays held back by the never-list
-        let never_hit = |f: &Finding| matches!(check_in(f, &tree, &never, &list, home), Err(Rejection::Never(_)));
+        let never_hit = |f: &Finding| matches!(check_in(f, &tree, &never, &list, home, None), Err(Rejection::Never(_)));
         for (id, action) in [("app.other/cache", clear.clone()), ("app.testx/cache", clear.clone()), ("app.test", clear.clone()), ("app.test/cache", Some(Action::Remove)), ("app.test/cache", Some(Action::Match { pattern: "*".into() })), ("app.test/cache", None)] {
             assert!(never_hit(&finding(cache.clone(), id, action.clone())), "{id} {action:?}");
         }
         assert!(never_hit(&Finding { builtin: false, ..good.clone() }), "a pack on disk");
-        assert!(check_in(&Finding { trusted: false, ..good.clone() }, &tree, &never, &list, home).is_err());
+        assert!(check_in(&Finding { trusted: false, ..good.clone() }, &tree, &never, &list, home, None).is_err());
         assert!(never_hit(&Finding { source: Source::Model("m".into()), ..good.clone() }), "a model");
         assert!(never_hit(&Finding { remedy: Remedy::Command, ..good.clone() }));
-        assert!(matches!(check_in(&good, &tree, &never, &list, Some(std::path::Path::new(r"C:\Users\someone-else"))), Err(Rejection::Never(_))), "another account's");
-        assert!(matches!(check_in(&good, &tree, &never, &[], home), Err(Rejection::Never(_))), "no carve-out: held back as before");
+        assert!(matches!(check_in(&good, &tree, &never, &list, Some(std::path::Path::new(r"C:\Users\someone-else")), None), Err(Rejection::Never(_))), "another account's");
+        assert!(matches!(check_in(&good, &tree, &never, &[], home, None), Err(Rejection::Never(_))), "no carve-out: held back as before");
         for p in [ud.join("Default"), ud.join("Guest Profile").join("Cache"), ud.join("Default").join("Login Data"), ud.join("Default").join("Network")] {
             assert!(never_hit(&finding(p.clone(), "app.test/cache", clear.clone())), "{}", p.display());
             assert!(never_hit(&finding(p.clone(), "app.test/cache", Some(Action::Remove))), "{}", p.display());
@@ -885,7 +984,7 @@ mod tests {
             f.path = p.clone();
             f.bytes = 0;
             f.set_action(Action::Clear { days: 0 }, false);
-            assert!(matches!(check_in(&f, &t2, &never, &list, home), Err(Rejection::ThroughLink(_))));
+            assert!(matches!(check_in(&f, &t2, &never, &list, home, None), Err(Rejection::ThroughLink(_))));
         }
         // the run: the cache goes, the protected name inside and the profile's files stay
         let o = crate::clean::run(&cache, &Action::Clear { days: 0 }, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {});

@@ -194,8 +194,10 @@ pub(crate) fn expand(pack: &RulePack) -> Result<Vec<Rule>, String> {
             if p.risk == Risk::Red {
                 return Err(format!("cleaner {}: part {} is red; a part is something that can go", c.id, p.id));
             }
-            if p.class == Class::Privacy && (p.risk < Risk::Amber || p.closed != Closed::Must) {
-                return Err(format!("cleaner {}: privacy part {} must be at least amber and closed = \"must\"", c.id, p.id));
+            // privacy parts are compiled into Sprawl (crate::privacy), in no pack: not a file on
+            // disk, not an import, not a model's proposal, not the built-in TOML either
+            if p.class == Class::Privacy {
+                return Err(format!("cleaner {}: part {} is class privacy; privacy cleaners come only built into Sprawl, never from a rule pack", c.id, p.id));
             }
             // "only with the app closed" needs a program to look for: without one nothing is checked
             if p.closed == Closed::Must && c.running.is_empty() {
@@ -335,8 +337,19 @@ pub fn as_text(rows: &[(String, Vec<PartText>)]) -> String {
 /// The id of the "found by shape" cleaner, and of its findings' rule.
 pub const SHAPE: &str = "shape.cache";
 
+/// [`catalogue`], and with `privacy_cleaners` on (the setting [`crate::privacy::SETTING`], off by
+/// default) the privacy cleaners after it. With it off, nothing about them is listed.
+pub fn catalogue_with(packs: &[RulePack], privacy_cleaners: bool) -> Vec<CleanerDef> {
+    let mut out = catalogue(packs);
+    if privacy_cleaners {
+        out.extend(crate::privacy::catalogue());
+    }
+    out
+}
+
 /// Every cleaner of `packs`, the built-in pack first. Local cleaners whose id is taken are left
-/// out (a local pack can't stand in for a built-in cleaner).
+/// out (a local pack can't stand in for a built-in cleaner). No privacy cleaner: no pack can
+/// hold one (see [`catalogue_with`]).
 pub fn catalogue(packs: &[RulePack]) -> Vec<CleanerDef> {
     let mut out: Vec<CleanerDef> = Vec::new();
     let ordered = packs.iter().filter(|p| p.trusted).chain(packs.iter().filter(|p| !p.trusted));
