@@ -82,20 +82,111 @@ pub fn restart_elevated(owner: isize, args: &str) -> bool {
     r.0 as isize > 32
 }
 
-/// Run `script` in a new, visible Windows PowerShell window with `args` (each already quoted
-/// with [`quote`] if it is a path), elevated when `admin` (the UAC prompt appears). The window
-/// stays open afterwards so its output can be read. False when it couldn't start or the user
-/// declined elevation.
-pub fn run_powershell(owner: isize, script: &std::path::Path, args: &[String], admin: bool) -> bool {
-    let ps = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\WindowsPowerShell\v1.0\powershell.exe")).unwrap_or_else(|| "powershell.exe".into());
-    let mut all = format!("-NoProfile -ExecutionPolicy Bypass -NoExit -File {}", quote(script));
-    for a in args {
-        all.push(' ');
-        all.push_str(a);
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetSystemDirectoryW(buf: *mut u16, size: u32) -> u32;
+    fn WaitForSingleObject(h: isize, ms: u32) -> u32;
+    fn CloseHandle(h: isize) -> i32;
+}
+
+/// Windows' System32 folder, from Windows itself (not from an environment variable).
+pub fn system_dir() -> Option<PathBuf> {
+    let mut buf = [0u16; 520];
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (n > 0 && n < buf.len()).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..n])))
+}
+
+/// A started process, watched until it ends.
+pub struct Running(isize);
+
+impl Running {
+    pub fn ended(&self) -> bool {
+        unsafe { WaitForSingleObject(self.0, 0) == 0 }
     }
-    let verb = if admin { w!("runas") } else { w!("open") };
-    let r = unsafe { ShellExecuteW(Some(hwnd(owner)), verb, &HSTRING::from(ps.as_os_str()), &HSTRING::from(all), PCWSTR::null(), SW_SHOWNORMAL) };
-    r.0 as isize > 32
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// Standard base64 of UTF-16LE text: what PowerShell's -EncodedCommand takes.
+fn encoded(text: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let mut out = String::with_capacity(bytes.len() * 4 / 3 + 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            if k <= c.len() {
+                out.push(T[(n >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Run PowerShell `command` in a new, visible window, elevated when `admin` (the UAC prompt
+/// appears). The command travels on the command line itself (-EncodedCommand): no file that
+/// another program could change between the prompt and the run. It starts in System32, so no
+/// tool reads its settings from whatever folder Sprawl was started in. None when it couldn't
+/// start or the user declined elevation.
+pub fn run_powershell(owner: isize, command: &str, admin: bool) -> Option<Running> {
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    let sys = system_dir()?;
+    let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
+    let args = format!("-NoProfile -ExecutionPolicy Bypass -EncodedCommand {}", encoded(command));
+    if args.len() > 32_000 {
+        return None;
+    }
+    let (file, params, dir) = (HSTRING::from(ps.as_os_str()), HSTRING::from(args), HSTRING::from(sys.as_os_str()));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: hwnd(owner),
+        lpVerb: if admin { w!("runas") } else { w!("open") },
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        lpDirectory: PCWSTR(dir.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    unsafe { ShellExecuteExW(&mut info) }.ok()?;
+    let h = info.hProcess.0 as isize;
+    (h != 0).then_some(Running(h))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_utf16() {
+        // [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('dir'))
+        assert_eq!(super::encoded("dir"), "ZABpAHIA");
+        assert_eq!(super::encoded("ab"), "YQBiAA==");
+    }
+
+    /// The wrapper Run now uses: a script with param() run as a block with -Run, from
+    /// System32, with its finally part after it (Windows PowerShell 5.1).
+    #[test]
+    fn encoded_wrapper_runs() {
+        let script = "param([switch]$Run, [string]$Report)
+if ($Run) { Write-Output ('ran in ' + (Get-Location).Path) } else { Write-Output 'dry' }";
+        let command = format!("Set-Location -LiteralPath ([Environment]::SystemDirectory)
+try {{
+& {{
+{script}
+}} -Run
+}} finally {{
+Write-Output 'closing'
+}}");
+        let ps = super::system_dir().unwrap().join(r"WindowsPowerShell\v1.0\powershell.exe");
+        let out = std::process::Command::new(ps).args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &super::encoded(&command)]).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        assert!(text.contains(r"ran in c:\windows\system32") && text.contains("closing"), "{text}");
+    }
 }
 
 /// Command-line argument quoting for a path.

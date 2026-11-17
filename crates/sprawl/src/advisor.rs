@@ -81,6 +81,8 @@ enum Msg {
     DupesProgress(u64, String),
     /// The script measured, and (path, size planned, size now) of every item in it.
     Verified(PathBuf, Vec<(PathBuf, u64, u64)>),
+    /// A Run now ended, measured: (path, title, size before, size now).
+    Acted(PathBuf, String, u64, u64),
 }
 
 /// The model run for the current report.
@@ -206,7 +208,7 @@ pub(crate) struct Advisor {
     sort: Sort,
     only: Only,
     /// A finding being run now: (its path, title, size, the file its script reports to, since).
-    acting: Option<(PathBuf, String, u64, PathBuf, std::time::Instant)>,
+    acting: Option<(PathBuf, String, u64, crate::dialogs::Running, std::time::Instant)>,
     /// What the last run freed: (title, bytes freed, bytes it had).
     acted: Option<(String, u64, u64)>,
     /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
@@ -407,6 +409,9 @@ impl State {
         self.advisor.preview = false;
         // a pick was for a finding as it was then: a new analysis asks again
         self.advisor.picks.clear();
+        // an AI run on the old scan stops spending; its answer would be dropped anyway
+        self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.advisor.acted = None;
         self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.advisor.dupes_status = None;
         self.advisor.dupes_note = None;
@@ -467,24 +472,20 @@ impl State {
     /// Called every frame: pick up finished work.
     /// A run in its PowerShell window writes what it freed into its report file when it ends.
     fn act_poll(&mut self) {
-        let Some((path, title, bytes, report, since)) = &self.advisor.acting else { return };
-        let done = std::fs::read_to_string(report).ok().and_then(|t| t.trim().trim_start_matches('\u{feff}').parse::<u64>().ok());
-        if let Some(freed) = done {
-            let (path, title, bytes) = (path.clone(), title.clone(), *bytes);
-            let _ = std::fs::remove_file(report);
-            let _ = std::fs::remove_file(report.with_extension("ps1"));
-            if freed * 2 >= bytes {
-                self.advisor.memory.decide(&path, &title, Verdict::Done);
-                self.save_memory();
-            }
-            self.advisor.acting = None;
-            self.advisor.acted = Some((title, freed, bytes));
-            self.advisor_changed();
-        } else if since.elapsed().as_secs() > 3600 {
-            // the window was closed early, or it is still going after an hour: stop watching
-            self.advisor.acting = None;
-            self.advisor_changed();
+        let Some((path, title, bytes, proc, _)) = &self.advisor.acting else { return };
+        if !proc.ended() {
+            return;
         }
+        // its window is closed: what is left there now is measured on another thread
+        let (path, title, bytes) = (path.clone(), title.clone(), *bytes);
+        self.advisor.acting = None;
+        if let Some(tx) = self.advisor.tx.clone() {
+            std::thread::spawn(move || {
+                let now = if std::fs::symlink_metadata(&path).is_err() { 0 } else { sprawl_core::scan(&path, |_| {}).map(|t| t.nodes[sprawl_core::ROOT].size).unwrap_or(bytes) };
+                let _ = tx.send(Msg::Acted(path, title, bytes, now));
+            });
+        }
+        self.advisor_changed();
     }
 
     pub(crate) fn advisor_poll(&mut self) {
@@ -577,6 +578,16 @@ impl State {
                             Err(e) => Ai::Failed(e),
                         };
                     }
+                }
+                Msg::Acted(path, title, before, now) => {
+                    let freed = before.saturating_sub(now);
+                    // mostly gone, and never over the user's own Keep
+                    let kept = self.advisor.memory.hides(&path).is_some_and(|d| d.verdict == Verdict::Keep);
+                    if now <= before / 2 && !kept {
+                        self.advisor.memory.decide(&path, &title, Verdict::Done);
+                        self.save_memory();
+                    }
+                    self.advisor.acted = Some((title, freed, before));
                 }
                 Msg::Verified(file, v) => {
                     if let Some(e) = self.advisor.exported.as_mut().filter(|e| e.file == file) {
@@ -697,7 +708,11 @@ impl State {
             "AdvRun" => return self.advisor_run(),
             "AdvRescan" => {
                 self.advisor.acted = None;
-                return self.command("ScanButton");
+                // the folder that was scanned, not whatever the drive box says
+                if let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)) {
+                    self.start_scan(root);
+                }
+                return;
             }
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecPlan" => self.advisor.section = Section::Plan,
@@ -724,6 +739,14 @@ impl State {
                 let Some(owner) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)?.owner.clone()) else { return };
                 // the user's own uninstaller, when one is set: it gets the app's details
                 if let Some(exe) = self.uninstaller() {
+                    // the setting is the user's file: an administrator Sprawl doesn't start what it names
+                    if sprawl_core::is_elevated() {
+                        win32::info(self.hwnd, "Sprawl runs as administrator, so it doesn't start your uninstaller (the setting could name any program). Open your uninstaller yourself.", "Sprawl");
+                        return;
+                    }
+                    if !win32::confirm(self.hwnd, &format!("Hand {owner} to this program?\n{}", exe.display()), "Uninstall") {
+                        return;
+                    }
                     let args = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.handoff.get(k).cloned())).unwrap_or_default();
                     let msg = match std::process::Command::new(&exe).args(&args).spawn() {
                         Ok(_) => format!("{owner} is handed to {}.", exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
@@ -747,8 +770,11 @@ impl State {
             }
             "AdvChatSend" => return self.chat_send(),
             "AdvStop" => {
+                if !matches!(self.advisor.ai, Ai::Running(_)) {
+                    return;
+                }
                 self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let (Ai::Running(_), Some(p)) = (&self.advisor.ai, &self.advisor.panel) {
+                if let Some(p) = &self.advisor.panel {
                     crate::state::text(p, "AdvAiStatus", "Stopping after this step");
                 }
                 self.advisor.ai = Ai::Running("Stopping after this step".into());
@@ -1024,7 +1050,7 @@ impl State {
         x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(&strip.join("   ·   ")));
         if let Some((_, title, _, _, since)) = &self.advisor.acting {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Running {} in its PowerShell window (started {} s ago). This updates when it ends." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Running {} in its PowerShell window (started {} s ago). Close that window when it is done: Sprawl then measures what is left." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
                 ui::esc(title),
                 since.elapsed().as_secs()
             );
@@ -1067,7 +1093,7 @@ impl State {
             Section::Findings => x += &self.findings_section(r),
         }
         x += &format!(
-            r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Sprawl only suggests: nothing is deleted or run from this tab. Commands are for PowerShell. Checked in {:.1} s."/>"##,
+            r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Nothing is deleted or run unless you press Run now and confirm; Export writes the same commands as a script for PowerShell. Checked in {:.1} s."/>"##,
             r.secs
         );
         x += "</StackPanel>";
@@ -1205,7 +1231,7 @@ impl State {
         // and what the user added themselves (anything with a command but red)
         for (i, f) in r.findings.iter().enumerate() {
             let overlaps = plan.picked.iter().any(|&j| {
-                let (a, b) = (r.findings[j].path.to_string_lossy().to_lowercase(), f.path.to_string_lossy().to_lowercase());
+                let (a, b) = (PathBuf::from(r.findings[j].path.to_string_lossy().to_lowercase()), PathBuf::from(f.path.to_string_lossy().to_lowercase()));
                 a.starts_with(&b) || b.starts_with(&a)
             });
             if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) && f.command.is_some() && f.risk < Risk::Red && !overlaps {
@@ -1427,7 +1453,7 @@ impl State {
         let (Some(t), Some(_)) = (self.tree.clone(), self.advice()) else { return };
         let Some(text) = run_file(&t.path_of(sprawl_core::ROOT)).and_then(|f| std::fs::read_to_string(f).ok()) else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
-        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(v["when"].as_u64().unwrap_or(0));
+        let Some(when) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(v["when"].as_u64().unwrap_or(0))) else { return };
         if when.elapsed().map_or(true, |d| d.as_secs() > 30 * 86_400) {
             return;
         }
@@ -1435,13 +1461,10 @@ impl State {
         let facts = Facts::from_apps(Vec::new());
         let already: Vec<Finding> = self.advice().map(|r| r.findings.iter().filter(|f| !matches!(f.source, Source::Model(_))).cloned().collect()).unwrap_or_default();
         let mut tools = sprawl_advisor::llm::tools::Tools::new(&t, &facts, &model, &already, &self.advisor.memory);
+        // each claim with the size it had then: a folder that changed since is held back as a
+        // size mismatch, and has to be asked about again
         for c in v["claims"].as_array().into_iter().flatten().take(200) {
-            let mut c = c.clone();
-            // the size now, from this scan: what changed since is checked like anything else
-            if let Some(n) = c["path"].as_str().and_then(|p| sprawl_advisor::find_path(&t, std::path::Path::new(p))) {
-                c["bytes"] = serde_json::json!(t.nodes[n].size);
-            }
-            let _ = tools.report_finding(&c);
+            let _ = tools.report_finding(c);
         }
         let run = AiRun {
             findings: std::mem::take(&mut tools.accepted),
@@ -1452,7 +1475,7 @@ impl State {
             with_tools: v["with_tools"].as_bool().unwrap_or(false),
             ..AiRun::default()
         };
-        let usage = v["usage"].as_str().unwrap_or("").to_string();
+        let usage = v["usage"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).take(120).collect::<String>();
         let mut ai = self.merge_ai(run);
         if let Ai::Done { usage: u, from, .. } = &mut ai {
             *u = usage;
@@ -1474,14 +1497,33 @@ impl State {
         if f.command.is_none() || f.risk == Risk::Red {
             return;
         }
-        // the same checks as when it was found, against the disk as it is now
-        if let Err(why) = sprawl_advisor::safety::check(&f, &t, &sprawl_advisor::safety::Never::default_list()) {
-            win32::info(self.hwnd, &format!("Not run: {why}."), "Sprawl");
-            return;
-        }
+        // the same checks as when it was found (the scan's sizes and links; the path must still
+        // be there); the commands' own functions check for links again as they go
+        let f = match sprawl_advisor::safety::check(&f, &t, &sprawl_advisor::safety::Never::default_list()) {
+            Ok(checked) => checked,
+            Err(why) => {
+                win32::info(self.hwnd, &format!("Not run: {why}."), "Sprawl");
+                return;
+            }
+        };
         let cmd = f.command.clone().unwrap_or_default();
+        // a tool's own clean-up (npm, yarn, NuGet...) acts on the account running it: only for
+        // the user's own folders, not another account's seen from an administrator scan
+        if !cmd.starts_with(RM_FN) {
+            let mine = std::env::var_os("USERPROFILE").map(PathBuf::from).is_some_and(|home| {
+                let (p, h) = (f.path.to_string_lossy().to_lowercase(), home.to_string_lossy().to_lowercase());
+                PathBuf::from(p).starts_with(PathBuf::from(h))
+            });
+            if !mine {
+                win32::info(self.hwnd, "This command cleans the account that runs it, and this folder belongs to another account (or to Windows). Copy the command and run it there instead.", "Sprawl");
+                return;
+            }
+        }
         let shown = cmd.strip_prefix(RM_FN).map(|r| format!("(Sprawl's safe-delete functions){r}")).unwrap_or_else(|| cmd.clone());
-        let admin = cmd.contains("# as administrator");
+        let admin = sprawl_advisor::export::needs_admin(&cmd);
+        let elevated = admin || sprawl_core::is_elevated();
+        // folder names can hold characters that reverse how text reads: shown as codes
+        let plain = |s: String| s.chars().map(|c| if matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}') { format!("<U+{:04X}>", c as u32) } else { c.to_string() }).collect::<String>();
         let text = format!(
             "{}\n{}\n\nAbout {} at\n{}\n\nThis runs in a PowerShell window{}:\n{}\n\nRun it now?",
             f.title,
@@ -1491,32 +1533,25 @@ impl State {
                 _ => "These are your own files.",
             },
             self.size(f.bytes),
-            f.path.display(),
-            if admin { " as administrator" } else { "" },
-            shown
+            plain(f.path.display().to_string()),
+            if elevated { " as administrator" } else { "" },
+            plain(shown)
         );
         if !win32::confirm(self.hwnd, &text, "Run now") {
             return;
         }
-        if f.risk >= Risk::Orange && !win32::confirm(self.hwnd, &format!("These are your own files, and they won't come back:\n{}\n\nAre you sure you want them gone?", f.path.display()), "Your own files") {
+        if f.risk >= Risk::Orange && !win32::confirm(self.hwnd, &format!("These are your own files, and they won't come back:\n{}\n\nAre you sure you want them gone?", plain(f.path.display().to_string())), "Your own files") {
             return;
         }
+        // the script Export writes, run from memory with -Run; the window waits to be read
         let root = t.path_of(sprawl_core::ROOT).display().to_string();
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        let script = std::env::temp_dir().join(format!("sprawl-run-{stamp}.ps1"));
-        let report = script.with_extension("txt");
-        let _ = std::fs::remove_file(&report);
-        if let Err(e) = sprawl_advisor::export::write_script(&script, &sprawl_advisor::export::script(&[&f], &root, std::time::SystemTime::now())) {
-            win32::info(self.hwnd, &format!("Couldn't write the script: {e}"), "Sprawl");
-            return;
-        }
-        let args = vec!["-Run".to_string(), "-Report".to_string(), crate::dialogs::quote(&report)];
-        if !crate::dialogs::run_powershell(self.hwnd, &script, &args, admin) {
-            let _ = std::fs::remove_file(&script);
+        let script = sprawl_advisor::export::script(&[&f], &root, std::time::SystemTime::now());
+        let command = format!("Set-Location -LiteralPath ([Environment]::SystemDirectory)\ntry {{\n& {{\n{script}\n}} -Run\n}} finally {{\nWrite-Host ''\nRead-Host 'Finished. Press Enter to close this window (Sprawl then measures what is left)' | Out-Null\n}}");
+        let Some(proc) = crate::dialogs::run_powershell(self.hwnd, &command, admin) else {
             crate::state::text(&self.root, "StatusText", "Not run: PowerShell didn't start (or administrator rights were declined).");
             return;
-        }
-        self.advisor.acting = Some((f.path.clone(), f.title.clone(), f.bytes, report, std::time::Instant::now()));
+        };
+        self.advisor.acting = Some((f.path.clone(), f.title.clone(), f.bytes, proc, std::time::Instant::now()));
         self.advisor.acted = None;
         self.advisor_changed();
     }
@@ -2140,16 +2175,17 @@ impl State {
                     how += " · stopped";
                 }
                 if let Some(t) = from {
-                    how += &format!(" · {}, checked against this scan", ago(*t));
+                    how += &format!(" · {}, still the same size in this scan", ago(*t));
                 }
                 x += &format!(
-                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {how}" Foreground="#FF8E97AA" FontSize="11"/></TextBlock>"##,
+                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="#FF8E97AA" FontSize="11"/></TextBlock>"##,
                     match found {
                         0 => "Nothing more found".to_string(),
                         1 => "1 more finding".to_string(),
                         n => format!("{n} more findings"),
                     },
-                    ui::esc(model)
+                    ui::esc(model),
+                    ui::esc(&how)
                 );
                 // its findings here, where they are read, not at the bottom of the list
                 for i in (0..r.findings.len()).filter(|&i| matches!(r.findings[i].source, Source::Model(_))) {

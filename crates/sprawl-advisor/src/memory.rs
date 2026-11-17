@@ -154,16 +154,38 @@ fn check_proposal(p: &Proposal) -> Result<(), String> {
     Ok(())
 }
 
+/// The memory file's text, also as an earlier build wrote it: a `verdict = "keepexact"` line
+/// (one build only) is read as a Keep of that one suggestion.
+fn parse(text: &str) -> Result<Memory, toml::de::Error> {
+    let text = text.trim_start_matches('\u{feff}');
+    if !text.contains("\"keepexact\"") {
+        return toml::from_str(text);
+    }
+    let fixed: String = text
+        .lines()
+        .map(|l| {
+            let t = l.trim();
+            if t.starts_with("verdict") && t.ends_with("\"keepexact\"") {
+                "verdict = \"keep\"\nexact = true".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    toml::from_str(&fixed)
+}
+
 impl Memory {
     /// Load without touching the file, even if it doesn't parse.
     pub fn load_readonly() -> Memory {
-        file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| toml::from_str(t.trim_start_matches('\u{feff}')).ok()).unwrap_or_default()
+        file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| parse(&t).ok()).unwrap_or_default()
     }
 
     pub fn load() -> Memory {
         let Some(f) = file() else { return Memory::default() };
         let Ok(t) = std::fs::read_to_string(&f) else { return Memory::default() };
-        match toml::from_str(t.trim_start_matches('\u{feff}')) {
+        match parse(&t) {
             Ok(m) => m,
             Err(_) => {
                 // never overwrite a file that didn't load: keep it beside, start afresh
@@ -384,6 +406,16 @@ pub fn local_packs() -> Vec<RulePack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_old_exact_keep() {
+        let old = "[[decisions]]\npath = 'D:\\\\Downloads'\ntitle = \"Move Downloads\"\nverdict = \"keepexact\"\nwhen = 5\n";
+        let m = parse(old).expect("an earlier build's file loads");
+        assert_eq!(m.decisions[0].verdict, Verdict::Keep);
+        assert!(m.decisions[0].exact);
+        assert!(m.hides(std::path::Path::new(r"D:\Downloads")).is_some());
+        assert!(m.hides(std::path::Path::new(r"D:\Downloads\old.exe")).is_none(), "only that one suggestion");
+    }
 
     #[test]
     fn decisions_hide_findings() {

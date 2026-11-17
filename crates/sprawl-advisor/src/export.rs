@@ -12,6 +12,12 @@ use crate::rules::{ps_quote, RM_FN};
 /// Text for the script. Findings without a command are listed at the end as things to do by
 /// hand. Write it with a UTF-8 byte order mark ([`write_script`]): Windows PowerShell 5.1 reads
 /// a file without one as the ANSI code page, which would garble non-English paths.
+/// Whether a command needs administrator rights: the rules mark it at the very end (a path
+/// that merely contains the words doesn't count).
+pub fn needs_admin(cmd: &str) -> bool {
+    cmd.trim_end().ends_with("# as administrator")
+}
+
 pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "<#\n  Sprawl clean-up script for {}, made {}.", scan_root.replace("#>", "# >"), month_year(made));
@@ -33,7 +39,7 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
             continue;
         };
         let body = cmd.strip_prefix(RM_FN).map(|r| r.trim_start_matches(';').trim_start()).unwrap_or(cmd);
-        let admin = body.contains("# as administrator");
+        let admin = needs_admin(body);
         let from = match &f.source {
             crate::finding::Source::Rule(id) if id.starts_with("local.") => format!("your rule {id}"),
             crate::finding::Source::Rule(id) => format!("Sprawl rule {id}"),

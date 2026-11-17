@@ -82,7 +82,27 @@ impl Usage {
 
 /// Dollars per million tokens (input, output) of Anthropic models, from the published prices.
 /// Cache reads cost about 5% of input.
+/// What a cache read costs, as a share of the input price.
+pub(crate) fn cache_read_share(model: &str) -> f64 {
+    if model.starts_with("claude-fable-5-") || model.starts_with("claude-mythos-5-") {
+        0.025
+    } else if model.starts_with("claude-opus-5-5") || model.starts_with("claude-sonnet-5-5") {
+        0.05
+    } else {
+        0.1
+    }
+}
+
+/// Price per million tokens (input, output) for an exact model id, or one with a date or
+/// version suffix after it.
 pub(crate) fn anthropic_price(model: &str) -> Option<(f64, f64)> {
+    let known = ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5", "claude-haiku-4-5", "claude-fable-5-2", "claude-fable-5-1", "claude-fable-5"];
+    // the longest id it starts with: "claude-opus-5-5-20261101" is Opus 5.5, not Opus 5
+    let model = known.iter().filter(|k| model == **k || model.strip_prefix(**k).is_some_and(|r| r.starts_with('-') && r[1..].bytes().all(|b| b.is_ascii_digit()))).max_by_key(|k| k.len())?;
+    exact_price(model)
+}
+
+fn exact_price(model: &str) -> Option<(f64, f64)> {
     Some(match model {
         "claude-opus-5-5" => (4.0, 20.0),
         "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" => (5.0, 25.0),

@@ -63,12 +63,14 @@ impl Anthropic {
         }
         let content = resp["content"].as_array().cloned().unwrap_or_default();
         let u = &resp["usage"];
-        let input = u["input_tokens"].as_u64().unwrap_or(0) + u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+        let written = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+        let input = u["input_tokens"].as_u64().unwrap_or(0) + written;
         let cached = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
         let output = u["output_tokens"].as_u64().unwrap_or(0);
         // the model that answered (a fallback may have)
         let model = resp["model"].as_str().unwrap_or(&self.model);
-        let cost_usd = super::anthropic_price(model).map(|(i, o)| (input as f64 * i + cached as f64 * i * 0.05 + output as f64 * o) / 1e6);
+        // cache writes (5 minutes) cost 1.25 times the input price; reads a share of it
+        let cost_usd = super::anthropic_price(model).map(|(i, o)| ((input - written) as f64 * i + written as f64 * i * 1.25 + cached as f64 * i * super::cache_read_share(model) + output as f64 * o) / 1e6);
         let usage = super::Usage { input, cached, output, cost_usd };
         let mut turn = Turn { truncated: stop == "max_tokens", usage, ..Turn::default() };
         for block in &content {
