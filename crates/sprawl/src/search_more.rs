@@ -739,6 +739,8 @@ impl State {
                 }
             }
             'O' => self.search_open(&path),
+            // a row from another drive: not part of the scan on screen, nothing to read again
+            'W' => self.shell_menu(path, false),
             'C' => {
                 crate::win32::copy_text(self.hwnd, &path.display().to_string());
                 crate::state::text(&self.root, "SearchInfo", "Path copied.");

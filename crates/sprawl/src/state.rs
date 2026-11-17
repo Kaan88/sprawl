@@ -139,6 +139,8 @@ pub(crate) struct State {
     pub(crate) changes: u64,
     /// What Sprawl itself just deleted (lower case), and when: not counted as live changes.
     pub(crate) own_deletes: Vec<(String, std::time::Instant)>,
+    /// Folders read again after something ran from the Windows menu.
+    pub(crate) shell_rescans: Option<std::sync::mpsc::Receiver<(std::path::PathBuf, Option<sprawl_core::Tree>)>>,
     pub(crate) pulses_on: bool,
     pub(crate) map_root: usize,
     pub(crate) map: MapView,
@@ -393,6 +395,7 @@ impl State {
 
     /// Pulse the map where files changed since the last frame.
     pub(crate) fn drain_changes(&mut self) {
+        self.drain_shell_rescans();
         let Some(w) = &self.watcher else { return };
         let mut seen = HashSet::new();
         while let Ok(p) = w.rx.try_recv() {

@@ -40,6 +40,7 @@ mod search;
 mod search_more;
 mod search_query;
 mod search_box;
+mod shellmenu;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -105,6 +106,7 @@ const ROW_MENU: &[(&str, &str)] = &[
     ("cCopyInfo", "mCopyInfo"),
     ("cDelete", "mDelete"),
     ("cDeleteForever", "mDeleteForever"),
+    ("cShell", "mShell"),
 ];
 
 pub(crate) fn launch() -> windows_core::Result<()> {
@@ -392,7 +394,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
     })?);
 
     // The menu of a search row from another drive.
-    for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S')] {
+    for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S'), ("sxShell", 'W')] {
         if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {
             keep(i.Click(move |_, _| {
                 with(|s| s.more_menu_pick(kind));
@@ -458,6 +460,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         watcher: None,
         changes: 0,
         own_deletes: Vec::new(),
+        shell_rescans: None,
         pulses_on: true,
         map_root: ROOT,
         map: treemap::MapView::new(panel),

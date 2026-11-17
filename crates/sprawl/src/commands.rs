@@ -294,6 +294,11 @@ impl State {
                 text(&self.root, "FootLeft", "Copied the visible rows to the clipboard");
             }
             // only from the tables: the Advisor removes things only through its own review
+            "mShell" => {
+                if let Some(p) = self.selected_path() {
+                    self.shell_menu(p, true);
+                }
+            }
             "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files | View::Search) => self.delete(name == "mDeleteForever"),
             "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View, File View and Search (on rows of this scan)"),
             "mExportCsv" if has_tree => {

@@ -677,6 +677,15 @@ impl State {
         let Some(&(n, d)) = self.rows.get(k) else { return };
         if self.view == View::Search {
             if d > 0 {
+                if crate::win32::ctrl_shift_down().1 && !sprawl_core::is_elevated() {
+                    if let Some((ix, i)) = self.search.more.item(d - 1, n) {
+                        let p = ix.path_of(i);
+                        self.search.more.sel = Some((d - 1, n));
+                        self.refresh_rows();
+                        self.shell_menu(p, false);
+                        return;
+                    }
+                }
                 self.more_menu(d - 1, n, at);
                 return;
             }
@@ -689,6 +698,17 @@ impl State {
         self.selected = Some(n);
         self.refresh_rows();
         self.show_selection();
+        // with several rows picked the Windows menu is off: it would act on one of them only
+        if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "cShell") {
+            let _ = i.SetIsEnabled(!sprawl_core::is_elevated() && self.picked_nodes().len() <= 1);
+        }
+        // Shift+right-click: straight to the Windows menu
+        if crate::win32::ctrl_shift_down().1 && !sprawl_core::is_elevated() && self.picked_nodes().len() <= 1 {
+            if let Some(p) = self.selected_path() {
+                self.shell_menu(p, true);
+                return;
+            }
+        }
         if let Ok(i) = find::<UIElement>(&self.root, "cInTree") {
             let _ = i.SetVisibility(if self.view == View::Search { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
         }

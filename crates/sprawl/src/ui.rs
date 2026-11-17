@@ -372,6 +372,12 @@ pub fn page(drives: &[String]) -> String {
     }
     let paint_items: String = crate::views::PAINTS.iter().map(|(_, cmd, name)| format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}"/>"##)).collect();
     let tree_hint = crate::welcome::tree_hint();
+    // Explorer's own menu: never as administrator (its extensions would run elevated too)
+    let shell = |name: &str| match crate::shellmenu::unavailable(sprawl_core::is_elevated(), 1) {
+        None => format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu..." ToolTipService.ToolTip="Explorer's own right-click menu (or Shift+right-click). What it does is not checked by Sprawl."><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##),
+        Some(why) => format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu: {why}" IsEnabled="False"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##),
+    };
+    let (shell_item, shell_more) = (shell("cShell"), shell("sxShell"));
     let types_hint = crate::welcome::types_hint();
     let wizard = crate::wizard::xaml();
     let hist = crate::history::xaml();
@@ -534,6 +540,8 @@ pub fn page(drives: &[String]) -> String {
               <MenuFlyoutItem x:Name="sxExplore" Text="Show in Explorer"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEC50;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutItem x:Name="sxCopy" Text="Copy Path"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8C8;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutItem x:Name="sxScan" Text="Scan This Folder"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE721;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutSeparator/>
+              {shell_more}
             </MenuFlyout>
           </FlyoutBase.AttachedFlyout>
         </Border>
@@ -568,6 +576,8 @@ pub fn page(drives: &[String]) -> String {
               <MenuFlyoutSeparator/>
               <MenuFlyoutItem x:Name="cDelete" Text="Delete (to Recycle Bin)"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutItem x:Name="cDeleteForever" Text="Delete Permanently"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;" Foreground="#FFFF6B6B"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutSeparator/>
+              {shell_item}
             </MenuFlyout>
           </FlyoutBase.AttachedFlyout>
         </ScrollViewer>
