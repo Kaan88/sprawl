@@ -41,7 +41,7 @@ pub(crate) enum Kind {
 pub(crate) const ALL: [(Kind, &str, &str, &str); 17] = [
     (Kind::Rings, "ViewRings", "Rings", "Rings: one ring per folder level, arc length is size. Double-click a ring to zoom in, the centre to go back."),
     (Kind::Flame, "ViewFlame", "Flame Stack", "Flame Stack: width is size, height is depth. Double-click a bar to zoom in, the base to go back."),
-    (Kind::Waffle, "ViewWaffle", "Waffle", "Waffle: every square is the same number of bytes; the glowing ones can be won back. Click to show only those."),
+    (Kind::Waffle, "ViewWaffle", "Waffle", "Waffle: every square is the same number of bytes; the glowing ones can be won back. The Showing button limits it to those."),
     (Kind::Library, "ViewLibrary", "Library", "Library: the biggest files as books, spine width is size, shelved by folder. Hover a book to pull it out."),
     (Kind::Suds, "ViewSuds", "Suds", "Suds: folders as bubbles, area is size. In Risk colour each fills with what can be won back."),
     (Kind::Glass, "ViewGlass", "Stained Glass", "Stained Glass: a Voronoi treemap, each pane's area is its size. Double-click a pane to go into it."),
@@ -53,7 +53,7 @@ pub(crate) const ALL: [(Kind, &str, &str, &str); 17] = [
     (Kind::Isobars, "ViewIsobars", "Isobars", "Isobars: a weather map of change since the scan before. Warm is growth, cool is shrinkage."),
     (Kind::Rose, "ViewRose", "Rose Stack", "Rose Stack: one disc per scan, oldest at the bottom; a wedge that flares is growing. Drag to turn."),
     (Kind::Grove, "ViewGrove", "Grove", "Grove: the folder tree as a tree, branch thickness is size, big files are leaves."),
-    (Kind::Lens, "ViewLens", "Lens", "Lens: the whole tree in one disc. Click a node to bring it to the middle."),
+    (Kind::Lens, "ViewLens", "Lens", "Lens: the whole tree in one disc. Double-click a node to bring it to the middle."),
     (Kind::Ridgeline, "ViewRidgeline", "Ridgeline", "Ridgeline: a landscape on the treemap, big files rise as ridges. Drag to turn, wheel to come closer."),
     (Kind::Molecule, "ViewMolecule", "Molecule", "Molecule: folders and big files as atoms, bonds are containment. Drag to turn."),
 ];
@@ -337,6 +337,9 @@ pub(crate) struct Views {
     pub paint: Paint,
     /// The map key's XAML, as last loaded.
     pub key_shown: String,
+    /// With animations off: what the last frame was built from, and when that last changed.
+    pub stamp: u64,
+    pub stamp_at: f32,
     pub out: Out,
     pub hover: Option<usize>,
     /// When the view or its root last changed (program seconds).
@@ -394,6 +397,9 @@ impl State {
             }
         }
         text(&self.root, "ViewMoreText", k.map_or("More views", |k| k.name()));
+        if let Ok(e) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "ViewOnly") {
+            let _ = e.SetVisibility(if k == Some(Kind::Waffle) { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
+        }
         // the view's hint as a caption on the map, where it is looked at
         text(&self.root, "MapCaption", k.map_or("", |k| k.hint()));
         if let Ok(e) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "MapCaption") {
@@ -594,6 +600,26 @@ impl State {
             self.map.views.shown = Some(key);
             self.map.views.since = now;
         }
+        // Animations off: no intro, no ambient motion, and no redraw once nothing changes (the
+        // packed layouts get a few seconds to settle after a change)
+        let animate = self.map.scene.animate;
+        if !animate {
+            use std::hash::{Hash, Hasher};
+            let v = &self.map.views;
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (key, v.paint as u8, v.hover, self.selected, v.lens_focus, v.waffle_only, self.map.show_labels).hash(&mut h);
+            for f in [v.cam.yaw, v.cam.tilt, v.cam.dist, self.map.scene.w, self.map.scene.h] {
+                f.to_bits().hash(&mut h);
+            }
+            (v.history.as_ref().map(|x| x.1.len()), v.cache.as_ref().map(|c| (c.0, c.2))).hash(&mut h);
+            let stamp = h.finish();
+            if stamp != v.stamp {
+                self.map.views.stamp = stamp;
+                self.map.views.stamp_at = now;
+            } else if now - v.stamp_at > 3.0 && self.map.drawn_once {
+                return false;
+            }
+        }
         let by_alloc = self.map.by_alloc && self.alloc.len() == t.nodes.len();
         let alloc = &self.alloc;
         let size = |n: usize| if by_alloc { alloc[n] } else { t.nodes[n].size };
@@ -616,8 +642,8 @@ impl State {
             paint: v.paint,
             w: self.map.scene.w,
             h: self.map.scene.h,
-            t: now - v.since,
-            time: now,
+            t: if animate { now - v.since } else { 100.0 },
+            time: if animate { now } else { 0.0 },
             hover: v.hover,
             selected: self.selected,
             fmt: &fmt,
@@ -708,22 +734,25 @@ impl State {
         self.map.views.out.pick(x as f32, y as f32).filter(|&n| n < len)
     }
 
-    /// A click on a view: some views act on it themselves.
-    pub(crate) fn views_click(&mut self, x: f64, y: f64) -> bool {
-        match self.map.views.kind {
-            Some(Kind::Waffle) => {
-                self.map.views.waffle_only = !self.map.views.waffle_only;
-                true
+    /// One rule in every view: a click selects (the tree follows), a double-click goes in, the
+    /// wheel zooms. Lens goes in by re-centring on what was double-clicked. True when handled.
+    pub(crate) fn views_double(&mut self, x: f64, y: f64) -> bool {
+        if self.map.views.kind == Some(Kind::Lens) {
+            if let Some(n) = self.views_pick(x, y) {
+                self.map.views.lens_focus = Some(n);
+                self.map.views.since = time_now();
             }
-            Some(Kind::Lens) => {
-                if let Some(n) = self.views_pick(x, y) {
-                    self.map.views.lens_focus = Some(n);
-                    self.map.views.since = time_now();
-                }
-                true
-            }
-            _ => false,
+            return true;
         }
+        false
+    }
+
+    /// Waffle's "only what can go" switch.
+    pub(crate) fn views_only_toggle(&mut self) {
+        self.map.views.waffle_only = !self.map.views.waffle_only;
+        text(&self.root, "ViewOnlyText", if self.map.views.waffle_only { "Showing: what can go" } else { "Showing: everything" });
+        self.map.drawn_once = false;
+        self.render_map();
     }
 
     /// The wheel over a 3D view comes closer; elsewhere it goes up or into folders.

@@ -550,9 +550,6 @@ impl State {
     }
 
     pub(crate) fn map_click(&mut self, x: f64, y: f64) {
-        if self.views_on() && self.views_click(x, y) {
-            return;
-        }
         let Some(n) = self.map_node_at(x, y) else { return };
         // in the Advisor, a lit tile opens its finding there, staying on that tab
         if self.advisor_map_click(n) {
@@ -563,6 +560,9 @@ impl State {
 
     /// Double-click: zoom into the folder one level below the current treemap root.
     pub(crate) fn map_zoom_at(&mut self, x: f64, y: f64) {
+        if self.views_on() && self.views_double(x, y) {
+            return;
+        }
         let Some(n) = self.map_node_at(x, y) else { return };
         self.map.scene.reset_view();
         self.map.galaxy.reset_view();

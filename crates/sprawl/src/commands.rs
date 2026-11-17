@@ -339,6 +339,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
                     self.set_paint(x.0);
                 }
             }
+            "ViewOnly" => self.views_only_toggle(),
             "ModeMap" | "ModeCity" | "ModeGalaxy" => {
                 let mode = match name {
                     "ModeCity" => crate::scene::Mode::City,
