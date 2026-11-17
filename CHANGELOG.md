@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.2.5 — 2026-11-17
+
+### Fixed
+- **The setup wizard opens by itself the first time Sprawl starts.** Before, it waited for the first scan and then only showed a small "Set up Sprawl?" card, which the update card could cover.
+
 ## 0.2.4 — 2026-11-17
 
 ### Fixed

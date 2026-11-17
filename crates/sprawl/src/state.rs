@@ -251,6 +251,12 @@ impl State {
     }
 
     pub(crate) fn poll(&mut self) {
+        // the first start: the setup wizard opens by itself (Skip remembers)
+        if !self.wizard_offered && self.shot.is_none() && self.settings.bool("wizard_done") != Some(true) {
+            self.wizard_offered = true;
+            self.wizard_all = false;
+            self.wizard_open();
+        }
         self.advisor_poll();
         self.cleanup_poll();
         self.update_poll();

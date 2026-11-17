@@ -50,7 +50,7 @@ pub fn xaml() -> String {
     let palettes: Vec<&str> = crate::paint::PALETTES.to_vec();
     let p0 = format!(
         r##"<StackPanel x:Name="WizP0" Spacing="2">{}
-        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="Your first scan is done. A few choices, all optional: each one can be changed later under Options &gt; Settings."/>
+        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before you start, all optional: each one can be changed later under Options &gt; Settings."/>
         {}{}{}{}</StackPanel>"##,
         page_title("&#xE7BE;", "Welcome to Sprawl", "Let's set it up the way you like it"),
         bullet("&#xE945;", "AI advisor", "Pick Claude, Claude Code or a local model to explain what is using your space. Optional."),
