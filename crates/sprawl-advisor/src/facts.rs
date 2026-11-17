@@ -278,6 +278,11 @@ impl Facts {
         out
     }
 
+    /// The newest start of any program (lower-case `name.exe`) that `pick` accepts.
+    pub fn last_run(&self, pick: impl Fn(&str) -> bool) -> Option<(SystemTime, UsedFrom)> {
+        self.runs.iter().filter(|(exe, _)| pick(exe)).map(|(_, &r)| r).max_by_key(|&(t, _)| t)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_run(&mut self, exe: &str, t: SystemTime) {
         self.runs.insert(run_key(exe), (t, UsedFrom::Prefetch));

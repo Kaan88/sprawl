@@ -178,6 +178,8 @@ pub(crate) struct Advisor {
     /// The "Things you can do yourself" and "Worth knowing" groups are folded.
     hide_tips: bool,
     hide_know: bool,
+    /// The group of what gone applications left behind is folded.
+    hide_left: bool,
     /// A finding's command is shown in its details.
     show_cmd: bool,
     /// The last message for the user, shown in the panel's foot next to the buttons.
@@ -773,6 +775,7 @@ impl State {
             "AdvActive" => self.advisor.show_active = !self.advisor.show_active,
             "AdvTips" => self.advisor.hide_tips = !self.advisor.hide_tips,
             "AdvKnow" => self.advisor.hide_know = !self.advisor.hide_know,
+            "AdvLeft" => self.advisor.hide_left = !self.advisor.hide_left,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
             "AdvAiEdit" => self.advisor.ai_edit = if self.advisor.ai_edit.is_some() { None } else { Some(AiConfig::load()) },
@@ -1333,7 +1336,7 @@ impl State {
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
+            "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
@@ -1500,12 +1503,27 @@ impl State {
             l
         };
         let list = pick(Group::Clean);
-        let (yourself, know) = (pick(Group::Yourself), pick(Group::Know));
-        if list.is_empty() && yourself.is_empty() && know.is_empty() && !r.findings.is_empty() && o == Only::All {
+        let (yourself, know, left) = (pick(Group::Yourself), pick(Group::Know), pick(Group::Leftover));
+        if list.is_empty() && yourself.is_empty() && know.is_empty() && left.is_empty() && !r.findings.is_empty() && o == Only::All {
             x += r##"<TextBlock Text="Nothing big enough for this list. Smaller things that can go are in Cleaners." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
         for i in list {
             x += &self.finding_row(r, i);
+        }
+        // folders left by applications that are gone: Sprawl can remove them, the user decides each
+        if !left.is_empty() {
+            let bytes: u64 = left.iter().filter(|&&i| r.counted[i]).map(|&i| r.findings[i].bytes).sum();
+            x += &format!(
+                r##"<Button x:Name="AdvLeft" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Left behind by applications that are no longer installed" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="Sprawl found no installed application by these names, and nothing in them changed for half a year. They may hold settings or saved games: decide each one. Never ticked for you." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                left.len(),
+                self.size(bytes),
+                if self.advisor.hide_left { "show" } else { "hide" }
+            );
+            if !self.advisor.hide_left {
+                for &i in &left {
+                    x += &self.finding_row(r, i);
+                }
+            }
         }
         // build outputs of projects being worked on: a group, largest first, never ticked for the user
         let mut active: Vec<usize> = (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && r.findings[i].in_active_project()).collect();

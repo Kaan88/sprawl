@@ -47,6 +47,11 @@ fn main() {
     println!("advise_all {t_adv:.2} s, owner_map {:.2} s ({} nodes owned)", t2.elapsed().as_secs_f64(), owners.iter().filter(|o| o.is_some()).count());
     use sprawl_advisor::finding::Group;
     let total: u64 = ok.iter().filter(|f| !f.in_active_project() && f.group() == Group::Clean).map(|f| f.bytes).sum();
+    let left: Vec<_> = ok.iter().filter(|f| f.group() == Group::Leftover).collect();
+    println!("left behind by applications no longer installed: {}, {}", left.len(), format_size(left.iter().map(|f| f.bytes).sum()));
+    for f in &left {
+        println!("  {:>10}  {}  ({})", format_size(f.bytes), f.path.display(), f.evidence[1..3].join("; "));
+    }
     let tips: u64 = ok.iter().filter(|f| f.group() == Group::Yourself).map(|f| f.expected_gain()).sum();
     let active: Vec<_> = ok.iter().filter(|f| f.in_active_project()).collect();
     println!("{} findings: {} Sprawl can clean, {} of tips by their gain", ok.len() - active.len(), format_size(total), format_size(tips));

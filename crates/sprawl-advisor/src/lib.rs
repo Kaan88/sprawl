@@ -14,6 +14,7 @@
 
 pub mod anomaly;
 pub mod chromium;
+pub mod leftovers;
 pub mod clean;
 pub mod cleaners;
 pub mod community;
@@ -136,6 +137,12 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         }
     }
     for f in cleaners::by_shape(tree, &seen) {
+        if seen.insert(f.path.to_string_lossy().to_lowercase()) {
+            found.push(f);
+        }
+    }
+    // folders left by applications that are gone: last, with everything else already known
+    for f in leftovers::find(tree, facts, &seen) {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);
         }

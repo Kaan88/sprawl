@@ -100,6 +100,9 @@ pub struct Finding {
 pub enum Group {
     /// Sprawl can remove it (deletes, a tool's clean-up).
     Clean,
+    /// Left behind by an application that is no longer installed (Sprawl can remove it, the
+    /// user decides each).
+    Leftover,
     /// The user can do it: compress, move, uninstall, clear from the app, pick between copies.
     Yourself,
     /// Information only: a folder bigger than usual, something never to touch.
@@ -157,10 +160,16 @@ pub enum Action {
 }
 
 impl Finding {
-    /// Found by its shape (a `Cache` folder under an unknown app), not by a rule that names the
-    /// program: a careful guess, never picked for the user nor written into a script.
+    /// Found by its shape (a `Cache` folder under an unknown app, a folder an application that
+    /// is gone left behind), not by a rule that names the program: a careful guess, never
+    /// picked for the user nor written into a script.
     pub fn heuristic(&self) -> bool {
-        matches!(&self.source, Source::Rule(id) if id == crate::cleaners::SHAPE)
+        matches!(&self.source, Source::Rule(id) if id == crate::cleaners::SHAPE || id == crate::leftovers::ID)
+    }
+
+    /// Left behind by an application that is no longer installed.
+    pub fn leftover(&self) -> bool {
+        matches!(&self.source, Source::Rule(id) if id == crate::leftovers::ID)
     }
 
     /// Its size is the whole folder's, while the clean-up takes only part of it (files a
@@ -177,6 +186,7 @@ impl Finding {
     /// Where it is listed: what Sprawl removes, what the user can do, what is worth knowing.
     pub fn group(&self) -> Group {
         match self.remedy {
+            Remedy::Delete | Remedy::Command if self.leftover() => Group::Leftover,
             Remedy::Delete | Remedy::Command => Group::Clean,
             _ if self.risk == Risk::Red || matches!(&self.source, Source::Rule(id) if id.starts_with("anomaly.")) => Group::Know,
             _ => Group::Yourself,
