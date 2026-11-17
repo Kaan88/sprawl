@@ -1336,6 +1336,37 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn PreviewKeyDown<F>(
+                    &self,
+                    handler: F,
+                ) -> windows_core::Result<windows_core::EventRevoker>
+                where
+                    F: Fn(
+                            windows_core::Ref<windows_core::IInspectable>,
+                            windows_core::Ref<Input::KeyRoutedEventArgs>,
+                        ) + Send
+                        + 'static,
+                {
+                    let this = &windows_core::Interface::cast::<IUIElement>(self)?;
+                    let handler = <Input::KeyEventHandler>::new(move |a0, a1| {
+                        handler(a0, a1);
+                        Ok(())
+                    });
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                            windows_core::Interface::as_raw(this),
+                            windows_core::Interface::as_raw(&handler),
+                            &mut result__,
+                        )
+                        .map(|| result__)?;
+                        Ok(windows_core::EventRevoker::new(
+                            this.clone(),
+                            token__,
+                            windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                        ))
+                    }
+                }
                 pub fn Focus(&self, value: FocusState) -> windows_core::Result<bool> {
                     let this = &windows_core::Interface::cast::<IUIElement>(self)?;
                     unsafe {
@@ -2062,8 +2093,14 @@ pub mod Microsoft {
                 RemoveLosingFocus: usize,
                 NoFocusCandidateFound: usize,
                 RemoveNoFocusCandidateFound: usize,
-                PreviewKeyDown: usize,
-                RemovePreviewKeyDown: usize,
+                pub PreviewKeyDown: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut core::ffi::c_void,
+                    *mut i64,
+                )
+                    -> windows_core::HRESULT,
+                pub RemovePreviewKeyDown:
+                    unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
                 PreviewKeyUp: usize,
                 RemovePreviewKeyUp: usize,
                 BringIntoViewRequested: usize,
@@ -2902,6 +2939,36 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn PreviewKeyDown<F>(
+                    &self,
+                    handler: F,
+                ) -> windows_core::Result<windows_core::EventRevoker>
+                where
+                    F: Fn(
+                            windows_core::Ref<windows_core::IInspectable>,
+                            windows_core::Ref<Input::KeyRoutedEventArgs>,
+                        ) + Send
+                        + 'static,
+                {
+                    let handler = <Input::KeyEventHandler>::new(move |a0, a1| {
+                        handler(a0, a1);
+                        Ok(())
+                    });
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        let token__ = (windows_core::Interface::vtable(self).PreviewKeyDown)(
+                            windows_core::Interface::as_raw(self),
+                            windows_core::Interface::as_raw(&handler),
+                            &mut result__,
+                        )
+                        .map(|| result__)?;
+                        Ok(windows_core::EventRevoker::new(
+                            self.clone(),
+                            token__,
+                            windows_core::Interface::vtable(self).RemovePreviewKeyDown,
+                        ))
+                    }
+                }
                 pub fn Focus(&self, value: FocusState) -> windows_core::Result<bool> {
                     unsafe {
                         let mut result__ = core::mem::zeroed();
@@ -3697,6 +3764,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -4276,6 +4374,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -4969,6 +5098,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -5565,6 +5725,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -6144,6 +6335,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -6698,6 +6920,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -7554,8 +7807,16 @@ pub mod Microsoft {
                     SetSelectedText: usize,
                     SelectionLength: usize,
                     SetSelectionLength: usize,
-                    SelectionStart: usize,
-                    SetSelectionStart: usize,
+                    pub SelectionStart: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut i32,
+                    )
+                        -> windows_core::HRESULT,
+                    pub SetSelectionStart: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        i32,
+                    )
+                        -> windows_core::HRESULT,
                     MaxLength: usize,
                     SetMaxLength: usize,
                     IsReadOnly: usize,
@@ -7609,6 +7870,32 @@ pub mod Microsoft {
                     pub RemoveTextChanged: unsafe extern "system" fn(
                         *mut core::ffi::c_void,
                         i64,
+                    )
+                        -> windows_core::HRESULT,
+                    SelectionChanged: usize,
+                    RemoveSelectionChanged: usize,
+                    ContextMenuOpening: usize,
+                    RemoveContextMenuOpening: usize,
+                    Paste: usize,
+                    RemovePaste: usize,
+                    TextCompositionStarted: usize,
+                    RemoveTextCompositionStarted: usize,
+                    TextCompositionChanged: usize,
+                    RemoveTextCompositionChanged: usize,
+                    TextCompositionEnded: usize,
+                    RemoveTextCompositionEnded: usize,
+                    CopyingToClipboard: usize,
+                    RemoveCopyingToClipboard: usize,
+                    CuttingToClipboard: usize,
+                    RemoveCuttingToClipboard: usize,
+                    BeforeTextChanging: usize,
+                    RemoveBeforeTextChanging: usize,
+                    SelectionChanging: usize,
+                    RemoveSelectionChanging: usize,
+                    pub Select: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        i32,
+                        i32,
                     )
                         -> windows_core::HRESULT,
                 }
@@ -8250,6 +8537,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -8815,6 +9133,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -9416,6 +9765,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -10123,6 +10503,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -10726,6 +11137,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -11276,6 +11718,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -11937,6 +12410,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -12632,6 +13136,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -13420,6 +13955,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -14214,6 +14780,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -14806,6 +15403,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -15081,6 +15709,25 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn SelectionStart(&self) -> windows_core::Result<i32> {
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(self).SelectionStart)(
+                                windows_core::Interface::as_raw(self),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
+                    pub fn SetSelectionStart(&self, value: i32) -> windows_core::Result<()> {
+                        unsafe {
+                            (windows_core::Interface::vtable(self).SetSelectionStart)(
+                                windows_core::Interface::as_raw(self),
+                                value,
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn TextChanged<F>(
                         &self,
                         handler: F,
@@ -15109,6 +15756,16 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(self).RemoveTextChanged,
                             ))
+                        }
+                    }
+                    pub fn Select(&self, start: i32, length: i32) -> windows_core::Result<()> {
+                        unsafe {
+                            (windows_core::Interface::vtable(self).Select)(
+                                windows_core::Interface::as_raw(self),
+                                start,
+                                length,
+                            )
+                            .ok()
                         }
                     }
                     pub fn Opacity(&self) -> windows_core::Result<f64> {
@@ -15456,6 +16113,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -16241,6 +16929,37 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                            ))
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -16905,6 +17624,37 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveRightTapped,
+                            ))
+                        }
+                    }
+                    pub fn PreviewKeyDown<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<super::Input::KeyRoutedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler = <super::Input::KeyEventHandler>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).PreviewKeyDown)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
                         }
                     }
@@ -17726,6 +18476,40 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveRightTapped,
+                                ))
+                            }
+                        }
+                        pub fn PreviewKeyDown<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<super::super::Input::KeyRoutedEventArgs>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler =
+                                <super::super::Input::KeyEventHandler>::new(move |a0, a1| {
+                                    handler(a0, a1);
+                                    Ok(())
+                                });
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .PreviewKeyDown)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                                 ))
                             }
                         }
@@ -18896,6 +19680,40 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn PreviewKeyDown<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<super::super::Input::KeyRoutedEventArgs>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler =
+                                <super::super::Input::KeyEventHandler>::new(move |a0, a1| {
+                                    handler(a0, a1);
+                                    Ok(())
+                                });
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .PreviewKeyDown)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemovePreviewKeyDown,
+                                ))
+                            }
+                        }
                         pub fn Focus(
                             &self,
                             value: super::super::FocusState,
@@ -19753,6 +20571,40 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveRightTapped,
+                                ))
+                            }
+                        }
+                        pub fn PreviewKeyDown<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<super::super::Input::KeyRoutedEventArgs>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler =
+                                <super::super::Input::KeyEventHandler>::new(move |a0, a1| {
+                                    handler(a0, a1);
+                                    Ok(())
+                                });
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .PreviewKeyDown)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                                 ))
                             }
                         }
