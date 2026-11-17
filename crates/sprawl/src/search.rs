@@ -443,19 +443,28 @@ impl State {
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         let (glyph, gc) = if node.is_dir { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
         let runs = self.name_runs(&node.name);
+        let full = ui::esc(&t.path_of(n).display().to_string());
         let changed = if self.search.is_changed(self.tree_gen, n, node.parent) {
             r##"<FontIcon Glyph="&#xE895;" FontSize="11" Foreground="#FFFFB547" ToolTipService.ToolTip="Changed since the scan: check it is still there"/>"##
         } else {
             ""
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             cols = crate::tables::col_defs(COLS),
             c1 = cell(1, &self.size(node.size)),
             c2 = cell(2, &self.size(self.alloc[n])),
             c3 = cell(3, &modified),
             folder = ui::esc(&folder),
         )
+    }
+
+    /// Esc in the results: back to the search box.
+    pub(crate) fn search_box_focus(&mut self) {
+        self.search_ui_build();
+        if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
+            let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+        }
     }
 
     /// Ctrl+F: the Search tab, its box focused.
@@ -572,4 +581,26 @@ fn folder_ranks_if(tree: &sprawl_core::Tree, key: crate::tables::Key, rows: usiz
     let r = Arc::new(sprawl_core::search::folder_ranks(tree));
     *built = Some(r.clone());
     Some(r)
+}
+
+/// The scan's rows that are picked (`marked` and `selected`), in the order shown. A row from
+/// another drive or a saved scan is never one of them, whatever its number.
+pub(crate) fn picked_in_order(rows: &[(usize, usize)], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>) -> Vec<usize> {
+    let mut seen = std::collections::BTreeSet::new();
+    rows.iter().filter(|r| r.1 == 0 && (marked.contains(&r.0) || selected == Some(r.0)) && seen.insert(r.0)).map(|r| r.0).collect()
+}
+
+#[cfg(test)]
+mod picked_tests {
+    use super::picked_in_order;
+
+    #[test]
+    fn only_the_scans_rows_in_the_order_shown() {
+        // node 5 of the scan and item 5 of another drive (place 0) are different things
+        let rows = [(9, 0), (5, 1), (5, 0), (2, 0), (7, 2)];
+        let marked = [2, 5, 7].into_iter().collect();
+        assert_eq!(picked_in_order(&rows, &marked, Some(9)), [9, 5, 2]);
+        assert_eq!(picked_in_order(&rows, &Default::default(), Some(7)), Vec::<usize>::new(), "7 is only another drive's row");
+        assert_eq!(picked_in_order(&rows, &Default::default(), None), Vec::<usize>::new());
+    }
 }

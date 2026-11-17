@@ -762,6 +762,11 @@ impl State {
                 self.show_selection();
                 return true;
             }
+            // Esc with nothing picked: in Search, back to the box
+            27 if self.view == View::Search => {
+                self.search_box_focus();
+                return true;
+            }
             65 if ctrl => {
                 self.marked = self.rows.iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
                 self.refresh_rows();
