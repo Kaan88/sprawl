@@ -1312,10 +1312,10 @@ impl State {
         };
         let (true_bytes, counted) = self.part_true(r, p);
         format!(
-            r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>{tick}<Button x:Name="AdvClP{n}" Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8,4" CornerRadius="6" BorderThickness="0" Background="{bg}" AutomationProperties.Name="{title}: details">
+            r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>{tick}<Button x:Name="AdvClP{n}" Grid.Column="1" {bg} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8,4" CornerRadius="6" AutomationProperties.Name="{title}: details">
 <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{dot}" VerticalAlignment="Top" Margin="0,6,0,0"/><StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="13" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
             op = if bytes > 0 { "1" } else { "0.55" },
-            bg = if sel { "#FF2C3B63" } else { "Transparent" },
+            bg = crate::look::pick(crate::look::Pick::Tab, sel),
             dot = if p.info { "#FF8E97AA" } else { crate::advisor::risk_hex(p.risk) },
             title = ui::esc(&p.title),
             sub = ui::esc(&sub),

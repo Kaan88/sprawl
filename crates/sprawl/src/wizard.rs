@@ -101,7 +101,8 @@ pub fn xaml() -> String {
         .enumerate()
         .map(|(i, s)| {
             format!(
-                r##"<Button x:Name="PfSec{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" CornerRadius="6" BorderThickness="0" Background="Transparent"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{}" FontSize="14"/><TextBlock Text="{}" FontSize="13"/></StackPanel></Button>"##,
+                r##"<Button x:Name="PfSec{i}" {} HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" CornerRadius="6"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{}" FontSize="14"/><TextBlock Text="{}" FontSize="13"/></StackPanel></Button>"##,
+                crate::look::pick(crate::look::Pick::Tab, false),
                 s.glyph(),
                 ui::esc(s.title())
             )
@@ -341,15 +342,8 @@ impl State {
             shown(self, "WizBack", false);
             text(&self.root, "WizSkipText", "Cancel");
             for i in 0..Sec::ALL.len() {
-                if let Ok(b) = find::<Control>(&self.root, &format!("PfSec{i}")) {
-                    let brush = load::<crate::bindings::Microsoft::UI::Xaml::Media::Brush>(&format!(
-                        r##"<SolidColorBrush {} Color="{}"/>"##,
-                        ui::NS,
-                        if i == self.prefs.sec { "#FF2C3B63" } else { "#00000000" }
-                    ));
-                    if let Ok(br) = brush {
-                        let _ = b.SetBackground(&br);
-                    }
+                {
+                    crate::look::paint(&self.root, &format!("PfSec{i}"), crate::look::Pick::Tab, i == self.prefs.sec);
                 }
             }
         } else {

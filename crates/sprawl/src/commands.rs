@@ -71,7 +71,8 @@ impl State {
             }
         }
         if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
-            let _ = r.SetHeight(GridLength { Value: if shown { 1.25 } else { 0.0 }, GridUnitType: GridUnitType::Star });
+            let share = crate::look::map_share(self.view == View::Search, self.win_h);
+            let _ = r.SetHeight(GridLength { Value: if shown { share } else { 0.0 }, GridUnitType: GridUnitType::Star });
         }
     }
 

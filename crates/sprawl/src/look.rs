@@ -431,7 +431,26 @@ pub(crate) fn tree_share(width: f64) -> f64 {
     }
 }
 
+/// The map's share of the height beside the tables (which have 1): less on the Search tab in a
+/// short window, where the results need the rows. 0 for the height: not known yet.
+pub(crate) fn map_share(search: bool, height: f64) -> f64 {
+    if search && height > 0.0 && height < 800.0 {
+        0.6
+    } else {
+        1.25
+    }
+}
+
 impl State {
+    /// The window's size changed.
+    pub(crate) fn fit_size(&mut self, w: f64, h: f64) {
+        self.fit_width(w);
+        if (h - self.win_h).abs() >= 1.0 {
+            self.win_h = h;
+            self.map_room();
+        }
+    }
+
     /// The window's width changed.
     pub(crate) fn fit_width(&mut self, w: f64) {
         use crate::bindings::Microsoft::UI::Xaml::Controls::ColumnDefinition;
@@ -445,6 +464,14 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_window_gives_search_the_rows() {
+        assert_eq!(map_share(true, 720.0), 0.6);
+        assert_eq!(map_share(true, 1000.0), 1.25);
+        assert_eq!(map_share(false, 720.0), 1.25, "Search only");
+        assert_eq!(map_share(true, 0.0), 1.25, "height not known yet");
+    }
 
     #[test]
     fn a_narrow_window_widens_the_tree() {

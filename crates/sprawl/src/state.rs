@@ -142,6 +142,8 @@ pub(crate) struct State {
     /// Folders read again after something ran from the Windows menu.
     /// What the user allowed this session while elevated (crate::admin), by setting key.
     pub(crate) admin_asked: HashSet<&'static str>,
+    /// The window's height (0 until it is laid out), for the map's share on Search.
+    pub(crate) win_h: f64,
     pub(crate) shell_rescans: Option<std::sync::mpsc::Receiver<(std::path::PathBuf, Option<sprawl_core::Tree>)>>,
     pub(crate) pulses_on: bool,
     pub(crate) map_root: usize,

@@ -1098,7 +1098,7 @@ impl State {
                 x += r##"<TextBlock Text="Its files couldn't be listed now: it will be held back." FontSize="12" Foreground="#FF8E97AA" Margin="16,0,0,0"/>"##;
             }
             for line in &files {
-                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis" Margin="16,0,0,0" ToolTipService.ToolTip="{0}"/>"##, ui::esc(line));
+                x += &format!(r##"<TextBlock Text="{}" {} FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis" Margin="16,0,0,0" ToolTipService.ToolTip="{0}"/>"##, ui::esc(line), crate::look::NUM);
             }
             x += "</StackPanel>";
         }

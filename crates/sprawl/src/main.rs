@@ -330,8 +330,9 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
     })?);
     // a narrow window gives the tree more of the width beside the file types
     keep(root.SizeChanged(|s, _| {
-        let Some(w) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()).and_then(|f| f.ActualWidth().ok()) else { return };
-        with(|st| st.fit_width(w));
+        let Some(f) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
+        let (Ok(w), Ok(h)) = (f.ActualWidth(), f.ActualHeight()) else { return };
+        with(|st| st.fit_size(w, h));
     })?);
     let tree_sv: UIElement = find(&root, "TreeScroll")?;
     keep(tree_sv.DoubleTapped(move |s, e| {
@@ -460,6 +461,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         changes: 0,
         own_deletes: Vec::new(),
         shell_rescans: None,
+        win_h: 0.0,
         admin_asked: Default::default(),
         pulses_on: true,
         map_root: ROOT,
