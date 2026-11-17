@@ -323,7 +323,7 @@ impl State {
     fn wizard_finish(&mut self) {
         let mut notes = Vec::new();
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
-        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string() };
+        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: AiConfig::load().web_lookup };
         if ai.save().is_err() {
             notes.push("couldn't save the AI settings");
         }

@@ -17,7 +17,7 @@ fn main() {
         "open-ai" => Provider::OpenAi,
         _ => Provider::ClaudeCode,
     };
-    let cfg = AiConfig { provider, model: args.get(3).cloned().unwrap_or_default(), base_url: std::env::var("SPRAWL_BASE_URL").unwrap_or_default() };
+    let cfg = AiConfig { provider, model: args.get(3).cloned().unwrap_or_default(), base_url: std::env::var("SPRAWL_BASE_URL").unwrap_or_default(), web_lookup: false };
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(args[1].clone()).unwrap();
     drop(tx);

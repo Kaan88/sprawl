@@ -21,14 +21,37 @@ use crate::llm::tools::{chat_specs, specs, Tools};
 use crate::llm::ToolSpec;
 use crate::memory::Memory;
 
-/// Tools offered from a snapshot (no app): looking only.
-fn local_specs(driven: bool) -> Vec<ToolSpec> {
+/// How the server was started.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    /// From the user's own Claude Code with no app: looking only.
+    Look,
+    /// The app's analysis run: looking and reporting.
+    Driven,
+    /// The app's chat: looking, and the chat's tools (the web search only with `web`).
+    Chat { web: bool },
+}
+
+/// The chat tools whose effect is the app's (a filter, ticks, memory): recorded for the app,
+/// which replays them through its own checks.
+pub const CHAT_EFFECTS: &[&str] = &["set_filter", "suggest_ticks", "remember", "propose_cleaner"];
+
+/// Tools offered from a snapshot (no app).
+fn local_specs(mode: Mode) -> Vec<ToolSpec> {
     let look = ["list_children", "largest", "by_type", "owner_of", "read_manifest"];
     let mut v: Vec<ToolSpec> = chat_specs().into_iter().filter(|t| look.contains(&t.name)).collect();
     v.insert(0, report_spec());
-    if driven {
-        let report = ["report_finding", "remember", "propose_rule", "propose_cleaner", "finish"];
-        v.extend(specs().into_iter().filter(|t| report.contains(&t.name)));
+    match mode {
+        Mode::Look => {}
+        Mode::Driven => {
+            let report = ["report_finding", "remember", "propose_rule", "propose_cleaner", "finish"];
+            v.extend(specs().into_iter().filter(|t| report.contains(&t.name)));
+        }
+        Mode::Chat { web } => {
+            let have: Vec<&str> = v.iter().map(|t| t.name).collect();
+            let more: Vec<ToolSpec> = crate::llm::tools::chat_specs_with(web).into_iter().filter(|t| !have.contains(&t.name)).collect();
+            v.extend(more);
+        }
     }
     v
 }
@@ -39,7 +62,7 @@ fn report_spec() -> ToolSpec {
 
 /// Tools offered through the running app: looking, plus its findings and the map filter.
 pub fn bridge_specs() -> Vec<ToolSpec> {
-    let mut v = local_specs(false);
+    let mut v = local_specs(Mode::Look);
     v.push(ToolSpec {
         name: "findings",
         description: "What Sprawl's Advisor found for the scan on screen: each with its risk, size, path and evidence. Don't delete anything yourself: \
@@ -68,34 +91,74 @@ pub struct Local<'a> {
     tree: &'a Tree,
     facts: &'a Facts,
     tools: Tools<'a>,
-    /// Driven mode: every report, remember, proposal and the summary go here as JSON lines.
+    mode: Mode,
+    /// Driven and chat: every report, remember, proposal and the summary go here as JSON lines.
     out: Option<std::fs::File>,
+    /// Where the out file is: a web lookup's answer comes back beside it.
+    out_path: Option<PathBuf>,
+    lookups: u64,
+}
+
+/// Where the app answers web lookup `n` of the chat whose out file is `out`.
+pub fn lookup_answer(out: &Path, n: u64) -> PathBuf {
+    out.with_extension(format!("lookup-{n}"))
 }
 
 impl<'a> Local<'a> {
     pub fn new(tree: &'a Tree, facts: &'a Facts, memory: &Memory, model: &str, out: Option<std::fs::File>) -> Local<'a> {
-        Local { tree, facts, tools: Tools::new(tree, facts, model, &[], memory), out }
+        let mode = if out.is_some() { Mode::Driven } else { Mode::Look };
+        Local { tree, facts, tools: Tools::new(tree, facts, model, &[], memory), mode, out, out_path: None, lookups: 0 }
     }
 
     pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
         if name == "scan_report" {
             return Ok(crate::llm::report::build(self.tree, self.facts, &[], None, None));
         }
-        let allowed = local_specs(self.out.is_some());
+        let allowed = local_specs(self.mode);
         if !allowed.iter().any(|t| t.name == name) {
             return Err(format!("there is no tool called {name}"));
         }
+        let chat = matches!(self.mode, Mode::Chat { .. });
         // every call is noted, so the app can show what Claude Code is doing; the reports are
-        // replayed there through its own checks, never taken from here
+        // replayed there through its own checks, never taken from here. A web query is shown
+        // by the app, as it will be sent, not as the model wrote it.
         if let Some(f) = self.out.as_mut() {
-            let what = crate::facts::clean_text(input["path"].as_str().or(input["title"].as_str()).unwrap_or(""));
-            let _ = writeln!(f, "{}", json!({"progress": format!("{} {what}", name.replace('_', " "))}));
-            if matches!(name, "report_finding" | "remember" | "propose_rule" | "propose_cleaner" | "finish") {
+            if name != "web_lookup" {
+                let what = crate::facts::clean_text(input["path"].as_str().or(input["title"].as_str()).or(input["filter"].as_str()).unwrap_or(""));
+                let _ = writeln!(f, "{}", json!({"progress": format!("{} {what}", name.replace('_', " "))}));
+            }
+            let recorded = if chat { CHAT_EFFECTS.contains(&name) } else { matches!(name, "report_finding" | "remember" | "propose_rule" | "propose_cleaner" | "finish") };
+            if recorded {
                 let _ = writeln!(f, "{}", json!({"tool": name, "input": input}));
             }
             let _ = f.flush();
         }
+        if name == "web_lookup" {
+            return self.ask_app(input);
+        }
         self.tools.call(name, input)
+    }
+
+    /// A web lookup in the chat: the app takes the query out of paths and names, asks the user,
+    /// searches and writes the answer beside the out file. Nothing goes out from here.
+    fn ask_app(&mut self, input: &Value) -> Result<String, String> {
+        let (Some(f), Some(out)) = (self.out.as_mut(), self.out_path.as_ref()) else { return Err("there is no tool called web_lookup".into()) };
+        let n = self.lookups;
+        self.lookups += 1;
+        let _ = writeln!(f, "{}", json!({"lookup": n, "input": input}));
+        let _ = f.flush();
+        let answer = lookup_answer(out, n);
+        let start = std::time::Instant::now();
+        // the user may take a while to decide; the app answers no after ten minutes
+        while start.elapsed() < std::time::Duration::from_secs(660) {
+            if let Some(v) = std::fs::read_to_string(&answer).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+                let _ = std::fs::remove_file(&answer);
+                let text = v["text"].as_str().unwrap_or("").to_string();
+                return if v["ok"].as_bool() == Some(true) { Ok(text) } else { Err(text) };
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Err("No answer from Sprawl about this search.".into())
     }
 }
 
@@ -194,14 +257,18 @@ pub fn main(args: &[String]) {
     step("facts gathered");
     facts.attach_usage(&tree);
     step("usage attached");
-    let out = arg(args, "--out").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    let out_path = arg(args, "--out").map(PathBuf::from);
+    let out = out_path.as_ref().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     let model = arg(args, "--model").unwrap_or_else(|| "claude-code".into());
     // read only: this process never renames or rewrites the user's memory
     let memory = Memory::load_readonly();
-    let driven = out.is_some();
     let mut local = Local::new(&tree, &facts, &memory, &model, out);
+    if local.out.is_some() && args.iter().any(|a| a == "--chat") {
+        local.mode = Mode::Chat { web: args.iter().any(|a| a == "--web") };
+        local.out_path = out_path;
+    }
     step("serving");
-    serve(local_specs(driven), &mut |name, input| local.call(name, input));
+    serve(local_specs(local.mode), &mut |name, input| local.call(name, input));
 }
 
 /// The app's side of the pipe: answer one request line against `tree`. `filter` receives a
@@ -243,13 +310,22 @@ pub fn driven_config(exe: &Path, tree_file: &Path, out_file: &Path, model: &str)
     json!({"mcpServers": {"sprawl": {"command": exe, "args": ["--mcp", "--tree", tree_file, "--out", out_file, "--model", model]}}}).to_string()
 }
 
+/// The MCP config for the chat with Claude Code: the chat's tools, the web search only with `web`.
+pub fn chat_config(exe: &Path, tree_file: &Path, out_file: &Path, model: &str, web: bool) -> String {
+    let mut args: Vec<Value> = vec!["--mcp".into(), "--tree".into(), json!(tree_file), "--out".into(), json!(out_file), "--model".into(), model.into(), "--chat".into()];
+    if web {
+        args.push("--web".into());
+    }
+    json!({"mcpServers": {"sprawl": {"command": exe, "args": args}}}).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn protocol() {
-        let specs = local_specs(false);
+        let specs = local_specs(Mode::Look);
         let mut call = |name: &str, _: &Value| if name == "scan_report" { Ok("report".to_string()) } else { Err("nope".to_string()) };
         let init = handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}), &specs, &mut call).unwrap();
         assert_eq!(init["result"]["serverInfo"]["name"], "sprawl");
@@ -264,8 +340,17 @@ mod tests {
         assert_eq!(e["result"]["isError"], true);
         assert!(handle(&json!({"jsonrpc": "2.0", "id": 5, "method": "nope"}), &specs, &mut call).unwrap()["error"]["code"] == -32601);
         // driven mode adds the reporting tools, never anything that acts
-        let d: Vec<&str> = local_specs(true).iter().map(|t| t.name).collect();
+        let d: Vec<&str> = local_specs(Mode::Driven).iter().map(|t| t.name).collect();
         assert!(d.contains(&"report_finding") && d.contains(&"finish") && !d.contains(&"web_lookup") && !d.contains(&"set_filter"));
+        // the chat: its tools, the web search only when switched on, never a finding
+        let c: Vec<&str> = local_specs(Mode::Chat { web: false }).iter().map(|t| t.name).collect();
+        assert!(c.contains(&"suggest_ticks") && c.contains(&"set_filter") && c.contains(&"largest") && !c.contains(&"web_lookup") && !c.contains(&"report_finding"), "{c:?}");
+        let w: Vec<&str> = local_specs(Mode::Chat { web: true }).iter().map(|t| t.name).collect();
+        assert!(w.contains(&"web_lookup"));
+        assert_eq!(w.len(), c.len() + 1);
+        let cfg = chat_config(Path::new("s.exe"), Path::new("t"), Path::new("o"), "m", false);
+        assert!(cfg.contains("--chat") && !cfg.contains("--web"));
+        assert!(chat_config(Path::new("s.exe"), Path::new("t"), Path::new("o"), "m", true).contains("--web"));
     }
 
     #[test]

@@ -1,6 +1,5 @@
-//! The user's own Claude Code: `claude -p` with its login, no key needed. It gets the report and
-//! answers once (no tools here; Sprawl as an MCP server comes later), in the single-report form
-//! that [`super::agent`] parses.
+//! The user's own Claude Code: `claude -p` with its login, no key needed. With an MCP config
+//! (`with_mcp`) it gets Sprawl's own server and nothing else; without, it answers from the text.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -220,6 +219,10 @@ impl ClaudeCode {
 impl Chat for ClaudeCode {
     fn turn(&mut self) -> Result<Turn, String> {
         self.turn_with(&mut || {})
+    }
+
+    fn turn_ticking(&mut self, tick: &mut dyn FnMut()) -> Result<Turn, String> {
+        self.turn_with(tick)
     }
 
     fn answer(&mut self, _: Vec<(String, String, bool)>) {}

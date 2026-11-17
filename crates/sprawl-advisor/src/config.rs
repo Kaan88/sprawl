@@ -73,6 +73,10 @@ pub struct AiConfig {
     /// OpenAI-compatible only, e.g. `http://localhost:11434/v1`.
     #[serde(default)]
     pub base_url: String,
+    /// "Let the AI search the web (asks each time)": off unless the user turns it on. Off, the
+    /// chat isn't offered a web search at all.
+    #[serde(default)]
+    pub web_lookup: bool,
 }
 
 fn dir() -> Option<PathBuf> {
@@ -243,13 +247,13 @@ impl Detected {
     /// needed), then a local model server, then off.
     pub fn suggest(&self) -> AiConfig {
         if self.claude_code.is_some() {
-            AiConfig { provider: Provider::ClaudeCode, model: Provider::ClaudeCode.default_model().into(), base_url: String::new() }
+            AiConfig { provider: Provider::ClaudeCode, model: Provider::ClaudeCode.default_model().into(), ..AiConfig::default() }
         } else if self.anthropic_env {
-            AiConfig { provider: Provider::Anthropic, model: Provider::Anthropic.default_model().into(), base_url: String::new() }
+            AiConfig { provider: Provider::Anthropic, model: Provider::Anthropic.default_model().into(), ..AiConfig::default() }
         } else if self.ollama {
-            AiConfig { provider: Provider::OpenAi, model: String::new(), base_url: "http://localhost:11434/v1".into() }
+            AiConfig { provider: Provider::OpenAi, base_url: "http://localhost:11434/v1".into(), ..AiConfig::default() }
         } else if self.lm_studio {
-            AiConfig { provider: Provider::OpenAi, model: String::new(), base_url: "http://localhost:1234/v1".into() }
+            AiConfig { provider: Provider::OpenAi, base_url: "http://localhost:1234/v1".into(), ..AiConfig::default() }
         } else {
             AiConfig::default()
         }
@@ -287,7 +291,8 @@ mod tests {
 
     #[test]
     fn config_round_trips_as_toml() {
-        let c = AiConfig { provider: Provider::OpenAi, model: "llama3".into(), base_url: "http://localhost:11434/v1".into() };
+        let c = AiConfig { provider: Provider::OpenAi, model: "llama3".into(), base_url: "http://localhost:11434/v1".into(), ..AiConfig::default() };
+        assert!(!AiConfig::default().web_lookup, "the web search is off until the user turns it on");
         let t = toml::to_string(&c).unwrap();
         assert!(t.contains("provider = \"open-ai\""));
         assert_eq!(toml::from_str::<AiConfig>(&t).unwrap(), c);

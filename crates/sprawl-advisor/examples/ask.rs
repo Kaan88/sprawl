@@ -17,7 +17,7 @@ fn main() {
         "open-ai" => Provider::OpenAi,
         _ => Provider::ClaudeCode,
     };
-    let cfg = AiConfig { provider, model: args.get(2).cloned().unwrap_or_default(), base_url: std::env::var("SPRAWL_BASE_URL").unwrap_or_default() };
+    let cfg = AiConfig { provider, model: args.get(2).cloned().unwrap_or_default(), base_url: std::env::var("SPRAWL_BASE_URL").unwrap_or_default(), web_lookup: false };
     let goal = args.get(3).and_then(|g| g.parse::<f64>().ok()).map(|g| (g * (1u64 << 30) as f64) as u64);
     let tree = sprawl_core::scan(path, |_| {}).expect("scan");
     let mut facts = Facts::gather();

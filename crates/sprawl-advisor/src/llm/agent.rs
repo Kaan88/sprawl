@@ -8,7 +8,7 @@ use sprawl_core::Tree;
 use super::anthropic::Anthropic;
 use super::claude_code::ClaudeCode;
 use super::openai::OpenAi;
-use super::tools::{chat_specs, specs, Tools};
+use super::tools::{chat_specs_with, specs, Tools};
 use super::{clip, Chat, Metered, Stop, Usage, STOPPED};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -74,11 +74,18 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
     let report = super::report::build(tree, &facts, &[], None, None) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, &[], memory);
     tools.consent = Some(consent);
-    tools.allowed = Some(chat_specs().iter().map(|t| t.name).collect());
-    let tools_ok = cfg.provider != Provider::ClaudeCode;
+    // the web search exists only while the user's switch is on
+    let web = cfg.web_lookup;
+    tools.web = web;
+    tools.allowed = Some(chat_specs_with(web).iter().map(|t| t.name).collect());
+    // Claude Code gets the same tools through Sprawl's own MCP server, on a snapshot of this
+    // scan; without one (no server program, the snapshot couldn't be written) it answers from
+    // the report
+    let cc = if cfg.provider == Provider::ClaudeCode { super::mcp_exe().and_then(|exe| CcRun::new(tree, exe, &model, web).ok()) } else { None };
+    let tools_ok = cfg.provider != Provider::ClaudeCode || cc.is_some();
     let opening = format!("{report}\n\n# The user asks\n{first}");
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
-        let specs = if with_tools { chat_specs() } else { Vec::new() };
+        let specs = if with_tools { chat_specs_with(web) } else { Vec::new() };
         let system = if with_tools { CHAT.to_string() } else { format!("{CHAT}\nYou have no tools in this conversation: answer from the report.") };
         let c: Box<dyn Chat> = match cfg.provider {
             Provider::Off => return Err("AI is off".into()),
@@ -89,7 +96,11 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
             Provider::OpenAi => Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, &model, system, opening.clone(), &specs)),
             Provider::ClaudeCode => {
                 let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
-                Box::new(ClaudeCode::new(&exe, &model, &system, &opening).with_stop(stop.clone()))
+                let c = ClaudeCode::new(&exe, &model, &system, &opening).with_stop(stop.clone());
+                match cc.as_ref().filter(|_| with_tools) {
+                    Some(run) => Box::new(c.with_mcp(&run.cfg)),
+                    None => Box::new(c),
+                }
             }
         };
         Ok(Box::new(Metered::new(c, stop.clone(), Rc::new(RefCell::new(Usage::default())))) as Box<dyn Chat>)
@@ -122,7 +133,27 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
         let mut turns = 0;
         let mut reply = String::new();
         loop {
-            let t = match chat.turn() {
+            // Claude Code runs the tools itself, in Sprawl's server: meanwhile its progress is
+            // shown and its web lookups are answered here, through the same checks
+            let turn = {
+                let mut tick = || {
+                    if let Some(run) = cc.as_ref() {
+                        run.serve(&mut tools, &mut *events);
+                    }
+                };
+                chat.turn_ticking(&mut tick)
+            };
+            if let Some(run) = cc.as_ref() {
+                run.serve(&mut tools, &mut *events);
+                for (name, input) in run.effects.borrow_mut().drain(..) {
+                    // replayed here: checked as if the model had called them directly
+                    let _ = tools.call(&name, &input);
+                    if let Some(f) = tools.filter.take() {
+                        events(ChatEvent::Filter(f));
+                    }
+                }
+            }
+            let t = match turn {
                 Ok(t) => t,
                 // only the first question can start again without tools: the opening holds it
                 Err(e) if turns == 0 && first_question && with_tools && cfg.provider == Provider::OpenAi && e.to_lowercase().contains("tool") => {
@@ -170,8 +201,14 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
             }
             let mut results = Vec::new();
             for c in &t.calls {
-                let what: String = c.input["path"].as_str().or(c.input["query"].as_str()).or(c.input["filter"].as_str()).unwrap_or("").chars().take(160).collect();
-                events(ChatEvent::Progress(format!("{} {what}", c.name.replace('_', " "))));
+                // a web query is shown as it will be sent: without paths or names
+                let what: String = if c.name == "web_lookup" {
+                    super::tools::shown_query(&c.input).unwrap_or_default()
+                } else {
+                    c.input["path"].as_str().or(c.input["filter"].as_str()).unwrap_or("").to_string()
+                };
+                let what: String = what.chars().take(160).collect();
+                events(ChatEvent::Progress(if c.name == "web_lookup" { format!("Searching the web for: {what}") } else { format!("{} {what}", c.name.replace('_', " ")) }));
                 let (text, err) = match tools.call(&c.name, &c.input) {
                     Ok(t) => (t, false),
                     Err(e) => (e, true),
@@ -201,6 +238,88 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
         if !failed {
             events(ChatEvent::Reply(if reply.is_empty() { "(No answer came back. Try asking again.)".into() } else { reply }));
         }
+    }
+}
+
+/// A run folder in Temp for Claude Code (machine-local, never roamed: a snapshot lists every
+/// path of the scan). What an earlier run left (the app closed or crashed) goes after a day.
+fn run_dir() -> Result<std::path::PathBuf, String> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let runs = std::env::temp_dir().join("sprawl-claude-runs");
+    if let Ok(rd) = std::fs::read_dir(&runs) {
+        for e in rd.flatten() {
+            if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 86_400) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let dir = runs.join(format!("{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// The chat with Claude Code given Sprawl's tools: a snapshot of the scan, the server's out
+/// file and its MCP config, removed when the chat ends.
+struct CcRun {
+    dir: std::path::PathBuf,
+    out: std::path::PathBuf,
+    cfg: std::path::PathBuf,
+    /// Lines of the out file already handled.
+    seen: std::cell::Cell<usize>,
+    /// Calls with an effect in the app (a filter, ticks, memory), to replay after the turn.
+    effects: RefCell<Vec<(String, Value)>>,
+}
+
+impl CcRun {
+    fn new(tree: &Tree, exe: &std::path::Path, model: &str, web: bool) -> Result<CcRun, String> {
+        let dir = run_dir()?;
+        let run = CcRun { out: dir.join("out.jsonl"), cfg: dir.join("mcp.json"), dir, seen: Default::default(), effects: Default::default() };
+        let tree_file = run.dir.join("scan.dtsn");
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&tree_file).map_err(|e| e.to_string())?);
+        crate::snapshot::write(tree, std::time::SystemTime::now(), 1, &mut w).map_err(|e| e.to_string())?;
+        drop(w);
+        std::fs::write(&run.out, "").map_err(|e| e.to_string())?;
+        std::fs::write(&run.cfg, crate::mcp::chat_config(exe, &tree_file, &run.out, model, web)).map_err(|e| e.to_string())?;
+        Ok(run)
+    }
+
+    /// Handle what the server wrote since last time: progress to the status line, effects kept
+    /// for after the turn, a web lookup answered (scrubbed, asked, searched, marked) by `tools`.
+    fn serve(&self, tools: &mut Tools, events: &mut dyn FnMut(ChatEvent)) {
+        let text = std::fs::read_to_string(&self.out).unwrap_or_default();
+        // only whole lines: the server may be writing the last one
+        let lines: Vec<&str> = text.split_inclusive('\n').filter(|l| l.ends_with('\n')).collect();
+        for l in lines.iter().skip(self.seen.get()) {
+            let Ok(v) = serde_json::from_str::<Value>(l.trim()) else { continue };
+            if let Some(p) = v["progress"].as_str() {
+                events(ChatEvent::Progress(format!("Claude Code: {}", super::tools::clean_text_long(p, 160))));
+            } else if let Some(n) = v["lookup"].as_u64() {
+                let q = super::tools::shown_query(&v["input"]);
+                if let Ok(q) = &q {
+                    events(ChatEvent::Progress(format!("Searching the web for: {q}")));
+                }
+                let (ok, text) = match tools.call("web_lookup", &v["input"]) {
+                    Ok(t) => (true, t),
+                    Err(e) => (false, e),
+                };
+                let ans = crate::mcp::lookup_answer(&self.out, n);
+                let tmp = ans.with_extension("tmp");
+                if std::fs::write(&tmp, serde_json::json!({"ok": ok, "text": text}).to_string()).is_ok() {
+                    let _ = std::fs::rename(&tmp, &ans);
+                }
+            } else if let (Some(name), true) = (v["tool"].as_str(), v["input"].is_object()) {
+                if crate::mcp::CHAT_EFFECTS.contains(&name) {
+                    self.effects.borrow_mut().push((name.to_string(), v["input"].clone()));
+                }
+            }
+        }
+        self.seen.set(lines.len());
+    }
+}
+
+impl Drop for CcRun {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -264,7 +383,7 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode, stop: &Stop) -> 
 #[allow(clippy::too_many_arguments)]
 fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let mut run = run_driven_inner(tree, facts, model, report, already, memory, exe, stop, progress)?;
-    let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), base_url: String::new() };
+    let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), ..AiConfig::default() };
     second_opinion(&cfg, model, &mut run, stop, progress);
     run_cleaner_check(&cfg, model, &mut run, stop, progress);
     Ok(run)
@@ -273,19 +392,7 @@ fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[
 #[allow(clippy::too_many_arguments)]
 fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    // in Temp (machine-local, never roamed): the snapshot lists every path on the disk
-    let runs = std::env::temp_dir().join("sprawl-claude-runs");
-    // what an earlier run left (the app closed or crashed during it) goes after a day
-    if let Ok(rd) = std::fs::read_dir(&runs) {
-        for e in rd.flatten() {
-            if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 86_400) {
-                let _ = std::fs::remove_dir_all(e.path());
-            }
-        }
-    }
-    let dir = runs.join(format!("{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = run_dir()?;
     /// Removes the run's folder however the run ends, a panic included.
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {

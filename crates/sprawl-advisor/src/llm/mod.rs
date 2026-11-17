@@ -138,10 +138,14 @@ impl Metered {
 
 impl Chat for Metered {
     fn turn(&mut self) -> Result<Turn, String> {
+        self.turn_ticking(&mut || {})
+    }
+
+    fn turn_ticking(&mut self, tick: &mut dyn FnMut()) -> Result<Turn, String> {
         if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(STOPPED.into());
         }
-        let t = self.inner.turn()?;
+        let t = self.inner.turn_ticking(tick)?;
         self.usage.borrow_mut().add(t.usage);
         if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
             // the turn is in the history already: its tool calls get an answer, or the next
@@ -221,6 +225,11 @@ pub trait Chat {
     /// Stream the text of each coming turn to `sink` (the turn's text so far), where the
     /// provider can. `None` turns it off.
     fn stream_to(&mut self, _sink: Option<Sink>) {}
+    /// [`Chat::turn`], calling `tick` now and then while it waits, where the provider can
+    /// (Claude Code, whose tools run in Sprawl's own MCP server meanwhile).
+    fn turn_ticking(&mut self, _tick: &mut dyn FnMut()) -> Result<Turn, String> {
+        self.turn()
+    }
 }
 
 /// Gets a turn's text so far, while it is written.
