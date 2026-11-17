@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use sprawl_core::{extension_stats, format_size, largest_files, Progress, Tree, ROOT};
+use sprawl_core::{format_size, Progress, Tree, ROOT};
 use windows_core::{Interface, HSTRING};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
@@ -56,9 +56,17 @@ pub(crate) struct Job {
     pub(crate) path: PathBuf,
     pub(crate) csv: bool,
     pub(crate) progress: Arc<Progress>,
-    pub(crate) result: Arc<Mutex<Option<std::io::Result<Tree>>>>,
+    pub(crate) result: Arc<Mutex<Option<std::io::Result<crate::tables::Prepared>>>>,
     pub(crate) started: Instant,
     pub(crate) last_layout: Instant,
+}
+
+/// A filter being made: its pattern, the full tree it filters and that tree's generation.
+pub(crate) struct Filtering {
+    pattern: String,
+    base: Arc<Tree>,
+    gen: u64,
+    rx: std::sync::mpsc::Receiver<crate::tables::Prepared>,
 }
 
 impl Job {
@@ -102,6 +110,8 @@ pub(crate) struct State {
     pub(crate) filter: String,
     pub(crate) filter_text: String,
     pub(crate) filter_pending: Option<Instant>,
+    /// The filter being made on a worker.
+    pub(crate) filtering: Option<Filtering>,
     /// Selections left by Select Parent, for Reselect Child.
     pub(crate) child_stack: Vec<usize>,
     pub(crate) wizard_page: usize,
@@ -229,13 +239,18 @@ impl State {
         let progress = Progress::new();
         let result = Arc::new(Mutex::new(None));
         let (g2, r2) = (progress.clone(), result.clone());
+        let sorts = self.sorts();
         std::thread::spawn(move || {
             let tree = match &source {
                 Source::Folders(v) if v.len() == 1 => sprawl_core::scan_auto(&v[0], &g2),
                 Source::Folders(v) => sprawl_core::scan_many(v, &g2),
                 Source::Csv(p) => sprawl_core::load_csv(p, &g2),
             };
-            *r2.lock().unwrap() = Some(tree);
+            // sorted and tallied here, not on the window's thread
+            if tree.is_ok() {
+                g2.set_phase("Sorting");
+            }
+            *r2.lock().unwrap() = Some(tree.map(|t| crate::tables::prepare(t, sorts)));
         });
         self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now() });
         self.scan_button(true);
@@ -266,6 +281,7 @@ impl State {
         self.cleanup_poll();
         self.update_poll();
         self.search_poll();
+        self.filter_poll();
         if self.wiz_models.poll() {
             self.wizard_models();
         }
@@ -306,7 +322,8 @@ impl State {
                 }
                 let live = self.map.live.take();
                 match res {
-                    Ok(tree) => {
+                    Ok(prepared) => {
+                        let tree = &prepared.tree;
                         // Let the live boxes open up into the real folders.
                         if let Some(live) = live.filter(|l| !l.index.is_empty()) {
                             let real: HashMap<&str, usize> = tree.nodes[ROOT].children.iter().map(|&c| (tree.nodes[c].name.as_str(), c)).collect();
@@ -323,7 +340,7 @@ impl State {
                         self.scan_taken = std::time::SystemTime::now();
                         let began = self.scan_taken.checked_sub(job.started.elapsed()).unwrap_or(self.scan_taken);
                         self.scan_began = if job.csv { std::fs::metadata(&job.path).and_then(|m| m.modified()).map_or(began, |t| t.min(began)) } else { began };
-                        self.set_tree(Arc::new(tree), &header);
+                        self.set_tree(prepared, &header);
                         self.map.scene.start_wave();
                         self.watch();
                         self.save_snapshot();
@@ -397,23 +414,36 @@ impl State {
         text(&self.root, "FootLeft", &format!("Live: {} change{} in this folder since the scan", thousands(c), if c == 1 { "" } else { "s" }));
     }
 
-    pub(crate) fn set_tree(&mut self, tree: Arc<Tree>, path: &std::path::Path) {
+    /// The sort columns now, for a worker preparing a tree.
+    pub(crate) fn sorts(&self) -> crate::tables::Sorts {
+        crate::tables::Sorts { tree: self.tables.tree_sort, files: self.tables.files_sort, exts: self.tables.ext_sort }
+    }
+
+    /// Show a tree prepared on a worker ([`crate::tables::prepare`]).
+    pub(crate) fn set_tree(&mut self, p: crate::tables::Prepared, path: &std::path::Path) {
         self.hist_close();
-        // Allocated size: each file rounded up to a 4 KB cluster, folders add up their contents.
-        self.alloc = tree.nodes.iter().map(|n| n.allocated).collect();
-        self.tree = Some(tree);
+        let crate::tables::Prepared { tree, alloc, files, exts, colours, sorts } = p;
+        self.alloc = alloc;
+        self.tree = Some(Arc::new(tree));
         self.tree_gen += 1;
         self.expanded = HashSet::from([ROOT]);
         self.selected = Some(ROOT);
         self.marked.clear();
         self.map_root = ROOT;
         self.ext_selected = None;
-        self.rebuild_exts();
-        self.sort_exts();
-        let t = self.tree.as_ref().unwrap();
-        self.files = largest_files(t, usize::MAX);
-        self.sort_tree();
-        self.sort_files();
+        self.exts = exts;
+        self.colours = colours;
+        self.files = files;
+        // a column clicked while it was being prepared: sorted again here
+        if sorts.tree != self.tables.tree_sort {
+            self.sort_tree();
+        }
+        if sorts.files != self.tables.files_sort {
+            self.sort_files();
+        }
+        if sorts.exts != self.tables.ext_sort {
+            self.sort_exts();
+        }
         let t = self.tree.as_ref().unwrap();
         let how = match t.method {
             sprawl_core::ScanMethod::Mft => "read from the MFT",
@@ -441,16 +471,7 @@ impl State {
 
     pub(crate) fn rebuild_exts(&mut self) {
         let t = self.tree.as_ref().unwrap();
-        let mut alloc_by: HashMap<String, u64> = HashMap::new();
-        for (i, n) in t.nodes.iter().enumerate() {
-            if !n.is_dir {
-                *alloc_by.entry(n.extension()).or_default() += self.alloc[i];
-            }
-        }
-        self.exts = extension_stats(t)
-            .into_iter()
-            .map(|s| ExtRow { alloc: alloc_by.get(&s.extension).copied().unwrap_or(0), ext: s.extension, size: s.size, files: s.files, percent: s.percent })
-            .collect();
+        self.exts = crate::tables::ext_rows(t, &self.alloc);
         self.colours = self.exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
     }
 
@@ -498,31 +519,55 @@ impl State {
         self.filter_pending = Some(Instant::now());
     }
 
+    /// Filter the whole tree by the filter box, on a worker; [`State::filter_poll`] shows it.
     pub(crate) fn apply_filter(&mut self) {
         self.filter_pending = None;
         let pattern = self.filter_text.trim().to_string();
-        if pattern == self.filter {
+        let busy_with = self.filtering.as_ref().map(|f| f.pattern.as_str());
+        if busy_with == Some(pattern.as_str()) || (busy_with.is_none() && pattern == self.filter) {
             return;
         }
-        let Some(base) = self.full_tree.take().or_else(|| self.tree.take()) else { return };
+        let Some(base) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
+        let sorts = self.sorts();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (p, b) = (pattern.clone(), base.clone());
+        std::thread::spawn(move || {
+            let tree = if p.is_empty() { (*b).clone() } else { sprawl_core::filter_tree(&b, &p) };
+            let _ = tx.send(crate::tables::prepare(tree, sorts));
+        });
+        if !pattern.is_empty() {
+            text(&self.root, "StatusText", &format!("Filtering by \"{pattern}\"..."));
+        }
+        self.filtering = Some(Filtering { pattern, base, gen: self.tree_gen, rx });
+    }
+
+    /// A filtered (or unfiltered again) tree is ready: show it, unless the tree it came from
+    /// changed meanwhile (then it is made again).
+    pub(crate) fn filter_poll(&mut self) {
+        let Some(f) = &self.filtering else { return };
+        let Ok(prepared) = f.rx.try_recv() else { return };
+        let Filtering { pattern, base, gen, .. } = self.filtering.take().unwrap();
+        if gen != self.tree_gen {
+            self.filter.clear();
+            return self.apply_filter();
+        }
         self.filter = pattern.clone();
         let path = base.root_path.clone();
         // Node numbers change, so the treemap grows afresh rather than morphing, and the
         // back/forward stack of nodes no longer means anything.
         self.map.scene.clear();
         self.child_stack.clear();
-        if pattern.is_empty() {
-            self.set_tree(base, &path);
-            self.advisor_refresh();
-            return;
-        }
-        let filtered = sprawl_core::filter_tree(&base, &pattern);
-        let found = filtered.nodes[ROOT].files;
-        let bytes = filtered.nodes[ROOT].size;
-        self.full_tree = Some(base);
-        self.set_tree(Arc::new(filtered), &path);
+        let (found, bytes) = (prepared.tree.nodes[ROOT].files, prepared.tree.nodes[ROOT].size);
+        self.full_tree = if pattern.is_empty() { None } else { Some(base) };
+        self.set_tree(prepared, &path);
         self.advisor_refresh();
-        text(&self.root, "StatusText", &format!("Filter \"{pattern}\": {} files, {}", thousands(found), self.size(bytes)));
+        if !pattern.is_empty() {
+            text(&self.root, "StatusText", &format!("Filter \"{pattern}\": {} files, {}", thousands(found), self.size(bytes)));
+        }
+        // typed on while it was made
+        if self.filter_text.trim() != self.filter && self.filter_pending.is_none() {
+            self.apply_filter();
+        }
     }
 
     // ------------------------------------------------------------ screenshot mode

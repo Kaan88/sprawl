@@ -56,6 +56,11 @@ fn main() {
     let (m2, _) = mem();
     println!("index build {:9.0} ms  {:.0} MB reported, {:.0} MB working set", ms(t), index.memory() as f64 / 1048576.0, m2 - m1);
 
+    // every folder's place in path order, built once per tree (what the app keeps)
+    let t = Instant::now();
+    let ranks = sprawl_core::search::folder_ranks(&tree);
+    println!("folder ranks {:8.0} ms  {} folders", ms(t), tree.nodes.iter().filter(|n| n.is_dir).count());
+
     let never = AtomicBool::new(false);
     for q in ["e", "a", "report", "*.dll", "cache >1mb", r"\windows\ *.exe", "folder:node_modules", "!e", "zzzzqqqq", "*.log|*.tmp <1kb"] {
         let query = Query::parse(q);
@@ -88,7 +93,13 @@ fn main() {
         let mut keyed: Vec<(String, usize)> = hits.iter().map(|&a| (tree.nodes[a].parent.map(|p| tree.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default(), a)).collect();
         keyed.sort();
         let s_keyed = ms(t);
-        println!("query {q:<22} {best:8.1} ms  {:>9} hits   sort size {s_size:8.1} ms   sort folder {s_folder:9.1} ms   (keyed {s_keyed:8.1} ms)", hits.len());
+        // by the folder ranks: numbers compared, no paths
+        let mut v = hits.clone();
+        let t = Instant::now();
+        let rank = |n: usize| tree.nodes[n].parent.map_or(0, |p| ranks[p] as u64 + 1);
+        v.sort_by(|&a, &b| rank(a).cmp(&rank(b)).then_with(|| tree.nodes[a].name.bytes().map(|c| c.to_ascii_lowercase()).cmp(tree.nodes[b].name.bytes().map(|c| c.to_ascii_lowercase()))));
+        let s_ranked = ms(t);
+        println!("query {q:<22} {best:8.1} ms  {:>9} hits   sort size {s_size:8.1} ms   sort folder {s_folder:9.1} ms   (keyed {s_keyed:8.1} ms, ranked {s_ranked:7.1} ms)", hits.len());
     }
 
     let t = Instant::now();

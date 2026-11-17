@@ -474,10 +474,67 @@ impl PathWalk<'_> {
     }
 }
 
+/// The place of every folder in the order of its full path, compared case-insensitively (ASCII)
+/// as the Folder column sorts: `rank[folder] < rank[other]` when its path sorts first. Each path
+/// is built once, by a walk from the root; a sort by folder is then a sort of numbers (a few
+/// hundred ms for millions of rows, not half a minute of paths built per comparison). Files
+/// are `u32::MAX`.
+pub fn folder_ranks(tree: &Tree) -> Vec<u32> {
+    let mut keys: Vec<(Box<[u8]>, u32)> = Vec::new();
+    let root: Vec<u8> = tree.root_path.to_string_lossy().bytes().map(|c| c.to_ascii_lowercase()).collect();
+    // (node, its lowercased path)
+    let mut stack: Vec<(usize, Vec<u8>)> = vec![(crate::ROOT, root)];
+    while let Some((n, path)) = stack.pop() {
+        for &c in &tree.nodes[n].children {
+            let child = &tree.nodes[c];
+            if !child.is_dir {
+                continue;
+            }
+            let mut p = Vec::with_capacity(path.len() + 1 + child.name.len());
+            p.extend_from_slice(&path);
+            // as PathBuf::push joins them
+            if !p.ends_with(b"\\") && !p.ends_with(b"/") {
+                p.push(b'\\');
+            }
+            p.extend(child.name.bytes().map(|c| c.to_ascii_lowercase()));
+            stack.push((c, p));
+        }
+        keys.push((path.into_boxed_slice(), n as u32));
+    }
+    keys.sort_unstable();
+    let mut rank = vec![u32::MAX; tree.nodes.len()];
+    // folders whose paths differ only in case (a case-sensitive folder) share a place, as the
+    // comparison of their paths would have it
+    let mut place = 0u32;
+    for (i, (k, n)) in keys.iter().enumerate() {
+        if i > 0 && keys[i - 1].0 != *k {
+            place = i as u32;
+        }
+        rank[*n as usize] = place;
+    }
+    rank
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{filter_tree, Node};
+
+    #[test]
+    fn folders_rank_in_path_order() {
+        let t = sample();
+        let r = folder_ranks(&t);
+        // C:\Data, C:\Data\cache, C:\Data\Games, C:\Data\Games\Steam (case ignored)
+        let mut dirs: Vec<usize> = (0..t.nodes.len()).filter(|&i| t.nodes[i].is_dir).collect();
+        dirs.sort_by_key(|&i| r[i]);
+        let names: Vec<&str> = dirs.iter().map(|&i| t.nodes[i].name.as_str()).collect();
+        assert_eq!(names, ["C:\\Data", "cache", "Games", "Steam"]);
+        // the same order as comparing the paths themselves
+        let mut by_path = dirs.clone();
+        by_path.sort_by_key(|&i| t.path_of(i).to_string_lossy().to_ascii_lowercase());
+        assert_eq!(dirs, by_path);
+        assert_eq!(r[3], u32::MAX, "a file has no folder rank");
+    }
     use std::path::PathBuf;
 
     fn node(name: &str, is_dir: bool, size: u64, parent: Option<usize>, children: Vec<usize>) -> Node {

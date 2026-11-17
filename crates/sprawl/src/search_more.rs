@@ -566,6 +566,22 @@ impl State {
 /// (place, node) pairs in the Search sort order.
 fn sort_hits(places: &[Arc<Place>], (c, desc): (usize, bool), v: &mut [(usize, usize)]) {
     let key = crate::search::COLS[c.min(crate::search::COLS.len() - 1)].key();
+    // by folder: each row's folder path built once
+    if key == crate::tables::Key::Folder {
+        let mut keyed: Vec<(Vec<u8>, String, (usize, usize))> = v.iter().map(|&(k, n)| (crate::tables::folder_key(&places[k].tree, n), places[k].tree.nodes[n].name.to_ascii_lowercase(), (k, n))).collect();
+        keyed.sort_by(|a, b| {
+            let o = (&a.0, &a.1).cmp(&(&b.0, &b.1));
+            if desc {
+                o.reverse()
+            } else {
+                o
+            }
+        });
+        for (slot, (_, _, h)) in v.iter_mut().zip(keyed) {
+            *slot = h;
+        }
+        return;
+    }
     v.sort_by(|a, b| {
         let o = crate::tables::cmp_two(&places[a.0].tree, &[], a.1, &places[b.0].tree, &[], b.1, key);
         if desc {

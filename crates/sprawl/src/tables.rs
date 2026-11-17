@@ -114,12 +114,34 @@ impl Col {
     }
 }
 
-/// Sort `v` (node indices) by `key`, the way the tables do.
-pub(crate) fn sort_nodes(t: &Tree, alloc: &[u64], key: Key, desc: bool, v: &mut [usize]) {
+/// Sort `v` (node indices) by `key`, the way the tables do. By folder, `ranks` (from
+/// `folder_ranks`, or empty) saves building paths: without it each row's folder path is built
+/// once, not once per comparison.
+pub(crate) fn sort_nodes(t: &Tree, alloc: &[u64], key: Key, desc: bool, v: &mut [usize], ranks: &[u32]) {
+    let dir = |o: Ordering| if desc { o.reverse() } else { o };
+    if key == Key::Folder {
+        let name = |a: usize, b: usize| cmp_names(&t.nodes[a].name, &t.nodes[b].name);
+        if ranks.len() == t.nodes.len() {
+            let rank = |n: usize| t.nodes[n].parent.map_or(0, |p| ranks[p] as u64 + 1);
+            v.sort_by(|&a, &b| dir(rank(a).cmp(&rank(b)).then_with(|| name(a, b))));
+        } else {
+            let mut keyed: Vec<(Vec<u8>, usize)> = v.iter().map(|&n| (folder_key(t, n), n)).collect();
+            keyed.sort_by(|(ka, a), (kb, b)| dir(ka.cmp(kb).then_with(|| name(*a, *b))));
+            for (slot, (_, n)) in v.iter_mut().zip(keyed) {
+                *slot = n;
+            }
+        }
+        return;
+    }
     v.sort_by(|&a, &b| {
         let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
-        if desc { o.reverse() } else { o }
+        dir(o)
     });
+}
+
+/// The folder a row is in, as the Folder column compares it: its path, ASCII lowercased.
+pub(crate) fn folder_key(t: &Tree, n: usize) -> Vec<u8> {
+    t.nodes[n].parent.map(|p| t.path_of(p).to_string_lossy().bytes().map(|c| c.to_ascii_lowercase()).collect()).unwrap_or_default()
 }
 
 /// Compare two nodes that may come from different trees (Search mixes the scan with other
@@ -185,7 +207,7 @@ fn col_at(cols: &[Col], width: f64, x: f64) -> Option<usize> {
 }
 
 /// Case-insensitive comparison without allocating.
-fn cmp_names(a: &str, b: &str) -> Ordering {
+pub(crate) fn cmp_names(a: &str, b: &str) -> Ordering {
     a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
 }
 
@@ -233,48 +255,18 @@ impl State {
 
     /// Order every folder's children by the tree view's sort column.
     pub(crate) fn sort_tree(&mut self) {
-        let (c, desc) = self.tables.tree_sort;
-        let key = TREE[c].key;
+        let sort = self.tables.tree_sort;
         let Some(t) = self.tree.as_mut().map(std::sync::Arc::make_mut) else { return };
-        let alloc = &self.alloc;
-        for i in 0..t.nodes.len() {
-            if t.nodes[i].children.len() < 2 {
-                continue;
-            }
-            let mut kids = std::mem::take(&mut t.nodes[i].children);
-            kids.sort_by(|&a, &b| {
-                let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
-                if desc { o.reverse() } else { o }
-            });
-            t.nodes[i].children = kids;
-        }
+        sort_children(t, &self.alloc, sort);
     }
 
     pub(crate) fn sort_files(&mut self) {
-        let (c, desc) = self.tables.files_sort;
-        let key = FILES[c].key;
         let Some(t) = &self.tree else { return };
-        let alloc = &self.alloc;
-        self.files.sort_by(|&a, &b| {
-            let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
-            if desc { o.reverse() } else { o }
-        });
+        sort_file_list(t, &self.alloc, self.tables.files_sort, &mut self.files);
     }
 
     pub(crate) fn sort_exts(&mut self) {
-        let (c, desc) = self.tables.ext_sort;
-        let key = EXTS[c].key;
-        self.exts.sort_by(|a, b| {
-            let o = match key {
-                Key::Size => a.size.cmp(&b.size),
-                Key::Alloc => a.alloc.cmp(&b.alloc),
-                Key::Files => a.files.cmp(&b.files),
-                Key::Type => cmp_names(&file_type(&a.ext), &file_type(&b.ext)),
-                _ => Ordering::Equal,
-            }
-            .then_with(|| cmp_names(&a.ext, &b.ext));
-            if desc { o.reverse() } else { o }
-        });
+        sort_ext_rows(&mut self.exts, self.tables.ext_sort);
     }
 
     /// A click on a table header at `x` (header coordinates).
@@ -890,6 +882,72 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sprawl_core::Node;
+
+    /// C:\T with folders b, A, a b, a (and a\x), each holding a file or two.
+    fn sample() -> Tree {
+        let mut nodes = vec![Node { name: r"C:\T".into(), is_dir: true, ..Default::default() }];
+        let mut add = |name: &str, dir: bool, parent: usize, size: u64| {
+            let i = nodes.len();
+            nodes.push(Node { name: name.into(), is_dir: dir, size, allocated: size, files: u64::from(!dir), parent: Some(parent), ..Default::default() });
+            nodes[parent].children.push(i);
+            i
+        };
+        let b = add("b", true, 0, 0);
+        let big_a = add("A", true, 0, 0);
+        let ab = add("a b", true, 0, 0);
+        let a = add("a", true, 0, 0);
+        let x = add("x", true, a, 0);
+        add("z.log", false, b, 5);
+        add("y.txt", false, big_a, 700);
+        add("m.log", false, ab, 30);
+        add("k.dll", false, a, 1);
+        add("j.log", false, x, 90);
+        add("i.TXT", false, big_a, 2);
+        let mut t = Tree { root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
+        t.compute_totals();
+        t
+    }
+
+    #[test]
+    fn a_folder_sort_by_ranks_is_the_folder_sort() {
+        let t = sample();
+        let files: Vec<usize> = (0..t.nodes.len()).filter(|&i| !t.nodes[i].is_dir).collect();
+        let ranks = sprawl_core::search::folder_ranks(&t);
+        for desc in [false, true] {
+            // the old way: two paths built for every comparison
+            let mut old = files.clone();
+            old.sort_by(|&a, &b| {
+                let o = cmp_two(&t, &[], a, &t, &[], b, Key::Folder);
+                if desc { o.reverse() } else { o }
+            });
+            let mut keyed = files.clone();
+            sort_nodes(&t, &[], Key::Folder, desc, &mut keyed, &[]);
+            let mut ranked = files.clone();
+            sort_nodes(&t, &[], Key::Folder, desc, &mut ranked, &ranks);
+            assert_eq!(keyed, old, "keyed, desc {desc}");
+            assert_eq!(ranked, old, "ranked, desc {desc}");
+        }
+    }
+
+    #[test]
+    fn a_prepared_tree_is_what_the_window_worked_out() {
+        let t = sample();
+        let sorts = Sorts { tree: (1, true), files: (1, true), exts: (4, true) };
+        let p = prepare(t.clone(), sorts);
+        // every file, biggest first
+        let names: Vec<&str> = p.files.iter().map(|&i| p.tree.nodes[i].name.as_str()).collect();
+        assert_eq!(names, ["y.txt", "j.log", "m.log", "z.log", "i.TXT", "k.dll"]);
+        // children by size, biggest first
+        let kids: Vec<&str> = p.tree.nodes[ROOT].children.iter().map(|&i| p.tree.nodes[i].name.as_str()).collect();
+        assert_eq!(kids, ["A", "a", "a b", "b"]);
+        // the file types and their colours (by size: txt, log, dll)
+        let rows = ext_rows(&t, &p.alloc);
+        assert_eq!(p.exts.len(), rows.len());
+        assert_eq!(p.colours.get("txt"), Some(&0));
+        assert_eq!(p.colours.get("log"), Some(&1));
+        assert_eq!(p.alloc.len(), p.tree.nodes.len());
+    }
 
     #[test]
     fn header_hit_test() {
@@ -907,4 +965,89 @@ mod tests {
         assert_eq!(cmp_names("apple", "Banana"), Ordering::Less);
         assert_eq!(cmp_names("ABC", "abc"), Ordering::Equal);
     }
+}
+
+/// The tables' sort columns, as a worker preparing a tree needs them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Sorts {
+    pub(crate) tree: (usize, bool),
+    pub(crate) files: (usize, bool),
+    pub(crate) exts: (usize, bool),
+}
+
+/// Everything the window shows for a tree that takes long to work out on a big scan: the
+/// children in order, the allocated sizes, every file biggest first and the file-type table.
+/// Made on a worker (a scan's own thread, or the filter's), so the window doesn't stop for
+/// seconds when a scan ends.
+pub(crate) struct Prepared {
+    pub(crate) tree: Tree,
+    pub(crate) alloc: Vec<u64>,
+    pub(crate) files: Vec<usize>,
+    pub(crate) exts: Vec<crate::state::ExtRow>,
+    /// Each extension's colour, by size (before the table's own sort).
+    pub(crate) colours: std::collections::HashMap<String, usize>,
+    pub(crate) sorts: Sorts,
+}
+
+pub(crate) fn prepare(mut tree: Tree, sorts: Sorts) -> Prepared {
+    let alloc: Vec<u64> = tree.nodes.iter().map(|n| n.allocated).collect();
+    sort_children(&mut tree, &alloc, sorts.tree);
+    let mut files = sprawl_core::largest_files(&tree, usize::MAX);
+    sort_file_list(&tree, &alloc, sorts.files, &mut files);
+    let mut exts = ext_rows(&tree, &alloc);
+    let colours = exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
+    sort_ext_rows(&mut exts, sorts.exts);
+    Prepared { tree, alloc, files, exts, colours, sorts }
+}
+
+/// The file-type table, biggest first.
+pub(crate) fn ext_rows(t: &Tree, alloc: &[u64]) -> Vec<crate::state::ExtRow> {
+    let mut alloc_by: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for (i, n) in t.nodes.iter().enumerate() {
+        if !n.is_dir {
+            *alloc_by.entry(n.extension()).or_default() += alloc.get(i).copied().unwrap_or(0);
+        }
+    }
+    sprawl_core::extension_stats(t)
+        .into_iter()
+        .map(|s| crate::state::ExtRow { alloc: alloc_by.get(&s.extension).copied().unwrap_or(0), ext: s.extension, size: s.size, files: s.files, percent: s.percent })
+        .collect()
+}
+
+pub(crate) fn sort_children(t: &mut Tree, alloc: &[u64], (c, desc): (usize, bool)) {
+    let key = TREE[c].key;
+    for i in 0..t.nodes.len() {
+        if t.nodes[i].children.len() < 2 {
+            continue;
+        }
+        let mut kids = std::mem::take(&mut t.nodes[i].children);
+        kids.sort_by(|&a, &b| {
+            let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
+            if desc { o.reverse() } else { o }
+        });
+        t.nodes[i].children = kids;
+    }
+}
+
+pub(crate) fn sort_file_list(t: &Tree, alloc: &[u64], (c, desc): (usize, bool), files: &mut [usize]) {
+    let key = FILES[c].key;
+    files.sort_by(|&a, &b| {
+        let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
+        if desc { o.reverse() } else { o }
+    });
+}
+
+pub(crate) fn sort_ext_rows(exts: &mut [crate::state::ExtRow], (c, desc): (usize, bool)) {
+    let key = EXTS[c].key;
+    exts.sort_by(|a, b| {
+        let o = match key {
+            Key::Size => a.size.cmp(&b.size),
+            Key::Alloc => a.alloc.cmp(&b.alloc),
+            Key::Files => a.files.cmp(&b.files),
+            Key::Type => cmp_names(&file_type(&a.ext), &file_type(&b.ext)),
+            _ => Ordering::Equal,
+        }
+        .then_with(|| cmp_names(&a.ext, &b.ext));
+        if desc { o.reverse() } else { o }
+    });
 }

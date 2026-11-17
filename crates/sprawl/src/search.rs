@@ -18,7 +18,17 @@ use crate::ui;
 /// The map colour code of a match (see `advisor::lens_colour`).
 pub(crate) const LENS_MATCH: u8 = 20;
 
-type Found = (u64, String, (usize, bool), Option<Vec<usize>>);
+/// (tree generation, query, sort, matches sorted, the folder ranks it built)
+type Found = (u64, String, (usize, bool), Option<Vec<usize>>, Option<Arc<Vec<u32>>>);
+/// (tree generation, sort, the matches sorted again, the folder ranks it built)
+type Sorted = (u64, (usize, bool), Vec<usize>, Option<Arc<Vec<u32>>>);
+
+/// How long typing pauses before the search runs: short enough to feel immediate, long enough
+/// that a word typed quickly doesn't start (and cancel) a search per letter.
+const TYPING_PAUSE_MS: u128 = 50;
+
+/// More matches than this are sorted again on a worker (a header click), not on the UI thread.
+const SORT_HERE: usize = 20_000;
 
 #[derive(Default)]
 pub(crate) struct Search {
@@ -47,6 +57,10 @@ pub(crate) struct Search {
     typed: Option<std::time::Instant>,
     /// Bumped whenever the scan's matches or the other drives' matches change or are re-sorted.
     pub(crate) stamp: u64,
+    /// Every folder's place in path order (`folder_ranks`), for the `tree_gen` it was built for.
+    ranks: Option<(u64, Arc<Vec<u32>>)>,
+    /// A sort of many matches on a worker.
+    sorting: Option<Receiver<Sorted>>,
     /// The two lists merged into the table's rows, for (`stamp`, `tree_gen`).
     merged: std::cell::RefCell<Option<((u64, u64), Vec<(usize, usize)>)>>,
 }
@@ -90,6 +104,7 @@ impl State {
         // whatever is running is about something older
         self.search.cancel.store(true, Ordering::Relaxed);
         self.search.running = None;
+        self.search.sorting = None;
         let cancel = Arc::new(AtomicBool::new(false));
         self.search.cancel = cancel.clone();
         // outside the scan: saved scans and other drives
@@ -142,19 +157,22 @@ impl State {
         let (c, desc) = self.search.sort;
         let key = COLS[c.min(COLS.len() - 1)].key();
         let alloc = if key == crate::tables::Key::Alloc { self.alloc.clone() } else { Vec::new() };
+        let ranks = self.ranks_for(gen);
         std::thread::spawn(move || {
             let mut r = search(&tree, &index, &q, &cancel);
+            let mut built = None;
             if let Some(v) = &mut r {
-                crate::tables::sort_nodes(&tree, &alloc, key, desc, v);
+                let ranks = folder_ranks_if(&tree, key, v.len(), ranks, &mut built);
+                crate::tables::sort_nodes(&tree, &alloc, key, desc, v, ranks.as_deref().map_or(&[], |r| &r[..]));
             }
-            let _ = tx.send((gen, text_q, (c, desc), r));
+            let _ = tx.send((gen, text_q, (c, desc), r, built));
         });
         self.search.running = Some(rx);
     }
 
     /// Each frame: the index, the results, and a tree that changed under the results.
     pub(crate) fn search_poll(&mut self) {
-        if self.search.typed.is_some_and(|t| t.elapsed().as_millis() >= 140) {
+        if self.search.typed.is_some_and(|t| t.elapsed().as_millis() >= TYPING_PAUSE_MS) {
             self.search.typed = None;
             self.search_run();
         }
@@ -171,9 +189,24 @@ impl State {
                 }
             }
         }
+        if let Some(rx) = &self.search.sorting {
+            if let Ok((gen, sort, v, built)) = rx.try_recv() {
+                self.search.sorting = None;
+                self.keep_ranks(gen, built);
+                if gen == self.tree_gen && self.search.results_gen == gen && sort == self.search.sort {
+                    self.search.results = v;
+                    self.search.stamp += 1;
+                    text(&self.root, "SearchInfo", &self.search_count());
+                    if self.view == View::Search {
+                        self.refresh_rows();
+                    }
+                }
+            }
+        }
         if let Some(rx) = &self.search.running {
-            if let Ok((gen, q, sort, r)) = rx.try_recv() {
+            if let Ok((gen, q, sort, r, built)) = rx.try_recv() {
                 self.search.running = None;
+                self.keep_ranks(gen, built);
                 if let Some(found) = r.filter(|_| gen == self.tree_gen && q == self.search.query) {
                     let resort = sort != self.search.sort;
                     self.search_show(found, String::new(), resort);
@@ -221,13 +254,44 @@ impl State {
 
     pub(crate) fn search_sort(&mut self) {
         let (c, desc) = self.search.sort;
-        if let Some(t) = &self.tree {
-            let mut v = std::mem::take(&mut self.search.results);
-            crate::tables::sort_nodes(t, &self.alloc, COLS[c.min(COLS.len() - 1)].key(), desc, &mut v);
-            self.search.results = v;
+        let key = COLS[c.min(COLS.len() - 1)].key();
+        let gen = self.tree_gen;
+        let ranks = self.ranks_for(gen);
+        if let Some(t) = self.tree.clone() {
+            if self.search.results.len() <= SORT_HERE {
+                let mut v = std::mem::take(&mut self.search.results);
+                crate::tables::sort_nodes(&t, &self.alloc, key, desc, &mut v, ranks.as_deref().map_or(&[], |r| &r[..]));
+                self.search.results = v;
+            } else {
+                // many: on a worker; the rows keep their order until it is done
+                let v = self.search.results.clone();
+                let alloc = if key == crate::tables::Key::Alloc { self.alloc.clone() } else { Vec::new() };
+                let (tx, rx) = channel();
+                std::thread::spawn(move || {
+                    let mut v = v;
+                    let mut built = None;
+                    let ranks = folder_ranks_if(&t, key, v.len(), ranks, &mut built);
+                    crate::tables::sort_nodes(&t, &alloc, key, desc, &mut v, ranks.as_deref().map_or(&[], |r| &r[..]));
+                    let _ = tx.send((gen, (c, desc), v, built));
+                });
+                self.search.sorting = Some(rx);
+                text(&self.root, "SearchInfo", "Sorting...");
+            }
         }
         self.more_sort();
         self.search.stamp += 1;
+    }
+
+    /// The folder ranks of tree `gen`, if they were built.
+    fn ranks_for(&self, gen: u64) -> Option<Arc<Vec<u32>>> {
+        self.search.ranks.as_ref().filter(|(g, _)| *g == gen).map(|(_, r)| r.clone())
+    }
+
+    /// Keep folder ranks a worker built, if they are for the tree on screen.
+    fn keep_ranks(&mut self, gen: u64, built: Option<Arc<Vec<u32>>>) {
+        if let Some(r) = built.filter(|_| gen == self.tree_gen) {
+            self.search.ranks = Some((gen, r));
+        }
     }
 
     /// "12 files (3.1 GB), 4 folders": the scan's matches and the other drives' together.
@@ -290,9 +354,25 @@ impl State {
                 let (c, desc) = self.search.sort;
                 let key = COLS[c.min(COLS.len() - 1)].key();
                 let (mut i, mut j) = (0, 0);
+                // by folder: both lists are in folder order, so a folder's path is built once
+                // for its run of rows, not for every comparison
+                let mut mine_dir: (Option<usize>, Vec<u8>) = (None, Vec::new());
+                let mut other_dir: (Option<(usize, usize)>, Vec<u8>) = (None, Vec::new());
                 while i < mine.len() && j < others.len() {
                     let (k, n) = others[j];
-                    let o = crate::tables::cmp_two(t, &self.alloc, mine[i], &m.places[k].tree, &[], n, key);
+                    let o = if key == crate::tables::Key::Folder {
+                        let (a, b) = (&t.nodes[mine[i]], &m.places[k].tree.nodes[n]);
+                        if mine_dir.0 != a.parent || mine_dir.1.is_empty() {
+                            mine_dir = (a.parent, crate::tables::folder_key(t, mine[i]));
+                        }
+                        let here = b.parent.map(|p| (k, p));
+                        if other_dir.0 != here || other_dir.1.is_empty() {
+                            other_dir = (here, crate::tables::folder_key(&m.places[k].tree, n));
+                        }
+                        mine_dir.1.cmp(&other_dir.1).then_with(|| crate::tables::cmp_names(&a.name, &b.name))
+                    } else {
+                        crate::tables::cmp_two(t, &self.alloc, mine[i], &m.places[k].tree, &[], n, key)
+                    };
                     let mine_first = if desc { o != std::cmp::Ordering::Less } else { o != std::cmp::Ordering::Greater };
                     if mine_first {
                         rows.push((mine[i], 0));
@@ -456,4 +536,15 @@ mod tap_tests {
         assert!(!second_tap(Some(last), (4, 0), ms(100), w, false).0);
         assert!(!second_tap(Some(last), (3, 0), ms(900), w, false).0);
     }
+}
+
+/// The folder ranks to sort `rows` matches by `key`: the ones given, or (by folder, for many
+/// matches) built now and put in `built` to keep. Few matches don't need them.
+fn folder_ranks_if(tree: &sprawl_core::Tree, key: crate::tables::Key, rows: usize, given: Option<Arc<Vec<u32>>>, built: &mut Option<Arc<Vec<u32>>>) -> Option<Arc<Vec<u32>>> {
+    if key != crate::tables::Key::Folder || given.is_some() || rows <= SORT_HERE {
+        return given;
+    }
+    let r = Arc::new(sprawl_core::search::folder_ranks(tree));
+    *built = Some(r.clone());
+    Some(r)
 }

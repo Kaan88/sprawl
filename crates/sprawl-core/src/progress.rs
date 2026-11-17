@@ -167,7 +167,7 @@ impl Progress {
         self.method.store(m.to_u8(), Relaxed);
     }
 
-    pub(crate) fn set_phase(&self, phase: &'static str) {
+    pub fn set_phase(&self, phase: &'static str) {
         self.lock().phase = phase;
     }
 

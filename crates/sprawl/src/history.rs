@@ -109,8 +109,11 @@ impl State {
         }
         let Some(base) = history::base_dir() else { return };
         let cap = (self.settings.num("snapshot_cap_mb").unwrap_or(1024.0) * 1024.0 * 1024.0) as u64;
-        let pending = history::prepare(t, self.scan_taken, true);
+        // encoded on the worker too: a big scan takes seconds to encode
+        let (t, taken) = (t.clone(), self.scan_taken);
         std::thread::spawn(move || {
+            let pending = history::prepare(&t, taken, true);
+            drop(t);
             if let Err(e) = pending.save(&base, cap) {
                 eprintln!("snapshot: {e}");
             }
