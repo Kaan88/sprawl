@@ -31,7 +31,7 @@ impl State {
             let _ = a.SetVisibility(vis(v == View::Advisor));
         }
         let table = matches!(v, View::Tree | View::Files | View::Search);
-        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search), ("SearchMore", false)] {
+        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search), ("SearchMore", false), ("SearchEmpty", false), ("SearchSuggest", false)] {
             if let Ok(e) = find::<UIElement>(&self.root, name) {
                 let _ = e.SetVisibility(vis(on));
             }

@@ -63,6 +63,8 @@ pub(crate) struct Search {
     sorting: Option<Receiver<Sorted>>,
     /// The two lists merged into the table's rows, for (`stamp`, `tree_gen`).
     merged: std::cell::RefCell<Option<((u64, u64), Vec<(usize, usize)>)>>,
+    /// The help and the empty state are made (once, when the tab first opens).
+    pub(crate) ui_built: bool,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
@@ -97,6 +99,7 @@ impl State {
         }
         self.search.query = q;
         self.search.typed = Some(std::time::Instant::now());
+        self.search_box_state();
     }
 
     /// Start a search for what is typed (or wait for the index).
@@ -126,7 +129,8 @@ impl State {
             return;
         };
         let q = Query::parse(&self.search.query);
-        if q.is_empty() {
+        // a word that can't be understood: nothing is searched (the hint line says why)
+        if q.is_empty() || !q.errors().is_empty() {
             self.search.pending = false;
             self.search_show(Vec::new(), String::new(), false);
             return;
@@ -299,6 +303,9 @@ impl State {
         if self.search.query.trim().is_empty() {
             return String::new();
         }
+        if !Query::parse(&self.search.query).errors().is_empty() {
+            return "Nothing searched: a word can't be understood (see below the box)".to_string();
+        }
         let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
         let mut add = |node: &sprawl_core::Node| {
             if node.is_dir {
@@ -440,6 +447,8 @@ impl State {
         if self.view != View::Search {
             self.set_view(View::Search);
         }
+        self.search_ui_build();
+        self.search_box_state();
         self.more_open();
         if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
             let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);

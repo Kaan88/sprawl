@@ -37,6 +37,8 @@ mod cleaners;
 mod models;
 mod search;
 mod search_more;
+mod search_query;
+mod search_box;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
