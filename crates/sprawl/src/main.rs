@@ -35,6 +35,7 @@ mod wizard;
 mod update;
 mod models;
 mod search;
+mod search_more;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

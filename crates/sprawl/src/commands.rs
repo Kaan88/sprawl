@@ -31,7 +31,7 @@ impl State {
             let _ = a.SetVisibility(vis(v == View::Advisor));
         }
         let table = matches!(v, View::Tree | View::Files | View::Search);
-        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search)] {
+        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search), ("SearchMore", false)] {
             if let Ok(e) = find::<UIElement>(&self.root, name) {
                 let _ = e.SetVisibility(vis(on));
             }
@@ -405,6 +405,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
             "TabFiles" => self.set_view(View::Files),
             "TabSearch" | "mSearch" => self.search_focus(),
             "SearchToFilter" => self.search_to_filter(),
+            d if d.len() == 4 && d.starts_with("SxD") => self.more_drive(d.chars().nth(3).unwrap_or('C')),
             "TabAdvisor" => self.set_view(View::Advisor),
             "TabAbout" => self.set_view(View::About),
             _ => {}

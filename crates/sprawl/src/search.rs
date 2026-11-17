@@ -39,6 +39,8 @@ pub(crate) struct Search {
     pub(crate) lens: Option<Arc<Vec<u8>>>,
     /// Nodes where the watcher saw a change since the scan, and the `tree_gen` they are for.
     changed: (u64, std::collections::HashSet<usize>),
+    /// Saved scans and other drives.
+    pub(crate) more: crate::search_more::More,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
@@ -80,8 +82,14 @@ impl State {
         // whatever is running is about something older
         self.search.cancel.store(true, Ordering::Relaxed);
         self.search.running = None;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search.cancel = cancel.clone();
+        // outside the scan: saved scans and other drives
+        self.more_forget_covered();
+        self.more_run(cancel.clone());
         let Some(tree) = self.tree.clone() else {
-            self.search_show(Vec::new(), "Scan a folder first; search looks through the scan.".into());
+            let note = if self.search.more.places.is_empty() { "Scan a folder first; search looks through the scan." } else { "No scan yet: searching saved scans only." };
+            self.search_show(Vec::new(), note.into());
             return;
         };
         let q = Query::parse(&self.search.query);
@@ -110,8 +118,6 @@ impl State {
             }
         };
         self.search.pending = false;
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.search.cancel = cancel.clone();
         let (tx, rx) = channel();
         let text_q = self.search.query.clone();
         std::thread::spawn(move || {
@@ -123,6 +129,7 @@ impl State {
 
     /// Each frame: the index, the results, and a tree that changed under the results.
     pub(crate) fn search_poll(&mut self) {
+        self.more_poll();
         if let Some((g, rx)) = &self.search.building {
             if let Ok(ix) = rx.try_recv() {
                 let g = *g;
@@ -262,6 +269,7 @@ impl State {
         if self.view != View::Search {
             self.set_view(View::Search);
         }
+        self.more_open();
         if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
             let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
         }
