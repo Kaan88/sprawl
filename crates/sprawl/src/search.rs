@@ -24,6 +24,8 @@ type Found = (u64, String, (usize, bool), Option<Vec<usize>>);
 pub(crate) struct Search {
     /// What is typed.
     pub(crate) query: String,
+    /// The last tap on a result: (row, when, already taken as a double-click).
+    last_tap: Option<((usize, usize), std::time::Instant, bool)>,
     /// The index and the `tree_gen` it was built for.
     index: Option<(u64, Arc<Index>)>,
     pub(crate) building: Option<(u64, Receiver<Index>)>,
@@ -377,6 +379,17 @@ impl State {
         text(&self.root, "StatusText", &format!("{} {}", if m.is_dir() { "Opened" } else { "Opening" }, path.display()));
     }
 
+    /// Whether this tap on `row` is a double-click. WinUI's own double-tap is lost when the
+    /// results are redrawn between the two clicks (other drives arriving every half second), so
+    /// two taps on the same row within the double-click time count too; `gesture` is WinUI's,
+    /// which is not counted again when the second tap already was.
+    pub(crate) fn tap_is_double(&mut self, row: (usize, usize), gesture: bool) -> bool {
+        let window = std::time::Duration::from_millis(crate::win32::double_click_ms());
+        let (double, last) = second_tap(self.search.last_tap, row, std::time::Instant::now(), window, gesture);
+        self.search.last_tap = Some(last);
+        double
+    }
+
     /// Ctrl+Enter or "Show in the Tree" on a result: show it in the tree.
     pub(crate) fn search_reveal(&mut self, n: usize) {
         self.set_view(View::Tree);
@@ -401,5 +414,46 @@ impl State {
             let _ = b.SetText(&f.into());
         }
         self.set_view(View::Files);
+    }
+}
+
+type Tap = ((usize, usize), std::time::Instant, bool);
+
+/// Whether a tap on `row` at `now` is the second of a double-click, and the tap to remember.
+fn second_tap(last: Option<Tap>, row: (usize, usize), now: std::time::Instant, window: std::time::Duration, gesture: bool) -> (bool, Tap) {
+    let recent = last.filter(|(r, t, _)| *r == row && now.duration_since(*t) <= window);
+    let taken = recent.is_some_and(|(_, _, taken)| taken);
+    let double = if gesture { !taken } else { recent.is_some() && !taken };
+    (double, (row, now, double || (gesture && taken)))
+}
+
+#[cfg(test)]
+mod tap_tests {
+    use super::second_tap;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn two_taps_on_a_row_are_one_double_click() {
+        let w = Duration::from_millis(500);
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        // WinUI lost the gesture: two plain taps
+        let (d, last) = second_tap(None, (3, 0), t0, w, false);
+        assert!(!d);
+        let (d, last) = second_tap(Some(last), (3, 0), ms(200), w, false);
+        assert!(d);
+        // a third tap starts over, not a second double-click
+        let (d, _) = second_tap(Some(last), (3, 0), ms(300), w, false);
+        assert!(!d);
+        // WinUI's own double-tap after one tap: once
+        let (_, last) = second_tap(None, (3, 0), t0, w, false);
+        let (d, last) = second_tap(Some(last), (3, 0), ms(200), w, true);
+        assert!(d);
+        let (d, _) = second_tap(Some(last), (3, 0), ms(210), w, true);
+        assert!(!d, "the same double-click is not taken twice");
+        // another row, or too slow: not a double-click
+        let (_, last) = second_tap(None, (3, 0), t0, w, false);
+        assert!(!second_tap(Some(last), (4, 0), ms(100), w, false).0);
+        assert!(!second_tap(Some(last), (3, 0), ms(900), w, false).0);
     }
 }

@@ -529,6 +529,7 @@ impl State {
     pub(crate) fn row_tapped(&mut self, x: f64, y: f64, double: bool) {
         let k = (y / ROW_H) as usize;
         let Some(&(n, d)) = self.rows.get(k) else { return };
+        let double = if self.view == View::Search { self.tap_is_double((n, d), double) } else { double };
         if self.view == View::Search {
             if d > 0 {
                 self.more_tapped(d - 1, n, double);

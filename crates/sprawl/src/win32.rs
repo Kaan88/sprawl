@@ -211,6 +211,15 @@ pub fn fit_work_area(h: HWND) {
 #[link(name = "user32")]
 extern "system" {
     fn GetKeyState(vk: i32) -> i16;
+    fn GetDoubleClickTime() -> u32;
+}
+
+/// The user's double-click time (Mouse settings).
+pub fn double_click_ms() -> u64 {
+    match unsafe { GetDoubleClickTime() } {
+        0 => 500,
+        t => t as u64,
+    }
 }
 
 /// (Ctrl, Shift) held down now.
