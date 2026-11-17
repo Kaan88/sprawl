@@ -150,7 +150,9 @@ pub(crate) fn folder_key(t: &Tree, n: usize) -> Vec<u8> {
 }
 
 /// Compare two nodes that may come from different trees (Search mixes the scan with other
-/// drives). A tree without allocated sizes (`&[]`) uses the size.
+/// drives). A tree without allocated sizes (`&[]`) uses the size. Kept as the tests' measure
+/// of the folder sort.
+#[cfg(test)]
 pub(crate) fn cmp_two(ta: &Tree, aa: &[u64], a: usize, tb: &Tree, ab: &[u64], b: usize, key: Key) -> Ordering {
     let (x, y) = (&ta.nodes[a], &tb.nodes[b]);
     let o = match key {
@@ -344,7 +346,7 @@ impl State {
         let total = self.tree.as_ref().map_or(0, |t| t.nodes[ROOT].size);
         let items = self.tree.as_ref().map_or(0, |t| t.nodes[ROOT].items());
         if self.view == View::Search {
-            let more: u64 = self.search.more.places.iter().map(|p| p.tree.nodes[ROOT].items()).sum();
+            let more = self.search.more.items_searched();
             text(&self.root, "FootRight", &format!("{} found  |  {} items searched", thousands(self.rows.len() as u64), thousands(items + more)));
             crate::welcome::tree_hint_shown(self, false);
         } else {
@@ -738,7 +740,7 @@ impl State {
     fn row_name(&self, k: usize) -> String {
         let Some(&(n, d)) = self.rows.get(k) else { return String::new() };
         if !self.scan_row(&(n, d)) {
-            return self.search.more.places.get(d - 1).map(|p| p.tree.nodes[n].name.to_lowercase()).unwrap_or_default();
+            return self.search.more.item(d - 1, n).map(|(ix, i)| ix.name(i).to_lowercase()).unwrap_or_default();
         }
         self.tree.as_ref().map(|t| t.nodes[n].name.to_lowercase()).unwrap_or_default()
     }

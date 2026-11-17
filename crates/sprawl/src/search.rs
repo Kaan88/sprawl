@@ -120,9 +120,9 @@ impl State {
         self.more_run(cancel.clone());
         let Some(tree) = self.tree.clone() else {
             let m = &self.search.more;
-            let note = if !m.loading.is_empty() {
+            let note = if m.is_reading() {
                 "Reading your drives; results come in as each one is ready."
-            } else if m.places.is_empty() {
+            } else if !m.has_places() {
                 "Scan a folder, or turn on Options > Search Every Drive When Search Opens."
             } else if self.search.query.trim().is_empty() {
                 "Type to search every drive."
@@ -328,10 +328,17 @@ impl State {
         let m = &self.search.more;
         let others = m.current_hits();
         for &(k, n) in others {
-            add(&m.places[k].tree.nodes[n]);
+            if let Some((ix, i)) = m.item(k, n) {
+                if ix.is_dir(i) {
+                    folders += 1;
+                } else {
+                    files += 1;
+                    bytes += ix.size(i);
+                }
+            }
         }
         let mut s = match (files, folders) {
-            (0, 0) if !m.loading.is_empty() => "Nothing yet; still reading drives".to_string(),
+            (0, 0) if m.is_reading() => "Nothing yet; still reading drives".to_string(),
             (0, 0) => "Nothing found".to_string(),
             (f, 0) => format!("{} file{}, {}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes)),
             (0, d) => format!("{} folder{}", thousands(d), if d == 1 { "" } else { "s" }),
@@ -364,26 +371,30 @@ impl State {
         match &self.tree {
             Some(t) if !others.is_empty() && !mine.is_empty() => {
                 let (c, desc) = self.search.sort;
-                let key = COLS[c.min(COLS.len() - 1)].key();
+                let by = crate::search_more::sort_by(c);
                 let (mut i, mut j) = (0, 0);
                 // by folder: both lists are in folder order, so a folder's path is built once
                 // for its run of rows, not for every comparison
-                let mut mine_dir: (Option<usize>, Vec<u8>) = (None, Vec::new());
-                let mut other_dir: (Option<(usize, usize)>, Vec<u8>) = (None, Vec::new());
+                let mut mine_dir: (Option<usize>, String) = (None, String::new());
+                let mut other_dir: (Option<(usize, u32)>, String) = (None, String::new());
                 while i < mine.len() && j < others.len() {
                     let (k, n) = others[j];
-                    let o = if key == crate::tables::Key::Folder {
-                        let (a, b) = (&t.nodes[mine[i]], &m.places[k].tree.nodes[n]);
+                    let Some((ix, id)) = m.item(k, n) else {
+                        j += 1;
+                        continue;
+                    };
+                    let a = &t.nodes[mine[i]];
+                    let o = if by == sprawl_core::compact::SortBy::Folder {
                         if mine_dir.0 != a.parent || mine_dir.1.is_empty() {
-                            mine_dir = (a.parent, crate::tables::folder_key(t, mine[i]));
+                            mine_dir = (a.parent, a.parent.map(|p| t.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default());
                         }
-                        let here = b.parent.map(|p| (k, p));
+                        let here = ix.parent(id).map(|p| (k, p));
                         if other_dir.0 != here || other_dir.1.is_empty() {
-                            other_dir = (here, crate::tables::folder_key(&m.places[k].tree, n));
+                            other_dir = (here, ix.parent(id).map(|p| ix.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default());
                         }
-                        mine_dir.1.cmp(&other_dir.1).then_with(|| crate::tables::cmp_names(&a.name, &b.name))
+                        mine_dir.1.cmp(&other_dir.1).then_with(|| a.name.to_lowercase().cmp(&ix.name(id).to_lowercase()))
                     } else {
-                        crate::tables::cmp_two(t, &self.alloc, mine[i], &m.places[k].tree, &[], n, key)
+                        crate::search_more::scan_val(t, mine[i], by).cmp(&crate::search_more::compact_val(ix, id, by))
                     };
                     let mine_first = if desc { o != std::cmp::Ordering::Less } else { o != std::cmp::Ordering::Greater };
                     if mine_first {
@@ -395,11 +406,11 @@ impl State {
                     }
                 }
                 rows.extend(mine[i..].iter().map(|&n| (n, 0)));
-                rows.extend(others[j..].iter().map(|&(k, n)| (n, k + 1)));
+                rows.extend(others[j..].iter().filter(|&&(k, n)| m.item(k, n).is_some()).map(|&(k, n)| (n, k + 1)));
             }
             _ => {
                 rows.extend(mine.iter().map(|&n| (n, 0)));
-                rows.extend(others.iter().map(|&(k, n)| (n, k + 1)));
+                rows.extend(others.iter().filter(|&&(k, n)| m.item(k, n).is_some()).map(|&(k, n)| (n, k + 1)));
             }
         }
         *self.search.merged.borrow_mut() = Some((at, rows.clone()));
