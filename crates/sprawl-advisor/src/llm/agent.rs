@@ -477,17 +477,41 @@ fn run_cleaner_check(cfg: &AiConfig, model: &str, run: &mut AiRun, stop: &Stop, 
     run.usage.add(*usage.borrow());
 }
 
+/// The host of an OpenAI-compatible address (empty: OpenAI itself), lower case.
+pub fn host_of(base_url: &str) -> Option<String> {
+    let url = if base_url.trim().is_empty() { "https://api.openai.com/v1" } else { base_url.trim() };
+    super::http::split_url(&format!("{}/x", url.trim_end_matches('/'))).ok().map(|(_, h, _, _)| h.to_lowercase())
+}
+
 /// The key for an OpenAI-compatible endpoint. `OPENAI_API_KEY` from the environment goes only to
-/// OpenAI itself; no key ever goes over plain http to another machine.
+/// OpenAI itself; a saved key only to the host it was saved for (a key saved before hosts were
+/// recorded: the host of the saved address); no key ever goes over plain http to another machine.
 pub(crate) fn openai_key(base_url: &str) -> Result<Option<String>, String> {
+    let saved = config::key(Provider::OpenAi).filter(|k| !k.trim().is_empty());
+    let bound = config::key_host(Provider::OpenAi).or_else(|| host_of(&AiConfig::load().base_url));
+    key_for(base_url, saved, bound, std::env::var("OPENAI_API_KEY").ok())
+}
+
+/// [`openai_key`] without the stores: `saved` was saved for host `bound`, `env` is
+/// `OPENAI_API_KEY`.
+pub(crate) fn key_for(base_url: &str, saved: Option<String>, bound: Option<String>, env: Option<String>) -> Result<Option<String>, String> {
     let url = if base_url.trim().is_empty() { "https://api.openai.com/v1" } else { base_url.trim() };
     let (secure, host, _, _) = super::http::split_url(&format!("{}/x", url.trim_end_matches('/')))?;
-    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1");
-    let key = config::key(Provider::OpenAi).filter(|k| !k.trim().is_empty()).or_else(|| (host == "api.openai.com").then(|| std::env::var("OPENAI_API_KEY").ok()).flatten());
+    let host = host.to_lowercase();
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    let saved = saved.filter(|_| bound.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(&host)));
+    let key = saved.or_else(|| (host == "api.openai.com").then_some(env).flatten()).filter(|k| !k.trim().is_empty());
     if key.is_some() && !secure && !local {
         return Err(format!("{host} isn't https: an API key would go over the network unencrypted. Use https, or remove the key."));
     }
     Ok(key)
+}
+
+/// Said when saving settings: the saved key belongs to another host, so `base_url` gets none.
+pub fn key_elsewhere(base_url: &str) -> Option<String> {
+    let bound = config::key_host(Provider::OpenAi).or_else(|| host_of(&AiConfig::load().base_url))?;
+    let host = host_of(base_url)?;
+    (config::has_key(Provider::OpenAi) && !bound.eq_ignore_ascii_case(&host)).then(|| format!("the saved key is for {bound}, so it isn't sent to {host}: paste it again to use it there"))
 }
 
 /// The JSON object in a model's single answer (inside a ```json fence or bare).
@@ -630,6 +654,24 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_key_goes_only_where_it_was_saved_for() {
+        use super::key_for;
+        let k = || Some("sk-test".to_string());
+        // plain http to another machine: refused, so no key at all
+        assert!(key_for("http://example.com/v1", k(), Some("example.com".into()), None).is_err());
+        assert_eq!(super::super::models::auth_for("http://example.com/v1", k(), Some("example.com".into()), None), None);
+        // https to its own host: sent
+        assert_eq!(key_for("https://example.com/v1", k(), Some("example.com".into()), None).unwrap(), k());
+        // https to another host: not sent
+        assert_eq!(key_for("https://evil.example.org/v1", k(), Some("example.com".into()), None).unwrap(), None);
+        // this machine over http: fine
+        assert_eq!(key_for("http://localhost:11434/v1", k(), Some("localhost".into()), None).unwrap(), k());
+        // the environment's key only to OpenAI
+        assert_eq!(key_for("", None, None, k()).unwrap(), k());
+        assert_eq!(key_for("https://openrouter.ai/api/v1", None, None, k()).unwrap(), None);
+    }
+
     use super::*;
 
     #[test]

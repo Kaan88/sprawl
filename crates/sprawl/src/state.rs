@@ -113,7 +113,6 @@ pub(crate) struct State {
     pub(crate) wiz_models: crate::models::ModelFetch,
     /// The Search tab.
     pub(crate) search: crate::search::Search,
-    pub(crate) wiz_url: crate::models::Settle,
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
     pub(crate) scan_taken: std::time::SystemTime,
@@ -270,7 +269,6 @@ impl State {
         if self.wiz_models.poll() {
             self.wizard_models();
         }
-        self.wizard_url_poll();
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {

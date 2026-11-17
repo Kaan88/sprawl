@@ -210,7 +210,6 @@ pub(crate) struct Advisor {
     ai_edit: Option<AiConfig>,
     /// The provider's models, for the Model dropdown.
     models: crate::models::ModelFetch,
-    url_settle: crate::models::Settle,
     sort: Sort,
     only: Only,
     /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
@@ -568,15 +567,6 @@ impl State {
         self.chat_poll();
         self.community_poll();
         self.tick_status();
-        // a typed address: fetch its list once the typing pauses (the form is redrawn when it arrives)
-        if self.view == View::Advisor && self.advisor.ai_edit.as_ref().is_some_and(|e| e.provider == Provider::OpenAi) {
-            let url = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvAiUrl").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
-            if let Some(url) = url {
-                if self.advisor.url_settle.settled(&url) {
-                    self.advisor.models.want(Provider::OpenAi, &url);
-                }
-            }
-        }
         if self.advisor.models.poll() && self.advisor.ai_edit.is_some() && self.view == View::Advisor {
             self.read_ai_fields();
             self.render_advisor();
@@ -770,6 +760,14 @@ impl State {
                     c.model = CLAUDE_MODELS[name[4..].parse::<usize>().unwrap_or(0)].0.into();
                 }
             }
+            "AdvAiLoad" => {
+                self.read_ai_fields();
+                if let Some(e) = &self.advisor.ai_edit {
+                    let u = e.base_url.clone();
+                    self.advisor.models.reset();
+                    self.advisor.models.want(Provider::OpenAi, &u);
+                }
+            }
             "AdvAiSave" => {
                 self.read_ai_fields();
                 // a key may have just been stored: the list is fetched again next time
@@ -780,8 +778,16 @@ impl State {
                     if c.save().is_err() {
                         notes.push("the settings couldn't be saved");
                     }
-                    if c.provider.needs_key() && !key.trim().is_empty() && !sprawl_advisor::config::set_key(c.provider, &key) {
-                        notes.push("the key couldn't be stored");
+                    let mut elsewhere = None;
+                    if c.provider.needs_key() && !key.trim().is_empty() {
+                        if !sprawl_advisor::config::set_key(c.provider, &key, &c.base_url) {
+                            notes.push("the key couldn't be stored");
+                        }
+                    } else if c.provider == Provider::OpenAi {
+                        elsewhere = sprawl_advisor::llm::agent::key_elsewhere(&c.base_url);
+                    }
+                    if let Some(w) = &elsewhere {
+                        notes.push(w);
                     }
                     let msg = if notes.is_empty() { format!("AI: {} saved.", c.provider.label().split(" (").next().unwrap_or("")) } else { format!("Not all saved: {}.", notes.join(", ")) };
                     self.adv_say(&msg);
@@ -1154,8 +1160,11 @@ impl State {
             self.cleaner_procs(false);
         }
         if let Some(e) = &self.advisor.ai_edit {
-            let (p, u) = (e.provider, e.base_url.clone());
-            self.advisor.models.want(p, &u);
+            // an OpenAI-compatible address is asked for its list only on "Load models"
+            if e.provider != Provider::OpenAi {
+                let (p, u) = (e.provider, e.base_url.clone());
+                self.advisor.models.want(p, &u);
+            }
         }
         // keep what was typed in the goal and question boxes across the redraw
         if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
@@ -1285,7 +1294,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
@@ -2276,7 +2285,7 @@ impl State {
         }
         if e.provider == Provider::OpenAi {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Address" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvAiUrl" Width="260" PlaceholderText="http://localhost:11434/v1" Text="{}"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Address" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvAiUrl" Width="260" PlaceholderText="http://localhost:11434/v1" Text="{}"/><Button x:Name="AdvAiLoad" Content="Load models" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></StackPanel>"##,
                 ui::esc(&e.base_url)
             );
         }

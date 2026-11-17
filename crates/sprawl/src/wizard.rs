@@ -15,7 +15,7 @@ const TITLES: [&str; PAGES] = ["Welcome", "AI advisor", "Scanning", "Look", "His
 pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
 
 /// Every control the wizard wires up: buttons, then lists.
-pub const BUTTONS: [&str; 4] = ["WizBack", "WizNext", "WizSkip", "WizMcpCopy"];
+pub const BUTTONS: [&str; 5] = ["WizBack", "WizNext", "WizSkip", "WizMcpCopy", "WizLoadModels"];
 
 fn switch(name: &str, header: &str, note: &str) -> String {
     format!(
@@ -64,7 +64,7 @@ pub fn xaml() -> String {
         <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF"/></StackPanel></Border>
         {}{}
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>
-        <StackPanel x:Name="WizUrlRow">{}<TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/></StackPanel>
+        <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
         <StackPanel x:Name="WizModelRow">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
         <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are. Every request is listed in the advisor's log. Web lookups always ask first."/>
         </StackPanel>"##,
@@ -268,8 +268,11 @@ impl State {
             let hint = if p.needs_key() && config::has_key(p) { "A key is saved. Leave empty to keep it." } else { "Paste your API key" };
             let _ = k.SetPlaceholderText(&hint.into());
         }
-        // the list of models for this provider; a text box until (and unless) it arrives
-        self.wiz_models.want(p, &field(self, "WizUrl"));
+        // the list of models for this provider; a text box until (and unless) it arrives. An
+        // OpenAI-compatible address is asked only on "Load models", never while it is typed.
+        if p != Provider::OpenAi {
+            self.wiz_models.want(p, &field(self, "WizUrl"));
+        }
         self.wizard_models();
     }
 
@@ -278,6 +281,12 @@ impl State {
             "WizBack" => {
                 self.wizard_page = self.wizard_page.saturating_sub(1);
                 self.wizard_show();
+            }
+            "WizLoadModels" => {
+                let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+                self.wiz_models.reset();
+                self.wiz_models.want(p, &field(self, "WizUrl"));
+                self.wizard_models();
             }
             "WizMcpCopy" => {
                 crate::win32::copy_text(self.hwnd, &crate::bridge::setup_command());
@@ -308,8 +317,12 @@ impl State {
             notes.push("couldn't save the AI settings");
         }
         let key = find::<PasswordBox>(&self.root, "WizKey").and_then(|k| k.Password()).map(|h| h.to_string_lossy()).unwrap_or_default();
+        let elsewhere = (p == Provider::OpenAi && key.trim().is_empty()).then(|| sprawl_advisor::llm::agent::key_elsewhere(&ai.base_url)).flatten();
+        if let Some(w) = &elsewhere {
+            notes.push(w.as_str());
+        }
         if p.needs_key() && !key.trim().is_empty() {
-            if !config::set_key(p, &key) {
+            if !config::set_key(p, &key, &ai.base_url) {
                 notes.push("couldn't store the API key");
             }
             if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
@@ -377,25 +390,6 @@ impl State {
         match (pick, self.wiz_models.choices(&typed)) {
             (Some(i), Some(list)) => usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).unwrap_or(typed),
             _ => typed,
-        }
-    }
-}
-
-impl State {
-    /// Each frame: when the typed address stops changing, fetch that server's list.
-    pub(crate) fn wizard_url_poll(&mut self) {
-        let open = find::<UIElement>(&self.root, "Wizard").and_then(|w| w.Visibility()).is_ok_and(|v| v == Visibility::Visible);
-        if !open {
-            return;
-        }
-        let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
-        if p != Provider::OpenAi {
-            return;
-        }
-        let url = field(self, "WizUrl");
-        if self.wiz_url.settled(&url) {
-            self.wiz_models.want(p, &url);
-            self.wizard_models();
         }
     }
 }

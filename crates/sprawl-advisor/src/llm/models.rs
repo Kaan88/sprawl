@@ -20,7 +20,8 @@ pub fn list(provider: Provider, base_url: &str) -> Result<Vec<String>, String> {
         Provider::OpenAi => {
             let base = if base_url.trim().is_empty() { "https://api.openai.com/v1" } else { base_url.trim() };
             let mut h = Vec::new();
-            if let Some(k) = config::key(provider).filter(|k| !k.is_empty()) {
+            // the same rule as a chat: https (or this machine), and only the host the key is for
+            if let Some(k) = super::agent::openai_key(base).ok().flatten() {
                 h.push(("Authorization", format!("Bearer {k}")));
             }
             (format!("{}/models", base.trim_end_matches('/')), h, true)
@@ -42,6 +43,12 @@ pub fn list(provider: Provider, base_url: &str) -> Result<Vec<String>, String> {
     } else {
         ids
     })
+}
+
+/// The key the model list would carry to `base_url` (see [`super::agent::key_for`]).
+#[cfg(test)]
+pub(crate) fn auth_for(base_url: &str, saved: Option<String>, bound: Option<String>, env: Option<String>) -> Option<String> {
+    super::agent::key_for(base_url, saved, bound, env).ok().flatten()
 }
 
 /// `{"data":[{"id":..}]}` (Anthropic, OpenAI), or Ollama's own `{"models":[{"name":..}]}`.

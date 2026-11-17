@@ -152,14 +152,23 @@ mod cred {
     }
 }
 
-/// Store (or with an empty string, remove) the API key for a provider.
-pub fn set_key(p: Provider, key: &str) -> bool {
+/// Store (or with an empty string, remove) the API key for a provider, for the server at
+/// `base_url` (OpenAI-compatible: the key is only ever sent to that host).
+pub fn set_key(p: Provider, key: &str, base_url: &str) -> bool {
     let key = key.trim();
+    let host_target = format!("{}/host", p.credential());
     if key.is_empty() {
         cred::delete(p.credential());
+        cred::delete(&host_target);
         return true;
     }
-    cred::write(p.credential(), key)
+    let host = crate::llm::agent::host_of(base_url).unwrap_or_default();
+    cred::write(p.credential(), key) && cred::write(&host_target, &host)
+}
+
+/// The host a provider's key was saved for, when that was recorded.
+pub fn key_host(p: Provider) -> Option<String> {
+    cred::read(&format!("{}/host", p.credential())).filter(|h| !h.is_empty())
 }
 
 pub fn key(p: Provider) -> Option<String> {
