@@ -253,6 +253,8 @@ mod tests {
             trusted: true,
             builtin: true,
             on_path: true,
+            action: None,
+            admin: false,
             path: tree.path_of(ROOT),
             bytes: tree.nodes[ROOT].size,
             ..good.clone()

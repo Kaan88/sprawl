@@ -51,6 +51,8 @@ pub(crate) struct Report {
     pub(crate) handoff: Vec<Vec<String>>,
     /// Risk code of every node inside a finding: 0 none, 1 green, 2 amber, 3 orange.
     pub(crate) lens: Arc<Vec<u8>>,
+    /// Rule files of the user's own that didn't pass the checks, and why.
+    pub(crate) refused: Vec<(PathBuf, String)>,
 }
 
 enum Msg {
@@ -361,7 +363,8 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     facts.attach_usage(tree);
     // the built-in rules, then the user's own (approved proposals): never trusted
     let mut packs = vec![RulePack::builtin()];
-    packs.extend(memory::local_packs());
+    let (local, refused) = memory::load_packs();
+    packs.extend(local);
     let (findings, held) = sprawl_advisor::advise_all(tree, &packs, &facts);
     let (findings, kept) = memory.filter(findings);
     let nodes: Vec<Option<usize>> = findings.iter().map(|f| sprawl_advisor::find_path(tree, &f.path)).collect();
@@ -390,6 +393,7 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
         uninstall: facts.apps.iter().map(|a| a.uninstall()).collect(),
         handoff: facts.apps.iter().map(|a| a.handoff_args()).collect(),
         lens: Arc::new(lens),
+        refused,
         findings,
     };
     (r, facts)
@@ -1222,7 +1226,7 @@ impl State {
             tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
             tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
             tab("AdvSecGrowth", "Growth".into(), Section::Growth),
-            tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len()), Section::Memory),
+            tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
         );
         match self.advisor.section {
             Section::Ask => {
@@ -2003,6 +2007,17 @@ impl State {
                     );
                 }
             }
+        }
+        if !r.refused.is_empty() {
+            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#22F5B342"><StackPanel Spacing="4"><TextBlock Text="Rule files not used" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="These files in your rules folder didn't pass Sprawl's checks, so nothing in them is offered. Fix or remove them." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
+            for (f, why) in &r.refused {
+                x += &format!(
+                    r##"<TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="{}" FontFamily="Consolas" Foreground="#FFB9C2D6"/><Run Text="  {}" Foreground="#FF8E97AA"/></TextBlock>"##,
+                    ui::esc(&f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                    ui::esc(&why.chars().take(300).collect::<String>())
+                );
+            }
+            x += "</StackPanel></Border>";
         }
         if !m.proposals.is_empty() {
             x += r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;

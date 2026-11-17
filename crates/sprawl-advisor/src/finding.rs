@@ -76,4 +76,34 @@ pub struct Finding {
     /// program's own delete), so link and scan-root checks apply even to exempt rules.
     #[serde(skip)]
     pub on_path: bool,
+    /// What Sprawl does to `path` when this is cleaned up. Set only by the code that writes
+    /// the finding (a rule, the program's own delete); `command` is the same thing written out
+    /// for "Save as script". Never read back out of command text.
+    #[serde(skip)]
+    pub action: Option<Action>,
+    /// The action needs administrator rights.
+    #[serde(skip)]
+    pub admin: bool,
+}
+
+/// What a clean-up does to a finding's path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// The path itself (a folder with everything in it, or a file).
+    Remove,
+    /// What is inside the folder, leaving anything created or changed in the last `days`.
+    Clear { days: u32 },
+    /// Files matching a PowerShell-style pattern anywhere below the folder.
+    Match { pattern: String },
+    /// A built-in rule's own tool command, run by PowerShell without a window.
+    Tool { command: String },
+}
+
+impl Finding {
+    /// Give the finding its action, and the command text "Save as script" writes for it.
+    pub fn set_action(&mut self, action: Action, admin: bool) {
+        self.command = Some(crate::clean::script(&self.path, &action, admin));
+        self.admin = admin;
+        self.action = Some(action);
+    }
 }

@@ -233,6 +233,8 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                     trusted: true,
                     builtin: true,
                     on_path: false,
+                    action: None,
+                    admin: false,
                 });
             }
         }

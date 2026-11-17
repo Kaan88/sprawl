@@ -816,6 +816,8 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
             trusted: true,
             builtin: true,
             on_path: false,
+            action: None,
+            admin: false,
         });
     }
     out

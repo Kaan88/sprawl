@@ -17,7 +17,6 @@ use super::ToolSpec;
 use crate::facts::{clean_text, month_year, Facts};
 use crate::finding::{Finding, Remedy, Risk, Source};
 use crate::memory::{self, Label, Memory, Pref, Proposal};
-use crate::rules::{ps_quote, RM_FN};
 use crate::safety::{self, Never};
 use crate::{find_path, segments};
 
@@ -281,6 +280,8 @@ impl<'a> Tools<'a> {
                         trusted: false,
                         builtin: false,
                         on_path: false,
+                        action: None,
+                        admin: false,
                     };
                     self.rejected.push((stub, e.trim_start_matches("Not accepted: ").trim_end_matches('.').to_string()));
                 }
@@ -461,15 +462,13 @@ impl<'a> Tools<'a> {
         evidence.insert(0, format!("Suggested by the AI ({}). Sprawl checked: it is in the scan, the size matches, it isn't protected.", self.model));
         let title = clean_text(input["title"].as_str().unwrap_or(""));
         let title = if title.is_empty() { self.tree.nodes[n].name.clone() } else { title };
-        // the command is written here, never taken from the model
-        let command = (remedy == Remedy::Delete).then(|| format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath {} -Force)", ps_quote(&path.display().to_string())));
-        let f = Finding {
+        let mut f = Finding {
             owner: self.facts.owner_of(&path).map(|a| a.name.clone()),
             path: path.clone(),
             bytes,
             risk,
             remedy,
-            command,
+            command: None,
             title,
             evidence,
             confidence: input["confidence"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0) as f32,
@@ -478,7 +477,13 @@ impl<'a> Tools<'a> {
             trusted: true,
             builtin: false,
             on_path: true,
+            action: None,
+            admin: false,
         };
+        // the action (and the command for a script) is Sprawl's, never the model's
+        if remedy == Remedy::Delete {
+            f.set_action(crate::finding::Action::Remove, false);
+        }
         match safety::check(&f, self.tree, &self.never) {
             Ok(ok) => {
                 let note = if ok.risk != f.risk { format!(" Risk raised to {:?}: a model's deletes are checked by the user.", ok.risk) } else { String::new() };
@@ -574,7 +579,7 @@ mod tests {
         assert!(t.call("report_finding", &claim(size)).is_ok());
         let f = &t.accepted[0];
         assert_eq!(f.risk, Risk::Orange);
-        assert!(f.command.as_deref().unwrap().starts_with(RM_FN));
+        assert!(f.command.as_deref().unwrap().starts_with(crate::rules::RM_FN));
         assert!(matches!(f.source, Source::Model(_)));
         // not twice, and not something inside it
         assert!(t.call("report_finding", &claim(size)).is_err());

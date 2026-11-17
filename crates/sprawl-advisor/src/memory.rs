@@ -122,8 +122,11 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 /// A path or pattern the model may name in a rule or a label: absolute (a drive or a
 /// `%VARIABLE%`), no `..`, nothing that isn't a plain path, and narrow: at least two segments
 /// after the root that aren't wildcards (`?:\\**\\*.jpg` or `C:\\*` would reach everything).
-fn plain_pattern(p: &str) -> bool {
+pub(crate) fn plain_pattern(p: &str) -> bool {
     let b = p.as_bytes();
+    if p.starts_with('%') && !VARS.iter().any(|v| p.len() > v.len() && p[..v.len()].eq_ignore_ascii_case(v) && p.as_bytes()[v.len()] == b'\\') {
+        return false;
+    }
     let rooted = (b.len() >= 3 && (b[0].is_ascii_alphabetic() || b[0] == b'?') && b[1] == b':' && b[2] == b'\\') || p.starts_with('%');
     if !rooted || p.len() >= 300 || p.contains("..") || p.contains(['"', '\'', '`', '|', '<', '>', ';', '\n', '\r', '{', '}', '$']) {
         return false;
@@ -132,24 +135,80 @@ fn plain_pattern(p: &str) -> bool {
     literal >= 2
 }
 
+/// The variables a pattern from a pack on disk, a proposal or a label may start with.
+const VARS: &[&str] = &["%USERPROFILE%", "%LOCALAPPDATA%", "%APPDATA%", "%TEMP%", "%TMP%", "%PUBLIC%", "%ProgramData%", "%SystemDrive%"];
+
 /// What a proposed rule must be, checked when proposed and again when approved (the file may
 /// have been changed in between).
 fn check_proposal(p: &Proposal) -> Result<(), String> {
     if p.title.is_empty() || p.why.is_empty() {
         return Err("give a title and a reason".into());
     }
-    if p.paths.is_empty() || p.paths.len() > 8 || !p.paths.iter().all(|x| plain_pattern(x)) {
-        return Err("give 1 to 8 absolute, narrow path patterns (C:\\... or %VARIABLE%\\..., at least two named folders)".into());
+    let mut r = Rule::new(&p.id, &p.title, p.paths.clone(), p.risk, p.remedy, &p.why);
+    r.kind = Kind::Any;
+    check_local_rule(&r, &crate::safety::Never::default_list())
+}
+
+/// A pattern turned into one path it could match (`?:` as C:, a wildcard as a plain name,
+/// `**` as nothing), to hold it against the never-list.
+fn sample_path(p: &str) -> String {
+    let e = crate::rules::expand(p);
+    let mut out: Vec<String> = Vec::new();
+    for (i, seg) in e.split('\\').filter(|s| !s.is_empty()).enumerate() {
+        if i == 0 && seg.starts_with('?') {
+            out.push("C:".into());
+        } else if seg == "**" {
+            continue;
+        } else if seg.contains(['*', '?']) {
+            out.push(seg.replace(['*', '?'], "x"));
+        } else {
+            out.push(seg.to_string());
+        }
+    }
+    let s = out.join("\\");
+    if s.len() == 2 {
+        s + "\\"
+    } else {
+        s
+    }
+}
+
+/// What a rule from anywhere but the built-in pack (a file on disk, an approved proposal) must
+/// be, checked every time it is loaded: no command, no protected paths, 1 to 8 narrow absolute
+/// patterns, a delete ending in a name, nothing on or above the never-list, red only as
+/// information. (Its risk is raised to at least amber later, by the safety check.)
+pub(crate) fn check_local_rule(r: &Rule, never: &crate::safety::Never) -> Result<(), String> {
+    if r.command.is_some() {
+        return Err("only Sprawl's own rules carry a command".into());
+    }
+    if r.allow_protected {
+        return Err("only Sprawl's own rules may name a protected folder".into());
+    }
+    if r.paths.is_empty() || r.paths.len() > 8 || !r.paths.iter().all(|x| plain_pattern(x)) {
+        return Err("give 1 to 8 absolute, narrow path patterns (C:\\... or %LOCALAPPDATA%\\..., at least two named folders)".into());
+    }
+    if matches!(r.remedy, Remedy::Command | Remedy::Move) {
+        return Err("a rule of your own can delete, suggest uninstalling, or explain (info): commands come only from Sprawl itself".into());
+    }
+    if r.risk == Risk::Red && r.remedy != Remedy::Info {
+        return Err("red is information only".into());
     }
     // a delete names what it deletes: the last part is a name, not a wildcard
-    if p.remedy == Remedy::Delete && p.paths.iter().any(|x| x.rsplit('\\').next().is_none_or(|last| last.contains(['*', '?']) || last.is_empty())) {
+    if r.remedy == Remedy::Delete && r.paths.iter().any(|x| x.rsplit('\\').next().is_none_or(|last| last.contains(['*', '?']) || last.is_empty())) {
         return Err("a delete rule must end in a folder or file name, not a wildcard".into());
     }
-    if matches!(p.remedy, Remedy::Command | Remedy::Move) {
-        return Err("a proposed rule can delete, suggest uninstalling, or explain (info): commands come only from Sprawl itself".into());
+    if r.remedy == Remedy::Delete && !never.complete() {
+        return Err("the protected-folder list couldn't be worked out on this PC".into());
     }
-    if p.risk == Risk::Red && p.remedy != Remedy::Info {
-        return Err("red is information only".into());
+    for x in &r.paths {
+        if crate::rules::expand(x).contains('%') {
+            return Err(format!("{x}: a variable that isn't set"));
+        }
+        if r.remedy == Remedy::Delete {
+            if let Some(hit) = never.hit(&sample_path(x)) {
+                return Err(format!("{x} is on or above a protected folder ({hit})"));
+            }
+        }
     }
     Ok(())
 }
@@ -327,20 +386,10 @@ impl Memory {
             Err(_) => RulePack { pack: PackInfo { name: "Your rules".into(), version: 1 }, rules: Vec::new(), trusted: false },
         };
         pack.rules.retain(|r| r.id != p.id);
-        pack.rules.push(Rule {
-            id: p.id,
-            title: p.title,
-            owner: None,
-            paths: p.paths,
-            kind: Kind::Any,
-            risk: p.risk,
-            remedy: p.remedy,
-            command: None,
-            why: p.why,
-            min_bytes: p.min_bytes,
-            min_age_days: None,
-            allow_protected: false,
-        });
+        let mut r = Rule::new(&p.id, &p.title, p.paths, p.risk, p.remedy, &p.why);
+        r.kind = Kind::Any;
+        r.min_bytes = p.min_bytes;
+        pack.rules.push(r);
         let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
         // what is written must load again
         RulePack::parse(&text)?;
@@ -386,21 +435,51 @@ fn local_ids() -> Vec<String> {
     local_packs().into_iter().flat_map(|p| p.rules.into_iter().map(|r| r.id)).collect()
 }
 
-/// Every `*.toml` in the local rules folder, untrusted. Broken files are skipped.
-pub fn local_packs() -> Vec<RulePack> {
-    let Some(d) = rules_dir() else { return Vec::new() };
-    let Ok(rd) = std::fs::read_dir(d) else { return Vec::new() };
-    let mut out = Vec::new();
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("toml")) && e.metadata().is_ok_and(|m| m.len() < 1 << 20) {
-            if let Some(mut pack) = std::fs::read_to_string(&p).ok().and_then(|t| RulePack::parse(&t).ok()) {
-                pack.trusted = false;
-                out.push(pack);
-            }
+/// A pack from disk, checked as [`load_packs`] does: the whole file or nothing.
+pub fn check_pack_text(text: &str, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
+    let mut pack = RulePack::parse(text.trim_start_matches('\u{feff}'))?;
+    pack.trusted = false;
+    let never = crate::safety::Never::default_list();
+    for r in &pack.rules {
+        check_local_rule(r, &never).map_err(|e| format!("rule {}: {e}", r.id))?;
+    }
+    for r in &pack.rules {
+        if !taken.insert(r.id.to_lowercase()) {
+            return Err(format!("rule id {} is already used by another pack", r.id));
         }
     }
-    out
+    Ok(pack)
+}
+
+/// Every `*.toml` in the local rules folder, untrusted, each checked whole every time it is
+/// loaded; and the files that were refused, with the reason.
+pub fn load_packs() -> (Vec<RulePack>, Vec<(PathBuf, String)>) {
+    let Some(d) = rules_dir() else { return (Vec::new(), Vec::new()) };
+    let Ok(rd) = std::fs::read_dir(d) else { return (Vec::new(), Vec::new()) };
+    let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("toml"))).collect();
+    files.sort();
+    // the built-in ids can't be taken over
+    let mut taken: std::collections::HashSet<String> = RulePack::builtin().rules.iter().map(|r| r.id.to_lowercase()).collect();
+    let mut out = Vec::new();
+    let mut refused = Vec::new();
+    for p in files {
+        let text = match std::fs::metadata(&p) {
+            Ok(m) if !m.is_file() => continue,
+            Ok(m) if m.len() >= 1 << 20 => Err("over 1 MB".to_string()),
+            Ok(_) => std::fs::read_to_string(&p).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match text.and_then(|t| check_pack_text(&t, &mut taken)) {
+            Ok(pack) => out.push(pack),
+            Err(e) => refused.push((p, e)),
+        }
+    }
+    (out, refused)
+}
+
+/// The local packs that pass the checks (see [`load_packs`]).
+pub fn local_packs() -> Vec<RulePack> {
+    load_packs().0
 }
 
 #[cfg(test)]
@@ -462,24 +541,62 @@ mod tests {
         // an approved rule is a pack that loads, untrusted, with no command
         let pack = RulePack {
             pack: PackInfo { name: "Your rules".into(), version: 1 },
-            rules: vec![Rule {
-                id: "local.x".into(),
-                title: "x".into(),
-                owner: None,
-                paths: vec![r"C:\x".into()],
-                kind: Kind::Any,
-                risk: Risk::Green,
-                remedy: Remedy::Delete,
-                command: None,
-                why: "w".into(),
-                min_bytes: None,
-                min_age_days: None,
-                allow_protected: false,
-            }],
+            rules: vec![Rule::new("local.x", "x", vec![r"C:\x".into()], Risk::Green, Remedy::Delete, "w")],
             trusted: false,
         };
         let back = RulePack::parse(&toml::to_string(&pack).unwrap()).unwrap();
         assert!(!back.trusted && back.rules[0].command.is_none());
         assert!(m.context().is_empty() || m.context().contains("Known folders"));
+    }
+
+    fn pack_with(rule: &str) -> String {
+        format!("[pack]\nname = 'mine'\n[[rule]]\nid = 'local.x'\ntitle = 'X'\nwhy = 'w'\nrisk = 'green'\n{rule}\n")
+    }
+
+    #[test]
+    fn hand_edited_packs_are_checked_at_load() {
+        std::env::set_var("SystemDrive", "C:");
+        std::env::set_var("SystemRoot", r"C:\Windows");
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\sam\AppData\Local");
+        std::env::set_var("APPDATA", r"C:\Users\sam\AppData\Roaming");
+        std::env::set_var("USERPROFILE", r"C:\Users\sam");
+        std::env::set_var("ProgramData", r"C:\ProgramData");
+        let load = |rule: &str| check_pack_text(&pack_with(rule), &mut Default::default());
+        assert!(load("remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']").is_ok());
+        assert!(load("\u{feff}remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']").is_err(), "a BOM inside is not a BOM at the start");
+        assert!(check_pack_text(&format!("\u{feff}{}", pack_with("remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']")), &mut Default::default()).is_ok(), "a BOM at the start is fine");
+        for bad in [
+            "remedy = 'command'\ncommand = 'Remove-Item C:\\x'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']",
+            "remedy = 'delete'\nallow_protected = true\npaths = ['%LOCALAPPDATA%\\Tool\\cache']",
+            "remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Tool\\*']",
+            "remedy = 'delete'\npaths = ['C:\\*']",
+            "remedy = 'delete'\npaths = ['%WINDIR%\\Temp\\x']",
+            "remedy = 'delete'\npaths = ['%SystemRoot%\\Temp\\x']",
+            "remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Microsoft\\Edge']",
+            "remedy = 'delete'\npaths = ['C:\\Windows\\Temp']",
+            "remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Google\\Chrome']",
+            "remedy = 'delete'\npaths = ['\\\\server\\share\\x\\y']",
+            "remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\..\\Roaming\\x']",
+            "remedy = 'delete'\nrisk2 = 'x'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']",
+            "remedy = 'move'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']",
+        ] {
+            assert!(load(bad).is_err(), "{bad}");
+        }
+        // an id can't be used twice, nor take over a built-in one
+        let mut taken = std::collections::HashSet::new();
+        let ok = pack_with("remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']");
+        assert!(check_pack_text(&ok, &mut taken).is_ok());
+        assert!(check_pack_text(&ok, &mut taken).is_err());
+        let mut builtin: std::collections::HashSet<String> = RulePack::builtin().rules.iter().map(|r| r.id.to_lowercase()).collect();
+        assert!(check_pack_text(&ok.replace("local.x", "DEV.NPM-CACHE"), &mut builtin).is_err());
+    }
+
+    #[test]
+    fn done_hides_nothing_so_a_cache_comes_back() {
+        let mut m = Memory::default();
+        m.decide(Path::new(r"C:\Cache"), "Cache", Verdict::Done);
+        assert!(m.hides(Path::new(r"C:\Cache")).is_none());
+        m.decide(Path::new(r"C:\Cache"), "Cache", Verdict::Keep);
+        assert!(m.hides(Path::new(r"C:\Cache")).is_some(), "Keep still hides it");
     }
 }

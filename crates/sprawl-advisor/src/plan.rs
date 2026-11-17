@@ -80,6 +80,8 @@ mod tests {
             trusted: true,
             builtin: true,
             on_path: true,
+            action: None,
+            admin: false,
         }
     }
 

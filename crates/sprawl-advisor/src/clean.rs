@@ -17,28 +17,50 @@ use std::time::{Duration, SystemTime};
 use crate::rules::RM_FN;
 use crate::Finding;
 
-/// What a finding's command does, read back from the command Sprawl itself wrote.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Action {
-    /// The path itself (a folder with everything in it, or a file).
-    Remove,
-    /// What is inside the folder, leaving anything created or changed in the last `days`.
-    Clear { days: u32 },
-    /// Files matching a PowerShell-style pattern anywhere below the folder.
-    Match { pattern: String },
-    /// A built-in rule's own tool command, run by PowerShell without a window.
-    Tool { command: String },
+pub use crate::finding::Action;
+
+/// A finding's action, and whether it needs administrator rights. The action is the one the
+/// code that wrote the finding gave it ([`Finding::set_action`]); command text is never read
+/// back. A tool command runs only when it comes from the built-in pack.
+pub fn action(f: &Finding) -> Option<(Action, bool)> {
+    let a = f.action.clone()?;
+    if matches!(a, Action::Tool { .. }) && !(f.trusted && f.builtin) {
+        return None;
+    }
+    if let Action::Match { pattern } = &a {
+        if pattern.is_empty() || pattern.contains(['\\', '/']) {
+            return None;
+        }
+    }
+    Some((a, f.admin))
 }
 
-/// A finding's action, and whether it needs administrator rights. None when its command isn't
-/// one Sprawl wrote, or names a different path than the finding.
-pub fn action(f: &Finding) -> Option<(Action, bool)> {
+/// The PowerShell text of an action on `path`, for "Save as script" (the functions in
+/// [`RM_FN`] do what [`run`] does).
+pub fn script(path: &Path, action: &Action, admin: bool) -> String {
+    let q = crate::rules::ps_quote(&path.display().to_string());
+    let s = match action {
+        Action::Remove => format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath {q} -Force)"),
+        Action::Clear { days } => format!("{RM_FN}; sprawl-clear {q} {days}"),
+        Action::Match { pattern } => format!("{RM_FN}; sprawl-match {q} {}", crate::rules::ps_quote(pattern)),
+        Action::Tool { command } => command.clone(),
+    };
+    if admin && !crate::export::needs_admin(&s) {
+        format!("{s}   # as administrator")
+    } else {
+        s
+    }
+}
+
+/// The action a command Sprawl wrote stands for, read back: only for the test that the typed
+/// action and the script text agree.
+#[cfg(test)]
+pub(crate) fn parse_command(f: &Finding) -> Option<(Action, bool)> {
     let cmd = f.command.as_deref()?;
     let admin = crate::export::needs_admin(cmd);
     let body = cmd.trim_end().strip_suffix("# as administrator").unwrap_or(cmd).trim_end();
     let Some(tail) = body.strip_prefix(RM_FN) else {
-        // only the built-in pack's own commands; never one from a model or a local pack
-        return (f.trusted && f.builtin).then(|| (Action::Tool { command: body.to_string() }, admin));
+        return Some((Action::Tool { command: cmd.to_string() }, admin));
     };
     let tail = tail.strip_prefix("; ")?;
     let (act, path) = if let Some(r) = tail.strip_prefix("sprawl-rm (Get-Item -LiteralPath ") {
@@ -58,12 +80,12 @@ pub fn action(f: &Finding) -> Option<(Action, bool)> {
     } else {
         return None;
     };
-    // the command must act on the finding's own path
     (path.to_lowercase() == f.path.to_string_lossy().to_lowercase()).then_some((act, admin))
 }
 
 /// A PowerShell single-quoted string at the start of `s` (quotes doubled inside, typographic
 /// ones too, as [`crate::rules::ps_quote`] writes them), and what follows it.
+#[cfg(test)]
 fn quoted(s: &str) -> Option<(String, &str)> {
     let q = |c: char| matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}');
     let mut it = s.char_indices();
@@ -650,24 +672,39 @@ mod tests {
             trusted: false,
             builtin: false,
             on_path: true,
+            action: None,
+            admin: false,
         }
     }
 
     #[test]
-    fn actions_read_back() {
+    fn typed_actions_and_script_agree() {
         let p = r"C:\Users\sam\it's ‘odd’";
+        for (a, admin) in [
+            (Action::Remove, false),
+            (Action::Clear { days: 7 }, true),
+            (Action::Clear { days: 0 }, false),
+            (Action::Match { pattern: "*.d'mp".into() }, true),
+        ] {
+            let mut x = f(p, String::new());
+            x.set_action(a.clone(), admin);
+            assert_eq!(action(&x), Some((a.clone(), admin)));
+            assert_eq!(parse_command(&x), Some((a, admin)), "{:?}", x.command);
+        }
+        // command text alone does nothing: the action is typed
         let q = ps_quote(p);
-        assert_eq!(action(&f(p, format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath {q} -Force)"))), Some((Action::Remove, false)));
-        assert_eq!(action(&f(p, format!("{RM_FN}; sprawl-clear {q} 7   # as administrator"))), Some((Action::Clear { days: 7 }, true)));
-        assert_eq!(action(&f(p, format!("{RM_FN}; sprawl-match {q} '*.dmp'"))), Some((Action::Match { pattern: "*.dmp".into() }, false)));
-        // a command for another path, or not Sprawl's own, does nothing
-        assert_eq!(action(&f(r"C:\other", format!("{RM_FN}; sprawl-clear {q} 0"))), None);
-        assert_eq!(action(&f(p, format!("{RM_FN}; sprawl-clear {q} 0; Remove-Item C:\\"))), None);
-        assert_eq!(action(&f(p, "npm cache clean --force".into())), None, "a tool command only from the built-in pack");
-        let mut b = f(p, "npm cache clean --force".into());
-        b.trusted = true;
-        b.builtin = true;
-        assert_eq!(action(&b), Some((Action::Tool { command: "npm cache clean --force".into() }, false)));
+        assert_eq!(action(&f(p, format!("{RM_FN}; sprawl-clear {q} 0"))), None);
+        // a tool command only from the built-in pack
+        let mut t = f(p, String::new());
+        t.set_action(Action::Tool { command: "npm cache clean --force".into() }, false);
+        assert_eq!(action(&t), None);
+        t.trusted = true;
+        t.builtin = true;
+        assert_eq!(action(&t), Some((Action::Tool { command: "npm cache clean --force".into() }, false)));
+        // a pattern can't reach into other folders
+        let mut m = f(p, String::new());
+        m.set_action(Action::Match { pattern: r"..\*".into() }, false);
+        assert_eq!(action(&m), None);
     }
 
     #[test]

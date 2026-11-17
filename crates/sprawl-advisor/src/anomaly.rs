@@ -78,6 +78,8 @@ pub fn find(tree: &Tree) -> Vec<Finding> {
                 trusted: true,
                 builtin: true,
                 on_path: false,
+                action: None,
+                admin: false,
             });
         }
     }

@@ -10,7 +10,6 @@ use sprawl_core::{Tree, ROOT};
 
 use crate::facts::month_year;
 use crate::finding::{Finding, Remedy, Risk, Source};
-use crate::rules::ps_quote;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -329,9 +328,8 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             if node.is_dir {
                 evidence.push(format!("{} files in {} folders", node.files, node.folders));
             }
-            out.push(Finding {
-                // removes links inside without following them
-                command: Some(format!("{}; sprawl-rm (Get-Item -LiteralPath {} -Force)", crate::rules::RM_FN, ps_quote(&path.display().to_string()))),
+            let mut f = Finding {
+                command: None,
                 path,
                 owner: Some(project_name.clone()),
                 bytes: node.size,
@@ -345,7 +343,12 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
                 trusted: true,
                 builtin: true,
                 on_path: true,
-            });
+                action: None,
+                admin: false,
+            };
+            // removes links inside without following them
+            f.set_action(crate::finding::Action::Remove, false);
+            out.push(f);
         }
     }
     out

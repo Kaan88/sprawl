@@ -36,6 +36,8 @@ fn info(tree: &Tree, n: usize, id: &str, title: String, evidence: Vec<String>, b
         trusted: true,
         builtin: true,
         on_path: false,
+        action: None,
+        admin: false,
     }
 }
 

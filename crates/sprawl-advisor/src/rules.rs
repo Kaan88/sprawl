@@ -20,6 +20,16 @@
 //! min_age_days = 90       # only things not modified for this long
 //! ```
 //!
+//! A delete says what it does as data, never as command text:
+//!
+//! ```toml
+//! remedy = "delete"
+//! action = "match"        # remove | clear (default for a folder) | match
+//! pattern = "*.dmp"       # for match: file names, anywhere below the folder
+//! keep_days = 7           # for clear: leave what changed in the last 7 days
+//! admin = true            # needs administrator rights
+//! ```
+//!
 //! Paths take `%VAR%` environment variables, `*` and `?` inside one segment, and `**` for any
 //! number of segments. Matching ignores case. `{path}` in a command becomes the matched path.
 
@@ -28,7 +38,7 @@ use std::path::PathBuf;
 use sprawl_core::{Tree, MULTIPLE, ROOT};
 use serde::Deserialize;
 
-use crate::finding::{Finding, Remedy, Risk, Source};
+use crate::finding::{Action, Finding, Remedy, Risk, Source};
 use crate::segments;
 
 pub const BUILTIN: &str = include_str!("../rules/builtin.toml");
@@ -72,6 +82,107 @@ pub struct Rule {
     /// Built-in pack only: the command may act on a never-list path (an official clean-up tool).
     #[serde(default)]
     pub allow_protected: bool,
+    /// What a delete does to the matched path (in place of command text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<Act>,
+    /// For `action = "match"`: the file names that go.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// For `action = "clear"`: what changed in the last this many days stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_days: Option<u32>,
+    /// The action needs administrator rights.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin: bool,
+}
+
+/// A rule's action, as written in a pack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Act {
+    Remove,
+    Clear,
+    Match,
+}
+
+impl Rule {
+    /// A rule with the fields every rule needs; the rest are left out.
+    pub fn new(id: &str, title: &str, paths: Vec<String>, risk: Risk, remedy: Remedy, why: &str) -> Rule {
+        Rule {
+            id: id.into(),
+            title: title.into(),
+            owner: None,
+            paths,
+            kind: Kind::Dir,
+            risk,
+            remedy,
+            command: None,
+            why: why.into(),
+            min_bytes: None,
+            min_age_days: None,
+            allow_protected: false,
+            action: None,
+            pattern: None,
+            keep_days: None,
+            admin: false,
+        }
+    }
+
+    /// What this rule does to a matched path (a folder or not) when cleaned up, if anything.
+    pub(crate) fn typed_action(&self, path: &str, is_dir: bool) -> Option<Action> {
+        if let Some(c) = &self.command {
+            return Some(Action::Tool { command: c.replace("{path}", &ps_quote(path)) });
+        }
+        if !matches!(self.remedy, Remedy::Delete | Remedy::Command) {
+            return None;
+        }
+        Some(match self.action {
+            Some(Act::Remove) => Action::Remove,
+            Some(Act::Clear) => Action::Clear { days: self.keep_days.unwrap_or(0) },
+            Some(Act::Match) => Action::Match { pattern: self.pattern.clone()? },
+            None if self.remedy == Remedy::Delete => {
+                if is_dir {
+                    Action::Clear { days: 0 }
+                } else {
+                    Action::Remove
+                }
+            }
+            None => return None,
+        })
+    }
+
+    /// The checks every rule must pass, from any pack.
+    fn check(&self) -> Result<(), String> {
+        let id = &self.id;
+        if self.paths.is_empty() {
+            return Err(format!("rule {id} has no paths"));
+        }
+        if self.command.is_some() && self.action.is_some() {
+            return Err(format!("rule {id} has both a command and an action"));
+        }
+        if self.remedy == Remedy::Command && self.command.is_none() && self.action.is_none() {
+            return Err(format!("rule {id} has remedy = \"command\" but no command or action"));
+        }
+        if self.action.is_some() && !matches!(self.remedy, Remedy::Delete | Remedy::Command) {
+            return Err(format!("rule {id}: an action needs remedy = \"delete\""));
+        }
+        match (self.action, &self.pattern) {
+            (Some(Act::Match), Some(p)) if !p.is_empty() && !p.contains(['\\', '/']) && p.len() < 100 => {}
+            (Some(Act::Match), _) => return Err(format!("rule {id}: action = \"match\" needs a pattern of file names (no folders)")),
+            (_, Some(_)) => return Err(format!("rule {id}: a pattern is only for action = \"match\"")),
+            _ => {}
+        }
+        if self.keep_days.is_some() && !matches!(self.action, Some(Act::Clear)) {
+            return Err(format!("rule {id}: keep_days is only for action = \"clear\""));
+        }
+        if self.keep_days.is_some_and(|d| d > 3650) {
+            return Err(format!("rule {id}: keep_days is at most 3650"));
+        }
+        if self.command.as_deref().is_some_and(|c| c.contains("sprawl-")) {
+            return Err(format!("rule {id}: say what a delete does with action, not with Sprawl's own functions"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -93,12 +204,7 @@ impl RulePack {
             if !ids.insert(&r.id) {
                 return Err(format!("rule id {} appears twice", r.id));
             }
-            if r.paths.is_empty() {
-                return Err(format!("rule {} has no paths", r.id));
-            }
-            if r.remedy == Remedy::Command && r.command.is_none() {
-                return Err(format!("rule {} has remedy = \"command\" but no command", r.id));
-            }
+            r.check()?;
         }
         Ok(p)
     }
@@ -386,17 +492,8 @@ pub const RM_FN: &str = "function sprawl-rm($i) { if (-not $i) { return }; if ($
 
 fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     let path: PathBuf = tree.path_of(n);
-    let quoted = ps_quote(&path.display().to_string());
-    let command = match (&rule.command, rule.remedy) {
-        (Some(c), _) => Some(c.replace("{path}", &quoted)),
-        (None, Remedy::Delete) => Some(if tree.nodes[n].is_dir {
-            format!("{RM_FN}; sprawl-clear {quoted} 0")
-        } else {
-            format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath {quoted} -Force)")
-        }),
-        _ => None,
-    };
     let node = &tree.nodes[n];
+    let action = rule.typed_action(&path.display().to_string(), node.is_dir);
     let mut evidence = vec![rule.why.clone()];
     if node.is_dir {
         evidence.push(format!("{} files in {} folders", node.files, node.folders));
@@ -407,14 +504,14 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
     } else {
         evidence.push(format!("Matched rule {} from the local pack \"{}\"", rule.id, pack.pack.name));
     }
-    let on_path = rule.command.as_deref().map_or(command.is_some(), |c| c.contains("{path}"));
-    Finding {
+    let on_path = rule.command.as_deref().map_or(action.is_some(), |c| c.contains("{path}"));
+    let mut f = Finding {
         path,
         owner: rule.owner.clone(),
         bytes: node.size,
         risk: rule.risk,
         remedy: rule.remedy,
-        command,
+        command: None,
         title: rule.title.clone(),
         evidence,
         confidence: 0.95,
@@ -424,12 +521,74 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
         trusted: pack.trusted || rule.command.is_none(),
         builtin: pack.trusted,
         on_path,
+        action: None,
+        admin: false,
+    };
+    if let Some(a) = action {
+        let admin = rule.admin || matches!(&a, Action::Tool { command } if crate::export::needs_admin(command));
+        f.set_action(a, admin);
     }
+    f
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every built-in rule: the typed action a finding gets and the script text written for it
+    /// say the same thing, on a folder and on a file, with an awkward name.
+    #[test]
+    fn typed_actions_match_the_script_for_every_builtin_rule() {
+        let pack = RulePack::builtin();
+        let mut acting = 0;
+        for rule in &pack.rules {
+            for is_dir in [true, false] {
+                let path = r"C:\Users\sam\it's ‘odd’";
+                let Some(a) = rule.typed_action(path, is_dir) else {
+                    assert!(matches!(rule.remedy, Remedy::Info | Remedy::Uninstall | Remedy::Move), "{} has no action", rule.id);
+                    continue;
+                };
+                acting += 1;
+                let mut f = Finding {
+                    path: path.into(),
+                    owner: None,
+                    bytes: 0,
+                    risk: rule.risk,
+                    remedy: rule.remedy,
+                    command: None,
+                    title: rule.title.clone(),
+                    evidence: Vec::new(),
+                    confidence: 1.0,
+                    source: Source::Rule(rule.id.clone()),
+                    allow_protected: rule.allow_protected,
+                    trusted: true,
+                    builtin: true,
+                    on_path: true,
+                    action: None,
+                    admin: false,
+                };
+                let admin = rule.admin || matches!(&a, Action::Tool { command } if crate::export::needs_admin(command));
+                f.set_action(a.clone(), admin);
+                assert_eq!(crate::clean::action(&f), Some((a.clone(), admin)), "{}", rule.id);
+                assert_eq!(crate::clean::parse_command(&f), Some((a, admin)), "{}: {:?}", rule.id, f.command);
+            }
+        }
+        assert!(acting > 20);
+    }
+
+    #[test]
+    fn rule_actions_are_checked() {
+        let parse = |extra: &str| RulePack::parse(&format!("[pack]\nname = 'x'\n[[rule]]\nid = 'a'\ntitle = 'A'\nwhy = 'w'\nrisk = 'green'\npaths = ['C:\\x\\y']\n{extra}\n"));
+        assert!(parse("remedy = 'delete'\naction = 'match'\npattern = '*.log'").is_ok());
+        assert!(parse("remedy = 'delete'\naction = 'clear'\nkeep_days = 7").is_ok());
+        assert!(parse("remedy = 'delete'\naction = 'match'").is_err(), "match needs a pattern");
+        assert!(parse("remedy = 'delete'\naction = 'match'\npattern = '..\\*.log'").is_err(), "file names only");
+        assert!(parse("remedy = 'delete'\naction = 'remove'\nkeep_days = 3").is_err());
+        assert!(parse("remedy = 'delete'\npattern = '*.log'").is_err());
+        assert!(parse("remedy = 'info'\naction = 'remove'").is_err());
+        assert!(parse("remedy = 'command'\ncommand = 'x'\naction = 'remove'").is_err());
+        assert!(parse("remedy = 'command'\ncommand = 'function sprawl-rm($i) {}; sprawl-rm x'").is_err());
+    }
 
     #[test]
     fn powershell_quoting() {
