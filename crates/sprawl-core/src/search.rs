@@ -363,14 +363,24 @@ impl PathWalk<'_> {
     }
 }
 
-/// The place of every folder in the order of its full path, compared case-insensitively (ASCII)
-/// as the Folder column sorts: `rank[folder] < rank[other]` when its path sorts first. Each path
+/// `s` lowercased, as bytes (ASCII quickly; other names as `str::to_lowercase`).
+pub fn lower_bytes(s: &str, out: &mut Vec<u8>) {
+    if s.is_ascii() {
+        out.extend(s.bytes().map(|c| c.to_ascii_lowercase()));
+    } else {
+        out.extend_from_slice(s.to_lowercase().as_bytes());
+    }
+}
+
+/// The place of every folder in the order of its full path, compared case-insensitively (as
+/// lowercase) as the Folder column sorts: `rank[folder] < rank[other]` when its path sorts first. Each path
 /// is built once, by a walk from the root; a sort by folder is then a sort of numbers (a few
 /// hundred ms for millions of rows, not half a minute of paths built per comparison). Files
 /// are `u32::MAX`.
 pub fn folder_ranks(tree: &Tree) -> Vec<u32> {
     let mut keys: Vec<(Box<[u8]>, u32)> = Vec::new();
-    let root: Vec<u8> = tree.root_path.to_string_lossy().bytes().map(|c| c.to_ascii_lowercase()).collect();
+    let mut root: Vec<u8> = Vec::new();
+    lower_bytes(&tree.root_path.to_string_lossy(), &mut root);
     // (node, its lowercased path)
     let mut stack: Vec<(usize, Vec<u8>)> = vec![(crate::ROOT, root)];
     while let Some((n, path)) = stack.pop() {
@@ -385,7 +395,7 @@ pub fn folder_ranks(tree: &Tree) -> Vec<u32> {
             if !p.ends_with(b"\\") && !p.ends_with(b"/") {
                 p.push(b'\\');
             }
-            p.extend(child.name.bytes().map(|c| c.to_ascii_lowercase()));
+            lower_bytes(&child.name, &mut p);
             stack.push((c, p));
         }
         keys.push((path.into_boxed_slice(), n as u32));

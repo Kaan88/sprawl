@@ -144,9 +144,13 @@ pub(crate) fn sort_nodes(t: &Tree, alloc: &[u64], key: Key, desc: bool, v: &mut 
     });
 }
 
-/// The folder a row is in, as the Folder column compares it: its path, ASCII lowercased.
+/// The folder a row is in, as the Folder column compares it: its path, lowercased.
 pub(crate) fn folder_key(t: &Tree, n: usize) -> Vec<u8> {
-    t.nodes[n].parent.map(|p| t.path_of(p).to_string_lossy().bytes().map(|c| c.to_ascii_lowercase()).collect()).unwrap_or_default()
+    let mut k = Vec::new();
+    if let Some(p) = t.nodes[n].parent {
+        sprawl_core::search::lower_bytes(&t.path_of(p).to_string_lossy(), &mut k);
+    }
+    k
 }
 
 /// Compare two nodes that may come from different trees (Search mixes the scan with other
@@ -213,9 +217,14 @@ fn col_at(cols: &[Col], width: f64, x: f64) -> Option<usize> {
     None
 }
 
-/// Case-insensitive comparison without allocating.
+/// Case-insensitive comparison without allocating: the order of the names lowercased (as
+/// Search's index of other drives keeps them), so the scan's rows and other drives' rows sort
+/// alike and merge at one seam. ASCII names take the quick path.
 pub(crate) fn cmp_names(a: &str, b: &str) -> Ordering {
-    a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+    if a.is_ascii() && b.is_ascii() {
+        return a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()));
+    }
+    a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
 }
 
 fn cmp_nodes(t: &Tree, alloc: &[u64], key: Key, a: usize, b: usize) -> Ordering {
@@ -908,6 +917,18 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    /// Names compare as their lowercase forms do, non-ASCII ones too: the scan's sort, other
+    /// drives' sort and the seam between them agree.
+    #[test]
+    fn names_compare_as_lowercase() {
+        let names = ["Äpfel", "apfel", "Zebra", "éclair", "Eclair", "ÉCOLE", "b", "Ω", "ω1", "_x", "Ab"];
+        for a in names {
+            for b in names {
+                assert_eq!(super::cmp_names(a, b), a.to_lowercase().cmp(&b.to_lowercase()), "{a} vs {b}");
+            }
+        }
+    }
+
     use super::*;
     use sprawl_core::Node;
 

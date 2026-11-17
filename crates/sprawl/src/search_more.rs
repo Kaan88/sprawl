@@ -125,6 +125,11 @@ impl More {
         self.places.iter().flatten().map(|p| p.ix.len().saturating_sub(1) as u64).sum()
     }
 
+    /// Other drives' rows are being sorted again after a sort change.
+    pub(crate) fn is_resorting(&self) -> bool {
+        self.resorting.is_some()
+    }
+
     pub(crate) fn is_reading(&self) -> bool {
         !self.reading.is_empty()
     }
@@ -601,7 +606,8 @@ impl State {
                 self.search.stamp += 1;
                 if self.view == View::Search {
                     self.refresh_rows();
-                    let info = self.search_count();
+                    // the scan's own rows may still be sorting
+                    let info = if self.search.sorting.is_some() { "Sorting...".to_string() } else { self.search_count() };
                     crate::state::text(&self.root, "SearchInfo", &info);
                 }
             }
@@ -625,6 +631,9 @@ impl State {
             let _ = tx.send((gen, q, sort, r));
         });
         m.resorting = Some(rx);
+        if self.view == View::Search {
+            crate::state::text(&self.root, "SearchInfo", "Sorting...");
+        }
     }
 
     /// A click on a row from another drive: picked (never part of the scan's picks); a

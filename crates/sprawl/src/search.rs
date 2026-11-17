@@ -60,7 +60,7 @@ pub(crate) struct Search {
     /// Every folder's place in path order (`folder_ranks`), for the `tree_gen` it was built for.
     ranks: Option<(u64, Arc<Vec<u32>>)>,
     /// A sort of many matches on a worker.
-    sorting: Option<Receiver<Sorted>>,
+    pub(crate) sorting: Option<Receiver<Sorted>>,
     /// The two lists merged into the table's rows, for (`stamp`, `tree_gen`).
     merged: std::cell::RefCell<Option<((u64, u64), Vec<(usize, usize)>)>>,
     /// The help and the empty state are made (once, when the tab first opens).
@@ -208,7 +208,9 @@ impl State {
                 if gen == self.tree_gen && self.search.results_gen == gen && sort == self.search.sort {
                     self.search.results = v;
                     self.search.stamp += 1;
-                    text(&self.root, "SearchInfo", &self.search_count());
+                    // other drives' rows may still be sorting
+                    let info = if self.search.more.is_resorting() { "Sorting...".to_string() } else { self.search_count() };
+                    text(&self.root, "SearchInfo", &info);
                     if self.view == View::Search {
                         self.refresh_rows();
                     }
@@ -389,13 +391,16 @@ impl State {
                     let a = &t.nodes[mine[i]];
                     let o = if by == sprawl_core::compact::SortBy::Folder {
                         if mine_dir.0 != a.parent || mine_dir.1.is_empty() {
-                            mine_dir = (a.parent, a.parent.map(|p| t.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default());
+                            mine_dir = (a.parent, a.parent.map(|p| t.path_of(p).to_string_lossy().into_owned()).unwrap_or_default());
                         }
                         let here = ix.parent(id).map(|p| (k, p));
                         if other_dir.0 != here || other_dir.1.is_empty() {
-                            other_dir = (here, ix.parent(id).map(|p| ix.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default());
+                            other_dir = (here, ix.parent(id).map(|p| ix.path_of(p).to_string_lossy().into_owned()).unwrap_or_default());
                         }
-                        mine_dir.1.cmp(&other_dir.1).then_with(|| a.name.to_lowercase().cmp(&ix.name(id).to_lowercase()))
+                        // the one comparison both sorts use
+                        crate::tables::cmp_names(&mine_dir.1, &other_dir.1).then_with(|| crate::tables::cmp_names(&a.name, &ix.name(id)))
+                    } else if by == sprawl_core::compact::SortBy::Name {
+                        crate::tables::cmp_names(&a.name, &ix.name(id))
                     } else {
                         crate::search_more::scan_val(t, mine[i], by).cmp(&crate::search_more::compact_val(ix, id, by))
                     };

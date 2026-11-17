@@ -666,6 +666,16 @@ pub(crate) fn history_save(h: &History) {
 mod tests {
     use super::*;
 
+    /// Search's Type options are the views' families (sprawl_core::kinds), each once.
+    #[test]
+    fn types_are_the_views_families() {
+        let mut fams: Vec<u8> = TYPES.iter().map(|t| t.0).collect();
+        fams.sort_unstable();
+        let mut views: Vec<u8> = sprawl_core::kinds::FAMILIES.iter().map(|f| f.0).collect();
+        views.sort_unstable();
+        assert_eq!(fams, views);
+    }
+
     fn lit_at(text: &str, c: Chip) -> Option<String> {
         lit(text)[CHIPS.iter().position(|&x| x == c).unwrap()].clone()
     }
