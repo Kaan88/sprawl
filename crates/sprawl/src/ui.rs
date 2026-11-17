@@ -312,6 +312,9 @@ pub fn page(drives: &[String]) -> String {
     ]
     .concat();
     let hud = hud();
+    let welcome = crate::welcome::xaml();
+    let tree_hint = crate::welcome::tree_hint();
+    let types_hint = crate::welcome::types_hint();
     let wizard = crate::wizard::xaml();
     let hist = crate::history::xaml();
     let version = env!("CARGO_PKG_VERSION");
@@ -481,6 +484,7 @@ pub fn page(drives: &[String]) -> String {
             </MenuFlyout>
           </FlyoutBase.AttachedFlyout>
         </ScrollViewer>
+        {tree_hint}
         <ScrollViewer x:Name="AdvisorPanel" Grid.RowSpan="2" Visibility="Collapsed" HorizontalScrollBarVisibility="Disabled"><Border x:Name="AdvHost"/></ScrollViewer>
         <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="2" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
@@ -497,6 +501,7 @@ pub fn page(drives: &[String]) -> String {
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Border x:Name="ExtHeader"/>
         <ScrollViewer x:Name="ExtScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled"/>
+        {types_hint}
       </Grid>
     </Border>
   </Grid>
@@ -512,6 +517,7 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
+    {welcome}
     {hud}
     {tweaks}
     {hist}

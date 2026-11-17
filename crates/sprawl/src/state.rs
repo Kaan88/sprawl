@@ -119,6 +119,11 @@ pub(crate) struct State {
     pub(crate) scan_secs: f64,
     pub(crate) shot: Option<PathBuf>,
     pub(crate) shot_ticks: u32,
+    /// Whether the welcome is shown (None before the first frame).
+    pub(crate) welcome: Option<bool>,
+    /// The drives and folders its cards scan.
+    pub(crate) welcome_drives: Vec<String>,
+    pub(crate) welcome_recent: Vec<PathBuf>,
 }
 
 thread_local! {
@@ -454,7 +459,7 @@ impl State {
         if self.job.is_some() {
             return;
         }
-        if self.tree.is_none() {
+        if self.tree.is_none() && std::env::var_os("SPRAWL_EMPTY").is_none() {
             return;
         }
         self.shot_ticks += 1;

@@ -28,6 +28,7 @@ mod watch;
 mod treemap;
 mod ui;
 mod win32;
+mod welcome;
 mod wizard;
 
 use std::collections::{HashMap, HashSet};
@@ -313,7 +314,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     })?);
 
     let shot = a.shot.clone();
-    let first = a.folder.clone().or_else(|| shot.as_ref().map(|_| PathBuf::from(r"C:\Program Files")));
+    // dev: SPRAWL_EMPTY=1 pictures the window as it opens, before any scan
+    let empty = std::env::var_os("SPRAWL_EMPTY").is_some();
+    let first = a.folder.clone().or_else(|| shot.as_ref().filter(|_| !empty).map(|_| PathBuf::from(r"C:\Program Files")));
     let state = State {
         window,
         hwnd,
@@ -353,6 +356,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         scan_secs: 0.0,
         shot,
         shot_ticks: 0,
+        welcome: None,
+        welcome_drives: Vec::new(),
+        welcome_recent: Vec::new(),
     };
     STATE.with(|s| *s.borrow_mut() = Some(state));
     with(|s| {
