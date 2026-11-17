@@ -45,11 +45,8 @@ impl State {
         if let Ok(c) = find::<ColumnDefinition>(&self.root, "TypesCol") {
             let _ = c.SetWidth(GridLength { Value: if types { 1.0 } else { 0.0 }, GridUnitType: GridUnitType::Star });
         }
-        // and more of the height: the map gives up some room while the Advisor is open
-        let map_on = find::<ToggleMenuFlyoutItem>(&self.root, "oTreemap").and_then(|t| t.IsChecked()).unwrap_or(true);
-        if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
-            let _ = r.SetHeight(GridLength { Value: if !map_on { 0.0 } else if v == View::Advisor { 0.7 } else { 1.25 }, GridUnitType: GridUnitType::Star });
-        }
+        // and the whole height: the map folds away while the Advisor or Cleaners is open
+        self.map_room();
         if self.welcome == Some(true) {
             crate::welcome::tree_hint_shown(self, v != View::Search);
         }
@@ -60,6 +57,22 @@ impl State {
             self.render_advisor();
         }
         self.map.drawn_once = false;
+    }
+
+    /// The map and its bar: shown when the Treemap option is on, folded away while the Advisor
+    /// or Cleaners tab is open (their lists take the height).
+    pub(crate) fn map_room(&self) {
+        let map_on = find::<ToggleMenuFlyoutItem>(&self.root, "oTreemap").and_then(|t| t.IsChecked()).unwrap_or(true);
+        let shown = map_on && self.view != View::Advisor;
+        // the bar (the map's modes) stays when only the map is switched off, as before
+        for (n, on) in [("MapBorder", shown), ("MapPath", map_on), ("MapBar", self.view != View::Advisor)] {
+            if let Ok(e) = find::<UIElement>(&self.root, n) {
+                let _ = e.SetVisibility(if on { Visibility::Visible } else { Visibility::Collapsed });
+            }
+        }
+        if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
+            let _ = r.SetHeight(GridLength { Value: if shown { 1.25 } else { 0.0 }, GridUnitType: GridUnitType::Star });
+        }
     }
 
     /// The lit tab: Cleaners is the Advisor showing only its Cleaners section.
@@ -340,16 +353,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
                             let _ = c.SetWidth(GridLength { Value: if on { 1.0 } else { 0.0 }, GridUnitType: GridUnitType::Star });
                         }
                     }
-                    _ => {
-                        for n in ["MapBorder", "MapPath"] {
-                            if let Ok(e) = find::<UIElement>(&self.root, n) {
-                                let _ = e.SetVisibility(vis);
-                            }
-                        }
-                        if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
-                            let _ = r.SetHeight(GridLength { Value: if !on { 0.0 } else if self.view == View::Advisor { 0.7 } else { 1.25 }, GridUnitType: GridUnitType::Star });
-                        }
-                    }
+                    _ => self.map_room(),
                 }
             }
             "oAlloc" | "oCushion" | "oNames" | "oTilt" | "oFree" | "oMirror" => {
