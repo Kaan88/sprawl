@@ -109,7 +109,7 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "finish",
-            description: "End the analysis with a short summary for the user (a few sentences: the main opportunities and anything they should know).",
+            description: "End the analysis with a summary for the user. Markdown, short: one sentence, then at most 6 bullets under the bold headings **Quick wins**, **Check first** and **Leave alone** (leave out empty ones). Start each bullet with the size, like '- 7.3 GB: Android build output in E:\\x, regenerates'. No long paragraphs.",
             schema: json!({"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}),
         },
     ]

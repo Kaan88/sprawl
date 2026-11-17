@@ -1,7 +1,7 @@
 //! A local named pipe between `sprawl --mcp` and the running app. One JSON request per line,
 //! one JSON answer per line. Local clients only; the first instance is ours or nothing.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 /// `\\.\pipe\sprawl-mcp-<user>`: one per Windows user.
 pub fn name() -> String {
@@ -19,7 +19,13 @@ mod ffi {
         pub fn DisconnectNamedPipe(h: isize) -> i32;
         pub fn FlushFileBuffers(h: isize) -> i32;
         pub fn CloseHandle(h: isize) -> i32;
+        pub fn GetNamedPipeServerProcessId(h: isize, pid: *mut u32) -> i32;
+        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        pub fn QueryFullProcessImageNameW(h: isize, flags: u32, name: *mut u16, size: *mut u32) -> i32;
     }
+    pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    /// SECURITY_IDENTIFICATION: the server may learn who connects, not act as them.
+    pub const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
     pub const ACCESS_DUPLEX: u32 = 3;
     pub const FIRST_INSTANCE: u32 = 0x0008_0000;
     pub const REJECT_REMOTE: u32 = 8;
@@ -43,8 +49,9 @@ pub fn serve(mut answer: impl FnMut(&str) -> String) -> std::io::Result<()> {
             let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(h as _) });
             let mut reader = BufReader::new(&*file);
             let mut line = String::new();
-            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
-                if line.len() > 1 << 20 {
+            // a line is at most 1 MB: a client that never sends a newline can't fill memory
+            while (&mut reader).take(1 << 20).read_line(&mut line).is_ok_and(|n| n > 0) {
+                if !line.ends_with('\n') {
                     break;
                 }
                 let mut out = answer(line.trim()).replace(['\r', '\n'], " ");
@@ -75,10 +82,46 @@ pub struct Client {
     writer: std::fs::File,
 }
 
+/// The process at the other end of the pipe runs the same program file as this one.
+#[cfg(windows)]
+fn server_is_us(f: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    let mut pid = 0u32;
+    if unsafe { ffi::GetNamedPipeServerProcessId(f.as_raw_handle() as isize, &mut pid) } == 0 {
+        return false;
+    }
+    let h = unsafe { ffi::OpenProcess(ffi::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h == 0 {
+        return false;
+    }
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { ffi::QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) } != 0;
+    unsafe { ffi::CloseHandle(h) };
+    if !ok {
+        return false;
+    }
+    let theirs = String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())]);
+    let ours = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    !ours.is_empty() && theirs.eq_ignore_ascii_case(&ours)
+}
+
 impl Client {
-    /// `None` when the app isn't running.
+    /// `None` when the app isn't running, or when whatever holds the pipe isn't this same
+    /// program (another process could have taken the name first).
     pub fn connect() -> Option<Client> {
-        let f = std::fs::OpenOptions::new().read(true).write(true).open(name()).ok()?;
+        let mut o = std::fs::OpenOptions::new();
+        o.read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            o.security_qos_flags(ffi::SECURITY_IDENTIFICATION);
+        }
+        let f = o.open(name()).ok()?;
+        #[cfg(windows)]
+        if !server_is_us(&f) {
+            return None;
+        }
         let writer = f.try_clone().ok()?;
         Some(Client { reader: BufReader::new(f), writer })
     }

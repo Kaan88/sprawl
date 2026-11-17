@@ -93,6 +93,9 @@ pub(crate) struct State {
     /// earlier tree (the advisor's report) is never applied to this one. Sorting doesn't change
     /// node numbers and keeps it.
     pub(crate) tree_gen: u64,
+    /// Changes with every finished scan (not with deletes or filters): growth is worked out
+    /// once per scan.
+    pub(crate) scan_id: u64,
     pub(crate) filter: String,
     pub(crate) filter_text: String,
     pub(crate) filter_pending: Option<Instant>,
@@ -269,6 +272,7 @@ impl State {
                         if !self.filter_text.trim().is_empty() {
                             self.apply_filter();
                         }
+                        self.scan_id += 1;
                         self.chat_reset();
                         self.advisor_start();
                     }

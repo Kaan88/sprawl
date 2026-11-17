@@ -67,7 +67,8 @@ pub(crate) struct Report {
 enum Msg {
     Report(Box<Report>),
     Hidden(u64, Option<HiddenSpace>),
-    Growth(u64, Option<sprawl_advisor::growth::Growth>),
+    /// (tree generation, scan id, growth)
+    Growth(u64, u64, Option<sprawl_advisor::growth::Growth>),
     /// (tree generation, finding, answer)
     InUse(u64, usize, InUse),
     /// A status line from the model run.
@@ -148,6 +149,13 @@ pub(crate) struct Advisor {
     show_kept: bool,
     show_memory: bool,
     chat: Chat,
+    /// When the AI run started, and when its status line last showed the time.
+    ai_started: Option<std::time::Instant>,
+    /// Growth of the last scan (by `State::scan_id`): snapshots are read once per scan.
+    growth_cache: Option<(u64, Option<sprawl_advisor::growth::Growth>)>,
+    ai_tick: Option<std::time::Instant>,
+    /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
+    picks: std::collections::HashSet<String>,
 }
 
 /// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
@@ -161,6 +169,8 @@ struct Chat {
     status: Option<String>,
     /// What is typed in the question box, kept across redraws.
     text: String,
+    /// When the current question was asked.
+    asked: Option<std::time::Instant>,
     /// A web search waiting for the user's yes or no.
     consent: Option<(String, Sender<bool>)>,
     /// "Allow for this session" was chosen.
@@ -222,10 +232,8 @@ fn findings_text(r: &Report) -> String {
         for e in &f.evidence {
             s += &format!("    {e}\n");
         }
-        if let Some(c) = &f.command {
-            // the functions are long and the same each time
-            let shown = c.strip_prefix(RM_FN).map(|r| format!("(Sprawl's safe-delete functions){r}")).unwrap_or_else(|| c.clone());
-            s += &format!("    PowerShell: {shown}\n");
+        if f.command.is_some() {
+            s += "    (Sprawl has a command for it: the user runs it from the Advisor's script export.)\n";
         }
     }
     s
@@ -325,8 +333,6 @@ impl State {
             self.advisor.memory_loaded = true;
             crate::bridge::publish_memory(&self.advisor.memory);
         }
-        // Claude Code sees the whole scan, also while a filter is on
-        crate::bridge::publish_tree(self.full_tree.clone().or_else(|| self.tree.clone()));
         crate::bridge::publish_findings(String::new());
         let Some(t) = self.tree.clone() else {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
@@ -346,17 +352,21 @@ impl State {
         self.advisor.running = true;
         let gen = self.tree_gen;
         let memory = self.advisor.memory.clone();
+        let scan_id = self.scan_id;
+        let want_growth = self.advisor.growth_cache.as_ref().is_none_or(|(id, _)| *id != scan_id);
         std::thread::spawn(move || {
             let (r, facts) = analyse(&t, gen, &memory);
             let (root, allocated, errors) = (t.path_of(sprawl_core::ROOT), t.nodes[sprawl_core::ROOT].allocated, t.errors);
             if tx.send(Msg::Report(Box::new(r))).is_err() {
                 return;
             }
-            // growth reads a few snapshots: after the report, so that shows first
-            let free = sprawl_advisor::hidden::free_space(&root).map(|(_, f)| f);
-            let growth = sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&t, &b, &facts, free, std::time::SystemTime::now()));
-            if tx.send(Msg::Growth(gen, growth)).is_err() {
-                return;
+            // growth reads a few snapshots: after the report, so that shows first, and once a scan
+            if want_growth {
+                let free = sprawl_advisor::hidden::free_space(&root).map(|(_, f)| f);
+                let growth = sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&t, &b, &facts, free, std::time::SystemTime::now()));
+                if tx.send(Msg::Growth(gen, scan_id, growth)).is_err() {
+                    return;
+                }
             }
             // let go of the tree before the slow part, so the app can change it without a copy
             drop(t);
@@ -374,7 +384,10 @@ impl State {
 
     /// Called every frame: pick up finished work.
     pub(crate) fn advisor_poll(&mut self) {
+        // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
+        crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
+        self.tick_status();
         for f in crate::bridge::take_filters() {
             if let Ok(t) = find::<TextBox>(&self.root, "FilterBox") {
                 let _ = t.SetText(&f.as_str().into());
@@ -386,7 +399,12 @@ impl State {
         for m in msgs {
             match m {
                 Msg::Report(r) => {
-                    self.advisor.report = Some(*r);
+                    let mut r = *r;
+                    if let Some((id, g)) = self.advisor.growth_cache.as_ref().filter(|(id, _)| *id == self.scan_id) {
+                        let _ = id;
+                        r.growth = g.clone();
+                    }
+                    self.advisor.report = Some(r);
                     self.advisor.running = false;
                     self.advisor.open = None;
                     self.advisor.in_use = None;
@@ -422,7 +440,8 @@ impl State {
                         }
                     }
                 }
-                Msg::Growth(key, g) => {
+                Msg::Growth(key, scan, g) => {
+                    self.advisor.growth_cache = Some((scan, g.clone()));
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
                         r.growth = g;
                     }
@@ -474,6 +493,22 @@ impl State {
         }
     }
 
+    /// Once a second, the time on a running AI or chat status line, so it visibly works.
+    fn tick_status(&mut self) {
+        let now = std::time::Instant::now();
+        if self.advisor.ai_tick.is_some_and(|t| now.duration_since(t).as_millis() < 1000) {
+            return;
+        }
+        self.advisor.ai_tick = Some(now);
+        let Some(p) = self.advisor.panel.clone() else { return };
+        if let (Ai::Running(line), Some(t)) = (&self.advisor.ai, self.advisor.ai_started) {
+            crate::state::text(&p, "AdvAiStatus", &format!("{line}  ·  {} s", t.elapsed().as_secs()));
+        }
+        if let (Some(line), Some(t)) = (&self.advisor.chat.status, self.advisor.chat.asked) {
+            crate::state::text(&p, "AdvChatStatus", &format!("{line}  ·  {} s", t.elapsed().as_secs()));
+        }
+    }
+
     fn advisor_changed(&mut self) {
         self.map.drawn_once = false;
         if let Some(r) = self.advice() {
@@ -509,6 +544,14 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvPick" => {
+                let Some(p) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)).map(|f| f.path.to_string_lossy().to_lowercase()) else { return };
+                if !self.advisor.picks.remove(&p) {
+                    self.advisor.picks.insert(p);
+                }
+                // the plan follows at once
+                return self.advisor_plan();
+            }
             "AdvDupes" => self.advisor_dupes(),
             "AdvDupesStop" => self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed),
             "AdvUninstall" => {
@@ -710,7 +753,7 @@ impl State {
             }
         }
         for name in [
-            "AdvKeep", "AdvLater", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvPick", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -789,38 +832,8 @@ impl State {
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
-        let in_plan = |i: usize| self.current_plan().is_some_and(|p| p.plan.picked.contains(&i));
-        let mut model_header = false;
-        for (i, f) in r.findings.iter().enumerate() {
-            if let (Source::Model(m), false) = (&f.source, model_header) {
-                model_header = true;
-                x += &format!(r##"<TextBlock Text="Found by {}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,6,0,0"/>"##, ui::esc(m));
-            }
-            let open = self.advisor.open == Some(i);
-            let sub = match &f.owner {
-                Some(o) if !f.title.contains(o.as_str()) => format!("{o} · {}", f.path.display()),
-                _ => f.path.display().to_string(),
-            };
-            x += &format!(
-                r##"<Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="7" BorderThickness="0" Background="{bg}">
-<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="86"/></Grid.ColumnDefinitions>
-<Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/>
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="11" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
-<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}<Border Padding="7,1" CornerRadius="4" Background="#1AFFFFFF"><TextBlock Text="{remedy}" FontSize="11" Foreground="#FFB9C2D6"/></Border></StackPanel>
-<TextBlock Grid.Column="3" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
-</Grid></Button>"##,
-                bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
-                dot = risk_hex(f.risk),
-                title = ui::esc(&f.title),
-                sub = ui::esc(&sub),
-                remedy = remedy_label(f.remedy),
-                plan = if in_plan(i) { r##"<Border Padding="7,1" CornerRadius="4" Background="#332F7BF6"><TextBlock Text="In plan" FontSize="11" Foreground="#FF8FB4FF"/></Border>"## } else { "" },
-                size = self.size(f.bytes),
-                op = if r.counted[i] { "1" } else { "0.55" },
-            );
-            if open {
-                x += &self.finding_detail(r, i);
-            }
+        for i in (0..r.findings.len()).filter(|&i| !matches!(r.findings[i].source, Source::Model(_))) {
+            x += &self.finding_row(r, i);
         }
         if let Some(h) = r.hidden.as_ref().filter(|h| h.notable) {
             x += &format!(
@@ -908,7 +921,14 @@ impl State {
             return;
         };
         let (Some(t), Some(r)) = (self.tree.as_ref(), self.advice()) else { return };
-        let plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
+        let mut plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
+        // and what the user added themselves (anything with a command but red)
+        for (i, f) in r.findings.iter().enumerate() {
+            if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) && f.command.is_some() && f.risk < Risk::Red && !plan.picked.contains(&i) {
+                plan.picked.push(i);
+                plan.bytes = plan.bytes.saturating_add(f.bytes);
+            }
+        }
         let mut lens = vec![0u8; t.nodes.len()];
         for &i in &plan.picked {
             let Some(n) = r.nodes[i] else { continue };
@@ -943,7 +963,8 @@ impl State {
         let goal = self.goal_bytes();
         let gen = self.tree_gen;
         let memory = self.advisor.memory.clone();
-        self.advisor.ai = Ai::Running("Starting...".into());
+        self.advisor.ai = Ai::Running("Starting".into());
+        self.advisor.ai_started = Some(std::time::Instant::now());
         std::thread::spawn(move || {
             let progress_tx = tx.clone();
             let mut progress = move |line: String| {
@@ -1295,7 +1316,8 @@ impl State {
         if let Some(tx) = &self.advisor.chat.tx {
             if tx.send(q.clone()).is_ok() {
                 self.advisor.chat.log.push((true, q));
-                self.advisor.chat.status = Some("Thinking...".into());
+                self.advisor.chat.status = Some("Sending the question".into());
+                self.advisor.chat.asked = Some(std::time::Instant::now());
                 self.advisor.chat.text.clear();
             }
         }
@@ -1387,7 +1409,10 @@ impl State {
             );
         }
         if let Some(s) = &c.status {
-            x += &format!(r##"<TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##, ui::esc(s));
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6" VerticalAlignment="Center"/></StackPanel>"##,
+                ui::esc(s)
+            );
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="Ask about this scan, then press Enter"/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##;
         x += "</StackPanel></Border>";
@@ -1528,11 +1553,12 @@ impl State {
         if let Some(p) = self.current_plan() {
             let n = p.plan.picked.len();
             let worst = p.plan.picked.iter().filter_map(|&i| r.findings.get(i)).map(|f| f.risk).max();
+            let mine = p.plan.picked.iter().filter(|&&i| r.findings.get(i).is_some_and(|f| self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()))).count();
             let msg = if n == 0 {
-                "No finding has something to run, so there is no plan yet.".to_string()
+                "Sprawl's own green and amber findings have nothing to run here. The AI's are orange, so they are never planned on their own: open one you've checked and press Add to plan.".to_string()
             } else if p.plan.enough() {
                 let items = if n == 1 { "1 item frees".to_string() } else { format!("{n} items free") };
-                format!("{items} {} of the {} you need, at worst {}.", self.size(p.plan.bytes), self.size(p.plan.need), worst.map(risk_words).unwrap_or(""))
+                format!("{items} {} of the {} you need, at worst {}{}.", self.size(p.plan.bytes), self.size(p.plan.need), worst.map(risk_words).unwrap_or(""), if mine > 0 { format!(" ({mine} added by you)") } else { String::new() })
             } else {
                 format!("Green and amber findings free {}, short of the {} you need. Orange ones are your own files: decide those one by one, or ask the AI to look further.", self.size(p.plan.bytes), self.size(p.plan.need))
             };
@@ -1545,15 +1571,17 @@ impl State {
         }
         match &self.advisor.ai {
             Ai::Idle => {}
-            Ai::Running(s) => x += &format!(r##"<TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##, ui::esc(s)),
+            Ai::Running(s) => {
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/></StackPanel>"##,
+                    ui::esc(s)
+                )
+            }
             Ai::Failed(e) => x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFFF7A45"/>"##, ui::esc(e)),
             Ai::Done { summary, model, found, rejected, with_tools, turns } => {
-                if !summary.is_empty() {
-                    x += &ui::markdown(summary, 13, "#FFD5DBE8");
-                }
-                let how = if *with_tools { format!("{turns} turns, looking closer with tools") } else { "one answer from the report".into() };
+                let how = if *with_tools { format!("{turns} steps with tools") } else { "one answer from the report".into() };
                 x += &format!(
-                    r##"<TextBlock Text="{} by {} ({how}). Its deletes are at least orange: check them yourself." TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##,
+                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {how}" Foreground="#FF8E97AA" FontSize="11"/></TextBlock>"##,
                     match found {
                         0 => "Nothing more found".to_string(),
                         1 => "1 more finding".to_string(),
@@ -1561,6 +1589,18 @@ impl State {
                     },
                     ui::esc(model)
                 );
+                // its findings here, where they are read, not at the bottom of the list
+                for i in (0..r.findings.len()).filter(|&i| matches!(r.findings[i].source, Source::Model(_))) {
+                    x += &self.finding_row(r, i);
+                }
+                if *found > 0 {
+                    x += r##"<TextBlock Text="The AI's deletes are orange: open one, check it, and Add to plan if you agree." TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##;
+                }
+                if !summary.is_empty() {
+                    x += r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF">"##;
+                    x += &ui::markdown(summary, 12, "#FFD5DBE8");
+                    x += "</Border>";
+                }
                 if !rejected.is_empty() {
                     x += &format!(
                         r##"<Button x:Name="AdvRejected" Padding="10,2" FontSize="11" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} claims didn't pass the checks ({})"/>"##,
@@ -1596,6 +1636,39 @@ impl State {
             x += r##"<Button x:Name="AdvLog" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="See what was sent to the AI"/>"##;
         }
         x += "</StackPanel></Border>";
+        x
+    }
+
+    /// One finding's row, with its details when open.
+    fn finding_row(&self, r: &Report, i: usize) -> String {
+        let f = &r.findings[i];
+        let open = self.advisor.open == Some(i);
+        let in_plan = |i: usize| self.current_plan().is_some_and(|p| p.plan.picked.contains(&i));
+        let mut x = String::new();
+        let sub = match &f.owner {
+            Some(o) if !f.title.contains(o.as_str()) => format!("{o} · {}", f.path.display()),
+            _ => f.path.display().to_string(),
+        };
+        x += &format!(
+            r##"<Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="7" BorderThickness="0" Background="{bg}">
+<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="86"/></Grid.ColumnDefinitions>
+<Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="11" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
+<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}<Border Padding="7,1" CornerRadius="4" Background="#1AFFFFFF"><TextBlock Text="{remedy}" FontSize="11" Foreground="#FFB9C2D6"/></Border></StackPanel>
+<TextBlock Grid.Column="3" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
+</Grid></Button>"##,
+            bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
+            dot = risk_hex(f.risk),
+            title = ui::esc(&f.title),
+            sub = ui::esc(&sub),
+            remedy = remedy_label(f.remedy),
+            plan = if in_plan(i) { r##"<Border Padding="7,1" CornerRadius="4" Background="#332F7BF6"><TextBlock Text="In plan" FontSize="11" Foreground="#FF8FB4FF"/></Border>"## } else { "" },
+            size = self.size(f.bytes),
+            op = if r.counted[i] { "1" } else { "0.55" },
+        );
+        if open {
+            x += &self.finding_detail(r, i);
+        }
         x
     }
 
@@ -1636,6 +1709,10 @@ impl State {
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if f.command.is_some() {
             x += r##"<Button x:Name="AdvCopy" Content="Copy command" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+            if f.risk < Risk::Red {
+                let picked = self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase());
+                x += &format!(r##"<Button x:Name="AdvPick" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, if picked { "Remove from plan" } else { "Add to plan" });
+            }
         }
         if r.nodes[i].is_some() {
             x += r##"<Button x:Name="AdvShow" Content="Show in tree" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvExplore" Content="Show in Explorer" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;

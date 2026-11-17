@@ -28,14 +28,14 @@ program installations (suggest uninstalling instead), or anything you can't expl
 When you are done, call finish with a short summary.";
 
 const SINGLE: &str = "You have no tools in this conversation. Answer with one JSON object and nothing else:
-{\"summary\": \"a few sentences\", \"findings\": [{\"path\": \"C:\\\\...\", \"bytes\": 123, \"title\": \"...\", \"risk\": \"green|amber|orange|red\", \
+{\"summary\": \"Markdown, short: one sentence, then at most 6 bullets under the bold headings **Quick wins**, **Check first** and **Leave alone** (leave out empty ones). Start each bullet with the size, like '- 7.3 GB: Android build output in E:\\x, regenerates'. No long paragraphs.\", \"findings\": [{\"path\": \"C:\\\\...\", \"bytes\": 123, \"title\": \"...\", \"risk\": \"green|amber|orange|red\", \
 \"remedy\": \"delete|uninstall|move|info\", \"evidence\": [\"...\"], \"confidence\": 0.8}]}
 Only report paths that appear in the report, with the exact bytes shown there. Risk: green = comes back by itself, amber = costs something, \
 orange = the user's own files, red = never touch. Sprawl writes any command itself.";
 
 const CHAT: &str = "You answer questions about the user's disk inside Sprawl, a disk analyser for Windows. \
 You get a compact report of the scan and tools to look closer; use them before you answer, and answer briefly and concretely, with sizes. \
-To show something on the user's map, call set_filter. You can't delete anything: to win back space, point the user to the Advisor's findings, \
+Answer in short Markdown: the answer in one line, then bullets that start with the size. To show something on the user's map, call set_filter. You can't delete anything: to win back space, point the user to the Advisor's findings, \
 its 'I need N GB' plan, or 'Ask Claude'. If you learn what a folder is, or the user states a preference, call remember.";
 
 /// Something the chat has for the app.
@@ -228,8 +228,26 @@ fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[
 fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let dir = super::advisor_dir().ok_or("APPDATA is not set")?.join("claude-code-runs").join(format!("{}-{stamp}", std::process::id()));
+    // in Temp (machine-local, never roamed): the snapshot lists every path on the disk
+    let runs = std::env::temp_dir().join("sprawl-claude-runs");
+    // what an earlier run left (the app closed or crashed during it) goes after a day
+    if let Ok(rd) = std::fs::read_dir(&runs) {
+        for e in rd.flatten() {
+            if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 86_400) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let dir = runs.join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    /// Removes the run's folder however the run ends, a panic included.
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
     let result = (|| {
         progress("Handing the scan to Claude Code...".into());
         let tree_file = dir.join("scan.dtsn");
@@ -256,20 +274,29 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
                 }
             }
             seen = lines.len();
-            let secs = started.elapsed().as_secs();
-            progress(if last.is_empty() { format!("Claude Code ({model}) is reading the scan... {secs} s") } else { format!("Claude Code: {last} ({secs} s)") });
-        })?;
+            let _ = started;
+            progress(if last.is_empty() { format!("Claude Code ({model}) is reading the scan") } else { format!("Claude Code: {last}") });
+        });
         // replay what it reported through this process's own checks
         let mut tools = Tools::new(tree, facts, model, already, memory);
         let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
         let mut turns = 1;
-        for line in recorded.lines().take(500) {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let name = v["tool"].as_str().unwrap_or("");
-            if matches!(name, "report_finding" | "remember" | "propose_rule" | "finish") {
-                let _ = tools.call(name, &v["input"]);
-                turns += 1;
-            }
+        // the reports, not the progress lines, count toward the cap
+        let reports: Vec<serde_json::Value> = recorded
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| matches!(v["tool"].as_str(), Some("report_finding" | "remember" | "propose_rule" | "finish")))
+            .take(500)
+            .collect();
+        turns += recorded.lines().filter(|l| l.contains("\"progress\"")).count();
+        // Claude Code ending with an error still keeps what it reported before
+        let answer = match answer {
+            Ok(a) => a,
+            Err(e) if reports.is_empty() => return Err(e),
+            Err(_) => super::Turn::default(),
+        };
+        for v in &reports {
+            let _ = tools.call(v["tool"].as_str().unwrap_or(""), &v["input"]);
         }
         let mut run = AiRun { model: format!("{model} (Claude Code)"), with_tools: true, turns, ..AiRun::default() };
         run.summary = super::tools::clean_text_long(&tools.summary.take().unwrap_or(answer.text), 2000);
@@ -281,7 +308,6 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
         run.proposals = std::mem::take(&mut tools.proposals);
         Ok(run)
     })();
-    let _ = std::fs::remove_dir_all(&dir);
     result
 }
 
@@ -378,7 +404,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     }
     let mut mode = if cfg.provider == Provider::ClaudeCode { Mode::Single } else { Mode::Tools };
     let mut chat = open(cfg, &model, &report, &mode)?;
-    progress(format!("Asking {model}..."));
+    progress(format!("Waiting for {model}'s first step"));
     let mut first = match chat.turn() {
         Ok(t) => t,
         // a local model without tool calling: ask once instead
@@ -403,9 +429,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
         Mode::Tools => {
             run.with_tools = true;
             loop {
-                if !first.text.trim().is_empty() {
-                    progress(super::short(first.text.trim()));
-                }
+                // the model's own words between steps aren't an answer: only its steps are shown
                 // a long server-side step, or cut off by the length limit: let it carry on
                 if first.calls.is_empty() && (first.paused || first.truncated) && run.turns < 32 {
                     if first.truncated {

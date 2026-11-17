@@ -332,6 +332,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         full_tree: None,
         advisor: Default::default(),
         tree_gen: 0,
+        scan_id: 0,
         filter: String::new(),
         filter_text: String::new(),
         filter_pending: None,

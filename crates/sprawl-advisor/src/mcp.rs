@@ -42,7 +42,8 @@ pub fn bridge_specs() -> Vec<ToolSpec> {
     let mut v = local_specs(false);
     v.push(ToolSpec {
         name: "findings",
-        description: "What Sprawl's Advisor found for the scan on screen: each with its risk, size, path, evidence and the PowerShell command Sprawl wrote for it.",
+        description: "What Sprawl's Advisor found for the scan on screen: each with its risk, size, path and evidence. Don't delete anything yourself: \
+            the user exports Sprawl's own script from its Advisor tab, which removes links without following them.",
         schema: json!({"type": "object", "properties": {}}),
     });
     v.extend(chat_specs().into_iter().filter(|t| t.name == "set_filter"));
@@ -78,7 +79,7 @@ impl<'a> Local<'a> {
         // every call is noted, so the app can show what Claude Code is doing; the reports are
         // replayed there through its own checks, never taken from here
         if let Some(f) = self.out.as_mut() {
-            let what: String = input["path"].as_str().or(input["title"].as_str()).unwrap_or("").chars().take(160).collect();
+            let what = crate::facts::clean_text(input["path"].as_str().or(input["title"].as_str()).unwrap_or(""));
             let _ = writeln!(f, "{}", json!({"progress": format!("{} {what}", name.replace('_', " "))}));
             if matches!(name, "report_finding" | "remember" | "propose_rule" | "finish") {
                 let _ = writeln!(f, "{}", json!({"tool": name, "input": input}));
@@ -186,7 +187,8 @@ pub fn main(args: &[String]) {
     step("usage attached");
     let out = arg(args, "--out").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     let model = arg(args, "--model").unwrap_or_else(|| "claude-code".into());
-    let memory = Memory::load();
+    // read only: this process never renames or rewrites the user's memory
+    let memory = Memory::load_readonly();
     let driven = out.is_some();
     let mut local = Local::new(&tree, &facts, &memory, &model, out);
     step("serving");

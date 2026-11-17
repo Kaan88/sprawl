@@ -150,6 +150,11 @@ fn check_proposal(p: &Proposal) -> Result<(), String> {
 }
 
 impl Memory {
+    /// Load without touching the file, even if it doesn't parse.
+    pub fn load_readonly() -> Memory {
+        file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| toml::from_str(t.trim_start_matches('\u{feff}')).ok()).unwrap_or_default()
+    }
+
     pub fn load() -> Memory {
         let Some(f) = file() else { return Memory::default() };
         let Ok(t) = std::fs::read_to_string(&f) else { return Memory::default() };
