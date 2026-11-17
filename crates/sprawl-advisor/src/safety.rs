@@ -268,6 +268,13 @@ impl Never {
         None
     }
 
+    /// The never-list entry a file or folder called `name` falls under anywhere (a disk image, a
+    /// vault): for what appears after the scan, which [`Never::hit_inside`] can't see.
+    pub fn name_hit(&self, name: &str) -> Option<&str> {
+        let name = name.to_lowercase();
+        self.patterns.iter().find_map(|(s, p)| p.any_depth_name().filter(|m| crate::rules::seg_match(m, &name)).map(|_| s.as_str()))
+    }
+
     pub fn is_user_data(&self, path: &str) -> bool {
         let forms = drive_forms(path).unwrap_or_default();
         self.user_data.iter().any(|pat| forms.iter().any(|p| pat.matches(p)))

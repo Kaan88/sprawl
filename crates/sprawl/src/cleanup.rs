@@ -53,6 +53,8 @@ pub(crate) struct Running {
 
     /// What each item's folder holds now: None when it is gone.
     rescans: Vec<(PathBuf, Option<Tree>)>,
+    /// Ticked items that didn't pass the checks again, and why.
+    held: Vec<String>,
 }
 
 pub(crate) struct Done {
@@ -69,6 +71,13 @@ enum Msg {
     /// (item, how it went, a scan of what is there now: None when it is gone, or not read)
     Finished(usize, Outcome, Option<Option<Tree>>),
     End,
+}
+
+/// One folder read again after it was cleaned. A plain walk: exact and quick for one folder,
+/// where the volume's MFT (when elevated) would read the whole drive, maybe not yet seeing
+/// what was just deleted.
+pub(crate) fn rescan(p: &std::path::Path) -> std::io::Result<Tree> {
+    sprawl_core::walk::walk(p, &sprawl_core::Progress::new())
 }
 
 pub(crate) fn key(p: &std::path::Path) -> String {
@@ -117,6 +126,7 @@ impl State {
         c.ticked_for = Some(gen);
         c.review = false;
         c.own_ok = false;
+        c.single = None;
     }
 
     /// The ticked findings of the report on screen, in list order (index, finding).
@@ -139,10 +149,13 @@ impl State {
 
     pub(crate) fn cleanup_toggle(&mut self, i: usize) {
         let Some(f) = self.advice().and_then(|r| r.findings.get(i)).map(|f| key(&f.path)) else { return };
-        let t = &mut self.advisor.cleanup.ticked;
-        if !t.remove(&f) {
-            t.insert(f);
+        let c = &mut self.advisor.cleanup;
+        if !c.ticked.remove(&f) {
+            c.ticked.insert(f);
         }
+        // the ticks are what counts now, and a changed set is confirmed again
+        c.single = None;
+        c.own_ok = false;
     }
 
     /// Tick what comes back by itself.
@@ -163,7 +176,11 @@ impl State {
 
     /// Start cleaning what is ticked: each item is checked again first.
     pub(crate) fn cleanup_start(&mut self) {
-        let Some(t) = self.tree.clone() else { return };
+        if self.advisor.cleanup.running.is_some() {
+            return;
+        }
+        // checked against the whole scan, not a filtered view of it
+        let Some(t) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
         let picked = self.ticked_findings();
         if picked.is_empty() {
             return;
@@ -176,10 +193,20 @@ impl State {
         let never = sprawl_advisor::safety::Never::default_list();
         let mut work: Vec<(PathBuf, Action, u64)> = Vec::new();
         let mut items = Vec::new();
+        let mut held = Vec::new();
         for (_, f) in picked {
             // the same checks as when it was found, against this scan
-            let Ok(f) = sprawl_advisor::safety::check(&f, &t, &never) else { continue };
-            let Some((action, _)) = clean::action(&f) else { continue };
+            let f = match sprawl_advisor::safety::check(&f, &t, &never) {
+                Ok(f) => f,
+                Err(why) => {
+                    held.push(format!("{}: not cleaned, {why}", f.title));
+                    continue;
+                }
+            };
+            let Some((action, _)) = clean::action(&f) else {
+                held.push(format!("{}: not cleaned, its command is not one Sprawl can run", f.title));
+                continue;
+            };
             work.push((f.path.clone(), action, f.bytes));
             items.push(Item { path: f.path.clone(), title: f.title.clone(), bytes: f.bytes, state: ItemState::Waiting });
         }
@@ -205,7 +232,7 @@ impl State {
                 });
                 // what is there now, for the tree
                 let now = match std::fs::symlink_metadata(&path) {
-                    Ok(_) => sprawl_core::scan(&path, |_| {}).ok().map(Some),
+                    Ok(_) => rescan(&path).ok().map(Some),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
                     Err(_) => None,
                 };
@@ -223,7 +250,7 @@ impl State {
         c.review = false;
         c.single = None;
         c.done = None;
-        c.running = Some(Running { items, rx, stop, rescans: Vec::new() });
+        c.running = Some(Running { items, rx, stop, rescans: Vec::new(), held });
         self.advisor_redraw();
     }
 
@@ -269,7 +296,7 @@ impl State {
 
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
-        let mut done = Done { freed: 0, items: 0, problems: Vec::new(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
                 done.items += 1;
@@ -363,7 +390,7 @@ impl State {
         if admin_waiting {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
         }
-        x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="Save the ticked items as a PowerShell script instead..."/>"##;
+        x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="Save the ticked items (and those that need administrator) as a PowerShell script instead..."/>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -374,9 +401,14 @@ impl State {
         let bytes: u64 = picked.iter().map(|(_, f)| f.bytes).sum();
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         let mut x = format!(
-            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {} items, about {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Sprawl removes them itself. Links inside are removed as links; what they point to stays. Files in use are skipped." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {} items, about {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
             picked.len(),
-            self.size(bytes)
+            self.size(bytes),
+            if picked.iter().all(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))) {
+                "Each runs its program's own clean-up command, shown below, without a window."
+            } else {
+                "Sprawl removes files and folders itself: links inside are removed as links (what they point to stays), files in use are skipped, and disk images or vaults that appeared since the scan stay. Items with a program of their own run its clean-up command, shown below."
+            }
         );
         for (_, f) in &picked {
             let what = match f.risk {
@@ -389,7 +421,10 @@ impl State {
                 r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="11" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
                 crate::advisor::risk_hex(f.risk),
                 ui::esc(&f.title),
-                ui::esc(&format!("{what} · {}", f.path.display())),
+                ui::esc(&match clean::action(f) {
+                    Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
+                    _ => format!("{what} · {}", f.path.display()),
+                }),
                 self.size(f.bytes)
             );
         }

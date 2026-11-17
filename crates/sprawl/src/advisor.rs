@@ -724,7 +724,11 @@ impl State {
             }
             "AdvCleanedOk" => self.advisor.cleanup.done = None,
             "AdvSelSafe" => self.cleanup_select_safe(),
-            "AdvSelNone" => self.advisor.cleanup.ticked.clear(),
+            "AdvSelNone" => {
+                self.advisor.cleanup.ticked.clear();
+                self.advisor.cleanup.single = None;
+                self.advisor.cleanup.own_ok = false;
+            }
             "AdvSelGoal" => {
                 self.read_goal();
                 if self.advisor.goal_text.trim().is_empty() {
@@ -1709,7 +1713,14 @@ impl State {
     fn advisor_export(&mut self) {
         let Some(r) = self.advice() else { return };
         // a plan, or everything that comes back or costs little: orange is the user's call, one by one
-        let ticked: Vec<usize> = self.ticked_findings().into_iter().map(|(i, _)| i).collect();
+        let mut ticked: Vec<usize> = self.ticked_findings().into_iter().map(|(i, _)| i).collect();
+        // what can't be ticked without administrator rights is what a script is for
+        if !ticked.is_empty() {
+            ticked.extend((0..r.findings.len()).filter(|&i| {
+                let f = &r.findings[i];
+                crate::cleanup::untickable(f, r.counted[i]) == Some("Needs administrator") && f.risk <= Risk::Amber && f.builtin
+            }));
+        }
         let picked: Vec<usize> = match self.current_plan() {
             _ if !ticked.is_empty() => ticked,
             Some(p) => p.plan.picked.iter().copied().filter(|&i| i < r.findings.len()).collect(),
@@ -1769,7 +1780,7 @@ impl State {
                         }
                         // can't be read: counted as unchanged, and the tree keeps it
                         Err(_) => before,
-                        Ok(_) => match sprawl_core::scan(&p, |_| {}) {
+                        Ok(_) => match crate::cleanup::rescan(&p) {
                             Ok(t) => {
                                 let n = t.nodes[sprawl_core::ROOT].size;
                                 trees.push((p.clone(), Some(t)));

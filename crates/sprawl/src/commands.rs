@@ -632,17 +632,24 @@ impl State {
         if self.tree.is_none() || now.is_empty() {
             return;
         }
+        let filtered = self.full_tree.is_some();
+        let mut changed = false;
         for (path, sub) in &now {
             if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
                 if let Some(k) = sprawl_advisor::find_path(full, path).filter(|&k| k != ROOT) {
+                    changed = true;
                     match sub {
                         Some(s) => replace_branch(full, k, s, None),
                         None => detach(full, k, None),
                     }
                 }
             }
+            if filtered {
+                continue;
+            }
             let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
             if let Some(k) = sprawl_advisor::find_path(t, path) {
+                changed = true;
                 match sub {
                     Some(s) => replace_branch(t, k, s, Some(&mut self.alloc)),
                     None if k != ROOT => detach(t, k, Some(&mut self.alloc)),
@@ -650,6 +657,16 @@ impl State {
                 }
             }
         }
+        if !changed {
+            return;
+        }
+        if filtered {
+            // the filtered view is made again from the full tree, which was updated
+            self.filter.clear();
+            self.apply_filter();
+            return;
+        }
+        self.sort_tree();
         let t = self.tree.as_ref().unwrap();
         // what was selected or zoomed into may be gone: its nearest part still there
         let up = |mut n: usize| {
