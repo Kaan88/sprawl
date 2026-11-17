@@ -36,15 +36,7 @@ impl State {
                 let _ = e.SetVisibility(vis(on));
             }
         }
-        for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabSearch", View::Search), ("TabAdvisor", View::Advisor), ("TabAbout", View::About)] {
-            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
-                let brush: windows_core::Result<crate::bindings::Microsoft::UI::Xaml::Media::Brush> =
-                    load(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if me == v { "#FF2C3550" } else { "Transparent" }));
-                if let Ok(br) = brush {
-                    let _ = b.SetBackground(&br);
-                }
-            }
-        }
+        self.paint_tabs();
         // the Advisor takes the whole width; the types pane comes back as the user left it
         let types = v != View::Advisor && find::<ToggleMenuFlyoutItem>(&self.root, "oTypes").and_then(|t| t.IsChecked()).unwrap_or(true);
         if let Ok(e) = find::<UIElement>(&self.root, "TypesPanel") {
@@ -65,6 +57,22 @@ impl State {
             self.render_advisor();
         }
         self.map.drawn_once = false;
+    }
+
+    /// The lit tab: Cleaners is the Advisor showing only its Cleaners section.
+    pub(crate) fn paint_tabs(&self) {
+        let v = self.view;
+        let cl = self.cleaners_tab();
+        for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabSearch", View::Search), ("TabAdvisor", View::Advisor), ("TabCleaners", View::Advisor), ("TabAbout", View::About)] {
+            let on = me == v && (me != View::Advisor || (name == "TabCleaners") == cl);
+            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
+                let brush: windows_core::Result<crate::bindings::Microsoft::UI::Xaml::Media::Brush> =
+                    load(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { "#FF2C3550" } else { "Transparent" }));
+                if let Ok(br) = brush {
+                    let _ = b.SetBackground(&br);
+                }
+            }
+        }
     }
 
     pub(crate) fn selected_path(&self) -> Option<PathBuf> {
@@ -413,7 +421,14 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
             "TabSearch" | "mSearch" => self.search_focus(),
             "SearchToFilter" => self.search_to_filter(),
             d if d.len() == 4 && d.starts_with("SxD") => self.more_drive(d.chars().nth(3).unwrap_or('C')),
-            "TabAdvisor" => self.set_view(View::Advisor),
+            "TabAdvisor" => {
+                self.set_cleaners_tab(false);
+                self.set_view(View::Advisor);
+            }
+            "TabCleaners" => {
+                self.set_cleaners_tab(true);
+                self.set_view(View::Advisor);
+            }
             "TabAbout" => self.set_view(View::About),
             _ => {}
         }

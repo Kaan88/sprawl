@@ -207,7 +207,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             }
         });
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "SearchToFilter", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);

@@ -204,6 +204,8 @@ pub(crate) struct Advisor {
     growth_cache: Option<(u64, Option<sprawl_advisor::growth::Growth>)>,
     ai_tick: Option<std::time::Instant>,
     section: Section,
+    /// The Cleaners tab: the Advisor showing its Cleaners section alone.
+    cleaners_tab: bool,
     /// The AI settings being edited in the Ask section (provider, model, base URL).
     ai_edit: Option<AiConfig>,
     /// The provider's models, for the Model dropdown.
@@ -1115,7 +1117,24 @@ impl State {
         self.advisor_changed();
     }
 
+    pub(crate) fn cleaners_tab(&self) -> bool {
+        self.advisor.cleaners_tab
+    }
+
+    /// The Cleaners tab opens the Cleaners section alone; the Advisor tab shows every section.
+    pub(crate) fn set_cleaners_tab(&mut self, on: bool) {
+        if on {
+            self.advisor.section = Section::Cleaners;
+        }
+        self.advisor.cleaners_tab = on;
+    }
+
     pub(crate) fn render_advisor(&mut self) {
+        // a button that leads to another section (a question for the AI) leaves the Cleaners tab
+        if self.advisor.cleaners_tab && self.advisor.section != Section::Cleaners {
+            self.advisor.cleaners_tab = false;
+            self.paint_tabs();
+        }
         // which programs are open, for the cleaners' parts and the review
         if self.advisor.section == Section::Cleaners || self.advisor.cleanup.review {
             self.cleaner_procs(false);
@@ -1333,14 +1352,16 @@ impl State {
         let tab = |name: &str, label: String, me: Section| {
             format!(r##"<Button x:Name="{name}" Content="{}" Padding="12,4" FontSize="12" CornerRadius="6" BorderThickness="0" Background="{}"/>"##, ui::esc(&label), if self.advisor.section == me { "#FF2C3B63" } else { "#0CFFFFFF" })
         };
-        x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}{}</StackPanel>"##,
-            tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
-            tab("AdvSecCleaners", format!("Cleaners ({cleaners})"), Section::Cleaners),
-            tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
-            tab("AdvSecGrowth", "Growth".into(), Section::Growth),
-            tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + m.cleaner_proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
-        );
+        if !self.advisor.cleaners_tab {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}{}</StackPanel>"##,
+                tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
+                tab("AdvSecCleaners", format!("Cleaners ({cleaners})"), Section::Cleaners),
+                tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
+                tab("AdvSecGrowth", "Growth".into(), Section::Growth),
+                tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + m.cleaner_proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
+            );
+        }
         match self.advisor.section {
             Section::Ask => {
                 x += &self.ai_card(r);
