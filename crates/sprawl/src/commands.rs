@@ -10,13 +10,13 @@ use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
 use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleMenuFlyoutItem, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, GridLength, GridUnitType, UIElement, Visibility};
 use crate::format::{file_type, stamp, user_dir};
-use crate::state::{find, load, text, State, Units, View};
+use crate::state::{find, text, State, Units, View};
 
 /// Options menu switches that are remembered between runs.
 const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "oUpdates"];
 const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 use crate::state::Source;
-use crate::{dialogs, paint, ui, win32};
+use crate::{dialogs, paint, win32};
 
 impl State {
     // ------------------------------------------------------------ commands
@@ -81,13 +81,7 @@ impl State {
         let cl = self.cleaners_tab();
         for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabSearch", View::Search), ("TabAdvisor", View::Advisor), ("TabCleaners", View::Advisor), ("TabAbout", View::About)] {
             let on = me == v && (me != View::Advisor || (name == "TabCleaners") == cl);
-            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
-                let brush: windows_core::Result<crate::bindings::Microsoft::UI::Xaml::Media::Brush> =
-                    load(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { "#FF2C3550" } else { "Transparent" }));
-                if let Ok(br) = brush {
-                    let _ = b.SetBackground(&br);
-                }
-            }
+            crate::look::paint(&self.root, name, crate::look::Pick::Tab, on);
         }
     }
 

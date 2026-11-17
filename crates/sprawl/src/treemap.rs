@@ -210,6 +210,7 @@ impl State {
         self.map.last = now;
 
         self.poll();
+        self.busy_poll();
         self.welcome_frame();
         self.hud_frame(dt);
         if self.filter_pending.is_some_and(|t| t.elapsed().as_millis() > 350) {
@@ -495,11 +496,7 @@ impl State {
         self.map.scene.clear();
         self.render_map();
         for (name, m) in [("ModeMap", Mode::Map), ("ModeCity", Mode::City), ("ModeGalaxy", Mode::Galaxy)] {
-            if let Ok(b) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
-                if let Some(br) = crate::hud::brush(if m == mode { (44, 59, 99) } else { (30, 33, 44) }) {
-                    let _ = b.SetBackground(&br);
-                }
-            }
+            crate::look::paint(&self.root, name, crate::look::Pick::Mode, m == mode);
         }
         let _ = CITY_DEPTH;
     }

@@ -1086,9 +1086,10 @@ impl State {
                 None => self.advisor.note.unwrap_or("Scan a drive or folder, and the cleaners show what can go.").into(),
             };
             x += &format!(
-                r##"<StackPanel Spacing="10"><StackPanel Orientation="Horizontal" Spacing="10">{}<TextBlock x:Name="ClReading" Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13" VerticalAlignment="Center"/></StackPanel>{}</StackPanel></Grid>"##,
+                r##"<StackPanel Spacing="10"><StackPanel Orientation="Horizontal" Spacing="10">{}<TextBlock x:Name="ClReading" Text="{}" {} TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13" VerticalAlignment="Center"/></StackPanel>{}</StackPanel></Grid>"##,
                 if reading.is_some() || self.advisor.running { r##"<ProgressRing IsActive="True" Width="18" Height="18"/>"## } else { "" },
                 ui::esc(&msg),
+                crate::look::NUM,
                 if reading.is_none() && !self.advisor.running { r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check"/>"## } else { "" }
             );
             return x;
@@ -1120,7 +1121,8 @@ impl State {
             },
         };
         x += &format!(
-            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
+            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock {} FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
+            crate::look::NUM,
             if total > 0 { self.size(total) } else { "Nothing to clean".into() },
             if total > 0 { format!(" in {apps} {}", if apps == 1 { "application" } else { "applications" }) } else { String::new() },
             ui::esc(&from),

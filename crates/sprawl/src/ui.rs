@@ -221,6 +221,7 @@ const CARD: &str = r##"CornerRadius="8" Background="#12FFFFFF" BorderBrush="#1CF
 const PANE: &str = r##"CornerRadius="8" Background="#0DFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1""##;
 
 fn hud() -> String {
+    let num = crate::look::NUM;
     let lanes: String = (0..crate::hud::LANES)
         .map(|k| {
             format!(
@@ -228,14 +229,14 @@ fn hud() -> String {
   <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
   <TextBlock x:Name="Lane{k}Name" FontSize="12" VerticalAlignment="Center"/>
   <Border x:Name="Lane{k}Bar" Grid.Column="1" Height="8" CornerRadius="4" HorizontalAlignment="Left" Width="2" Background="#FF4CC2FF"/>
-  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" FontSize="12" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" {num} FontSize="12" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
 </Grid>"##
             )
         })
         .collect();
     let stat = |label: &str, name: &str, col: u8, row: u8| {
         format!(
-            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="12" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" FontSize="17" FontWeight="SemiBold"/></StackPanel>"##
+            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="12" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" {num} FontSize="17" FontWeight="SemiBold"/></StackPanel>"##
         )
     };
     format!(
@@ -244,7 +245,7 @@ fn hud() -> String {
   <StackPanel Spacing="8">
     <Grid>
       <TextBlock x:Name="HudMethod" Text="Reading" FontSize="12" FontWeight="SemiBold" Foreground="#FF7A8296" CharacterSpacing="60"/>
-      <TextBlock x:Name="HudPct" Text="0%" FontSize="12" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
+      <TextBlock x:Name="HudPct" Text="0%" {num} FontSize="12" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
     </Grid>
     <Image x:Name="HudImage" Height="76" Stretch="Fill"/>
     <Grid ColumnSpacing="14" RowSpacing="6">
@@ -263,6 +264,12 @@ fn hud() -> String {
 }
 
 pub fn page(drives: &[String]) -> String {
+    let num = crate::look::NUM;
+    use crate::look::{pick, pick_drop, Pick};
+    let (tab_on, tab_off) = (pick(Pick::Tab, true), pick(Pick::Tab, false));
+    // the activity indicator: the selectable look on its own blue
+    let busy_style = r##"Style="{StaticResource SprawlPick}" Background="#332F6BFF""##;
+    let (mode_on, mode_off, drop_off) = (pick(Pick::Mode, true), pick(Pick::Mode, false), pick_drop(Pick::Mode, false));
     let drive_items: String = drives
         .iter()
         .map(|d| format!(r##"<ComboBoxItem Content="{}"/>"##, esc(d)))
@@ -384,14 +391,18 @@ pub fn page(drives: &[String]) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
     let tweaks = format!(r##"
-    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14" Width="300" CornerRadius="10" Padding="16,12,16,14" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
+    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="10" Padding="16,10,4,10" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
       <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
-      <StackPanel Spacing="4">
-        <Grid>
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid Margin="0,0,12,0">
           <TextBlock Text="Colours and Tweaks" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
           <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="12"/></Button>
         </Grid>
-        <TextBlock Text="Colours" FontSize="12" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
+      <!-- a short map scrolls the panel rather than cutting off its last switch -->
+      <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,12,0">
+      <StackPanel Spacing="4">
+        <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="12" Margin="0,2,0,0"/>
+        <TextBlock Text="Colours" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0"/>
         <ComboBox x:Name="PaletteBox" HorizontalAlignment="Stretch" SelectedIndex="0">{palettes}</ComboBox>
         <TextBlock Text="Tile height when hovered" FontSize="12" Foreground="#FF8E97AA" Margin="0,8,0,0"/>
         <Slider x:Name="LiftSlider" Minimum="0" Maximum="250" Value="100" StepFrequency="5"/>
@@ -399,8 +410,9 @@ pub fn page(drives: &[String]) -> String {
         <Slider x:Name="CushionSlider" Minimum="0" Maximum="200" Value="100" StepFrequency="5"/>
         <TextBlock Text="Tilt" FontSize="12" Foreground="#FF8E97AA"/>
         <Slider x:Name="TiltSlider" Minimum="0" Maximum="100" Value="55" StepFrequency="1"/>
-        <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="12"/>
       </StackPanel>
+      </ScrollViewer>
+      </Grid>
     </Border>"##);
 
     format!(
@@ -446,7 +458,6 @@ pub fn page(drives: &[String]) -> String {
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="380"/>
       <ColumnDefinition Width="*"/>
-      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Border {CARD} Padding="12,10">
       <StackPanel Spacing="8">
@@ -458,7 +469,7 @@ pub fn page(drives: &[String]) -> String {
             <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon x:Name="ScanButtonIcon" Glyph="&#xE721;" FontSize="13"/><TextBlock x:Name="ScanButtonText" Text="Scan"/></StackPanel>
           </Button>
         </Grid>
-        <TextBlock x:Name="StatusText" Text="Ready. Pick a drive or folder and press Scan." FontSize="12" Foreground="#FFB9C2D6"/>
+        <TextBlock x:Name="StatusText" {num} TextTrimming="CharacterEllipsis" Text="Ready. Pick a drive or folder and press Scan." FontSize="12" Foreground="#FFB9C2D6"/>
         <ProgressBar x:Name="Progress" Value="0" Maximum="100" Height="4" CornerRadius="2"/>
       </StackPanel>
     </Border>
@@ -470,10 +481,10 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock Text="Total Space:" Grid.Row="1" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock Text="Space Used:" Grid.Row="2" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock Text="Space Free:" Grid.Row="3" Foreground="#FF8E97AA" FontSize="12"/>
-        <TextBlock x:Name="SelText" Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
-        <TextBlock x:Name="TotalText" Grid.Row="1" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <TextBlock x:Name="UsedText" Grid.Row="2" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <TextBlock x:Name="FreeText" Grid.Row="3" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock x:Name="SelText" {num} Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
+        <TextBlock x:Name="TotalText" {num} Grid.Row="1" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock x:Name="UsedText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock x:Name="FreeText" {num} Grid.Row="3" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
         <Grid Grid.Row="1" Grid.RowSpan="3" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
           <Border x:Name="UsageTrack" Height="10" CornerRadius="5" Background="#14FFFFFF"/>
           <Border x:Name="UsageBar" Height="10" CornerRadius="5" HorizontalAlignment="Left" Width="0">
@@ -484,51 +495,34 @@ pub fn page(drives: &[String]) -> String {
             </Border.Background>
           </Border>
         </Grid>
-        <TextBlock x:Name="ScanInfo" Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
+        <TextBlock x:Name="ScanInfo" {num} Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
-    </Border>
-    <Border x:Name="BrandCard" Grid.Column="2" Width="330" {CARD} Padding="14,10">
-      <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
-        <Border Width="54" Height="54" CornerRadius="13">
-          <Border.Background>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-              <GradientStop Color="#FFFFB347" Offset="0"/><GradientStop Color="#FFFF5E62" Offset="0.55"/><GradientStop Color="#FF8E54E9" Offset="1"/>
-            </LinearGradientBrush>
-          </Border.Background>
-          <Grid Width="34" Height="30" VerticalAlignment="Center" HorizontalAlignment="Center">
-            <!-- the app icon's skyline -->
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="12" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="0,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="19" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6.4,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="7.4" Height="15" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12.9,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="21" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="19.8,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="7.8" Height="10" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="26.2,0,0,0"/>
-          </Grid>
-        </Border>
-        <StackPanel VerticalAlignment="Center" Spacing="2">
-          <TextBlock Text="Sprawl {version}" FontSize="17" FontWeight="SemiBold"/>
-          <TextBlock Text="Disk space analyser" FontSize="12" Foreground="#FF8E97AA"/>
-          <TextBlock x:Name="BrandLine" Text="Wheel zooms, right-drag pans" FontSize="12" Foreground="#FF8E97AA"/>
-        </StackPanel>
-      </StackPanel>
     </Border>
   </Grid>
 
   <Grid Grid.Row="3" Margin="12,0,12,6">
-  <Border x:Name="IndexBusy" Visibility="Collapsed" HorizontalAlignment="Right" Margin="0,0,352,0" Padding="10,4" CornerRadius="6" Background="#332F6BFF" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0"/><TextBlock x:Name="IndexText" FontSize="12" Foreground="#FFCFE0FF" VerticalAlignment="Center" MaxWidth="380" TextTrimming="CharacterEllipsis"/></StackPanel></Border>
+  <Button x:Name="BusyPill" Visibility="Collapsed" {busy_style} HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,352,0" Width="260" Height="32" Padding="10,0" HorizontalContentAlignment="Stretch" ToolTipService.ToolTip="What is running now. Click for the list; an entry opens its tab.">
+    <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>
+      <TextBlock x:Name="BusyText" Grid.Column="1" FontSize="12" Foreground="#FFCFE0FF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+      <TextBlock x:Name="BusyMore" Grid.Column="2" {num} FontSize="12" FontWeight="SemiBold" Foreground="#FFCFE0FF" VerticalAlignment="Center"/>
+    </Grid>
+    <Button.Flyout><Flyout x:Name="BusyFly" Placement="BottomEdgeAlignedRight"><Border x:Name="BusyList" MinWidth="320" MaxWidth="520"/></Flyout></Button.Flyout>
+  </Button>
   <TextBox x:Name="FilterBox" HorizontalAlignment="Right" Width="340" Height="32" PlaceholderText="Filter: *.mp4;  node_modules;  *\cache\*" FontSize="12"/>
   <StackPanel Orientation="Horizontal" Spacing="4">
-    <Button x:Name="TabTree" Content="Tree View" Padding="14,4" CornerRadius="6" Background="#FF2C3550" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabFiles" Content="File View" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number2" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabAdvisor" Content="Advisor" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number3" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabCleaners" Content="Cleaners" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number5" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabSearch" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE721;" FontSize="12"/><TextBlock Text="Search"/></StackPanel></Button>
-    <Button x:Name="TabAbout" Visibility="Collapsed" Content="About" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabTree" Content="Tree View" {tab_on} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabFiles" Content="File View" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number2" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabAdvisor" Content="Advisor" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number3" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabCleaners" Content="Cleaners" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number5" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabSearch" {tab_off} Padding="14,4" FontSize="14"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE721;" FontSize="12"/><TextBlock Text="Search"/></StackPanel></Button>
+    <Button x:Name="TabAbout" Visibility="Collapsed" Content="About" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
   </StackPanel>
   </Grid>
 
   <Grid Grid.Row="4" Margin="12,0,12,0" ColumnSpacing="10">
     <Grid.ColumnDefinitions>
-      <ColumnDefinition Width="1.4*"/>
+      <ColumnDefinition x:Name="TreeCol" Width="1.4*"/>
       <ColumnDefinition x:Name="TypesCol" Width="1*"/>
     </Grid.ColumnDefinitions>
     <Border {PANE}>
@@ -553,9 +547,9 @@ pub fn page(drives: &[String]) -> String {
             <Button.Flyout><Flyout x:Name="SearchHelpFly" Placement="Bottom"><ScrollViewer MaxHeight="560" HorizontalScrollBarVisibility="Disabled"><Border x:Name="SearchHelpHost" MaxWidth="640"/></ScrollViewer></Flyout></Button.Flyout>
           </Button>
           <Border x:Name="SearchSaved" Grid.Column="2"/>
-          <TextBlock x:Name="SearchInfo" Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="SearchInfo" Grid.Column="3" {num} VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
           <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
-          <StackPanel Grid.Row="1" Grid.ColumnSpan="5" Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel>
+          <ScrollViewer Grid.Row="1" Grid.ColumnSpan="5" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled"><StackPanel Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel></ScrollViewer>
           <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="5" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxLines="3"/>
         </Grid>
         <Border x:Name="SearchEmpty" Grid.Row="2" Visibility="Collapsed" Background="Transparent"><ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="16,12"><Border x:Name="SearchEmptyHost"/></ScrollViewer></Border>
@@ -586,9 +580,11 @@ pub fn page(drives: &[String]) -> String {
         <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="4" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="Sprawl" FontSize="26" FontWeight="SemiBold"/>
-            <TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6" Text="Scans a drive or folder and shows which folders, files and file types use the most space: as a sortable tree, a list of the biggest files, a table of file types and a lit 3D treemap."/>
-            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Treemap: hover to lift tiles, click to find a file in the tree, double-click or scroll up to zoom into a folder, scroll down to zoom out. Click a file type to light up its files."/>
-            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Shortcuts: F5 scan, F3 pick a folder, F4 collapse, Shift+F4 expand all, F6 parent, F10/F11 zoom the treemap, F8/F9 hide panels, Ctrl+S save the treemap picture, Ctrl+Shift+T flat or 3D."/>
+            <TextBlock Text="Version {version}" FontSize="12" Foreground="#FF8E97AA"/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6" Text="Scans a drive or folder and shows which folders, files and file types use the most space, and helps win it back."/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Tree View and File View: the scan as a sortable tree and a list of the biggest files, beside a table of file types and a lit 3D treemap. Advisor: what in the scan can go, how safe that is, and what has grown. Cleaners: the caches and leftovers of the applications on this PC, ticked by you and cleaned by Sprawl. Search: names in this scan, on other drives and in saved scans."/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Treemap: hover to lift tiles, click to find a file in the tree, double-click or scroll up to zoom into a folder, scroll down to zoom out, right-drag to pan. Click a file type to light up its files."/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Shortcuts: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor, Ctrl+5 Cleaners, Ctrl+F Search. F5 scan, F3 pick a folder, F4 collapse, Shift+F4 expand all, F6 parent, F10/F11 zoom the treemap, F8/F9 hide panels, Ctrl+S save the treemap picture, Ctrl+Shift+T flat or 3D. F1 lists them all."/>
           </StackPanel>
         </ScrollViewer>
       </Grid>
@@ -606,16 +602,16 @@ pub fn page(drives: &[String]) -> String {
   <Grid x:Name="MapBar" Grid.Row="5" Margin="12,6,12,6" ColumnSpacing="12">
     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
     <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" Padding="2" CornerRadius="7" Background="#14FFFFFF">
-      <Button x:Name="ModeMap" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF2C3B63" ToolTipService.ToolTip="Treemap"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
-      <Button x:Name="ModeCity" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="12"/><TextBlock Text="City" FontSize="12"/></StackPanel></Button>
-      <Button x:Name="ModeGalaxy" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
-      <DropDownButton x:Name="ViewMore" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="12"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="12"/></StackPanel>
+      <Button x:Name="ModeMap" {mode_on} CornerRadius="5" ToolTipService.ToolTip="Treemap: wheel zooms, right-drag pans"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeCity" {mode_off} CornerRadius="5" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="12"/><TextBlock Text="City" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeGalaxy" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
+      <DropDownButton x:Name="ViewMore" {drop_off} Padding="10,3,4,3" CornerRadius="5" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="12"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="12"/></StackPanel>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{view_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
-      <Button x:Name="ViewOnly" Visibility="Collapsed" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="12"/></Button>
-      <DropDownButton x:Name="ViewPaint" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
+      <Button x:Name="ViewOnly" Visibility="Collapsed" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="12"/></Button>
+      <DropDownButton x:Name="ViewPaint" {drop_off} Padding="10,3,4,3" CornerRadius="5" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{paint_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
     </StackPanel>
-    <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
+    <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="5" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
     <TextBlock x:Name="MapPath" Grid.Column="1" Text=" " HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/>
   </Grid>
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
@@ -629,8 +625,8 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
 
   <Grid Grid.Row="7" Margin="16,0,16,0">
-    <TextBlock x:Name="FootLeft" Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-    <TextBlock x:Name="FootRight" Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+    <TextBlock x:Name="FootLeft" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+    <TextBlock x:Name="FootRight" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
   </Grid>
   <Border x:Name="UpdateCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#552F7BF6" BorderThickness="1" Width="400">
     <StackPanel Spacing="6"><TextBlock x:Name="UpdateTitle" FontSize="14" FontWeight="SemiBold"/><TextBlock x:Name="UpdateSub" FontSize="12" Foreground="#FF8E97AA"/>

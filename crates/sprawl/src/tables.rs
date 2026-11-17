@@ -246,13 +246,14 @@ fn cmp_nodes(t: &Tree, alloc: &[u64], key: Key, a: usize, b: usize) -> Ordering 
 }
 
 pub(crate) fn cell(col: usize, s: &str) -> String {
-    format!(r##"<TextBlock Grid.Column="{col}" Text="{}" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>"##, ui::esc(s))
+    format!(r##"<TextBlock Grid.Column="{col}" Text="{}" {} FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>"##, ui::esc(s), crate::look::NUM)
 }
 
 pub(crate) fn pct_bar(col: usize, pct: f64, a: &str, b: &str) -> String {
     let w = pct.clamp(0.0, 100.0);
+    let num = crate::look::NUM;
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="#18FFFFFF"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="#18FFFFFF"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" {num} FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 

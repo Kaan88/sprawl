@@ -29,6 +29,7 @@ mod views;
 mod watch;
 mod treemap;
 mod ui;
+mod look;
 mod win32;
 mod welcome;
 mod wizard;
@@ -130,7 +131,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     window.SetTitle(&HSTRING::from("Sprawl"))?;
     window.SetExtendsContentIntoTitleBar(true)?;
     window.SetTitleBar(&find::<UIElement>(&root, "TitleBar")?)?;
-    window.AppWindow()?.Resize(SizeInt32 { Width: 1680, Height: 1080 })?;
+    // dev: SPRAWL_SIZE=1280x800 sets the window's size for a screenshot
+    let (w, h) = std::env::var("SPRAWL_SIZE").ok().filter(|_| a.shot.is_some()).and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))).unwrap_or((1680, 1080));
+    window.AppWindow()?.Resize(SizeInt32 { Width: w, Height: h })?;
     // Frosted glass: the desktop shows through the whole window, blurred.
     if let Ok(b) = DesktopAcrylicBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()) {
         window.SetSystemBackdrop(&b)?;
@@ -325,15 +328,10 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             let _ = e.SetHandled(true);
         }
     })?);
-    // a narrow window folds the header: the brand card goes first
+    // a narrow window gives the tree more of the width beside the file types
     keep(root.SizeChanged(|s, _| {
-        let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
-        let narrow = fe.ActualWidth().unwrap_or(2000.0) < 1250.0;
-        with(|st| {
-            if let Ok(c) = find::<UIElement>(&st.root, "BrandCard") {
-                let _ = c.SetVisibility(if narrow { bindings::Microsoft::UI::Xaml::Visibility::Collapsed } else { bindings::Microsoft::UI::Xaml::Visibility::Visible });
-            }
-        });
+        let Some(w) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()).and_then(|f| f.ActualWidth().ok()) else { return };
+        with(|st| st.fit_width(w));
     })?);
     let tree_sv: UIElement = find(&root, "TreeScroll")?;
     keep(tree_sv.DoubleTapped(move |s, e| {
@@ -487,10 +485,14 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             s.wizard_page = p.min(wizard::PAGES - 1);
             s.wizard_show();
         }
-        if a.advisor && first.is_some() {
+        let restart = a.advisor && first.is_some();
+        let tab = look::start_tab(look::start_choice(s.settings.num("startTab")), s.settings.get("lastTab"), first.is_some(), restart);
+        if restart {
             // ticks only become ticks for findings of the new report; the review still asks
             s.advisor.cleanup.pending = Some(a.ticks.iter().take(500).map(|p| crate::cleanup::key(p)).collect());
             s.command("TabAdvisor");
+        } else {
+            s.open_on(tab);
         }
         if let Some(f) = first {
             s.start_scan(f);
