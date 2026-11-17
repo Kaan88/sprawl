@@ -199,6 +199,11 @@ impl State {
         if self.job.is_some() {
             return;
         }
+        // a new scan would replace the tree the clean-up is checking and rescanning
+        if self.advisor.cleanup.running.is_some() {
+            text(&self.root, "FootLeft", "A clean-up is running: scan again when it has finished.");
+            return;
+        }
         let (path, csv) = match &source {
             Source::Folders(v) if v.len() == 1 => (v[0].clone(), false),
             Source::Folders(v) if v.is_empty() => return,

@@ -359,8 +359,9 @@ impl State {
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = if d.stopped { format!("Stopped. Freed {} from {items}.", self.size(d.freed)) } else { format!("Freed {} from {items}.", self.size(d.freed)) };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="#144CC38A" BorderBrush="#554CC38A" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE73E;" FontSize="16" Foreground="#FF4CC38A"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated." FontSize="12" Foreground="#FFB9C2D6"/>"##,
-                ui::esc(&head)
+                r##"<Border Padding="14,12" CornerRadius="8" Background="#144CC38A" BorderBrush="#554CC38A" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE73E;" FontSize="16" Foreground="#FF4CC38A"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                ui::esc(&head),
+                self.tree.as_ref().and_then(|t| crate::win32::disk_space(&t.path_of(sprawl_core::ROOT))).map_or(String::new(), |(_, free)| ui::esc(&format!(" The disk now has {} free.", self.size(free))))
             );
             if !d.problems.is_empty() {
                 x += r##"<TextBlock Text="Some things couldn't go (in use, or no access): they stay as they were." FontSize="12" Foreground="#FFF5B342"/>"##;

@@ -36,8 +36,16 @@ fn spline(p: &[f32], t: f32) -> f32 {
     0.5 * ((2.0 * p1) + (-p0 + p2) * u + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * u * u + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * u * u * u)
 }
 
-fn when(t: std::time::SystemTime) -> String {
-    crate::format::fmt_time(t).get(5..10).unwrap_or("").to_string()
+/// A scan's date as MM-DD, with the time when another scan in the list has the same date.
+fn when_in(c: &Ctx, t: std::time::SystemTime) -> String {
+    let full = crate::format::fmt_time(t);
+    let day = full.get(5..10).unwrap_or("");
+    let twins = c.history.iter().filter(|h| crate::format::fmt_time(h.0).get(5..10) == Some(day)).count();
+    if twins > 1 {
+        full.get(5..16).unwrap_or(day).to_string()
+    } else {
+        day.to_string()
+    }
 }
 
 pub(crate) fn tideline(c: &Ctx, o: &mut Out) {
@@ -86,7 +94,7 @@ pub(crate) fn tideline(c: &Ctx, o: &mut Out) {
     o.rect(ph - 1.0, top - 6.0, 2.0, bottom - top + 12.0, [1.0, 1.0, 1.0, 0.5]);
     for (i, (t, _)) in c.history.iter().enumerate() {
         let x = left + (right - left) * i as f32 / (steps - 1).max(1) as f32;
-        o.label(x - 30.0, bottom + 6.0, 60.0, when(*t), false);
+        o.label(x - 30.0, bottom + 6.0, 60.0, when_in(c, *t), false);
     }
     o.label(right - 40.0, bottom + 6.0, 60.0, "Now".into(), true);
 }
@@ -150,7 +158,7 @@ pub(crate) fn isobars(c: &Ctx, o: &mut Out) {
     let step = ((c.time / 2.5) as usize) % steps;
     let before = &c.history[step].1;
     let after = |k: usize| if step + 1 < steps { c.history[step + 1].1.get(k).copied().unwrap_or(0) } else { (c.size)(k) };
-    let label_to = if step + 1 < steps { when(c.history[step + 1].0) } else { "now".into() };
+    let label_to = if step + 1 < steps { when_in(c, c.history[step + 1].0) } else { "now".into() };
     // pressure: growth splatted around each tile's middle
     let cell = 8.0f32;
     let (gw, gh) = (((c.w - 20.0) / cell) as usize + 1, ((c.h - 20.0) / cell) as usize + 1);
@@ -216,5 +224,5 @@ pub(crate) fn isobars(c: &Ctx, o: &mut Out) {
         o.line([r.x as f32, r.y as f32], [(r.x + r.w) as f32, r.y as f32], [0.0, 0.0, 0.0, 0.25]);
         o.line([r.x as f32, r.y as f32], [r.x as f32, (r.y + r.h) as f32], [0.0, 0.0, 0.0, 0.25]);
     }
-    o.label(16.0, c.h - 28.0, 400.0, format!("{} to {label_to}", when(c.history[step].0)), true);
+    o.label(16.0, c.h - 28.0, 400.0, format!("{} to {label_to}", when_in(c, c.history[step].0)), true);
 }

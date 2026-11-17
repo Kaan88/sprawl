@@ -121,6 +121,11 @@ impl State {
             self.hist_close();
             return;
         }
+        // the history plays on the treemap
+        if self.map.views.kind.is_some() {
+            self.set_view_kind(None);
+            self.command("ModeMap");
+        }
         let Some(t) = &self.tree else {
             text(&self.root, "FootLeft", "Scan something first: the history shows how it changed between scans.");
             return;
