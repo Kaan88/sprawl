@@ -632,6 +632,70 @@ fn system_dir() -> Option<PathBuf> {
     (n > 0 && n < buf.len()).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..n])))
 }
 
+/// Folders only administrators can write to: Windows, Program Files (both). A program an
+/// elevated Sprawl starts must come from one of them.
+fn system_roots() -> Vec<PathBuf> {
+    ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)"].iter().filter_map(|v| std::env::var_os(v)).map(PathBuf::from).filter(|p| p.is_absolute()).collect()
+}
+
+/// Where PATH (with PATHEXT) finds `name`, as PowerShell would for a program.
+fn on_path(name: &str) -> Option<PathBuf> {
+    let exts: Vec<String> = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').filter(|e| !e.is_empty()).map(str::to_string).collect();
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if Path::new(name).extension().is_some() && dir.join(name).is_file() {
+            return Some(dir.join(name));
+        }
+        for e in &exts {
+            let p = dir.join(format!("{name}{e}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Whether a built-in tool command may run while Sprawl is elevated: every program it starts
+/// must resolve to a folder only administrators can write to (a user-writable `npm.cmd` would
+/// run as administrator). PowerShell's own commands (`Verb-Noun`) are fine; their modules are
+/// limited to the system's folders when the command runs.
+pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<PathBuf>, roots: &[PathBuf]) -> Result<(), String> {
+    let body = command.split('#').next().unwrap_or("");
+    let words: Vec<&str> = body.split_whitespace().collect();
+    let mut programs = Vec::new();
+    if let Some(&first) = words.first() {
+        if first.eq_ignore_ascii_case("Start-Process") {
+            if let Some(&p) = words.get(1) {
+                programs.push(p);
+            }
+        } else {
+            programs.push(first);
+        }
+    }
+    // PowerShell's own commands, and its words that are not commands at all
+    const KEYWORDS: [&str; 6] = ["exit", "return", "if", "foreach", "throw", "break"];
+    let cmdlet = |w: &str| {
+        // Verb-Noun, letters only, each part capitalised: Clear-RecycleBin, not npm-x or foo-bar
+        let verb_noun = w.split_once('-').is_some_and(|(v, n)| {
+            let part = |p: &str| p.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && p.chars().all(|c| c.is_ascii_alphabetic());
+            part(v) && part(n)
+        });
+        verb_noun || KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(w))
+    };
+    for p in programs.into_iter().filter(|w| !cmdlet(w)) {
+        let p = p.trim_matches(['"', '\'']);
+        let Some(found) = resolve(p) else { return Err(format!("not run as administrator: {p} wasn't found")) };
+        if !roots.iter().any(|r| crate::finding::within(&found, r)) {
+            return Err(format!("not run as administrator: {p} is {}, in a folder your account can change. Run it from a normal (not elevated) Sprawl.", found.display()));
+        }
+    }
+    Ok(())
+}
+
 /// PowerShell's -EncodedCommand form: base64 of the UTF-16 text.
 fn encoded(s: &str) -> String {
     const B: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -653,6 +717,12 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
     use std::io::Read;
     use std::os::windows::process::CommandExt;
     let Some(sys) = system_dir() else { return o.problem(Path::new(command), "Windows' System32 folder wasn't found") };
+    let elevated = sprawl_core::is_elevated();
+    if elevated {
+        if let Err(why) = elevated_tool_ok(command, &|name| on_path(name), &system_roots()) {
+            return o.problem(Path::new(command), why);
+        }
+    }
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
     // kept, and the output in UTF-8
@@ -669,6 +739,12 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    if elevated {
+        // no PowerShell module from the user's own folders loads into an elevated run
+        let pf = std::env::var_os("ProgramFiles").map(PathBuf::from);
+        let modules: Vec<String> = [pf.map(|p| p.join(r"WindowsPowerShell\Modules")), Some(sys.join(r"WindowsPowerShell\v1.0\Modules"))].into_iter().flatten().map(|p| p.display().to_string()).collect();
+        cmd.env("PSModulePath", modules.join(";"));
+    }
     let job = win::Job::new();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -943,6 +1019,32 @@ mod tests {
         let o = run(&temp.join("MyTool"), &Action::Remove, &spare, &AtomicBool::new(false), &mut |_| {});
         assert_eq!((o.freed, o.kept_chosen), (0, 1));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn elevated_tools_come_from_system_folders_only() {
+        let roots = vec![PathBuf::from(r"C:\Windows"), PathBuf::from(r"C:\Program Files")];
+        let resolve = |n: &str| -> Option<PathBuf> {
+            match n.to_lowercase().as_str() {
+                "dism" => Some(r"C:\Windows\System32\Dism.exe".into()),
+                "cleanmgr" => Some(r"C:\Windows\System32\cleanmgr.exe".into()),
+                "npm" => Some(r"C:\Users\sam\AppData\Roaming\npm\npm.cmd".into()),
+                "dotnet" => Some(r"C:\Program Files\dotnet\dotnet.exe".into()),
+                _ => None,
+            }
+        };
+        assert!(elevated_tool_ok("DISM /Online /Cleanup-Image /StartComponentCleanup   # as administrator", &resolve, &roots).is_ok());
+        assert!(elevated_tool_ok("dotnet nuget locals all --clear", &resolve, &roots).is_ok());
+        assert!(elevated_tool_ok("Clear-RecycleBin -Force", &resolve, &roots).is_ok());
+        assert!(elevated_tool_ok("exit 3", &resolve, &roots).is_ok(), "a PowerShell word, not a program");
+        assert!(elevated_tool_ok("npm-run cache", &resolve, &roots).is_err(), "a hyphen alone doesn't make a cmdlet");
+        assert!(elevated_tool_ok("Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs", &resolve, &roots).is_ok());
+        let e = elevated_tool_ok("npm cache clean --force", &resolve, &roots).unwrap_err();
+        assert!(e.contains("your account can change"), "{e}");
+        assert!(elevated_tool_ok("pip cache purge", &resolve, &roots).is_err(), "not found: not run");
+        // a lookalike folder name is not Program Files
+        let near = |_: &str| Some(PathBuf::from(r"C:\Program Files Evil\x.exe"));
+        assert!(elevated_tool_ok("x", &near, &roots).is_err());
     }
 
     #[test]

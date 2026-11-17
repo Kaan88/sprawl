@@ -95,6 +95,12 @@ pub(crate) fn parse(out: &str) -> Result<String, String> {
     v["result"].as_str().map(str::to_string).ok_or_else(|| "Claude Code gave no result".into())
 }
 
+/// Why Claude Code isn't started, when Sprawl runs as administrator: it comes from your own
+/// folders (PATH, `.local\bin`) and would run, with whatever it loads, as administrator.
+pub fn elevated_refusal(elevated: bool) -> Option<&'static str> {
+    elevated.then_some("Claude Code isn't started while Sprawl runs as administrator: it would run as administrator too. Restart Sprawl normally to use it.")
+}
+
 impl ClaudeCode {
     /// [`Chat::turn`], calling `tick` about every half second while Claude Code works.
     pub fn turn_with(&mut self, tick: &mut dyn FnMut()) -> Result<Turn, String> {
@@ -102,6 +108,9 @@ impl ClaudeCode {
             return Ok(Turn::default());
         }
         self.pending = false;
+        if let Some(why) = elevated_refusal(sprawl_core::is_elevated()) {
+            return Err(why.into());
+        }
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
         // Rust escapes arguments for a .cmd shim itself; the prompt goes on stdin
         let mut cmd = Command::new(&self.exe);
