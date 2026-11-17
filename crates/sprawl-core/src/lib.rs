@@ -20,6 +20,7 @@ pub mod csv;
 pub mod filter;
 pub mod mft;
 pub mod progress;
+pub mod search;
 pub mod walk;
 
 pub use csv::{export_csv, load_csv};

@@ -79,7 +79,7 @@ fn lower_eq(p: char, c: char) -> bool {
 
 /// Glob match with `*` and `?`, `pat` already lower-case. Linear-ish (backtracks to the last
 /// star only).
-fn wildcard(pat: &[char], s: &str) -> bool {
+pub(crate) fn wildcard(pat: &[char], s: &str) -> bool {
     let (mut p, mut si) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None; // (pattern index after '*', string index)
     let bytes = s.len();
