@@ -176,6 +176,16 @@ const NEVER: &[&str] = &[
     r"?:\**\ThunderbirdPortable\Data\profile\**",
     r"?:\**\Telegram Desktop\tdata",
     r"?:\**\Telegram Desktop\tdata\**",
+    // what a program built on Chromium keeps for its user: sign-ins, site data, saved forms.
+    // By Chromium's own layout, so a code folder called "cookies" isn't taken for one
+    r"?:\**\Network\Cookies",
+    r"?:\**\Default\Cookies",
+    r"?:\**\Profile *\Cookies",
+    r"?:\**\Local Storage\leveldb",
+    r"?:\**\IndexedDB\*.indexeddb.leveldb",
+    r"?:\**\IndexedDB\*.indexeddb.blob",
+    r"?:\**\Login Data",
+    r"?:\**\Web Data",
 ];
 
 /// Folders that hold the user's own work.

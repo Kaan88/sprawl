@@ -158,6 +158,31 @@ impl State {
         if !shape.is_empty() {
             rows.push(ClRow { id: SHAPE.into(), name: "Other apps (found by shape)".into(), group: "Other", def: None, presence: Presence::InScan, parts: shape });
         }
+        // caches of programs built on Chromium, known by their folder
+        let chromium: Vec<PartRow> = by_rule
+            .get(sprawl_advisor::chromium::ID)
+            .into_iter()
+            .flatten()
+            .map(|&i| {
+                let f = &r.findings[i];
+                PartRow {
+                    key: key(&f.path),
+                    title: f.title.clone(),
+                    risk: f.risk,
+                    class: Class::Space,
+                    closed: Closed::Warn,
+                    cost: "The program downloads or makes these again; it may be slower once.".into(),
+                    why: f.evidence.first().cloned().unwrap_or_default(),
+                    info: false,
+                    clears: true,
+                    keep_days: None,
+                    findings: vec![i],
+                }
+            })
+            .collect();
+        if !chromium.is_empty() {
+            rows.push(ClRow { id: sprawl_advisor::chromium::ID.into(), name: "Apps built on Chromium (recognised)".into(), group: "Other", def: None, presence: Presence::InScan, parts: chromium });
+        }
         let size = |c: &ClRow| -> u64 { c.parts.iter().map(|p| p.bytes(r)).sum() };
         rows.sort_by_key(|c| (GROUPS.iter().position(|g| *g == c.group).unwrap_or(GROUPS.len()), c.id == SHAPE, std::cmp::Reverse(size(c))));
         rows

@@ -13,6 +13,7 @@
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
 pub mod anomaly;
+pub mod chromium;
 pub mod clean;
 pub mod cleaners;
 pub mod community;
@@ -127,7 +128,13 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
             found.push(f);
         }
     }
-    // caches of programs no cleaner knows, last, so a known one names them first
+    // caches of programs built on Chromium, known by their folder; then caches of programs no
+    // cleaner knows, last, so a known one names them first
+    for f in chromium::find(tree, facts, &seen, cleaners::PART_MIN) {
+        if seen.insert(f.path.to_string_lossy().to_lowercase()) {
+            found.push(f);
+        }
+    }
     for f in cleaners::by_shape(tree, &seen) {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);

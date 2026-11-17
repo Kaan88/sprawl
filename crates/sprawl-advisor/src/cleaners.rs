@@ -444,7 +444,7 @@ pub fn presence(tree: &sprawl_core::Tree, def: &CleanerDef, found: bool) -> Pres
 /// The smallest finding of each grouped rule that the Findings list shows (its own threshold);
 /// smaller ones show in Cleaners only.
 pub fn list_min(packs: &[RulePack], rule: &str) -> Option<u64> {
-    if rule == SHAPE {
+    if rule == SHAPE || rule == crate::chromium::ID {
         return Some(crate::rules::DEFAULT_MIN);
     }
     if rule.contains('/') {
