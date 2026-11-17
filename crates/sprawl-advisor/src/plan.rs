@@ -27,8 +27,8 @@ pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
         .filter(|&i| counted.get(i).copied().unwrap_or(true))
         // only Sprawl's own rules: a local or AI-proposed rule's deletes are the user's call
         .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk <= Risk::Amber && findings[i].builtin)
-        // nor a guess by shape, nor anything outside the user's own profile
-        .filter(|&i| !findings[i].heuristic() && findings[i].in_profile())
+        // nor a guess by shape, nor anything in another account's profile
+        .filter(|&i| !findings[i].heuristic() && !findings[i].other_account())
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();
@@ -119,11 +119,35 @@ mod tests {
         assert!(shape.heuristic());
         let mut other = f(Risk::Green, 30);
         other.path = r"Z:\Users\someone-else\AppData\Local\Temp".into();
-        assert!(!other.in_profile());
+        assert!(other.other_account());
         let mine = f(Risk::Green, 1);
-        assert!(mine.in_profile());
-        let v = vec![shape, other, mine];
-        assert_eq!(plan(&v, &[true; 3], 100 << 30).picked, vec![2]);
+        assert!(!mine.other_account());
+        // a project's build output on another drive is nobody else's: planned as usual
+        let mut project = f(Risk::Green, 2);
+        project.path = r"D:\src\game\target".into();
+        project.source = Source::Rule("project.build-output".into());
+        assert!(!project.other_account());
+        let v = vec![shape, other, mine, project];
+        assert_eq!(plan(&v, &[true; 4], 100 << 30).picked, vec![3, 2]);
+    }
+
+    #[test]
+    fn whose_folder_it_is() {
+        use crate::finding::other_account;
+        use std::path::Path;
+        let home = Some(Path::new(r"C:\Users\Sam"));
+        assert!(other_account(Path::new(r"C:\Users\Alex\AppData\Local\Temp"), home));
+        assert!(other_account(Path::new(r"C:\Users\Public\Downloads"), home));
+        assert!(other_account(Path::new(r"D:\Users\Sam\old"), home));
+        assert!(other_account(Path::new(r"C:\Users"), home));
+        assert!(!other_account(Path::new(r"c:\users\sam\AppData\Local\Temp"), home));
+        assert!(!other_account(Path::new(r"C:\Users\Sam"), home));
+        assert!(!other_account(Path::new(r"C:\Windows\Temp"), home));
+        assert!(!other_account(Path::new(r"C:\Windows\WinSxS"), home));
+        assert!(!other_account(Path::new(r"D:\src\game\target"), home));
+        assert!(!other_account(Path::new(r"D:\Projects\Users\x"), home));
+        // profiles kept somewhere else: that folder counts too
+        assert!(other_account(Path::new(r"E:\Profiles\Alex"), Some(Path::new(r"E:\Profiles\Sam"))));
     }
 
     #[test]

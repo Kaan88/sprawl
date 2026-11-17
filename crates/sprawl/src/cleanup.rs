@@ -183,7 +183,7 @@ impl State {
         r.findings
             .iter()
             .zip(&r.counted)
-            .filter(|(f, c)| untickable(f, **c).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && f.in_profile() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
+            .filter(|(f, c)| untickable(f, **c).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
             .map(|(f, _)| key(&f.path))
             .collect()
     }

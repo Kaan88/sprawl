@@ -93,6 +93,22 @@ pub fn within(p: &std::path::Path, base: &std::path::Path) -> bool {
     !b.as_os_str().is_empty() && n(p).starts_with(b)
 }
 
+/// `p` is in the Users folder of its drive (`X:\Users\...`, or the folder the user's own profile
+/// sits in) and not inside `home`. The Users folder itself counts: it holds other profiles.
+pub fn other_account(p: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    let s = p.to_string_lossy().replace('/', "\\");
+    let mut parts = s.trim_end_matches('\\').split('\\').filter(|x| !x.is_empty());
+    let (Some(drive), Some(top)) = (parts.next(), parts.next()) else { return false };
+    if !drive.ends_with(':') {
+        return false;
+    }
+    // the name of the folder profiles live in: "Users", and whatever this user's sits in
+    let users_dir = home.and_then(|h| h.parent()).and_then(|u| u.file_name()).map(|n| n.to_string_lossy().to_lowercase());
+    let top = top.to_lowercase();
+    let in_users = top == "users" || users_dir.is_some_and(|u| u == top);
+    in_users && !home.is_some_and(|h| within(p, h))
+}
+
 /// What a clean-up does to a finding's path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -119,10 +135,11 @@ impl Finding {
         matches!(&self.action, Some(Action::Match { .. }) | Some(Action::Clear { days: 1.. }))
     }
 
-    /// Inside the profile of the account Sprawl runs as (`%USERPROFILE%`). What is outside it
-    /// (another account's folders, Windows' own) is never ticked for the user.
-    pub fn in_profile(&self) -> bool {
-        std::env::var_os("USERPROFILE").is_some_and(|home| within(&self.path, std::path::Path::new(&home)))
+    /// Inside another account's profile (Public counts as one): under the Users folder of any
+    /// drive, but not inside `%USERPROFILE%`. Never green, never planned or ticked for the user.
+    /// Everything else (this user's folders, Windows' own, a project on D:) keeps its rule's risk.
+    pub fn other_account(&self) -> bool {
+        other_account(&self.path, std::env::var_os("USERPROFILE").as_deref().map(std::path::Path::new))
     }
 
     /// Give the finding its action, and the command text "Save as script" writes for it.
