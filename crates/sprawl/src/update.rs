@@ -268,7 +268,12 @@ impl State {
             }
         }
         if cmd.spawn().is_ok() {
-            std::process::exit(0);
+            // close the window the normal way (exiting from inside a XAML callback ends the
+            // process with a crash code that Windows may report)
+            if self.window.Close().is_err() {
+                std::process::exit(0);
+            }
+            return;
         }
         text(&self.root, "UpdateStatus", "Updated. Close and open Sprawl to use the new version.");
     }

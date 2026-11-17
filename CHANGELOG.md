@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.2.1 — 2026-11-17
+
+### Fixed
+- After an update, the old copy closes its window normally instead of ending in a way Windows could report as a crash.
+
 ## 0.2.0 — 2026-11-17
 
 The first release with an installer and automatic updates.

@@ -374,6 +374,32 @@ Only one cargo runs at a time.
   browser starts clean afterwards and bookmarks and passwords are intact.
 - Review: Fable, and one usability read of the words.
 
+### 3b. Public definitions, downloaded automatically (the user's decision, 2026-11-17)
+After phase 3, because it reuses everything phase 3 builds for untrusted proposals.
+- **Sources:** winapp2.ini (MoscaDotTo/Winapp2) and BleachBit's community CleanerML
+  (bleachbit/cleanerml, the `release` folder only). Fetched at run time from their GitHub
+  repositories over HTTPS, at most once a week and when the user asks; never bundled in Sprawl's
+  installer or repository, so their licences (CC BY-SA 4.0, unconfirmed, and GPLv3+) stay with
+  their files. The source and licence are shown with each imported cleaner.
+- **Converter:** each entry becomes a proposal in Sprawl's own format. Only what Sprawl's format
+  can say survives: folders and file patterns under the fixed `%VAR%` list, `*`, `?`, `**`, the
+  running-process check. Registry keys, `FileKey` with recursion over a whole drive, SQLite or
+  JSON edits, shredding and anything in the never-list are dropped, each with a reason the user
+  can read ("needs a registry write, which Sprawl doesn't do").
+- **Trust:** every imported cleaner goes through the same checks as an AI proposal
+  (`propose_cleaner`'s checks and the match-now preview) and stays untrusted for good: at least
+  amber, never ticked automatically, never green, and marked "from winapp2" or "from BleachBit".
+  A downloaded file can't add carve-outs or privacy classes.
+- **The AI's part:** explain what an imported entry does and what it costs to get back, and
+  point out entries that match nothing on this PC so the list stays short.
+- **Updates:** a new download replaces the old import as a whole; a cleaner the user approved
+  keeps its approval only while its paths are unchanged.
+- **Privacy:** the download is a plain GET of a public file; nothing about the PC is sent.
+- Checks: a corrupted or hostile file (path traversal, a never-list path, a pattern over a whole
+  drive, a huge file) is refused whole or entry by entry, never partly applied; the converter's
+  tests use fixed copies of both files.
+- Review: Fable, not skippable (downloaded input that leads to deletion).
+
 ### 6. Decide on the rest
 With five phases in use: registry MRU lists (own plan or dropped), and whether any of "Left
 out" below is worth its risk.
@@ -401,10 +427,9 @@ for a later milestone, each with its own plan and its own safety review:
 - **An elevated helper, and cleaning other accounts.**
 - **Scheduled or automatic cleaning.** Nothing runs without the review.
 - **The Recycle Bin as a target.** Deferred in the usability pass; unchanged here.
-- **Importing CleanerML or winapp2.ini.** Licence and trust questions, and they assume
-  commands Sprawl doesn't have. A converter into proposals could come later, through the same
-  checks.
-- **A shared, online cleaner list.** Definitions come from the build, the user, or the user's
-  own AI. Nothing is downloaded.
+- **Bundling CleanerML or winapp2.ini** in Sprawl's installer or repository. They are
+  downloaded at run time instead (phase 3b).
+- **A cleaner list of Sprawl's own on a server.** Definitions come from the build, the user,
+  the user's own AI, or the two public projects in phase 3b.
 - **Deep scan by file name** across the whole disk (`Thumbs.db`, `*.tmp` anywhere).
 - **Store apps** (`AppData\Local\Packages\**`): stays on the never-list until looked at alone.
