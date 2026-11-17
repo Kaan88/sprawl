@@ -91,6 +91,14 @@ pub struct Memory {
     pub labels: Vec<Label>,
     #[serde(default)]
     pub proposals: Vec<Proposal>,
+    /// "Keep the last N days" the user chose per cleaner part (by rule id). Only ever raises the
+    /// definition's own value.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub part_days: std::collections::BTreeMap<String, u32>,
+    /// The amber cleaner parts the user ticked in their last clean-up, offered as "Tick my
+    /// usual ones" (never ticked by Sprawl itself).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usual: Vec<String>,
 }
 
 fn now() -> u64 {

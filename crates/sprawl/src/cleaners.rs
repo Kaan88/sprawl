@@ -24,6 +24,16 @@ pub(crate) struct ClState {
     pub(crate) lens: Option<(u64, Arc<Vec<u8>>)>,
     /// Cleaners whose definition is shown.
     pub(crate) def: HashSet<String>,
+    /// The programs running in this session, and when that was read (`None` inside: unknown).
+    pub(crate) procs: Option<(std::time::Instant, Option<HashSet<String>>)>,
+}
+
+/// The "keep the last N days" choices offered for a part whose definition keeps `def`.
+fn day_choices(def: u32) -> Vec<u32> {
+    let mut v: Vec<u32> = [def, 1, 3, 7, 30, 90].into_iter().filter(|&d| d >= def).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
 }
 
 /// One cleaner as listed.
@@ -46,6 +56,8 @@ pub(crate) struct PartRow {
     pub(crate) cost: String,
     pub(crate) why: String,
     pub(crate) info: bool,
+    /// It clears a folder (so "keep the last N days" applies).
+    pub(crate) clears: bool,
     pub(crate) keep_days: Option<u32>,
     /// The findings that are this part (indices into the report).
     pub(crate) findings: Vec<usize>,
@@ -95,6 +107,7 @@ impl State {
                     cost: p.cost.clone(),
                     why: p.why.clone(),
                     info: p.info,
+                    clears: p.clears,
                     keep_days: p.keep_days,
                     findings: by_rule.get(p.rule.as_str()).cloned().unwrap_or_default(),
                 })
@@ -117,6 +130,7 @@ impl State {
                     cost: "The program downloads or makes these again; it may be slower once.".into(),
                     why: f.evidence.first().cloned().unwrap_or_default(),
                     info: false,
+                    clears: true,
                     keep_days: None,
                     findings: vec![i],
                 }
@@ -143,6 +157,9 @@ impl State {
         let mut x = String::from(
             r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Text="The applications on this PC, and what each keeps that can go. A part's tick is the same as its row in Findings: one bar, one review, and nothing goes before you press Clean up."/>"##,
         );
+        if !self.usual_keys(r).is_empty() {
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
+        }
         if rows.is_empty() {
             x += r##"<TextBlock Text="No application Sprawl knows is in this scan." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
             return x;
@@ -247,19 +264,35 @@ impl State {
             }
         };
         let mut sub = label;
-        if let Some(d) = p.keep_days.filter(|&d| d > 0) {
-            sub += &format!(" · keeps the last {d} days");
+        let days = self.part_days(p);
+        if days > 0 && !p.clears {
+            sub += &format!(" · keeps the last {days} days");
         }
         if p.closed == Closed::Must {
-            sub += " · close the app first";
+            sub += " · only with the app closed";
         }
         if !p.cost.is_empty() {
             sub += &format!(" · {}", p.cost);
         }
+        // the application being open
+        let open = p.findings.first().and_then(|&i| self.app_open(&r.findings[i]));
+        let warn = match &open {
+            Some((app, Closed::Must)) => format!(r##"<TextBlock Text="Close {} first: this can't be cleaned while it is open." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(app)),
+            Some((app, Closed::Warn)) => format!(r##"<TextBlock Text="{} is open: files it is using will be skipped." FontSize="12" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(app)),
+            _ => String::new(),
+        };
+        let keep = if p.clears && !p.info && bytes > 0 {
+            format!(
+                r##"<Button x:Name="AdvClK{n}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" Foreground="#FF8FB4FF" ToolTipService.ToolTip="What changed lately stays. Press to keep more days." Margin="-8,0,0,0"/>"##,
+                if days == 0 { "Keep the newest files?".to_string() } else { format!("Keeps the last {days} days (more)") }
+            )
+        } else {
+            String::new()
+        };
         let shown = self.advisor.cl.show.as_deref() == Some(p.key.as_str());
         let mut x = format!(
             r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>{tick}
-<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,4,0,4"><Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/><StackPanel Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxWidth="520"/></StackPanel></StackPanel>
+<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,4,0,4"><Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Top" Margin="0,5,0,0"/><StackPanel Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxWidth="560"/>{warn}{keep}</StackPanel></StackPanel>
 {files}<TextBlock Grid.Column="3" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
             op = if bytes > 0 { "1" } else { "0.55" },
             dot = if p.info { "#FF8E97AA" } else { crate::advisor::risk_hex(p.risk) },
@@ -347,6 +380,31 @@ impl State {
                 self.cleanup_tick_many(keys);
                 self.advisor.focus_after = Some(format!("AdvClT{i}"));
             }
+            "AdvClK" => {
+                let Some(p) = rows.iter().flat_map(|c| c.parts.iter()).nth(i) else { return };
+                let def = p.keep_days.unwrap_or(0);
+                let cur = self.part_days(p);
+                let choices = day_choices(def);
+                let next = choices.iter().copied().find(|&d| d > cur).unwrap_or(def);
+                let (rule, findings) = (p.key.clone(), p.findings.clone());
+                if next == def {
+                    self.advisor.memory.part_days.remove(&rule);
+                } else {
+                    self.advisor.memory.part_days.insert(rule, next);
+                }
+                self.save_memory();
+                // the findings of this report act on the new number now
+                if let Some(r) = self.advisor.report.as_mut() {
+                    for k in findings {
+                        if let Some(f) = r.findings.get_mut(k) {
+                            if let Some(sprawl_advisor::clean::Action::Clear { .. }) = f.action {
+                                let admin = f.admin;
+                                f.set_action(sprawl_advisor::clean::Action::Clear { days: next }, admin);
+                            }
+                        }
+                    }
+                }
+            }
             "AdvClS" => {
                 let Some(p) = rows.iter().flat_map(|c| c.parts.iter()).nth(i) else { return };
                 if self.advisor.cl.show.as_deref() == Some(p.key.as_str()) {
@@ -370,6 +428,97 @@ impl State {
             _ => return,
         }
         self.render_advisor();
+    }
+
+    /// The part's "keep the last N days": the user's choice, never below the definition's.
+    pub(crate) fn part_days(&self, p: &PartRow) -> u32 {
+        let def = p.keep_days.unwrap_or(0);
+        self.advisor.memory.part_days.get(&p.key).copied().unwrap_or(def).max(def)
+    }
+
+    /// Read the running programs again when the last look is older than a few seconds.
+    pub(crate) fn cleaner_procs(&mut self, force: bool) {
+        let stale = self.advisor.cl.procs.as_ref().is_none_or(|(t, _)| t.elapsed().as_secs() >= 3);
+        if force || stale {
+            self.advisor.cl.procs = Some((std::time::Instant::now(), sprawl_advisor::procs::running()));
+        }
+    }
+
+    /// The application of `f`'s cleaner part when it is open (or when that can't be told and
+    /// the part must have it closed), with what that means for the part.
+    pub(crate) fn app_open(&self, f: &Finding) -> Option<(String, Closed)> {
+        let r = self.advice()?;
+        let Source::Rule(id) = &f.source else { return None };
+        let (d, p) = sprawl_advisor::cleaners::part_of(&r.catalogue, id)?;
+        if d.running.is_empty() || p.closed == Closed::No {
+            return None;
+        }
+        let now = self.advisor.cl.procs.as_ref().and_then(|(_, s)| s.as_ref());
+        match sprawl_advisor::procs::any_running(&d.running, now) {
+            Some(true) => Some((d.name.clone(), p.closed)),
+            None if p.closed == Closed::Must => Some((d.name.clone(), Closed::Must)),
+            _ => None,
+        }
+    }
+
+    /// For a part that must have its application closed: the application and its programs, to
+    /// check again just before the part is cleaned.
+    pub(crate) fn part_gate(&self, f: &Finding) -> Option<(String, Vec<String>)> {
+        let r = self.advice()?;
+        let Source::Rule(id) = &f.source else { return None };
+        let (d, p) = sprawl_advisor::cleaners::part_of(&r.catalogue, id)?;
+        (p.closed == Closed::Must && !d.running.is_empty()).then(|| (d.name.clone(), d.running.clone()))
+    }
+
+    /// The paths "Tick my usual ones" would tick.
+    pub(crate) fn usual_keys(&self, r: &Report) -> Vec<String> {
+        let usual = &self.advisor.memory.usual;
+        if usual.is_empty() {
+            return Vec::new();
+        }
+        r.findings
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| matches!(&f.source, Source::Rule(id) if usual.contains(id)) && untickable(f, r.counted[*i]).is_none())
+            .map(|(_, f)| key(&f.path))
+            .filter(|k| !self.advisor.cleanup.ticked.contains(k))
+            .collect()
+    }
+
+    /// Remember the amber space parts in a clean-up, for "Tick my usual ones" next time.
+    pub(crate) fn remember_usual(&mut self, picked: &[Finding]) {
+        let Some(r) = self.advice() else { return };
+        let mut ids: Vec<String> = picked
+            .iter()
+            .filter(|f| f.risk == Risk::Amber)
+            .filter_map(|f| if let Source::Rule(id) = &f.source { Some(id.clone()) } else { None })
+            .filter(|id| sprawl_advisor::cleaners::part_of(&r.catalogue, id).is_some_and(|(_, p)| p.class == Class::Space))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        if !ids.is_empty() && ids != self.advisor.memory.usual {
+            self.advisor.memory.usual = ids;
+            self.save_memory();
+        }
+    }
+
+    /// The cleaners as text, for the read-only MCP tool.
+    pub(crate) fn cleaners_text(&self, r: &Report) -> String {
+        let rows: Vec<(String, Vec<(String, Risk, u64, Vec<String>)>)> = self
+            .cleaner_layout(r)
+            .into_iter()
+            .filter(|c| c.presence == Presence::InScan)
+            .map(|c| {
+                let parts = c
+                    .parts
+                    .iter()
+                    .filter(|p| p.bytes(r) > 0)
+                    .map(|p| (p.title.clone(), p.risk, p.bytes(r), p.findings.iter().map(|&i| r.findings[i].path.display().to_string()).collect()))
+                    .collect();
+                (c.name, parts)
+            })
+            .collect();
+        sprawl_advisor::cleaners::as_text(&rows)
     }
 
     /// The map lens for the part whose files are shown, while the Cleaners section is on.

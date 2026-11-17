@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sprawl_advisor::clean::{self, Action, Outcome};
+use sprawl_advisor::cleaners::Closed;
 use sprawl_advisor::{Finding, Remedy, Risk, Source};
 use sprawl_core::Tree;
 
@@ -86,6 +87,26 @@ pub(crate) fn rescan(p: &std::path::Path) -> std::io::Result<Tree> {
 
 pub(crate) fn key(p: &std::path::Path) -> String {
     p.to_string_lossy().to_lowercase()
+}
+
+/// Why a part whose application must be closed can't be cleaned now, or None when it can:
+/// one of `exes` runs, a program has one of its files open, or Windows can't say.
+fn still_open(path: &std::path::Path, app: &str, exes: &[String]) -> Option<String> {
+    let now = sprawl_advisor::procs::running();
+    match sprawl_advisor::procs::any_running(exes, now.as_ref()) {
+        Some(false) => {}
+        Some(true) => return Some(format!("{}: left alone, {app} is open", path.display())),
+        None => return Some(format!("{}: left alone, Windows couldn't say whether {app} is open", path.display())),
+    }
+    let files = sprawl_advisor::inuse::files_on_disk(path, sprawl_advisor::inuse::MAX_FILES);
+    if files.is_empty() {
+        return None;
+    }
+    match sprawl_advisor::inuse::in_use(&files) {
+        Some(names) if names.is_empty() => None,
+        Some(names) => Some(format!("{}: left alone, in use by {}", path.display(), names.join(", "))),
+        None => Some(format!("{}: left alone, Windows couldn't say which programs use it", path.display())),
+    }
 }
 
 /// Why a finding can't be ticked, or None when it can.
@@ -236,7 +257,9 @@ impl State {
             return;
         }
         let never = sprawl_advisor::safety::Never::default_list();
-        let mut work: Vec<(PathBuf, Action, u64)> = Vec::new();
+        self.cleaner_procs(true);
+        self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
+        let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>)> = Vec::new();
         let mut items = Vec::new();
         let mut held = Vec::new();
         for (_, f) in picked {
@@ -252,7 +275,13 @@ impl State {
                 held.push(format!("{}: not cleaned, its command is not one Sprawl can run", f.title));
                 continue;
             };
-            work.push((f.path.clone(), action, f.bytes));
+            // its application must be closed: checked now, and again just before it runs
+            let gate = self.part_gate(&f);
+            if let Some((app, Closed::Must)) = self.app_open(&f) {
+                held.push(format!("{}: not cleaned, {app} is open. Close it, then clean up again.", f.title));
+                continue;
+            }
+            work.push((f.path.clone(), action, f.bytes, gate));
             items.push(Item { path: f.path.clone(), title: f.title.clone(), bytes: f.bytes, state: ItemState::Waiting });
         }
         if items.is_empty() {
@@ -263,11 +292,21 @@ impl State {
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         std::thread::spawn(move || {
-            for (i, (path, action, before)) in work.into_iter().enumerate() {
+            for (i, (path, action, before, gate)) in work.into_iter().enumerate() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
                 }
                 let _ = tx.send(Msg::Start(i));
+                // an application that must be closed: the process list and the files' users,
+                // just before; an answer Windows can't give counts as open
+                if let Some((app, exes)) = &gate {
+                    if let Some(why) = still_open(&path, app, exes) {
+                        let mut out = Outcome::default();
+                        out.problems.push(why);
+                        let _ = tx.send(Msg::Finished(i, out, None));
+                        continue;
+                    }
+                }
                 let mut last = Instant::now();
                 let mut out = clean::run(&path, &action, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
@@ -485,6 +524,31 @@ impl State {
             );
         }
         x += "</StackPanel></ScrollViewer>";
+        // an open application: a part that must have it closed stays, the rest skip what it holds
+        let mut must: Vec<String> = Vec::new();
+        let mut warn: Vec<String> = Vec::new();
+        for (_, f) in &picked {
+            match self.app_open(f) {
+                Some((app, sprawl_advisor::cleaners::Closed::Must)) if !must.contains(&app) => must.push(app),
+                Some((app, sprawl_advisor::cleaners::Closed::Warn)) if !warn.contains(&app) => warn.push(app),
+                _ => {}
+            }
+        }
+        if !must.is_empty() || !warn.is_empty() {
+            x += r##"<StackPanel Spacing="4">"##;
+            if !must.is_empty() {
+                x += &format!(
+                    r##"<TextBlock Text="{} {} open: close {} first, or its parts stay. Sprawl never closes a program." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##,
+                    ui::esc(&must.join(", ")),
+                    if must.len() == 1 { "is" } else { "are" },
+                    if must.len() == 1 { "it" } else { "them" }
+                );
+            }
+            if !warn.is_empty() {
+                x += &format!(r##"<TextBlock Text="{} {} open: files in use are skipped." FontSize="12" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(&warn.join(", ")), if warn.len() == 1 { "is" } else { "are" });
+            }
+            x += r##"<Button x:Name="AdvClCheck" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
+        }
         if own {
             x += &format!(
                 r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="These are my own files, I want them gone, and I know they can't be brought back" FontSize="13"/>"##,

@@ -26,6 +26,27 @@ pub fn files_under(tree: &Tree, n: usize, cap: usize) -> Vec<PathBuf> {
     out
 }
 
+/// Files below `path` on disk now, at most `cap` (links not followed): for the check just before
+/// a part is cleaned, when the scan may be old.
+pub fn files_on_disk(path: &Path, cap: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+        if m.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&p) {
+                stack.extend(rd.flatten().map(|e| e.path()));
+            }
+        } else if !m.file_type().is_symlink() {
+            out.push(p);
+            if out.len() >= cap {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Names of the programs that have any of `files` open (empty when none), or `None` when
 /// Windows couldn't say.
 pub fn in_use(files: &[PathBuf]) -> Option<Vec<String>> {

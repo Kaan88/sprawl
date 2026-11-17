@@ -241,6 +241,32 @@ pub struct PartDef {
     pub paths: Vec<String>,
 }
 
+/// The cleaner and part a rule's findings belong to.
+pub fn part_of<'a>(catalogue: &'a [CleanerDef], rule: &str) -> Option<(&'a CleanerDef, &'a PartDef)> {
+    catalogue.iter().find_map(|d| d.parts.iter().find(|p| p.rule == rule).map(|p| (d, p)))
+}
+
+/// The cleaners as text, for the read-only MCP tool: each application found, its parts and
+/// sizes. `parts`: (cleaner name, part title, risk, bytes, paths).
+pub fn as_text(rows: &[(String, Vec<(String, Risk, u64, Vec<String>)>)]) -> String {
+    let mut s = String::new();
+    for (name, parts) in rows {
+        let total: u64 = parts.iter().map(|p| p.2).sum();
+        s += &format!("## {name} ({})\n", sprawl_core::format_size(total));
+        for (title, risk, bytes, paths) in parts {
+            s += &format!("- {title}: {} [{risk:?}]", sprawl_core::format_size(*bytes));
+            if !paths.is_empty() {
+                s += &format!(" at {}", paths.join(", "));
+            }
+            s += "\n";
+        }
+    }
+    if s.is_empty() {
+        s = "No cleaner has anything in this scan.".into();
+    }
+    s + "\nRead-only: the user ticks parts in Sprawl's Advisor (Cleaners) and presses Clean up.\n"
+}
+
 /// The id of the "found by shape" cleaner, and of its findings' rule.
 pub const SHAPE: &str = "shape.cache";
 

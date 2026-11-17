@@ -392,7 +392,16 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     let (local, refused) = memory::load_packs();
     packs.extend(local);
     let (findings, held) = sprawl_advisor::advise_all(tree, &packs, &facts);
-    let (findings, kept) = memory.filter(findings);
+    let (mut findings, kept) = memory.filter(findings);
+    // "keep the last N days" the user chose for a part: only ever more days than its own
+    for f in &mut findings {
+        if let (Source::Rule(id), Some(sprawl_advisor::clean::Action::Clear { days })) = (&f.source, &f.action) {
+            if let Some(&d) = memory.part_days.get(id).filter(|&&d| d > *days) {
+                let admin = f.admin;
+                f.set_action(sprawl_advisor::clean::Action::Clear { days: d }, admin);
+            }
+        }
+    }
     let catalogue = sprawl_advisor::cleaners::catalogue(&packs);
     let presence = crate::cleaners::presences(tree, &catalogue, &findings);
     let mut list_min = std::collections::HashMap::new();
@@ -674,7 +683,7 @@ impl State {
     fn advisor_changed(&mut self) {
         self.map.drawn_once = false;
         if let Some(r) = self.advice() {
-            crate::bridge::publish_findings(findings_text(r));
+            crate::bridge::publish_findings(format!("{}{}{}", findings_text(r), sprawl_advisor::mcp::CLEANERS_MARK, self.cleaners_text(r)));
         }
         if self.view == View::Advisor {
             self.render_advisor();
@@ -830,6 +839,13 @@ impl State {
             }
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecCleaners" => self.advisor.section = Section::Cleaners,
+            "AdvClCheck" => self.cleaner_procs(true),
+            "AdvClUsual" => {
+                if let Some(r) = self.advice() {
+                    let keys = self.usual_keys(r);
+                    self.cleanup_tick_many(keys);
+                }
+            }
             "AdvSecAsk" => self.advisor.section = Section::Ask,
             "AdvSecGrowth" | "AdvGrowOpen" => self.advisor.section = Section::Growth,
             "AdvGrowPaint" => return self.command("PaintGrowth"),
@@ -1064,6 +1080,10 @@ impl State {
     }
 
     pub(crate) fn render_advisor(&mut self) {
+        // which programs are open, for the cleaners' parts and the review
+        if self.advisor.section == Section::Cleaners || self.advisor.cleanup.review {
+            self.cleaner_procs(false);
+        }
         if let Some(e) = &self.advisor.ai_edit {
             let (p, u) = (e.provider, e.base_url.clone());
             self.advisor.models.want(p, &u);
@@ -1175,6 +1195,7 @@ impl State {
             ("AdvClScan", cl.0),
             ("AdvClT", cl.1),
             ("AdvClS", cl.1),
+            ("AdvClK", cl.1),
         ];
         for (kind, n) in counts {
             for i in 0..n {
@@ -1188,7 +1209,7 @@ impl State {
             }
         }
         for name in [
-            "AdvSecFindings", "AdvSecCleaners", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
+            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",

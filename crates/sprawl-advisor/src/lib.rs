@@ -29,6 +29,7 @@ pub mod mcp;
 pub mod memory;
 pub mod pipe;
 pub mod plan;
+pub mod procs;
 pub mod projects;
 pub mod remedies;
 pub mod rules;

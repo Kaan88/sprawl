@@ -46,9 +46,18 @@ pub fn bridge_specs() -> Vec<ToolSpec> {
             the user ticks findings in Sprawl's Advisor and presses Clean up; Sprawl removes them itself, links as links.",
         schema: json!({"type": "object", "properties": {}}),
     });
+    v.push(ToolSpec {
+        name: "cleaners",
+        description: "Sprawl's Cleaners for the scan on screen: each application found, its parts (caches, logs) with risk, size and paths. Read-only: \
+            the user ticks parts in the Advisor and presses Clean up.",
+        schema: json!({"type": "object", "properties": {}}),
+    });
     v.extend(chat_specs().into_iter().filter(|t| t.name == "set_filter"));
     v
 }
+
+/// The text the app publishes holds the findings, then [`CLEANERS_MARK`] and the cleaners.
+pub const CLEANERS_MARK: &str = "\n\u{1e}cleaners\n";
 
 fn tool_list(specs: &[ToolSpec]) -> Value {
     Value::Array(specs.iter().map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.schema})).collect())
@@ -204,7 +213,14 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Me
     let name = req["tool"].as_str().unwrap_or("");
     let input = &req["input"];
     match name {
-        "findings" => reply(true, if findings.is_empty() { "The Advisor hasn't found anything (or is still looking).".into() } else { findings.to_string() }),
+        "findings" => {
+            let f = findings.split(CLEANERS_MARK).next().unwrap_or("");
+            reply(true, if f.trim().is_empty() { "The Advisor hasn't found anything (or is still looking).".into() } else { f.to_string() })
+        }
+        "cleaners" => {
+            let c = findings.split_once(CLEANERS_MARK).map_or("", |(_, c)| c);
+            reply(true, if c.trim().is_empty() { "The Advisor hasn't listed cleaners yet (or is still looking).".into() } else { c.to_string() })
+        }
         "scan_report" => reply(true, crate::llm::report::build(tree, facts, &[], None, None)),
         _ if bridge_specs().iter().any(|t| t.name == name) => {
             let mut tools = Tools::new(tree, facts, "claude-code", &[], memory);
