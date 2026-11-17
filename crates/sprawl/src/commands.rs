@@ -69,6 +69,8 @@ impl State {
     pub(crate) fn command(&mut self, name: &str) {
         let has_tree = self.tree.is_some();
         match name {
+            // while scanning the button is Stop
+            "ScanButton" if self.job.is_some() => self.stop_scan(),
             "mScan" | "ScanButton" => {
                 let idx = find::<Selector>(&self.root, "DriveBox").and_then(|c| c.SelectedIndex()).unwrap_or(0);
                 if let Some(d) = self.drives.get(idx.max(0) as usize) {

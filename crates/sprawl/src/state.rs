@@ -226,6 +226,7 @@ impl State {
             *r2.lock().unwrap() = Some(tree);
         });
         self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now() });
+        self.scan_button(true);
         // The map shows the scan growing; the header's used space lets the overlay estimate progress.
         self.map.scene.clear();
         self.map.live = Some(LiveMap::new());
@@ -267,6 +268,7 @@ impl State {
             }
             Some(res) => {
                 let job = self.job.take().unwrap();
+                self.scan_button(false);
                 self.scan_secs = job.started.elapsed().as_secs_f64();
                 if let Ok(p) = find::<ProgressBar>(&self.root, "Progress") {
                     let _ = p.SetIsIndeterminate(false);
@@ -436,6 +438,15 @@ impl State {
                 let w = track.ActualWidth().unwrap_or(200.0);
                 let _ = bar.SetWidth((w * pct(used) / 100.0).max(14.0));
             }
+        }
+    }
+
+    /// The Scan button turns into Stop while a scan runs.
+    fn scan_button(&self, scanning: bool) {
+        text(&self.root, "ScanButtonText", if scanning { "Stop" } else { "Scan" });
+        if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::FontIcon>(&self.root, "ScanButtonIcon") {
+            let glyph = char::from_u32(if scanning { 0xE71A } else { 0xE721 }).unwrap_or(' ').to_string();
+            let _ = i.SetGlyph(&glyph.as_str().into());
         }
     }
 

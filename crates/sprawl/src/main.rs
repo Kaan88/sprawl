@@ -312,6 +312,16 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             let _ = e.SetHandled(true);
         }
     })?);
+    // a narrow window folds the header: the brand card goes first
+    keep(root.SizeChanged(|s, _| {
+        let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
+        let narrow = fe.ActualWidth().unwrap_or(2000.0) < 1250.0;
+        with(|st| {
+            if let Ok(c) = find::<UIElement>(&st.root, "BrandCard") {
+                let _ = c.SetVisibility(if narrow { bindings::Microsoft::UI::Xaml::Visibility::Collapsed } else { bindings::Microsoft::UI::Xaml::Visibility::Visible });
+            }
+        });
+    })?);
     let tree_sv: UIElement = find(&root, "TreeScroll")?;
     keep(tree_sv.DoubleTapped(move |s, e| {
         let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };

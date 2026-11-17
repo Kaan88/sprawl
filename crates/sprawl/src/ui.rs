@@ -398,7 +398,7 @@ pub fn page(drives: &[String]) -> String {
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="380"/>
       <ColumnDefinition Width="*"/>
-      <ColumnDefinition Width="330"/>
+      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Border {CARD} Padding="12,10">
       <StackPanel Spacing="8">
@@ -407,7 +407,7 @@ pub fn page(drives: &[String]) -> String {
           <TextBlock Text="Select:" VerticalAlignment="Center" Foreground="#FFB9C2D6"/>
           <ComboBox x:Name="DriveBox" Grid.Column="1" HorizontalAlignment="Stretch" SelectedIndex="0">{drive_items}</ComboBox>
           <Button x:Name="ScanButton" Grid.Column="2" Style="{{StaticResource AccentButtonStyle}}" MinWidth="78">
-            <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE721;" FontSize="13"/><TextBlock Text="Scan"/></StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon x:Name="ScanButtonIcon" Glyph="&#xE721;" FontSize="13"/><TextBlock x:Name="ScanButtonText" Text="Scan"/></StackPanel>
           </Button>
         </Grid>
         <TextBlock x:Name="StatusText" Text="Ready. Pick a drive or folder and press Scan." FontSize="12" Foreground="#FFB9C2D6"/>
@@ -439,7 +439,7 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock x:Name="ScanInfo" Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
     </Border>
-    <Border Grid.Column="2" {CARD} Padding="14,10">
+    <Border x:Name="BrandCard" Grid.Column="2" Width="330" {CARD} Padding="14,10">
       <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
         <Border Width="54" Height="54" CornerRadius="13">
           <Border.Background>
@@ -458,7 +458,7 @@ pub fn page(drives: &[String]) -> String {
         </Border>
         <StackPanel VerticalAlignment="Center" Spacing="2">
           <TextBlock Text="Sprawl {version}" FontSize="17" FontWeight="SemiBold"/>
-          <TextBlock Text="Rust + WinUI 3 disk space analyser" FontSize="12" Foreground="#FF8E97AA"/>
+          <TextBlock Text="Disk space analyser" FontSize="12" Foreground="#FF8E97AA"/>
           <TextBlock x:Name="BrandLine" Text="Wheel zooms, right-drag pans" FontSize="12" Foreground="#FF8E97AA"/>
         </StackPanel>
       </StackPanel>
