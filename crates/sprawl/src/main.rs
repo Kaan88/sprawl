@@ -473,10 +473,14 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             s.wizard_page = p.min(wizard::PAGES - 1);
             s.wizard_show();
         }
-        if a.advisor && first.is_some() {
+        let restart = a.advisor && first.is_some();
+        let tab = look::start_tab(look::start_choice(s.settings.num("startTab")), s.settings.get("lastTab"), first.is_some(), restart);
+        if restart {
             // ticks only become ticks for findings of the new report; the review still asks
             s.advisor.cleanup.pending = Some(a.ticks.iter().take(500).map(|p| crate::cleanup::key(p)).collect());
             s.command("TabAdvisor");
+        } else {
+            s.open_on(tab);
         }
         if let Some(f) = first {
             s.start_scan(f);

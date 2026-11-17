@@ -94,13 +94,22 @@ pub const AA_ITEMS: [&str; 4] = ["aaOff", "aaLow", "aaMedium", "aaHigh"];
 pub const CAPS: [&str; 4] = ["500 MB", "1 GB", "2 GB", "5 GB"];
 pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
 pub const AFTER_SCAN: [&str; 2] = ["Stay where I am", "Open the Advisor"];
+/// "Open Sprawl on": the tab used last, or one of the tabs (look::start_tab reads the index).
+pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "Advisor", "Cleaners", "Search"];
 
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 46] = [
+pub static PREFS: [Pref; 47] = [
     // General
     p("units", Sec::General, "Sizes in", "How sizes are written. Sizes are binary: 1 GB is 1,024 MB.", Kind::Choice(&UNITS, 0)),
+    p(
+        "startTab",
+        Sec::General,
+        "Open Sprawl on",
+        "The tab shown when Sprawl starts; nothing is scanned because of it. A folder opened from Explorer or the command line is scanned and shown in Tree View whatever this says.",
+        Kind::Choice(&OPEN_ON, 0),
+    ),
     p("dataFolder", Sec::General, "Your data", "Settings, what the Advisor remembers, scan history and logs: all on this PC, in your own folders.", Kind::Custom),
     // AI and privacy
     p("ai", Sec::Ai, "AI provider", "", Kind::Custom),
@@ -241,6 +250,7 @@ mod tests {
     fn defaults_are_the_documented_ones() {
         let documented: &[(&str, &str)] = &[
             ("units", "0"),
+            ("startTab", "0"),
             ("aiWebLookup", "0"),
             ("oUpdates", "1"),
             ("communityFetch", "0"),

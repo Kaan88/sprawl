@@ -275,6 +275,7 @@ impl State {
 
     /// Each frame: the activity indicator beside the filter box, the same on every tab.
     pub(crate) fn busy_poll(&mut self) {
+        self.start_frame();
         let mut cleanup_tab = SHOWN.with(|s| s.borrow().cleanup_tab);
         if self.advisor.cleanup.running.is_none() {
             cleanup_tab = None;
@@ -345,9 +346,113 @@ impl State {
     }
 }
 
+// ---------------------------------------------------------------- the tab Sprawl opens on
+
+/// The tabs Sprawl can open on, in the order of `prefs::OPEN_ON` after "the tab used last".
+pub(crate) const START_TABS: [&str; 5] = ["TabTree", "TabFiles", "TabAdvisor", "TabCleaners", "TabSearch"];
+
+/// The "Open Sprawl on" setting as an index into `prefs::OPEN_ON` (0: the tab used last).
+pub(crate) fn start_choice(v: Option<f64>) -> usize {
+    v.filter(|v| v.is_finite() && *v >= 0.0).map_or(0, |v| (v as usize).min(START_TABS.len()))
+}
+
+/// The tab to open at start. A folder given on the command line or by Explorer is scanned and
+/// shown in Tree View; the restart as administrator from the Advisor goes back to the Advisor;
+/// otherwise the setting, where 0 is the tab used last (Tree View when none is known).
+pub(crate) fn start_tab(choice: usize, last: Option<&str>, folder: bool, advisor_restart: bool) -> &'static str {
+    if advisor_restart {
+        return "TabAdvisor";
+    }
+    if folder {
+        return "TabTree";
+    }
+    match choice {
+        1..=5 => START_TABS[choice - 1],
+        _ => last.and_then(|l| START_TABS.iter().find(|t| **t == l).copied()).unwrap_or("TabTree"),
+    }
+}
+
+thread_local! {
+    /// Frames drawn so far, and a tab switch that waits for the window to be drawn first.
+    static START: std::cell::Cell<(u32, Option<&'static str>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+impl State {
+    /// Open the tab the start-up chose. Cleaners shows at once but reads its folders only
+    /// once the window has been drawn (the read is started a few frames later).
+    pub(crate) fn open_on(&mut self, tab: &'static str) {
+        match tab {
+            "TabTree" => {}
+            "TabCleaners" => {
+                self.set_cleaners_tab(true);
+                self.set_view(View::Advisor);
+                START.with(|s| s.set((s.get().0, Some(tab))));
+            }
+            t => self.command(t),
+        }
+    }
+
+    /// Each frame: run what waited for the window, and remember the tab in use (saved with the
+    /// other settings, for "the tab used last").
+    fn start_frame(&mut self) {
+        let (n, waiting) = START.with(|s| s.get());
+        START.with(|s| s.set((n.saturating_add(1), if n >= 3 { None } else { waiting })));
+        if n == 3 {
+            if let Some(t) = waiting {
+                self.command(t);
+            }
+        }
+        if n < 3 {
+            return;
+        }
+        let now = match self.view {
+            View::Tree => "TabTree",
+            View::Files => "TabFiles",
+            View::Search => "TabSearch",
+            View::Advisor if self.advisor.cleaners_tab_on() => "TabCleaners",
+            View::Advisor => "TabAdvisor",
+            View::About => return,
+        };
+        if self.settings.get("lastTab") != Some(now) {
+            self.settings.set("lastTab", now);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_start_tab() {
+        // the setting
+        assert_eq!(start_tab(1, Some("TabSearch"), false, false), "TabTree");
+        assert_eq!(start_tab(2, None, false, false), "TabFiles");
+        assert_eq!(start_tab(3, None, false, false), "TabAdvisor");
+        assert_eq!(start_tab(4, None, false, false), "TabCleaners");
+        assert_eq!(start_tab(5, None, false, false), "TabSearch");
+        // the tab used last, the default; Tree View when none (or an odd one) is known
+        assert_eq!(start_tab(0, Some("TabCleaners"), false, false), "TabCleaners");
+        assert_eq!(start_tab(0, None, false, false), "TabTree");
+        assert_eq!(start_tab(0, Some("TabAbout"), false, false), "TabTree");
+        // a folder from Explorer or the command line: scanned, in Tree View, whatever the setting
+        for c in 0..=5 {
+            assert_eq!(start_tab(c, Some("TabSearch"), true, false), "TabTree");
+            // the restart as administrator from the Advisor goes back to the Advisor
+            assert_eq!(start_tab(c, Some("TabSearch"), true, true), "TabAdvisor");
+        }
+        // the setting as stored
+        assert_eq!(start_choice(None), 0);
+        assert_eq!(start_choice(Some(4.0)), 4);
+        assert_eq!(start_choice(Some(99.0)), 5);
+        assert_eq!(start_choice(Some(-1.0)), 0);
+        assert_eq!(start_choice(Some(f64::NAN)), 0);
+        // one start tab for each choice after the first
+        assert_eq!(START_TABS.len() + 1, crate::prefs::OPEN_ON.len());
+        for (i, t) in START_TABS.iter().enumerate() {
+            assert_eq!(tab_name(t), crate::prefs::OPEN_ON[i + 1]);
+        }
+    }
 
     #[test]
     fn the_indicator_lists_what_runs_with_its_tab() {

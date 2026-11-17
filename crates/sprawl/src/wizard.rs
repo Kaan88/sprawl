@@ -243,6 +243,7 @@ impl State {
             "animate" => b(self.map.scene.animate),
             "aiWebLookup" => b(AiConfig::load().web_lookup),
             "afterScan" => self.settings.num("afterScan").unwrap_or(0.0).clamp(0.0, 1.0).to_string(),
+            "startTab" => crate::look::start_choice(self.settings.num("startTab")).to_string(),
             "snapshot_cap_mb" => {
                 let cap = self.settings.num("snapshot_cap_mb").unwrap_or(1024.0) as u32;
                 prefs::CAPS_MB.iter().position(|&c| c == cap).unwrap_or(1).to_string()
@@ -295,6 +296,7 @@ impl State {
                 let _ = c.save();
             }
             "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
+            "startTab" => self.settings.set("startTab", idx(prefs::OPEN_ON.len())),
             "snapshot_cap_mb" => self.settings.set("snapshot_cap_mb", prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),
             "uninstaller" => self.settings.set("uninstaller", v.trim().trim_matches('"')),
             "searchDrivesOn" => {
