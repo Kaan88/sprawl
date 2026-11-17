@@ -217,7 +217,7 @@ impl State {
                 win32::copy_text(self.hwnd, &s);
                 text(&self.root, "FootLeft", "Copied the visible rows to the clipboard");
             }
-            // only from the tables: the Advisor tab never deletes anything, even by keyboard
+            // only from the tables: the Advisor removes things only through its own review
             "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files) => self.delete(name == "mDeleteForever"),
             "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View and File View"),
             "mExportCsv" if has_tree => {

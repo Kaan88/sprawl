@@ -50,7 +50,7 @@ pub fn xaml() -> String {
     let palettes: Vec<&str> = crate::paint::PALETTES.to_vec();
     let p0 = format!(
         r##"<StackPanel x:Name="WizP0" Spacing="2">{}
-        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before your first scan. Each one can be changed later under Options, and you can open this again from Options &gt; Setup Wizard."/>
+        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before your first scan. You can open this again from Options &gt; Setup Wizard; the AI can also be changed in the Advisor's Ask tab."/>
         {}{}{}{}</StackPanel>"##,
         page_title("&#xE7BE;", "Welcome to Sprawl", "Let's set it up the way you like it"),
         bullet("&#xE945;", "AI advisor", "Pick Claude, Claude Code or a local model to explain what is using your space. Optional."),
@@ -60,7 +60,7 @@ pub fn xaml() -> String {
     );
     let p1 = format!(
         r##"<StackPanel x:Name="WizP1" Spacing="2" Visibility="Collapsed">{}
-        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, plan how to free a target amount, and answer questions. It only advises; Sprawl never deletes anything by itself."/>
+        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, add what it finds to your list, and answer questions. It only suggests: nothing goes until you tick it and press Clean up."/>
         <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF"/></StackPanel></Border>
         {}{}
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>

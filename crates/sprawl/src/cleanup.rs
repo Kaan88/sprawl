@@ -484,6 +484,7 @@ impl State {
             ui::esc(msg.as_deref().unwrap_or("")),
             if msg.is_some() { "Visible" } else { "Collapsed" }
         );
+        x += &self.exported_xaml();
         let c = &self.advisor.cleanup;
         x += &self.cleanup_status_xaml();
         if c.running.is_none() {

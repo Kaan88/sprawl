@@ -43,7 +43,7 @@ pub fn bridge_specs() -> Vec<ToolSpec> {
     v.push(ToolSpec {
         name: "findings",
         description: "What Sprawl's Advisor found for the scan on screen: each with its risk, size, path and evidence. Don't delete anything yourself: \
-            the user exports Sprawl's own script from its Advisor tab, which removes links without following them.",
+            the user ticks findings in Sprawl's Advisor and presses Clean up; Sprawl removes them itself, links as links.",
         schema: json!({"type": "object", "properties": {}}),
     });
     v.extend(chat_specs().into_iter().filter(|t| t.name == "set_filter"));

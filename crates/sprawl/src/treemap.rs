@@ -266,9 +266,8 @@ impl State {
         }
         self.map.scene.selected = self.selected;
         self.map.scene.highlight_ext = self.ext_selected.as_deref().map(ext_key);
-        // the plan preview: only the plan lit, its tiles shrinking away
-        let preview = if self.view == crate::state::View::Advisor && self.map.live.is_none() { self.plan_preview() } else { None };
-        self.map.scene.shrink = preview.clone();
+        let preview: Option<std::sync::Arc<Vec<u8>>> = None;
+        self.map.scene.shrink = None;
         // the colour switch: Risk and Growth light the map on every tab (not the live picture of a
         // scan: its node numbers are its own)
         let paint = self.map.views.paint;

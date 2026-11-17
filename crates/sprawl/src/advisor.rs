@@ -1,13 +1,10 @@
-//! The Advisor tab: what can be won back, with evidence, the command to run and a treemap lens.
+//! The Advisor tab: what can be won back, with evidence, and the map coloured by it.
 //!
 //! The analysis (rules, app facts, projects, safety checks) runs on a background thread after
 //! every scan; the report is tied to the exact tree it was made from and ignored once that tree
-//! changes. Nothing here deletes or runs anything: commands are shown for the user to copy, or
-//! written into a PowerShell script the user runs (a dry run unless given `-Run`).
-//!
-//! Phase 2 adds the model ("Ask Claude"), goal mode ("I need N GB" gives the lowest-risk plan,
-//! previewed on the map as tiles shrinking away), the script export and a verify step that
-//! measures what was really freed.
+//! changes. Nothing here deletes: the user ticks findings and [`crate::cleanup`] removes them,
+//! after a review. "Ask Claude" adds the model's findings to the same list; a chat answers
+//! questions; "Save as a script" writes the ticked items as a PowerShell script instead.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -18,7 +15,6 @@ use sprawl_advisor::facts::Facts;
 use sprawl_advisor::hidden::HiddenSpace;
 use sprawl_advisor::llm::agent::{AiRun, ChatEvent};
 use sprawl_advisor::memory::{self, Memory, Verdict};
-use sprawl_advisor::plan::Plan;
 use sprawl_advisor::rules::RM_FN;
 use sprawl_advisor::{Finding, Remedy, Risk, RulePack, Source};
 use sprawl_core::Tree;
@@ -96,14 +92,6 @@ enum Ai {
     Failed(String),
 }
 
-/// A goal plan for the current report, and its map preview.
-struct Planned {
-    gen: u64,
-    plan: Plan,
-    /// Risk code of every node the plan removes (0 elsewhere): the preview's lens and what shrinks.
-    lens: Arc<Vec<u8>>,
-}
-
 /// The last script written, and what verifying it found.
 struct Exported {
     file: PathBuf,
@@ -117,7 +105,6 @@ struct Exported {
 enum Section {
     #[default]
     Findings,
-    Plan,
     Ask,
     Growth,
     Memory,
@@ -174,9 +161,6 @@ pub(crate) struct Advisor {
     /// What is in the "I need __ GB" box, kept across redraws.
     goal_text: String,
     ai: Ai,
-    plan: Option<Planned>,
-    /// The plan's tiles shrink away on the map.
-    pub(crate) preview: bool,
     exported: Option<Exported>,
     show_rejected: bool,
     /// Preferences, decisions, labels and proposed rules (loaded on the first analysis).
@@ -204,7 +188,6 @@ pub(crate) struct Advisor {
     /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
     pub(crate) growth_lens: Option<(u64, Arc<Vec<u8>>)>,
     /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
-    picks: std::collections::HashSet<String>,
     /// The ticks, the review and the clean-up running inside the Advisor.
     pub(crate) cleanup: crate::cleanup::Cleanup,
 }
@@ -303,7 +286,7 @@ fn findings_text(r: &Report) -> String {
             s += &format!("    {e}\n");
         }
         if f.command.is_some() {
-            s += "    (Sprawl has a command for it: the user runs it from the Advisor's script export.)\n";
+            s += "    (Sprawl can clean it up itself: the user ticks it in the Advisor's Findings and presses Clean up.)\n";
         }
     }
     s
@@ -425,10 +408,6 @@ impl State {
         self.advisor.in_use = None;
         self.advisor.note = None;
         self.advisor.ai = Ai::Idle;
-        self.advisor.plan = None;
-        self.advisor.preview = false;
-        // a pick was for a finding as it was then: a new analysis asks again
-        self.advisor.picks.clear();
         // an AI run on the old scan stops spending; its answer would be dropped anyway
         self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -771,7 +750,6 @@ impl State {
                 return;
             }
             "AdvSecFindings" => self.advisor.section = Section::Findings,
-            "AdvSecPlan" => self.advisor.section = Section::Plan,
             "AdvSecAsk" => self.advisor.section = Section::Ask,
             "AdvSecGrowth" => self.advisor.section = Section::Growth,
             "AdvSecMemory" => self.advisor.section = Section::Memory,
@@ -781,14 +759,6 @@ impl State {
             "AdvOnlyAll" => self.advisor.only = Only::All,
             "AdvOnlyRun" => self.advisor.only = Only::Runnable,
             "AdvOnlyDecide" => self.advisor.only = Only::Decide,
-            "AdvPick" => {
-                let Some(p) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)).map(|f| f.path.to_string_lossy().to_lowercase()) else { return };
-                if !self.advisor.picks.remove(&p) {
-                    self.advisor.picks.insert(p);
-                }
-                // the plan follows at once, and the panel shows it
-                self.advisor_plan();
-            }
             "AdvDupes" => self.advisor_dupes(),
             "AdvDupesStop" => self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed),
             "AdvUninstall" => {
@@ -878,15 +848,6 @@ impl State {
                 self.advisor_ask();
             }
             "AdvSetup" => return self.command("mWizard"),
-            "AdvPlan" => {
-                self.advisor.section = Section::Plan;
-                self.advisor_plan();
-            }
-            "AdvPreview" => self.advisor.preview = !self.advisor.preview,
-            "AdvClearPlan" => {
-                self.advisor.plan = None;
-                self.advisor.preview = false;
-            }
             "AdvExport" => self.advisor_export(),
             "AdvVerify" => self.advisor_verify(),
             "AdvLog" => {
@@ -1120,9 +1081,9 @@ impl State {
             }
         }
         for name in [
-            "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
+            "AdvSecFindings", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
@@ -1210,7 +1171,6 @@ impl State {
             tab("AdvSecMemory", format!("Memory ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len()), Section::Memory),
         );
         match self.advisor.section {
-            Section::Plan => x += &self.findings_section(r),
             Section::Ask => {
                 x += &self.ai_card(r);
                 x += &self.chat_card();
@@ -1303,16 +1263,6 @@ impl State {
         x
     }
 
-    /// The goal plan, if it is for the report on screen.
-    fn current_plan(&self) -> Option<&Planned> {
-        self.advisor.plan.as_ref().filter(|p| p.gen == self.tree_gen && self.advice().is_some())
-    }
-
-    /// The preview's lens, while it is on.
-    pub(crate) fn plan_preview(&self) -> Option<Arc<Vec<u8>>> {
-        self.advisor.preview.then(|| self.current_plan().map(|p| p.lens.clone())).flatten()
-    }
-
     fn goal_bytes(&self) -> Option<u64> {
         let t = self.advisor.goal_text.trim().trim_end_matches(['G', 'g', 'B', 'b', ' ']).replace(' ', "");
         // "1,000" is a thousand; "2,5" is two and a half
@@ -1338,45 +1288,6 @@ impl State {
                 self.advisor.goal_text = h.to_string_lossy();
             }
         }
-    }
-
-    /// "Make a plan": the lowest-risk findings that free the goal, previewed on the map.
-    fn advisor_plan(&mut self) {
-        self.read_goal();
-        // an empty box means the example it shows
-        if self.advisor.goal_text.trim().is_empty() {
-            self.advisor_set_goal(GOAL_EXAMPLE);
-        }
-        let Some(need) = self.goal_bytes() else {
-            self.adv_say("Type how many GB you need, like 20.");
-            return;
-        };
-        let (Some(t), Some(r)) = (self.tree.as_ref(), self.advice()) else { return };
-        let mut plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
-        // and what the user added themselves (anything with a command but red)
-        for (i, f) in r.findings.iter().enumerate() {
-            let overlaps = plan.picked.iter().any(|&j| {
-                let (a, b) = (PathBuf::from(r.findings[j].path.to_string_lossy().to_lowercase()), PathBuf::from(f.path.to_string_lossy().to_lowercase()));
-                a.starts_with(&b) || b.starts_with(&a)
-            });
-            if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) && f.command.is_some() && f.risk < Risk::Red && !overlaps {
-                plan.picked.push(i);
-                plan.bytes = plan.bytes.saturating_add(f.bytes);
-            }
-        }
-        let mut lens = vec![0u8; t.nodes.len()];
-        for &i in &plan.picked {
-            let Some(n) = r.nodes[i] else { continue };
-            let code = risk_code(r.findings[i].risk);
-            let mut stack = vec![n];
-            while let Some(k) = stack.pop() {
-                lens[k] = code;
-                stack.extend_from_slice(&t.nodes[k].children);
-            }
-        }
-        self.advisor.plan = Some(Planned { gen: self.tree_gen, plan, lens: Arc::new(lens) });
-        self.advisor.preview = true;
-        self.map.scene.shrink_restart = true;
     }
 
     /// "Ask Claude": the model looks at the report and the tree, in the background.
@@ -1441,11 +1352,7 @@ impl State {
             r.lens = Arc::new(lens);
         }
         let found = run.findings.len();
-        // indexes past the rules' findings change: what pointed at them goes, and picks of the
-        // model's earlier findings with them
-        self.advisor.plan = None;
-        self.advisor.picks.clear();
-        self.advisor.preview = false;
+        // indexes past the rules' findings change: what pointed at them goes
         self.advisor.open = None;
         self.advisor.in_use = None;
         let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return Ai::Idle };
@@ -1514,8 +1421,6 @@ impl State {
             r.counted.push(true);
             r.findings.push(f);
         }
-        self.advisor.plan = None;
-        self.advisor.preview = false;
         self.advisor.open = None;
         self.advisor.in_use = None;
     }
@@ -1670,8 +1575,6 @@ impl State {
         // indexes moved: the open finding and any plan go
         self.advisor.open = None;
         self.advisor.in_use = None;
-        self.advisor.plan = None;
-        self.advisor.preview = false;
         self.save_memory();
         self.advisor_changed();
     }
@@ -1732,26 +1635,16 @@ impl State {
                 crate::cleanup::untickable(f, r.counted[i]) == Some("Needs administrator") && f.risk <= Risk::Amber && f.builtin
             }));
         }
-        let picked: Vec<usize> = match self.current_plan() {
-            _ if !ticked.is_empty() => ticked,
-            Some(p) => p.plan.picked.iter().copied().filter(|&i| i < r.findings.len()).collect(),
-            None => (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber && r.findings[i].builtin).collect(),
+        let picked: Vec<usize> = if !ticked.is_empty() {
+            ticked
+        } else {
+            (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber && r.findings[i].builtin).collect()
         };
         if picked.is_empty() {
             self.adv_say("Nothing to export: no finding has a command to run.");
             return;
         }
-        // what the user added themselves says so in the script
-        let owned: Vec<Finding> = picked
-            .iter()
-            .map(|&i| {
-                let mut f = r.findings[i].clone();
-                if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) {
-                    f.title = format!("{} (added by you)", f.title);
-                }
-                f
-            })
-            .collect();
+        let owned: Vec<Finding> = picked.iter().map(|&i| r.findings[i].clone()).collect();
         let list: Vec<&Finding> = owned.iter().collect();
         let root = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT).display().to_string()).unwrap_or_default();
         let text = sprawl_advisor::export::script(&list, &root, std::time::SystemTime::now());
@@ -2268,6 +2161,25 @@ impl State {
         }
         x += "</StackPanel></Border>";
         x
+    }
+
+    /// After "Save as a script": the file, and a check of what running it freed.
+    pub(crate) fn exported_xaml(&self) -> String {
+        let Some(e) = &self.advisor.exported else { return String::new() };
+        let planned: u64 = e.items.iter().map(|(_, b, _)| *b).sum();
+        let line = match &e.verify {
+            None => format!("Saved {} ({} items, {}). As it is, it only measures: run it with -Run, then check what it freed.", e.file.display(), e.items.len(), self.size(planned)),
+            Some(None) => "Measuring the saved items...".to_string(),
+            Some(Some(v)) => {
+                let freed: u64 = v.iter().map(|(_, b, a)| b.saturating_sub(*a)).sum();
+                let done = v.iter().filter(|(_, b, a)| a < b).count();
+                format!("The script freed {} of {}: {done} of {} items are gone or smaller. The tree and the map show them as they are now.", self.size(freed), self.size(planned), v.len())
+            }
+        };
+        format!(
+            r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvVerify" Grid.Column="1" Content="Check what it freed" Padding="10,3" FontSize="12" CornerRadius="5"/></Grid>"##,
+            ui::esc(&line)
+        )
     }
 
     /// One finding's row, with its details when open.
