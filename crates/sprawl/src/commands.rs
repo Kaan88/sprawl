@@ -963,6 +963,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_filtered_view_forgets_what_a_clean_up_removed() {
+        let base = std::env::temp_dir().join(format!("sprawl-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("cache").join("sub")).unwrap();
+        std::fs::write(base.join("cache").join("a.dll"), vec![0u8; 100]).unwrap();
+        std::fs::write(base.join("cache").join("sub").join("b.dll"), vec![0u8; 50]).unwrap();
+        std::fs::write(base.join("cache").join("sub").join("c.dll"), vec![0u8; 20]).unwrap();
+        let full = sprawl_core::scan(&base, |_| {}).unwrap();
+        // the view on screen: filtered to *.dll
+        let mut shown = sprawl_core::filter_tree(&full, "*.dll");
+        let mut alloc: Vec<u64> = shown.nodes.iter().map(|n| n.allocated).collect();
+        // the clean-up took b.dll; the folder is scanned again
+        std::fs::remove_file(base.join("cache").join("sub").join("b.dll")).unwrap();
+        let sub = sprawl_core::scan(&base.join("cache"), |_| {}).unwrap();
+        let k = sprawl_advisor::find_path(&shown, &base.join("cache")).unwrap();
+        forget_missing(&mut shown, k, &sub, &mut alloc);
+        assert!(sprawl_advisor::find_path(&shown, &base.join("cache").join("sub").join("b.dll")).is_none());
+        assert!(sprawl_advisor::find_path(&shown, &base.join("cache").join("sub").join("c.dll")).is_some());
+        assert!(sprawl_advisor::find_path(&shown, &base.join("cache").join("a.dll")).is_some());
+        assert_eq!(shown.nodes[ROOT].size, 120);
+        assert_eq!(shown.nodes[ROOT].files, 2);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn a_branch_is_replaced_and_totals_follow() {
         let base = std::env::temp_dir().join(format!("sprawl-splice-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
