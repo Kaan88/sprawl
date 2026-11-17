@@ -50,7 +50,6 @@ pub(crate) struct Report {
     pub(crate) handoff: Vec<Vec<String>>,
     /// Risk code of every node inside a finding: 0 none, 1 green, 2 amber, 3 orange.
     pub(crate) lens: Arc<Vec<u8>>,
-    pub(crate) secs: f64,
 }
 
 enum Msg {
@@ -352,7 +351,6 @@ fn remedy_label(r: Remedy) -> &'static str {
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
 fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
-    let started = std::time::Instant::now();
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
     // the built-in rules, then the user's own (approved proposals): never trusted
@@ -387,7 +385,6 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
         handoff: facts.apps.iter().map(|a| a.handoff_args()).collect(),
         lens: Arc::new(lens),
         findings,
-        secs: started.elapsed().as_secs_f64(),
     };
     (r, facts)
 }
@@ -1197,10 +1194,6 @@ impl State {
             Section::Memory => x += &self.memory_cards(r),
             Section::Findings => x += &self.findings_section(r),
         }
-        x += &format!(
-            r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFA0A8B8" Text="Nothing is removed until you press Clean up now{}."/>"##,
-            if r.secs > 0.0 { "" } else { "" }
-        );
         x += "</StackPanel>";
         x
     }
@@ -1213,7 +1206,7 @@ impl State {
         };
         let (s, o) = (self.advisor.sort, self.advisor.only);
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}</StackPanel>"##,
+            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}</StackPanel><Border Grid.Column="1" HorizontalAlignment="Right">"##,
             chip("AdvSortSize", "Size", s == Sort::Size),
             chip("AdvSortRisk", "Risk", s == Sort::Risk),
             chip("AdvSortOwner", "Owner", s == Sort::Owner),
@@ -1227,10 +1220,11 @@ impl State {
                 ui::esc(s)
             ),
             None => format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
-                ui::esc(self.advisor.dupes_note.as_deref().unwrap_or("Copies are confirmed byte for byte; hard links aren't copies."))
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Copies are confirmed byte for byte; hard links aren't copies."/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
+                ui::esc(self.advisor.dupes_note.as_deref().unwrap_or(""))
             ),
         };
+        x += "</Border></Grid>";
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }

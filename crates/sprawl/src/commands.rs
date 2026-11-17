@@ -53,6 +53,11 @@ impl State {
         if let Ok(c) = find::<ColumnDefinition>(&self.root, "TypesCol") {
             let _ = c.SetWidth(GridLength { Value: if types { 1.0 } else { 0.0 }, GridUnitType: GridUnitType::Star });
         }
+        // and more of the height: the map gives up some room while the Advisor is open
+        let map_on = find::<ToggleMenuFlyoutItem>(&self.root, "oTreemap").and_then(|t| t.IsChecked()).unwrap_or(true);
+        if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
+            let _ = r.SetHeight(GridLength { Value: if !map_on { 0.0 } else if v == View::Advisor { 0.7 } else { 1.25 }, GridUnitType: GridUnitType::Star });
+        }
         if table {
             self.refresh_rows();
         }
@@ -312,7 +317,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
                             }
                         }
                         if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
-                            let _ = r.SetHeight(GridLength { Value: if on { 1.0 } else { 0.0 }, GridUnitType: GridUnitType::Star });
+                            let _ = r.SetHeight(GridLength { Value: if !on { 0.0 } else if self.view == View::Advisor { 0.7 } else { 1.25 }, GridUnitType: GridUnitType::Star });
                         }
                     }
                 }
