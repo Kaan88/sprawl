@@ -121,11 +121,30 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 
     // closing mid clean-up asks first (what is gone stays gone; the rest is left as it was)
     win32::on_close(hwnd, || {
-        let Some((true, h)) = with(|s| (s.advisor.cleanup.running.is_some(), s.hwnd)) else { return true };
-        win32::confirm(h, "A clean-up is still running. Close Sprawl anyway?
+        let ok = match with(|s| (s.advisor.cleanup.running.is_some(), s.hwnd)) {
+            Some((true, h)) => win32::confirm(h, "A clean-up is still running. Close Sprawl anyway?
 
-What is already deleted stays deleted; the rest is left as it was.", "Sprawl")
+What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
+            _ => true,
+        };
+        if ok {
+            // the window's place and size, for next time
+            with(|s| {
+                if let Some(p) = win32::window_place(s.hwnd) {
+                    s.settings.set("window", p);
+                    s.settings.save();
+                }
+            });
+        }
+        ok
     });
+    // the window where it was left, or most of the screen (screenshots keep their fixed size)
+    if a.shot.is_none() {
+        let remembered = crate::settings::Settings::load().get("window").is_some_and(|v| win32::set_window_place(hwnd, v));
+        if !remembered {
+            win32::fit_work_area(hwnd);
+        }
+    }
     if a.shot.is_some() {
         crate::settings::READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
         win32::show_behind(hwnd);

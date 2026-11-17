@@ -148,6 +148,66 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     (ok != 0).then_some((total, free))
 }
 
+#[repr(C)]
+struct Placement {
+    length: u32,
+    flags: u32,
+    show: u32,
+    min: [i32; 2],
+    max: [i32; 2],
+    normal: RECT,
+    device: RECT,
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetWindowPlacement(h: HWND, p: *mut Placement) -> i32;
+    fn SetWindowPlacement(h: HWND, p: *const Placement) -> i32;
+    fn SystemParametersInfoW(action: u32, param: u32, out: *mut RECT, flags: u32) -> i32;
+}
+
+fn placement(h: HWND) -> Option<Placement> {
+    let mut p = Placement { length: std::mem::size_of::<Placement>() as u32, flags: 0, show: 0, min: [0; 2], max: [0; 2], normal: RECT { left: 0, top: 0, right: 0, bottom: 0 }, device: RECT { left: 0, top: 0, right: 0, bottom: 0 } };
+    (unsafe { GetWindowPlacement(h, &mut p) } != 0).then_some(p)
+}
+
+/// The window's normal position and size, and whether it is maximised: "x,y,w,h,max".
+pub fn window_place(h: HWND) -> Option<String> {
+    let p = placement(h)?;
+    let r = &p.normal;
+    Some(format!("{},{},{},{},{}", r.left, r.top, r.right - r.left, r.bottom - r.top, (p.show == 3) as u8))
+}
+
+/// Put the window back where `window_place` found it; false (and nothing done) when the
+/// remembered place is off every screen's work area or makes no sense.
+pub fn set_window_place(h: HWND, v: &str) -> bool {
+    let n: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let [x, y, w, hh, max] = n[..] else { return false };
+    let mut work = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    unsafe { SystemParametersInfoW(0x30, 0, &mut work, 0) };
+    // the primary work area only: a window left on a monitor since unplugged starts fresh
+    if w < 640 || hh < 400 || x + 100 > work.right || y < work.top - 20 || x + w < work.left + 100 || y + 60 > work.bottom {
+        return false;
+    }
+    let Some(mut p) = placement(h) else { return false };
+    p.normal = RECT { left: x, top: y, right: x + w, bottom: y + hh };
+    p.show = if max == 1 { 3 } else { 1 };
+    unsafe { SetWindowPlacement(h, &p) != 0 }
+}
+
+/// Size the window to most of the primary screen's work area, centred.
+pub fn fit_work_area(h: HWND) {
+    let mut work = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    if unsafe { SystemParametersInfoW(0x30, 0, &mut work, 0) } == 0 {
+        return;
+    }
+    let (ww, wh) = (work.right - work.left, work.bottom - work.top);
+    let (w, hh) = ((ww as f32 * 0.9) as i32, (wh as f32 * 0.9) as i32);
+    unsafe {
+        SetWindowPos(h, 0, work.left + (ww - w) / 2, work.top + (wh - hh) / 2, w, hh, 0x0004 | 0x0010); // no z-order, no activate
+    }
+}
+
 #[link(name = "comctl32")]
 extern "system" {
     fn SetWindowSubclass(h: HWND, f: unsafe extern "system" fn(HWND, u32, usize, isize, usize, usize) -> isize, id: usize, data: usize) -> i32;

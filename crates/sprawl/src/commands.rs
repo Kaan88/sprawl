@@ -242,14 +242,18 @@ impl State {
                 }
                 self.save_text("Sprawl file types", &s);
             }
-            "mExit" if self.advisor.cleanup.running.is_some() => {
-                if win32::confirm(self.hwnd, "A clean-up is still running. Close Sprawl anyway?
+            "mExit" => {
+                if self.advisor.cleanup.running.is_some() && !win32::confirm(self.hwnd, "A clean-up is still running. Close Sprawl anyway?
 
 What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
-                    std::process::exit(0);
+                    return;
                 }
+                if let Some(p) = win32::window_place(self.hwnd) {
+                    self.settings.set("window", p);
+                    self.settings.save();
+                }
+                std::process::exit(0);
             }
-            "mExit" => std::process::exit(0),
             "uDyn" | "uB" | "uKB" | "uMB" | "uGB" | "uTB" => {
                 self.units = match name {
                     "uB" => Units::Bytes,
