@@ -16,11 +16,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod compact;
 pub mod csv;
 pub mod filter;
 pub mod kinds;
 pub mod mft;
 pub mod progress;
+pub mod query;
 pub mod search;
 pub mod walk;
 
