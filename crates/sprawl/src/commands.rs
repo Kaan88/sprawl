@@ -314,6 +314,15 @@ impl State {
                 self.pulses_on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
                 self.watch();
             }
+            v if v.starts_with("View") && crate::views::ALL.iter().any(|a| a.1 == v) => {
+                let k = crate::views::ALL.iter().find(|a| a.1 == v).map(|a| a.0);
+                self.set_view_kind(k);
+            }
+            p if p.starts_with("Paint") && crate::views::PAINTS.iter().any(|a| a.1 == p) => {
+                if let Some(x) = crate::views::PAINTS.iter().find(|a| a.1 == p) {
+                    self.set_paint(x.0);
+                }
+            }
             "ModeMap" | "ModeCity" | "ModeGalaxy" => {
                 let mode = match name {
                     "ModeCity" => crate::scene::Mode::City,

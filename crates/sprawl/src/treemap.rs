@@ -74,6 +74,8 @@ pub(crate) struct MapView {
     pub(crate) last_pointer: (f64, f64),
     pub(crate) galaxy: crate::galaxy::Galaxy,
     pub(crate) capture: Option<std::path::PathBuf>,
+    /// The other views (rings, flame stack, ...), when one is on.
+    pub(crate) views: crate::views::Views,
 }
 
 impl MapView {
@@ -99,6 +101,7 @@ impl MapView {
             last_pointer: (0.0, 0.0),
             galaxy: crate::galaxy::Galaxy::default(),
             capture: None,
+            views: crate::views::Views::default(),
         }
     }
 }
@@ -285,7 +288,10 @@ impl State {
         self.drain_changes();
         self.hist_tick();
         let galaxy = self.galaxy_on();
-        let busy = if galaxy {
+        let views = self.views_on();
+        let busy = if views {
+            self.views_frame()
+        } else if galaxy {
             let m = &mut self.map;
             m.galaxy.w = m.scene.w;
             m.galaxy.h = m.scene.h;
@@ -299,9 +305,10 @@ impl State {
         if busy || !self.map.drawn_once || want_capture {
             if let Some(g) = &self.map.gpu {
                 if g.ready() || want_capture {
-                    let labels = if self.map.show_labels { self.map_labels(galaxy) } else { Vec::new() };
+                    let labels = if self.map.show_labels && !views { self.map_labels(galaxy) } else { Vec::new() };
                     let m = &mut self.map;
-                    let (vp, eye) = if galaxy { (m.galaxy.vp, m.galaxy.eye) } else { (m.scene.vp, m.scene.eye) };
+                    let (vp, eye) = if views { (m.views.vp, m.views.eye) } else if galaxy { (m.galaxy.vp, m.galaxy.eye) } else { (m.scene.vp, m.scene.eye) };
+                    let flat = views && !m.views.kind.is_some_and(|k| k.is_3d());
                     let frame = Frame {
                         vp,
                         eye,
@@ -309,8 +316,8 @@ impl State {
                         size: [m.scene.w, m.scene.h],
                         cushion: m.scene.cushion,
                         time: { static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new(); T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f32() },
-                        mirror: m.mirror && m.scene.tilt_on && !galaxy,
-                        floor: (m.mirror && m.scene.tilt_on && !galaxy).then(|| {
+                        mirror: m.mirror && m.scene.tilt_on && !galaxy && !views,
+                        floor: (m.mirror && m.scene.tilt_on && !galaxy && !views).then(|| {
                             let (w, h) = (m.scene.w, m.scene.h);
                             let rect = if m.scene.mode == Mode::Map {
                                 [-w * 0.6, -h * 0.3, w * 2.2, h * 1.9]
@@ -325,11 +332,14 @@ impl State {
                                 fx: [0.0; 4],
                             }
                         }),
-                        instances: if galaxy { &[] } else { &m.scene.instances },
-                        stars: if galaxy { &m.galaxy.instances } else { &[] },
+                        instances: if galaxy || views { &[] } else { &m.scene.instances },
+                        stars: if galaxy && !views { &m.galaxy.instances } else { &[] },
                         right: m.galaxy.right,
                         up: m.galaxy.up,
-                        labels: &labels,
+                        labels: if views { if m.show_labels { &m.views.out.labels } else { &[] } } else { &labels },
+                        mesh: if views { &m.views.out.tris } else { &[] },
+                        lines: if views { &m.views.out.lines } else { &[] },
+                        mesh_2d: flat,
                     };
                     let g = m.gpu.as_mut().unwrap();
                     g.want_capture = want_capture;
@@ -408,6 +418,9 @@ impl State {
         if rotate && self.map.scene.mode == Mode::City {
             self.map.scene.drag(dx, dy);
         }
+        if self.views_on() {
+            return self.views_hover(x, y, rotate, dx, dy);
+        }
         if pan && !self.galaxy_on() {
             self.map.scene.pan(x as f32, y as f32, dx, dy);
         }
@@ -456,7 +469,11 @@ impl State {
 
     /// Switch between the treemap, the city and the galaxy.
     pub(crate) fn set_mode(&mut self, mode: Mode) {
-        if self.map.scene.mode == mode {
+        let was_view = self.map.views.kind.is_some();
+        if was_view {
+            self.set_view_kind(None);
+        }
+        if self.map.scene.mode == mode && !was_view {
             return;
         }
         self.map.scene.mode = mode;
@@ -516,12 +533,18 @@ impl State {
             return None;
         }
         let len = self.tree.as_ref().map_or(0, |t| t.nodes.len());
+        if self.views_on() {
+            return self.views_pick(x, y);
+        }
         let n = if self.galaxy_on() { self.map.galaxy.pick(x as f32, y as f32) } else { self.map.scene.hit(x as f32, y as f32).filter(|&n| n != FREE) };
         // never hand out a node number the loaded tree doesn't have
         n.filter(|&n| n < len)
     }
 
     pub(crate) fn map_click(&mut self, x: f64, y: f64) {
+        if self.views_on() && self.views_click(x, y) {
+            return;
+        }
         let Some(n) = self.map_node_at(x, y) else { return };
         // in the Advisor, a lit tile opens its finding there, staying on that tab
         if self.advisor_map_click(n) {
@@ -536,6 +559,15 @@ impl State {
         self.map.scene.reset_view();
         self.map.galaxy.reset_view();
         let Some(t) = &self.tree else { return };
+        if self.views_on() {
+            // the root itself (a centre, a base bar) goes up; anything else is gone into
+            let target = if n == self.map_root { t.nodes[n].parent } else if t.nodes[n].is_dir { Some(n) } else { t.nodes[n].parent };
+            if let Some(f) = target.filter(|&f| f != self.map_root) {
+                self.map_root = f;
+                self.render_map();
+            }
+            return;
+        }
         if self.galaxy_on() {
             // fly into the star's folder (a planet's folder for a file)
             let target = if t.nodes[n].is_dir { Some(n) } else { t.nodes[n].parent };
@@ -560,6 +592,18 @@ impl State {
 
     /// Mouse wheel over the map: up zooms into the folder under the pointer, down zooms out.
     pub(crate) fn map_wheel(&mut self, x: f64, y: f64, delta: i32) {
+        if self.views_on() {
+            if self.views_wheel(delta) {
+                return;
+            }
+            if delta > 0 {
+                self.map_zoom_at(x, y);
+            } else if let Some(p) = self.tree.as_ref().and_then(|t| t.nodes[self.map_root].parent) {
+                self.map_root = p;
+                self.render_map();
+            }
+            return;
+        }
         if self.galaxy_on() {
             self.map.galaxy.zoom(x as f32, y as f32, delta);
             return;

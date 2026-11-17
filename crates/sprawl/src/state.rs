@@ -159,8 +159,15 @@ pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
 
 impl State {
     pub(crate) fn size(&self, v: u64) -> String {
+        size_with(self.units, v)
+    }
+}
+
+/// `v` bytes in `units`.
+pub(crate) fn size_with(units: Units, v: u64) -> String {
+    {
         let f = |d: f64, u: &str| format!("{:.1} {u}", v as f64 / d);
-        match self.units {
+        match units {
             Units::Dynamic => format_size(v),
             Units::Bytes => thousands(v),
             Units::KB => f(1024.0, "KB"),
@@ -169,7 +176,9 @@ impl State {
             Units::TB => f(1024.0f64.powi(4), "TB"),
         }
     }
+}
 
+impl State {
     pub(crate) fn label(&self, node: usize) -> String {
         let t = self.tree.as_ref().unwrap();
         if node == ROOT {

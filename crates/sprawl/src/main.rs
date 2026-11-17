@@ -25,6 +25,7 @@ mod scene;
 mod settings;
 mod state;
 mod tables;
+mod views;
 mod watch;
 mod treemap;
 mod ui;
@@ -126,6 +127,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 
     // Menu items and buttons all route to State::command by name.
     for &name in COMMANDS {
+        if let Ok(item) = find::<MenuFlyoutItem>(&root, name) {
+            keep(item.Click(move |_, _| {
+                with(|s| s.command(name));
+            })?);
+        }
+    }
+    // the other views and their colour switch
+    for name in crate::views::ALL.iter().map(|v| v.1).chain(crate::views::PAINTS.iter().map(|p| p.1)) {
         if let Ok(item) = find::<MenuFlyoutItem>(&root, name) {
             keep(item.Click(move |_, _| {
                 with(|s| s.command(name));

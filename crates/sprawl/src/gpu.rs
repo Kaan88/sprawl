@@ -150,6 +150,18 @@ float4 ps_star(SOut i) : SV_Target {
     float a = saturate(max(c.r, max(c.g, c.b)));
     return float4(c, a);
 }
+// The other views: plain coloured triangles and lines. uRight.w = 1: positions are DIPs of the
+// panel (2D); 0: world positions under the camera (3D, already shaded).
+struct MIn { float3 pos : POSITION; float4 col : COLOR; };
+struct MOut { float4 sv : SV_Position; float4 col : COLOR; };
+MOut vs_mesh(MIn i) {
+    MOut o;
+    if (uRight.w > 0.5) o.sv = float4(i.pos.x / uSize.x * 2.0 - 1.0, 1.0 - i.pos.y / uSize.y * 2.0, 0.5, 1.0);
+    else o.sv = mul(uVP, float4(i.pos, 1.0));
+    o.col = i.col;
+    return o;
+}
+float4 ps_mesh(MOut i) : SV_Target { return float4(i.col.rgb * i.col.a, i.col.a); }
 "#;
 
 /// One tile: rectangle and parent rectangle in layout units (DIPs), colour + kind (0 file, 1
@@ -161,6 +173,15 @@ pub struct Instance {
     pub parent: [f32; 4],
     pub color: [f32; 4],
     pub fx: [f32; 4],
+}
+
+/// A vertex of the other views' meshes: position (DIPs in 2D, world units in 3D) and straight
+/// (not premultiplied) colour.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Vertex {
+    pub pos: [f32; 3],
+    pub col: [f32; 4],
 }
 
 pub struct Label {
@@ -193,6 +214,10 @@ pub struct Frame<'a> {
     pub right: [f32; 3],
     pub up: [f32; 3],
     pub labels: &'a [Label],
+    /// The other views: triangles, then lines, and whether they are in panel DIPs.
+    pub mesh: &'a [Vertex],
+    pub lines: &'a [Vertex],
+    pub mesh_2d: bool,
 }
 
 #[repr(C)]
@@ -233,6 +258,12 @@ pub struct Gpu {
     ps_star: ID3D11PixelShader,
     cb_mirror: ID3D11Buffer,
     extra: ID3D11Buffer,
+    vs_mesh: ID3D11VertexShader,
+    ps_mesh: ID3D11PixelShader,
+    layout_mesh: ID3D11InputLayout,
+    cb_mesh: ID3D11Buffer,
+    mesh_buf: ID3D11Buffer,
+    mesh_cap: usize,
     msaa: Option<(ID3D11Texture2D, ID3D11RenderTargetView, ID3D11DepthStencilView)>,
     /// Antialiasing: samples per pixel (1 = off).
     samples: u32,
@@ -482,6 +513,16 @@ impl Gpu {
         let (vs_star, ps_star) = (vs_star.ok_or("vs_star")?, ps_star.ok_or("ps_star")?);
         let cb_mirror = buffer(&device, std::mem::size_of::<Constants>(), D3D11_BIND_CONSTANT_BUFFER, true, None)?;
         let extra = buffer(&device, 1024 * std::mem::size_of::<Instance>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
+        let (mvb, mpb) = (compile("vs_mesh", "vs_5_0")?, compile("ps_mesh", "ps_5_0")?);
+        let (mut vs_mesh, mut ps_mesh) = (None, None);
+        hr(unsafe { device.CreateVertexShader(&mvb, None, Some(&mut vs_mesh)) }, "CreateVertexShader")?;
+        hr(unsafe { device.CreatePixelShader(&mpb, None, Some(&mut ps_mesh)) }, "CreatePixelShader")?;
+        let mesh_el = [el(b"POSITION\0", f3, 0, 0, false), el(b"COLOR\0", f4, 0, 12, false)];
+        let mut layout_mesh = None;
+        hr(unsafe { device.CreateInputLayout(&mesh_el, &mvb, Some(&mut layout_mesh)) }, "CreateInputLayout")?;
+        let cb_mesh = buffer(&device, std::mem::size_of::<Constants>(), D3D11_BIND_CONSTANT_BUFFER, true, None)?;
+        let mesh_cap = 1 << 16;
+        let mesh_buf = buffer(&device, mesh_cap * std::mem::size_of::<Vertex>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
 
         let mut gpu = Gpu {
             device,
@@ -505,6 +546,12 @@ impl Gpu {
             ps_star,
             cb_mirror,
             extra,
+            vs_mesh: vs_mesh.ok_or("vs_mesh")?,
+            ps_mesh: ps_mesh.ok_or("ps_mesh")?,
+            layout_mesh: layout_mesh.ok_or("layout_mesh")?,
+            cb_mesh,
+            mesh_buf,
+            mesh_cap,
             msaa: None,
             samples: 4,
             d2d,
@@ -652,6 +699,36 @@ impl Gpu {
                 ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb.clone())]));
                 ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.clone())]));
                 ctx.DrawInstanced(6, f.stars.len() as u32, 0, 0);
+            }
+            let (nt, nl) = (f.mesh.len(), f.lines.len());
+            if nt + nl > 0 {
+                if nt + nl > self.mesh_cap {
+                    self.mesh_cap = (nt + nl).next_power_of_two();
+                    self.mesh_buf = buffer(&self.device, self.mesh_cap * std::mem::size_of::<Vertex>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
+                }
+                let mut all = Vec::with_capacity(nt + nl);
+                all.extend_from_slice(f.mesh);
+                all.extend_from_slice(f.lines);
+                write(ctx, &self.mesh_buf, &all)?;
+                let mc = Constants { right: [f.right[0], f.right[1], f.right[2], if f.mesh_2d { 1.0 } else { 0.0 }], ..consts };
+                write(ctx, &self.cb_mesh, std::slice::from_ref(&mc))?;
+                ctx.OMSetBlendState(&self.blend, None, 0xffff_ffff);
+                ctx.OMSetDepthStencilState(if f.mesh_2d { &self.depth_off } else { &self.depth_state }, 0);
+                ctx.IASetInputLayout(&self.layout_mesh);
+                ctx.VSSetShader(&self.vs_mesh, None);
+                ctx.PSSetShader(&self.ps_mesh, None);
+                ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb_mesh.clone())]));
+                ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb_mesh.clone())]));
+                let stride = std::mem::size_of::<Vertex>() as u32;
+                ctx.IASetVertexBuffers(0, 1, Some(&Some(self.mesh_buf.clone())), Some(&stride), Some(&0));
+                if nt > 0 {
+                    ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    ctx.Draw(nt as u32, 0);
+                }
+                if nl > 0 {
+                    ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+                    ctx.Draw(nl as u32, nt as u32);
+                }
             }
 
             let back: ID3D11Texture2D = hr(self.swap.GetBuffer(0), "GetBuffer")?;
