@@ -4,14 +4,18 @@ BleachBit has a list of cleaners, one per application. Each has options, a previ
 what would go and how much, then a clean. This plan gives Sprawl the same idea, fitted to what
 Sprawl already is.
 
-**Status (2026-11-17):** phases 0, 1, 2, 3 and 3b are built and pushed (commits 074804f,
-098c56a, 6604067, 2f63c28, 3bcec86). Next: phase 4 (carve-outs: browser caches and thumbcache
+**Status (2026-11-17, end of day):** phases 0, 1, 2, 3 and 3b are built and pushed (commits
+074804f, 098c56a, 6604067, 2f63c28, 3bcec86). Added on the user's request since: a Cleaners tab
+(a449a42, the Advisor's Cleaners section alone), the Use/Scan buttons fix (959d7e3), and AI in
+Cleaners (983a321: a chat card with ready-made questions; questions carry the cleaners text; the
+`suggest_ticks` tool shows a card with Tick them, safe and amber parts only, review still first;
+not yet tried against a real model). Next: phase 4 (carve-outs: browser caches and thumbcache
 inside protected folders, all closed = must, with tests), then phase 5 (opt-in privacy cleaners:
 Settings switch, the `Set` action, Chromium cookies and history, Firefox cookies, Recent and jump
 lists). After that: one Fable review of all phases (notes per phase are queued in
-`.claude/fable-review-queue.md`; 3b is not skippable), docs (README Search tab and Status,
-search.md and this file's status, CHANGELOG), version bump and release. Not yet tested: a real
-clean-up run (the auto-mode classifier blocked it).
+`.claude/fable-review-queue.md`; 3b is not skippable), docs (README Search and Cleaners tabs and
+Status, search.md and this file's status, CHANGELOG), version bump and release. Not yet tested: a
+real clean-up run (the auto-mode classifier blocked it).
 
 The rules from the earlier plans still hold. Rust finds, the model judges. Every claim is
 checked. Commands come only from Rust. One clean-up path: ticks, the review that says "Deleted
