@@ -138,15 +138,44 @@ const NEVER: &[&str] = &[
     r"%LOCALAPPDATA%\Packages\**",
     r"%APPDATA%",
     r"%APPDATA%\Microsoft\**",
-    // anywhere: disk images, password vaults, mail stores, wallets
+    // password managers
+    r"?:\Users\*\AppData\Roaming\Bitwarden\**",
+    r"?:\Users\*\AppData\Local\1Password\**",
+    // messengers: Signal's messages, attachments and key; Telegram's data; WhatsApp
+    r"?:\Users\*\AppData\Roaming\Signal\sql\**",
+    r"?:\Users\*\AppData\Roaming\Signal\attachments.noindex\**",
+    r"?:\Users\*\AppData\Roaming\Signal\config.json",
+    r"?:\Users\*\AppData\Roaming\WhatsApp\**",
+    r"?:\Users\*\AppData\Local\WhatsApp\**",
+    // other Chromium browsers' profiles
+    r"?:\Users\*\AppData\Roaming\Opera Software\**",
+    r"?:\Users\*\AppData\Local\Vivaldi\User Data\**",
+    r"?:\Users\*\AppData\Local\Chromium\User Data\**",
+    r"?:\Users\*\AppData\Local\Yandex\YandexBrowser\User Data\**",
+    r"?:\Users\*\AppData\Local\Arc\User Data\**",
+    // anywhere (a name, or the last folders of a path): disk images, password vaults, mail
+    // stores, wallets, messengers' data
     r"?:\**\*.vhdx",
     r"?:\**\*.vhd",
     r"?:\**\*.avhdx",
     r"?:\**\*.vmdk",
     r"?:\**\*.vdi",
     r"?:\**\*.kdbx",
+    r"?:\**\*.kdb",
+    r"?:\**\*.keyx",
+    r"?:\**\*.opvault",
+    r"?:\**\*.agilekeychain",
+    r"?:\**\*.1pux",
     r"?:\**\*.pst",
+    r"?:\**\*.ost",
+    r"?:\**\*.mbox",
     r"?:\**\wallet.dat",
+    r"?:\**\Thunderbird\Profiles",
+    r"?:\**\Thunderbird\Profiles\**",
+    r"?:\**\ThunderbirdPortable\Data\profile",
+    r"?:\**\ThunderbirdPortable\Data\profile\**",
+    r"?:\**\Telegram Desktop\tdata",
+    r"?:\**\Telegram Desktop\tdata\**",
 ];
 
 /// Folders that hold the user's own work.
@@ -248,19 +277,39 @@ impl Never {
         self.patterns.iter().find(|(_, pat)| forms.iter().any(|p| pat.matches(p) || pat.is_above(p))).map(|(s, _)| s.as_str())
     }
 
-    /// Every never-list item below node `n` by name (a disk image, a vault), not looking inside
-    /// one found: node and the entry. What Sprawl's own clean-up skips by [`Never::name_hit`].
+    /// The `?:\**\<tail>` entries: (tail segments, the entry, what a name must end with to be
+    /// worth the glob: `*.vhdx` -> `.vhdx`, or "" when the last segment has other wildcards).
+    fn tails(&self) -> Vec<(&[String], &str, &str)> {
+        self.patterns
+            .iter()
+            .filter_map(|(s, p)| {
+                let t = p.any_depth_tail()?;
+                let last = t.last()?.trim_start_matches('*');
+                let quick = if last.contains(['*', '?']) { "" } else { last };
+                Some((t, s.as_str(), quick))
+            })
+            .collect()
+    }
+
+    /// Every never-list item below node `n` found by the end of its path (a disk image, a vault,
+    /// a `Thunderbird\Profiles` folder), not looking inside one found: node and the entry. What
+    /// Sprawl's own clean-up skips by [`Never::path_hit`].
     pub fn hits_inside(&self, tree: &Tree, n: usize) -> Vec<(usize, &str)> {
-        let names: Vec<(&str, &str)> = self.patterns.iter().filter_map(|(s, p)| p.any_depth_name().map(|m| (m, s.as_str()))).collect();
-        let tails: Vec<&str> = names.iter().map(|(m, _)| m.trim_start_matches('*')).collect();
+        let tails = self.tails();
         let mut out = Vec::new();
         let mut stack = tree.nodes[n].children.clone();
         while let Some(k) = stack.pop() {
             let raw = &tree.nodes[k].name;
-            let maybe = tails.iter().any(|t| raw.len() >= t.len() && raw.is_char_boundary(raw.len() - t.len()) && raw[raw.len() - t.len()..].eq_ignore_ascii_case(t));
+            let maybe = tails.iter().any(|(_, _, q)| q.is_empty() || (raw.len() >= q.len() && raw.is_char_boundary(raw.len() - q.len()) && raw[raw.len() - q.len()..].eq_ignore_ascii_case(q)));
             if maybe {
-                let name = raw.to_lowercase();
-                if let Some((_, s)) = names.iter().find(|(m, _)| crate::rules::seg_match(m, &name)) {
+                // the node's name and those of the folders above it, last first
+                let mut names = Vec::new();
+                let mut i = Some(k);
+                while let Some(j) = i.filter(|_| names.len() < 4) {
+                    names.push(tree.nodes[j].name.to_lowercase());
+                    i = tree.nodes[j].parent;
+                }
+                if let Some((_, s, _)) = tails.iter().find(|(t, _, _)| ends_with(&names, t)) {
                     out.push((k, *s));
                     continue;
                 }
@@ -270,37 +319,31 @@ impl Never {
         out
     }
 
-    /// A never-list entry found anywhere below node `n` (a disk image, a vault) by name.
+    /// The first never-list item below node `n` (see [`Never::hits_inside`]), by path.
     pub fn hit_inside(&self, tree: &Tree, n: usize) -> Option<(String, &str)> {
-        let names: Vec<(&str, &str)> = self.patterns.iter().filter_map(|(s, p)| p.any_depth_name().map(|m| (m, s.as_str()))).collect();
-        // what each name must end with (`*.vhdx` -> `.vhdx`), to skip the glob for most files
-        let tails: Vec<&str> = names.iter().map(|(m, _)| m.trim_start_matches('*')).collect();
-        let mut stack = tree.nodes[n].children.clone();
-        while let Some(k) = stack.pop() {
-            let raw = &tree.nodes[k].name;
-            stack.extend_from_slice(&tree.nodes[k].children);
-            if !tails.iter().any(|t| raw.len() >= t.len() && raw.is_char_boundary(raw.len() - t.len()) && raw[raw.len() - t.len()..].eq_ignore_ascii_case(t)) {
-                continue;
-            }
-            let name = raw.to_lowercase();
-            if let Some((_, s)) = names.iter().find(|(m, _)| crate::rules::seg_match(m, &name)) {
-                return Some((tree.path_of(k).display().to_string(), s));
-            }
-        }
-        None
+        self.hits_inside(tree, n).first().map(|&(k, s)| (tree.path_of(k).display().to_string(), s))
     }
 
-    /// The never-list entry a file or folder called `name` falls under anywhere (a disk image, a
-    /// vault): for what appears after the scan, which [`Never::hit_inside`] can't see.
-    pub fn name_hit(&self, name: &str) -> Option<&str> {
-        let name = name.to_lowercase();
-        self.patterns.iter().find_map(|(s, p)| p.any_depth_name().filter(|m| crate::rules::seg_match(m, &name)).map(|_| s.as_str()))
+    /// The never-list entry the item at `path` falls under by the end of its path (a disk image,
+    /// a vault, a `Thunderbird\Profiles` folder): for what Sprawl's clean-up meets on the way,
+    /// including what appeared after the scan, which [`Never::hits_inside`] can't see.
+    pub fn path_hit(&self, path: &std::path::Path) -> Option<&str> {
+        let mut names: Vec<String> = Vec::new();
+        for c in path.components().rev().take(4) {
+            names.push(c.as_os_str().to_string_lossy().to_lowercase());
+        }
+        self.tails().into_iter().find(|(t, _, _)| ends_with(&names, t)).map(|(_, s, _)| s)
     }
 
     pub fn is_user_data(&self, path: &str) -> bool {
         let forms = drive_forms(path).unwrap_or_default();
         self.user_data.iter().any(|pat| forms.iter().any(|p| pat.matches(p)))
     }
+}
+
+/// `names` (an item's name, then the folders above it) ends in `tail` (segments, the item last).
+fn ends_with(names: &[String], tail: &[String]) -> bool {
+    tail.len() <= names.len() && tail.iter().rev().zip(names).all(|(t, n)| crate::rules::seg_match(t, n))
 }
 
 /// How far a claimed size may be from the scan's: files change between the scan and the check.
@@ -484,6 +527,45 @@ mod tests {
         let mut info = f.clone();
         other_account_floor(&mut info, true);
         assert_eq!(info.risk, Risk::Green);
+    }
+
+    #[test]
+    fn mail_vaults_messengers_and_browsers_are_protected() {
+        let never = Never::default_list();
+        for p in [
+            r"C:\Users\sam\AppData\Local\Temp\x\archive.ost",
+            r"D:\Mail\export.mbox",
+            r"C:\Users\sam\AppData\Local\Temp\old.kdb",
+            r"E:\keys\me.keyx",
+            r"C:\Users\sam\Dropbox\Me.opvault",
+            r"C:\Users\sam\Downloads\backup.1pux",
+            r"D:\Portable\Thunderbird\Profiles",
+            r"D:\Portable\Thunderbird\Profiles\abc.default\Mail\Inbox",
+            r"D:\Apps\ThunderbirdPortable\Data\profile\prefs.js",
+            r"D:\Apps\Telegram Desktop\tdata",
+            r"C:\Users\sam\AppData\Roaming\Telegram Desktop\tdata\user_data",
+            r"C:\Users\sam\AppData\Roaming\Bitwarden\data.json",
+            r"C:\Users\sam\AppData\Local\1Password\data\1password.sqlite",
+            r"C:\Users\sam\AppData\Roaming\Signal\sql\db.sqlite",
+            r"C:\Users\sam\AppData\Roaming\Signal\attachments.noindex\ab\cd",
+            r"C:\Users\sam\AppData\Roaming\Signal\config.json",
+            r"C:\Users\sam\AppData\Roaming\Signal",
+            r"C:\Users\sam\AppData\Roaming\WhatsApp\IndexedDB",
+            r"C:\Users\sam\AppData\Roaming\Opera Software\Opera Stable\Cookies",
+            r"C:\Users\sam\AppData\Local\Vivaldi\User Data\Default\Login Data",
+            r"C:\Users\sam\AppData\Local\Chromium\User Data\Default",
+            r"C:\Users\sam\AppData\Local\Arc\User Data\Default",
+        ] {
+            assert!(never.hit(p).is_some(), "{p}");
+        }
+        // their caches, and look-alikes, are not
+        for p in [r"C:\Users\sam\AppData\Roaming\Signal\Cache", r"C:\Users\sam\AppData\Local\Opera Software\Opera Stable\Cache", r"D:\x\Profiles", r"D:\x\tdata", r"D:\x\notes.db"] {
+            assert!(never.hit(p).is_none(), "{p}");
+        }
+        // found inside a folder by the end of their path, and skipped by the clean-up
+        assert!(never.path_hit(std::path::Path::new(r"D:\Portable\Thunderbird\Profiles")).is_some());
+        assert!(never.path_hit(std::path::Path::new(r"D:\x\Profiles")).is_none());
+        assert!(never.path_hit(std::path::Path::new(r"D:\x\mail.OST")).is_some());
     }
 
     #[test]

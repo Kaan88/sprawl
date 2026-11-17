@@ -376,10 +376,11 @@ impl Pattern {
         parts.len() < fixed && parts.iter().zip(&self.segs).all(|(p, s)| seg_match(s, p))
     }
 
-    /// For `?:\**\<name>`: the name pattern (`*.vhdx`), checked against every name in a tree.
-    pub(crate) fn any_depth_name(&self) -> Option<&str> {
+    /// For `?:\**\<tail>`: the tail's segments (`*.vhdx`, or `thunderbird`, `profiles`), lower
+    /// case, looked for at the end of any path.
+    pub(crate) fn any_depth_tail(&self) -> Option<&[String]> {
         match self.segs.as_slice() {
-            [d, s, n] if d == "?:" && s == "**" && !n.contains('\\') => Some(n.as_str()),
+            [d, s, rest @ ..] if d == "?:" && s == "**" && !rest.is_empty() && rest.iter().all(|r| r != "**") => Some(rest),
             _ => None,
         }
     }

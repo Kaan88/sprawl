@@ -6,7 +6,8 @@
 //! - read-only files go too; a folder's read-only bit is cleared only once it is empty;
 //! - `clear` and `match` do nothing when their folder is no longer a plain folder;
 //! - an error on one item is noted and the rest carry on;
-//! - a name on the never-list (a disk image, a vault) that appeared after the scan stays;
+//! - anything on the never-list by the end of its path (a disk image, a vault, a mail profile)
+//!   stays, also when it appeared after the scan;
 //! - anything created or changed after the scan stays ([`Spare::since`]), and so does anything
 //!   the user chose to keep ([`Spare::keep`]), at any depth; both are counted.
 //!
@@ -238,7 +239,7 @@ pub fn would_free(path: &Path, action: &Action, spare: &Spare) -> Option<u64> {
     }
     while let Some(k) = stack.pop() {
         let name = k.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if odd_name(&k) || never().name_hit(&name).is_some() || spare.keeps(&k) {
+        if odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
             continue;
         }
         let Ok(m) = std::fs::symlink_metadata(&k) else { continue };
@@ -336,7 +337,7 @@ fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut 
             continue;
         }
         let name = k.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if never().name_hit(&name).is_some() {
+        if never().path_hit(&k).is_some() {
             o.kept_protected += 1;
             continue;
         }
@@ -1199,19 +1200,51 @@ mod tests {
     }
 
     #[test]
+    fn a_mail_profile_inside_is_found_and_left() {
+        let base = std::env::temp_dir().join(format!("sprawl-tbird-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let prof = base.join("old").join("Thunderbird").join("Profiles").join("x.default");
+        std::fs::create_dir_all(&prof).unwrap();
+        std::fs::write(prof.join("Inbox"), b"mail").unwrap();
+        std::fs::write(base.join("old").join("junk.tmp"), b"junk").unwrap();
+        let tree = sprawl_core::scan(&base, |_| {}).unwrap();
+        let never = crate::safety::Never::default_list();
+        let hits = never.hits_inside(&tree, sprawl_core::ROOT);
+        assert_eq!(hits.len(), 1, "the Profiles folder, not what is inside it");
+        assert!(tree.path_of(hits[0].0).ends_with(r"Thunderbird\Profiles"));
+        let o = run(&base, &Action::Clear { days: 0 }, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
+        assert!(prof.join("Inbox").exists(), "the mail stays");
+        assert!(!base.join("old").join("junk.tmp").exists());
+        assert_eq!(o.kept_protected, 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn stop_ends_what_a_tool_started() {
+        // Stop is pressed once the tool is seen running (it writes a marker first), not after a
+        // fixed time: a slow start on a busy machine can't make this pass or fail by chance.
+        let marker = std::env::temp_dir().join(format!("sprawl-stop-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
         let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let s = stop.clone();
+        let (s, m) = (stop.clone(), marker.clone());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let at = seen.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(1500));
+            let begin = std::time::Instant::now();
+            while !m.exists() && begin.elapsed() < Duration::from_secs(120) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            *at.lock().unwrap() = Some(std::time::Instant::now());
             s.store(true, Ordering::Relaxed);
         });
-        let started = std::time::Instant::now();
         let mut o = Outcome::default();
-        // ping is a program of its own, below PowerShell
-        tool("ping -n 40 127.0.0.1", &stop, &mut o);
-        assert!(o.stopped);
-        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        // ping is a program of its own, below PowerShell; it runs for about 100 s if not stopped
+        tool(&format!("New-Item -ItemType File -Path {} | Out-Null; ping -n 100 127.0.0.1", ps_quote(&marker.display().to_string())), &stop, &mut o);
+        let ended = std::time::Instant::now();
+        let _ = std::fs::remove_file(&marker);
+        assert!(o.stopped, "not stopped: {:?} {:?}", o.problems, o.output);
+        let pressed = seen.lock().unwrap().expect("the tool started");
+        assert!(ended.duration_since(pressed) < Duration::from_secs(10), "took {:?} after Stop", ended.duration_since(pressed));
     }
 
     #[test]
