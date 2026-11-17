@@ -321,6 +321,7 @@ impl<'a> Tools<'a> {
                         action: None,
                         admin: false,
                         carved: Vec::new(),
+                        gain: None,
                     };
                     self.rejected.push((stub, e.trim_start_matches("Not accepted: ").trim_end_matches('.').to_string()));
                 }
@@ -546,6 +547,7 @@ impl<'a> Tools<'a> {
             action: None,
             admin: false,
             carved: Vec::new(),
+            gain: None,
         };
         // the action (and the command for a script) is Sprawl's, never the model's
         if remedy == Remedy::Delete {

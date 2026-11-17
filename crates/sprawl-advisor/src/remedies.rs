@@ -39,6 +39,7 @@ fn info(tree: &Tree, n: usize, id: &str, title: String, evidence: Vec<String>, b
         action: None,
         admin: false,
         carved: Vec::new(),
+        gain: None,
     }
 }
 
@@ -107,7 +108,7 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
             tree,
             n,
             "compact",
-            format!("Compress {} (about {})", tree.nodes[n].name, format_size(saving)),
+            format!("Compress {}", tree.nodes[n].name),
             vec![
                 format!("Windows can store these program files compressed: about {} of {} saved, the program runs as before.", format_size(saving), format_size(node.size)),
                 // single-quoted: a folder name can't run anything in the admin shell it is pasted into
@@ -115,13 +116,16 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
                 if game { "An update or 'verify files' in Steam writes some files back uncompressed; run it again after big updates.".into() } else { "An update writes changed files back uncompressed; run it again after big updates.".into() },
                 "Undo with: compact /u /s /exe /i on the same folder.".into(),
             ],
-            // the folder's own size (what the safety checks compare); the saving is in the title
+            // the folder's own size (what the safety checks compare); the saving is its gain
             node.size,
             Risk::Green,
             Remedy::Info,
         ));
+        if let Some(f) = out.last_mut() {
+            f.gain = Some(saving);
+        }
     }
-    out.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    out.sort_by(|a, b| b.expected_gain().cmp(&a.expected_gain()));
     out.truncate(10);
     out
 }
@@ -175,7 +179,9 @@ pub fn onedrive(tree: &Tree) -> Vec<Finding> {
         if pinned > 0 {
             ev.push(format!("{} of it is set to 'Always keep on this device'; Free up space undoes that.", format_size(pinned)));
         }
-        out.push(info(tree, n, "onedrive", format!("{}: {} can be online only", node.name, format_size(local)), ev, node.size, Risk::Amber, Remedy::Info));
+        let mut f = info(tree, n, "onedrive", format!("{}: {} can be online only", node.name, format_size(local)), ev, node.size, Risk::Amber, Remedy::Info);
+        f.gain = Some(local);
+        out.push(f);
     }
     out
 }

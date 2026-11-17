@@ -120,6 +120,7 @@ mod tests {
             action: None,
             admin: false,
             carved: Vec::new(),
+            gain: None,
         }
     }
 

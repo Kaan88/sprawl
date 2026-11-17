@@ -45,9 +45,11 @@ fn main() {
     let t2 = std::time::Instant::now();
     let owners = facts.owner_map(&tree);
     println!("advise_all {t_adv:.2} s, owner_map {:.2} s ({} nodes owned)", t2.elapsed().as_secs_f64(), owners.iter().filter(|o| o.is_some()).count());
-    let total: u64 = ok.iter().filter(|f| !f.in_active_project()).map(|f| f.bytes).sum();
+    use sprawl_advisor::finding::Group;
+    let total: u64 = ok.iter().filter(|f| !f.in_active_project() && f.group() == Group::Clean).map(|f| f.bytes).sum();
+    let tips: u64 = ok.iter().filter(|f| f.group() == Group::Yourself).map(|f| f.expected_gain()).sum();
     let active: Vec<_> = ok.iter().filter(|f| f.in_active_project()).collect();
-    println!("{} findings, {} in total", ok.len() - active.len(), format_size(total));
+    println!("{} findings: {} Sprawl can clean, {} of tips by their gain", ok.len() - active.len(), format_size(total), format_size(tips));
     println!("build outputs of projects being worked on: {}, {}", active.len(), format_size(active.iter().map(|f| f.bytes).sum()));
     let carved: Vec<_> = ok.iter().filter(|f| !f.carved.is_empty()).collect();
     for f in &carved {
@@ -58,7 +60,7 @@ fn main() {
             sprawl_advisor::Source::Rule(id) => id.as_str(),
             sprawl_advisor::Source::Model(m) => m.as_str(),
         };
-        println!("  {:>10}  {:<7} {:<32} {rule:<24} {}", format_size(f.bytes), format!("{:?}", f.risk), f.title, f.owner.as_deref().unwrap_or(""));
+        println!("  {:>10}  {:<7} {:<8} {:<32} {rule:<24} {}", format_size(f.expected_gain()), format!("{:?}", f.risk), format!("{:?}", f.group()), f.title, f.owner.as_deref().unwrap_or(""));
         if show {
             println!("              {}", f.path.display());
         }

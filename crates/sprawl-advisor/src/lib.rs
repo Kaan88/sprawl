@@ -265,6 +265,7 @@ mod tests {
             action: None,
             admin: false,
             carved: Vec::new(),
+            gain: None,
             path: tree.path_of(ROOT),
             bytes: tree.nodes[ROOT].size,
             ..good.clone()

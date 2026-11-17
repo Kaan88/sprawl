@@ -175,6 +175,9 @@ pub(crate) struct Advisor {
     show_held: bool,
     /// The group of build outputs of projects being worked on is open.
     show_active: bool,
+    /// The "Things you can do yourself" and "Worth knowing" groups are folded.
+    hide_tips: bool,
+    hide_know: bool,
     /// A finding's command is shown in its details.
     show_cmd: bool,
     /// The last message for the user, shown in the panel's foot next to the buttons.
@@ -768,6 +771,8 @@ impl State {
             "AdvRefresh" => return self.advisor_start(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvActive" => self.advisor.show_active = !self.advisor.show_active,
+            "AdvTips" => self.advisor.hide_tips = !self.advisor.hide_tips,
+            "AdvKnow" => self.advisor.hide_know = !self.advisor.hide_know,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
             "AdvAiEdit" => self.advisor.ai_edit = if self.advisor.ai_edit.is_some() { None } else { Some(AiConfig::load()) },
@@ -1328,7 +1333,7 @@ impl State {
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvRefresh", "AdvHeld", "AdvActive", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
+            "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
@@ -1362,8 +1367,11 @@ impl State {
         let up_to = |pred: &dyn Fn(&Finding) -> bool| r.findings.iter().zip(&r.counted).any(|(f, c)| *c && pred(f) && self.review_size(f).1);
         let upto = |yes: bool| if yes { "up to " } else { "" };
         // what deleting or a command wins back; uninstalling is the user's call, shown below
-        // (build outputs of projects being worked on are a group of their own, below the list)
-        let actionable = |f: &Finding| matches!(f.remedy, Remedy::Delete | Remedy::Command) && !f.in_active_project();
+        // only what Sprawl can remove now: tickable and runnable here (build outputs of projects
+        // being worked on are a group of their own, below the list)
+        let can_now = |f: &Finding| crate::cleanup::untickable(f, true).is_none() && crate::cleanup::held_in_app(f).is_none();
+        let actionable = |f: &Finding| can_now(f) && !f.in_active_project();
+        let as_admin = sum(&|f| crate::cleanup::untickable(f, true).is_none() && crate::cleanup::held_in_app(f).is_some() && !f.in_active_project());
         let total = sum(&|f| actionable(f));
         let green = sum(&|f| actionable(f) && f.risk == Risk::Green);
         let amber = sum(&|f| actionable(f) && f.risk == Risk::Amber);
@@ -1380,6 +1388,9 @@ impl State {
             }
             l
         };
+        if as_admin > 0 {
+            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" FontWeight="SemiBold"/><Run Text=" more as administrator" Foreground="#FFB9C2D6"/>"##, self.size(as_admin));
+        }
         if orange > 0 {
             line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="#FFFF9A70" FontWeight="SemiBold"/><Run Text=" your own files" Foreground="#FFB9C2D6"/>"##, self.size(orange));
         }
@@ -1467,21 +1478,30 @@ impl State {
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
-        // the AI's findings are in the same list, marked
-        let mut list: Vec<usize> = (0..r.findings.len())
-            .filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project())
-            .filter(|&i| match o {
-                Only::All => true,
-                Only::Runnable => crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none(),
-                Only::Decide => r.findings[i].risk == Risk::Orange,
-            })
-            .collect();
-        match s {
-            Sort::Size => list.sort_by_key(|&i| std::cmp::Reverse(r.findings[i].bytes)),
-            Sort::Risk => list.sort_by_key(|&i| (r.findings[i].risk, std::cmp::Reverse(r.findings[i].bytes))),
-            Sort::Owner => list.sort_by_key(|&i| (r.findings[i].owner.clone().unwrap_or_else(|| "~".into()).to_lowercase(), std::cmp::Reverse(r.findings[i].bytes))),
-        }
-        if list.is_empty() && !r.findings.is_empty() && o == Only::All {
+        // the AI's findings are in the same lists, marked. Three groups: what Sprawl can clean
+        // (with the active projects' build outputs apart), what the user can do, what is worth
+        // knowing; each ranked by what it would win back
+        use sprawl_advisor::finding::Group;
+        let pick = |g: Group| -> Vec<usize> {
+            let mut l: Vec<usize> = (0..r.findings.len())
+                .filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project() && r.findings[i].group() == g)
+                .filter(|&i| match o {
+                    Only::All => true,
+                    Only::Runnable => crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none(),
+                    Only::Decide => r.findings[i].risk == Risk::Orange,
+                })
+                .collect();
+            let gain = |i: usize| std::cmp::Reverse(r.findings[i].expected_gain());
+            match s {
+                Sort::Size => l.sort_by_key(|&i| gain(i)),
+                Sort::Risk => l.sort_by_key(|&i| (r.findings[i].risk, gain(i))),
+                Sort::Owner => l.sort_by_key(|&i| (r.findings[i].owner.clone().unwrap_or_else(|| "~".into()).to_lowercase(), gain(i))),
+            }
+            l
+        };
+        let list = pick(Group::Clean);
+        let (yourself, know) = (pick(Group::Yourself), pick(Group::Know));
+        if list.is_empty() && yourself.is_empty() && know.is_empty() && !r.findings.is_empty() && o == Only::All {
             x += r##"<TextBlock Text="Nothing big enough for this list. Smaller things that can go are in Cleaners." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
         for i in list {
@@ -1501,6 +1521,26 @@ impl State {
             );
             if self.advisor.show_active {
                 for i in active {
+                    x += &self.finding_row(r, i);
+                }
+            }
+        }
+        for (name, title, note, rows, hidden) in [
+            ("AdvTips", "Things you can do yourself", "Sprawl doesn't run these: each says how, and the size is about what it would win back.", &yourself, self.advisor.hide_tips),
+            ("AdvKnow", "Worth knowing", "Nothing to do here, or nothing safe to do.", &know, self.advisor.hide_know),
+        ] {
+            if rows.is_empty() {
+                continue;
+            }
+            let bytes: u64 = rows.iter().filter(|&&i| r.counted[i] && name == "AdvTips").map(|&i| r.findings[i].expected_gain()).sum();
+            let size = if bytes > 0 { format!(" · about {}", self.size(bytes)) } else { String::new() };
+            x += &format!(
+                r##"<Button x:Name="{name}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="{title}" FontWeight="SemiBold"/><Run Text="   {}{size} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{note}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                rows.len(),
+                if hidden { "show" } else { "hide" }
+            );
+            if !hidden {
+                for &i in rows {
                     x += &self.finding_row(r, i);
                 }
             }
@@ -2558,7 +2598,11 @@ impl State {
             sub = ui::esc(&sub),
             remedy = remedy_label(f.remedy),
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
-            size = if f.estimate() { format!("up to {}", self.size(f.bytes)) } else { self.size(f.bytes) },
+            size = match f.gain {
+                Some(g) => format!("about {}", self.size(g)),
+                None if f.estimate() => format!("up to {}", self.size(f.bytes)),
+                None => self.size(f.bytes),
+            },
             op = if r.counted[i] { "1" } else { "0.55" },
         );
         if open {
@@ -2682,6 +2726,7 @@ mod script_tests {
                 action: None,
                 admin: false,
                 carved: Vec::new(),
+                gain: None,
             };
             f.set_action(sprawl_advisor::clean::Action::Clear { days: 0 }, false);
             f

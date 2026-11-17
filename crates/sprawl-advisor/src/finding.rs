@@ -88,6 +88,22 @@ pub struct Finding {
     /// image): already taken off `bytes`. Set by the safety check, never by the finding's source.
     #[serde(skip)]
     pub carved: Vec<Carve>,
+    /// What acting on it would win back, when that isn't `bytes` (a tip: what compressing
+    /// saves, what OneDrive frees). `bytes` stays the folder's size, which the safety checks
+    /// compare with the tree.
+    #[serde(skip)]
+    pub gain: Option<u64>,
+}
+
+/// Where a finding is listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    /// Sprawl can remove it (deletes, a tool's clean-up).
+    Clean,
+    /// The user can do it: compress, move, uninstall, clear from the app, pick between copies.
+    Yourself,
+    /// Information only: a folder bigger than usual, something never to touch.
+    Know,
 }
 
 /// One protected item inside a finding that its clean-up leaves where it is.
@@ -148,9 +164,23 @@ impl Finding {
     }
 
     /// Its size is the whole folder's, while the clean-up takes only part of it (files a
-    /// pattern names, or what is older than some days): shown as "up to".
+    /// pattern names, what is older than some days, or what a tool decides): shown as "up to".
     pub fn estimate(&self) -> bool {
-        matches!(&self.action, Some(Action::Match { .. }) | Some(Action::Clear { days: 1.. }))
+        matches!(&self.action, Some(Action::Match { .. }) | Some(Action::Clear { days: 1.. }) | Some(Action::Tool { .. }))
+    }
+
+    /// What acting on it wins back: its gain when it has one, else its size.
+    pub fn expected_gain(&self) -> u64 {
+        self.gain.unwrap_or(self.bytes)
+    }
+
+    /// Where it is listed: what Sprawl removes, what the user can do, what is worth knowing.
+    pub fn group(&self) -> Group {
+        match self.remedy {
+            Remedy::Delete | Remedy::Command => Group::Clean,
+            _ if self.risk == Risk::Red || matches!(&self.source, Source::Rule(id) if id.starts_with("anomaly.")) => Group::Know,
+            _ => Group::Yourself,
+        }
     }
 
     /// Inside another account's profile (Public counts as one): under the Users folder of any

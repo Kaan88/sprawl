@@ -90,6 +90,7 @@ mod tests {
             action: None,
             admin: false,
             carved: Vec::new(),
+            gain: None,
         }
     }
 
@@ -112,6 +113,36 @@ mod tests {
         // a finding inside another doesn't count twice
         let p = plan(&v, &[true, false, true, true], 10 << 30);
         assert!(!p.picked.contains(&1));
+    }
+
+    #[test]
+    fn findings_are_grouped_and_ranked_by_what_they_win_back() {
+        use crate::finding::{Action, Group};
+        let del = f(Risk::Green, 3);
+        assert_eq!(del.group(), Group::Clean);
+        let mut tip = f(Risk::Green, 8);
+        tip.remedy = Remedy::Info;
+        tip.gain = Some(2 << 30);
+        assert_eq!(tip.group(), Group::Yourself);
+        assert_eq!(tip.expected_gain(), 2 << 30, "a tip ranks by its saving, not its folder");
+        let mut moved = f(Risk::Amber, 20);
+        moved.remedy = Remedy::Move;
+        assert_eq!(moved.group(), Group::Yourself);
+        let mut odd = f(Risk::Amber, 5);
+        odd.remedy = Remedy::Info;
+        odd.source = Source::Rule("anomaly.winsxs".into());
+        assert_eq!(odd.group(), Group::Know);
+        let mut never = f(Risk::Red, 5);
+        never.remedy = Remedy::Info;
+        assert_eq!(never.group(), Group::Know);
+        // a tool decides what it removes: "up to"
+        let mut tool = f(Risk::Green, 17);
+        tool.action = Some(Action::Tool { command: "dism".into() });
+        assert!(tool.estimate());
+        assert!(!del.estimate());
+        // tips are never planned: they aren't Sprawl's to run
+        let p = plan(&[tip, del], &[true, true], 1 << 40);
+        assert_eq!(p.picked, vec![1]);
     }
 
     #[test]

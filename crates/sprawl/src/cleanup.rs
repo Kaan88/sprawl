@@ -882,6 +882,7 @@ mod admin_tests {
             action: None,
             admin: false,
             carved: Vec::new(),
+            gain: None,
         };
         f.set_action(Action::Clear { days: 7 }, true);
         // tickable either way; the in-app run holds it back only when not elevated

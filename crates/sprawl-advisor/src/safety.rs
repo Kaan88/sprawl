@@ -514,6 +514,7 @@ mod tests {
             action: None,
             admin: false,
             carved: Vec::new(),
+            gain: None,
         };
         assert!(f.other_account());
         let mut out = f.clone();
