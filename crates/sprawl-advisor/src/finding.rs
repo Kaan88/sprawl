@@ -94,9 +94,14 @@ pub fn within(p: &std::path::Path, base: &std::path::Path) -> bool {
 }
 
 /// `p` is in the Users folder of its drive (`X:\Users\...`, or the folder the user's own profile
-/// sits in) and not inside `home`. The Users folder itself counts: it holds other profiles.
+/// sits in) and not inside `home`. The Users folder itself counts: it holds other profiles. A
+/// network path (`\\server\...`) counts too: whose folder it is can't be told from here.
 pub fn other_account(p: &std::path::Path, home: Option<&std::path::Path>) -> bool {
     let s = p.to_string_lossy().replace('/', "\\");
+    if s.starts_with("\\\\") && !s.starts_with("\\\\?\\") || s.to_lowercase().starts_with("\\\\?\\unc\\") {
+        return true;
+    }
+    let s = s.strip_prefix("\\\\?\\").unwrap_or(&s).to_string();
     let mut parts = s.trim_end_matches('\\').split('\\').filter(|x| !x.is_empty());
     let (Some(drive), Some(top)) = (parts.next(), parts.next()) else { return false };
     if !drive.ends_with(':') {

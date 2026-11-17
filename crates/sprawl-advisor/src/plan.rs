@@ -146,6 +146,12 @@ mod tests {
         assert!(!other_account(Path::new(r"C:\Windows\WinSxS"), home));
         assert!(!other_account(Path::new(r"D:\src\game\target"), home));
         assert!(!other_account(Path::new(r"D:\Projects\Users\x"), home));
+        // a network path: nobody's to tick
+        assert!(other_account(Path::new(r"\\server\Users\Alex\AppData"), home));
+        assert!(other_account(Path::new(r"\\nas\share\build\target"), home));
+        assert!(other_account(Path::new(r"\\?\UNC\nas\share\x"), home));
+        assert!(!other_account(Path::new(r"\\?\C:\Windows\Temp"), home));
+        assert!(other_account(Path::new(r"\\?\C:\Users\Alex"), home));
         // profiles kept somewhere else: that folder counts too
         assert!(other_account(Path::new(r"E:\Profiles\Alex"), Some(Path::new(r"E:\Profiles\Sam"))));
     }
