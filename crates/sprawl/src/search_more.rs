@@ -1,14 +1,15 @@
-//! The Search tab, outside the scan: the last full snapshot of folders scanned before (searchable
-//! before any scan of this session) and, as administrator, other drives read from their MFT.
-//! These rows are not part of the scan on screen, so they offer Open, Show in Explorer, Copy
-//! path and "Scan this folder" — never a delete, which only goes through a scanned tree.
+//! The Search tab beyond the scan: every other fixed drive, read when the tab opens (from the
+//! MFT as administrator, else folder by folder), and saved scans of places no drive read covers.
+//! Their matches sit in the same list as the scan's. They are not part of the scan on screen,
+//! so they offer Show in Explorer, Copy path and "Scan this folder" — never a delete, which only
+//! goes through a scanned tree.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use sprawl_core::search::{search, Index, Query};
 use sprawl_core::Tree;
@@ -20,22 +21,20 @@ use crate::format::{fmt_time, thousands};
 use crate::state::{find, keep, load, with, State, View};
 use crate::ui;
 
-/// Rows shown, biggest first.
-const SHOWN: usize = 200;
+/// Matches from other drives kept at most (the first ones in the sort order).
+const MAX_HITS: usize = 100_000;
 /// Saved scans loaded at most (each costs about what its scan cost in memory).
 const MAX_SNAPSHOTS: usize = 3;
 
 /// A tree that isn't the scan on screen.
 pub(crate) struct Place {
-    /// "Saved scan, 12 Nov" or "Read now".
-    pub(crate) label: String,
     pub(crate) tree: Arc<Tree>,
     index: Arc<Index>,
     /// From a saved scan (its date), or read just now.
     pub(crate) as_of: Option<SystemTime>,
 }
 
-type Hits = (u64, String, Option<(Vec<(usize, usize)>, usize)>);
+type Hits = (u64, String, (usize, bool), Option<(Vec<(usize, usize)>, usize)>);
 
 #[derive(Default)]
 pub(crate) struct More {
@@ -44,18 +43,42 @@ pub(crate) struct More {
     gen: u64,
     snapshots_tried: bool,
     arriving: Option<Receiver<Option<Place>>>,
-    /// What is being read ("C:\ (saved 12 Nov)", "D:").
-    pub(crate) loading: Vec<String>,
+    /// What is being read ("C:\ (saved 12 Nov)", "D:\"), with a drive read's progress.
+    pub(crate) loading: Vec<(String, Option<Arc<sprawl_core::Progress>>)>,
     drives_on: HashSet<String>,
     /// Drives the user switched off this session: not read again by themselves.
     drives_off: HashSet<String>,
     running: Option<Receiver<Hits>>,
-    /// (place, node), biggest first, at most SHOWN; and how many there were.
+    /// (place, node) in the Search sort order, at most MAX_HITS; and how many there were.
     hits: Vec<(usize, usize)>,
-    total: usize,
+    pub(crate) total: usize,
     hits_gen: u64,
+    /// The row from another drive that is picked (place, node).
+    pub(crate) sel: Option<(usize, usize)>,
+    /// When the line under the results last showed the reading progress.
+    drawn: Option<Instant>,
     /// What the indexing note in the main window says now ("" hidden).
     busy_shown: String,
+}
+
+impl More {
+    /// The matches for the places as they are now (none while they changed under them).
+    pub(crate) fn current_hits(&self) -> &[(usize, usize)] {
+        if self.hits_gen == self.gen {
+            &self.hits
+        } else {
+            &[]
+        }
+    }
+}
+
+/// "D:\ 1,234,567 items", or "C:\ (saved 12 Nov)".
+fn loading_label((l, p): &(String, Option<Arc<sprawl_core::Progress>>)) -> String {
+    match p {
+        Some(p) if p.items() > 0 => format!("{l} {} items", thousands(p.items())),
+        Some(_) => format!("{l} starting"),
+        None => l.clone(),
+    }
 }
 
 fn norm(p: &Path) -> String {
@@ -108,13 +131,13 @@ impl State {
             self.render_more();
             return;
         }
-        self.search.more.loading.extend(newest.iter().map(|e| format!("{} (saved {})", e.root.display(), fmt_time(e.taken))));
+        self.search.more.loading.extend(newest.iter().map(|e| (format!("{} (saved {})", e.root.display(), fmt_time(e.taken)), None)));
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             for e in newest {
                 let place = sprawl_advisor::history::load(&e).ok().map(|t| {
                     let index = Arc::new(Index::build(&t));
-                    Place { label: format!("Saved scan, {}", fmt_time(e.taken)), tree: Arc::new(t), index, as_of: Some(e.taken) }
+                    Place { tree: Arc::new(t), index, as_of: Some(e.taken) }
                 });
                 if tx.send(place).is_err() {
                     return;
@@ -176,13 +199,13 @@ impl State {
             return;
         }
         m.drives_on.insert(root.clone());
-        m.loading.push(format!("{root} (reading)"));
+        let progress = sprawl_core::Progress::new();
+        m.loading.push((root.clone(), Some(progress.clone())));
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let progress = sprawl_core::Progress::new();
             let place = sprawl_core::scan_auto(Path::new(&root), &progress).ok().map(|t| {
                 let index = Arc::new(Index::build(&t));
-                Place { label: "Read now".into(), tree: Arc::new(t), index, as_of: None }
+                Place { tree: Arc::new(t), index, as_of: None }
             });
             let _ = tx.send(place);
         });
@@ -222,6 +245,7 @@ impl State {
         let places = m.places.clone();
         let gen = m.gen;
         let text_q = self.search.query.clone();
+        let sort = self.search.sort;
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let mut all: Vec<(usize, usize)> = Vec::new();
@@ -229,18 +253,18 @@ impl State {
                 match search(&p.tree, &p.index, &q, &cancel) {
                     Some(v) => all.extend(v.into_iter().map(|n| (k, n))),
                     None => {
-                        let _ = tx.send((gen, text_q, None));
+                        let _ = tx.send((gen, text_q, sort, None));
                         return;
                     }
                 }
             }
-            all.sort_by(|a, b| places[b.0].tree.nodes[b.1].size.cmp(&places[a.0].tree.nodes[a.1].size));
+            sort_hits(&places, sort, &mut all);
             // what the scan on screen already shows is left out
             let mut shown = Vec::new();
             let mut total = 0usize;
             for (k, n) in all {
                 if cancel.load(Ordering::Relaxed) {
-                    let _ = tx.send((gen, text_q, None));
+                    let _ = tx.send((gen, text_q, sort, None));
                     return;
                 }
                 if let Some(c) = &cur {
@@ -249,11 +273,11 @@ impl State {
                     }
                 }
                 total += 1;
-                if shown.len() < SHOWN {
+                if shown.len() < MAX_HITS {
                     shown.push((k, n));
                 }
             }
-            let _ = tx.send((gen, text_q, Some((shown, total))));
+            let _ = tx.send((gen, text_q, sort, Some((shown, total))));
         });
         m.running = Some(rx);
     }
@@ -263,7 +287,7 @@ impl State {
     /// scan's names, on any tab.
     fn index_note(&mut self) {
         let m = &self.search.more;
-        let mut what: Vec<String> = m.loading.iter().map(|l| l.replace(" (reading)", "")).collect();
+        let mut what: Vec<String> = m.loading.iter().map(loading_label).collect();
         if self.search.building.is_some() {
             what.insert(0, "this scan".into());
         }
@@ -315,29 +339,107 @@ impl State {
                 self.search_run();
                 self.render_more();
             }
+        } else if !self.search.more.loading.is_empty() && self.view == View::Search && self.search.more.drawn.is_none_or(|t| t.elapsed().as_millis() > 500) {
+            // the counts going up
+            self.render_more();
         }
         if let Some(rx) = &self.search.more.running {
-            if let Ok((gen, q, r)) = rx.try_recv() {
+            if let Ok((gen, q, sort, r)) = rx.try_recv() {
                 self.search.more.running = None;
                 if let Some((hits, total)) = r.filter(|_| gen == self.search.more.gen && q == self.search.query) {
                     let m = &mut self.search.more;
                     m.hits = hits;
                     m.total = total;
                     m.hits_gen = gen;
-                    self.render_more();
+                    m.sel = None;
+                    if sort != self.search.sort {
+                        self.more_sort();
+                    }
+                    self.search.stamp += 1;
+                    if self.view == View::Search {
+                        self.refresh_rows();
+                        let info = self.search_count();
+                        crate::state::text(&self.root, "SearchInfo", &info);
+                    }
                 }
             }
         }
     }
 
-    fn more_path(&self, i: usize) -> Option<PathBuf> {
-        let &(k, n) = self.search.more.hits.get(i)?;
-        let p = self.search.more.places.get(k)?;
-        Some(p.tree.path_of(n))
+    /// The matches from other drives in the current sort order (after a click on a column).
+    pub(crate) fn more_sort(&mut self) {
+        let m = &mut self.search.more;
+        let mut v = std::mem::take(&mut m.hits);
+        sort_hits(&m.places, self.search.sort, &mut v);
+        self.search.more.hits = v;
     }
 
-    fn more_command(&mut self, kind: char, i: usize) {
-        let Some(path) = self.more_path(i) else { return };
+    /// A click on a row from another drive: picked (never part of the scan's picks); a
+    /// double-click shows it in Explorer.
+    pub(crate) fn more_tapped(&mut self, k: usize, n: usize, double: bool) {
+        self.search.more.sel = Some((k, n));
+        self.selected = None;
+        self.marked.clear();
+        if double {
+            self.more_command('E', k, n);
+        }
+        self.focus_main();
+        self.refresh_rows();
+    }
+
+    /// Right-click on a row from another drive: what can be done with it.
+    pub(crate) fn more_menu(&mut self, k: usize, n: usize, at: crate::bindings::Windows::Foundation::Point) {
+        self.search.more.sel = Some((k, n));
+        self.selected = None;
+        self.marked.clear();
+        self.refresh_rows();
+        let shown = || -> windows_core::Result<()> {
+            use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{FlyoutBase, FlyoutShowOptions};
+            let menu: FlyoutBase = find(&self.root, "MoreMenu")?;
+            let target: crate::bindings::Microsoft::UI::Xaml::DependencyObject = find(&self.root, "TreeScroll")?;
+            let opts = FlyoutShowOptions::new()?;
+            opts.SetPosition(Some(at))?;
+            menu.ShowAtWithOptions(&target, &opts)
+        };
+        if let Err(e) = shown() {
+            eprintln!("search menu: {e:?}");
+        }
+    }
+
+    /// An item of that menu, for the picked row.
+    pub(crate) fn more_menu_pick(&mut self, kind: char) {
+        if let Some((k, n)) = self.search.more.sel {
+            self.more_command(kind, k, n);
+        }
+    }
+
+    /// A row from another drive, in the same columns as the scan's.
+    pub(crate) fn more_row(&self, row: usize, k: usize, n: usize) -> String {
+        let Some(p) = self.search.more.places.get(k) else { return String::new() };
+        let node = &p.tree.nodes[n];
+        let bg = self.row_bg(row, self.search.more.sel == Some((k, n)));
+        let folder = node.parent.map(|q| p.tree.path_of(q).display().to_string()).unwrap_or_default();
+        let (glyph, gc) = if node.is_dir { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
+        let saved = match p.as_of {
+            Some(t) => format!(
+                r##"<Border Background="#33FFB547" CornerRadius="3" Padding="5,0" VerticalAlignment="Center" ToolTipService.ToolTip="From a saved scan: how it was then, not checked now"><TextBlock Text="saved {}" FontSize="11" Foreground="#FFFFB547"/></Border>"##,
+                ui::esc(&fmt_time(t))
+            ),
+            None => String::new(),
+        };
+        format!(
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/></Grid>"##,
+            cols = crate::tables::col_defs(crate::search::COLS),
+            runs = self.name_runs(&node.name),
+            c1 = crate::tables::cell(1, &self.size(node.size)),
+            c2 = crate::tables::cell(2, ""),
+            c3 = crate::tables::cell(3, &node.modified.map(fmt_time).unwrap_or_default()),
+            folder = ui::esc(&folder),
+        )
+    }
+
+    pub(crate) fn more_command(&mut self, kind: char, k: usize, n: usize) {
+        let Some(path) = self.search.more.places.get(k).map(|p| p.tree.path_of(n)) else { return };
         match kind {
             'E' => {
                 // show it in Explorer if it is still there, else its nearest folder that is
@@ -382,81 +484,55 @@ impl State {
             let _ = host.cast::<UIElement>().and_then(|u| u.SetVisibility(Visibility::Collapsed));
             return;
         }
+        self.search.more.drawn = Some(Instant::now());
+        let m = &self.search.more;
         let mut x = format!(r##"<StackPanel {} Spacing="4" Padding="8,6,8,6">"##, ui::NS);
-        // the head: what is searched besides the scan
         x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
-        let head = if self.search.query.trim().is_empty() || m.places.is_empty() {
-            "Outside this scan".to_string()
-        } else if m.total == 0 {
-            "Outside this scan: nothing".to_string()
-        } else if m.total > m.hits.len() {
-            format!("Outside this scan: {} found, the biggest {} shown", thousands(m.total as u64), m.hits.len())
-        } else {
-            format!("Outside this scan: {} found", thousands(m.total as u64))
-        };
-        x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>"##, ui::esc(&head));
-        let mut places: Vec<String> = m.places.iter().map(|p| format!("{} ({})", p.tree.root_path.display(), p.label.to_lowercase())).collect();
-        places.extend(m.loading.iter().map(|l| format!("{l}...")));
-        if !places.is_empty() {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="520"/>"##, ui::esc(&places.join(",  ")));
+        let busy = !m.loading.is_empty();
+        if busy {
+            x += r##"<ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>"##;
         }
-        {
-            for d in &offer {
-                let letter = d.root.chars().next().unwrap_or('C');
-                let on = m.drives_on.contains(&d.root);
-                x += &format!(
-                    r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Search {root} too (kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
-                    on = if on { "True" } else { "False" },
-                    root = ui::esc(&d.root),
-                );
+        x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>"##, if busy { "Reading" } else { "Searching" });
+        let mut places: Vec<String> = Vec::new();
+        if self.tree.is_some() {
+            places.push("this scan".into());
+        }
+        places.extend(m.places.iter().map(|p| match p.as_of {
+            Some(t) => format!("{} (saved {})", p.tree.root_path.display(), fmt_time(t)),
+            None => p.tree.root_path.display().to_string(),
+        }));
+        let reading: Vec<String> = m.loading.iter().map(loading_label).collect();
+        let line = if busy {
+            let mut l = reading.join(",  ");
+            if !places.is_empty() {
+                l += &format!("   ·   searching {} meanwhile", places.join(", "));
             }
+            l
+        } else {
+            places.join(",  ")
+        };
+        if !line.is_empty() {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="640"/>"##, ui::esc(&line));
         }
-        if !elevated && !m.loading.is_empty() {
-            x += r##"<TextBlock Text="Reading drives folder by folder; as administrator it takes seconds." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
+        for d in &offer {
+            let letter = d.root.chars().next().unwrap_or('C');
+            let on = m.drives_on.contains(&d.root);
+            x += &format!(
+                r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Search {root} too (kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
+                on = if on { "True" } else { "False" },
+                root = ui::esc(&d.root),
+            );
+        }
+        if !elevated && busy {
+            x += r##"<TextBlock Text="Folder by folder; as administrator it takes seconds." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
         }
         x += "</StackPanel>";
-        if !m.hits.is_empty() && m.hits_gen == m.gen {
-            x += r##"<ScrollViewer MaxHeight="210" VerticalScrollBarVisibility="Auto"><StackPanel>"##;
-            for (i, &(k, n)) in m.hits.iter().enumerate() {
-                let p = &m.places[k];
-                let node = &p.tree.nodes[n];
-                let folder = node.parent.map(|q| p.tree.path_of(q).display().to_string()).unwrap_or_default();
-                let glyph = if node.is_dir { "&#xE8B7;" } else { "&#xE7C3;" };
-                let when = match p.as_of {
-                    Some(t) => format!("as of {}", fmt_time(t)),
-                    None => "read now".into(),
-                };
-                x += &format!(
-                    r##"<Grid Height="26" ColumnSpacing="8" Background="{bg}"><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="86"/><ColumnDefinition Width="150"/><ColumnDefinition Width="3*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="8" Margin="4,0,0,0"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="#FF8E97AA"/><TextBlock Text="{name}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{size}" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center"/><TextBlock Grid.Column="2" Text="{when}" FontSize="12" Foreground="#FFFFB547" VerticalAlignment="Center"/><TextBlock Grid.Column="3" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="2">{b1}{b2}{b3}</StackPanel></Grid>"##,
-                    bg = if i % 2 == 1 { "#08FFFFFF" } else { "Transparent" },
-                    name = ui::esc(&node.name),
-                    size = ui::esc(&self.size(node.size)),
-                    when = ui::esc(&when),
-                    folder = ui::esc(&folder),
-                    b1 = small_button(&format!("SxE{i}"), "&#xEC50;", "Show in Explorer"),
-                    b2 = small_button(&format!("SxC{i}"), "&#xE8C8;", "Copy path"),
-                    b3 = small_button(&format!("SxS{i}"), "&#xE721;", "Scan this folder"),
-                );
-            }
-            x += "</StackPanel></ScrollViewer>";
-        }
         x += "</StackPanel>";
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
         let _ = host.cast::<UIElement>().and_then(|u| u.SetVisibility(Visibility::Visible));
         // the clicks
         let Ok(fe) = content.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>() else { return };
-        for i in 0..self.search.more.hits.len() {
-            for kind in ['E', 'C', 'S'] {
-                if let Ok(b) = find::<ButtonBase>(&fe, &format!("Sx{kind}{i}")) {
-                    if let Ok(t) = b.Click(move |_, _| {
-                        with(|s| s.more_command(kind, i));
-                    }) {
-                        keep(t);
-                    }
-                }
-            }
-        }
         for d in &offer {
             let letter = d.root.chars().next().unwrap_or('C');
             if let Ok(b) = find::<ButtonBase>(&fe, &format!("SxD{letter}")) {
@@ -470,8 +546,17 @@ impl State {
     }
 }
 
-fn small_button(name: &str, glyph: &str, tip: &str) -> String {
-    format!(r##"<Button x:Name="{name}" Padding="6,2" MinWidth="0" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="{tip}"><FontIcon Glyph="{glyph}" FontSize="12"/></Button>"##)
+/// (place, node) pairs in the Search sort order.
+fn sort_hits(places: &[Arc<Place>], (c, desc): (usize, bool), v: &mut [(usize, usize)]) {
+    let key = crate::search::COLS[c.min(crate::search::COLS.len() - 1)].key();
+    v.sort_by(|a, b| {
+        let o = crate::tables::cmp_two(&places[a.0].tree, &[], a.1, &places[b.0].tree, &[], b.1, key);
+        if desc {
+            o.reverse()
+        } else {
+            o
+        }
+    });
 }
 
 use windows_core::Interface;

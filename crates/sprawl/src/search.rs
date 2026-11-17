@@ -43,6 +43,10 @@ pub(crate) struct Search {
     pub(crate) more: crate::search_more::More,
     /// When the box last changed: the search runs once typing pauses.
     typed: Option<std::time::Instant>,
+    /// Bumped whenever the scan's matches or the other drives' matches change or are re-sorted.
+    pub(crate) stamp: u64,
+    /// The two lists merged into the table's rows, for (`stamp`, `tree_gen`).
+    merged: std::cell::RefCell<Option<((u64, u64), Vec<(usize, usize)>)>>,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
@@ -100,7 +104,8 @@ impl State {
             } else {
                 ""
             };
-            self.search_show(Vec::new(), note.into(), false);
+            let note = if note.is_empty() { self.search_count() } else { note.to_string() };
+            self.search_show(Vec::new(), note, false);
             return;
         };
         let q = Query::parse(&self.search.query);
@@ -192,33 +197,8 @@ impl State {
             self.search_sort();
         }
         let t = self.tree.as_ref();
-        let info = if !note.is_empty() {
-            note
-        } else if self.search.query.trim().is_empty() {
-            String::new()
-        } else if let Some(t) = t {
-            let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
-            for &n in &self.search.results {
-                if t.nodes[n].is_dir {
-                    folders += 1;
-                } else {
-                    files += 1;
-                    bytes += t.nodes[n].size;
-                }
-            }
-            let mut s = match (files, folders) {
-                (0, 0) => "Nothing found".to_string(),
-                (f, 0) => format!("{} file{}, {}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes)),
-                (0, d) => format!("{} folder{}", thousands(d), if d == 1 { "" } else { "s" }),
-                (f, d) => format!("{} file{} ({}), {} folder{}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes), thousands(d), if d == 1 { "" } else { "s" }),
-            };
-            if self.full_tree.is_some() {
-                s += " in the filtered view";
-            }
-            s
-        } else {
-            String::new()
-        };
+        self.search.stamp += 1;
+        let info = if !note.is_empty() { note } else { self.search_count() };
         text(&self.root, "SearchInfo", &info);
         // the map: matches lit, the rest dimmed
         self.search.lens = match t {
@@ -239,33 +219,103 @@ impl State {
 
     pub(crate) fn search_sort(&mut self) {
         let (c, desc) = self.search.sort;
-        let Some(t) = &self.tree else { return };
-        let mut v = std::mem::take(&mut self.search.results);
-        crate::tables::sort_nodes(t, &self.alloc, COLS[c.min(COLS.len() - 1)].key(), desc, &mut v);
-        self.search.results = v;
+        if let Some(t) = &self.tree {
+            let mut v = std::mem::take(&mut self.search.results);
+            crate::tables::sort_nodes(t, &self.alloc, COLS[c.min(COLS.len() - 1)].key(), desc, &mut v);
+            self.search.results = v;
+        }
+        self.more_sort();
+        self.search.stamp += 1;
+    }
+
+    /// "12 files (3.1 GB), 4 folders": the scan's matches and the other drives' together.
+    pub(crate) fn search_count(&self) -> String {
+        if self.search.query.trim().is_empty() {
+            return String::new();
+        }
+        let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
+        let mut add = |node: &sprawl_core::Node| {
+            if node.is_dir {
+                folders += 1;
+            } else {
+                files += 1;
+                bytes += node.size;
+            }
+        };
+        if let Some(t) = self.tree.as_ref().filter(|_| self.search.results_gen == self.tree_gen) {
+            for &n in &self.search.results {
+                add(&t.nodes[n]);
+            }
+        }
+        let m = &self.search.more;
+        let others = m.current_hits();
+        for &(k, n) in others {
+            add(&m.places[k].tree.nodes[n]);
+        }
+        let mut s = match (files, folders) {
+            (0, 0) if !m.loading.is_empty() => "Nothing yet; still reading drives".to_string(),
+            (0, 0) => "Nothing found".to_string(),
+            (f, 0) => format!("{} file{}, {}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes)),
+            (0, d) => format!("{} folder{}", thousands(d), if d == 1 { "" } else { "s" }),
+            (f, d) => format!("{} file{} ({}), {} folder{}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes), thousands(d), if d == 1 { "" } else { "s" }),
+        };
+        if !others.is_empty() && m.total > others.len() {
+            s += &format!("; the biggest {} of {} on other drives", thousands(others.len() as u64), thousands(m.total as u64));
+        }
+        if self.full_tree.is_some() {
+            s += "; the scan's part is the filtered view";
+        }
+        s
     }
 
     /// The rows of the Search tab (none while the tree has changed under the results).
+    /// The scan's matches are `(node, 0)`; another drive's are `(node, place + 1)`.
     pub(crate) fn search_rows(&self) -> Vec<(usize, usize)> {
-        let len = self.tree.as_ref().map_or(0, |t| t.nodes.len());
-        if self.search.results_gen != self.tree_gen {
-            return Vec::new();
+        let at = (self.search.stamp, self.tree_gen);
+        if let Some((s, rows)) = self.search.merged.borrow().as_ref() {
+            if *s == at {
+                return rows.clone();
+            }
         }
-        self.search.results.iter().filter(|&&n| n < len).map(|&n| (n, 0)).collect()
+        let len = self.tree.as_ref().map_or(0, |t| t.nodes.len());
+        let mine: &[usize] = if self.search.results_gen == self.tree_gen { &self.search.results } else { &[] };
+        let mine: Vec<usize> = mine.iter().copied().filter(|&n| n < len).collect();
+        let m = &self.search.more;
+        let others = m.current_hits();
+        let mut rows = Vec::with_capacity(mine.len() + others.len());
+        match &self.tree {
+            Some(t) if !others.is_empty() && !mine.is_empty() => {
+                let (c, desc) = self.search.sort;
+                let key = COLS[c.min(COLS.len() - 1)].key();
+                let (mut i, mut j) = (0, 0);
+                while i < mine.len() && j < others.len() {
+                    let (k, n) = others[j];
+                    let o = crate::tables::cmp_two(t, &self.alloc, mine[i], &m.places[k].tree, &[], n, key);
+                    let mine_first = if desc { o != std::cmp::Ordering::Less } else { o != std::cmp::Ordering::Greater };
+                    if mine_first {
+                        rows.push((mine[i], 0));
+                        i += 1;
+                    } else {
+                        rows.push((n, k + 1));
+                        j += 1;
+                    }
+                }
+                rows.extend(mine[i..].iter().map(|&n| (n, 0)));
+                rows.extend(others[j..].iter().map(|&(k, n)| (n, k + 1)));
+            }
+            _ => {
+                rows.extend(mine.iter().map(|&n| (n, 0)));
+                rows.extend(others.iter().map(|&(k, n)| (n, k + 1)));
+            }
+        }
+        *self.search.merged.borrow_mut() = Some((at, rows.clone()));
+        rows
     }
 
-    pub(crate) fn search_row(&self, k: usize) -> String {
-        let t = self.tree.as_ref().unwrap();
-        let n = self.rows[k].0;
-        let node = &t.nodes[n];
-        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
-        let modified = node.modified.map(fmt_time).unwrap_or_default();
-        let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
-        let (glyph, gc) = if node.is_dir { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
-        // the matched part in bold
+    /// The matched part of `name` in bold.
+    pub(crate) fn name_runs(&self, name: &str) -> String {
         let q = Query::parse(&self.search.query);
-        let name = &node.name;
-        let runs = match q.highlight(name) {
+        match q.highlight(name) {
             Some((a, b)) => format!(
                 r##"<Run Text="{}"/><Run Text="{}" FontWeight="Bold" Foreground="#FF7FD4FF"/><Run Text="{}"/>"##,
                 ui::esc(&name[..a]),
@@ -273,7 +323,21 @@ impl State {
                 ui::esc(&name[b..])
             ),
             None => format!(r##"<Run Text="{}"/>"##, ui::esc(name)),
-        };
+        }
+    }
+
+    pub(crate) fn search_row(&self, k: usize) -> String {
+        let (n, d) = self.rows[k];
+        if d > 0 {
+            return self.more_row(k, d - 1, n);
+        }
+        let t = self.tree.as_ref().unwrap();
+        let node = &t.nodes[n];
+        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
+        let modified = node.modified.map(fmt_time).unwrap_or_default();
+        let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
+        let (glyph, gc) = if node.is_dir { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
+        let runs = self.name_runs(&node.name);
         let changed = if self.search.is_changed(self.tree_gen, n, node.parent) {
             r##"<FontIcon Glyph="&#xE895;" FontSize="11" Foreground="#FFFFB547" ToolTipService.ToolTip="Changed since the scan: check it is still there"/>"##
         } else {

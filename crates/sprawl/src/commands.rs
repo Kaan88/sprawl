@@ -50,6 +50,9 @@ impl State {
         if let Ok(r) = find::<RowDefinition>(&self.root, "MapRow") {
             let _ = r.SetHeight(GridLength { Value: if !map_on { 0.0 } else if v == View::Advisor { 0.7 } else { 1.25 }, GridUnitType: GridUnitType::Star });
         }
+        if self.welcome == Some(true) {
+            crate::welcome::tree_hint_shown(self, v != View::Search);
+        }
         if table {
             self.refresh_rows();
         }
@@ -253,7 +256,10 @@ impl State {
             "mCopyInfo" if has_tree => {
                 let t = self.tree.as_ref().unwrap();
                 let mut s = String::from("Name\tSize\tAllocated\tItems\tFiles\r\n");
-                for &(n, _) in &self.rows {
+                for &(n, d) in &self.rows {
+                    if !self.scan_row(&(n, d)) {
+                        continue;
+                    }
                     let node = &t.nodes[n];
                     s += &format!("{}\t{}\t{}\t{}\t{}\r\n", t.path_of(n).display(), self.size(node.size), self.size(self.alloc[n]), node.items(), node.files);
                 }

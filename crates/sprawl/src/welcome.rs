@@ -21,6 +21,13 @@ pub(crate) fn tree_hint() -> &'static str {
     r##"<TextBlock x:Name="TreeHint" Grid.Row="2" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="13" Foreground="#FF6E7789" Text="Folders show up here, biggest first.&#x0a;Click one to find it on the map below."/>"##
 }
 
+/// "Folders show up here" under the welcome page; never over Search's results.
+pub(crate) fn tree_hint_shown(st: &State, on: bool) {
+    if let Ok(e) = find::<UIElement>(&st.root, "TreeHint") {
+        let _ = e.SetVisibility(if on { Visibility::Visible } else { Visibility::Collapsed });
+    }
+}
+
 pub(crate) fn types_hint() -> &'static str {
     r##"<TextBlock x:Name="TypesHint" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="13" Foreground="#FF6E7789" Text="File types show up here.&#x0a;Click one to light up its files."/>"##
 }

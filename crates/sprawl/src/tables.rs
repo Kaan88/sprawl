@@ -122,6 +122,27 @@ pub(crate) fn sort_nodes(t: &Tree, alloc: &[u64], key: Key, desc: bool, v: &mut 
     });
 }
 
+/// Compare two nodes that may come from different trees (Search mixes the scan with other
+/// drives). A tree without allocated sizes (`&[]`) uses the size.
+pub(crate) fn cmp_two(ta: &Tree, aa: &[u64], a: usize, tb: &Tree, ab: &[u64], b: usize, key: Key) -> Ordering {
+    let (x, y) = (&ta.nodes[a], &tb.nodes[b]);
+    let o = match key {
+        Key::Name => cmp_names(&x.name, &y.name),
+        Key::Size => x.size.cmp(&y.size),
+        Key::Alloc => aa.get(a).copied().unwrap_or(x.size).cmp(&ab.get(b).copied().unwrap_or(y.size)),
+        Key::Items => x.items().cmp(&y.items()),
+        Key::Files => x.files.cmp(&y.files),
+        Key::Modified => x.modified.cmp(&y.modified),
+        Key::Folder => match (x.parent, y.parent) {
+            (Some(p), Some(q)) => cmp_names(&ta.path_of(p).to_string_lossy(), &tb.path_of(q).to_string_lossy()),
+            _ => Ordering::Equal,
+        },
+        Key::Type => cmp_names(&file_type(&x.extension()), &file_type(&y.extension())),
+        Key::None => Ordering::Equal,
+    };
+    o.then_with(|| cmp_names(&x.name, &y.name))
+}
+
 pub(crate) fn col_defs(cols: &[Col]) -> String {
     let mut s = String::from("<Grid.ColumnDefinitions>");
     for c in cols {
@@ -311,7 +332,9 @@ impl State {
 
     /// Rebuild the main table (tree or file list) after the data, selection or view changed.
     pub(crate) fn refresh_rows(&mut self) {
-        let Some(t) = &self.tree else { return };
+        if self.tree.is_none() && self.view != View::Search {
+            return;
+        }
         self.rows = match self.view {
             View::Files => self.files.iter().map(|&f| (f, 0)).collect(),
             View::Search => self.search_rows(),
@@ -321,10 +344,12 @@ impl State {
         if let (Ok(h), Ok(head)) = (find::<Border>(&self.root, "TreeHeader"), load::<UIElement>(&header(cols, sort))) {
             let _ = h.SetChild(&head);
         }
-        let total = t.nodes[ROOT].size;
-        let items = t.nodes[ROOT].items();
+        let total = self.tree.as_ref().map_or(0, |t| t.nodes[ROOT].size);
+        let items = self.tree.as_ref().map_or(0, |t| t.nodes[ROOT].items());
         if self.view == View::Search {
-            text(&self.root, "FootRight", &format!("{} found  |  {} items scanned", thousands(self.rows.len() as u64), thousands(items)));
+            let more: u64 = self.search.more.places.iter().map(|p| p.tree.nodes[ROOT].items()).sum();
+            text(&self.root, "FootRight", &format!("{} found  |  {} items searched", thousands(self.rows.len() as u64), thousands(items + more)));
+            crate::welcome::tree_hint_shown(self, false);
         } else {
             text(&self.root, "FootRight", &format!("{} items  |  {}", thousands(items), self.size(total)));
         }
@@ -343,7 +368,7 @@ impl State {
     /// Make sure the rows on screen exist (called after scrolling and resizing too).
     pub(crate) fn fill(&mut self, which: Which) {
         let (scroll, count) = match which {
-            Which::Main => ("TreeScroll", if self.tree.is_some() { self.rows.len() } else { 0 }),
+            Which::Main => ("TreeScroll", if self.tree.is_some() || self.view == View::Search { self.rows.len() } else { 0 }),
             Which::Exts => ("ExtScroll", self.exts.len()),
         };
         let Ok(sv) = find::<ScrollViewer>(&self.root, scroll) else { return };
@@ -504,13 +529,20 @@ impl State {
     pub(crate) fn row_tapped(&mut self, x: f64, y: f64, double: bool) {
         let k = (y / ROW_H) as usize;
         let Some(&(n, d)) = self.rows.get(k) else { return };
+        if self.view == View::Search {
+            if d > 0 {
+                self.more_tapped(d - 1, n, double);
+                return;
+            }
+            self.search.more.sel = None;
+        }
         let on_chevron = self.view == View::Tree && x < (8 + d * 16 + 20) as f64;
         // Ctrl adds or takes away a row, Shift picks the run from the selected row
         let (ctrl, shift) = if double || on_chevron { (false, false) } else { crate::win32::ctrl_shift_down() };
         if shift {
-            let from = self.selected.and_then(|s| self.rows.iter().position(|r| r.0 == s)).unwrap_or(k);
+            let from = self.selected.and_then(|s| self.rows.iter().position(|r| r.0 == s && self.scan_row(r))).unwrap_or(k);
             let (a, b) = (from.min(k), from.max(k));
-            self.marked = self.rows[a..=b].iter().map(|r| r.0).collect();
+            self.marked = self.rows[a..=b].iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
             self.refresh_rows();
             self.show_selection();
             return;
@@ -603,7 +635,14 @@ impl State {
     /// Right-click on a row: select it and open the row menu at the pointer.
     pub(crate) fn row_menu(&mut self, y_content: f64, at: Point) {
         let k = (y_content / ROW_H) as usize;
-        let Some(&(n, _)) = self.rows.get(k) else { return };
+        let Some(&(n, d)) = self.rows.get(k) else { return };
+        if self.view == View::Search {
+            if d > 0 {
+                self.more_menu(d - 1, n, at);
+                return;
+            }
+            self.search.more.sel = None;
+        }
         // right-click outside the picked rows picks just that row
         if !self.marked.contains(&n) {
             self.marked.clear();
@@ -624,9 +663,35 @@ impl State {
     }
 
     /// Arrow keys and friends in the main table. Returns true when the key was used.
+    /// A row of the scan on screen (in Search, a row can be from another drive).
+    pub(crate) fn scan_row(&self, r: &(usize, usize)) -> bool {
+        self.view != View::Search || r.1 == 0
+    }
+
+    /// The row the keyboard is on.
+    fn key_row(&self) -> usize {
+        if let Some((p, n)) = self.search.more.sel.filter(|_| self.view == View::Search) {
+            if let Some(k) = self.rows.iter().position(|r| r.1 == p + 1 && r.0 == n) {
+                return k;
+            }
+        }
+        self.selected.and_then(|n| self.rows.iter().position(|r| r.0 == n && self.scan_row(r))).unwrap_or(0)
+    }
+
+    /// The name on row `k`, whichever tree it is from.
+    fn row_name(&self, k: usize) -> String {
+        let Some(&(n, d)) = self.rows.get(k) else { return String::new() };
+        if !self.scan_row(&(n, d)) {
+            return self.search.more.places.get(d - 1).map(|p| p.tree.nodes[n].name.to_lowercase()).unwrap_or_default();
+        }
+        self.tree.as_ref().map(|t| t.nodes[n].name.to_lowercase()).unwrap_or_default()
+    }
+
     pub(crate) fn table_key(&mut self, key: i32) -> bool {
-        let Some(t) = &self.tree else { return false };
-        let k = self.selected.and_then(|n| self.rows.iter().position(|r| r.0 == n)).unwrap_or(0);
+        if self.tree.is_none() && self.view != View::Search {
+            return false;
+        }
+        let k = self.key_row();
         let last = self.rows.len().saturating_sub(1);
         let page = 20;
         let mut target = k;
@@ -640,7 +705,7 @@ impl State {
                 return true;
             }
             65 if ctrl => {
-                self.marked = self.rows.iter().map(|r| r.0).collect();
+                self.marked = self.rows.iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
                 self.refresh_rows();
                 self.show_selection();
                 return true;
@@ -663,13 +728,16 @@ impl State {
             36 => target = 0,                       // home
             35 => target = last,                    // end
             13 if self.view == View::Search => {
-                if let Some(&(n, _)) = self.rows.get(k) {
-                    self.search_reveal(n);
+                match self.rows.get(k) {
+                    Some(&(n, 0)) => self.search_reveal(n),
+                    Some(&(n, d)) => self.more_command('E', d - 1, n),
+                    None => {}
                 }
                 return true;
             }
             39 | 37 | 13 if self.view == View::Tree => {
                 let Some(&(n, _)) = self.rows.get(k) else { return false };
+                let Some(t) = self.tree.clone() else { return false };
                 let node = &t.nodes[n];
                 let open = self.expanded.contains(&n);
                 match key {
@@ -711,7 +779,7 @@ impl State {
                 // one letter moves on to the next match; more letters refine from here
                 let start = if typed.chars().count() == 1 { k + 1 } else { k };
                 let n = self.rows.len();
-                let hit = (0..n).map(|i| (start + i) % n.max(1)).find(|&i| t.nodes[self.rows[i].0].name.to_lowercase().starts_with(&typed));
+                let hit = (0..n).map(|i| (start + i) % n.max(1)).find(|&i| self.row_name(i).starts_with(&typed));
                 match hit {
                     Some(i) => target = i,
                     None => return true,
@@ -719,12 +787,21 @@ impl State {
             }
             _ => return false,
         }
-        if let Some(&(n, _)) = self.rows.get(target) {
-            self.selected = Some(n);
-            if shift && matches!(key, 33..=40) {
-                // the whole run from where it started
-                let (a, b) = (k.min(target), k.max(target));
-                self.marked.extend(self.rows[a..=b].iter().map(|r| r.0));
+        if let Some(&(n, d)) = self.rows.get(target) {
+            if !self.scan_row(&(n, d)) {
+                // a row from another drive: only looked at, never part of the scan's picks
+                self.search.more.sel = Some((d - 1, n));
+                self.selected = None;
+                self.marked.clear();
+            } else {
+                self.search.more.sel = None;
+                self.selected = Some(n);
+                if shift && matches!(key, 33..=40) {
+                    // the whole run from where it started
+                    let (a, b) = (k.min(target), k.max(target));
+                    let run: Vec<usize> = self.rows[a..=b].iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
+                    self.marked.extend(run);
+                }
             }
         }
         self.refresh_rows();
@@ -735,7 +812,10 @@ impl State {
 
     /// Scroll the main table just enough to show the selected row.
     pub(crate) fn scroll_to_selected(&mut self) {
-        let Some(k) = self.selected.and_then(|n| self.rows.iter().position(|r| r.0 == n)) else { return };
+        let k = self.key_row();
+        if self.rows.is_empty() {
+            return;
+        }
         let Ok(sv) = find::<ScrollViewer>(&self.root, "TreeScroll") else { return };
         let off = sv.VerticalOffset().unwrap_or(0.0);
         let vh = sv.ViewportHeight().unwrap_or(0.0);

@@ -394,6 +394,15 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         with(|st| st.command("mTweaks"));
     })?);
 
+    // The menu of a search row from another drive.
+    for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S')] {
+        if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {
+            keep(i.Click(move |_, _| {
+                with(|s| s.more_menu_pick(kind));
+            })?);
+        }
+    }
+
     // The row menu's items reuse the File menu's commands.
     for (item, cmd) in ROW_MENU {
         if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {

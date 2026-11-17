@@ -565,6 +565,12 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: type into the search box
+                    q if q.starts_with("find=") => {
+                        if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
+                            let _ = b.SetText(&q[5..].into());
+                        }
+                    }
                     // dev: type into a text box, field=Name=text
                     f if f.starts_with("field=") => {
                         if let Some((n, v)) = f[6..].split_once('=') {
