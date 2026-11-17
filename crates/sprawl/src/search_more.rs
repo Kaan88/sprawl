@@ -59,6 +59,9 @@ pub(crate) struct More {
     drawn: Option<Instant>,
     /// What the indexing note in the main window says now ("" hidden).
     busy_shown: String,
+    /// The drive strip's buttons as built (drives offered, which are on, reading or not): while
+    /// they stay the same only its text changes, so the buttons don't move or flicker.
+    strip_shape: String,
 }
 
 impl More {
@@ -288,7 +291,8 @@ impl State {
     /// scan's names, on any tab.
     fn index_note(&mut self) {
         let m = &self.search.more;
-        let mut what: Vec<String> = m.loading.iter().map(loading_label).collect();
+        // on the Search tab the strip under the results shows the drives being read
+        let mut what: Vec<String> = if self.view == View::Search { Vec::new() } else { m.loading.iter().map(loading_label).collect() };
         if self.search.building.is_some() {
             what.insert(0, "this scan".into());
         }
@@ -488,13 +492,8 @@ impl State {
         }
         self.search.more.drawn = Some(Instant::now());
         let m = &self.search.more;
-        let mut x = format!(r##"<StackPanel {} Spacing="4" Padding="8,6,8,6">"##, ui::NS);
-        x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
         let busy = !m.loading.is_empty();
-        if busy {
-            x += r##"<ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>"##;
-        }
-        x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>"##, if busy { "Reading" } else { "Searching" });
+        let head = if busy { "Reading" } else { "Searching" };
         let mut places: Vec<String> = Vec::new();
         if self.tree.is_some() {
             places.push("this scan".into());
@@ -513,25 +512,41 @@ impl State {
         } else {
             places.join(",  ")
         };
-        if !line.is_empty() {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="640"/>"##, ui::esc(&line));
+        let line = if !elevated && busy { format!("{line}   ·   folder by folder; as administrator it takes seconds") } else { line };
+        // the same buttons as last time: only the words change
+        let shape = format!("{busy}|{}", offer.iter().map(|d| format!("{}{}", d.root, m.drives_on.contains(&d.root))).collect::<Vec<_>>().join(","));
+        let built = host.Child().ok().and_then(|c| c.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>().ok());
+        if let Some(fe) = built.filter(|_| shape == m.strip_shape) {
+            crate::state::text(&fe, "SxHead", head);
+            crate::state::text(&fe, "SxLine", &line);
+            let _ = host.cast::<UIElement>().and_then(|u| u.SetVisibility(Visibility::Visible));
+            return;
+        }
+        // drive chips first, at a fixed place; the changing text after them
+        let mut x = format!(r##"<StackPanel {} Spacing="4" Padding="8,6,8,6">"##, ui::NS);
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
+        if !offer.is_empty() {
+            x += r##"<TextBlock Text="Also search" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
         }
         for d in &offer {
             let letter = d.root.chars().next().unwrap_or('C');
             let on = m.drives_on.contains(&d.root);
             x += &format!(
-                r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Search {root} too (kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
+                r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" MinWidth="40" ToolTipService.ToolTip="Search {root} too (kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
                 on = if on { "True" } else { "False" },
                 root = ui::esc(&d.root),
             );
         }
-        if !elevated && busy {
-            x += r##"<TextBlock Text="Folder by folder; as administrator it takes seconds." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
+        if busy {
+            x += r##"<ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center" Margin="6,0,0,0"/>"##;
         }
+        x += &format!(r##"<TextBlock x:Name="SxHead" Text="{head}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>"##);
+        x += &format!(r##"<TextBlock x:Name="SxLine" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="760"/>"##, ui::esc(&line));
         x += "</StackPanel>";
         x += "</StackPanel>";
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
+        self.search.more.strip_shape = shape;
         let _ = host.cast::<UIElement>().and_then(|u| u.SetVisibility(Visibility::Visible));
         // the clicks
         let Ok(fe) = content.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>() else { return };
