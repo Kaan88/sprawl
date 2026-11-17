@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use super::{post_json, Chat, ToolCall, ToolSpec, Turn};
 
 const URL: &str = "https://api.anthropic.com/v1/messages";
-const VERSION: &str = "2026-10-21";
+pub(crate) const VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 
 pub struct Anthropic {

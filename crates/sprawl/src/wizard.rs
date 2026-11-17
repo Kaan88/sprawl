@@ -5,7 +5,7 @@
 use sprawl_advisor::config::{self, AiConfig, Detected, Provider};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Control, PasswordBox, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, PasswordBox, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
 use crate::scene::Mode;
 use crate::state::{find, text, State};
@@ -65,7 +65,7 @@ pub fn xaml() -> String {
         {}{}
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/></StackPanel>
-        <StackPanel x:Name="WizModelRow">{}<TextBox x:Name="WizModel" PlaceholderText="Model name"/></StackPanel>
+        <StackPanel x:Name="WizModelRow">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
         <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are. Every request is listed in the advisor's log. Web lookups always ask first."/>
         </StackPanel>"##,
         page_title("&#xE945;", "AI advisor", "Optional: who should explain your disk?"),
@@ -266,6 +266,9 @@ impl State {
             let hint = if p.needs_key() && config::has_key(p) { "A key is saved. Leave empty to keep it." } else { "Paste your API key" };
             let _ = k.SetPlaceholderText(&hint.into());
         }
+        // the list of models for this provider; a text box until (and unless) it arrives
+        self.wiz_models.want(p, &field(self, "WizUrl"));
+        self.wizard_models();
     }
 
     pub(crate) fn wizard_command(&mut self, name: &str) {
@@ -298,7 +301,7 @@ impl State {
     fn wizard_finish(&mut self) {
         let mut notes = Vec::new();
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
-        let ai = AiConfig { provider: p, model: field(self, "WizModel").trim().to_string(), base_url: field(self, "WizUrl").trim().to_string() };
+        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string() };
         if ai.save().is_err() {
             notes.push("couldn't save the AI settings");
         }
@@ -347,5 +350,31 @@ impl State {
             format!("Setup saved, but {}.", notes.join(" and "))
         };
         text(&self.root, "FootLeft", &msg);
+    }
+}
+
+impl State {
+    /// Show the Model dropdown if the list is here, else the text box (and why).
+    pub(crate) fn wizard_models(&mut self) {
+        let current = field(self, "WizModel");
+        let choices = self.wiz_models.choices(&current);
+        if let Ok(host) = find::<Border>(&self.root, "WizModelHost") {
+            let combo = choices.as_ref().and_then(|list| crate::state::load::<UIElement>(&crate::models::combo("WizModelPick", list, &current, 0).replacen("<ComboBox ", &format!("<ComboBox {} HorizontalAlignment=\"Stretch\" ", crate::ui::NS), 1).replace(" Width=\"0\"", "")).ok());
+            let _ = host.SetChild(combo.as_ref());
+        }
+        shown(self, "WizModel", choices.is_none());
+        let note = self.wiz_models.note();
+        text(&self.root, "WizModelNote", note.as_deref().unwrap_or(""));
+        shown(self, "WizModelNote", note.is_some());
+    }
+
+    /// The model chosen: the dropdown's entry, or what is typed.
+    fn wizard_model(&self) -> String {
+        let typed = field(self, "WizModel").trim().to_string();
+        let pick = find::<Border>(&self.root, "WizModelHost").ok().and_then(|h| h.Child().ok()).and_then(|c| windows_core::Interface::cast::<Selector>(&c).ok()).and_then(|s| s.SelectedIndex().ok());
+        match (pick, self.wiz_models.choices(&typed)) {
+            (Some(i), Some(list)) => usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).unwrap_or(typed),
+            _ => typed,
+        }
     }
 }

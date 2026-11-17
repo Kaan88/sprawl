@@ -108,6 +108,8 @@ pub(crate) struct State {
     pub(crate) wizard_all: bool,
     pub(crate) wizard_offered: bool,
     pub(crate) update: crate::update::Updater,
+    /// The Model dropdown on the setup / Settings page.
+    pub(crate) wiz_models: crate::models::ModelFetch,
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
     pub(crate) scan_taken: std::time::SystemTime,
@@ -251,6 +253,9 @@ impl State {
         self.advisor_poll();
         self.cleanup_poll();
         self.update_poll();
+        if self.wiz_models.poll() {
+            self.wizard_models();
+        }
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {

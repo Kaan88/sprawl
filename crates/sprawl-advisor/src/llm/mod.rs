@@ -13,6 +13,7 @@ pub mod agent;
 pub mod anthropic;
 pub mod claude_code;
 pub mod http;
+pub mod models;
 pub mod openai;
 pub mod report;
 pub mod tools;

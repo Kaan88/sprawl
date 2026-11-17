@@ -33,6 +33,7 @@ mod win32;
 mod welcome;
 mod wizard;
 mod update;
+mod models;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -413,6 +414,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         wizard_all: false,
         wizard_offered: false,
         update: Default::default(),
+        wiz_models: Default::default(),
         hist: None,
         scan_taken: std::time::SystemTime::now(),
         settings,

@@ -121,9 +121,7 @@ fn build() {
     }
     let flags = flags.join("\u{1f}");
     // one cargo at a time
-    for p in ["sprawl", "sprawl-setup"] {
-        run(Command::new("cargo").args(["build", "--release", "-p", p, "--target-dir", "target/dist"]).env("CARGO_ENCODED_RUSTFLAGS", &flags).env("SPRAWL_SETUP_FROM", root.join("target").join("dist").join("release")));
-    }
+    run(Command::new("cargo").args(["build", "--release", "-p", "sprawl", "--target-dir", "target/dist"]).env("CARGO_ENCODED_RUSTFLAGS", &flags));
     let out = dist(&v);
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).unwrap_or_else(|e| fail(e));
@@ -134,7 +132,23 @@ fn build() {
         files.push(FileEntry { name: name.to_string(), sha256: sha256_hex(&bytes), size: bytes.len() as u64 });
         std::fs::write(out.join(name), &bytes).unwrap_or_else(|e| fail(e));
     }
-    std::fs::copy(release.join("sprawl-setup.exe"), out.join(format!("Sprawl-Setup-{v}.exe"))).unwrap_or_else(|e| fail(e));
+    // the installer: Inno Setup 7 (installer/sprawl.iss), from the same files
+    let iscc = std::env::var_os("SPRAWL_ISCC").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Program Files\Inno Setup 7\ISCC.exe"));
+    if !iscc.is_file() {
+        fail(format!("Inno Setup 7 not found at {} (set SPRAWL_ISCC)", iscc.display()));
+    }
+    run(Command::new(&iscc)
+        .arg("/Q")
+        .arg(format!("/DAppVersion={v}"))
+        .arg(format!("/DSourceDir={}", root.join(&release).display()))
+        .arg(format!("/O{}", root.join(&out).display()))
+        .arg(root.join("installer").join("sprawl.iss")));
+    let setup = out.join(format!("Sprawl-Setup-{v}.exe"));
+    if !setup.is_file() {
+        fail(format!("Inno Setup didn't make {}", setup.display()));
+    }
+    // a copy next to the builds, for trying it out
+    let _ = std::fs::copy(&setup, Path::new("target").join(format!("Sprawl-Setup-{v}.exe")));
     let manifest = serde_json::to_vec_pretty(&Manifest { version: v.clone(), files }).unwrap();
     let sig = hex(&key.sign(&manifest).to_bytes());
     // check it the way an installed copy will

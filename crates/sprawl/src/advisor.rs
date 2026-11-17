@@ -6,6 +6,7 @@
 //! after a review. "Ask Claude" adds the model's findings to the same list; a chat answers
 //! questions; "Save as a script" writes the ticked items as a PowerShell script instead.
 
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -184,6 +185,8 @@ pub(crate) struct Advisor {
     section: Section,
     /// The AI settings being edited in the Ask section (provider, model, base URL).
     ai_edit: Option<AiConfig>,
+    /// The provider's models, for the Model dropdown.
+    models: crate::models::ModelFetch,
     sort: Sort,
     only: Only,
     /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
@@ -473,6 +476,10 @@ impl State {
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
         self.tick_status();
+        if self.advisor.models.poll() && self.advisor.ai_edit.is_some() && self.view == View::Advisor {
+            self.read_ai_fields();
+            self.render_advisor();
+        }
         for f in crate::bridge::take_filters() {
             if let Ok(t) = find::<TextBox>(&self.root, "FilterBox") {
                 let _ = t.SetText(&f.as_str().into());
@@ -664,6 +671,8 @@ impl State {
             }
             "AdvAiSave" => {
                 self.read_ai_fields();
+                // a key may have just been stored: the list is fetched again next time
+                self.advisor.models.reset();
                 let key = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
                 if let Some(c) = self.advisor.ai_edit.take() {
                     let mut notes = Vec::new();
@@ -997,6 +1006,10 @@ impl State {
     }
 
     pub(crate) fn render_advisor(&mut self) {
+        if let Some(e) = &self.advisor.ai_edit {
+            let (p, u) = (e.provider, e.base_url.clone());
+            self.advisor.models.want(p, &u);
+        }
         // keep what was typed in the goal and question boxes across the redraw
         if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
             if let Ok(h) = t.Text() {
@@ -1549,7 +1562,16 @@ impl State {
     /// What is typed in the AI settings' model and address boxes.
     fn read_ai_fields(&mut self) {
         let get = |n: &str| self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, n).ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
-        let (m, u) = (get("AdvAiModel"), get("AdvAiUrl"));
+        let (mut m, u) = (get("AdvAiModel"), get("AdvAiUrl"));
+        // the dropdown, when there is one: its entries are the same as when it was drawn
+        if let Some(c) = &self.advisor.ai_edit {
+            let pick = self.advisor.panel.as_ref().and_then(|p| find::<Selector>(p, "AdvAiModelPick").ok()).and_then(|s| s.SelectedIndex().ok());
+            if let (Some(i), Some(list)) = (pick, self.advisor.models.choices(&c.model)) {
+                if let Some(v) = usize::try_from(i).ok().and_then(|i| list.get(i)) {
+                    m = Some(v.clone());
+                }
+            }
+        }
         if let Some(c) = &mut self.advisor.ai_edit {
             if let Some(m) = m {
                 c.model = m.trim().to_string();
@@ -2030,7 +2052,9 @@ impl State {
             chip("AdvPOpenAi", "OpenAI-compatible", e.provider == Provider::OpenAi),
             chip("AdvPOff", "Off", e.provider == Provider::Off),
         );
-        if matches!(e.provider, Provider::Anthropic | Provider::ClaudeCode) {
+        let choices = self.advisor.models.choices(&e.model);
+        // the quick picks, when there's no list to pick from
+        if choices.is_none() && matches!(e.provider, Provider::Anthropic | Provider::ClaudeCode) {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="4">"##;
             for (i, (id, what)) in CLAUDE_MODELS.iter().enumerate() {
                 x += &chip(&format!("AdvM{i}"), &format!("{} ({what})", id.trim_start_matches("claude-")), e.model == *id);
@@ -2038,7 +2062,14 @@ impl State {
             x += "</StackPanel>";
         }
         if e.provider != Provider::Off {
-            x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Model" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvAiModel" Width="260" Text="{}"/></StackPanel>"##, ui::esc(&e.model));
+            let field = match &choices {
+                Some(list) => crate::models::combo("AdvAiModelPick", list, &e.model, 260),
+                None => format!(r##"<TextBox x:Name="AdvAiModel" Width="260" Text="{}"/>"##, ui::esc(&e.model)),
+            };
+            x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Model" Width="70" VerticalAlignment="Center" FontSize="12"/>{field}</StackPanel>"##);
+            if let Some(n) = self.advisor.models.note() {
+                x += &format!(r##"<TextBlock Text="{}" Margin="78,0,0,0" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(&n));
+            }
         }
         if e.provider == Provider::OpenAi {
             x += &format!(

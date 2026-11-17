@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "sprawl"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde_json",
  "sprawl-advisor",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "sprawl-advisor"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -406,21 +406,21 @@ dependencies = [
 
 [[package]]
 name = "sprawl-bindgen"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "windows-bindgen",
 ]
 
 [[package]]
 name = "sprawl-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "windows-sys",
 ]
 
 [[package]]
 name = "sprawl-install"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ed25519-dalek",
  "serde",
@@ -431,18 +431,11 @@ dependencies = [
 
 [[package]]
 name = "sprawl-release"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "serde_json",
- "sprawl-install",
-]
-
-[[package]]
-name = "sprawl-setup"
-version = "0.2.2"
-dependencies = [
  "sprawl-install",
 ]
 

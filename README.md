@@ -8,7 +8,7 @@ A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8), m
 ## Install
 
 Download `Sprawl-Setup-<version>.exe` from the [latest release](https://github.com/Kaan88/sprawl/releases/latest)
-and run it. It installs for you only, in `%LOCALAPPDATA%\Programs\Sprawl`, with a Start menu
+and run it (an Inno Setup installer). It installs for you only, in `%LOCALAPPDATA%\Programs\Sprawl`, with a Start menu
 entry and an entry in Settings > Apps for uninstalling. No administrator rights are needed.
 Sprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the
 first time Sprawl starts.
@@ -24,8 +24,7 @@ each version is in [CHANGELOG.md](CHANGELOG.md).
 crates/
   sprawl-core/   UI-free logic: scanning, folder totals, file-type stats, squarified treemap layout (+ tests)
   sprawl-advisor/ the Advisor: rules, history, clean-up, AI providers, the MCP server
-  sprawl-install/ install, uninstall and update plumbing, and the signed release manifest
-  sprawl-setup/   the installer (carries the release build)
+  sprawl-install/ update plumbing (signed release manifest, swapping files in) and the Apps entry
   sprawl-release/ builds, signs and publishes a release
   sprawl/        the WinUI 3 app (XAML loaded at run time, treemap painted into a WriteableBitmap)
     src/main.rs      start-up: arguments, window, event wiring
@@ -42,6 +41,8 @@ tools/
   setup.ps1        downloads the Windows App SDK NuGet packages into sdk/
   fetch-pkg.ps1    downloads + unzips one NuGet package (used by setup.ps1)
   probe.ps1        read-only check of the build environment (runtime, Windows Kits, VS tools)
+installer/
+  sprawl.iss       the Inno Setup 7 script for Sprawl-Setup-<version>.exe
 docs/
   screenshots/             Sprawl screenshots
 ```
@@ -73,7 +74,7 @@ run `cargo run -p sprawl-bindgen` (needs the Windows SDK 10.0.26100 metadata).
 
 ```powershell
 cargo build --release -p sprawl-release
-.\target\release\sprawl-release build     # builds Sprawl and the installer, signs, fills dist\v<version>
+.\target\release\sprawl-release build     # builds Sprawl, signs, makes the installer with Inno Setup 7, fills dist\v<version>
 .\target\release\sprawl-release publish   # creates the GitHub release (needs gh)
 ```
 

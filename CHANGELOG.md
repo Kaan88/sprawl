@@ -3,6 +3,15 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.2.3 — 2026-11-17
+
+### New
+- **The installer is now an Inno Setup installer**: the usual setup wizard, a choice of folder, an optional desktop shortcut, and Inno's own uninstaller. Copies installed with 0.2.0 to 0.2.2 move over when you run it.
+- **Pick the AI model from a list.** In the AI settings and on the Settings page, Model is a dropdown filled from your provider (Anthropic with your key, or the OpenAI-compatible server's list, such as Ollama or LM Studio). If there is no list, you type the name as before, and Sprawl says why.
+
+### Fixed
+- The update card and the "Set up Sprawl?" card can be clicked and scrolled again (the welcome screen was covering them).
+
 ## 0.2.2 — 2026-11-17
 
 Safer updates, from a safety review of the updater.
