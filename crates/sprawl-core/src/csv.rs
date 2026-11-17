@@ -345,18 +345,24 @@ fn local_to_filetime(y: u16, mo: u16, d: u16, h: u16, mi: u16, s: u16) -> Option
 
 /// FILETIME ticks as local "yyyy/mm/dd hh:mm:ss".
 pub(crate) fn local_time_string(ft: u64) -> String {
+    match local_parts(ft) {
+        Some([y, mo, d, h, mi, s]) => format!("{y:04}/{mo:02}/{d:02} {h:02}:{mi:02}:{s:02}"),
+        None => String::new(),
+    }
+}
+
+/// A FILETIME as local [year, month, day, hour, minute, second], with the daylight saving time
+/// of that date.
+pub(crate) fn local_parts(ft: u64) -> Option<[u16; 6]> {
     let f = FILETIME { dwLowDateTime: ft as u32, dwHighDateTime: (ft >> 32) as u32 };
     // SAFETY: valid in/out structs.
     unsafe {
         let mut utc: SYSTEMTIME = std::mem::zeroed();
         let mut local: SYSTEMTIME = std::mem::zeroed();
         if FileTimeToSystemTime(&f, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
-            return String::new();
+            return None;
         }
-        format!(
-            "{:04}/{:02}/{:02} {:02}:{:02}:{:02}",
-            local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond
-        )
+        Some([local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond])
     }
 }
 

@@ -844,3 +844,8 @@ mod tests {
 pub fn local_time(t: SystemTime) -> String {
     csv::local_time_string(system_to_filetime(t))
 }
+
+/// A time as local [year, month, day, hour, minute, second].
+pub fn local_parts(t: SystemTime) -> Option<[u16; 6]> {
+    csv::local_parts(system_to_filetime(t))
+}

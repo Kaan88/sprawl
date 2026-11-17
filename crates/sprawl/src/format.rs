@@ -44,7 +44,16 @@ pub(crate) fn file_type(ext: &str) -> String {
     if known.is_empty() { format!("{} File", ext.to_uppercase()) } else { known.to_string() }
 }
 
+/// A time as the user's local "2026-11-17 19:47" (the clock in the taskbar shows the same).
 pub(crate) fn fmt_time(t: std::time::SystemTime) -> String {
+    if let Some([y, m, d, h, mi, _]) = sprawl_core::local_parts(t) {
+        return format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}");
+    }
+    fmt_utc(t)
+}
+
+/// The same in UTC, when Windows can't convert it.
+fn fmt_utc(t: std::time::SystemTime) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
@@ -69,4 +78,17 @@ pub(crate) fn user_dir(sub: &str) -> PathBuf {
     let base = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     let d = base.join(sub);
     if d.is_dir() { d } else { base }
+}
+
+#[cfg(test)]
+mod time_tests {
+    #[test]
+    fn times_are_shown_in_local_time() {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_795_000_000);
+        // the same clock time as the clean-up log (local), not UTC
+        let local = sprawl_core::local_time(t);
+        let shown = super::fmt_time(t);
+        assert_eq!(shown, local[..16].replace('/', "-"));
+        assert_eq!(super::fmt_utc(std::time::UNIX_EPOCH), "1970-01-01 00:00");
+    }
 }
