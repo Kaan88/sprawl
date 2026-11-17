@@ -419,9 +419,38 @@ impl State {
     }
 }
 
+// ---------------------------------------------------------------- narrow windows
+
+/// The tree's share of the width beside the file types (which have 1): more in a narrow
+/// window, where the tree's fixed columns would leave its names a few letters.
+pub(crate) fn tree_share(width: f64) -> f64 {
+    if width < 1500.0 {
+        2.0
+    } else {
+        1.4
+    }
+}
+
+impl State {
+    /// The window's width changed.
+    pub(crate) fn fit_width(&mut self, w: f64) {
+        use crate::bindings::Microsoft::UI::Xaml::Controls::ColumnDefinition;
+        use crate::bindings::Microsoft::UI::Xaml::{GridLength, GridUnitType};
+        if let Ok(c) = find::<ColumnDefinition>(&self.root, "TreeCol") {
+            let _ = c.SetWidth(GridLength { Value: tree_share(w), GridUnitType: GridUnitType::Star });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_narrow_window_widens_the_tree() {
+        assert_eq!(tree_share(1680.0), 1.4);
+        assert!(tree_share(1280.0) > tree_share(1680.0));
+    }
 
     #[test]
     fn the_start_tab() {

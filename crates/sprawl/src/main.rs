@@ -128,7 +128,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     window.SetTitle(&HSTRING::from("Sprawl"))?;
     window.SetExtendsContentIntoTitleBar(true)?;
     window.SetTitleBar(&find::<UIElement>(&root, "TitleBar")?)?;
-    window.AppWindow()?.Resize(SizeInt32 { Width: 1680, Height: 1080 })?;
+    // dev: SPRAWL_SIZE=1280x800 sets the window's size for a screenshot
+    let (w, h) = std::env::var("SPRAWL_SIZE").ok().filter(|_| a.shot.is_some()).and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))).unwrap_or((1680, 1080));
+    window.AppWindow()?.Resize(SizeInt32 { Width: w, Height: h })?;
     // Frosted glass: the desktop shows through the whole window, blurred.
     if let Ok(b) = DesktopAcrylicBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()) {
         window.SetSystemBackdrop(&b)?;
@@ -322,6 +324,11 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         if with(|st| st.ext_key(k.0)).unwrap_or(false) {
             let _ = e.SetHandled(true);
         }
+    })?);
+    // a narrow window gives the tree more of the width beside the file types
+    keep(root.SizeChanged(|s, _| {
+        let Some(w) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()).and_then(|f| f.ActualWidth().ok()) else { return };
+        with(|st| st.fit_width(w));
     })?);
     let tree_sv: UIElement = find(&root, "TreeScroll")?;
     keep(tree_sv.DoubleTapped(move |s, e| {
