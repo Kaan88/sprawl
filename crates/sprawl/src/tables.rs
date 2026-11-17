@@ -92,6 +92,10 @@ pub(crate) struct Tables {
     ext_body: Option<Border>,
     main_span: (usize, usize, usize),
     ext_span: (usize, usize, usize),
+    /// The rows' XAML as last loaded (main table, file types): the same text is not loaded
+    /// again, so rows that didn't change aren't replaced (other drives' results arrive every
+    /// half second; replacing the rows lost a double-click and the scroll's smoothness).
+    drawn: [String; 2],
 }
 
 impl Default for Tables {
@@ -104,6 +108,7 @@ impl Default for Tables {
             ext_body: None,
             main_span: (0, 0, usize::MAX),
             ext_span: (0, 0, usize::MAX),
+            drawn: Default::default(),
         }
     }
 }
@@ -403,9 +408,20 @@ impl State {
             };
         }
         xaml += "</StackPanel>";
+        let slot = if which == Which::Main { 0 } else { 1 };
+        let span = (a, b, count);
+        if self.tables.drawn[slot] == xaml && body.Child().is_ok() {
+            if which == Which::Main {
+                self.tables.main_span = span;
+            } else {
+                self.tables.ext_span = span;
+            }
+            return;
+        }
         match load::<UIElement>(&xaml) {
             Ok(chunk) => {
                 let _ = body.SetChild(&chunk);
+                self.tables.drawn[slot] = xaml;
             }
             Err(e) => {
                 // leave the span stale so the next scroll tries again
