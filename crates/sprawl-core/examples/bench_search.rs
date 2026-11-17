@@ -1,5 +1,6 @@
 //! Times what the app does after a scan: the name index, queries, sorts, the filter and the
-//! file-type table. Prints counts and times only, no paths.
+//! file-type table; then the compact search-only form of the same scan (its size against the
+//! tree plus the index, its queries and sorts). Prints counts and times only, no paths.
 //!
 //!     cargo run --release -p sprawl-core --example bench_search -- C:\
 
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use sprawl_core::compact::{CompactIndex, SortBy};
 use sprawl_core::search::{search, Index, Query};
 use sprawl_core::{extension_stats, filter_tree, largest_files, scan_auto, Progress, ROOT};
 
@@ -62,7 +64,7 @@ fn main() {
     println!("folder ranks {:8.0} ms  {} folders", ms(t), tree.nodes.iter().filter(|n| n.is_dir).count());
 
     let never = AtomicBool::new(false);
-    for q in ["e", "a", "report", "*.dll", "cache >1mb", r"\windows\ *.exe", "folder:node_modules", "!e", "zzzzqqqq", "*.log|*.tmp <1kb"] {
+    for q in QUERIES {
         let query = Query::parse(q);
         let mut best = f64::MAX;
         let mut hits = Vec::new();
@@ -76,7 +78,8 @@ fn main() {
         let t = Instant::now();
         by_size.sort_by(|&a, &b| tree.nodes[b].size.cmp(&tree.nodes[a].size));
         let s_size = ms(t);
-        let s_folder = if hits.len() <= 3_000_000 {
+        // (two paths built per comparison: half a minute for millions of hits, so only for fewer)
+        let s_folder = if hits.len() <= 200_000 {
             let mut v = hits.clone();
             let t = Instant::now();
             v.sort_by(|&a, &b| {
@@ -117,7 +120,75 @@ fn main() {
     drop(c);
     let (m3, p3) = mem();
     println!("memory      now {:.0} MB, peak {:.0} MB", m3, p3);
+
+    // the compact search-only form: built from the tree, then on its own
+    let t = Instant::now();
+    let compact = CompactIndex::build(&tree);
+    let (m4, _) = mem();
+    let per = |b: f64| b / n as f64;
+    println!(
+        "compact build {:7.0} ms  {:.0} MB reported ({:.1} bytes/item), {:.0} MB working set",
+        ms(t),
+        compact.memory() as f64 / 1048576.0,
+        per(compact.memory() as f64),
+        m4 - m3
+    );
+    println!(
+        "bytes/item  tree {:.0} (working set) + index {:.1} = {:.0}   compact {:.1}   ({:.0}%)",
+        per((m1 - m0) * 1048576.0),
+        per(index.memory() as f64),
+        per((m1 - m0) * 1048576.0 + index.memory() as f64),
+        per(compact.memory() as f64),
+        100.0 * compact.memory() as f64 / ((m1 - m0) * 1048576.0 + index.memory() as f64)
+    );
+    for q in QUERIES {
+        let query = Query::parse(q);
+        let mut best = f64::MAX;
+        let mut hits = Vec::new();
+        for _ in 0..3 {
+            let t = Instant::now();
+            hits = compact.search(&query, &never).unwrap_or_default();
+            best = best.min(ms(t));
+        }
+        let mut v = hits.clone();
+        let t = Instant::now();
+        compact.sort(&mut v, SortBy::Size, true);
+        let s_size = ms(t);
+        let t = Instant::now();
+        compact.sort(&mut v, SortBy::Name, false);
+        let s_name = ms(t);
+        // the first folder sort builds the folder ranks, the next ones reuse them
+        let t = Instant::now();
+        compact.sort(&mut v, SortBy::Folder, false);
+        let s_folder = ms(t);
+        println!("compact {q:<20} {best:8.1} ms  {:>9} hits   sort size {s_size:8.1} ms   name {s_name:8.1} ms   folder {s_folder:8.1} ms", hits.len());
+    }
+    let (m5, p5) = mem();
+    println!("memory      now {:.0} MB, peak {:.0} MB (compact {:.0} MB of it, folder ranks included)", m5, p5, compact.memory() as f64 / 1048576.0);
 }
+
+/// The queries timed on the tree and on the compact form: the old shapes, then the new keywords.
+const QUERIES: &[&str] = &[
+    "e",
+    "a",
+    "report",
+    "*.dll",
+    "cache >1mb",
+    r"\windows\ *.exe",
+    "folder:node_modules",
+    "!e",
+    "zzzzqqqq",
+    "*.log|*.tmp <1kb",
+    "ext:jpg;png",
+    "dm:lastweek",
+    "dm:2025 ext:log",
+    "size:100mb..2gb",
+    "path:system32 ext:dll",
+    r"regex:^[a-f0-9]{32}$",
+    "case:README",
+    "exact:desktop.ini",
+    "depth:<=2 folder:",
+];
 
 /// Every folder's place in path order (a copy of the app's folder rank, so this example does not
 /// depend on where that function lives).
