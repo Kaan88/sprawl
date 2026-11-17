@@ -18,7 +18,7 @@ pub(crate) fn xaml() -> &'static str {
 }
 
 pub(crate) fn tree_hint() -> &'static str {
-    r##"<TextBlock x:Name="TreeHint" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="13" Foreground="#FF6E7789" Text="Folders show up here, biggest first.&#x0a;Click one to find it on the map below."/>"##
+    r##"<TextBlock x:Name="TreeHint" Grid.Row="2" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="13" Foreground="#FF6E7789" Text="Folders show up here, biggest first.&#x0a;Click one to find it on the map below."/>"##
 }
 
 pub(crate) fn types_hint() -> &'static str {

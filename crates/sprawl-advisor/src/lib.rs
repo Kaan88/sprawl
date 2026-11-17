@@ -14,6 +14,7 @@
 
 pub mod anomaly;
 pub mod clean;
+pub mod cleaners;
 pub mod config;
 pub mod dupes;
 pub mod export;
@@ -120,6 +121,12 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));
     for f in extra {
+        if seen.insert(f.path.to_string_lossy().to_lowercase()) {
+            found.push(f);
+        }
+    }
+    // caches of programs no cleaner knows, last, so a known one names them first
+    for f in cleaners::by_shape(tree, &seen) {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);
         }

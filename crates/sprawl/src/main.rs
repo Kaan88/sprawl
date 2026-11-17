@@ -33,6 +33,7 @@ mod win32;
 mod welcome;
 mod wizard;
 mod update;
+mod cleaners;
 mod models;
 mod search;
 mod search_more;

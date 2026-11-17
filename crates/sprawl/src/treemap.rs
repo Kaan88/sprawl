@@ -266,7 +266,7 @@ impl State {
         }
         self.map.scene.selected = self.selected;
         self.map.scene.highlight_ext = self.ext_selected.as_deref().map(ext_key);
-        let preview: Option<std::sync::Arc<Vec<u8>>> = None;
+        let preview: Option<std::sync::Arc<Vec<u8>>> = self.cleaner_preview();
         self.map.scene.shrink = None;
         // the colour switch: Risk and Growth light the map on every tab (not the live picture of a
         // scan: its node numbers are its own)

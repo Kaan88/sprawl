@@ -53,6 +53,22 @@ pub(crate) struct Report {
     pub(crate) lens: Arc<Vec<u8>>,
     /// Rule files of the user's own that didn't pass the checks, and why.
     pub(crate) refused: Vec<(PathBuf, String)>,
+    /// The cleaners, and where each one's application is.
+    pub(crate) catalogue: Vec<sprawl_advisor::cleaners::CleanerDef>,
+    pub(crate) presence: Vec<sprawl_advisor::cleaners::Presence>,
+    /// By rule id: the smallest finding the Findings list shows (smaller ones are in Cleaners only).
+    pub(crate) list_min: std::collections::HashMap<String, u64>,
+}
+
+impl Report {
+    /// Finding `i` is shown in the Findings list (not only in Cleaners).
+    pub(crate) fn in_findings_list(&self, i: usize) -> bool {
+        let f = &self.findings[i];
+        match &f.source {
+            Source::Rule(id) => self.list_min.get(id).is_none_or(|m| f.bytes >= *m),
+            Source::Model(_) => true,
+        }
+    }
 }
 
 enum Msg {
@@ -107,6 +123,7 @@ struct Exported {
 enum Section {
     #[default]
     Findings,
+    Cleaners,
     Ask,
     Growth,
     Memory,
@@ -197,6 +214,15 @@ pub(crate) struct Advisor {
     /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
     /// The ticks, the review and the clean-up running inside the Advisor.
     pub(crate) cleanup: crate::cleanup::Cleanup,
+    /// What the Cleaners section has open.
+    pub(crate) cl: crate::cleaners::ClState,
+}
+
+impl Advisor {
+    /// The Cleaners section is the one on show.
+    pub(crate) fn cleaners_on(&self) -> bool {
+        self.section == Section::Cleaners
+    }
 }
 
 /// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
@@ -338,7 +364,7 @@ pub(crate) fn risk_words(r: Risk) -> &'static str {
 }
 
 /// The short form, for a row.
-fn risk_label(r: Risk) -> &'static str {
+pub(crate) fn risk_label(r: Risk) -> &'static str {
     match r {
         Risk::Green => "Safe to delete",
         Risk::Amber => "Takes time to get back",
@@ -367,6 +393,18 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     packs.extend(local);
     let (findings, held) = sprawl_advisor::advise_all(tree, &packs, &facts);
     let (findings, kept) = memory.filter(findings);
+    let catalogue = sprawl_advisor::cleaners::catalogue(&packs);
+    let presence = crate::cleaners::presences(tree, &catalogue, &findings);
+    let mut list_min = std::collections::HashMap::new();
+    for f in &findings {
+        if let Source::Rule(id) = &f.source {
+            if !list_min.contains_key(id) {
+                if let Some(m) = sprawl_advisor::cleaners::list_min(&packs, id) {
+                    list_min.insert(id.clone(), m);
+                }
+            }
+        }
+    }
     let nodes: Vec<Option<usize>> = findings.iter().map(|f| sprawl_advisor::find_path(tree, &f.path)).collect();
     let mut lens = vec![0u8; tree.nodes.len()];
     // inside another finding: shown, but its bytes are already in that one's
@@ -394,6 +432,9 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
         handoff: facts.apps.iter().map(|a| a.handoff_args()).collect(),
         lens: Arc::new(lens),
         refused,
+        catalogue,
+        presence,
+        list_min,
         findings,
     };
     (r, facts)
@@ -788,6 +829,7 @@ impl State {
                 return;
             }
             "AdvSecFindings" => self.advisor.section = Section::Findings,
+            "AdvSecCleaners" => self.advisor.section = Section::Cleaners,
             "AdvSecAsk" => self.advisor.section = Section::Ask,
             "AdvSecGrowth" | "AdvGrowOpen" => self.advisor.section = Section::Growth,
             "AdvGrowPaint" => return self.command("PaintGrowth"),
@@ -1119,6 +1161,7 @@ impl State {
                 let _ = c.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
             }
         }
+        let cl = self.cleaner_counts();
         let m = &self.advisor.memory;
         let counts = [
             ("AdvUndo", self.advice().map_or(0, |r| r.kept.len())),
@@ -1127,6 +1170,11 @@ impl State {
             ("AdvForgetP", m.prefs.len()),
             ("AdvForgetL", m.labels.len()),
             ("AdvGrow", self.advice().and_then(|r| r.growth.as_ref()).map_or(0, |g| g.grew.len())),
+            ("AdvClO", cl.0),
+            ("AdvClDef", cl.0),
+            ("AdvClScan", cl.0),
+            ("AdvClT", cl.1),
+            ("AdvClS", cl.1),
         ];
         for (kind, n) in counts {
             for i in 0..n {
@@ -1140,7 +1188,7 @@ impl State {
             }
         }
         for name in [
-            "AdvSecFindings", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
+            "AdvSecFindings", "AdvSecCleaners", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
@@ -1211,7 +1259,8 @@ impl State {
             );
         }
         // the sections, one at a time
-        let shown = r.findings.len();
+        let shown = (0..r.findings.len()).filter(|&i| r.in_findings_list(i)).count();
+        let cleaners = self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count();
         let ai_tag = match &self.advisor.ai {
             Ai::Running(_) => " •".to_string(),
             Ai::Done { found, .. } if *found > 0 => format!(" ({found})"),
@@ -1222,8 +1271,9 @@ impl State {
             format!(r##"<Button x:Name="{name}" Content="{}" Padding="12,4" FontSize="12" CornerRadius="6" BorderThickness="0" Background="{}"/>"##, ui::esc(&label), if self.advisor.section == me { "#FF2C3B63" } else { "#0CFFFFFF" })
         };
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}</StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}{}</StackPanel>"##,
             tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
+            tab("AdvSecCleaners", format!("Cleaners ({cleaners})"), Section::Cleaners),
             tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
             tab("AdvSecGrowth", "Growth".into(), Section::Growth),
             tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
@@ -1236,6 +1286,7 @@ impl State {
             Section::Growth => x += &self.growth_card(r),
             Section::Memory => x += &self.memory_cards(r),
             Section::Findings => x += &self.findings_section(r),
+            Section::Cleaners => x += &self.cleaners_section(r),
         }
         x += "</StackPanel>";
         x
@@ -1273,6 +1324,7 @@ impl State {
         }
         // the AI's findings are in the same list, marked
         let mut list: Vec<usize> = (0..r.findings.len())
+            .filter(|&i| r.in_findings_list(i))
             .filter(|&i| match o {
                 Only::All => true,
                 Only::Runnable => crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none(),
@@ -1283,6 +1335,9 @@ impl State {
             Sort::Size => list.sort_by_key(|&i| std::cmp::Reverse(r.findings[i].bytes)),
             Sort::Risk => list.sort_by_key(|&i| (r.findings[i].risk, std::cmp::Reverse(r.findings[i].bytes))),
             Sort::Owner => list.sort_by_key(|&i| (r.findings[i].owner.clone().unwrap_or_else(|| "~".into()).to_lowercase(), std::cmp::Reverse(r.findings[i].bytes))),
+        }
+        if list.is_empty() && !r.findings.is_empty() && o == Only::All {
+            x += r##"<TextBlock Text="Nothing big enough for this list. Smaller things that can go are in Cleaners." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
         for i in list {
             x += &self.finding_row(r, i);
@@ -1645,6 +1700,9 @@ impl State {
 
     /// A numbered button: undo a decision, approve or dismiss a proposal, forget a memory.
     fn advisor_indexed(&mut self, kind: &str, i: usize) {
+        if kind.starts_with("AdvCl") {
+            return self.cleaner_command(kind, i);
+        }
         if kind == "AdvGrow" {
             let n = self.advice().and_then(|r| r.growth.as_ref()).and_then(|g| g.grew.get(i)).map(|g| g.node);
             if let Some(n) = n.filter(|&n| self.tree.as_ref().is_some_and(|t| n < t.nodes.len())) {

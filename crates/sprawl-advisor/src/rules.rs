@@ -94,6 +94,9 @@ pub struct Rule {
     /// The action needs administrator rights.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub admin: bool,
+    /// What cleaning it costs, in one plain sentence (shown in Cleaners).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
 }
 
 /// A rule's action, as written in a pack.
@@ -125,6 +128,7 @@ impl Rule {
             pattern: None,
             keep_days: None,
             admin: false,
+            cost: None,
         }
     }
 
@@ -152,7 +156,7 @@ impl Rule {
     }
 
     /// The checks every rule must pass, from any pack.
-    fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         let id = &self.id;
         if self.paths.is_empty() {
             return Err(format!("rule {id} has no paths"));
@@ -190,6 +194,12 @@ pub struct RulePack {
     pub pack: PackInfo,
     #[serde(default, rename = "rule")]
     pub rules: Vec<Rule>,
+    /// Applications and their parts (see [`crate::cleaners`]).
+    #[serde(default, rename = "cleaner", skip_serializing_if = "Vec::is_empty")]
+    pub cleaners: Vec<crate::cleaners::Cleaner>,
+    /// The cleaners' parts as rules, made when the pack is parsed.
+    #[serde(skip)]
+    pub part_rules: Vec<Rule>,
     /// Only the pack compiled into the program. Local and proposed packs are never trusted:
     /// their commands and `allow_protected` are refused by the safety checks.
     #[serde(skip)]
@@ -197,14 +207,30 @@ pub struct RulePack {
 }
 
 impl RulePack {
+    /// A pack with nothing in it.
+    pub fn empty(name: &str) -> RulePack {
+        RulePack { pack: PackInfo { name: name.into(), version: 1 }, rules: Vec::new(), cleaners: Vec::new(), part_rules: Vec::new(), trusted: false }
+    }
+
+    /// The rules, then the cleaners' parts.
+    pub fn all_rules(&self) -> impl Iterator<Item = &Rule> {
+        self.rules.iter().chain(self.part_rules.iter())
+    }
+
     pub fn parse(text: &str) -> Result<RulePack, String> {
-        let p: RulePack = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut p: RulePack = toml::from_str(text).map_err(|e| e.to_string())?;
+        p.part_rules = crate::cleaners::expand(&p)?;
         let mut ids = std::collections::HashSet::new();
         for r in &p.rules {
             if !ids.insert(&r.id) {
                 return Err(format!("rule id {} appears twice", r.id));
             }
             r.check()?;
+        }
+        for r in &p.part_rules {
+            if !ids.insert(&r.id) {
+                return Err(format!("rule id {} appears twice", r.id));
+            }
         }
         Ok(p)
     }
@@ -353,7 +379,7 @@ impl Pattern {
     }
 }
 
-const DEFAULT_MIN: u64 = 50 * 1024 * 1024;
+pub(crate) const DEFAULT_MIN: u64 = 50 * 1024 * 1024;
 
 /// Not modified for `days` (no date known counts as not old enough).
 fn old_enough(node: &sprawl_core::Node, days: Option<u32>) -> bool {
@@ -376,8 +402,11 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
     // The built-in pack first, so a local pack can't shadow its findings by matching first.
     let ordered: Vec<&RulePack> = packs.iter().filter(|p| p.trusted).chain(packs.iter().filter(|p| !p.trusted)).collect();
     for pack in ordered {
-        for rule in &pack.rules {
+        for rule in pack.all_rules() {
+            // a rule grouped into a cleaner shows there from a megabyte; the Findings list
+            // keeps its own threshold
             let min = rule.min_bytes.unwrap_or(DEFAULT_MIN);
+            let min = if crate::cleaners::grouped(pack, &rule.id) { min.min(crate::cleaners::PART_MIN) } else { min };
             for pat in rule.paths.iter().map(|p| Pattern::new(p)) {
                 for (start, base) in &starts {
                     let mut s = pat.start();
@@ -541,7 +570,7 @@ mod tests {
     fn typed_actions_match_the_script_for_every_builtin_rule() {
         let pack = RulePack::builtin();
         let mut acting = 0;
-        for rule in &pack.rules {
+        for rule in pack.all_rules() {
             for is_dir in [true, false] {
                 let path = r"C:\Users\sam\it's ‘odd’";
                 let Some(a) = rule.typed_action(path, is_dir) else {

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::clean_text;
 use crate::finding::{Finding, Remedy, Risk};
-use crate::rules::{Kind, PackInfo, Pattern, Rule, RulePack};
+use crate::rules::{Kind, Pattern, Rule, RulePack};
 use crate::segments;
 
 /// How long "Not now" hides a finding.
@@ -151,7 +151,7 @@ fn check_proposal(p: &Proposal) -> Result<(), String> {
 
 /// A pattern turned into one path it could match (`?:` as C:, a wildcard as a plain name,
 /// `**` as nothing), to hold it against the never-list.
-fn sample_path(p: &str) -> String {
+pub(crate) fn sample_path(p: &str) -> String {
     let e = crate::rules::expand(p);
     let mut out: Vec<String> = Vec::new();
     for (i, seg) in e.split('\\').filter(|s| !s.is_empty()).enumerate() {
@@ -383,7 +383,7 @@ impl Memory {
         let mut pack = match std::fs::read_to_string(&path) {
             // a file that doesn't load is the user's to fix, not to overwrite
             Ok(t) => RulePack::parse(&t).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?,
-            Err(_) => RulePack { pack: PackInfo { name: "Your rules".into(), version: 1 }, rules: Vec::new(), trusted: false },
+            Err(_) => RulePack::empty("Your rules"),
         };
         pack.rules.retain(|r| r.id != p.id);
         let mut r = Rule::new(&p.id, &p.title, p.paths, p.risk, p.remedy, &p.why);
@@ -432,7 +432,7 @@ impl Memory {
 }
 
 fn local_ids() -> Vec<String> {
-    local_packs().into_iter().flat_map(|p| p.rules.into_iter().map(|r| r.id)).collect()
+    local_packs().iter().flat_map(|p| p.all_rules().map(|r| r.id.clone()).collect::<Vec<_>>()).collect()
 }
 
 /// A pack from disk, checked as [`load_packs`] does: the whole file or nothing.
@@ -440,12 +440,22 @@ pub fn check_pack_text(text: &str, taken: &mut std::collections::HashSet<String>
     let mut pack = RulePack::parse(text.trim_start_matches('\u{feff}'))?;
     pack.trusted = false;
     let never = crate::safety::Never::default_list();
-    for r in &pack.rules {
+    for r in pack.all_rules() {
         check_local_rule(r, &never).map_err(|e| format!("rule {}: {e}", r.id))?;
     }
-    for r in &pack.rules {
+    for c in &pack.cleaners {
+        if c.parts.iter().any(|p| p.class == crate::cleaners::Class::Privacy) {
+            return Err(format!("cleaner {}: privacy cleaners come only with Sprawl itself", c.id));
+        }
+    }
+    for r in pack.all_rules() {
         if !taken.insert(r.id.to_lowercase()) {
             return Err(format!("rule id {} is already used by another pack", r.id));
+        }
+    }
+    for c in &pack.cleaners {
+        if !taken.insert(format!("cleaner:{}", c.id.to_lowercase())) {
+            return Err(format!("cleaner id {} is already used by another pack", c.id));
         }
     }
     Ok(pack)
@@ -459,7 +469,9 @@ pub fn load_packs() -> (Vec<RulePack>, Vec<(PathBuf, String)>) {
     let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("toml"))).collect();
     files.sort();
     // the built-in ids can't be taken over
-    let mut taken: std::collections::HashSet<String> = RulePack::builtin().rules.iter().map(|r| r.id.to_lowercase()).collect();
+    let builtin = RulePack::builtin();
+    let mut taken: std::collections::HashSet<String> = builtin.all_rules().map(|r| r.id.to_lowercase()).collect();
+    taken.extend(builtin.cleaners.iter().map(|c| format!("cleaner:{}", c.id.to_lowercase())));
     let mut out = Vec::new();
     let mut refused = Vec::new();
     for p in files {
@@ -539,11 +551,8 @@ mod tests {
         assert_eq!(m.proposals[0].id, "local.MyCache");
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\cache"], Remedy::Delete)).is_err(), "not twice");
         // an approved rule is a pack that loads, untrusted, with no command
-        let pack = RulePack {
-            pack: PackInfo { name: "Your rules".into(), version: 1 },
-            rules: vec![Rule::new("local.x", "x", vec![r"C:\x".into()], Risk::Green, Remedy::Delete, "w")],
-            trusted: false,
-        };
+        let mut pack = RulePack::empty("Your rules");
+        pack.rules = vec![Rule::new("local.x", "x", vec![r"C:\x".into()], Risk::Green, Remedy::Delete, "w")];
         let back = RulePack::parse(&toml::to_string(&pack).unwrap()).unwrap();
         assert!(!back.trusted && back.rules[0].command.is_none());
         assert!(m.context().is_empty() || m.context().contains("Known folders"));

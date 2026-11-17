@@ -577,6 +577,11 @@ impl State {
                     "chatdemo" => self.advisor_chat_demo(),
                     // dev: click the map a third of the way across
                     "mapclick" => self.map_click(w * 0.3, h * 0.5),
+                    // dev: a Cleaners button, AdvClO0 (open), AdvClT2 (tick), AdvClS2 (files)
+                    a if a.starts_with("AdvCl") && a.ends_with(|c: char| c.is_ascii_digit()) && !a.starts_with("AdvClean") => {
+                        let cut = a.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+                        self.cleaner_command(&a[..cut], a[cut..].parse().unwrap_or(0));
+                    }
                     a if a.starts_with("Adv") => self.advisor_command(a),
                     _ => self.command(&c),
                 }

@@ -184,6 +184,24 @@ impl State {
         c.auto = false;
     }
 
+    /// Tick all of `keys` (a cleaner's part), or untick them when they are all ticked already.
+    pub(crate) fn cleanup_tick_many(&mut self, keys: Vec<String>) {
+        if keys.is_empty() {
+            return;
+        }
+        let c = &mut self.advisor.cleanup;
+        if keys.iter().all(|k| c.ticked.contains(k)) {
+            for k in &keys {
+                c.ticked.remove(k);
+            }
+        } else {
+            c.ticked.extend(keys);
+        }
+        c.single = None;
+        c.own_ok = false;
+        c.auto = false;
+    }
+
     /// Tick what comes back by itself.
     pub(crate) fn cleanup_select_safe(&mut self) {
         self.advisor.cleanup.ticked_for = None;

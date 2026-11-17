@@ -552,8 +552,8 @@ pub fn page(drives: &[String]) -> String {
           </FlyoutBase.AttachedFlyout>
         </ScrollViewer>
         {tree_hint}
-        <Grid x:Name="AdvisorPanel" Grid.RowSpan="2" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer x:Name="AdvScroll" HorizontalScrollBarVisibility="Disabled"><Border x:Name="AdvHost"/></ScrollViewer><Border x:Name="AdvFoot" Grid.Row="1"/></Grid>
-        <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="2" Visibility="Collapsed" Padding="24">
+        <Grid x:Name="AdvisorPanel" Grid.RowSpan="4" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer x:Name="AdvScroll" HorizontalScrollBarVisibility="Disabled"><Border x:Name="AdvHost"/></ScrollViewer><Border x:Name="AdvFoot" Grid.Row="1"/></Grid>
+        <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="4" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="Sprawl" FontSize="26" FontWeight="SemiBold"/>
             <TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6" Text="Scans a drive or folder and shows which folders, files and file types use the most space: as a sortable tree, a list of the biggest files, a table of file types and a lit 3D treemap."/>

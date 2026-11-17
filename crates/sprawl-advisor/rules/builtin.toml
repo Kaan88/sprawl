@@ -353,3 +353,252 @@ command = "DISM /Online /Cleanup-Image /StartComponentCleanup   # as administrat
 allow_protected = true
 min_bytes = 4294967296
 why = "Superseded component versions. Never delete WinSxS by hand: DISM removes only what is no longer needed. Part of its size is hard links shared with System32, so the real saving is smaller than shown."
+
+# ---------------------------------------------------------------------------------------------
+# Cleaners: applications and their parts, shown in the Advisor's Cleaners section. A cleaner
+# groups rules above by id, and adds parts of its own (rules with a few more fields).
+
+[[cleaner]]
+id = "windows"
+name = "Windows"
+group = "Windows"
+rules = ["win.user-temp", "win.crash-dumps", "win.system-crash-dumps", "win.system-temp", "win.live-kernel-reports", "win.error-reports", "win.delivery-optimization", "win.update-downloads", "win.recycle-bin", "win.windows-old", "win.component-store"]
+
+[[cleaner]]
+id = "dev.tools"
+name = "Developer tools"
+group = "Developer tools"
+rules = ["dev.npm-cache", "dev.pip-cache", "dev.cargo-registry", "dev.gradle-cache", "dev.nuget-packages", "dev.pnpm-store", "dev.yarn-cache", "dev.go-build-cache", "dev.conda-pkgs", "dev.huggingface"]
+
+[[cleaner]]
+id = "app.vscode"
+name = "Visual Studio Code"
+group = "Developer tools"
+present = ['%APPDATA%\Code']
+running = ["Code.exe"]
+rules = ["dev.vscode-cache"]
+
+  [[cleaner.part]]
+  id = "code-cache"
+  title = "Code and GPU caches"
+  risk = "green"
+  paths = ['%APPDATA%\Code\Code Cache', '%APPDATA%\Code\GPUCache']
+  cost = "The window opens a little slower once."
+  why = "Compiled scripts and graphics data VS Code makes again when it needs them."
+
+  [[cleaner.part]]
+  id = "logs"
+  title = "Old logs"
+  risk = "green"
+  paths = ['%APPDATA%\Code\logs']
+  keep_days = 7
+  closed = "no"
+  cost = "Nothing you would notice."
+  why = "Logs of earlier sessions, for troubleshooting. The last week's stay."
+
+[[cleaner]]
+id = "app.jetbrains"
+name = "JetBrains IDEs"
+group = "Developer tools"
+present = ['%LOCALAPPDATA%\JetBrains', '%APPDATA%\JetBrains']
+rules = ["dev.jetbrains-caches"]
+
+  [[cleaner.part]]
+  id = "logs"
+  title = "Old logs"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\JetBrains\*\log']
+  keep_days = 7
+  closed = "no"
+  cost = "Nothing you would notice."
+  why = "IDE logs of earlier sessions. The last week's stay."
+
+[[cleaner]]
+id = "app.firefox"
+name = "Firefox"
+group = "Browsers"
+present = ['%APPDATA%\Mozilla\Firefox']
+running = ["firefox.exe"]
+rules = ["web.firefox-cache"]
+
+  [[cleaner.part]]
+  id = "startup"
+  title = "Startup cache"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\startupCache']
+  cost = "Firefox starts a little slower once."
+  why = "Firefox's own scripts, prepared for a quick start. Made again on the next start."
+
+  [[cleaner.part]]
+  id = "thumbnails"
+  title = "Page thumbnails"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\thumbnails']
+  cost = "New-tab tiles show without pictures for a while."
+  why = "Small pictures of pages for the new-tab page."
+
+[[cleaner]]
+id = "app.chrome"
+name = "Google Chrome"
+group = "Browsers"
+present = ['%LOCALAPPDATA%\Google\Chrome']
+running = ["chrome.exe"]
+rules = ["web.chrome-cache"]
+
+[[cleaner]]
+id = "app.edge"
+name = "Microsoft Edge"
+group = "Browsers"
+present = ['%LOCALAPPDATA%\Microsoft\Edge']
+running = ["msedge.exe"]
+rules = ["web.edge-cache"]
+
+[[cleaner]]
+id = "app.discord"
+name = "Discord"
+group = "Chat"
+present = ['%APPDATA%\discord']
+running = ["Discord.exe"]
+
+  [[cleaner.part]]
+  id = "cache"
+  title = "Cache"
+  risk = "green"
+  paths = ['%APPDATA%\discord\Cache', '%APPDATA%\discord\Code Cache', '%APPDATA%\discord\GPUCache']
+  cost = "Images and emoji load again the first time."
+  why = "Copies of pictures, videos and scripts Discord downloaded. It fetches them again."
+
+[[cleaner]]
+id = "app.slack"
+name = "Slack"
+group = "Chat"
+present = ['%APPDATA%\Slack']
+running = ["slack.exe"]
+
+  [[cleaner.part]]
+  id = "cache"
+  title = "Cache"
+  risk = "green"
+  paths = ['%APPDATA%\Slack\Cache', '%APPDATA%\Slack\Code Cache', '%APPDATA%\Slack\GPUCache', '%APPDATA%\Slack\Service Worker\CacheStorage']
+  cost = "Pictures and files load again the first time."
+  why = "Copies of things Slack downloaded. It fetches them again."
+
+  [[cleaner.part]]
+  id = "logs"
+  title = "Old logs"
+  risk = "green"
+  paths = ['%APPDATA%\Slack\logs']
+  keep_days = 7
+  closed = "no"
+  cost = "Nothing you would notice."
+  why = "Slack's logs of earlier sessions. The last week's stay."
+
+[[cleaner]]
+id = "app.zoom"
+name = "Zoom"
+group = "Chat"
+present = ['%APPDATA%\Zoom']
+running = ["Zoom.exe"]
+
+  [[cleaner.part]]
+  id = "logs"
+  title = "Old logs"
+  risk = "green"
+  paths = ['%APPDATA%\Zoom\logs']
+  keep_days = 7
+  closed = "no"
+  cost = "Nothing you would notice."
+  why = "Zoom's logs of earlier meetings, for troubleshooting. The last week's stay."
+
+[[cleaner]]
+id = "app.spotify"
+name = "Spotify"
+group = "Media"
+present = ['%LOCALAPPDATA%\Spotify', '%APPDATA%\Spotify']
+running = ["Spotify.exe"]
+
+  [[cleaner.part]]
+  id = "storage"
+  title = "Song cache"
+  risk = "amber"
+  paths = ['%LOCALAPPDATA%\Spotify\Storage', '%LOCALAPPDATA%\Spotify\Data']
+  closed = "must"
+  cost = "Songs stream again, and songs you saved for offline listening download again."
+  why = "Songs Spotify kept so they play without downloading. Spotify fills it again as you listen."
+
+  [[cleaner.part]]
+  id = "browser"
+  title = "Browser cache"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\Spotify\Browser\Cache', '%LOCALAPPDATA%\Spotify\Browser\Code Cache', '%LOCALAPPDATA%\Spotify\Browser\GPUCache']
+  cost = "Covers and pages load again the first time."
+  why = "Pictures and pages the app downloaded."
+
+[[cleaner]]
+id = "app.adobe"
+name = "Adobe"
+group = "Media"
+present = ['%APPDATA%\Adobe', '%LOCALAPPDATA%\Adobe']
+
+  [[cleaner.part]]
+  id = "media-cache"
+  title = "Media cache"
+  risk = "amber"
+  paths = ['%APPDATA%\Adobe\Common\Media Cache Files', '%APPDATA%\Adobe\Common\Media Cache']
+  cost = "Projects open slower once: audio and previews are prepared again."
+  why = "Audio and preview files Premiere Pro, After Effects and Audition make from your media. Your media and projects stay."
+
+  [[cleaner.part]]
+  id = "acrobat"
+  title = "Acrobat cache"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\Adobe\AcroCef\DC\Acrobat\Cache']
+  cost = "Nothing you would notice."
+  why = "Copies of pages and pictures Acrobat's built-in browser downloaded."
+
+[[cleaner]]
+id = "app.steam"
+name = "Steam"
+group = "Games"
+present = ['%LOCALAPPDATA%\Steam']
+running = ["steam.exe"]
+rules = ["games.steam-shadercache"]
+
+  [[cleaner.part]]
+  id = "web"
+  title = "Store and community cache"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\Steam\htmlcache']
+  cost = "Store pages load again the first time. You stay signed in."
+  why = "Pages and pictures Steam's built-in browser downloaded."
+
+[[cleaner]]
+id = "app.epic"
+name = "Epic Games Launcher"
+group = "Games"
+present = ['%LOCALAPPDATA%\EpicGamesLauncher']
+running = ["EpicGamesLauncher.exe"]
+
+  [[cleaner.part]]
+  id = "web"
+  title = "Web cache"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\EpicGamesLauncher\Saved\webcache*']
+  cost = "Store pages load again the first time."
+  why = "Pages and pictures the launcher's built-in browser downloaded."
+
+  [[cleaner.part]]
+  id = "logs"
+  title = "Old logs"
+  risk = "green"
+  paths = ['%LOCALAPPDATA%\EpicGamesLauncher\Saved\Logs']
+  keep_days = 7
+  closed = "no"
+  cost = "Nothing you would notice."
+  why = "The launcher's logs of earlier sessions. The last week's stay."
+
+[[cleaner]]
+id = "gfx"
+name = "Graphics drivers"
+group = "Games"
+rules = ["gfx.shader-caches"]
