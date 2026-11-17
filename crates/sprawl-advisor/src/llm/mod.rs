@@ -135,6 +135,45 @@ impl Chat for Metered {
     fn say(&mut self, text: &str) {
         self.inner.say(text)
     }
+
+    fn stream_to(&mut self, sink: Option<Sink>) {
+        self.inner.stream_to(sink)
+    }
+}
+
+/// POST JSON and read the answer as server-sent events, each `data:` payload going to
+/// `event` as it arrives. Retried like [`post_json`] while nothing has arrived yet.
+pub(crate) fn post_events(url: &str, headers: &[(&str, String)], body: &Value, timeout: Duration, event: &mut dyn FnMut(&str)) -> Result<(), String> {
+    let text = body.to_string();
+    log_request(&format!("POST {url} (streamed)"), &text);
+    let mut wait = 4;
+    for attempt in 0..3 {
+        let mut sse = http::Sse::default();
+        let mut got = false;
+        let r = http::post_stream(url, headers, text.as_bytes(), timeout, &mut |bytes| {
+            got = true;
+            for d in sse.feed(bytes) {
+                event(&d);
+            }
+        });
+        match r {
+            Ok(r) if (200..300).contains(&r.status) => return Ok(()),
+            Ok(r) => {
+                if attempt < 2 && !got && matches!(r.status, 429 | 500 | 502 | 503 | 529) {
+                    std::thread::sleep(Duration::from_secs(r.retry_after.unwrap_or(wait).min(30)));
+                    wait *= 3;
+                    continue;
+                }
+                return Err(format!("HTTP {}: {}", r.status, error_message(&r.body)));
+            }
+            Err(e) if attempt < 2 && !got && e.contains("couldn't connect") => {
+                std::thread::sleep(Duration::from_secs(wait));
+                wait *= 3;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err("no answer".into())
 }
 
 /// A tool the model may call, with a JSON Schema for its input.
@@ -153,7 +192,13 @@ pub trait Chat {
     fn answer(&mut self, results: Vec<(String, String, bool)>);
     /// Add a plain user message (a nudge to finish).
     fn say(&mut self, text: &str);
+    /// Stream the text of each coming turn to `sink` (the turn's text so far), where the
+    /// provider can. `None` turns it off.
+    fn stream_to(&mut self, _sink: Option<Sink>) {}
 }
+
+/// Gets a turn's text so far, while it is written.
+pub type Sink = Box<dyn FnMut(&str)>;
 
 static MCP_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 

@@ -2,7 +2,7 @@
 //! answers once (no tools here; Sprawl as an MCP server comes later), in the single-report form
 //! that [`super::agent`] parses.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,6 +22,8 @@ pub struct ClaudeCode {
     pending: bool,
     /// Set by the user's Stop: the process tree is ended.
     stop: Option<super::Stop>,
+    /// Text as it is written (`--output-format stream-json`).
+    sink: Option<super::Sink>,
 }
 
 /// Arguments for `claude`: print mode, JSON out, and nothing it could act with. No built-in tools,
@@ -56,7 +58,7 @@ fn workdir() -> PathBuf {
 
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
-        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true, stop: None }
+        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true, stop: None, sink: None }
     }
 
     /// End the run when `stop` is set.
@@ -103,7 +105,16 @@ impl ClaudeCode {
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
         // Rust escapes arguments for a .cmd shim itself; the prompt goes on stdin
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args(&self.model, self.mcp.as_deref())).current_dir(workdir());
+        let mut a = args(&self.model, self.mcp.as_deref());
+        let streaming = self.sink.is_some();
+        if streaming {
+            // the same run, its events line by line: text arrives as it is written
+            if let Some(i) = a.iter().position(|x| x == "json") {
+                a[i] = "stream-json".into();
+            }
+            a.extend(["--include-partial-messages".to_string(), "--verbose".to_string()]);
+        }
+        cmd.args(a).current_dir(workdir());
         // stderr isn't read: a full pipe would stall it
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         #[cfg(windows)]
@@ -117,15 +128,54 @@ impl ClaudeCode {
         let writer = std::thread::spawn(move || {
             let _ = stdin.write_all(prompt.as_bytes());
         });
-        let mut stdout = child.stdout.take().ok_or("no stdout")?;
-        let (otx, orx) = std::sync::mpsc::channel();
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let (otx, orx) = std::sync::mpsc::channel::<Option<String>>();
         std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = stdout.read_to_string(&mut s);
-            let _ = otx.send(s);
+            // each line as it comes, then None at the end
+            let mut r = std::io::BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match std::io::BufRead::read_line(&mut r, &mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if otx.send(Some(line)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            let _ = otx.send(None);
         });
+        let mut out = String::new();
+        let mut written = String::new();
+        let mut finished = false;
+        let take = |line: String, out: &mut String, written: &mut String, sink: &mut Option<super::Sink>| {
+            if !streaming {
+                out.push_str(&line);
+                return;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return };
+            match v["type"].as_str() {
+                Some("stream_event") if v["event"]["delta"]["type"] == "text_delta" => {
+                    written.push_str(v["event"]["delta"]["text"].as_str().unwrap_or(""));
+                    if let Some(s) = sink.as_mut() {
+                        s(written);
+                    }
+                }
+                // a new message starts a new text (the turn's text so far)
+                Some("stream_event") if v["event"]["type"] == "message_start" => written.clear(),
+                Some("result") => *out = line,
+                _ => {}
+            }
+        };
         let start = Instant::now();
         loop {
+            while let Ok(m) = orx.try_recv() {
+                match m {
+                    Some(l) => take(l, &mut out, &mut written, &mut self.sink),
+                    None => finished = true,
+                }
+            }
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
@@ -143,8 +193,14 @@ impl ClaudeCode {
             }
         }
         let _ = writer.join();
-        // a grandchild still holding the pipe mustn't keep this waiting
-        let out = orx.recv_timeout(Duration::from_secs(30)).unwrap_or_default();
+        // the rest of the output; a grandchild still holding the pipe mustn't keep this waiting
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !finished {
+            match orx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(Some(l)) => take(l, &mut out, &mut written, &mut self.sink),
+                _ => break,
+            }
+        }
         let text = parse(&out)?;
         // each new process gets the whole conversation
         self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
@@ -158,6 +214,10 @@ impl Chat for ClaudeCode {
     }
 
     fn answer(&mut self, _: Vec<(String, String, bool)>) {}
+
+    fn stream_to(&mut self, sink: Option<super::Sink>) {
+        self.sink = sink;
+    }
 
     fn say(&mut self, text: &str) {
         self.prompt.push_str(&format!("\n\nThe user:\n{text}"));

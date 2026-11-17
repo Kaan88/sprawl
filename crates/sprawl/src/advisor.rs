@@ -224,6 +224,8 @@ struct Chat {
     asked: Option<std::time::Instant>,
     /// Stops the question being answered.
     stop: sprawl_advisor::llm::Stop,
+    /// The answer so far, while it is written.
+    live: Option<String>,
     /// A web search waiting for the user's yes or no.
     consent: Option<(String, Sender<bool>)>,
     /// "Allow for this session" was chosen.
@@ -1685,10 +1687,14 @@ impl State {
                     // no answer in ten minutes, or the chat ended: no
                     rrx.recv_timeout(std::time::Duration::from_secs(600)).unwrap_or(false)
                 };
+                let ptx = etx.clone();
+                let partial: std::rc::Rc<dyn Fn(&str)> = std::rc::Rc::new(move |t: &str| {
+                    let _ = ptx.send(ChatMsg::Event(ChatEvent::Partial(t.to_string())));
+                });
                 let mut events = |e: ChatEvent| {
                     let _ = etx.send(ChatMsg::Event(e));
                 };
-                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, &notes, qrx, &mut events, &consent, stop.clone())));
+                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, &notes, qrx, &mut events, &consent, stop.clone(), partial.clone())));
                 if ended.is_err() {
                     let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
                 }
@@ -1730,12 +1736,25 @@ impl State {
                     }
                     self.advisor.chat.status = Some(s);
                 }
+                ChatMsg::Event(ChatEvent::Partial(s)) => {
+                    // the first piece makes room for it; after that, only its text changes
+                    let first = self.advisor.chat.live.is_none();
+                    if let (false, Some(p)) = (first, &self.advisor.panel) {
+                        crate::state::text(p, "AdvChatLive", &s);
+                    }
+                    self.advisor.chat.live = Some(s);
+                    if first {
+                        redraw = true;
+                    }
+                }
                 ChatMsg::Event(ChatEvent::Reply(s)) => {
+                    self.advisor.chat.live = None;
                     self.advisor.chat.log.push((false, s));
                     self.advisor.chat.status = None;
                     redraw = true;
                 }
                 ChatMsg::Event(ChatEvent::Failed(e)) => {
+                    self.advisor.chat.live = None;
                     self.advisor.chat.log.push((false, format!("(failed: {e})")));
                     self.advisor.chat.status = None;
                     redraw = true;
@@ -1798,6 +1817,9 @@ impl State {
                 r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="11" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebSession" Content="Allow for this session" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebDeny" Content="Don't search" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##,
                 ui::esc(q)
             );
+        }
+        if let Some(t) = &c.live {
+            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc(t));
         }
         if let Some(s) = &c.status {
             x += &format!(

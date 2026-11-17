@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use super::{post_json, Chat, ToolCall, ToolSpec, Turn};
 
 pub struct OpenAi {
+    sink: Option<super::Sink>,
     url: String,
     key: Option<String>,
     model: String,
@@ -23,6 +24,7 @@ impl OpenAi {
             tools.iter().map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}})).collect(),
         );
         OpenAi {
+            sink: None,
             url,
             key: key.filter(|k| !k.is_empty()),
             model: model.trim().to_string(),
@@ -69,7 +71,24 @@ impl Chat for OpenAi {
             headers.push(("authorization", format!("Bearer {k}")));
         }
         // local models can be slow on a long report
-        let resp = post_json(&self.url, &headers, &self.body(), Duration::from_secs(900))?;
+        let plain = self.body();
+        let resp = match self.sink.as_mut() {
+            None => post_json(&self.url, &headers, &plain, Duration::from_secs(900))?,
+            Some(sink) => {
+                let mut body = plain;
+                body["stream"] = json!(true);
+                body["stream_options"] = json!({"include_usage": true});
+                let mut a = Chunks::default();
+                super::post_events(&self.url, &headers, &body, Duration::from_secs(900), &mut |d| {
+                    let before = a.text.len();
+                    a.chunk(d);
+                    if a.text.len() != before {
+                        sink(&a.text);
+                    }
+                })?;
+                a.response()
+            }
+        };
         self.take(&resp)
     }
 
@@ -83,11 +102,84 @@ impl Chat for OpenAi {
     fn say(&mut self, text: &str) {
         self.messages.push(json!({"role": "user", "content": text}));
     }
+
+    fn stream_to(&mut self, sink: Option<super::Sink>) {
+        self.sink = sink;
+    }
+}
+
+/// Streamed chat completion chunks, put back together into one response.
+#[derive(Default)]
+pub(crate) struct Chunks {
+    pub(crate) text: String,
+    calls: Vec<(String, String, String)>,
+    finish: Value,
+    usage: Value,
+}
+
+impl Chunks {
+    pub(crate) fn chunk(&mut self, data: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(data) else { return };
+        if !v["usage"].is_null() {
+            self.usage = v["usage"].clone();
+        }
+        let c = &v["choices"][0];
+        if let Some(t) = c["delta"]["content"].as_str() {
+            self.text.push_str(t);
+        }
+        for tc in c["delta"]["tool_calls"].as_array().into_iter().flatten() {
+            let i = tc["index"].as_u64().unwrap_or(0) as usize;
+            while self.calls.len() <= i {
+                self.calls.push(Default::default());
+            }
+            let e = &mut self.calls[i];
+            if let Some(id) = tc["id"].as_str() {
+                e.0 = id.to_string();
+            }
+            if let Some(n) = tc["function"]["name"].as_str() {
+                e.1.push_str(n);
+            }
+            if let Some(a) = tc["function"]["arguments"].as_str() {
+                e.2.push_str(a);
+            }
+        }
+        if !c["finish_reason"].is_null() {
+            self.finish = c["finish_reason"].clone();
+        }
+    }
+
+    pub(crate) fn response(self) -> Value {
+        let mut msg = json!({"role": "assistant", "content": self.text});
+        if !self.calls.is_empty() {
+            msg["tool_calls"] = Value::Array(self.calls.into_iter().map(|(id, name, args)| json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}})).collect());
+        }
+        json!({"choices": [{"message": msg, "finish_reason": self.finish}], "usage": self.usage})
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunks_rebuild_the_answer() {
+        let mut c = Chunks::default();
+        for d in [
+            r#"{"choices":[{"delta":{"content":"Hi "}}]}"#,
+            r#"{"choices":[{"delta":{"content":"there"}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"lar","arguments":"{\"pa"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"gest","arguments":"th\":1}"}}]},"finish_reason":"tool_calls"}]}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}"#,
+        ] {
+            c.chunk(d);
+        }
+        assert_eq!(c.text, "Hi there");
+        let mut o = OpenAi::new("http://localhost:1/v1", None, "m", "s".into(), "r".into(), &[]);
+        let t = o.take(&c.response()).unwrap();
+        assert_eq!(t.text, "Hi there");
+        assert_eq!((t.calls[0].name.as_str(), t.calls[0].input["path"].as_i64()), ("largest", Some(1)));
+        assert_eq!(t.usage.output, 3);
+    }
 
     #[test]
     fn tool_calls_round_trip() {

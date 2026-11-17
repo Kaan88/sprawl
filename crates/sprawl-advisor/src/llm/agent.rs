@@ -45,6 +45,8 @@ its 'I need N GB' plan, or 'Ask Claude'. If you learn what a folder is, or the u
 #[derive(Debug)]
 pub enum ChatEvent {
     Progress(String),
+    /// The answer so far, while it is written.
+    Partial(String),
     Reply(String),
     /// Show this filter on the map (empty clears it).
     Filter(String),
@@ -56,7 +58,8 @@ pub enum ChatEvent {
 /// own thread with its own copy of the scan, so filtering the map doesn't end it.
 /// `stop` ends the question being answered (it is cleared again for the next one).
 #[allow(clippy::too_many_arguments)]
-pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool, stop: Stop) {
+/// `partial` gets each answer's text so far, while it is written.
+pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool, stop: Stop, partial: Rc<dyn Fn(&str)>) {
     let Ok(first) = questions.recv() else { return };
     if cfg.provider == Provider::Off {
         events(ChatEvent::Failed("AI is off. Choose a provider with Set up AI.".into()));
@@ -93,6 +96,12 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
         Ok(c) => c,
         Err(e) => return events(ChatEvent::Failed(e)),
     };
+    // the answer as it is written, straight to the app
+    let stream = |c: &mut Box<dyn Chat>| {
+        let p = partial.clone();
+        c.stream_to(Some(Box::new(move |t: &str| p(t))));
+    };
+    stream(&mut chat);
     let mut with_tools = tools_ok;
     let mut question_open = true;
     let mut first_question = true;
@@ -116,7 +125,10 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
                 Err(e) if turns == 0 && first_question && with_tools && cfg.provider == Provider::OpenAi && e.to_lowercase().contains("tool") => {
                     with_tools = false;
                     match open_chat(false) {
-                        Ok(c) => chat = c,
+                        Ok(c) => {
+                            chat = c;
+                            stream(&mut chat);
+                        }
                         Err(e) => return events(ChatEvent::Failed(e)),
                     }
                     continue;

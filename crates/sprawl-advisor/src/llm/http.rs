@@ -102,16 +102,45 @@ fn last_error(what: &str) -> String {
 
 /// POST `body` (JSON) to `url` with `headers`.
 pub fn post(url: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<Response, String> {
-    request("POST", url, headers, Some(body), timeout)
+    request("POST", url, headers, Some(body), timeout, None)
+}
+
+/// POST, handing each piece of a successful answer to `chunk` as it arrives (an answer that
+/// isn't 2xx is collected into `Response::body` as usual).
+pub fn post_stream(url: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration, chunk: &mut dyn FnMut(&[u8])) -> Result<Response, String> {
+    request("POST", url, headers, Some(body), timeout, Some(chunk))
 }
 
 /// GET `url`.
 pub fn get(url: &str, headers: &[(&str, String)], timeout: Duration) -> Result<Response, String> {
-    request("GET", url, headers, None, timeout)
+    request("GET", url, headers, None, timeout, None)
+}
+
+/// Splits a server-sent event stream into its `data:` payloads.
+#[derive(Default)]
+pub(crate) struct Sse {
+    buf: Vec<u8>,
+}
+
+impl Sse {
+    /// Feed bytes; returns the complete `data:` lines so far.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.buf.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.buf.drain(..=i).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if let Some(d) = line.strip_prefix("data:") {
+                out.push(d.trim_start().to_string());
+            }
+        }
+        out
+    }
 }
 
 #[cfg(windows)]
-fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]>, timeout: Duration) -> Result<Response, String> {
+fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]>, timeout: Duration, mut chunk: Option<&mut dyn FnMut(&[u8])>) -> Result<Response, String> {
     use ffi::*;
     use std::ptr::null;
 
@@ -178,7 +207,12 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
                 .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]))
                 .and_then(|s| s.trim().parse::<u64>().ok())
         };
+        // only a good answer streams; an error body is read whole, to be shown
+        if !(200..300).contains(&status) {
+            chunk = None;
+        }
         let mut out = Vec::new();
+        let mut streamed = 0usize;
         loop {
             let mut avail = 0u32;
             if WinHttpQueryDataAvailable(request.0, &mut avail) == 0 {
@@ -188,7 +222,7 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
                 break;
             }
             // answers are small; refuse anything absurd
-            if out.len() + avail as usize > 64 << 20 {
+            if out.len() + streamed + avail as usize > 64 << 20 {
                 return Err("the answer is over 64 MB".into());
             }
             let start = out.len();
@@ -198,6 +232,11 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
                 return Err(last_error("reading the answer"));
             }
             out.truncate(start + read as usize);
+            if let Some(c) = chunk.as_mut() {
+                c(&out[start..]);
+                streamed += out.len() - start;
+                out.truncate(start);
+            }
             if read == 0 {
                 break;
             }
@@ -207,7 +246,7 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
 }
 
 #[cfg(not(windows))]
-fn request(_: &str, _: &str, _: &[(&str, String)], _: Option<&[u8]>, _: Duration) -> Result<Response, String> {
+fn request(_: &str, _: &str, _: &[(&str, String)], _: Option<&[u8]>, _: Duration, _: Option<&mut dyn FnMut(&[u8])>) -> Result<Response, String> {
     Err("HTTP is only built for Windows".into())
 }
 
@@ -215,6 +254,13 @@ fn request(_: &str, _: &str, _: &[(&str, String)], _: Option<&[u8]>, _: Duration
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
+
+    #[test]
+    fn sse_lines() {
+        let mut s = Sse::default();
+        assert!(s.feed(b"event: x\ndata: {\"a\":").is_empty());
+        assert_eq!(s.feed(b"1}\r\n\ndata: [DONE]\n"), vec!["{\"a\":1}".to_string(), "[DONE]".to_string()]);
+    }
 
     #[test]
     fn urls() {
