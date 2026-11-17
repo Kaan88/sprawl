@@ -279,7 +279,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         }
     })?);
 
-    // The two tables. Positions are taken relative to the scrolled content, so row = y / ROW_H.
+    // The two tables. Positions are taken relative to the scrolled content (see tables::Rows).
     let content_pos = |sv: &IInspectable, get: &dyn Fn(&UIElement) -> windows_core::Result<Point>| -> Option<(f64, f64)> {
         let c = sv.cast::<ScrollViewer>().ok()?.Content().ok()?.cast::<UIElement>().ok()?;
         let p = get(&c).ok()?;

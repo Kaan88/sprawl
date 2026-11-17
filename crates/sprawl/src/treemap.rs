@@ -11,7 +11,7 @@ use crate::bindings::Microsoft::UI::Xaml::Controls::{ScrollViewer, SwapChainPane
 use crate::bindings::Microsoft::UI::Xaml::FrameworkElement;
 use crate::gpu::{Frame, Gpu};
 use crate::scene::{ext_key, Info, Mode, Scene, CITY_DEPTH, FREE};
-use crate::state::{find, text, State, View, ROW_H};
+use crate::state::{find, text, State, View};
 use crate::paint;
 
 /// While a scan runs the map shows the root's top-level entries growing as they are found.
@@ -651,7 +651,7 @@ impl State {
         self.show_selection();
         if let Some(k) = self.rows.iter().position(|r| r.0 == n) {
             if let Ok(sv) = find::<ScrollViewer>(&self.root, "TreeScroll") {
-                let _ = sv.ChangeView(None, Some((k as f64 * ROW_H - 120.0).max(0.0)), None);
+                let _ = sv.ChangeView(None, Some(self.rows_now(crate::tables::Which::Main).off_near(k, 5.0)), None);
             }
         }
     }

@@ -677,14 +677,14 @@ impl State {
                     // dev: a double-click on row k of the main table
                     d if d.starts_with("dbl=") => {
                         let k: f64 = d[4..].parse().unwrap_or(0.0);
-                        self.row_tapped(40.0, k * ROW_H + 5.0, false);
-                        self.row_tapped(40.0, k * ROW_H + 5.0, true);
+                        self.row_tapped(40.0, self.rows_now(crate::tables::Which::Main).y_of(k as usize) + 5.0, false);
+                        self.row_tapped(40.0, self.rows_now(crate::tables::Which::Main).y_of(k as usize) + 5.0, true);
                     }
                     // dev: two plain taps on row k (WinUI lost the double-tap)
                     d if d.starts_with("tap2=") => {
                         let k: f64 = d[5..].parse().unwrap_or(0.0);
-                        self.row_tapped(40.0, k * ROW_H + 5.0, false);
-                        self.row_tapped(40.0, k * ROW_H + 5.0, false);
+                        self.row_tapped(40.0, self.rows_now(crate::tables::Which::Main).y_of(k as usize) + 5.0, false);
+                        self.row_tapped(40.0, self.rows_now(crate::tables::Which::Main).y_of(k as usize) + 5.0, false);
                     }
                     k if k.starts_with("key=") => {
                         self.table_key(k[4..].parse().unwrap_or(0));

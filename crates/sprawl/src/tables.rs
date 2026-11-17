@@ -372,10 +372,18 @@ impl State {
         let off = sv.VerticalOffset().unwrap_or(0.0);
         let vh = sv.ViewportHeight().unwrap_or(0.0);
         let vh = if vh > 0.0 { vh } else { 900.0 };
-        let first = (off / ROW_H).floor() as usize;
-        let last = (((off + vh) / ROW_H).ceil() as usize).min(count);
+        let g = Rows { count, off, vh };
+        let first = (g.top().floor().max(0.0) as usize).min(count);
+        let last = ((g.top() + vh / ROW_H).ceil().max(0.0) as usize).min(count);
         let span = if which == Which::Main { self.tables.main_span } else { self.tables.ext_span };
         if span.2 == count && span.0 <= first && last <= span.1 {
+            // a long list's rows move with the scroll (see Rows): the loaded ones are moved
+            if g.scaled() {
+                let body = if which == Which::Main { &self.tables.main_body } else { &self.tables.ext_body };
+                if let Some(fe) = body.as_ref().and_then(|b| b.Child().ok()).and_then(|c| c.cast::<FrameworkElement>().ok()) {
+                    let _ = fe.SetMargin(crate::bindings::Microsoft::UI::Xaml::Thickness { Left: 0.0, Top: g.y_of(span.0), Right: 0.0, Bottom: 0.0 });
+                }
+            }
             return;
         }
         let a = first.saturating_sub(OVERSCAN).min(count);
@@ -396,9 +404,9 @@ impl State {
         };
         let Some(body) = body else { return };
         if let Ok(fe) = body.cast::<FrameworkElement>() {
-            let _ = fe.SetHeight((count as f64 * ROW_H).max(1.0));
+            let _ = fe.SetHeight(g.body());
         }
-        let mut xaml = format!(r##"<StackPanel {} VerticalAlignment="Top" Margin="0,{},0,0">"##, ui::NS, a as f64 * ROW_H);
+        let mut xaml = format!(r##"<StackPanel {} VerticalAlignment="Top" Margin="0,{},0,0">"##, ui::NS, g.y_of(a));
         for k in a..b {
             xaml += &match which {
                 Which::Main if self.view == View::Files => self.file_row(k),
@@ -534,8 +542,18 @@ impl State {
 
     // ------------------------------------------------------------ mouse and keyboard
 
+    /// Where the rows of a table sit now.
+    pub(crate) fn rows_now(&self, which: Which) -> Rows {
+        let (scroll, count) = match which {
+            Which::Main => ("TreeScroll", if self.tree.is_some() || self.view == View::Search { self.rows.len() } else { 0 }),
+            Which::Exts => ("ExtScroll", self.exts.len()),
+        };
+        let (off, vh) = find::<ScrollViewer>(&self.root, scroll).map_or((0.0, 0.0), |sv| (sv.VerticalOffset().unwrap_or(0.0), sv.ViewportHeight().unwrap_or(0.0)));
+        Rows { count, off, vh: if vh > 0.0 { vh } else { 900.0 } }
+    }
+
     pub(crate) fn row_tapped(&mut self, x: f64, y: f64, double: bool) {
-        let k = (y / ROW_H) as usize;
+        let k = self.rows_now(Which::Main).at(y);
         let Some(&(n, d)) = self.rows.get(k) else { return };
         let double = if self.view == View::Search { self.tap_is_double((n, d), double) } else { double };
         if self.view == View::Search {
@@ -601,7 +619,7 @@ impl State {
     }
 
     pub(crate) fn ext_tapped(&mut self, y: f64) {
-        let k = (y / ROW_H) as usize;
+        let k = self.rows_now(Which::Exts).at(y);
         let Some(e) = self.exts.get(k) else { return };
         self.ext_selected = if self.ext_selected.as_deref() == Some(e.ext.as_str()) { None } else { Some(e.ext.clone()) };
         self.refresh_exts();
@@ -634,12 +652,8 @@ impl State {
         };
         self.ext_selected = Some(self.exts[target].ext.clone());
         self.refresh_exts();
-        if let Ok(sv) = find::<ScrollViewer>(&self.root, "ExtScroll") {
-            let off = sv.VerticalOffset().unwrap_or(0.0);
-            let vh = sv.ViewportHeight().unwrap_or(0.0);
-            let (top, bottom) = (target as f64 * ROW_H, (target + 1) as f64 * ROW_H);
-            let to = if top < off { Some(top) } else if bottom > off + vh { Some(bottom - vh) } else { None };
-            if let Some(y) = to {
+        if let Some(y) = self.rows_now(Which::Exts).off_to_show(target) {
+            if let Ok(sv) = find::<ScrollViewer>(&self.root, "ExtScroll") {
                 let _ = sv.ChangeView(None, Some(y), None);
             }
         }
@@ -648,7 +662,7 @@ impl State {
 
     /// Right-click on a row: select it and open the row menu at the pointer.
     pub(crate) fn row_menu(&mut self, y_content: f64, at: Point) {
-        let k = (y_content / ROW_H) as usize;
+        let k = self.rows_now(Which::Main).at(y_content);
         let Some(&(n, d)) = self.rows.get(k) else { return };
         if self.view == View::Search {
             if d > 0 {
@@ -866,17 +880,7 @@ impl State {
             return;
         }
         let Ok(sv) = find::<ScrollViewer>(&self.root, "TreeScroll") else { return };
-        let off = sv.VerticalOffset().unwrap_or(0.0);
-        let vh = sv.ViewportHeight().unwrap_or(0.0);
-        let (top, bottom) = (k as f64 * ROW_H, (k + 1) as f64 * ROW_H);
-        let to = if top < off {
-            Some(top)
-        } else if bottom > off + vh {
-            Some(bottom - vh)
-        } else {
-            None
-        };
-        if let Some(y) = to {
+        if let Some(y) = self.rows_now(Which::Main).off_to_show(k) {
             let _ = sv.ChangeView(None, Some(y), None);
         }
     }
@@ -967,6 +971,38 @@ mod tests {
     }
 
     #[test]
+    fn a_long_list_maps_its_scroll_onto_the_rows() {
+        // short: the content is the rows
+        let g = Rows { count: 1000, off: 240.0, vh: 300.0 };
+        assert!(!g.scaled());
+        assert_eq!(g.body(), 24_000.0);
+        assert_eq!(g.top(), 10.0);
+        assert_eq!(g.y_of(12), 288.0);
+        assert_eq!(g.at(289.0), 12);
+        assert_eq!(g.off_to_show(3), Some(72.0));
+        assert_eq!(g.off_to_show(11), None);
+        assert_eq!(g.off_to_show(30), Some(30.0 * 24.0 + 24.0 - 300.0));
+        // long: the content stays short enough for XAML to clip, and every row is reachable
+        let n = 500_000;
+        let top = Rows { count: n, off: 0.0, vh: 300.0 };
+        assert!(top.scaled() && top.body() <= MAX_BODY);
+        assert_eq!(top.at(5.0), 0);
+        let end = Rows { count: n, off: top.body() - 300.0, vh: 300.0 };
+        let last_seen = end.at(end.off + 299.0);
+        assert_eq!(last_seen, n - 1, "the last row is at the bottom of the full scroll");
+        // rows stay a row apart on screen, and a tap finds the row drawn there
+        let mid = Rows { count: n, off: 400_000.0, vh: 300.0 };
+        let k = mid.at(mid.off + 100.0);
+        assert!((mid.y_of(k + 1) - mid.y_of(k) - ROW_H).abs() < 1e-6);
+        assert_eq!(mid.at(mid.y_of(k) + 1.0), k);
+        // scrolling to a row puts it in view
+        let to = mid.off_to_show(123_456).unwrap();
+        let there = Rows { off: to, ..mid };
+        let y = there.y_of(123_456);
+        assert!(y >= there.off - 1e-6 && y + ROW_H <= there.off + there.vh + 1e-6, "{y} in {}..{}", there.off, there.off + there.vh);
+    }
+
+    #[test]
     fn the_filter_box_and_what_is_on_screen() {
         use FilterStep::*;
         // shown already, or being made: nothing
@@ -1054,6 +1090,76 @@ impl Parts {
         sort_file_list(t, &self.alloc, self.sorts.files, &mut self.files);
         self.exts = ext_rows(t, &self.alloc);
         sort_ext_rows(&mut self.exts, self.sorts.exts);
+    }
+}
+
+/// The tallest the scrolled rows of a table are made. Past about two million pixels XAML stops
+/// clipping them to the view, and the last rows paint over what is below the table (a search
+/// of 100,000 results was 2.5 million).
+pub(crate) const MAX_BODY: f64 = 1_000_000.0;
+
+/// Where the rows of a table of `count` rows sit, scrolled to `off` in a view `vh` high. Up to
+/// [`MAX_BODY`] the scrolled content is the rows, one under the other. Past it the content is
+/// [`MAX_BODY`] high, its scroll range maps onto the rows evenly, and the rows near the view are
+/// drawn a row apart around it. Every position on the content is in content coordinates.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Rows {
+    pub(crate) count: usize,
+    pub(crate) off: f64,
+    pub(crate) vh: f64,
+}
+
+impl Rows {
+    pub(crate) fn scaled(&self) -> bool {
+        self.count as f64 * ROW_H > MAX_BODY
+    }
+
+    /// The height of the scrolled content.
+    pub(crate) fn body(&self) -> f64 {
+        (self.count as f64 * ROW_H).clamp(1.0, MAX_BODY)
+    }
+
+    /// Rows per pixel of scrolling.
+    fn ratio(&self) -> f64 {
+        if self.scaled() {
+            (self.count as f64 - self.vh / ROW_H) / (MAX_BODY - self.vh).max(1.0)
+        } else {
+            1.0 / ROW_H
+        }
+    }
+
+    /// The row at the top of the view (with the part of it above).
+    pub(crate) fn top(&self) -> f64 {
+        self.off * self.ratio()
+    }
+
+    /// Where row `k` is drawn.
+    pub(crate) fn y_of(&self, k: usize) -> f64 {
+        self.off + (k as f64 - self.top()) * ROW_H
+    }
+
+    /// The row drawn at `y`.
+    pub(crate) fn at(&self, y: f64) -> usize {
+        (self.top() + (y - self.off) / ROW_H).floor().max(0.0) as usize
+    }
+
+    /// The scroll that shows row `k` with the least movement; None when it is in view.
+    pub(crate) fn off_to_show(&self, k: usize) -> Option<f64> {
+        let rows_in_view = self.vh / ROW_H;
+        let top = self.top();
+        let want = if (k as f64) < top {
+            k as f64
+        } else if (k + 1) as f64 > top + rows_in_view {
+            (k + 1) as f64 - rows_in_view
+        } else {
+            return None;
+        };
+        Some((want / self.ratio()).clamp(0.0, (self.body() - self.vh).max(0.0)))
+    }
+
+    /// The scroll that puts row `k` near the top, `above` rows down from it.
+    pub(crate) fn off_near(&self, k: usize, above: f64) -> f64 {
+        ((k as f64 - above).max(0.0) / self.ratio()).clamp(0.0, (self.body() - self.vh).max(0.0))
     }
 }
 
