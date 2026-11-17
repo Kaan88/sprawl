@@ -119,6 +119,36 @@ struct Exported {
     verify: Option<Option<Vec<(PathBuf, u64, u64)>>>,
 }
 
+/// The part of the Advisor tab on show.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Section {
+    #[default]
+    Findings,
+    Plan,
+    Ask,
+    Growth,
+    Memory,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Sort {
+    #[default]
+    Size,
+    Risk,
+    Owner,
+}
+
+/// Which findings the list shows.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Only {
+    #[default]
+    All,
+    /// With something to run (a delete or a command).
+    Runnable,
+    /// Orange: the user's own files.
+    Decide,
+}
+
 /// The in-use check of an opened finding.
 #[derive(Clone)]
 enum InUse {
@@ -168,6 +198,9 @@ pub(crate) struct Advisor {
     /// Growth of the last scan (by `State::scan_id`): snapshots are read once per scan.
     growth_cache: Option<(u64, Option<sprawl_advisor::growth::Growth>)>,
     ai_tick: Option<std::time::Instant>,
+    section: Section,
+    sort: Sort,
+    only: Only,
     /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
     picks: std::collections::HashSet<String>,
 }
@@ -581,6 +614,17 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvSecFindings" => self.advisor.section = Section::Findings,
+            "AdvSecPlan" => self.advisor.section = Section::Plan,
+            "AdvSecAsk" => self.advisor.section = Section::Ask,
+            "AdvSecGrowth" => self.advisor.section = Section::Growth,
+            "AdvSecMemory" => self.advisor.section = Section::Memory,
+            "AdvSortSize" => self.advisor.sort = Sort::Size,
+            "AdvSortRisk" => self.advisor.sort = Sort::Risk,
+            "AdvSortOwner" => self.advisor.sort = Sort::Owner,
+            "AdvOnlyAll" => self.advisor.only = Only::All,
+            "AdvOnlyRun" => self.advisor.only = Only::Runnable,
+            "AdvOnlyDecide" => self.advisor.only = Only::Decide,
             "AdvPick" => {
                 let Some(p) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)).map(|f| f.path.to_string_lossy().to_lowercase()) else { return };
                 if !self.advisor.picks.remove(&p) {
@@ -649,9 +693,15 @@ impl State {
                 }
                 self.save_memory();
             }
-            "AdvAsk" => self.advisor_ask(),
+            "AdvAsk" => {
+                self.advisor.section = Section::Ask;
+                self.advisor_ask();
+            }
             "AdvSetup" => return self.command("mWizard"),
-            "AdvPlan" => self.advisor_plan(),
+            "AdvPlan" => {
+                self.advisor.section = Section::Plan;
+                self.advisor_plan();
+            }
             "AdvPreview" => self.advisor.preview = !self.advisor.preview,
             "AdvClearPlan" => {
                 self.advisor.plan = None;
@@ -803,6 +853,7 @@ impl State {
             }
         }
         for name in [
+            "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvPick", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
@@ -866,7 +917,69 @@ impl State {
             );
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="16"><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FF4CC38A"/><TextBlock Text="Comes back by itself" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFF5B342"/><TextBlock Text="Costs something" FontSize="11" Foreground="#FF8E97AA"/></StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Ellipse Width="8" Height="8" Fill="#FFFF7A45"/><TextBlock Text="Your own files" FontSize="11" Foreground="#FF8E97AA"/></StackPanel></StackPanel>"##;
-        x += &self.growth_card(r);
+        // the strip: what can go now, what is the user's to decide, how long the room lasts
+        let now = sum(&|f| actionable(f) && f.risk <= Risk::Amber);
+        let mut strip = vec![format!("Can go now: {}", self.size(now))];
+        if orange > 0 {
+            strip.push(format!("Your decision: {}", self.size(orange)));
+        }
+        if let Some(d) = r.growth.as_ref().and_then(|g| g.full_in_days) {
+            strip.push(if d < 365.0 { format!("Full in about {d:.0} days") } else { "Room for over a year".into() });
+        }
+        x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(&strip.join("   ·   ")));
+        // the sections, one at a time
+        let shown = (0..r.findings.len()).filter(|&i| !matches!(r.findings[i].source, Source::Model(_))).count();
+        let ai_tag = match &self.advisor.ai {
+            Ai::Running(_) => " •".to_string(),
+            Ai::Done { found, .. } if *found > 0 => format!(" ({found})"),
+            _ => String::new(),
+        };
+        let m = &self.advisor.memory;
+        let tab = |name: &str, label: String, me: Section| {
+            format!(r##"<Button x:Name="{name}" Content="{}" Padding="12,4" FontSize="12" CornerRadius="6" BorderThickness="0" Background="{}"/>"##, ui::esc(&label), if self.advisor.section == me { "#FF2C3B63" } else { "#0CFFFFFF" })
+        };
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}{}</StackPanel>"##,
+            tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
+            tab("AdvSecPlan", if self.current_plan().is_some() { "Plan •".into() } else { "Plan".into() }, Section::Plan),
+            tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
+            tab("AdvSecGrowth", "Growth".into(), Section::Growth),
+            tab("AdvSecMemory", format!("Memory ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len()), Section::Memory),
+        );
+        match self.advisor.section {
+            Section::Plan => x += &self.ai_card(r, true),
+            Section::Ask => {
+                x += &self.ai_card(r, false);
+                x += &self.chat_card();
+            }
+            Section::Growth => x += &self.growth_card(r),
+            Section::Memory => x += &self.memory_cards(r),
+            Section::Findings => x += &self.findings_section(r),
+        }
+        x += &format!(
+            r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Sprawl only suggests: nothing is deleted or run from this tab. Commands are for PowerShell. Checked in {:.1} s."/>"##,
+            r.secs
+        );
+        x += "</StackPanel>";
+        x
+    }
+
+    /// The findings list with its sort and filter, duplicates, hidden space and what was held back.
+    fn findings_section(&self, r: &Report) -> String {
+        let mut x = String::new();
+        let chip = |name: &str, label: &str, on: bool| {
+            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,2" FontSize="11" CornerRadius="10" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#0CFFFFFF" })
+        };
+        let (s, o) = (self.advisor.sort, self.advisor.only);
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}</StackPanel>"##,
+            chip("AdvSortSize", "Size", s == Sort::Size),
+            chip("AdvSortRisk", "Risk", s == Sort::Risk),
+            chip("AdvSortOwner", "Owner", s == Sort::Owner),
+            chip("AdvOnlyAll", "All", o == Only::All),
+            chip("AdvOnlyRun", "Something to run", o == Only::Runnable),
+            chip("AdvOnlyDecide", "Your decision", o == Only::Decide),
+        );
         x += &match &self.advisor.dupes_status {
             Some(s) => format!(
                 r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="AdvDupesStatus" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvDupesStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
@@ -877,12 +990,23 @@ impl State {
                 ui::esc(self.advisor.dupes_note.as_deref().unwrap_or("Copies are confirmed byte for byte; hard links aren't copies."))
             ),
         };
-        x += &self.ai_card(r);
-        x += &self.chat_card();
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
-        for i in (0..r.findings.len()).filter(|&i| !matches!(r.findings[i].source, Source::Model(_))) {
+        let mut list: Vec<usize> = (0..r.findings.len())
+            .filter(|&i| !matches!(r.findings[i].source, Source::Model(_)))
+            .filter(|&i| match o {
+                Only::All => true,
+                Only::Runnable => r.findings[i].command.is_some(),
+                Only::Decide => r.findings[i].risk == Risk::Orange,
+            })
+            .collect();
+        match s {
+            Sort::Size => list.sort_by_key(|&i| std::cmp::Reverse(r.findings[i].bytes)),
+            Sort::Risk => list.sort_by_key(|&i| (r.findings[i].risk, std::cmp::Reverse(r.findings[i].bytes))),
+            Sort::Owner => list.sort_by_key(|&i| (r.findings[i].owner.clone().unwrap_or_else(|| "~".into()).to_lowercase(), std::cmp::Reverse(r.findings[i].bytes))),
+        }
+        for i in list {
             x += &self.finding_row(r, i);
         }
         if let Some(h) = r.hidden.as_ref().filter(|h| h.notable) {
@@ -913,12 +1037,6 @@ impl State {
                 }
             }
         }
-        x += &self.memory_cards(r);
-        x += &format!(
-            r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Sprawl only suggests: nothing is deleted or run from this tab. Commands are for PowerShell. Checked in {:.1} s."/>"##,
-            r.secs
-        );
-        x += "</StackPanel>";
         x
     }
 
@@ -1675,7 +1793,8 @@ impl State {
         x
     }
 
-    fn ai_card(&self, r: &Report) -> String {
+    /// `plan`: the goal, the plan and the script; otherwise asking the AI and its answer.
+    fn ai_card(&self, r: &Report, plan: bool) -> String {
         let cfg = AiConfig::load();
         let btn = |name: &str, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
         let ask = match cfg.provider {
@@ -1685,13 +1804,21 @@ impl State {
             Provider::OpenAi => btn("AdvAsk", &format!("Ask {}", ui::esc(if cfg.model.is_empty() { "the model" } else { &cfg.model }))),
         };
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="8">"##);
-        x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="I need" VerticalAlignment="Center" FontSize="13"/><TextBox x:Name="AdvGoal" Width="70" PlaceholderText="{GOAL_EXAMPLE}"/><TextBlock Text="GB" VerticalAlignment="Center" FontSize="13"/>{}{}{}</StackPanel>"##,
-            btn("AdvPlan", "Make a plan"),
-            ask,
-            btn("AdvExport", if self.current_plan().is_some() { "Export plan as script" } else { "Export script" }),
-        );
-        if let Some(p) = self.current_plan() {
+        if plan {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="I need" VerticalAlignment="Center" FontSize="13"/><TextBox x:Name="AdvGoal" Width="70" PlaceholderText="{GOAL_EXAMPLE}"/><TextBlock Text="GB" VerticalAlignment="Center" FontSize="13"/>{}{}</StackPanel>"##,
+                btn("AdvPlan", "Make a plan"),
+                btn("AdvExport", if self.current_plan().is_some() { "Export plan as script" } else { "Export script" }),
+            );
+            x += r##"<TextBlock Text="The plan takes Sprawl's own green and amber findings first, then anything you added with Add to plan. The script only measures until you run it with -Run." TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##;
+        } else {
+            let model = if cfg.model.is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.clone() };
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8">{ask}<TextBlock Text="{}" VerticalAlignment="Center" FontSize="11" Foreground="#FF8E97AA"/></StackPanel>"##,
+                if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) }
+            );
+        }
+        if let Some(p) = self.current_plan().filter(|_| plan) {
             let n = p.plan.picked.len();
             let worst = p.plan.picked.iter().filter_map(|&i| r.findings.get(i)).map(|f| f.risk).max();
             let mine = p.plan.picked.iter().filter(|&&i| r.findings.get(i).is_some_and(|f| self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()))).count();
@@ -1710,7 +1837,7 @@ impl State {
                 btn("AdvClearPlan", "Clear"),
             );
         }
-        match &self.advisor.ai {
+        match if plan { &Ai::Idle } else { &self.advisor.ai } {
             Ai::Idle => {}
             Ai::Running(s) => {
                 x += &format!(
@@ -1765,7 +1892,7 @@ impl State {
                 }
             }
         }
-        if let Some(e) = &self.advisor.exported {
+        if let Some(e) = self.advisor.exported.as_ref().filter(|_| plan) {
             let planned: u64 = e.items.iter().map(|(_, b, _)| *b).sum();
             let line = match &e.verify {
                 None => format!("Saved {} ({} items, {}). After running it with -Run, check what it freed.", e.file.display(), e.items.len(), self.size(planned)),
@@ -1782,7 +1909,7 @@ impl State {
                 btn("AdvVerify", "Check what it freed")
             );
         }
-        if cfg.provider != Provider::Off {
+        if cfg.provider != Provider::Off && !plan {
             x += r##"<Button x:Name="AdvLog" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="See what was sent to the AI"/>"##;
         }
         x += "</StackPanel></Border>";
