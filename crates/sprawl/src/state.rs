@@ -109,6 +109,8 @@ pub(crate) struct State {
     /// Live change pulses: the watcher on the scanned folder and how many changes it saw.
     pub(crate) watcher: Option<crate::watch::Watcher>,
     pub(crate) changes: u64,
+    /// What Sprawl itself just deleted (lower case), and when: not counted as live changes.
+    pub(crate) own_deletes: Vec<(String, std::time::Instant)>,
     pub(crate) pulses_on: bool,
     pub(crate) map_root: usize,
     pub(crate) map: MapView,
@@ -334,6 +336,15 @@ impl State {
             if seen.len() > 400 {
                 break;
             }
+        }
+        // Sprawl's own deletes (a clean-up, or Delete in the tree) aren't changes from outside
+        let running = self.advisor.cleanup.running.is_some();
+        self.own_deletes.retain(|(_, at)| running || at.elapsed().as_secs() < 120);
+        if !self.own_deletes.is_empty() {
+            seen.retain(|p| {
+                let l = p.to_string_lossy().to_lowercase();
+                !self.own_deletes.iter().any(|(o, _)| l == *o || l.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('\\')))
+            });
         }
         if seen.is_empty() || self.map.live.is_some() {
             return;

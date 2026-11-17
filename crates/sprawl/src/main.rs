@@ -56,14 +56,21 @@ use state::{find, keep, load, with, State, Units, View, STATE};
 struct Args {
     shot: Option<PathBuf>,
     folder: Option<PathBuf>,
+    /// Restarted as administrator from the Advisor: open it again, with these ticks.
+    advisor: bool,
+    ticks: Vec<PathBuf>,
 }
 
 fn args() -> Args {
-    let mut a = Args { shot: None, folder: None };
+    let mut a = Args { shot: None, folder: None, advisor: false, ticks: Vec::new() };
     let mut it = std::env::args_os().skip(1);
     while let Some(x) = it.next() {
         if x == "--screenshot" {
             a.shot = it.next().map(PathBuf::from);
+        } else if x == "--advisor" {
+            a.advisor = true;
+        } else if x == "--tick" {
+            a.ticks.extend(it.next().map(PathBuf::from));
         } else {
             a.folder = Some(PathBuf::from(x));
         }
@@ -389,6 +396,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         settings,
         watcher: None,
         changes: 0,
+        own_deletes: Vec::new(),
         pulses_on: true,
         map_root: ROOT,
         map: treemap::MapView::new(panel),
@@ -414,6 +422,11 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             s.wizard_open();
             s.wizard_page = p.min(wizard::PAGES - 1);
             s.wizard_show();
+        }
+        if a.advisor && first.is_some() {
+            // ticks only become ticks for findings of the new report; the review still asks
+            s.advisor.cleanup.pending = Some(a.ticks.iter().take(500).map(|p| crate::cleanup::key(p)).collect());
+            s.command("TabAdvisor");
         }
         if let Some(f) = first {
             s.start_scan(f);

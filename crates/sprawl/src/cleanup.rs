@@ -22,6 +22,8 @@ pub(crate) struct Cleanup {
     pub ticked: HashSet<String>,
     /// The report generation the default ticks were set for.
     pub ticked_for: Option<u64>,
+    /// Ticks carried over a restart as administrator, for the first report.
+    pub pending: Option<HashSet<String>>,
     /// The review panel is open.
     pub review: bool,
     /// "These are my own files and I want them gone" is ticked.
@@ -116,6 +118,15 @@ impl State {
             return;
         }
         let gen = r.tree;
+        if let Some(p) = self.advisor.cleanup.pending.as_ref() {
+            let ticked: HashSet<String> = r.findings.iter().zip(&r.counted).filter(|(f, c)| untickable(f, **c).is_none()).map(|(f, _)| key(&f.path)).filter(|k| p.contains(k)).collect();
+            let c = &mut self.advisor.cleanup;
+            c.ticked = ticked;
+            c.ticked_for = Some(gen);
+            c.auto = false;
+            c.pending = None;
+            return;
+        }
         let ticked: HashSet<String> = r
             .findings
             .iter()
@@ -251,6 +262,8 @@ impl State {
             }
             let _ = tx.send(Msg::End);
         });
+        let at = std::time::Instant::now();
+        self.own_deletes.extend(items.iter().map(|it| (it.path.to_string_lossy().trim_end_matches('\\').to_lowercase(), at)));
         let c = &mut self.advisor.cleanup;
         c.review = false;
         c.single = None;

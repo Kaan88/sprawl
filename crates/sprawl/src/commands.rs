@@ -112,7 +112,14 @@ impl State {
             }
             "mAdmin" if self.advisor.cleanup.running.is_some() => text(&self.root, "FootLeft", "A clean-up is running: restart as administrator when it has finished."),
             "mAdmin" => {
-                let arg = self.tree.as_ref().map(|t| dialogs::quote(&t.root_path)).unwrap_or_default();
+                let mut arg = self.tree.as_ref().map(|t| dialogs::quote(&t.root_path)).unwrap_or_default();
+                // from the Advisor: the new copy opens it again with the same ticks
+                if self.view == View::Advisor && !arg.is_empty() {
+                    arg += " --advisor";
+                    for k in self.advisor.cleanup.ticked.iter().take(500) {
+                        arg += &format!(" --tick {}", dialogs::quote(std::path::Path::new(k)));
+                    }
+                }
                 if sprawl_core::is_elevated() {
                     text(&self.root, "FootLeft", "Sprawl is already running as administrator.");
                 } else if dialogs::restart_elevated(self.hwnd, &arg) {
@@ -533,6 +540,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         if !win32::confirm(self.hwnd, &format!("{what}\n\n{}", path.display()), "Sprawl") {
             return;
         }
+        self.own_deletes.push((path.to_string_lossy().trim_end_matches('\\').to_lowercase(), std::time::Instant::now()));
         if !win32::delete_path(self.hwnd, &path, permanent) {
             win32::info(self.hwnd, "It couldn't be deleted (it may be in use or protected).", "Sprawl");
             return;
