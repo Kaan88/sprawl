@@ -27,7 +27,13 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     s.push_str("  Unlike Clean up in Sprawl, this script deletes what it finds when it runs: it does not\n");
     s.push_str("  leave files created or changed since the scan, and it was not checked again against a\n");
     s.push_str("  new scan. (Items holding a folder you chose to keep were left out of it.) Run it soon,\n");
-    s.push_str("  or scan again and save a new one.\n#>\n");
+    s.push_str("  or scan again and save a new one.\n");
+    if findings.iter().any(|f| f.risk >= crate::Risk::Orange) {
+        // the app may send these to the Recycle Bin; the script can't
+        s.push_str("\n  Your own files in it are deleted for good, not sent to the Recycle Bin: this script\n");
+        s.push_str("  has no Recycle Bin. Clean up in Sprawl can send them there instead (Settings > Cleaning).\n");
+    }
+    s.push_str("#>\n");
     // -Report <file>: the bytes freed are written there at the end (Sprawl's Run now reads it)
     s.push_str("param([switch]$Run, [string]$Report)\n");
     s.push_str("$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\n");
@@ -138,6 +144,11 @@ mod tests {
         assert!(s.contains("7   # as administrator\n  } }"));
         assert!(s.contains("param([switch]$Run, [string]$Report)") && s.contains("Dry run"));
         assert!(s.contains("To do by hand") && s.contains(r"D:\Games\Old"));
+        // only caches here; the user's own files make the script say it has no Recycle Bin
+        assert!(!s.contains("has no Recycle Bin"));
+        let mut own = f("Old project", r"C:\Users\sam\Old", Some(format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath 'C:\\Users\\sam\\Old' -Force)")));
+        own.risk = crate::Risk::Orange;
+        assert!(script(&[&own], r"C:\", SystemTime::now()).contains("has no Recycle Bin"));
         let p = std::env::temp_dir().join(format!("sprawl-export-{}.ps1", std::process::id()));
         write_script(&p, &s).unwrap();
         let bytes = std::fs::read(&p).unwrap();

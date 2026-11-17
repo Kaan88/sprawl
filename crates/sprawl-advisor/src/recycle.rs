@@ -45,11 +45,27 @@ pub fn bin_for(path: &Path) -> Result<Bin, String> {
         return Err(format!("the Recycle Bin is turned off on {drive}"));
     }
     // its size: as set in its properties, else Windows' default share of the drive
-    let room = match key.as_ref().and_then(|k| k.dword("MaxCapacity")) {
+    let cap = match key.as_ref().and_then(|k| k.dword("MaxCapacity")) {
         Some(mb) => u64::from(mb) << 20,
         None => win::total_bytes(&root).ok_or(format!("the size of {drive} couldn't be read"))? / 20,
     };
+    // what is in it already counts: Windows doesn't hold to the limit for what Sprawl puts there
+    let room = cap.saturating_sub(held(&dir));
     Ok(Bin { dir, drive, room })
+}
+
+/// What the bin folder `dir` holds now, by its `$I` records' sizes (each item's size as it was
+/// deleted, also for a whole folder). A record that can't be read counts its item's own size.
+pub(crate) fn held(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut total = 0u64;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("$I") else { continue };
+        let from_record = std::fs::read(e.path()).ok().filter(|r| r.len() >= 16).map(|r| u64::from_le_bytes(r[8..16].try_into().unwrap()));
+        total = total.saturating_add(from_record.unwrap_or_else(|| std::fs::symlink_metadata(dir.join(format!("$R{rest}"))).map_or(0, |m| m.len())));
+    }
+    total
 }
 
 fn is_link(m: &std::fs::Metadata) -> bool {
@@ -170,6 +186,24 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The room left counts what the bin already holds, by its records.
+    #[test]
+    fn what_the_bin_holds_is_counted() {
+        let dir = std::env::temp_dir().join(format!("sprawl-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("$IAAAAAA.txt"), record(Path::new(r"C:\a.txt"), 700, 0)).unwrap();
+        std::fs::write(dir.join("$RAAAAAA.txt"), vec![0u8; 700]).unwrap();
+        std::fs::write(dir.join("$IBBBBBB"), record(Path::new(r"C:\folder"), 5000, 0)).unwrap();
+        std::fs::create_dir_all(dir.join("$RBBBBBB")).unwrap();
+        // a short record: its item's own size
+        std::fs::write(dir.join("$ICCCCCC.bin"), b"x").unwrap();
+        std::fs::write(dir.join("$RCCCCCC.bin"), vec![0u8; 30]).unwrap();
+        std::fs::write(dir.join("desktop.ini"), b"[x]").unwrap();
+        assert_eq!(held(&dir), 700 + 5000 + 30);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_record_is_what_explorer_reads() {
