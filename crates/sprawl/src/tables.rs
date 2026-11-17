@@ -700,7 +700,7 @@ impl State {
         self.show_selection();
         // with several rows picked the Windows menu is off: it would act on one of them only
         if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "cShell") {
-            let _ = i.SetIsEnabled(!sprawl_core::is_elevated() && self.picked_nodes().len() <= 1);
+            let _ = i.SetIsEnabled(!sprawl_core::is_elevated() && self.picked_nodes().len() <= 1 && self.advisor.cleanup.running.is_none());
         }
         // Shift+right-click: straight to the Windows menu
         if crate::win32::ctrl_shift_down().1 && !sprawl_core::is_elevated() && self.picked_nodes().len() <= 1 {
