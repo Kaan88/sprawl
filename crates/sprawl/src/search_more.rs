@@ -97,6 +97,10 @@ impl State {
             if cur.as_ref().is_some_and(|c| within(c, &r) || within(&r, c)) {
                 continue;
             }
+            // a drive being read now is newer than any saved scan on it
+            if self.search.more.drives_on.iter().any(|d| within(&r, &norm(Path::new(d)))) {
+                continue;
+            }
             newest.push(e);
         }
         newest.truncate(MAX_SNAPSHOTS);
@@ -104,7 +108,7 @@ impl State {
             self.render_more();
             return;
         }
-        self.search.more.loading = newest.iter().map(|e| format!("{} (saved {})", e.root.display(), fmt_time(e.taken))).collect();
+        self.search.more.loading.extend(newest.iter().map(|e| format!("{} (saved {})", e.root.display(), fmt_time(e.taken))));
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             for e in newest {
@@ -117,8 +121,27 @@ impl State {
                 }
             }
         });
-        self.search.more.arriving = Some(rx);
+        self.more_queue(rx);
         self.render_more();
+    }
+
+    /// Places arrive in the order `loading` lists them: a new reader waits behind the ones before.
+    fn more_queue(&mut self, rx: Receiver<Option<Place>>) {
+        let Some(prev) = self.search.more.arriving.take() else {
+            self.search.more.arriving = Some(rx);
+            return;
+        };
+        let (tx2, rx2) = channel();
+        std::thread::spawn(move || {
+            for r in [prev, rx] {
+                while let Ok(p) = r.recv() {
+                    if tx2.send(p).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        self.search.more.arriving = Some(rx2);
     }
 
     /// Every fixed drive the scan on screen isn't, read by itself like Everything: from the file
@@ -163,24 +186,7 @@ impl State {
             });
             let _ = tx.send(place);
         });
-        // one reader at a time is plenty; a second chip waits behind the first
-        if self.search.more.arriving.is_none() {
-            self.search.more.arriving = Some(rx);
-        } else {
-            let prev = self.search.more.arriving.take().unwrap();
-            let (tx2, rx2) = channel();
-            std::thread::spawn(move || {
-                while let Ok(p) = prev.recv() {
-                    if tx2.send(p).is_err() {
-                        return;
-                    }
-                }
-                if let Ok(p) = rx.recv() {
-                    let _ = tx2.send(p);
-                }
-            });
-            self.search.more.arriving = Some(rx2);
-        }
+        self.more_queue(rx);
         self.render_more();
     }
 

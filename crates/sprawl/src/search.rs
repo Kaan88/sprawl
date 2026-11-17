@@ -18,7 +18,7 @@ use crate::ui;
 /// The map colour code of a match (see `advisor::lens_colour`).
 pub(crate) const LENS_MATCH: u8 = 20;
 
-type Found = (u64, String, Option<Vec<usize>>);
+type Found = (u64, String, (usize, bool), Option<Vec<usize>>);
 
 #[derive(Default)]
 pub(crate) struct Search {
@@ -41,6 +41,8 @@ pub(crate) struct Search {
     changed: (u64, std::collections::HashSet<usize>),
     /// Saved scans and other drives.
     pub(crate) more: crate::search_more::More,
+    /// When the box last changed: the search runs once typing pauses.
+    typed: Option<std::time::Instant>,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
@@ -74,7 +76,7 @@ impl State {
             return;
         }
         self.search.query = q;
-        self.search_run();
+        self.search.typed = Some(std::time::Instant::now());
     }
 
     /// Start a search for what is typed (or wait for the index).
@@ -88,14 +90,23 @@ impl State {
         self.more_forget_covered();
         self.more_run(cancel.clone());
         let Some(tree) = self.tree.clone() else {
-            let note = if self.search.more.places.is_empty() && self.search.more.loading.is_empty() { "Scan a folder first; search looks through the scan and your drives." } else { "No scan yet: searching your drives and saved scans." };
-            self.search_show(Vec::new(), note.into());
+            let m = &self.search.more;
+            let note = if !m.loading.is_empty() {
+                "Reading your drives; results come in as each one is ready."
+            } else if m.places.is_empty() {
+                "Scan a folder, or turn on Options > Search Every Drive When Search Opens."
+            } else if self.search.query.trim().is_empty() {
+                "Type to search every drive."
+            } else {
+                ""
+            };
+            self.search_show(Vec::new(), note.into(), false);
             return;
         };
         let q = Query::parse(&self.search.query);
         if q.is_empty() {
             self.search.pending = false;
-            self.search_show(Vec::new(), String::new());
+            self.search_show(Vec::new(), String::new(), false);
             return;
         }
         let gen = self.tree_gen;
@@ -120,15 +131,26 @@ impl State {
         self.search.pending = false;
         let (tx, rx) = channel();
         let text_q = self.search.query.clone();
+        // sorted on the worker too: a million matches sort slowly
+        let (c, desc) = self.search.sort;
+        let key = COLS[c.min(COLS.len() - 1)].key();
+        let alloc = if key == crate::tables::Key::Alloc { self.alloc.clone() } else { Vec::new() };
         std::thread::spawn(move || {
-            let r = search(&tree, &index, &q, &cancel);
-            let _ = tx.send((gen, text_q, r));
+            let mut r = search(&tree, &index, &q, &cancel);
+            if let Some(v) = &mut r {
+                crate::tables::sort_nodes(&tree, &alloc, key, desc, v);
+            }
+            let _ = tx.send((gen, text_q, (c, desc), r));
         });
         self.search.running = Some(rx);
     }
 
     /// Each frame: the index, the results, and a tree that changed under the results.
     pub(crate) fn search_poll(&mut self) {
+        if self.search.typed.is_some_and(|t| t.elapsed().as_millis() >= 140) {
+            self.search.typed = None;
+            self.search_run();
+        }
         self.more_poll();
         if let Some((g, rx)) = &self.search.building {
             if let Ok(ix) = rx.try_recv() {
@@ -143,10 +165,11 @@ impl State {
             }
         }
         if let Some(rx) = &self.search.running {
-            if let Ok((gen, q, r)) = rx.try_recv() {
+            if let Ok((gen, q, sort, r)) = rx.try_recv() {
                 self.search.running = None;
                 if let Some(found) = r.filter(|_| gen == self.tree_gen && q == self.search.query) {
-                    self.search_show(found, String::new());
+                    let resort = sort != self.search.sort;
+                    self.search_show(found, String::new(), resort);
                 }
             }
         }
@@ -162,10 +185,12 @@ impl State {
     }
 
     /// Show `found` (sorted here), or `note` when there is nothing to show.
-    fn search_show(&mut self, found: Vec<usize>, note: String) {
+    fn search_show(&mut self, found: Vec<usize>, note: String, sort: bool) {
         self.search.results = found;
         self.search.results_gen = self.tree_gen;
-        self.search_sort();
+        if sort {
+            self.search_sort();
+        }
         let t = self.tree.as_ref();
         let info = if !note.is_empty() {
             note
