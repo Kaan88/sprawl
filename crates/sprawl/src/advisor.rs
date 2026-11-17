@@ -24,7 +24,7 @@ use sprawl_advisor::{Finding, Remedy, Risk, RulePack, Source};
 use sprawl_core::Tree;
 use windows_core::Interface;
 
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, TextBox};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, PasswordBox, TextBox};
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ButtonBase;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
 use crate::state::{find, keep, load, with, State, View};
@@ -59,6 +59,8 @@ pub(crate) struct Report {
     apps: Vec<String>,
     /// How each app is uninstalled, when Sprawl can take the user there.
     uninstall: Vec<Option<sprawl_advisor::facts::Uninstall>>,
+    /// What each app's hand-off to the user's own uninstaller says.
+    handoff: Vec<Vec<String>>,
     /// Risk code of every node inside a finding: 0 none, 1 green, 2 amber, 3 orange.
     pub(crate) lens: Arc<Vec<u8>>,
     secs: f64,
@@ -199,6 +201,8 @@ pub(crate) struct Advisor {
     growth_cache: Option<(u64, Option<sprawl_advisor::growth::Growth>)>,
     ai_tick: Option<std::time::Instant>,
     section: Section,
+    /// The AI settings being edited in the Ask section (provider, model, base URL).
+    ai_edit: Option<AiConfig>,
     sort: Sort,
     only: Only,
     /// A finding being run now: (its path, title, size, the file its script reports to, since).
@@ -311,6 +315,9 @@ fn run_file(root: &std::path::Path) -> Option<PathBuf> {
     Some(PathBuf::from(base).join("Sprawl").join("advisor").join("runs").join(format!("{}.json", sprawl_advisor::history::key(root))))
 }
 
+/// One-click models: (id, what it is good for).
+const CLAUDE_MODELS: [(&str, &str); 3] = [("claude-haiku-5-5", "fast and cheap"), ("claude-sonnet-5-5", "balanced"), ("claude-opus-5-5", "most careful")];
+
 /// What the goal box shows when empty, and what an empty box means.
 const GOAL_EXAMPLE: &str = "20";
 
@@ -370,6 +377,7 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
         owners: facts.owner_map(tree),
         apps: facts.apps.iter().map(|a| a.name.clone()).collect(),
         uninstall: facts.apps.iter().map(|a| a.uninstall()).collect(),
+        handoff: facts.apps.iter().map(|a| a.handoff_args()).collect(),
         lens: Arc::new(lens),
         findings,
         secs: started.elapsed().as_secs_f64(),
@@ -645,6 +653,47 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvAiEdit" => self.advisor.ai_edit = if self.advisor.ai_edit.is_some() { None } else { Some(AiConfig::load()) },
+            "AdvPOff" | "AdvPAnthropic" | "AdvPClaudeCode" | "AdvPOpenAi" => {
+                self.read_ai_fields();
+                if let Some(c) = &mut self.advisor.ai_edit {
+                    c.provider = match name {
+                        "AdvPAnthropic" => Provider::Anthropic,
+                        "AdvPClaudeCode" => Provider::ClaudeCode,
+                        "AdvPOpenAi" => Provider::OpenAi,
+                        _ => Provider::Off,
+                    };
+                    if c.model.is_empty() || (c.provider == Provider::OpenAi) != c.model.starts_with("claude") {
+                        c.model = c.provider.default_model().into();
+                    }
+                }
+            }
+            "AdvM0" | "AdvM1" | "AdvM2" => {
+                self.read_ai_fields();
+                if let Some(c) = &mut self.advisor.ai_edit {
+                    c.model = CLAUDE_MODELS[name[4..].parse::<usize>().unwrap_or(0)].0.into();
+                }
+            }
+            "AdvAiSave" => {
+                self.read_ai_fields();
+                let key = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+                if let Some(c) = self.advisor.ai_edit.take() {
+                    let mut notes = Vec::new();
+                    if c.save().is_err() {
+                        notes.push("the settings couldn't be saved");
+                    }
+                    if c.provider.needs_key() && !key.trim().is_empty() && !sprawl_advisor::config::set_key(c.provider, &key) {
+                        notes.push("the key couldn't be stored");
+                    }
+                    let msg = if notes.is_empty() { format!("AI: {} saved.", c.provider.label().split(" (").next().unwrap_or("")) } else { format!("Not all saved: {}.", notes.join(", ")) };
+                    crate::state::text(&self.root, "StatusText", &msg);
+                    // a chat started with the old settings ends
+                    self.chat_reset();
+                    let u = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvUninstaller").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy().trim().trim_matches('"').to_string()).unwrap_or_default();
+                    self.settings.set("uninstaller", &u);
+                    self.settings.save();
+                }
+            }
             "AdvRun" => return self.advisor_run(),
             "AdvRescan" => {
                 self.advisor.acted = None;
@@ -673,6 +722,16 @@ impl State {
             "AdvDupesStop" => self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed),
             "AdvUninstall" => {
                 let Some(owner) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)?.owner.clone()) else { return };
+                // the user's own uninstaller, when one is set: it gets the app's details
+                if let Some(exe) = self.uninstaller() {
+                    let args = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.handoff.get(k).cloned())).unwrap_or_default();
+                    let msg = match std::process::Command::new(&exe).args(&args).spawn() {
+                        Ok(_) => format!("{owner} is handed to {}.", exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
+                        Err(e) => format!("Your uninstaller didn't start: {e}"),
+                    };
+                    crate::state::text(&self.root, "StatusText", &msg);
+                    return;
+                }
                 let Some(how) = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.uninstall.get(k).cloned().flatten())) else { return };
                 use std::os::windows::process::CommandExt;
                 let _ = std::process::Command::new("explorer.exe").raw_arg(how.address()).spawn();
@@ -890,7 +949,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -1462,6 +1521,26 @@ impl State {
         self.advisor_changed();
     }
 
+    /// The user's own uninstaller app, when one is set and exists.
+    fn uninstaller(&self) -> Option<PathBuf> {
+        let p = PathBuf::from(self.settings.get("uninstaller")?.trim());
+        (p.is_absolute() && p.is_file()).then_some(p)
+    }
+
+    /// What is typed in the AI settings' model and address boxes.
+    fn read_ai_fields(&mut self) {
+        let get = |n: &str| self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, n).ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
+        let (m, u) = (get("AdvAiModel"), get("AdvAiUrl"));
+        if let Some(c) = &mut self.advisor.ai_edit {
+            if let Some(m) = m {
+                c.model = m.trim().to_string();
+            }
+            if let Some(u) = u {
+                c.base_url = u.trim().to_string();
+            }
+        }
+    }
+
     fn save_memory(&self) {
         crate::bridge::publish_memory(&self.advisor.memory);
         if let Err(e) = self.advisor.memory.save() {
@@ -1905,6 +1984,51 @@ impl State {
         x
     }
 
+    /// Choosing the provider and model, here instead of the setup wizard.
+    fn ai_settings(&self, e: &AiConfig) -> String {
+        let chip = |name: &str, label: &str, on: bool| {
+            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="10,3" FontSize="12" CornerRadius="12" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#14FFFFFF" })
+        };
+        let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF"><StackPanel Spacing="8">"##);
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="4">{}{}{}{}</StackPanel>"##,
+            chip("AdvPClaudeCode", "Claude Code", e.provider == Provider::ClaudeCode),
+            chip("AdvPAnthropic", "Anthropic API", e.provider == Provider::Anthropic),
+            chip("AdvPOpenAi", "OpenAI-compatible", e.provider == Provider::OpenAi),
+            chip("AdvPOff", "Off", e.provider == Provider::Off),
+        );
+        if matches!(e.provider, Provider::Anthropic | Provider::ClaudeCode) {
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="4">"##;
+            for (i, (id, what)) in CLAUDE_MODELS.iter().enumerate() {
+                x += &chip(&format!("AdvM{i}"), &format!("{} ({what})", id.trim_start_matches("claude-")), e.model == *id);
+            }
+            x += "</StackPanel>";
+        }
+        if e.provider != Provider::Off {
+            x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Model" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvAiModel" Width="260" Text="{}"/></StackPanel>"##, ui::esc(&e.model));
+        }
+        if e.provider == Provider::OpenAi {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Address" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvAiUrl" Width="260" PlaceholderText="http://localhost:11434/v1" Text="{}"/></StackPanel>"##,
+                ui::esc(&e.base_url)
+            );
+        }
+        if e.provider.needs_key() {
+            let has = sprawl_advisor::config::has_key(e.provider);
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Key" Width="70" VerticalAlignment="Center" FontSize="12"/><PasswordBox x:Name="AdvAiKey" Width="260" PlaceholderText="{}"/></StackPanel>"##,
+                if has { "A key is stored; leave empty to keep it" } else { "Paste the API key (stored in Windows Credential Manager)" }
+            );
+        }
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Uninstaller" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvUninstaller" Width="260" PlaceholderText="Your uninstaller app (optional), a full path to its .exe" Text="{}" ToolTipService.ToolTip="Uninstall... hands the app to it: --sprawl-uninstall --name --kind --publisher --steam-id --folder"/></StackPanel>"##,
+            ui::esc(self.settings.get("uninstaller").unwrap_or(""))
+        );
+        x += r##"<Button x:Name="AdvAiSave" Content="Save" Padding="12,3" FontSize="12" CornerRadius="5"/>"##;
+        x += "</StackPanel></Border>";
+        x
+    }
+
     fn growth_card(&self, r: &Report) -> String {
         use sprawl_advisor::growth::signed;
         let not_yet = r##"<TextBlock Text="Growth over time shows here once History has scans of this folder at least a day apart." FontSize="11" Foreground="#FF6F788C" TextWrapping="Wrap"/>"##;
@@ -1968,9 +2092,16 @@ impl State {
         } else {
             let model = if cfg.model.is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.clone() };
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8">{ask}<TextBlock Text="{}" VerticalAlignment="Center" FontSize="11" Foreground="#FF8E97AA"/></StackPanel>"##,
-                if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) }
+                r##"<StackPanel Orientation="Horizontal" Spacing="8">{ask}<TextBlock Text="{}" VerticalAlignment="Center" FontSize="11" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Content="{}" Padding="8,1" FontSize="11" CornerRadius="4" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
+                if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) },
+                if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
+            if cfg.provider == Provider::Off && self.advisor.ai_edit.is_none() {
+                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, plan around how much you need, and answer questions about this scan. It only ever suggests: everything it claims is checked against the scan, and nothing is deleted without your say. It can use your own Claude Code (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
+            }
+            if let Some(e) = &self.advisor.ai_edit {
+                x += &self.ai_settings(e);
+            }
         }
         if let Some(p) = self.current_plan().filter(|_| plan) {
             let n = p.plan.picked.len();
@@ -2153,7 +2284,14 @@ impl State {
         }
         // only where uninstalling is the suggestion, not on every cache an app owns
         let how = (f.remedy == Remedy::Uninstall).then(|| f.owner.as_ref().and_then(|o| r.apps.iter().position(|a| a == o)).and_then(|k| r.uninstall.get(k).cloned().flatten())).flatten();
-        if let (Some(how), Some(o)) = (how, &f.owner) {
+        let own = self.uninstaller().filter(|_| f.remedy == Remedy::Uninstall && f.owner.is_some());
+        if let (Some(exe), Some(o)) = (&own, &f.owner) {
+            x += &format!(
+                r##"<Button x:Name="AdvUninstall" Content="Uninstall {}..." ToolTipService.ToolTip="Hands it to {}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##,
+                ui::esc(o),
+                ui::esc(&exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+            );
+        } else if let (Some(how), Some(o)) = (how, &f.owner) {
             let tip = match how {
                 sprawl_advisor::facts::Uninstall::Settings => "Opens Windows' Installed apps",
                 sprawl_advisor::facts::Uninstall::Steam(_) => "Opens Steam's uninstall, which asks first",

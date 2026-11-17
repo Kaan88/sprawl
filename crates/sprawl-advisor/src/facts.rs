@@ -100,6 +100,30 @@ impl App {
             AppKind::Epic | AppKind::Wsl => None,
         }
     }
+
+    /// What Sprawl hands the user's own uninstaller app (docs/uninstaller-handoff.md): each value
+    /// is its own argument, never part of a command line Sprawl builds.
+    pub fn handoff_args(&self) -> Vec<String> {
+        let kind = match self.kind {
+            AppKind::Installed => "installed",
+            AppKind::Store => "store",
+            AppKind::Steam => "steam",
+            AppKind::Epic => "epic",
+            AppKind::Gog => "gog",
+            AppKind::Wsl => "wsl",
+        };
+        let mut a = vec!["--sprawl-uninstall".to_string(), "--name".into(), self.name.clone(), "--kind".into(), kind.into()];
+        if let Some(p) = &self.publisher {
+            a.extend(["--publisher".into(), p.clone()]);
+        }
+        if let Some(Uninstall::Steam(id)) = self.uninstall() {
+            a.extend(["--steam-id".into(), id]);
+        }
+        for l in &self.locations {
+            a.extend(["--folder".into(), l.display().to_string()]);
+        }
+        a
+    }
 }
 
 /// The apps found on this machine, and a lookup from folder to owner.
