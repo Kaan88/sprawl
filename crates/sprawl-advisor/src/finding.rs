@@ -86,6 +86,13 @@ pub struct Finding {
     pub admin: bool,
 }
 
+/// `p` is `base` or inside it (case and a trailing separator aside).
+pub fn within(p: &std::path::Path, base: &std::path::Path) -> bool {
+    let n = |p: &std::path::Path| PathBuf::from(p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase());
+    let b = n(base);
+    !b.as_os_str().is_empty() && n(p).starts_with(b)
+}
+
 /// What a clean-up does to a finding's path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -100,6 +107,18 @@ pub enum Action {
 }
 
 impl Finding {
+    /// Found by its shape (a `Cache` folder under an unknown app), not by a rule that names the
+    /// program: a careful guess, never picked for the user nor written into a script.
+    pub fn heuristic(&self) -> bool {
+        matches!(&self.source, Source::Rule(id) if id == crate::cleaners::SHAPE)
+    }
+
+    /// Inside the profile of the account Sprawl runs as (`%USERPROFILE%`). What is outside it
+    /// (another account's folders, Windows' own) is never ticked for the user.
+    pub fn in_profile(&self) -> bool {
+        std::env::var_os("USERPROFILE").is_some_and(|home| within(&self.path, std::path::Path::new(&home)))
+    }
+
     /// Give the finding its action, and the command text "Save as script" writes for it.
     pub fn set_action(&mut self, action: Action, admin: bool) {
         self.command = Some(crate::clean::script(&self.path, &action, admin));

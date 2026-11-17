@@ -192,6 +192,10 @@ pub(crate) fn expand(pack: &RulePack) -> Result<Vec<Rule>, String> {
             if p.class == Class::Privacy && (p.risk < Risk::Amber || p.closed != Closed::Must) {
                 return Err(format!("cleaner {}: privacy part {} must be at least amber and closed = \"must\"", c.id, p.id));
             }
+            // "only with the app closed" needs a program to look for: without one nothing is checked
+            if p.closed == Closed::Must && c.running.is_empty() {
+                return Err(format!("cleaner {}: part {} says closed = \"must\" but the cleaner names no program in running", c.id, p.id));
+            }
             if p.action == Some(Act::Remove) && p.keep_days.is_some() {
                 return Err(format!("cleaner {}: part {}: keep_days is only for clear", c.id, p.id));
             }
@@ -638,6 +642,17 @@ mod tests {
         let mut m2 = crate::memory::Memory::default();
         m2.propose_cleaner(crate::memory::CleanerProposal { cleaner: bad, note: String::new() }).unwrap();
         assert!(!m2.cleaner_proposals[0].cleaner.parts[0].admin, "never as administrator");
+    }
+
+    #[test]
+    fn must_be_closed_needs_a_program() {
+        let must = GOOD.replacen("risk = 'green'\npaths = ['C:\\x\\Cache']", "risk = 'green'\nclosed = 'must'\npaths = ['C:\\x\\Cache']", 1);
+        assert_ne!(must, GOOD);
+        assert!(pack(&must).and_then(|p| expand(&p)).is_ok(), "with running = ['X.exe']");
+        let none = must.replace("running = ['X.exe']\n", "");
+        assert_ne!(none, must);
+        let err = pack(&none).and_then(|p| expand(&p)).unwrap_err();
+        assert!(err.contains("names no program"), "{err}");
     }
 
     #[test]

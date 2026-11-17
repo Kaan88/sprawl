@@ -1846,28 +1846,19 @@ impl State {
         self.advisor_changed();
     }
 
-    /// Write the plan (or every finding with something to run) as a PowerShell script.
+    /// Write exactly the ticked findings as a PowerShell script. A guess by shape stays out: the
+    /// script has fewer checks than Sprawl's own clean-up.
     fn advisor_export(&mut self) {
-        let Some(r) = self.advice() else { return };
-        // a plan, or everything that comes back or costs little: orange is the user's call, one by one
-        let mut ticked: Vec<usize> = self.ticked_findings().into_iter().map(|(i, _)| i).collect();
-        // what can't be ticked without administrator rights is what a script is for
-        if !ticked.is_empty() {
-            ticked.extend((0..r.findings.len()).filter(|&i| {
-                let f = &r.findings[i];
-                crate::cleanup::untickable(f, r.counted[i]) == Some("Needs administrator") && f.risk <= Risk::Amber && f.builtin
-            }));
-        }
-        let picked: Vec<usize> = if !ticked.is_empty() {
-            ticked
-        } else {
-            (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber && r.findings[i].builtin).collect()
-        };
-        if picked.is_empty() {
-            self.adv_say("Nothing to export: no finding has a command to run.");
+        let ticked = self.ticked_findings();
+        if ticked.is_empty() {
+            self.adv_say("Nothing to export: tick what the script should clean first.");
             return;
         }
-        let owned: Vec<Finding> = picked.iter().map(|&i| r.findings[i].clone()).collect();
+        let (owned, guesses) = script_items(ticked.into_iter().map(|(_, f)| f).collect());
+        if owned.is_empty() {
+            self.adv_say("Nothing to export: what is ticked was found by its shape only, so clean it here, where it is checked again first.");
+            return;
+        }
         let list: Vec<&Finding> = owned.iter().collect();
         let root = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT).display().to_string()).unwrap_or_default();
         let text = sprawl_advisor::export::script(&list, &root, std::time::SystemTime::now());
@@ -1881,7 +1872,8 @@ impl State {
                 use std::os::windows::process::CommandExt;
                 // quoted for Explorer itself: a comma in the path would split it
                 let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
-                self.adv_say("Script saved. Read it, then run it in PowerShell: as it is, it only measures.");
+                let left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
+                self.adv_say(&format!("Script saved with the {} ticked item(s). Read it, then run it in PowerShell: as it is, it only measures.{left}", owned.len()));
                 self.advisor.exported = Some(Exported { file, items, verify: None });
             }
             Err(e) => self.adv_say(&format!("Couldn't save the script: {e}")),
@@ -2574,5 +2566,48 @@ impl State {
         x += &format!(r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="{keep_tip}" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
         x += "</StackPanel></StackPanel></Border>";
         x
+    }
+}
+
+/// What "Save as a script" writes: the ticked findings with a command, never a guess by shape
+/// (the script has fewer checks than Sprawl's own clean-up), and how many guesses were left out.
+pub(crate) fn script_items(ticked: Vec<Finding>) -> (Vec<Finding>, usize) {
+    let guesses = ticked.iter().filter(|f| f.heuristic()).count();
+    (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some()).collect(), guesses)
+}
+
+#[cfg(test)]
+mod script_tests {
+    use super::*;
+
+    #[test]
+    fn the_script_holds_the_ticks_only() {
+        let mk = |p: &str, src: &str| {
+            let mut f = Finding {
+                path: p.into(),
+                owner: None,
+                bytes: 1,
+                risk: Risk::Green,
+                remedy: sprawl_advisor::Remedy::Delete,
+                command: None,
+                title: p.into(),
+                evidence: vec![],
+                confidence: 1.0,
+                source: sprawl_advisor::Source::Rule(src.into()),
+                allow_protected: false,
+                trusted: true,
+                builtin: true,
+                on_path: true,
+                action: None,
+                admin: false,
+            };
+            f.set_action(sprawl_advisor::clean::Action::Clear { days: 0 }, false);
+            f
+        };
+        let ticked = vec![mk(r"C:\a", "r.a"), mk(r"C:\b", sprawl_advisor::cleaners::SHAPE)];
+        let (out, guesses) = script_items(ticked);
+        assert_eq!(out.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), vec![r"C:\a"]);
+        assert_eq!(guesses, 1);
+        assert!(script_items(Vec::new()).0.is_empty(), "nothing ticked: nothing written");
     }
 }

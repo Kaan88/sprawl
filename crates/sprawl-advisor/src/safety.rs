@@ -364,6 +364,9 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
             out.evidence.push("Not from Sprawl's built-in rules, so check it yourself".into());
         }
     }
+    // Outside the user's own profile (another account's folders, Windows' own): never green,
+    // and never ticked for the user (see `Finding::in_profile`)
+    outside_profile_floor(&mut out, f.in_profile());
     // A build output found by its project's marker file is regenerable wherever it lives
     // (projects usually sit in Documents or source); anything else in the user's folders is theirs.
     let build_output = f.builtin && matches!(&f.source, crate::finding::Source::Rule(id) if id == "project.build-output");
@@ -375,9 +378,52 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     Ok(out)
 }
 
+/// A delete or command outside the user's own profile is at least Amber.
+fn outside_profile_floor(out: &mut Finding, in_profile: bool) {
+    let acts = matches!(out.remedy, Remedy::Delete | Remedy::Move | Remedy::Command);
+    if acts && !in_profile && out.risk < Risk::Amber {
+        out.risk = Risk::Amber;
+        out.evidence.push("Outside your own user folder, so Sprawl doesn't tick it for you".into());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outside_the_profile_is_never_green() {
+        let mut f = Finding {
+            path: r"Z:\Users\other\AppData\Local\Temp".into(),
+            owner: None,
+            bytes: 1,
+            risk: Risk::Green,
+            remedy: Remedy::Delete,
+            command: None,
+            title: String::new(),
+            evidence: vec![],
+            confidence: 1.0,
+            source: crate::finding::Source::Rule("t".into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: true,
+            action: None,
+            admin: false,
+        };
+        assert!(!f.in_profile());
+        let mut out = f.clone();
+        outside_profile_floor(&mut out, f.in_profile());
+        assert_eq!(out.risk, Risk::Amber);
+        // inside: untouched; information: untouched
+        let mut mine = f.clone();
+        outside_profile_floor(&mut mine, true);
+        assert_eq!(mine.risk, Risk::Green);
+        f.remedy = Remedy::Info;
+        let mut info = f.clone();
+        outside_profile_floor(&mut info, false);
+        assert_eq!(info.risk, Risk::Green);
+    }
 
     #[test]
     fn never_list() {

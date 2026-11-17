@@ -27,6 +27,8 @@ pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
         .filter(|&i| counted.get(i).copied().unwrap_or(true))
         // only Sprawl's own rules: a local or AI-proposed rule's deletes are the user's call
         .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk <= Risk::Amber && findings[i].builtin)
+        // nor a guess by shape, nor anything outside the user's own profile
+        .filter(|&i| !findings[i].heuristic() && findings[i].in_profile())
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();
@@ -64,9 +66,13 @@ mod tests {
     use super::*;
     use crate::finding::Source;
 
+    fn home() -> std::path::PathBuf {
+        std::env::var_os("USERPROFILE").map(Into::into).unwrap_or_else(|| r"C:\Users\test".into())
+    }
+
     fn f(risk: Risk, gb: u64) -> Finding {
         Finding {
-            path: format!("C:\\x{gb}{risk:?}").into(),
+            path: home().join(format!("x{gb}{risk:?}")),
             owner: None,
             bytes: gb << 30,
             risk,
@@ -104,5 +110,29 @@ mod tests {
         // a finding inside another doesn't count twice
         let p = plan(&v, &[true, false, true, true], 10 << 30);
         assert!(!p.picked.contains(&1));
+    }
+
+    #[test]
+    fn guesses_and_other_accounts_are_never_planned() {
+        let mut shape = f(Risk::Amber, 20);
+        shape.source = Source::Rule(crate::cleaners::SHAPE.into());
+        assert!(shape.heuristic());
+        let mut other = f(Risk::Green, 30);
+        other.path = r"Z:\Users\someone-else\AppData\Local\Temp".into();
+        assert!(!other.in_profile());
+        let mine = f(Risk::Green, 1);
+        assert!(mine.in_profile());
+        let v = vec![shape, other, mine];
+        assert_eq!(plan(&v, &[true; 3], 100 << 30).picked, vec![2]);
+    }
+
+    #[test]
+    fn within_compares_whole_folders() {
+        use crate::finding::within;
+        use std::path::Path;
+        assert!(within(Path::new(r"C:\Users\Sam\AppData"), Path::new(r"c:\users\sam\")));
+        assert!(within(Path::new(r"C:\Users\Sam"), Path::new(r"C:\Users\Sam")));
+        assert!(!within(Path::new(r"C:\Users\Samantha\AppData"), Path::new(r"C:\Users\Sam")));
+        assert!(!within(Path::new(r"C:\Users\Sam"), Path::new("")));
     }
 }
