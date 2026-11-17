@@ -968,10 +968,21 @@ pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<P
 /// Why a built-in tool command won't run from this Sprawl: it is elevated and the command starts
 /// a program from a folder the user can change (see [`elevated_tool_ok`]). None when it runs.
 pub fn elevated_refusal(command: &str) -> Option<String> {
+    refusal_unless_allowed(elevated_risk(command), crate::ELEVATED_USER_TOOLS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Why `command` would not be run as administrator (see [`elevated_tool_ok`]): None when Sprawl
+/// isn't elevated or the command's programs are in system folders.
+pub fn elevated_risk(command: &str) -> Option<String> {
     if !sprawl_core::is_elevated() {
         return None;
     }
     elevated_tool_ok(command, &|name| on_path(name), &system_roots()).err()
+}
+
+/// The risk stops the command unless the user allowed it (Settings > Scanning, yes this session).
+fn refusal_unless_allowed(risk: Option<String>, allowed: bool) -> Option<String> {
+    risk.filter(|_| !allowed).map(|r| format!("{r} You can allow it in Settings > Scanning."))
 }
 
 /// PowerShell's -EncodedCommand form: base64 of the UTF-16 text.
@@ -1297,6 +1308,16 @@ mod tests {
         let o = run(&temp.join("MyTool"), &Action::Remove, &spare, &AtomicBool::new(false), &mut |_| {});
         assert_eq!((o.freed, o.kept_chosen), (0, 1));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A tool command from the user's folders, as administrator: held back unless allowed.
+    #[test]
+    fn a_risky_tool_runs_only_when_allowed() {
+        let risk = Some(r"not run as administrator: npm is C:\Users\sam\npm.cmd".to_string());
+        assert!(refusal_unless_allowed(risk.clone(), false).is_some_and(|w| w.contains("Settings > Scanning")));
+        assert_eq!(refusal_unless_allowed(risk, true), None);
+        assert_eq!(refusal_unless_allowed(None, false), None);
+        assert!(!crate::ELEVATED_USER_TOOLS.load(std::sync::atomic::Ordering::Relaxed), "off until the app says so");
     }
 
     #[test]

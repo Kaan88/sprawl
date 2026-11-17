@@ -1003,9 +1003,10 @@ impl State {
                 let Some(owner) = self.advisor.open.and_then(|i| self.advice()?.findings.get(i)?.owner.clone()) else { return };
                 // the user's own uninstaller, when one is set: it gets the app's details
                 if let Some(exe) = self.uninstaller() {
-                    // the setting is the user's file: an administrator Sprawl doesn't start what it names
-                    if sprawl_core::is_elevated() {
-                        win32::info(self.hwnd, "Sprawl runs as administrator, so it doesn't start your uninstaller (the setting could name any program). Open your uninstaller yourself.", "Sprawl");
+                    // the setting is the user's file: an administrator Sprawl starts what it names only
+                    // when the user allowed that (Settings > Scanning)
+                    if let Err(why) = self.admin_allows(&crate::admin::HAND_OFF) {
+                        win32::info(self.hwnd, &format!("{why}\n\nOr open your uninstaller yourself."), "Sprawl");
                         return;
                     }
                     if !win32::confirm(self.hwnd, &format!("Hand {owner} to this program?\n{}", exe.display()), "Uninstall") {
@@ -1741,6 +1742,12 @@ impl State {
             self.advisor.ai = Ai::Failed("AI is off. Choose a provider with Set up AI.".into());
             return;
         }
+        if cfg.provider == Provider::ClaudeCode {
+            if let Err(why) = self.admin_allows(&crate::admin::CLAUDE_CODE) {
+                self.advisor.ai = Ai::Failed(why);
+                return;
+            }
+        }
         let (Some(t), Some(r), Some(tx)) = (self.tree.clone(), self.advice(), self.advisor.tx.clone()) else { return };
         // only what the rules found: the model's own earlier findings are found again if still true
         let already: Vec<Finding> = r.findings.iter().filter(|f| !matches!(f.source, Source::Model(_))).cloned().collect();
@@ -2229,6 +2236,12 @@ impl State {
             // the whole scan, also while a filter is on
             let Some(t) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
             let cfg = AiConfig::load();
+            if cfg.provider == Provider::ClaudeCode {
+                if let Err(why) = self.admin_allows(&crate::admin::CLAUDE_CODE) {
+                    self.adv_say(&why);
+                    return;
+                }
+            }
             let memory = self.advisor.memory.clone();
             let notes = self.advice().and_then(|r| r.growth.as_ref()).zip(self.tree.as_ref()).map(|(g, t)| g.text(t)).unwrap_or_default();
             let (qtx, qrx) = channel::<String>();

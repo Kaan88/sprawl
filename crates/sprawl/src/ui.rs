@@ -372,10 +372,10 @@ pub fn page(drives: &[String]) -> String {
     }
     let paint_items: String = crate::views::PAINTS.iter().map(|(_, cmd, name)| format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}"/>"##)).collect();
     let tree_hint = crate::welcome::tree_hint();
-    // Explorer's own menu: never as administrator (its extensions would run elevated too)
-    let shell = |name: &str| match crate::shellmenu::unavailable(sprawl_core::is_elevated(), 1) {
-        None => format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu..." ToolTipService.ToolTip="Explorer's own right-click menu (or Shift+right-click). What it does is not checked by Sprawl."><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##),
-        Some(why) => format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu: {why}" IsEnabled="False"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##),
+    // Explorer's own menu (as administrator only when allowed in Settings > Scanning: crate::admin)
+    let shell = |name: &str| {
+        let tip = if sprawl_core::is_elevated() { "Explorer's own right-click menu (or Shift+right-click). As administrator, only when allowed in Settings > Scanning." } else { "Explorer's own right-click menu (or Shift+right-click). What it does is not checked by Sprawl." };
+        format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu..." ToolTipService.ToolTip="{tip}"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##)
     };
     let (shell_item, shell_more) = (shell("cShell"), shell("sxShell"));
     let types_hint = crate::welcome::types_hint();

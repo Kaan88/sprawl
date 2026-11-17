@@ -16,14 +16,9 @@ use windows::Win32::UI::Shell::{DefSubclassProc, IContextMenu, IContextMenu2, IC
 use windows::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, GetCursorPos, TrackPopupMenuEx, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON};
 
 /// Why the item is not offered now, or None when it is.
-pub(crate) fn unavailable(elevated: bool, picked: usize) -> Option<&'static str> {
-    if elevated {
-        Some("not as administrator: Explorer's menu extensions would run as administrator too")
-    } else if picked > 1 {
-        Some("one row at a time")
-    } else {
-        None
-    }
+/// (As administrator it also needs Settings > Scanning: crate::admin::SHELL_MENU.)
+pub(crate) fn unavailable(picked: usize) -> Option<&'static str> {
+    (picked > 1).then_some("one row at a time")
 }
 
 /// How the menu went.
@@ -59,10 +54,11 @@ unsafe extern "system" fn menu_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM, _id: 
     unsafe { DefSubclassProc(h, m, w, l) }
 }
 
-/// Show Explorer's menu for `path` at the mouse pointer, and run what is chosen.
-pub(crate) fn show(owner: isize, path: &Path) -> Result<Shown, String> {
-    if sprawl_core::is_elevated() {
-        return Err(unavailable(true, 1).unwrap().into());
+/// Show Explorer's menu for `path` at the mouse pointer, and run what is chosen. `allowed`: the
+/// user allowed it as administrator (crate::admin); an elevated Sprawl refuses without it.
+pub(crate) fn show(owner: isize, path: &Path, allowed: bool) -> Result<Shown, String> {
+    if sprawl_core::is_elevated() && !allowed {
+        return Err(crate::admin::refused(&crate::admin::SHELL_MENU));
     }
     if std::fs::symlink_metadata(path).is_err() {
         return Err(format!("{} is gone", path.display()));
@@ -161,11 +157,15 @@ impl crate::state::State {
             return;
         }
         let picked = if in_scan { self.picked_nodes().len() } else { 1 };
-        if let Some(why) = unavailable(sprawl_core::is_elevated(), picked) {
+        if let Some(why) = unavailable(picked) {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
             return;
         }
-        match show(self.hwnd, &path) {
+        if let Err(why) = self.admin_allows(&crate::admin::SHELL_MENU) {
+            crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
+            return;
+        }
+        match show(self.hwnd, &path, true) {
             Ok(Shown::Closed) => {}
             Ok(Shown::Ran(verb)) => {
                 let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)).filter(|_| in_scan) else { return };
@@ -215,10 +215,13 @@ mod tests {
     }
 
     #[test]
-    fn not_as_administrator_and_one_row_at_a_time() {
-        assert!(super::unavailable(true, 1).is_some_and(|w| w.contains("administrator")));
-        assert!(super::unavailable(false, 2).is_some_and(|w| w.contains("one row")));
-        assert_eq!(super::unavailable(false, 1), None);
-        assert_eq!(super::unavailable(false, 0), None);
+    fn one_row_at_a_time() {
+        assert!(super::unavailable(2).is_some_and(|w| w.contains("one row")));
+        assert_eq!(super::unavailable(1), None);
+        assert_eq!(super::unavailable(0), None);
+        // as administrator without the setting, show() itself refuses before touching the shell
+        if sprawl_core::is_elevated() {
+            assert!(super::show(0, std::path::Path::new(r"C:\Windows"), false).is_err_and(|e| e.contains("Settings > Scanning")));
+        }
     }
 }

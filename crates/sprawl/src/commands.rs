@@ -487,6 +487,8 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
     pub(crate) fn apply_settings(&mut self) {
         // Work offline, and the thresholds (each held at its floor and ceiling)
         sprawl_advisor::OFFLINE.store(self.settings.bool("offline") == Some(true), std::sync::atomic::Ordering::Relaxed);
+        // a setting switched off takes back this session's yes
+        self.admin_flags();
         for k in sprawl_advisor::tuning::ALL {
             if let Some(v) = self.settings.num(k.key).filter(|v| v.is_finite() && *v >= 0.0) {
                 sprawl_advisor::tuning::set(k, v as u64);

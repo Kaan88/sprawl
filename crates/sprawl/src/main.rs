@@ -41,6 +41,7 @@ mod search_more;
 mod search_query;
 mod search_box;
 mod shellmenu;
+mod admin;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -461,6 +462,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         changes: 0,
         own_deletes: Vec::new(),
         shell_rescans: None,
+        admin_asked: Default::default(),
         pulses_on: true,
         map_root: ROOT,
         map: treemap::MapView::new(panel),

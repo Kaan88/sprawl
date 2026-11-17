@@ -140,6 +140,8 @@ pub(crate) struct State {
     /// What Sprawl itself just deleted (lower case), and when: not counted as live changes.
     pub(crate) own_deletes: Vec<(String, std::time::Instant)>,
     /// Folders read again after something ran from the Windows menu.
+    /// What the user allowed this session while elevated (crate::admin), by setting key.
+    pub(crate) admin_asked: HashSet<&'static str>,
     pub(crate) shell_rescans: Option<std::sync::mpsc::Receiver<(std::path::PathBuf, Option<sprawl_core::Tree>)>>,
     pub(crate) pulses_on: bool,
     pub(crate) map_root: usize,

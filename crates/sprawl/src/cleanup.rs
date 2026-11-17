@@ -322,6 +322,14 @@ impl State {
             self.adv_say("Tick \"These are my own files and I want them gone\" first, or untick your own files.");
             return;
         }
+        // a tool command from the user's own folders, as administrator: allowed in Settings, asked
+        // once; refused, the executor holds it back with the reason
+        let risky = picked.iter().any(|(_, f)| matches!(clean::action(f), Some((Action::Tool { command }, _)) if clean::elevated_risk(&command).is_some()));
+        if risky {
+            if let Err(why) = self.admin_allows(&crate::admin::USER_TOOLS) {
+                self.adv_say(&why);
+            }
+        }
         let never = sprawl_advisor::safety::Never::default_list();
         // what the run leaves: anything new since the scan began, and what the user keeps
         let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };

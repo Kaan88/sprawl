@@ -98,7 +98,7 @@ pub const AFTER_SCAN: [&str; 2] = ["Stay where I am", "Open the Advisor"];
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 46] = [
+pub static PREFS: [Pref; 50] = [
     // General
     p("units", Sec::General, "Sizes in", "How sizes are written. Sizes are binary: 1 GB is 1,024 MB.", Kind::Choice(&UNITS, 0)),
     p("dataFolder", Sec::General, "Your data", "Settings, what the Advisor remembers, scan history and logs: all on this PC, in your own folders.", Kind::Custom),
@@ -127,9 +127,14 @@ pub static PREFS: [Pref; 46] = [
         "oAlwaysAdmin",
         Sec::Scanning,
         "Always run as administrator",
-        "Reads the NTFS master file table directly: a whole drive in seconds instead of a minute or more. Windows asks each time Sprawl starts. As administrator, Claude Code isn't started and nothing is handed to your own programs.",
+        "Reads the NTFS master file table directly: a whole drive in seconds instead of a minute or more. Windows asks each time Sprawl starts. As administrator, the four things below are off unless you allow them.",
         Kind::Switch(false),
     ),
+    // While Sprawl runs as administrator, also allow (off by default; never on the wizard)
+    p("adminShellMenu", Sec::Scanning, "As administrator, also allow: the Windows menu", "Explorer's menu add-ons from other programs will run as administrator inside Sprawl.", Kind::Switch(false)),
+    p("adminHandOff", Sec::Scanning, "As administrator, also allow: handing an application to your uninstaller", "That program will run as administrator.", Kind::Switch(false)),
+    p("adminClaudeCode", Sec::Scanning, "As administrator, also allow: Claude Code", "Claude Code, found through your PATH, will run as administrator.", Kind::Switch(false)),
+    p("adminUserTools", Sec::Scanning, "As administrator, also allow: clean-up commands from your own folders", "Any program of that name in your folders (npm, pip and the like) will run as administrator.", Kind::Switch(false)),
     p("oExplorer", Sec::Scanning, "Add \"Scan with Sprawl\" to Explorer", "Right-click any folder or drive in Explorer to scan it. Only for your account; no administrator needed.", Kind::Switch(false)),
     p("oAuto", Sec::Scanning, "Scan as soon as a drive is picked", "Picking a drive in the list starts its scan.", Kind::Switch(true)),
     p("oPulses", Sec::Scanning, "Watch for changes after a scan", "Tiles pulse when their files change (Live Change Pulses).", Kind::Switch(true)),
@@ -257,6 +262,10 @@ mod tests {
             ("animate", "1"),
             ("clUsualTicks", "1"),
             ("recycleOwn", "1"),
+            ("adminShellMenu", "0"),
+            ("adminHandOff", "0"),
+            ("adminClaudeCode", "0"),
+            ("adminUserTools", "0"),
             ("tuneCommunityDays", "7"),
             ("oldScanMinutes", "60"),
             ("tuneFindingMinMb", "50"),

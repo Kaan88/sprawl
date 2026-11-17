@@ -96,8 +96,8 @@ pub(crate) fn parse(out: &str) -> Result<String, String> {
 
 /// Why Claude Code isn't started, when Sprawl runs as administrator: it comes from your own
 /// folders (PATH, `.local\bin`) and would run, with whatever it loads, as administrator.
-pub fn elevated_refusal(elevated: bool) -> Option<&'static str> {
-    elevated.then_some("Claude Code isn't started while Sprawl runs as administrator: it would run as administrator too. Restart Sprawl normally to use it.")
+pub fn elevated_refusal(elevated: bool, allowed: bool) -> Option<&'static str> {
+    (elevated && !allowed).then_some("Not as administrator: Claude Code, found through your PATH, would run as administrator. You can allow it in Settings > Scanning, or restart Sprawl normally.")
 }
 
 impl ClaudeCode {
@@ -107,7 +107,7 @@ impl ClaudeCode {
             return Ok(Turn::default());
         }
         self.pending = false;
-        if let Some(why) = elevated_refusal(sprawl_core::is_elevated()) {
+        if let Some(why) = elevated_refusal(sprawl_core::is_elevated(), crate::ELEVATED_CLAUDE_CODE.load(std::sync::atomic::Ordering::Relaxed)) {
             return Err(why.into());
         }
         if crate::offline() {
@@ -257,6 +257,15 @@ fn kill_tree(child: &mut std::process::Child) {
 
 #[cfg(test)]
 mod tests {
+    /// As administrator Claude Code runs only when the user allowed it; not elevated, always.
+    #[test]
+    fn elevated_only_when_allowed() {
+        assert!(super::elevated_refusal(true, false).is_some_and(|w| w.contains("Settings > Scanning")));
+        assert_eq!(super::elevated_refusal(true, true), None);
+        assert_eq!(super::elevated_refusal(false, false), None);
+        assert!(!crate::ELEVATED_CLAUDE_CODE.load(std::sync::atomic::Ordering::Relaxed), "off until the app says so");
+    }
+
     #[test]
     fn nothing_to_act_with() {
         let a = super::args("claude-opus-5-5", None);

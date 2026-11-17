@@ -50,6 +50,12 @@ pub static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 pub const OFFLINE_MSG: &str = "Sprawl is working offline (Settings > Network): nothing is sent.";
 
 /// Whether "Work offline" is on.
+/// Running as administrator, the user allowed Claude Code (Settings > Scanning, and yes this
+/// session). Off: Claude Code isn't started from an elevated Sprawl.
+pub static ELEVATED_CLAUDE_CODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The same for built-in tool commands whose program sits in a folder the account can change.
+pub static ELEVATED_USER_TOOLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn offline() -> bool {
     OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
 }
