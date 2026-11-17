@@ -105,7 +105,8 @@ const ROW_MENU: &[(&str, &str)] = &[
 
 pub(crate) fn launch() -> windows_core::Result<()> {
     let a = args();
-    let settings = settings::Settings::load();
+    let mut settings = settings::Settings::load();
+    settings.keep_old_defaults();
     // "Always run as administrator": come back elevated (the UAC prompt shows) and quit this copy.
     if a.shot.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() {
         let args: Vec<String> = std::env::args_os().skip(1).map(|x| dialogs::quote(std::path::Path::new(&x))).collect();

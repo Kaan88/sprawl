@@ -29,6 +29,16 @@ impl Settings {
         Settings { values }
     }
 
+    /// Defaults that changed: a settings file from an older Sprawl keeps what it had (the old
+    /// default), a new install gets the new one.
+    pub fn keep_old_defaults(&mut self) {
+        if self.values.is_empty() {
+            return;
+        }
+        // read every fixed drive when Search opens: on before 0.2.6
+        self.values.entry("oSearchDrives".into()).or_insert_with(|| "1".into());
+    }
+
     pub fn save(&self) {
         // a screenshot run (and the dev steps it plays) leaves the user's settings alone
         if READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
@@ -70,6 +80,21 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_files_keep_their_defaults() {
+        let mut new = Settings::default();
+        new.keep_old_defaults();
+        assert_eq!(new.bool("oSearchDrives"), None, "a new install takes the new default (off)");
+        let mut old = Settings::default();
+        old.set("units", "uDyn");
+        old.keep_old_defaults();
+        assert_eq!(old.bool("oSearchDrives"), Some(true));
+        let mut chosen = Settings::default();
+        chosen.set_bool("oSearchDrives", false);
+        chosen.keep_old_defaults();
+        assert_eq!(chosen.bool("oSearchDrives"), Some(false));
+    }
 
     #[test]
     fn values_round_trip() {

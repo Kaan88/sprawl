@@ -170,7 +170,8 @@ impl State {
     /// Every fixed drive the scan on screen isn't, read by itself like Everything: from the file
     /// table as administrator (seconds), else by walking its folders (slower).
     fn more_all_drives(&mut self) {
-        if self.settings.bool("oSearchDrives") == Some(false) {
+        // off unless switched on (on for settings from before 0.2.6, which had it on)
+        if self.settings.bool("oSearchDrives") != Some(true) {
             return;
         }
         let cur = self.current_root();

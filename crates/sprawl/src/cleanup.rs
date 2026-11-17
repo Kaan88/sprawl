@@ -136,7 +136,8 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
 }
 
 impl State {
-    /// Ticks for a new report: what comes back by itself, from Sprawl's own rules, 1 MB or more.
+    /// Ticks for a new report: the user's own ticks that still apply, else none. Sprawl never
+    /// ticks a delete by itself; "Tick the safe ones" does it on request.
     pub(crate) fn cleanup_defaults(&mut self) {
         let Some(r) = self.advice() else { return };
         if self.advisor.cleanup.ticked_for == Some(r.tree) {
@@ -163,20 +164,25 @@ impl State {
             c.single = None;
             return;
         }
-        let ticked: HashSet<String> = r
-            .findings
-            .iter()
-            .zip(&r.counted)
-            .filter(|(f, c)| untickable(f, **c).is_none() && f.risk == Risk::Green && f.builtin && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
-            .map(|(f, _)| key(&f.path))
-            .collect();
         let c = &mut self.advisor.cleanup;
-        c.ticked = ticked;
+        c.ticked.clear();
         c.ticked_for = Some(gen);
         c.review = false;
         c.own_ok = false;
         c.single = None;
-        c.auto = true;
+        c.auto = false;
+    }
+
+    /// What "Tick the safe ones" ticks: what comes back by itself, from Sprawl's own rules (not a
+    /// guess by shape), inside the user's own profile, 1 MB or more.
+    fn safe_ticks(&self) -> HashSet<String> {
+        let Some(r) = self.advice() else { return HashSet::new() };
+        r.findings
+            .iter()
+            .zip(&r.counted)
+            .filter(|(f, c)| untickable(f, **c).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && f.in_profile() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
+            .map(|(f, _)| key(&f.path))
+            .collect()
     }
 
     /// The ticked findings of the report on screen, in list order (index, finding).
@@ -227,10 +233,15 @@ impl State {
         c.auto = false;
     }
 
-    /// Tick what comes back by itself.
+    /// Tick what comes back by itself (on the user's request).
     pub(crate) fn cleanup_select_safe(&mut self) {
-        self.advisor.cleanup.ticked_for = None;
         self.cleanup_defaults();
+        let safe = self.safe_ticks();
+        let c = &mut self.advisor.cleanup;
+        c.ticked = safe;
+        c.single = None;
+        c.own_ok = false;
+        c.auto = true;
     }
 
     /// Tick enough for `need` bytes: the plan's choice (green first, then amber).
@@ -505,7 +516,7 @@ impl State {
 <Button x:Name="AdvClean" Grid.Column="1" Content="Clean up..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></Grid>
 <StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
             if picked.is_empty() { "Nothing ticked".to_string() } else { format!("{} ticked · {}", picked.len(), self.size(bytes)) },
-            if self.advisor.cleanup.auto && !picked.is_empty() { "Sprawl ticked the safe ones for you. Change the ticks, then Clean up." } else { "Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." },
+            if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then Clean up." } else { "Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." },
             if picked.is_empty() { "False" } else { "True" },
         );
         if admin_waiting {

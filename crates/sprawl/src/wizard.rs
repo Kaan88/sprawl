@@ -15,7 +15,7 @@ const TITLES: [&str; PAGES] = ["Welcome", "AI advisor", "Scanning", "Look", "His
 pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
 
 /// Every control the wizard wires up: buttons, then lists.
-pub const BUTTONS: [&str; 5] = ["WizBack", "WizNext", "WizSkip", "WizMcpCopy", "WizLoadModels"];
+pub const BUTTONS: [&str; 6] = ["WizBack", "WizNext", "WizSkip", "WizMcpCopy", "WizLoadModels", "WizUseDetected"];
 
 fn switch(name: &str, header: &str, note: &str) -> String {
     format!(
@@ -61,7 +61,7 @@ pub fn xaml() -> String {
     let p1 = format!(
         r##"<StackPanel x:Name="WizP1" Spacing="2" Visibility="Collapsed">{}
         <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, add what it finds to your list, and answer questions. It only suggests: nothing goes until you tick it and press Clean up."/>
-        <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF"/></StackPanel></Border>
+        <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="12" CornerRadius="4" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
@@ -185,13 +185,16 @@ fn set_field(s: &State, name: &str, v: &str) {
 
 impl State {
     pub(crate) fn wizard_open(&mut self) {
-        // AI: what was saved, or a suggestion from what is installed
+        // AI: what was saved (Off at first); what is installed is only offered, one click away
         let det = Detected::probe();
-        text(&self.root, "WizDetected", &det.summary());
-        let saved = AiConfig::load();
-        let first = self.settings.bool("wizard_done") != Some(true);
-        // the wizard suggests what is installed; Settings shows what is saved, never more
-        let ai = if first && !self.wizard_all && saved.provider == Provider::Off { det.suggest() } else { saved };
+        let offer = det.suggest();
+        let summary = match offer.provider {
+            Provider::Off => det.summary(),
+            p => format!("{}. Suggested: {}. The AI stays off unless you choose it.", det.summary(), p.label()),
+        };
+        text(&self.root, "WizDetected", &summary);
+        shown(self, "WizUseDetected", offer.provider != Provider::Off);
+        let ai = AiConfig::load();
         let pi = Provider::ALL.iter().position(|&p| p == ai.provider).unwrap_or(0);
         select(self, "WizProvider", pi);
         set_field(self, "WizUrl", &ai.base_url);
@@ -281,6 +284,14 @@ impl State {
             "WizBack" => {
                 self.wizard_page = self.wizard_page.saturating_sub(1);
                 self.wizard_show();
+            }
+            "WizUseDetected" => {
+                let ai = Detected::probe().suggest();
+                let pi = Provider::ALL.iter().position(|&p| p == ai.provider).unwrap_or(0);
+                select(self, "WizProvider", pi);
+                set_field(self, "WizUrl", &ai.base_url);
+                set_field(self, "WizModel", &ai.model);
+                self.wizard_provider();
             }
             "WizLoadModels" => {
                 let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];

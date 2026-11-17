@@ -331,14 +331,17 @@ impl Memory {
     }
 
     pub fn load() -> Memory {
-        let Some(f) = file() else { return Memory::default() };
-        let Ok(t) = std::fs::read_to_string(&f) else { return Memory::default() };
+        // a new start fetches no community cleaners until the user turns them on; a file from
+        // an older Sprawl keeps what it had (on, unless turned off)
+        let fresh = || Memory { community_off: true, ..Memory::default() };
+        let Some(f) = file() else { return fresh() };
+        let Ok(t) = std::fs::read_to_string(&f) else { return fresh() };
         match parse(&t) {
             Ok(m) => m,
             Err(_) => {
                 // never overwrite a file that didn't load: keep it beside, start afresh
                 let _ = std::fs::rename(&f, f.with_extension("toml.unreadable"));
-                Memory::default()
+                fresh()
             }
         }
     }
