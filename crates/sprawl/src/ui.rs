@@ -385,14 +385,18 @@ pub fn page(drives: &[String]) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
     let tweaks = format!(r##"
-    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14" Width="300" CornerRadius="10" Padding="16,12,16,14" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
+    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="10" Padding="16,10,4,10" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
       <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
-      <StackPanel Spacing="4">
-        <Grid>
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid Margin="0,0,12,0">
           <TextBlock Text="Colours and Tweaks" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
           <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="12"/></Button>
         </Grid>
-        <TextBlock Text="Colours" FontSize="12" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
+      <!-- a short map scrolls the panel rather than cutting off its last switch -->
+      <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,12,0">
+      <StackPanel Spacing="4">
+        <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="12" Margin="0,2,0,0"/>
+        <TextBlock Text="Colours" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0"/>
         <ComboBox x:Name="PaletteBox" HorizontalAlignment="Stretch" SelectedIndex="0">{palettes}</ComboBox>
         <TextBlock Text="Tile height when hovered" FontSize="12" Foreground="#FF8E97AA" Margin="0,8,0,0"/>
         <Slider x:Name="LiftSlider" Minimum="0" Maximum="250" Value="100" StepFrequency="5"/>
@@ -400,8 +404,9 @@ pub fn page(drives: &[String]) -> String {
         <Slider x:Name="CushionSlider" Minimum="0" Maximum="200" Value="100" StepFrequency="5"/>
         <TextBlock Text="Tilt" FontSize="12" Foreground="#FF8E97AA"/>
         <Slider x:Name="TiltSlider" Minimum="0" Maximum="100" Value="55" StepFrequency="1"/>
-        <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="12"/>
       </StackPanel>
+      </ScrollViewer>
+      </Grid>
     </Border>"##);
 
     format!(
@@ -447,7 +452,6 @@ pub fn page(drives: &[String]) -> String {
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="380"/>
       <ColumnDefinition Width="*"/>
-      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Border {CARD} Padding="12,10">
       <StackPanel Spacing="8">
@@ -487,30 +491,6 @@ pub fn page(drives: &[String]) -> String {
         </Grid>
         <TextBlock x:Name="ScanInfo" {num} Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
-    </Border>
-    <Border x:Name="BrandCard" Grid.Column="2" Width="330" {CARD} Padding="14,10">
-      <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
-        <Border Width="54" Height="54" CornerRadius="13">
-          <Border.Background>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-              <GradientStop Color="#FFFFB347" Offset="0"/><GradientStop Color="#FFFF5E62" Offset="0.55"/><GradientStop Color="#FF8E54E9" Offset="1"/>
-            </LinearGradientBrush>
-          </Border.Background>
-          <Grid Width="34" Height="30" VerticalAlignment="Center" HorizontalAlignment="Center">
-            <!-- the app icon's skyline -->
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="12" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="0,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="19" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6.4,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="7.4" Height="15" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12.9,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="6.9" Height="21" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="19.8,0,0,0"/>
-            <Rectangle Fill="White" RadiusX="1.2" RadiusY="1.2" Width="7.8" Height="10" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="26.2,0,0,0"/>
-          </Grid>
-        </Border>
-        <StackPanel VerticalAlignment="Center" Spacing="2">
-          <TextBlock Text="Sprawl {version}" FontSize="17" FontWeight="SemiBold"/>
-          <TextBlock Text="Disk space analyser" FontSize="12" Foreground="#FF8E97AA"/>
-          <TextBlock x:Name="BrandLine" Text="Wheel zooms, right-drag pans" FontSize="12" Foreground="#FF8E97AA"/>
-        </StackPanel>
-      </StackPanel>
     </Border>
   </Grid>
 
@@ -590,9 +570,11 @@ pub fn page(drives: &[String]) -> String {
         <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="4" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="Sprawl" FontSize="26" FontWeight="SemiBold"/>
-            <TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6" Text="Scans a drive or folder and shows which folders, files and file types use the most space: as a sortable tree, a list of the biggest files, a table of file types and a lit 3D treemap."/>
-            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Treemap: hover to lift tiles, click to find a file in the tree, double-click or scroll up to zoom into a folder, scroll down to zoom out. Click a file type to light up its files."/>
-            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Shortcuts: F5 scan, F3 pick a folder, F4 collapse, Shift+F4 expand all, F6 parent, F10/F11 zoom the treemap, F8/F9 hide panels, Ctrl+S save the treemap picture, Ctrl+Shift+T flat or 3D."/>
+            <TextBlock Text="Version {version}" FontSize="12" Foreground="#FF8E97AA"/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6" Text="Scans a drive or folder and shows which folders, files and file types use the most space, and helps win it back."/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Tree View and File View: the scan as a sortable tree and a list of the biggest files, beside a table of file types and a lit 3D treemap. Advisor: what in the scan can go, how safe that is, and what has grown. Cleaners: the caches and leftovers of the applications on this PC, ticked by you and cleaned by Sprawl. Search: names in this scan, on other drives and in saved scans."/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Treemap: hover to lift tiles, click to find a file in the tree, double-click or scroll up to zoom into a folder, scroll down to zoom out, right-drag to pan. Click a file type to light up its files."/>
+            <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Shortcuts: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor, Ctrl+5 Cleaners, Ctrl+F Search. F5 scan, F3 pick a folder, F4 collapse, Shift+F4 expand all, F6 parent, F10/F11 zoom the treemap, F8/F9 hide panels, Ctrl+S save the treemap picture, Ctrl+Shift+T flat or 3D. F1 lists them all."/>
           </StackPanel>
         </ScrollViewer>
       </Grid>
@@ -610,7 +592,7 @@ pub fn page(drives: &[String]) -> String {
   <Grid x:Name="MapBar" Grid.Row="5" Margin="12,6,12,6" ColumnSpacing="12">
     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
     <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" Padding="2" CornerRadius="7" Background="#14FFFFFF">
-      <Button x:Name="ModeMap" {mode_on} CornerRadius="5" ToolTipService.ToolTip="Treemap"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeMap" {mode_on} CornerRadius="5" ToolTipService.ToolTip="Treemap: wheel zooms, right-drag pans"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
       <Button x:Name="ModeCity" {mode_off} CornerRadius="5" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="12"/><TextBlock Text="City" FontSize="12"/></StackPanel></Button>
       <Button x:Name="ModeGalaxy" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
       <DropDownButton x:Name="ViewMore" {drop_off} Padding="10,3,4,3" CornerRadius="5" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="12"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="12"/></StackPanel>

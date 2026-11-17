@@ -1446,7 +1446,7 @@ impl State {
     }
 
     fn advisor_xaml(&self) -> String {
-        let mut x = format!(r##"<StackPanel {} Spacing="10" Padding="18,16,18,18">"##, ui::NS);
+        let mut x = format!(r##"<StackPanel {} Spacing="10" Padding="18,14,18,18">"##, ui::NS);
         let Some(r) = self.advice() else {
             let msg = if self.advisor.running { "Looking for space to win back..." } else { self.advisor.note.unwrap_or("Scan a drive or folder, and the advisor shows what can be won back.") };
             x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/>"##, ui::esc(msg));
@@ -2783,14 +2783,15 @@ impl State {
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="86"/></Grid.ColumnDefinitions>
 <Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/>
 <StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
-<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}<Border Padding="7,1" CornerRadius="4" Background="#1AFFFFFF"><TextBlock Text="{remedy}" FontSize="12" Foreground="#FFB9C2D6"/></Border></StackPanel>
-<TextBlock Grid.Column="3" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
+<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}{remedy}</StackPanel>
+<TextBlock Grid.Column="3" Text="{size}" {num} FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button>"##,
             bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
             dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
-            remedy = if yours { "Look first" } else { remedy_label(f.remedy) },
+            remedy = crate::look::label(if yours { "Look first" } else { remedy_label(f.remedy) }),
+            num = crate::look::NUM,
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = match f.gain {
                 Some(g) => format!("about {}", self.size(g)),

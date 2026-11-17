@@ -65,6 +65,12 @@ pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
     }
 }
 
+/// A tag on a row that says what kind of thing it is ("Delete", "How to"): plain words in the
+/// row's quiet colour, with no background or border, so it does not read as a button.
+pub(crate) fn label(text: &str) -> String {
+    format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
+}
+
 /// The template both selectable styles share: the item's own background (set by `paint` or
 /// `pick`: at rest or selected), a white wash over it for the pointer (pointer over: faint,
 /// pressed: a little more), and the system's focus rectangle, which shows for the keyboard

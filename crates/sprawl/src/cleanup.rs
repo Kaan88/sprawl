@@ -907,6 +907,7 @@ impl State {
             ui::esc(msg.as_deref().unwrap_or("")),
             if msg.is_some() { "Visible" } else { "Collapsed" }
         );
+        let bare = x.len();
         x += &self.exported_xaml();
         let c = &self.advisor.cleanup;
         x += &self.cleanup_status_xaml();
@@ -916,6 +917,9 @@ impl State {
             } else if self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, k)| !matches!(untickable(f, *k), Some("")))) {
                 x += &self.cleanup_bar_xaml(crate::advisor::GOAL_EXAMPLE);
             }
+        }
+        if msg.is_none() && x.len() == bare {
+            return format!(r##"<StackPanel {}/>"##, crate::ui::NS);
         }
         x += "</StackPanel>";
         x
