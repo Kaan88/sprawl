@@ -43,6 +43,24 @@ use crate::segments;
 
 pub const BUILTIN: &str = include_str!("../rules/builtin.toml");
 
+#[cfg(test)]
+mod one_program_tests {
+    /// `elevated_tool_ok` checks the first program a command starts. That holds only while every
+    /// built-in command is one program: a `;`, pipe, `&` or `$(` would start more, unchecked.
+    #[test]
+    fn every_built_in_command_is_one_program() {
+        let pack = super::RulePack::builtin();
+        let commands: Vec<&str> = pack.rules.iter().filter_map(|r| r.command.as_deref()).collect();
+        assert!(commands.len() >= 11, "the built-in commands were not found");
+        for c in commands {
+            let body = c.split('#').next().unwrap_or("");
+            for bad in [";", "|", "&", "$(", "`", "\n"] {
+                assert!(!body.contains(bad), "built-in command {c:?} has {bad:?}: it could start a second program the elevation check doesn't see");
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct PackInfo {
     pub name: String,
