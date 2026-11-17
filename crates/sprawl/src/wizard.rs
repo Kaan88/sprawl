@@ -259,7 +259,9 @@ impl State {
         shown(self, "WizKeyRow", p.needs_key());
         shown(self, "WizUrlRow", p == Provider::OpenAi);
         shown(self, "WizModelRow", p != Provider::Off);
-        if p != Provider::Off && field(self, "WizModel").trim().is_empty() {
+        // an empty model, or another provider's default, becomes this provider's default
+        let m = field(self, "WizModel").trim().to_string();
+        if p != Provider::Off && (m.is_empty() || Provider::ALL.iter().any(|q| q.default_model() == m)) {
             set_field(self, "WizModel", p.default_model());
         }
         if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
@@ -375,6 +377,25 @@ impl State {
         match (pick, self.wiz_models.choices(&typed)) {
             (Some(i), Some(list)) => usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).unwrap_or(typed),
             _ => typed,
+        }
+    }
+}
+
+impl State {
+    /// Each frame: when the typed address stops changing, fetch that server's list.
+    pub(crate) fn wizard_url_poll(&mut self) {
+        let open = find::<UIElement>(&self.root, "Wizard").and_then(|w| w.Visibility()).is_ok_and(|v| v == Visibility::Visible);
+        if !open {
+            return;
+        }
+        let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+        if p != Provider::OpenAi {
+            return;
+        }
+        let url = field(self, "WizUrl");
+        if self.wiz_url.settled(&url) {
+            self.wiz_models.want(p, &url);
+            self.wizard_models();
         }
     }
 }

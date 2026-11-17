@@ -3,6 +3,15 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.2.4 — 2026-11-17
+
+### Fixed
+- The Model list now loads when you type or change the server address, not only when you switch provider. Before, an address typed afterwards (LM Studio on another PC, say) left you with a text box.
+- Switching provider no longer keeps the old provider's model (such as a Claude model for an OpenAI-compatible server).
+
+### Changed
+- Claude Code gets a Model list too: the current Claude models (its command line can't list them). **Haiku is now its default**: fast, and the cheapest on your plan's limits.
+
 ## 0.2.3 — 2026-11-17
 
 ### New

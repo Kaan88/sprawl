@@ -110,6 +110,7 @@ pub(crate) struct State {
     pub(crate) update: crate::update::Updater,
     /// The Model dropdown on the setup / Settings page.
     pub(crate) wiz_models: crate::models::ModelFetch,
+    pub(crate) wiz_url: crate::models::Settle,
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
     pub(crate) scan_taken: std::time::SystemTime,
@@ -256,6 +257,7 @@ impl State {
         if self.wiz_models.poll() {
             self.wizard_models();
         }
+        self.wizard_url_poll();
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {
@@ -552,6 +554,14 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: type into a text box, field=Name=text
+                    f if f.starts_with("field=") => {
+                        if let Some((n, v)) = f[6..].split_once('=') {
+                            if let Ok(t) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, n) {
+                                let _ = t.SetText(&v.into());
+                            }
+                        }
+                    }
                     q if q.starts_with("chat=") => self.advisor_chat_dev(&q[5..]),
                     "chatdemo" => self.advisor_chat_demo(),
                     // dev: click the map a third of the way across

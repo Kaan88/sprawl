@@ -187,6 +187,7 @@ pub(crate) struct Advisor {
     ai_edit: Option<AiConfig>,
     /// The provider's models, for the Model dropdown.
     models: crate::models::ModelFetch,
+    url_settle: crate::models::Settle,
     sort: Sort,
     only: Only,
     /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
@@ -476,6 +477,15 @@ impl State {
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
         self.tick_status();
+        // a typed address: fetch its list once the typing pauses (the form is redrawn when it arrives)
+        if self.view == View::Advisor && self.advisor.ai_edit.as_ref().is_some_and(|e| e.provider == Provider::OpenAi) {
+            let url = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvAiUrl").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
+            if let Some(url) = url {
+                if self.advisor.url_settle.settled(&url) {
+                    self.advisor.models.want(Provider::OpenAi, &url);
+                }
+            }
+        }
         if self.advisor.models.poll() && self.advisor.ai_edit.is_some() && self.view == View::Advisor {
             self.read_ai_fields();
             self.render_advisor();

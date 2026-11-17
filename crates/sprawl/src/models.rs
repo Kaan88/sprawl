@@ -1,5 +1,5 @@
 //! The Model dropdown: the provider's list of models, fetched on another thread. While it loads,
-//! or when there is no list (no key yet, a server that's down, Claude Code), the model is typed
+//! or when there is no list (no key yet, a server that's down), the model is typed
 //! in a text box instead.
 
 use std::sync::mpsc::{channel, Receiver};
@@ -89,4 +89,29 @@ pub(crate) fn combo(name: &str, list: &[String], current: &str, width: u32) -> S
     let sel = list.iter().position(|m| m == current.trim()).unwrap_or(0);
     let items: String = list.iter().map(|m| format!(r##"<ComboBoxItem Content="{}"/>"##, crate::ui::esc(m))).collect();
     format!(r##"<ComboBox x:Name="{name}" Width="{width}" MaxDropDownHeight="360" SelectedIndex="{sel}">{items}</ComboBox>"##)
+}
+
+/// A typed address that has stopped changing: the list is fetched once the typing pauses.
+#[derive(Default)]
+pub(crate) struct Settle {
+    text: String,
+    since: Option<std::time::Instant>,
+}
+
+impl Settle {
+    /// Each frame with the box's text: true once, when it changed and then stayed for 0.7 s.
+    pub(crate) fn settled(&mut self, now: &str) -> bool {
+        if now != self.text {
+            self.text = now.to_string();
+            self.since = Some(std::time::Instant::now());
+            return false;
+        }
+        match self.since {
+            Some(t) if t.elapsed() >= std::time::Duration::from_millis(700) => {
+                self.since = None;
+                true
+            }
+            _ => false,
+        }
+    }
 }

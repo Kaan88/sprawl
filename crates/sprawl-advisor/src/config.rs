@@ -56,7 +56,9 @@ impl Provider {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Provider::Anthropic | Provider::ClaudeCode => "claude-opus-5-5",
+            Provider::Anthropic => "claude-opus-5-5",
+            // the advisor's work is mostly reading lists; Haiku does it fast and costs the least
+            Provider::ClaudeCode => "claude-haiku-5-5",
             Provider::OpenAi => "",
             Provider::Off => "",
         }

@@ -1,11 +1,14 @@
 //! The models a provider offers, for the Model dropdown: Anthropic's `/v1/models` with the
 //! stored key, or an OpenAI-compatible server's `/models` (OpenAI, OpenRouter, Ollama, LM Studio,
-//! vLLM). Claude Code has no such list.
+//! vLLM). Claude Code has no such list, so it gets the current Claude models.
 
 use std::time::Duration;
 
 use super::http;
 use crate::config::{self, Provider};
+
+/// The current Claude models, for Claude Code: its CLI has no way to list them.
+pub const CLAUDE: [&str; 4] = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"];
 
 /// The model ids `provider` offers at `base_url` (OpenAI-compatible only), or why there's no list.
 pub fn list(provider: Provider, base_url: &str) -> Result<Vec<String>, String> {
@@ -22,7 +25,7 @@ pub fn list(provider: Provider, base_url: &str) -> Result<Vec<String>, String> {
             }
             (format!("{}/models", base.trim_end_matches('/')), h, true)
         }
-        Provider::ClaudeCode => return Err("Claude Code doesn't list its models".into()),
+        Provider::ClaudeCode => return Ok(CLAUDE.iter().map(|m| m.to_string()).collect()),
         Provider::Off => return Err("no provider chosen".into()),
     };
     let r = http::get(&url, &headers, Duration::from_secs(10))?;
