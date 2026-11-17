@@ -26,6 +26,8 @@ pub(crate) struct Cleanup {
     pub review: bool,
     /// "These are my own files and I want them gone" is ticked.
     pub own_ok: bool,
+    /// The ticks are the ones Sprawl chose.
+    pub auto: bool,
     /// The review is for this one finding (its row's Clean up...), not for the ticks.
     pub single: Option<String>,
     pub running: Option<Running>,
@@ -127,6 +129,7 @@ impl State {
         c.review = false;
         c.own_ok = false;
         c.single = None;
+        c.auto = true;
     }
 
     /// The ticked findings of the report on screen, in list order (index, finding).
@@ -156,6 +159,7 @@ impl State {
         // the ticks are what counts now, and a changed set is confirmed again
         c.single = None;
         c.own_ok = false;
+        c.auto = false;
     }
 
     /// Tick what comes back by itself.
@@ -171,6 +175,7 @@ impl State {
         let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| untickable(&r.findings[i], r.counted[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
         self.advisor.cleanup.ticked = ticked;
+        self.advisor.cleanup.auto = false;
         Some(bytes)
     }
 
@@ -187,7 +192,7 @@ impl State {
         }
         let needs_ok = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         if needs_ok && !self.advisor.cleanup.own_ok {
-            crate::state::text(&self.root, "StatusText", "Tick \"These are my own files and I want them gone\" first, or untick your own files.");
+            self.adv_say("Tick \"These are my own files and I want them gone\" first, or untick your own files.");
             return;
         }
         let never = sprawl_advisor::safety::Never::default_list();
@@ -211,7 +216,7 @@ impl State {
             items.push(Item { path: f.path.clone(), title: f.title.clone(), bytes: f.bytes, state: ItemState::Waiting });
         }
         if items.is_empty() {
-            crate::state::text(&self.root, "StatusText", "Nothing was cleaned: the items no longer pass the safety checks. Scan again.");
+            self.adv_say("Nothing was cleaned: the items no longer pass the safety checks. Scan again.");
             return;
         }
         let (tx, rx) = channel();
@@ -270,7 +275,7 @@ impl State {
                 Msg::Progress(i, freed) => {
                     if let Some(it) = run.items.get_mut(i) {
                         it.state = ItemState::Running(freed);
-                        if let Some(p) = &self.advisor.panel {
+                        if let Some(p) = &self.advisor.foot {
                             crate::state::text(p, &format!("AdvCS{i}"), &format!("Removing... {}", sprawl_core::format_size(freed)));
                         }
                     }
@@ -351,9 +356,10 @@ impl State {
             }
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
-            let head = if d.stopped { format!("Stopped. Freed {} from {} items.", self.size(d.freed), d.items) } else { format!("Freed {} from {} items.", self.size(d.freed), d.items) };
+            let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
+            let head = if d.stopped { format!("Stopped. Freed {} from {items}.", self.size(d.freed)) } else { format!("Freed {} from {items}.", self.size(d.freed)) };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="#144CC38A" BorderBrush="#554CC38A" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE73E;" FontSize="16" Foreground="#FF4CC38A"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="The tree, the map and the findings are updated." FontSize="12" Foreground="#FFB9C2D6"/>"##,
+                r##"<Border Padding="14,12" CornerRadius="8" Background="#144CC38A" BorderBrush="#554CC38A" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE73E;" FontSize="16" Foreground="#FF4CC38A"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated." FontSize="12" Foreground="#FFB9C2D6"/>"##,
                 ui::esc(&head)
             );
             if !d.problems.is_empty() {
@@ -381,16 +387,17 @@ impl State {
         let mut x = format!(
             r##"<Border Padding="12,10" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="8">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-<StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel>
+<StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/></StackPanel>
 <Button x:Name="AdvClean" Grid.Column="1" Content="Clean up..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></Grid>
-<StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick what comes back by itself" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+<StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
             if picked.is_empty() { "Nothing ticked".to_string() } else { format!("{} ticked · {}", picked.len(), self.size(bytes)) },
+            if self.advisor.cleanup.auto && !picked.is_empty() { "Sprawl ticked the safe ones for you. Change the ticks, then Clean up." } else { "Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." },
             if picked.is_empty() { "False" } else { "True" },
         );
         if admin_waiting {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
         }
-        x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="Save the ticked items (and those that need administrator) as a PowerShell script instead..."/>"##;
+        x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="Save as a script instead..."/>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -401,21 +408,22 @@ impl State {
         let bytes: u64 = picked.iter().map(|(_, f)| f.bytes).sum();
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         let mut x = format!(
-            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {} items, about {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
-            picked.len(),
+            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {}, about {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Deleted for good, not sent to the Recycle Bin." FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            if picked.len() == 1 { "1 item".to_string() } else { format!("{} items", picked.len()) },
             self.size(bytes),
-            if picked.iter().all(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))) {
-                "Each runs its program's own clean-up command, shown below, without a window."
-            } else {
-                "Sprawl removes files and folders itself: links inside are removed as links (what they point to stays), files in use are skipped, and disk images or vaults that appeared since the scan stay. Items with a program of their own run its clean-up command, shown below."
+            {
+                let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
+                if tools == picked.len() {
+                    "Each runs its program's own clean-up command, shown below, without a window."
+                } else if tools > 0 {
+                    "Sprawl removes them itself. Links inside are removed as links (what they point to stays), files in use are skipped, and anything new since the scan is left alone. Items with a program of their own run its clean-up command, shown below."
+                } else {
+                    "Sprawl removes them itself. Links inside are removed as links (what they point to stays), files in use are skipped, and anything new since the scan is left alone."
+                }
             }
         );
         for (_, f) in &picked {
-            let what = match f.risk {
-                Risk::Green => "Comes back by itself",
-                Risk::Amber => "Costs something to get back",
-                _ => "Your own files: they won't come back",
-            };
+            let what = crate::advisor::risk_words(f.risk);
             let ai = if matches!(f.source, Source::Model(_)) { " · suggested by the AI" } else { "" };
             x += &format!(
                 r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="11" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
@@ -430,11 +438,12 @@ impl State {
         }
         if own {
             x += &format!(
-                r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="These are my own files and I want them gone" FontSize="13"/>"##,
+                r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="These are my own files, I want them gone, and I know they can't be brought back" FontSize="13"/>"##,
                 if self.advisor.cleanup.own_ok { "True" } else { "False" }
             );
         }
-        x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="AdvReviewBack" Content="Back" Padding="14,6" FontSize="13" CornerRadius="6"/></StackPanel>"##;
+        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if own && !self.advisor.cleanup.own_ok { "False" } else { "True" });
+        x += r##"<Button x:Name="AdvReviewBack" Content="Back" Padding="14,6" FontSize="13" CornerRadius="6"/></StackPanel>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -446,5 +455,45 @@ impl State {
         if self.view == crate::state::View::Advisor {
             self.render_advisor();
         }
+    }
+}
+
+impl State {
+    /// A message for the user, in the Advisor's foot next to the buttons (or the status line
+    /// when the Advisor isn't on screen).
+    pub(crate) fn adv_say(&self, msg: &str) {
+        *self.advisor.msg.borrow_mut() = Some(msg.to_string());
+        let shown = self.view == crate::state::View::Advisor
+            && self.advisor.foot.as_ref().and_then(|f| crate::find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBlock>(f, "AdvMsg").ok()).is_some_and(|t| {
+                let _ = t.SetText(&msg.into());
+                let _ = t.SetVisibility(crate::bindings::Microsoft::UI::Xaml::Visibility::Visible);
+                true
+            });
+        if !shown {
+            crate::state::text(&self.root, "StatusText", msg);
+        }
+    }
+
+    /// The Advisor's foot, pinned under the list: the message, then the clean-up's status, review
+    /// or bar, whatever section is open.
+    pub(crate) fn advisor_foot_xaml(&self) -> String {
+        let mut x = format!(r##"<StackPanel {} Spacing="8" Padding="18,10,18,12" BorderBrush="#22FFFFFF" BorderThickness="0,1,0,0" Background="#FF1A1D27">"##, crate::ui::NS);
+        let msg = self.advisor.msg.borrow().clone();
+        x += &format!(
+            r##"<TextBlock x:Name="AdvMsg" Text="{}" FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap" Visibility="{}"/>"##,
+            ui::esc(msg.as_deref().unwrap_or("")),
+            if msg.is_some() { "Visible" } else { "Collapsed" }
+        );
+        let c = &self.advisor.cleanup;
+        x += &self.cleanup_status_xaml();
+        if c.running.is_none() {
+            if c.review {
+                x += &self.cleanup_review_xaml();
+            } else if self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, k)| !matches!(untickable(f, *k), Some("")))) {
+                x += &self.cleanup_bar_xaml(crate::advisor::GOAL_EXAMPLE);
+            }
+        }
+        x += "</StackPanel>";
+        x
     }
 }

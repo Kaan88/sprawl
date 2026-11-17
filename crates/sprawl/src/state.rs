@@ -515,7 +515,9 @@ impl State {
             }
         }
         // Let the finish wave and morphs play out first (about 3 s at 60 frames a second).
-        if self.shot_ticks < 180 {
+        // ...and every SPRAWL_SWITCH step its 30 frames, plus a second for the last one to settle
+        let steps = std::env::var("SPRAWL_SWITCH").map_or(0, |v| v.split(',').count() as u32);
+        if self.shot_ticks < 180u32.max(steps * 30 + 60) {
             return;
         }
         if let Some((w, h, px)) = win32::capture(self.hwnd) {

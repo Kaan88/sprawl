@@ -45,6 +45,14 @@ impl State {
                 }
             }
         }
+        // the Advisor takes the whole width; the types pane comes back as the user left it
+        let types = v != View::Advisor && find::<ToggleMenuFlyoutItem>(&self.root, "oTypes").and_then(|t| t.IsChecked()).unwrap_or(true);
+        if let Ok(e) = find::<UIElement>(&self.root, "TypesPanel") {
+            let _ = e.SetVisibility(vis(types));
+        }
+        if let Ok(c) = find::<ColumnDefinition>(&self.root, "TypesCol") {
+            let _ = c.SetWidth(GridLength { Value: if types { 1.0 } else { 0.0 }, GridUnitType: GridUnitType::Star });
+        }
         if table {
             self.refresh_rows();
         }

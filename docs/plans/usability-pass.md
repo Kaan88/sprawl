@@ -34,29 +34,31 @@ and as a power user, from the code and screenshots).
   mislead ("comes back by itself"); no multi-select in tree and file list; pre-ticked items not
   explained; result panel ends with only OK; same-day scans labelled with the same date.
 
-## Where they differ
+## Where they differ: Fable's view decides
 
-- Which views to keep. Both keep Rings, Waffle, Flow, Tideline. Fable also keeps Flame, Suds and
-  Stained Glass and drops Library and Strata; Opus keeps Library. The user decides (they said
-  they'd eliminate after trying them); the plan only groups and hides.
-- Recycle Bin: Opus wants own and AI-suggested files sent there; Fable says "consider". Plan:
-  amber and orange items go to the Recycle Bin, green ones (caches) are removed for good, and the
-  review says which is which.
+- Views. Keep in front: Rings, Flame Stack, Waffle, Suds, Stained Glass, Flow, Tideline. The rest
+  (Spectrum, Grove, Lens, Tree Rings, Isobars, Rose Stack, Ridgeline, Molecule, Strata, Library)
+  move to a "For fun" group, to be cut after the user has tried them. Menu groups use Fable's
+  names: Size, What can go, Over time, For fun.
+- Recycle Bin. Must: the review and the result say plainly "Deleted for good, not sent to the
+  Recycle Bin". The Recycle Bin option is only considered, and deferred: it frees no space until
+  the bin is emptied, and a link-safe move into the bin needs its own safety work.
+- Order. Fable's top 5 first: (1) the AI path, (2) say it is permanent, (3) Advisor full width
+  with its messages in the panel, (4) risk words and the command hidden, (5) one colour switch with
+  a legend, the views grouped and described.
 
 ## Milestones
 
 ### 1. Trust (both blockers)
-- Amber and orange items go to the Recycle Bin (per item, through the shell's recycle API, still
-  links-as-links: refuse to recycle a folder that holds a junction and fall back to asking).
-  Green items removed for good.
-- The review and the result say, per item, "To the Recycle Bin" or "Removed for good".
+- The AI path works: "Clean up just this..." from anywhere opens the review in Findings; AI
+  findings are shown once, in Findings; the Ask card points there.
+- The review and the result say "Deleted for good, not sent to the Recycle Bin".
 - Under each review row, the finding's one-line cost from its evidence.
 - "Tick enough for N GB" names the amber items it added.
 - Clean-up log: `%LOCALAPPDATA%\Sprawl\cleanup-log.txt` (time, path, freed, errors), linked as
   "See what was removed".
 - Result card: amber when something failed or nothing was freed; show the new free space and a
   "Find more" link instead of only OK.
-- Safety review (Opus xhigh) before commit: the recycle path is new deletion code.
 
 ### 2. One Advisor, with room
 - The Advisor takes the full width while open (the file-types pane hides).
@@ -91,9 +93,8 @@ and as a power user, from the code and screenshots).
   darkens the map by itself. A small key in the map corner for every mode; a plain message when a
   mode has no data ("Risk needs the Advisor's check", "Growth needs an earlier scan").
 - "Types" colours a folder by its biggest type, not an average.
-- The More menu grouped: Size (Rings, Flame, Waffle, Stained Glass, Suds, Library), What can go
-  (Flow, Strata), Over time (Tideline, Tree Rings, Isobars, Rose Stack), Experimental (Grove,
-  Lens, Spectrum, Ridgeline, Molecule), each with a one-line description and a tick on the current
+- The More menu grouped: Size (Rings, Flame Stack, Waffle, Suds, Stained Glass), What can go
+  (Flow), Over time (Tideline), For fun (the other ten), each with a one-line description and a tick on the current
   one. The hint as a caption on the map, not the footer.
 - One rule everywhere: click selects, double-click goes in, Backspace goes out, wheel zooms.
   Waffle's filter becomes a visible toggle; Lens re-centres on double-click.
