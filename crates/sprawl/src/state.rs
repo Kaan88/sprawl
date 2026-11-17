@@ -570,6 +570,12 @@ impl State {
                     "wait" => {}
                     // dev: Enter in the search box, or a key in the main table (key=40 is Down)
                     "boxenter" => self.search_box_down(),
+                    // dev: a double-click on row k of the main table
+                    d if d.starts_with("dbl=") => {
+                        let k: f64 = d[4..].parse().unwrap_or(0.0);
+                        self.row_tapped(40.0, k * ROW_H + 5.0, false);
+                        self.row_tapped(40.0, k * ROW_H + 5.0, true);
+                    }
                     k if k.starts_with("key=") => {
                         self.table_key(k[4..].parse().unwrap_or(0));
                     }
