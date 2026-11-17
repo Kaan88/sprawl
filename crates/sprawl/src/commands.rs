@@ -647,11 +647,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
             return;
         }
         // The full tree behind a filter forgets it too, or clearing the filter brings it back.
-        if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
-            if let Some(k) = sprawl_advisor::find_path(full, &path) {
-                detach(full, k, None);
-            }
-        }
+        self.forget_in_full(&[path.clone()]);
         let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
         let parent = t.nodes[n].parent;
         detach(t, n, Some(&mut self.alloc));
@@ -704,12 +700,8 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
                 failed.push(path);
             }
         }
-        for (n, path) in &gone {
-            if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
-                if let Some(k) = sprawl_advisor::find_path(full, path) {
-                    detach(full, k, None);
-                }
-            }
+        self.forget_in_full(&gone.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>());
+        for (n, _) in &gone {
             let tm = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
             detach(tm, *n, Some(&mut self.alloc));
         }
@@ -813,6 +805,36 @@ pub(crate) fn replace_branch(t: &mut sprawl_core::Tree, n: usize, sub: &sprawl_c
     t.nodes[n].children = new.children.iter().map(|&c| map(c)).collect();
 }
 
+/// In a filtered view, the files below `k` that a fresh scan of it (`sub`) no longer has are
+/// taken out, so the rows don't show what a clean-up removed.
+fn forget_missing(t: &mut sprawl_core::Tree, k: usize, sub: &sprawl_core::Tree, alloc: &mut Vec<u64>) {
+    // every path below the fresh scan's root, relative to it, in lower case
+    let mut there = std::collections::HashSet::new();
+    let mut stack = vec![(ROOT, String::new())];
+    while let Some((i, rel)) = stack.pop() {
+        for &c in &sub.nodes[i].children {
+            let r = format!("{rel}\\{}", sub.nodes[c].name.to_lowercase());
+            stack.push((c, r.clone()));
+            there.insert(r);
+        }
+    }
+    let mut gone = Vec::new();
+    let mut stack = vec![(k, String::new())];
+    while let Some((i, rel)) = stack.pop() {
+        for &c in &t.nodes[i].children {
+            let r = format!("{rel}\\{}", t.nodes[c].name.to_lowercase());
+            if !there.contains(&r) {
+                gone.push(c);
+            } else {
+                stack.push((c, r));
+            }
+        }
+    }
+    for g in gone {
+        detach(t, g, Some(alloc));
+    }
+}
+
 /// Still in the tree: every step up is among its parent's children (a detached branch isn't).
 pub(crate) fn alive(t: &sprawl_core::Tree, mut n: usize) -> bool {
     while let Some(p) = t.nodes.get(n).and_then(|x| x.parent) {
@@ -825,6 +847,25 @@ pub(crate) fn alive(t: &sprawl_core::Tree, mut n: usize) -> bool {
 }
 
 impl State {
+    /// Deleted paths leave the full tree behind a filter too, and its kept parts follow (as
+    /// the tables of the tree on screen do after a delete).
+    fn forget_in_full(&mut self, paths: &[PathBuf]) {
+        let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) else { return };
+        let mut parts = self.full_parts.as_mut();
+        let mut any = false;
+        for path in paths {
+            if let Some(k) = sprawl_advisor::find_path(full, path).filter(|&k| k != ROOT) {
+                detach(full, k, parts.as_mut().map(|p| &mut p.alloc));
+                any = true;
+            }
+        }
+        if let (true, Some(p)) = (any, parts) {
+            p.files.retain(|&f| !full.nodes[f].is_dir);
+            p.exts = crate::tables::ext_rows(full, &p.alloc);
+            crate::tables::sort_ext_rows(&mut p.exts, p.sorts.exts);
+        }
+    }
+
     /// After a clean-up: each path as it is now (a fresh scan of it, or None when it is gone) goes
     /// into the tree, and the tables, the map and the findings follow.
     pub(crate) fn apply_rescans(&mut self, now: Vec<(PathBuf, Option<sprawl_core::Tree>)>) {
@@ -835,15 +876,25 @@ impl State {
         let mut changed = false;
         for (path, sub) in &now {
             if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
+                let alloc = self.full_parts.as_mut().map(|p| &mut p.alloc);
                 if let Some(k) = sprawl_advisor::find_path(full, path).filter(|&k| k != ROOT) {
                     changed = true;
                     match sub {
-                        Some(s) => replace_branch(full, k, s, None),
-                        None => detach(full, k, None),
+                        Some(s) => replace_branch(full, k, s, alloc),
+                        None => detach(full, k, alloc),
                     }
                 }
             }
             if filtered {
+                // the filtered view on screen loses what is gone at once; it is made again
+                // from the full tree below
+                let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
+                if let Some(k) = sprawl_advisor::find_path(t, path).filter(|&k| k != ROOT) {
+                    match sub {
+                        None => detach(t, k, Some(&mut self.alloc)),
+                        Some(s) => forget_missing(t, k, s, &mut self.alloc),
+                    }
+                }
                 continue;
             }
             let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
@@ -860,9 +911,18 @@ impl State {
             return;
         }
         if filtered {
-            // the filtered view is made again from the full tree, which was updated
-            self.filter.clear();
-            self.apply_filter();
+            // the full tree's parts follow it; the filtered view is made again from it
+            if let (Some(full), Some(p)) = (self.full_tree.as_mut().map(std::sync::Arc::make_mut), self.full_parts.as_mut()) {
+                p.redo(full);
+            }
+            self.tree_gen += 1;
+            self.files.retain(|&f| !self.tree.as_ref().unwrap().nodes[f].is_dir);
+            self.rebuild_exts();
+            self.sort_exts();
+            self.refresh_rows();
+            self.refresh_exts();
+            self.render_map();
+            self.filter_again(true);
             return;
         }
         self.sort_tree();

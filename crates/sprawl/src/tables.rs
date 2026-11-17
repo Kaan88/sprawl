@@ -935,6 +935,7 @@ mod tests {
         let t = sample();
         let sorts = Sorts { tree: (1, true), files: (1, true), exts: (4, true) };
         let p = prepare(t.clone(), sorts);
+        let p = Prepared { tree: p.tree.clone(), ..p };
         // every file, biggest first
         let names: Vec<&str> = p.files.iter().map(|&i| p.tree.nodes[i].name.as_str()).collect();
         assert_eq!(names, ["y.txt", "j.log", "m.log", "z.log", "i.TXT", "k.dll"]);
@@ -947,6 +948,24 @@ mod tests {
         assert_eq!(p.colours.get("txt"), Some(&0));
         assert_eq!(p.colours.get("log"), Some(&1));
         assert_eq!(p.alloc.len(), p.tree.nodes.len());
+    }
+
+    #[test]
+    fn the_filter_box_and_what_is_on_screen() {
+        use FilterStep::*;
+        // shown already, or being made: nothing
+        assert_eq!(filter_step("*.dll", Some("*.dll"), None, false), Nothing);
+        assert_eq!(filter_step("*.dll", None, Some("*.dll"), false), Nothing);
+        // the review's case: a filter on, the box cleared, the tree changed meanwhile (the
+        // pattern applied was forgotten): the full tree comes back, it doesn't stay filtered
+        assert_eq!(filter_step("", Some("*.dll"), None, true), Unfilter);
+        assert_eq!(filter_step("", Some(""), None, false), Unfilter);
+        assert_eq!(filter_step("", None, None, true), Nothing);
+        // the tree under a filter changed: made again, same pattern or not
+        assert_eq!(filter_step("*.dll", Some("*.dll"), None, true), Filter);
+        assert_eq!(filter_step("*.dll", Some("*.dll"), Some("*.dll"), true), Filter);
+        // typed on
+        assert_eq!(filter_step("*.exe", Some("*.dll"), Some("*.dll"), false), Filter);
     }
 
     #[test]
@@ -980,7 +999,7 @@ pub(crate) struct Sorts {
 /// Made on a worker (a scan's own thread, or the filter's), so the window doesn't stop for
 /// seconds when a scan ends.
 pub(crate) struct Prepared {
-    pub(crate) tree: Tree,
+    pub(crate) tree: std::sync::Arc<Tree>,
     pub(crate) alloc: Vec<u64>,
     pub(crate) files: Vec<usize>,
     pub(crate) exts: Vec<crate::state::ExtRow>,
@@ -997,7 +1016,53 @@ pub(crate) fn prepare(mut tree: Tree, sorts: Sorts) -> Prepared {
     let mut exts = ext_rows(&tree, &alloc);
     let colours = exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
     sort_ext_rows(&mut exts, sorts.exts);
-    Prepared { tree, alloc, files, exts, colours, sorts }
+    Prepared { tree: std::sync::Arc::new(tree), alloc, files, exts, colours, sorts }
+}
+
+/// What the window worked out for the full tree while a filter shows part of it: kept, so
+/// clearing the filter shows the full tree again at once, without a copy or a worker.
+pub(crate) struct Parts {
+    pub(crate) alloc: Vec<u64>,
+    pub(crate) files: Vec<usize>,
+    pub(crate) exts: Vec<crate::state::ExtRow>,
+    pub(crate) colours: std::collections::HashMap<String, usize>,
+    pub(crate) sorts: Sorts,
+}
+
+impl Parts {
+    /// The full tree changed (a clean-up's rescans, `alloc` already follows): the rest is
+    /// worked out again, as the window does for the tree on screen.
+    pub(crate) fn redo(&mut self, t: &mut Tree) {
+        sort_children(t, &self.alloc, self.sorts.tree);
+        self.files = sprawl_core::largest_files(t, usize::MAX);
+        sort_file_list(t, &self.alloc, self.sorts.files, &mut self.files);
+        self.exts = ext_rows(t, &self.alloc);
+        sort_ext_rows(&mut self.exts, self.sorts.exts);
+    }
+}
+
+/// What the filter box asks for, given what is on screen.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FilterStep {
+    /// It is shown already, or being made.
+    Nothing,
+    /// Show the full tree again.
+    Unfilter,
+    /// Make this filtered view.
+    Filter,
+}
+
+/// `shown`: the pattern of the filtered view on screen (None: the full tree); `busy`: the one
+/// being made; `again`: the full tree changed, so a filtered view is made again even if it is
+/// the same pattern.
+pub(crate) fn filter_step(wanted: &str, shown: Option<&str>, busy: Option<&str>, again: bool) -> FilterStep {
+    if wanted.is_empty() {
+        return if shown.is_some() { FilterStep::Unfilter } else { FilterStep::Nothing };
+    }
+    if !again && (busy == Some(wanted) || (busy.is_none() && shown == Some(wanted))) {
+        return FilterStep::Nothing;
+    }
+    FilterStep::Filter
 }
 
 /// The file-type table, biggest first.

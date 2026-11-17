@@ -99,6 +99,8 @@ pub(crate) struct State {
     pub(crate) tables: crate::tables::Tables,
     /// The unfiltered scan while a filter is on.
     pub(crate) full_tree: Option<Arc<Tree>>,
+    /// What was worked out for `full_tree`, kept up to date with it while a filter is on.
+    pub(crate) full_parts: Option<crate::tables::Parts>,
     pub(crate) advisor: crate::advisor::Advisor,
     /// Changes whenever the tree on screen is replaced or loses nodes, so work done for an
     /// earlier tree (the advisor's report) is never applied to this one. Sorting doesn't change
@@ -335,6 +337,8 @@ impl State {
                         let header = if job.csv { tree.root_path.clone() } else { job.path.clone() };
                         // A new scan starts unfiltered; the filter box is applied again right away.
                         self.full_tree = None;
+                        self.full_parts = None;
+                        self.filtering = None;
                         self.filter.clear();
                         self.child_stack.clear();
                         self.scan_taken = std::time::SystemTime::now();
@@ -424,7 +428,7 @@ impl State {
         self.hist_close();
         let crate::tables::Prepared { tree, alloc, files, exts, colours, sorts } = p;
         self.alloc = alloc;
-        self.tree = Some(Arc::new(tree));
+        self.tree = Some(tree);
         self.tree_gen += 1;
         self.expanded = HashSet::from([ROOT]);
         self.selected = Some(ROOT);
@@ -521,19 +525,33 @@ impl State {
 
     /// Filter the whole tree by the filter box, on a worker; [`State::filter_poll`] shows it.
     pub(crate) fn apply_filter(&mut self) {
+        self.filter_again(false);
+    }
+
+    /// The same, also when the filtered view on screen has the pattern already (`again`: the
+    /// full tree under it changed).
+    pub(crate) fn filter_again(&mut self, again: bool) {
+        use crate::tables::FilterStep;
         self.filter_pending = None;
         let pattern = self.filter_text.trim().to_string();
-        let busy_with = self.filtering.as_ref().map(|f| f.pattern.as_str());
-        if busy_with == Some(pattern.as_str()) || (busy_with.is_none() && pattern == self.filter) {
-            return;
+        let shown = self.full_tree.is_some().then_some(self.filter.as_str());
+        let busy = self.filtering.as_ref().map(|f| f.pattern.as_str());
+        match crate::tables::filter_step(&pattern, shown, busy, again) {
+            FilterStep::Nothing => {
+                if pattern.is_empty() {
+                    self.filtering = None;
+                }
+                return;
+            }
+            FilterStep::Unfilter => return self.unfilter(),
+            FilterStep::Filter => {}
         }
         let Some(base) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
         let sorts = self.sorts();
         let (tx, rx) = std::sync::mpsc::channel();
         let (p, b) = (pattern.clone(), base.clone());
         std::thread::spawn(move || {
-            let tree = if p.is_empty() { (*b).clone() } else { sprawl_core::filter_tree(&b, &p) };
-            let _ = tx.send(crate::tables::prepare(tree, sorts));
+            let _ = tx.send(crate::tables::prepare(sprawl_core::filter_tree(&b, &p), sorts));
         });
         if !pattern.is_empty() {
             text(&self.root, "StatusText", &format!("Filtering by \"{pattern}\"..."));
@@ -548,8 +566,17 @@ impl State {
         let Ok(prepared) = f.rx.try_recv() else { return };
         let Filtering { pattern, base, gen, .. } = self.filtering.take().unwrap();
         if gen != self.tree_gen {
-            self.filter.clear();
-            return self.apply_filter();
+            return self.filter_again(true);
+        }
+        // the full tree's own parts are kept for when the filter is cleared
+        if self.full_tree.is_none() {
+            self.full_parts = Some(crate::tables::Parts {
+                alloc: std::mem::take(&mut self.alloc),
+                files: std::mem::take(&mut self.files),
+                exts: std::mem::take(&mut self.exts),
+                colours: std::mem::take(&mut self.colours),
+                sorts: self.sorts(),
+            });
         }
         self.filter = pattern.clone();
         let path = base.root_path.clone();
@@ -558,16 +585,48 @@ impl State {
         self.map.scene.clear();
         self.child_stack.clear();
         let (found, bytes) = (prepared.tree.nodes[ROOT].files, prepared.tree.nodes[ROOT].size);
-        self.full_tree = if pattern.is_empty() { None } else { Some(base) };
+        self.full_tree = Some(base);
         self.set_tree(prepared, &path);
         self.advisor_refresh();
-        if !pattern.is_empty() {
-            text(&self.root, "StatusText", &format!("Filter \"{pattern}\": {} files, {}", thousands(found), self.size(bytes)));
-        }
+        text(&self.root, "StatusText", &format!("Filter \"{pattern}\": {} files, {}", thousands(found), self.size(bytes)));
         // typed on while it was made
         if self.filter_text.trim() != self.filter && self.filter_pending.is_none() {
             self.apply_filter();
         }
+    }
+
+    /// The filter box was cleared: the full tree again, as it was worked out (kept up to date
+    /// with deletes and clean-ups), with no copy.
+    fn unfilter(&mut self) {
+        self.filtering = None;
+        let Some(tree) = self.full_tree.take() else { return };
+        let parts = match self.full_parts.take() {
+            Some(p) => p,
+            // never left without them; should it happen, worked out here
+            None => {
+                let mut tree = tree;
+                let sorts = self.sorts();
+                let alloc: Vec<u64> = tree.nodes.iter().map(|n| n.allocated).collect();
+                let mut p = crate::tables::Parts { alloc, files: Vec::new(), exts: Vec::new(), colours: HashMap::new(), sorts };
+                p.redo(Arc::make_mut(&mut tree));
+                p.colours = p.exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
+                self.full_tree = Some(tree);
+                return self.unfilter_with(p);
+            }
+        };
+        self.full_tree = Some(tree);
+        self.unfilter_with(parts);
+    }
+
+    fn unfilter_with(&mut self, parts: crate::tables::Parts) {
+        let Some(tree) = self.full_tree.take() else { return };
+        let crate::tables::Parts { alloc, files, exts, colours, sorts } = parts;
+        self.filter.clear();
+        let path = tree.root_path.clone();
+        self.map.scene.clear();
+        self.child_stack.clear();
+        self.set_tree(crate::tables::Prepared { tree, alloc, files, exts, colours, sorts }, &path);
+        self.advisor_refresh();
     }
 
     // ------------------------------------------------------------ screenshot mode
