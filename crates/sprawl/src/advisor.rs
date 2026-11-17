@@ -158,6 +158,8 @@ pub(crate) struct Advisor {
     pub(crate) panel: Option<FrameworkElement>,
     /// The foot under the list: messages, the clean-up bar, review and progress.
     pub(crate) foot: Option<FrameworkElement>,
+    /// A control to focus after the next redraw (the box just ticked).
+    pub(crate) focus_after: Option<String>,
     /// What is in the "I need __ GB" box, kept across redraws.
     goal_text: String,
     ai: Ai,
@@ -996,6 +998,9 @@ impl State {
             }
         }
         let Ok(host) = find::<Border>(&self.root, "AdvHost") else { return };
+        // the list stays where it was scrolled to
+        let scroll = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "AdvScroll").ok();
+        let offset = scroll.as_ref().and_then(|s| s.VerticalOffset().ok());
         let xaml = self.advisor_xaml();
         let Ok(el) = load::<UIElement>(&xaml) else {
             eprintln!("advisor panel failed to load");
@@ -1057,11 +1062,21 @@ impl State {
                 if let Ok(t) = b.Click(move |_, _| {
                     with(|s| {
                         s.cleanup_toggle(i);
+                        s.advisor.focus_after = Some(format!("AdvT{i}"));
                         s.render_advisor();
                     });
                 }) {
                     keep(t);
                 }
+            }
+        }
+        if let (Some(sv), Some(y)) = (&scroll, offset) {
+            let _ = sv.ChangeView(None, Some(y), None);
+        }
+        // and the box just ticked keeps the focus, for the keyboard
+        if let Some(name) = self.advisor.focus_after.take() {
+            if let Some(c) = roots.iter().find_map(|r| find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(r, &name).ok()) {
+                let _ = c.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
             }
         }
         let m = &self.advisor.memory;
