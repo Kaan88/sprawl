@@ -6,7 +6,9 @@
 //! - read-only files go too; a folder's read-only bit is cleared only once it is empty;
 //! - `clear` and `match` do nothing when their folder is no longer a plain folder;
 //! - an error on one item is noted and the rest carry on;
-//! - a name on the never-list (a disk image, a vault) that appeared after the scan stays.
+//! - a name on the never-list (a disk image, a vault) that appeared after the scan stays;
+//! - anything created or changed after the scan stays ([`Spare::since`]), and so does anything
+//!   the user chose to keep ([`Spare::keep`]), at any depth; both are counted.
 //!
 //! Tool commands (npm, pip, DISM...) run as a hidden process from System32, their output kept.
 
@@ -123,6 +125,54 @@ pub struct Outcome {
     /// A tool's last lines of output.
     pub output: Vec<String>,
     pub stopped: bool,
+    /// Items left because they were created or changed after the scan.
+    pub kept_new: u64,
+    /// Items left because the user chose to keep them.
+    pub kept_chosen: u64,
+}
+
+/// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
+/// program decides what it removes.
+#[derive(Clone, Debug, Default)]
+pub struct Spare {
+    /// When the scan began: anything created or changed after it stays.
+    pub since: Option<SystemTime>,
+    /// Folders and files the user chose to keep: they, and everything inside them, stay.
+    pub keep: Vec<PathBuf>,
+}
+
+impl Spare {
+    /// `p` is one of the kept paths, or inside one.
+    pub fn keeps(&self, p: &Path) -> bool {
+        let p = lower(p);
+        self.keep.iter().any(|k| p.starts_with(lower(k)))
+    }
+
+    /// The item was created or changed after the scan (by its open handle's times).
+    fn is_new(&self, info: &win::Info) -> bool {
+        let Some(since) = self.since else { return false };
+        let ft = filetime(since);
+        if info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0 {
+            // a folder's own write and change times move whenever something inside it does,
+            // so only its birth counts; what is inside is looked at one by one
+            info.created > ft
+        } else {
+            info.created > ft || info.newest > ft
+        }
+    }
+}
+
+fn lower(p: &Path) -> PathBuf {
+    PathBuf::from(p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase())
+}
+
+/// A time as Windows stores it in a file (100 ns steps since 1601).
+fn filetime(t: SystemTime) -> i64 {
+    const UNIX_AT: i64 = 116_444_736_000_000_000;
+    match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => UNIX_AT + (d.as_nanos() / 100) as i64,
+        Err(e) => UNIX_AT - (e.duration().as_nanos() / 100) as i64,
+    }
 }
 
 impl Outcome {
@@ -139,16 +189,16 @@ const DIRECTORY: u32 = 0x10;
 /// Junctions and symbolic links (and other "points elsewhere" tags) have this bit in their tag.
 const NAME_SURROGATE: u32 = 0x2000_0000;
 
-/// Run `action` on `path`. `progress` gets the bytes freed so far.
+/// Run `action` on `path`, leaving what `spare` names. `progress` gets the bytes freed so far.
 ///
 /// Everything is done through handles: each item is opened without following a link, checked
 /// and deleted through that handle, and each folder stays open (and so can't be renamed or
 /// swapped for a link) while what is in it goes. The root's real path is checked once open.
-pub fn run(path: &Path, action: &Action, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
+pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
     let mut o = Outcome::default();
     match action {
         Action::Tool { command } => tool(command, stop, &mut o),
-        _ => tree(path, action, stop, &mut o, progress),
+        _ => tree(path, action, spare, stop, &mut o, progress),
     }
     if stop.load(Ordering::Relaxed) {
         o.stopped = true;
@@ -165,14 +215,22 @@ struct Frame {
     remove: bool,
 }
 
-fn tree(path: &Path, action: &Action, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
+fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
     if odd_name(path) {
         return o.problem(path, "skipped, its name ends in a dot or space");
+    }
+    if spare.keeps(path) {
+        o.kept_chosen += 1;
+        return;
     }
     let (h, info) = match win::open(path) {
         Ok(x) => x,
         Err(e) => return o.problem(path, e),
     };
+    if spare.is_new(&info) {
+        o.kept_new += 1;
+        return;
+    }
     // the path must still lead where it did: no folder above it swapped for a link
     match win::final_path(&h) {
         Some(real) if same_path(&real, path) => {}
@@ -232,6 +290,10 @@ fn tree(path: &Path, action: &Action, stop: &AtomicBool, o: &mut Outcome, progre
             o.problem(&k, format!("kept, it is on the never-list ({rule})"));
             continue;
         }
+        if spare.keeps(&k) {
+            o.kept_chosen += 1;
+            continue;
+        }
         let (h, info) = match win::open(&k) {
             Ok(x) => x,
             Err(e) => {
@@ -239,6 +301,13 @@ fn tree(path: &Path, action: &Action, stop: &AtomicBool, o: &mut Outcome, progre
                 continue;
             }
         };
+        if spare.is_new(&info) {
+            // Match only removes the files it names: what it wouldn't touch isn't counted
+            if pattern.is_none_or(|p| info.attrs & DIRECTORY == 0 && like(&name, p)) {
+                o.kept_new += 1;
+            }
+            continue;
+        }
         if info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0 {
             match list(&k) {
                 Ok(kids) => stack.push(Frame { h, path: k, kids: kids.into_iter(), remove: pattern.is_none() }),
@@ -426,6 +495,10 @@ mod win {
         pub tag: u32,
         pub size: u64,
         pub links: u32,
+        /// When it was made, as a FILETIME.
+        pub created: i64,
+        /// The latest of its write and change times (a rename or move counts), as a FILETIME.
+        pub newest: i64,
     }
 
     /// A path for the wide calls; a long one gets the `\\?\` form (std does the same in its own).
@@ -472,7 +545,14 @@ mod win {
             // a reparse point whose kind can't be told: treat it as a link
             tag[1] = super::NAME_SURROGATE;
         }
-        Ok((h, Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links }))
+        let ft = |t: [u32; 2]| ((t[1] as u64) << 32 | t[0] as u64) as i64;
+        let (mut created, mut newest) = (ft(b.created), ft(b.written));
+        let mut basic = Basic { created: 0, accessed: 0, written: 0, changed: 0, attrs: 0 };
+        if unsafe { GetFileInformationByHandleEx(h.0, 0, (&mut basic as *mut Basic).cast(), std::mem::size_of::<Basic>() as u32) } != 0 {
+            created = created.max(basic.created);
+            newest = newest.max(basic.written).max(basic.changed);
+        }
+        Ok((h, Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest }))
     }
 
     /// Delete exactly the opened item (an empty folder, a file, a link), read-only or not.
@@ -738,14 +818,14 @@ mod tests {
         let ok = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&link).arg(&target).output().is_ok_and(|o| o.status.success());
         let stop = AtomicBool::new(false);
 
-        let m = run(&cache, &Action::Match { pattern: "*.dmp".into() }, &stop, &mut |_| {});
+        let m = run(&cache, &Action::Match { pattern: "*.dmp".into() }, &Spare::default(), &stop, &mut |_| {});
         assert_eq!((m.freed, m.files), (500, 1));
         assert!(cache.join("sub").join("c.txt").exists());
 
-        let c = run(&cache, &Action::Clear { days: 7 }, &stop, &mut |_| {});
+        let c = run(&cache, &Action::Clear { days: 7 }, &Spare::default(), &stop, &mut |_| {});
         assert_eq!(c.freed, 0, "everything is new: nothing goes");
 
-        let c = run(&cache, &Action::Clear { days: 0 }, &stop, &mut |_| {});
+        let c = run(&cache, &Action::Clear { days: 0 }, &Spare::default(), &stop, &mut |_| {});
         assert_eq!(c.freed, 1000 + 200 + 300, "{:?}", c.problems);
         let left: Vec<_> = std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.file_name()).collect();
         assert!(cache.exists() && left.is_empty(), "emptied, kept: {left:?} {:?}", c.problems);
@@ -757,10 +837,10 @@ mod tests {
         // a cache that became a link is not cleared through it
         let _ = std::fs::remove_dir(&cache);
         if std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&cache).arg(&target).output().is_ok_and(|o| o.status.success()) {
-            let c = run(&cache, &Action::Clear { days: 0 }, &stop, &mut |_| {});
+            let c = run(&cache, &Action::Clear { days: 0 }, &Spare::default(), &stop, &mut |_| {});
             assert_eq!(c.freed, 0);
             assert!(target.join("inner").join("precious.txt").exists());
-            let r = run(&cache, &Action::Remove, &stop, &mut |_| {});
+            let r = run(&cache, &Action::Remove, &Spare::default(), &stop, &mut |_| {});
             assert!(r.problems.is_empty(), "{:?}", r.problems);
             assert!(!cache.exists() && target.join("inner").join("precious.txt").exists(), "removing a link leaves its target");
         }
@@ -777,7 +857,7 @@ mod tests {
         // "parent" is a junction to "target": parent\cache is really target\cache
         let parent = base.join("parent");
         if std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&parent).arg(&target).output().is_ok_and(|o| o.status.success()) {
-            let o = run(&parent.join("cache"), &Action::Clear { days: 0 }, &AtomicBool::new(false), &mut |_| {});
+            let o = run(&parent.join("cache"), &Action::Clear { days: 0 }, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
             assert_eq!(o.freed, 0, "{:?}", o.problems);
             assert!(target.join("cache").join("victim.txt").exists());
             assert!(o.problems.iter().any(|p| p.contains("leads to")), "{:?}", o.problems);
@@ -791,8 +871,77 @@ mod tests {
         // a vault that appeared after the scan stays
         std::fs::write(cache.join("passwords.kdbx"), b"x").unwrap();
         std::fs::write(cache.join("junk.tmp"), b"x").unwrap();
-        let o = run(&cache, &Action::Clear { days: 0 }, &AtomicBool::new(false), &mut |_| {});
+        let o = run(&cache, &Action::Clear { days: 0 }, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
         assert!(cache.join("passwords.kdbx").exists() && !cache.join("junk.tmp").exists(), "{:?}", o.problems);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn what_is_new_since_the_scan_stays() {
+        let base = std::env::temp_dir().join(format!("sprawl-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cache = base.join("cache");
+        std::fs::create_dir_all(cache.join("old_dir")).unwrap();
+        std::fs::write(cache.join("old.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(cache.join("old_dir").join("old2.bin"), vec![0u8; 50]).unwrap();
+        std::fs::write(cache.join("old.dmp"), vec![0u8; 10]).unwrap();
+        // the scan begins here; NTFS times have 100 ns steps, so wait past the same tick
+        std::thread::sleep(Duration::from_millis(50));
+        let scan = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(cache.join("new.bin"), vec![0u8; 7]).unwrap();
+        std::fs::write(cache.join("old_dir").join("new2.bin"), vec![0u8; 7]).unwrap();
+        std::fs::create_dir_all(cache.join("new_dir")).unwrap();
+        std::fs::write(cache.join("new_dir").join("x.bin"), vec![0u8; 7]).unwrap();
+        std::fs::write(cache.join("new.dmp"), vec![0u8; 7]).unwrap();
+        let spare = Spare { since: Some(scan), keep: vec![] };
+        let stop = AtomicBool::new(false);
+
+        // Match counts only the new files it would have removed
+        let m = run(&cache, &Action::Match { pattern: "*.dmp".into() }, &spare, &stop, &mut |_| {});
+        assert_eq!((m.freed, m.kept_new), (10, 1), "{:?}", m.problems);
+        assert!(cache.join("new.dmp").exists());
+
+        let o = run(&cache, &Action::Clear { days: 0 }, &spare, &stop, &mut |_| {});
+        assert_eq!(o.freed, 150, "{:?}", o.problems);
+        // new.bin, new.dmp, new_dir (whole), old_dir\new2.bin
+        assert_eq!(o.kept_new, 4);
+        assert!(cache.join("new.bin").exists() && cache.join("new_dir").join("x.bin").exists() && cache.join("old_dir").join("new2.bin").exists());
+        assert!(!cache.join("old.bin").exists() && !cache.join("old_dir").join("old2.bin").exists());
+
+        // a whole folder made after the scan is left as it is
+        let r = run(&cache.join("new_dir"), &Action::Remove, &spare, &stop, &mut |_| {});
+        assert_eq!((r.freed, r.kept_new), (0, 1));
+        assert!(cache.join("new_dir").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn what_the_user_keeps_stays_at_any_depth() {
+        let base = std::env::temp_dir().join(format!("sprawl-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let temp = base.join("Temp");
+        std::fs::create_dir_all(temp.join("MyTool").join("deep")).unwrap();
+        std::fs::create_dir_all(temp.join("junk")).unwrap();
+        std::fs::write(temp.join("MyTool").join("deep").join("state.db"), vec![0u8; 40]).unwrap();
+        std::fs::write(temp.join("junk").join("a.tmp"), vec![0u8; 30]).unwrap();
+        std::fs::write(temp.join("b.tmp"), vec![0u8; 20]).unwrap();
+        std::fs::write(temp.join("mine.txt"), vec![0u8; 5]).unwrap();
+        // kept in another case and with a trailing slash: the same folder
+        let spare = Spare { since: None, keep: vec![PathBuf::from(temp.join("mytool").to_string_lossy().to_uppercase() + "\\"), temp.join("mine.txt")] };
+        assert!(spare.keeps(&temp.join("MyTool").join("deep").join("state.db")));
+        assert!(!spare.keeps(&temp.join("MyToolbox")), "a name that only starts the same is not inside");
+        let o = run(&temp, &Action::Clear { days: 0 }, &spare, &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((o.freed, o.kept_chosen), (50, 2), "{:?}", o.problems);
+        assert!(temp.join("MyTool").join("deep").join("state.db").exists() && temp.join("mine.txt").exists());
+        assert!(!temp.join("junk").exists() && !temp.join("b.tmp").exists());
+        // Remove on a folder that holds a kept one: the rest goes, the kept one and its parents stay
+        let o = run(&base, &Action::Remove, &spare, &AtomicBool::new(false), &mut |_| {});
+        assert!(o.problems.is_empty(), "{:?}", o.problems);
+        assert!(temp.join("MyTool").join("deep").join("state.db").exists());
+        // and a target that is itself kept is not touched
+        let o = run(&temp.join("MyTool"), &Action::Remove, &spare, &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((o.freed, o.kept_chosen), (0, 1));
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -807,7 +956,7 @@ mod tests {
         // std makes the long paths work
         if std::fs::create_dir_all(&p).is_ok() {
             std::fs::write(p.join("f.bin"), b"abc").unwrap();
-            let o = run(&base, &Action::Remove, &AtomicBool::new(false), &mut |_| {});
+            let o = run(&base, &Action::Remove, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
             assert_eq!(o.freed, 3, "{:?}", o.problems);
             assert!(!base.exists());
         }

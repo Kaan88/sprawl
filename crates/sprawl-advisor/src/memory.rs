@@ -380,6 +380,13 @@ impl Memory {
         self.decisions.retain(|d| d.path.to_string_lossy().to_lowercase() != key);
     }
 
+    /// What a clean-up must leave, with everything inside: the folders and files the user chose
+    /// to keep. A Keep of one suggestion only ([`Decision::exact`]) is about advice, not about
+    /// deleting, and is not listed.
+    pub fn kept_paths(&self) -> Vec<PathBuf> {
+        self.decisions.iter().filter(|d| d.verdict == Verdict::Keep && !d.exact).map(|d| d.path.clone()).collect()
+    }
+
     /// The decision that hides `path`: kept (it or a folder above it), or "not now" lately.
     pub fn hides(&self, path: &Path) -> Option<&Decision> {
         let p = segments(&path.to_string_lossy());

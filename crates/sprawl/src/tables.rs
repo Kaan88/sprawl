@@ -668,6 +668,31 @@ impl State {
         self.view != View::Search || r.1 == 0
     }
 
+    /// Enter or Down in the search box: keep the row the keyboard is on if it is still listed,
+    /// otherwise take the first one. A row from another drive is only looked at (`more.sel`),
+    /// never put in `selected`/`marked`, which index the scan's tree.
+    pub(crate) fn search_box_down(&mut self) {
+        let Some(&first) = self.rows.first() else { return };
+        let on_listed = match self.search.more.sel.filter(|_| self.view == View::Search) {
+            Some((p, n)) => self.rows.iter().any(|r| r.1 == p + 1 && r.0 == n),
+            None => self.selected.is_some_and(|s| self.rows.iter().any(|r| r.0 == s && self.scan_row(r))),
+        };
+        if !on_listed {
+            if self.scan_row(&first) {
+                self.search.more.sel = None;
+                self.selected = Some(first.0);
+            } else {
+                self.search.more.sel = Some((first.1 - 1, first.0));
+                self.selected = None;
+                self.marked.clear();
+            }
+        }
+        self.refresh_rows();
+        self.scroll_to_selected();
+        self.show_selection();
+        self.focus_main();
+    }
+
     /// The row the keyboard is on.
     fn key_row(&self) -> usize {
         if let Some((p, n)) = self.search.more.sel.filter(|_| self.view == View::Search) {

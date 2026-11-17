@@ -117,6 +117,9 @@ pub(crate) struct State {
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
     pub(crate) scan_taken: std::time::SystemTime,
+    /// When the current tree's scan began (for a CSV, when the file was written, if earlier): a
+    /// clean-up leaves anything created or changed after it.
+    pub(crate) scan_began: std::time::SystemTime,
     pub(crate) settings: Settings,
     /// Live change pulses: the watcher on the scanned folder and how many changes it saw.
     pub(crate) watcher: Option<crate::watch::Watcher>,
@@ -320,6 +323,8 @@ impl State {
                         self.filter.clear();
                         self.child_stack.clear();
                         self.scan_taken = std::time::SystemTime::now();
+                        let began = self.scan_taken.checked_sub(job.started.elapsed()).unwrap_or(self.scan_taken);
+                        self.scan_began = if job.csv { std::fs::metadata(&job.path).and_then(|m| m.modified()).map_or(began, |t| t.min(began)) } else { began };
                         self.set_tree(Arc::new(tree), &header);
                         self.map.scene.start_wave();
                         self.watch();

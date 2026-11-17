@@ -357,16 +357,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         let Some(e) = e.as_ref() else { return };
         let Ok(k) = e.Key() else { return };
         if k.0 == 13 || k.0 == 40 {
-            with(|st| {
-                if let Some(&(n, _)) = st.rows.first() {
-                    if !st.rows.iter().any(|r| Some(r.0) == st.selected) {
-                        st.selected = Some(n);
-                    }
-                    st.refresh_rows();
-                    st.show_selection();
-                    st.focus_main();
-                }
-            });
+            with(|st| st.search_box_down());
             let _ = e.SetHandled(true);
         }
     })?);
@@ -454,6 +445,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         wiz_url: Default::default(),
         hist: None,
         scan_taken: std::time::SystemTime::now(),
+        scan_began: std::time::SystemTime::now(),
         settings,
         watcher: None,
         changes: 0,

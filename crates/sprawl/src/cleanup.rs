@@ -64,7 +64,11 @@ pub(crate) struct Running {
 
 pub(crate) struct Done {
     pub freed: u64,
+    /// Items that freed something.
     pub items: usize,
+    /// Left because they were new since the scan, or kept by the user.
+    pub kept_new: u64,
+    pub kept_chosen: u64,
     pub problems: Vec<String>,
     pub stopped: bool,
     pub output: Vec<String>,
@@ -257,12 +261,18 @@ impl State {
             return;
         }
         let never = sprawl_advisor::safety::Never::default_list();
+        // what the run leaves: anything new since the scan began, and what the user keeps
+        let spare = clean::Spare { since: Some(self.scan_began), keep: self.advisor.memory.kept_paths() };
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>)> = Vec::new();
         let mut items = Vec::new();
         let mut held = Vec::new();
         for (_, f) in picked {
+            if spare.keeps(&f.path) {
+                held.push(format!("{}: not cleaned, you chose to keep it", f.title));
+                continue;
+            }
             // the same checks as when it was found, against this scan
             let f = match sprawl_advisor::safety::check(&f, &t, &never) {
                 Ok(f) => f,
@@ -308,7 +318,7 @@ impl State {
                     }
                 }
                 let mut last = Instant::now();
-                let mut out = clean::run(&path, &action, &stop2, &mut |freed| {
+                let mut out = clean::run(&path, &action, &spare, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
                         last = Instant::now();
                         let _ = tx.send(Msg::Progress(i, freed));
@@ -383,11 +393,15 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, kept_new: 0, kept_chosen: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
-                done.items += 1;
+                if o.freed > 0 {
+                    done.items += 1;
+                }
                 done.freed += o.freed;
+                done.kept_new += o.kept_new;
+                done.kept_chosen += o.kept_chosen;
                 done.problems.extend(o.problems.iter().take(3).cloned());
                 if o.more_problems > 0 || o.problems.len() > 3 {
                     done.problems.push(format!("{}: and {} more", it.title, o.more_problems + o.problems.len().saturating_sub(3) as u64));
@@ -441,7 +455,12 @@ impl State {
             let fine = d.problems.is_empty() && !d.stopped && d.freed > 0;
             let (bg, border, glyph, colour) = if fine { ("#144CC38A", "#554CC38A", "&#xE73E;", "#FF4CC38A") } else { ("#14F5B342", "#55F5B342", "&#xE7BA;", "#FFF5B342") };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
-            let head = if d.stopped { format!("Stopped. Freed {} from {items}.", self.size(d.freed)) } else { format!("Freed {} from {items}.", self.size(d.freed)) };
+            let head = match (d.stopped, d.items) {
+                (true, 0) => "Stopped. Nothing was freed.".to_string(),
+                (true, _) => format!("Stopped. Freed {} from {items}.", self.size(d.freed)),
+                (false, 0) => "Nothing was freed.".to_string(),
+                (false, _) => format!("Freed {} from {items}.", self.size(d.freed)),
+            };
             x += &format!(
                 r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvCleanLog" Content="See what was removed" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
                 ui::esc(&head),
@@ -452,6 +471,16 @@ impl State {
                 for p in d.problems.iter().take(8) {
                     x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(p));
                 }
+            }
+            if d.kept_new + d.kept_chosen > 0 {
+                let mut parts = Vec::new();
+                if d.kept_new > 0 {
+                    parts.push(format!("{} new since the scan", d.kept_new));
+                }
+                if d.kept_chosen > 0 {
+                    parts.push(format!("{} you chose to keep", d.kept_chosen));
+                }
+                x += &format!(r##"<TextBlock Text="Left alone: {}." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(&parts.join(", ")));
             }
             if !d.output.is_empty() {
                 x += &format!(
@@ -498,12 +527,17 @@ impl State {
             self.size(bytes),
             {
                 let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
+                let own = format!(
+                    "Sprawl removes them itself. Links inside are removed as links (what they point to stays), files a program has locked are skipped, and anything created or changed since the scan began ({}) is left alone, as is anything you chose to keep.",
+                    sprawl_core::local_time(self.scan_began)
+                );
+                let tool = "Each item with a program of its own runs that program's clean-up command, shown below, without a window. The program decides what goes: files new since the scan, or ones you chose to keep, may go too.";
                 if tools == picked.len() {
-                    "Each runs its program's own clean-up command, shown below, without a window."
+                    tool.to_string()
                 } else if tools > 0 {
-                    "Sprawl removes them itself. Links inside are removed as links (what they point to stays), files in use are skipped, and anything new since the scan is left alone. Items with a program of their own run its clean-up command, shown below."
+                    format!("{own} {tool}")
                 } else {
-                    "Sprawl removes them itself. Links inside are removed as links (what they point to stays), files in use are skipped, and anything new since the scan is left alone."
+                    own
                 }
             }
         );
@@ -524,6 +558,27 @@ impl State {
             );
         }
         x += "</StackPanel></ScrollViewer>";
+        // what the user keeps inside a ticked folder stays: say which
+        let kept: Vec<PathBuf> = self
+            .advisor
+            .memory
+            .kept_paths()
+            .into_iter()
+            .filter(|k| {
+                let k = PathBuf::from(key(k));
+                picked.iter().any(|(_, f)| !matches!(clean::action(f), Some((Action::Tool { .. }, _))) && k.starts_with(PathBuf::from(key(&f.path))))
+            })
+            .collect();
+        if !kept.is_empty() {
+            x += r##"<StackPanel Spacing="2"><TextBlock Text="Kept, because you chose to keep them:" FontSize="12" Foreground="#FFB9C2D6"/>"##;
+            for k in kept.iter().take(6) {
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis" Margin="10,0,0,0"/>"##, ui::esc(&k.display().to_string()));
+            }
+            if kept.len() > 6 {
+                x += &format!(r##"<TextBlock Text="and {} more" FontSize="12" Foreground="#FF8E97AA" Margin="10,0,0,0"/>"##, kept.len() - 6);
+            }
+            x += "</StackPanel>";
+        }
         // an open application: a part that must have it closed stays, the rest skip what it holds
         let mut must: Vec<String> = Vec::new();
         let mut warn: Vec<String> = Vec::new();
@@ -623,11 +678,17 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let mut s = format!("\r\n== {}{}\r\n", crate::format::fmt_time(std::time::SystemTime::now()), if stopped { " (stopped)" } else { "" });
+    let mut s = format!("\r\n== {} (local time){}\r\n", sprawl_core::local_time(std::time::SystemTime::now()), if stopped { " (stopped)" } else { "" });
     for it in items {
         match &it.state {
             ItemState::Done(o) => {
                 s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
+                if o.kept_new > 0 {
+                    s += &format!("\t  left {} items new since the scan\r\n", o.kept_new);
+                }
+                if o.kept_chosen > 0 {
+                    s += &format!("\t  left {} items you chose to keep\r\n", o.kept_chosen);
+                }
                 for pr in &o.problems {
                     s += &format!("\t  not removed: {pr}\r\n");
                 }
