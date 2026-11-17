@@ -39,6 +39,12 @@ fn main() {
             println!("    {c:>6}  {k}");
         }
     }
+    // what the Cleaners tab reads when no scan covers the cleaners
+    let roots = sprawl_advisor::cleaners::scan_roots(&sprawl_advisor::cleaners::catalogue(&[RulePack::builtin()]));
+    println!("cleaner scan roots: {}", roots.len());
+    for r in &roots {
+        println!("  {}", r.display());
+    }
     let t1 = std::time::Instant::now();
     let (ok, held) = advise_all(&tree, &[RulePack::builtin()], &facts);
     let t_adv = t1.elapsed().as_secs_f64();

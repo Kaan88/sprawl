@@ -108,6 +108,10 @@ pub struct Memory {
     /// usual ones" (never ticked by Sprawl itself).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub usual: Vec<String>,
+    /// The cleaner parts (by rule id) the user had ticked on the Cleaners tab, ticked again
+    /// when it opens. Only ever what the user ticked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleaner_ticks: Vec<String>,
     /// Cleaners the AI proposed, for the user to approve.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleaner_proposals: Vec<CleanerProposal>,

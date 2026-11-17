@@ -214,10 +214,30 @@ pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progr
 /// and count nothing; never-list names, kept paths and anything new since the scan count
 /// nothing either. For Remove and a plain Clear the scan's size is the answer (None).
 pub fn would_free(path: &Path, action: &Action, spare: &Spare) -> Option<u64> {
+    match action {
+        Action::Clear { days } if *days > 0 => {}
+        Action::Match { .. } => {}
+        _ => return None,
+    }
+    preview(path, action, spare, 0).map(|p| p.bytes)
+}
+
+/// What a clean-up of `path` would remove now, by the run's own tests, without removing
+/// anything: the bytes, the files, and the `keep` biggest of them. None for a tool's command
+/// (the tool decides) or when `path` can't be read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Preview {
+    pub bytes: u64,
+    pub files: u64,
+    /// (file, bytes), the biggest first.
+    pub biggest: Vec<(PathBuf, u64)>,
+}
+
+pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Option<Preview> {
     let cut = match action {
         Action::Clear { days } if *days > 0 => Some(SystemTime::now().checked_sub(Duration::from_secs(*days as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH)),
-        Action::Match { .. } => None,
-        _ => return None,
+        Action::Tool { .. } => return None,
+        _ => None,
     };
     let pattern = match action {
         Action::Match { pattern } => Some(pattern.as_str()),
@@ -228,11 +248,32 @@ pub fn would_free(path: &Path, action: &Action, spare: &Spare) -> Option<u64> {
     // as the run sees it (it also counts a later rename or move as new, which this can't see)
     let new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s || m.last_write_time() as i64 > s);
     let born_new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s);
+    let mut out = Preview::default();
+    // the biggest so far, smallest on top
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, PathBuf)>> = std::collections::BinaryHeap::new();
+    let mut take = |k: PathBuf, len: u64, out: &mut Preview| {
+        out.bytes += len;
+        out.files += 1;
+        if keep > 0 {
+            heap.push(std::cmp::Reverse((len, k)));
+            if heap.len() > keep {
+                heap.pop();
+            }
+        }
+    };
     let top = std::fs::symlink_metadata(path).ok()?;
-    if !top.is_dir() || attrs(&top) & REPARSE != 0 {
-        return Some(0);
+    if attrs(&top) & REPARSE != 0 || odd_name(path) || never().path_hit(path).is_some() || spare.keeps(path) {
+        return Some(out);
     }
-    let mut total = 0u64;
+    if !top.is_dir() {
+        // a file: only Remove takes it
+        if matches!(action, Action::Remove) && !new(&top) {
+            take(path.to_path_buf(), top.len(), &mut out);
+        }
+        drop(take);
+        out.biggest = heap.into_sorted_vec().into_iter().map(|std::cmp::Reverse((b, p))| (p, b)).collect();
+        return Some(out);
+    }
     let mut stack: Vec<PathBuf> = list(path).ok()?;
     if let Some(cut) = cut {
         stack.retain(|k| !is_new(k, cut));
@@ -251,10 +292,12 @@ pub fn would_free(path: &Path, action: &Action, spare: &Spare) -> Option<u64> {
                 stack.extend(list(&k).unwrap_or_default());
             }
         } else if pattern.is_none_or(|p| like(&name, p)) && !new(&m) {
-            total += m.len();
+            take(k, m.len(), &mut out);
         }
     }
-    Some(total)
+    drop(take);
+    out.biggest = heap.into_sorted_vec().into_iter().map(|std::cmp::Reverse((b, p))| (p, b)).collect();
+    Some(out)
 }
 
 /// One open folder and what is left to do in it.
@@ -1197,6 +1240,49 @@ mod tests {
         if linked {
             assert!(std::fs::symlink_metadata(temp.join("link")).is_err(), "the link itself went");
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Preview counts what the run would take, by the run's tests, and deletes nothing.
+    #[test]
+    fn preview_lists_what_would_go_and_removes_nothing() {
+        let base = std::env::temp_dir().join(format!("sprawl-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        let old = |p: &std::path::Path, n: usize| {
+            std::fs::write(p, vec![0u8; n]).unwrap();
+            let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+            f.set_modified(SystemTime::now() - Duration::from_secs(10 * 86_400)).unwrap();
+        };
+        old(&base.join("a.log"), 300);
+        old(&base.join("b.txt"), 100);
+        old(&base.join("sub").join("c.log"), 200);
+        old(&base.join("mail.pst"), 5000);
+        let none = Spare::default();
+        let all = preview(&base, &Action::Remove, &none, 2).unwrap();
+        assert_eq!((all.bytes, all.files), (600, 3), "the .pst is protected");
+        let names: Vec<(String, u64)> = all.biggest.iter().map(|(p, b)| (p.file_name().unwrap().to_string_lossy().into_owned(), *b)).collect();
+        assert_eq!(names, [("a.log".to_string(), 300), ("c.log".to_string(), 200)]);
+        let m = Action::Match { pattern: "*.log".into() };
+        let logs = preview(&base, &m, &none, 10).unwrap();
+        assert_eq!((logs.bytes, logs.files), (500, 2));
+        assert_eq!(would_free(&base, &m, &none), Some(logs.bytes), "the same count as the measure");
+        assert_eq!(preview(&base, &Action::Clear { days: 0 }, &none, 0).unwrap().bytes, 600);
+        // made or changed after the scan began: stays
+        let spare = Spare { since: Some(SystemTime::now()), keep: Vec::new() };
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(base.join("new.log"), vec![0u8; 50]).unwrap();
+        assert_eq!(preview(&base, &m, &spare, 0).unwrap().bytes, 500, "the new log stays");
+        std::fs::remove_file(base.join("new.log")).unwrap();
+        // kept by the user
+        let kept = Spare { since: None, keep: vec![base.join("sub")] };
+        assert_eq!(preview(&base, &Action::Remove, &kept, 0).unwrap().bytes, 400);
+        // a tool decides itself; a single file only goes with Remove
+        assert!(preview(&base, &Action::Tool { command: "x".into() }, &none, 0).is_none());
+        assert_eq!(preview(&base.join("a.log"), &Action::Remove, &none, 1).unwrap().files, 1);
+        assert_eq!(preview(&base.join("a.log"), &Action::Clear { days: 0 }, &none, 1).unwrap().files, 0);
+        // nothing was removed
+        assert!(base.join("a.log").exists() && base.join("sub").join("c.log").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 

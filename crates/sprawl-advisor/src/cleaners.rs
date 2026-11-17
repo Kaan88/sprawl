@@ -416,6 +416,58 @@ pub enum Presence {
     Absent,
 }
 
+/// The folders to read for the cleaners when no scan covers them: the fixed start of every
+/// path a cleaner part names (up to its first wildcard), with the profile's AppData (where the
+/// Chromium recogniser and the guesses by shape look), each existing, none inside another.
+/// Any account's folder (`Users\*`) is this user's: another account's isn't this tab's to
+/// clean. Never a drive's root, nor a wildcard straight under a drive's folder
+/// (`C:\Windows\*.log`): those are left to a scan of the drive. Where an application is
+/// installed (`present`) isn't read: it only says the application is there.
+pub fn scan_roots(catalogue: &[CleanerDef]) -> Vec<std::path::PathBuf> {
+    let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let home = std::env::var("USERPROFILE").ok();
+    let mut pats: Vec<String> = catalogue.iter().flat_map(|d| d.parts.iter().flat_map(|p| p.paths.iter().cloned())).collect();
+    pats.extend(["%LOCALAPPDATA%", "%APPDATA%", r"%USERPROFILE%\AppData\LocalLow"].map(String::from));
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for p in pats {
+        let e = crate::rules::expand(&p);
+        let mut e = match e.strip_prefix("?:") {
+            Some(rest) => format!("{sys}{rest}"),
+            None => e,
+        };
+        // any account's: this one's
+        let users = format!(r"{}\users\*\", sys.to_lowercase());
+        if e.to_lowercase().starts_with(&users) {
+            let Some(h) = &home else { continue };
+            e = format!(r"{}\{}", h.trim_end_matches('\\'), &e[users.len()..]);
+        }
+        if e.contains('%') {
+            continue;
+        }
+        let segs: Vec<&str> = e.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+        let fixed: Vec<&str> = segs.iter().copied().take_while(|s| !s.contains(['*', '?'])).collect();
+        // a drive and at least one folder; with a wildcard after it, two
+        let wild = fixed.len() < segs.len();
+        if fixed.len() < 2 + usize::from(wild) || !fixed[0].ends_with(':') {
+            continue;
+        }
+        let path = std::path::PathBuf::from(format!("{}\\{}", fixed[0], fixed[1..].join("\\")));
+        if path.is_dir() {
+            roots.push(path);
+        } else if let Some(parent) = path.parent().filter(|p| p.components().count() > 3 && p.is_dir() && path.extension().is_some()) {
+            // a file the part names: its folder, when that isn't a drive's own folder
+            // (C:\Windows\MEMORY.DMP is left to a scan of the drive)
+            roots.push(parent.to_path_buf());
+        }
+    }
+    let low = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
+    roots.sort_by_key(|p| low(p));
+    roots.dedup_by_key(|p| low(p));
+    let all = roots.clone();
+    roots.retain(|r| !all.iter().any(|o| o != r && low(r).starts_with(&format!("{}\\", low(o)))));
+    roots
+}
+
 /// Whether `def`'s application is in the scan, elsewhere on this PC, or not here. `found`: the
 /// cleaner has findings in this scan.
 pub fn presence(tree: &sprawl_core::Tree, def: &CleanerDef, found: bool) -> Presence {
@@ -534,6 +586,49 @@ mod tests {
     }
 
     const GOOD: &str = "[[cleaner]]\nid = 'app.x'\nname = 'X'\ngroup = 'Chat'\nrunning = ['X.exe']\nrules = ['r.one']\n[[cleaner.part]]\nid = 'cache'\ntitle = 'Cache'\nrisk = 'green'\npaths = ['C:\\x\\Cache']\nwhy = 'copies'\ncost = 'Slower once.'\n[[cleaner.part]]\nid = 'logs'\ntitle = 'Logs'\nrisk = 'green'\npaths = ['C:\\x\\logs']\naction = 'match'\npattern = '*.log'\nwhy = 'logs'\n";
+
+    #[test]
+    fn scan_roots_are_the_fixed_starts_of_what_cleaners_name() {
+        // not in %TEMP%: that is inside AppData, which is a root of its own
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("target").join(format!("sprawl-roots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let base = std::path::PathBuf::from(std::fs::canonicalize(&base).unwrap().to_string_lossy().trim_start_matches(r"\\?\"));
+        let _ = std::fs::remove_dir_all(&base);
+        for d in [r"app\Cache", r"app\User Data\Default", r"other\logs", "alone"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let b = base.display().to_string();
+        let part = |paths: Vec<String>| PartDef { rule: "r".into(), title: "t".into(), class: Class::Space, risk: Risk::Green, closed: Closed::No, cost: String::new(), why: String::new(), keep_days: None, clears: true, info: false, paths };
+        let def = CleanerDef {
+            id: "x".into(),
+            name: "X".into(),
+            group: "Other".into(),
+            present: vec![format!(r"{b}\alone")],
+            running: vec![],
+            builtin: true,
+            pack: "p".into(),
+            parts: vec![
+                part(vec![format!(r"{b}\app\Cache"), format!(r"{b}\app\User Data\*\Cache"), format!(r"{b}\app")]),
+                part(vec![format!(r"{b}\other\logs\*.log"), format!(r"{b}\missing\x"), r"?:\**\Thumbs.db".into(), r"%NOPE_NOT_SET%\x".into(), r"%SystemDrive%\Windows\*.log".into()]),
+                // any account's folder: this user's
+                part(vec![r"%SystemDrive%\Users\*\AppData\Local\sprawl-roots-test-none".into(), r"%SystemDrive%\Users\*\AppData\Local".into()]),
+            ],
+            text: String::new(),
+        };
+        let roots = scan_roots(&[def]);
+        let mine: Vec<String> = roots.iter().filter(|p| p.starts_with(&base)).map(|p| p.strip_prefix(&base).unwrap().display().to_string()).collect();
+        // app's own parts inside app; the drive's root and unset names left out; missing ones dropped
+        assert_eq!(mine, ["app", r"other\logs"], "{roots:?}");
+        // only where the application is: not read
+        assert!(!roots.iter().any(|p| p.ends_with("alone")));
+        assert!(!roots.iter().any(|p| p.components().count() < 3), "never a drive's root: {roots:?}");
+        assert!(!roots.iter().any(|p| p.to_string_lossy().eq_ignore_ascii_case(r"C:\Windows")), "nor a wildcard straight under a drive's folder: {roots:?}");
+        // a profile's AppData, whichever profile the tests run as (others change USERPROFILE)
+        assert!(roots.iter().any(|p| p.ends_with(std::path::Path::new("AppData").join("Roaming")) && p.to_string_lossy().to_lowercase().contains(r"\users\")), "{roots:?}");
+        assert!(!roots.iter().any(|p| p.ends_with("Users")), "{roots:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn cleaners_parse_into_rules() {
