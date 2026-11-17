@@ -88,7 +88,7 @@ impl State {
         self.more_forget_covered();
         self.more_run(cancel.clone());
         let Some(tree) = self.tree.clone() else {
-            let note = if self.search.more.places.is_empty() && self.search.more.loading.is_empty() { "Scan a folder first, or run Sprawl as administrator to search every drive." } else { "No scan yet: searching your drives and saved scans." };
+            let note = if self.search.more.places.is_empty() && self.search.more.loading.is_empty() { "Scan a folder first; search looks through the scan and your drives." } else { "No scan yet: searching your drives and saved scans." };
             self.search_show(Vec::new(), note.into());
             return;
         };

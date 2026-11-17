@@ -121,10 +121,10 @@ impl State {
         self.render_more();
     }
 
-    /// Every fixed drive the scan on screen isn't, read by itself (as administrator, from the
-    /// file table), like Everything: search finds things on all drives without asking.
+    /// Every fixed drive the scan on screen isn't, read by itself like Everything: from the file
+    /// table as administrator (seconds), else by walking its folders (slower).
     fn more_all_drives(&mut self) {
-        if !sprawl_core::is_elevated() || self.settings.bool("oSearchDrives") == Some(false) {
+        if self.settings.bool("oSearchDrives") == Some(false) {
             return;
         }
         let cur = self.current_root();
@@ -394,18 +394,19 @@ impl State {
         if !places.is_empty() {
             x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="520"/>"##, ui::esc(&places.join(",  ")));
         }
-        if elevated {
+        {
             for d in &offer {
                 let letter = d.root.chars().next().unwrap_or('C');
                 let on = m.drives_on.contains(&d.root);
                 x += &format!(
-                    r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Search {root} too (read from its file table, kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
+                    r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Search {root} too (kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
                     on = if on { "True" } else { "False" },
                     root = ui::esc(&d.root),
                 );
             }
-        } else if !offer.is_empty() {
-            x += r##"<TextBlock Text="Other drives are searched too when Sprawl runs as administrator." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
+        }
+        if !elevated && !m.loading.is_empty() {
+            x += r##"<TextBlock Text="Reading drives folder by folder; as administrator it takes seconds." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
         }
         x += "</StackPanel>";
         if !m.hits.is_empty() && m.hits_gen == m.gen {
