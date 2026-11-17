@@ -13,7 +13,7 @@ use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
 
 /// Options menu switches that are remembered between runs.
-const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oSearchDrives", "oAlwaysAdmin", "oUpdates"];
+const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "oUpdates"];
 const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 use crate::state::Source;
 use crate::{dialogs, paint, ui, win32};
@@ -396,13 +396,6 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
                 self.settings.set("aa", name);
                 self.settings.save();
             }
-            "oSearchDrives" => {
-                let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
-                self.settings.set_bool(name, on);
-                if on && self.view == View::Search {
-                    self.more_open();
-                }
-            }
             "oPulses" => {
                 self.pulses_on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
                 self.watch();
@@ -487,6 +480,28 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
 
     /// Put the saved options back (at start-up).
     pub(crate) fn apply_settings(&mut self) {
+        // Work offline, and the thresholds (each held at its floor and ceiling)
+        sprawl_advisor::OFFLINE.store(self.settings.bool("offline") == Some(true), std::sync::atomic::Ordering::Relaxed);
+        for k in sprawl_advisor::tuning::ALL {
+            if let Some(v) = self.settings.num(k.key).filter(|v| v.is_finite() && *v >= 0.0) {
+                sprawl_advisor::tuning::set(k, v as u64);
+            }
+        }
+        // "Search every drive when Search opens" (before 0.2.6) became the drives ticked in
+        // Settings > Search: on, it ticks every fixed drive not turned off, once
+        if self.settings.bool("oSearchDrives") == Some(true) {
+            let list = |k: &str| self.settings.get(k).unwrap_or("").split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_string).collect::<Vec<_>>();
+            let off = list("searchDrivesOff");
+            let mut on = list("searchDrivesOn");
+            for d in State::fixed_drives_pub() {
+                if !off.contains(&d) && !on.contains(&d) {
+                    on.push(d);
+                }
+            }
+            self.settings.set("searchDrivesOn", on.join(","));
+            self.settings.set_bool("oSearchDrives", false);
+            self.settings.save();
+        }
         let s = &self.settings;
         let lift = s.num("lift").unwrap_or(1.0) as f32;
         let cushion = s.num("cushion").unwrap_or(1.0) as f32;

@@ -304,6 +304,19 @@ impl State {
         crate::win32::drives().into_iter().filter(|d| d.kind == 3).map(|d| d.root).collect()
     }
 
+    /// The fixed drives, for Settings.
+    pub(crate) fn fixed_drives_pub() -> Vec<String> {
+        Self::fixed_drives()
+    }
+
+    /// Settings changed the drives Search may read: read them again when Search opens next.
+    pub(crate) fn more_settings_changed(&mut self) {
+        self.search.more.remembered = false;
+        if self.view == crate::state::View::Search {
+            self.more_open();
+        }
+    }
+
     fn more_remember(&mut self) {
         let m = &self.search.more;
         let on: Vec<&str> = m.drives_on.iter().map(String::as_str).collect();
@@ -325,7 +338,7 @@ impl State {
         }
         self.more_forget_covered();
         self.more_all_drives();
-        if self.search.more.snapshots_tried || self.settings.bool("snapshots") == Some(false) {
+        if self.search.more.snapshots_tried || self.settings.bool("snapshots") != Some(true) {
             self.search.more.snapshots_tried = true;
             self.render_more();
             return;
@@ -366,7 +379,6 @@ impl State {
     }
 
     fn more_all_drives(&mut self) {
-        let every = self.settings.bool("oSearchDrives") == Some(true);
         let cur = self.current_root();
         let m = &self.search.more;
         let busy = |d: &str| {
@@ -374,7 +386,7 @@ impl State {
                 || m.places.iter().flatten().any(|p| p.drive.as_deref() == Some(d))
                 || m.failed.iter().any(|f| f.0 == d)
         };
-        let want = drives_to_read(&Self::fixed_drives(), cur.as_deref(), every, &m.drives_on, &m.drives_off, &busy);
+        let want = drives_to_read(&Self::fixed_drives(), cur.as_deref(), false, &m.drives_on, &m.drives_off, &busy);
         for d in want {
             self.search.more.drives_on.insert(d.clone());
             self.more_read(d);

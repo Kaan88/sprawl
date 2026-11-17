@@ -336,7 +336,6 @@ pub fn page(drives: &[String]) -> String {
             ),
         ),
         toggle("oAuto", "Scan as Soon as a Drive Is Picked", true, "", ""),
-        toggle("oSearchDrives", "Search Every Drive When Search Opens", false, "", ""),
         SEP.to_string(),
         item("mAdmin", "Restart as Administrator", "", ""),
         toggle("oAlwaysAdmin", "Always Run as Administrator", false, "", ""),

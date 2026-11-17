@@ -100,7 +100,7 @@ pub(crate) fn change_colour(then: u64, now: u64) -> [f32; 3] {
 impl State {
     /// After a scan: encode its snapshots on this thread (fast) and write them on another.
     pub(crate) fn save_snapshot(&mut self) {
-        if self.shot.is_some() || self.settings.bool("snapshots") == Some(false) {
+        if self.shot.is_some() || self.settings.bool("snapshots") != Some(true) {
             return;
         }
         let Some(t) = &self.tree else { return };
@@ -138,12 +138,12 @@ impl State {
         let me = self.scan_taken - Duration::from_secs(2);
         let entries: Vec<Entry> = history::covering(&base, &t.path_of(ROOT)).into_iter().filter(|e| e.taken < me).collect();
         if entries.is_empty() {
-            let off = self.settings.bool("snapshots") == Some(false);
+            let off = self.settings.bool("snapshots") != Some(true);
             text(
                 &self.root,
                 "FootLeft",
                 if off {
-                    "Scan history is off (Options > Setup Wizard > History)."
+                    "Scan history is off (Options > Settings > History)."
                 } else {
                     "No earlier scans of this folder yet. Each scan is saved, so the next one can be compared with this one."
                 },

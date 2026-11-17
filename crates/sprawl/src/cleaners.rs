@@ -437,7 +437,7 @@ impl State {
 
     /// Fetch the community files again, off the UI thread.
     pub(crate) fn community_fetch(&mut self) {
-        if self.advisor.cl.fetching.is_some() || self.advisor.memory.community_off {
+        if self.advisor.cl.fetching.is_some() || self.advisor.memory.community_off || sprawl_advisor::offline() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1590,6 +1590,10 @@ impl State {
         self.advisor.memory_ready();
         let restore = std::mem::take(&mut self.advisor.cl.restore_pending);
         let changed = std::mem::take(&mut self.advisor.cl.user_ticked);
+        // Settings > Cleaning, "Open Cleaners with my usual ticks": off puts none back
+        if restore && self.settings.bool("clUsualTicks") == Some(false) {
+            return;
+        }
         if restore {
             let keys: Vec<String> = {
                 let r = self.advice().unwrap();

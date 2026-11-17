@@ -185,7 +185,7 @@ impl State {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let last = self.settings.num("update_last").unwrap_or(0.0) as u64;
             let on = find::<ToggleMenuFlyoutItem>(&self.root, "oUpdates").and_then(|t| t.IsChecked()).unwrap_or(true);
-            if on && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) && now.saturating_sub(last) > 20 * 3600 {
+            if on && !sprawl_advisor::offline() && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) && now.saturating_sub(last) > 20 * 3600 {
                 self.update_check(false);
             }
         }

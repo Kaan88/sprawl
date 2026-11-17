@@ -35,8 +35,11 @@ impl Settings {
         if self.values.is_empty() {
             return;
         }
-        // read every fixed drive when Search opens: on before 0.2.6
+        // read every fixed drive when Search opens: on before 0.2.6 (ticks them all in
+        // Settings > Search once, then is set to 0)
         self.values.entry("oSearchDrives".into()).or_insert_with(|| "1".into());
+        // scan history: kept unless switched off before 0.2.6; a new install starts with it off
+        self.values.entry("snapshots".into()).or_insert_with(|| "1".into());
     }
 
     pub fn save(&self) {
@@ -86,10 +89,12 @@ mod tests {
         let mut new = Settings::default();
         new.keep_old_defaults();
         assert_eq!(new.bool("oSearchDrives"), None, "a new install takes the new default (off)");
+        assert_eq!(new.bool("snapshots"), None, "and keeps no scan history until chosen");
         let mut old = Settings::default();
         old.set("units", "uDyn");
         old.keep_old_defaults();
         assert_eq!(old.bool("oSearchDrives"), Some(true));
+        assert_eq!(old.bool("snapshots"), Some(true), "an older install keeps its history on");
         let mut chosen = Settings::default();
         chosen.set_bool("oSearchDrives", false);
         chosen.keep_old_defaults();

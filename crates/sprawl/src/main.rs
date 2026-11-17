@@ -32,6 +32,7 @@ mod ui;
 mod win32;
 mod welcome;
 mod wizard;
+mod prefs;
 mod update;
 mod cleaners;
 mod models;
@@ -448,6 +449,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         wizard_offered: false,
         update: Default::default(),
         wiz_models: Default::default(),
+        prefs: Default::default(),
         search: crate::search::Search::new(),
         hist: None,
         scan_taken: std::time::SystemTime::now(),

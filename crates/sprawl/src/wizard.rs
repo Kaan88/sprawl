@@ -1,135 +1,130 @@
-//! First-run setup wizard (also Options > Setup Wizard): the AI advisor, scanning, the look of
-//! the map and scan history. Every page only fills in choices that exist elsewhere too, so the
-//! wizard can be skipped and everything changed later.
+//! The first-run setup wizard and Settings: one overlay, both built from [`crate::prefs`]. The
+//! wizard asks only what matters on the first day; Settings has everything, in sections, in
+//! the same words. Both keep a draft of the values and apply it on Finish or Save, through the
+//! same paths the menus use.
+
+use std::collections::HashMap;
 
 use sprawl_advisor::config::{self, AiConfig, Detected, Provider};
 
-use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, PasswordBox, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
-use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
-use crate::scene::Mode;
-use crate::state::{find, text, State};
+use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibility};
+use crate::prefs::{self, Kind, Pref, Sec, PREFS, WIZARD};
+use crate::state::{find, keep, load, text, with, State};
+use crate::ui;
 
-pub const PAGES: usize = 6;
-const TITLES: [&str; PAGES] = ["Welcome", "AI advisor", "Scanning", "Look", "History", "Advisor"];
-pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
+pub const PAGES: usize = WIZARD.len();
 
-/// Every control the wizard wires up: buttons, then lists.
-pub const BUTTONS: [&str; 6] = ["WizBack", "WizNext", "WizSkip", "WizMcpCopy", "WizLoadModels", "WizUseDetected"];
+/// Every control of the overlay that is wired once: buttons, then the sections.
+pub const BUTTONS: [&str; 14] = ["WizBack", "WizNext", "WizSkip", "WizLoadModels", "WizUseDetected", "PfSec0", "PfSec1", "PfSec2", "PfSec3", "PfSec4", "PfSec5", "PfSec6", "PfSec7", "PfSec8"];
 
-fn switch(name: &str, header: &str, note: &str) -> String {
-    format!(
-        r##"<StackPanel Spacing="0"><ToggleSwitch x:Name="{name}" Header="{header}" FontSize="13"/><TextBlock Text="{note}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,-4,0,6"/></StackPanel>"##
-    )
+/// The overlay's state while it is open.
+#[derive(Default)]
+pub(crate) struct PrefUi {
+    /// The Settings section shown.
+    pub(crate) sec: usize,
+    /// The values as chosen so far (key: value as text), and as they were when it opened.
+    draft: HashMap<&'static str, String>,
+    orig: HashMap<&'static str, String>,
+    /// The settings on the page shown, read back into the draft before it changes.
+    shown: Vec<&'static str>,
+    /// The page's loaded content (its controls are found in it).
+    fe: Option<FrameworkElement>,
+    /// The fixed drives offered for Search, in the order shown.
+    drives: Vec<String>,
+    /// "Clear history" was pressed once: the next press clears.
+    clear_armed: bool,
+    /// What the last action said, shown at the top of the page.
+    note: Option<String>,
 }
 
 fn label(t: &str) -> String {
-    format!(r##"<TextBlock Text="{t}" FontSize="12" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##)
+    format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##, ui::esc(t))
+}
+
+fn help(t: &str) -> String {
+    if t.is_empty() {
+        return String::new();
+    }
+    format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,0,0,6"/>"##, ui::esc(t))
+}
+
+fn combo(name: &str, items: &[&str], pick: usize) -> String {
+    let items: String = items.iter().map(|i| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(i))).collect();
+    format!(r##"<ComboBox x:Name="{name}" HorizontalAlignment="Left" Width="420" SelectedIndex="{pick}">{items}</ComboBox>"##)
+}
+
+fn button(name: &str, t: &str) -> String {
+    format!(r##"<Button x:Name="{name}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(t))
 }
 
 fn page_title(glyph: &str, title: &str, sub: &str) -> String {
     format!(
-        r##"<StackPanel Orientation="Horizontal" Spacing="12" Margin="0,0,0,8"><Border Width="40" Height="40" CornerRadius="10" Background="#FF2C3B63"><FontIcon Glyph="{glyph}" FontSize="18" Foreground="#FFBFD4FF"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{title}" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF9AA3B8" TextWrapping="Wrap"/></StackPanel></StackPanel>"##
+        r##"<StackPanel {} Orientation="Horizontal" Spacing="12" Margin="0,0,0,4"><Border Width="40" Height="40" CornerRadius="10" Background="#FF2C3B63"><FontIcon Glyph="{glyph}" FontSize="18" Foreground="#FFBFD4FF"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FF9AA3B8" TextWrapping="Wrap"/></StackPanel></StackPanel>"##,
+        ui::NS,
+        ui::esc(title),
+        ui::esc(sub)
     )
 }
 
 fn bullet(glyph: &str, title: &str, t: &str) -> String {
     format!(
-        r##"<Grid ColumnSpacing="12" Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="16" Foreground="#FF8FB4FF" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{title}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{t}" TextWrapping="Wrap" FontSize="12" Foreground="#FF9AA3B8"/></StackPanel></Grid>"##
+        r##"<Grid ColumnSpacing="12" Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="16" Foreground="#FF8FB4FF" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF9AA3B8"/></StackPanel></Grid>"##,
+        ui::esc(title),
+        ui::esc(t)
     )
 }
 
-fn combo(name: &str, items: &[&str]) -> String {
-    let items: String = items.iter().map(|i| format!(r##"<ComboBoxItem Content="{i}"/>"##)).collect();
-    format!(r##"<ComboBox x:Name="{name}" HorizontalAlignment="Stretch" SelectedIndex="0">{items}</ComboBox>"##)
-}
-
-/// The overlay, placed over the whole window.
+/// The overlay, placed over the whole window. The AI provider's controls are fixed (they have
+/// their own events); everything else is built per page.
 pub fn xaml() -> String {
     let providers: Vec<&str> = Provider::ALL.iter().map(|p| p.label()).collect();
-    let palettes: Vec<&str> = crate::paint::PALETTES.to_vec();
-    let p0 = format!(
-        r##"<StackPanel x:Name="WizP0" Spacing="2">{}
-        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before you start, all optional: each one can be changed later under Options &gt; Settings."/>
-        {}{}{}{}</StackPanel>"##,
-        page_title("&#xE7BE;", "Welcome to Sprawl", "Let's set it up the way you like it"),
-        bullet("&#xE945;", "AI advisor", "Pick Claude, Claude Code or a local model to explain what is using your space. Optional."),
-        bullet("&#xE721;", "Scanning", "Faster scans as administrator, and a right-click entry in Explorer."),
-        bullet("&#xE790;", "Look", "Treemap, city or galaxy, colours, the mirror floor and live pulses."),
-        bullet("&#xE81C;", "History", "Keep compact snapshots so you can see what grew over time."),
-    );
-    let p1 = format!(
-        r##"<StackPanel x:Name="WizP1" Spacing="2" Visibility="Collapsed">{}
-        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, add what it finds to your list, and answer questions. It only suggests: nothing goes until you tick it and press Clean up."/>
-        <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="12" CornerRadius="4" Visibility="Collapsed"/></StackPanel></Border>
+    let ai = format!(
+        r##"<StackPanel x:Name="WizAi" Spacing="2" Visibility="Collapsed">
+        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it and press Clean up."/>
+        <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="12" CornerRadius="4" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
-        <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>
-        <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
-        <StackPanel x:Name="WizModelRow">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Requests are listed in the advisor's log; with Claude Code only the first prompt is, not what it asks Sprawl afterwards. Web lookups ask first, unless you allow them for the session."/>
+        <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
+        <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
+        <StackPanel x:Name="WizModelRow" MaxWidth="420" HorizontalAlignment="Left" Width="420">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the AI works, folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time."/>
         </StackPanel>"##,
-        page_title("&#xE945;", "AI advisor", "Optional: who should explain your disk?"),
         label("Provider"),
-        combo("WizProvider", &providers),
+        format!(r##"<ComboBox x:Name="WizProvider" HorizontalAlignment="Left" Width="420" SelectedIndex="0">{}</ComboBox>"##, providers.iter().map(|i| format!(r##"<ComboBoxItem Content="{i}"/>"##)).collect::<String>()),
         label("API key (kept in Windows Credential Manager, not in a file)"),
         label("Base URL"),
         label("Model"),
     );
-    let p2 = format!(
-        r##"<StackPanel x:Name="WizP2" Spacing="4" Visibility="Collapsed">{}{}{}</StackPanel>"##,
-        page_title("&#xE721;", "Scanning", "How Sprawl reads your drives"),
-        switch("WizAdmin", "Always run as administrator", "Reads the NTFS master file table directly: a whole drive in seconds instead of a minute or more. Windows asks for permission each time Sprawl starts."),
-        switch("WizExplorer", "Add &quot;Scan with Sprawl&quot; to Explorer", "Right-click any folder or drive in Explorer to scan it. Only for your account; no administrator needed."),
-    );
-    let p3 = format!(
-        r##"<StackPanel x:Name="WizP3" Spacing="2" Visibility="Collapsed">{}{}{}{}{}
-        <Grid ColumnSpacing="16" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-          <StackPanel>{}{}</StackPanel>
-          <StackPanel Grid.Column="1">{}</StackPanel>
-        </Grid></StackPanel>"##,
-        page_title("&#xE790;", "Look", "How the map is drawn"),
-        label("Start in"),
-        combo("WizView", &["Treemap: lit 3D tiles", "City: folders as buildings", "Galaxy: folders as stars"]),
-        label("Colours"),
-        combo("WizPalette", &palettes),
-        switch("WizMirror", "Mirror floor", "A glossy reflection under the map."),
-        switch("WizPulses", "Live change pulses", "Tiles pulse when their files change."),
-        switch("WizAnim", "Animations", "Turn off for a calmer, lighter map."),
-    );
-    let p4 = format!(
-        r##"<StackPanel x:Name="WizP4" Spacing="2" Visibility="Collapsed">{}{}{}{}
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="Snapshots are kept in %LOCALAPPDATA%\Sprawl\snapshots on this PC only. The oldest are thinned out first when the limit is reached."/>
-        </StackPanel>"##,
-        page_title("&#xE81C;", "History", "See how your disk changes over time"),
-        switch("WizSnapshots", "Keep scan history", "After each scan Sprawl saves a compact snapshot: about 5 MB for a whole system drive, and the last 3 in full detail (about 27 MB each). It powers growth over time, &quot;what grew since last week&quot;, the time-lapse and scan comparisons."),
-        label("Space for history"),
-        combo("WizCap", &["500 MB", "1 GB", "2 GB", "5 GB"]),
-    );
-    let p5 = format!(
-        r##"<StackPanel x:Name="WizP5" Spacing="2" Visibility="Collapsed">{}{}
-        <TextBox x:Name="WizUninstaller" PlaceholderText="A full path to its .exe (optional)"/>
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Hand to... in the Advisor hands an app to it (Revo, Bulk Crap Uninstaller, and the like) instead of Windows' own uninstaller."/>
-        {}<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="WizMcp" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="440"/><Button x:Name="WizMcpCopy" Content="Copy" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Run it once in a terminal; then your own Claude Code can ask Sprawl about your disk while Sprawl is open."/>
-        </StackPanel>"##,
-        page_title("&#xE90F;", "Advisor", "Your uninstaller, and Claude Code"),
-        label("Uninstaller"),
-        label("Use Sprawl from your own Claude Code"),
-    );
+    let nav: String = Sec::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            format!(
+                r##"<Button x:Name="PfSec{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" CornerRadius="6" BorderThickness="0" Background="Transparent"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{}" FontSize="14"/><TextBlock Text="{}" FontSize="13"/></StackPanel></Button>"##,
+                s.glyph(),
+                ui::esc(s.title())
+            )
+        })
+        .collect();
     format!(
         r##"
   <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="#B8080A10">
-    <Border Width="620" Height="600" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
+    <Border x:Name="WizCard" Width="640" Height="610" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
       <Border.Background><AcrylicBrush TintColor="#FF141824" TintOpacity="0.62" TintLuminosityOpacity="0.75" FallbackColor="#F2161A26"/></Border.Background>
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid>
-          <TextBlock x:Name="WizStep" Text="Step 1 of 5" FontSize="12" Foreground="#FF8E97AA"/>
+          <TextBlock x:Name="WizStep" Text="Step 1" FontSize="12" Foreground="#FF8E97AA"/>
           <TextBlock x:Name="WizDots" Text="" FontSize="12" Foreground="#FF8FB4FF" HorizontalAlignment="Right"/>
         </Grid>
-        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
-          <StackPanel Spacing="18">{p0}{p1}{p2}{p3}{p4}{p5}</StackPanel>
-        </ScrollViewer>
+        <Grid Grid.Row="1" ColumnSpacing="18">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <StackPanel x:Name="PfNav" Width="200" Spacing="2" Visibility="Collapsed">{nav}</StackPanel>
+          <ScrollViewer x:Name="PfScroll" Grid.Column="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,12,0">
+            <StackPanel Spacing="8"><Border x:Name="PfTop"/>{ai}<Border x:Name="PfHost"/></StackPanel>
+          </ScrollViewer>
+        </Grid>
         <Grid Grid.Row="2">
           <Button x:Name="WizSkip" Background="Transparent" BorderThickness="0" Foreground="#FF9AA3B8"><TextBlock x:Name="WizSkipText" Text="Skip setup"/></Button>
           <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
@@ -159,16 +154,6 @@ fn selected(s: &State, name: &str) -> usize {
     find::<Selector>(&s.root, name).and_then(|b| b.SelectedIndex()).unwrap_or(0).max(0) as usize
 }
 
-fn set_switch(s: &State, name: &str, on: bool) {
-    if let Ok(t) = find::<ToggleSwitch>(&s.root, name) {
-        let _ = t.SetIsOn(on);
-    }
-}
-
-fn switch_on(s: &State, name: &str) -> bool {
-    find::<ToggleSwitch>(&s.root, name).and_then(|t| t.IsOn()).unwrap_or(false)
-}
-
 fn checked(s: &State, item: &str) -> bool {
     find::<ToggleMenuFlyoutItem>(&s.root, item).and_then(|t| t.IsChecked()).unwrap_or(false)
 }
@@ -183,8 +168,52 @@ fn set_field(s: &State, name: &str, v: &str) {
     }
 }
 
+fn on(v: &str) -> &'static str {
+    if v == "1" {
+        "True"
+    } else {
+        "False"
+    }
+}
+
 impl State {
+    /// The setup wizard, from its first page.
     pub(crate) fn wizard_open(&mut self) {
+        self.wizard_all = false;
+        self.prefs_begin();
+        self.wizard_page = 0;
+        self.wizard_show();
+        shown(self, "Wizard", true);
+    }
+
+    /// Options > Settings, at its first section.
+    pub(crate) fn settings_open(&mut self) {
+        self.settings_open_at("general");
+    }
+
+    /// Settings, at one section (`"ai"`, `"history"`...).
+    pub(crate) fn settings_open_at(&mut self, section: &str) {
+        self.wizard_all = true;
+        self.prefs_begin();
+        self.prefs.sec = Sec::by_id(section).and_then(|s| Sec::ALL.iter().position(|x| *x == s)).unwrap_or(0);
+        self.wizard_show();
+        shown(self, "Wizard", true);
+    }
+
+    /// Fill the draft from what is in use now, and the AI provider's controls.
+    fn prefs_begin(&mut self) {
+        let mut draft = HashMap::new();
+        for p in PREFS.iter() {
+            if let Some(v) = self.pref_value(p) {
+                draft.insert(p.key, v);
+            }
+        }
+        self.advisor.memory_ready();
+        draft.insert("communityFetch", if self.advisor.memory.community_off { "0" } else { "1" }.to_string());
+        self.prefs.orig = draft.clone();
+        self.prefs.draft = draft;
+        self.prefs.note = None;
+        self.prefs.clear_armed = false;
         // AI: what was saved (Off at first); what is installed is only offered, one click away
         let det = Detected::probe();
         let offer = det.suggest();
@@ -200,65 +229,448 @@ impl State {
         set_field(self, "WizUrl", &ai.base_url);
         set_field(self, "WizModel", &ai.model);
         self.wizard_provider();
-
-        set_switch(self, "WizAdmin", checked(self, "oAlwaysAdmin"));
-        set_switch(self, "WizExplorer", checked(self, "oExplorer"));
-        let view = match self.map.scene.mode {
-            Mode::Map => 0,
-            Mode::City => 1,
-            Mode::Galaxy => 2,
-        };
-        select(self, "WizView", view);
-        select(self, "WizPalette", self.settings.num("palette").unwrap_or(0.0) as usize);
-        set_switch(self, "WizMirror", checked(self, "oMirror"));
-        set_switch(self, "WizPulses", checked(self, "oPulses"));
-        set_switch(self, "WizAnim", self.map.scene.animate);
-        set_switch(self, "WizSnapshots", self.settings.bool("snapshots").unwrap_or(true));
-        let cap = self.settings.num("snapshot_cap_mb").unwrap_or(1024.0) as u32;
-        select(self, "WizCap", CAPS_MB.iter().position(|&c| c == cap).unwrap_or(1));
-        set_field(self, "WizUninstaller", self.settings.get("uninstaller").unwrap_or("").to_string().as_str());
-        text(&self.root, "WizMcp", &crate::bridge::setup_command());
-
-        self.wizard_page = 0;
-        self.wizard_show();
-        shown(self, "Wizard", true);
     }
 
-    /// Options > Settings: the wizard's choices on one page (without its welcome), saved at once.
-    pub(crate) fn settings_open(&mut self) {
-        self.wizard_all = true;
-        self.wizard_open();
-    }
-
-    /// Settings, at one section.
-    pub(crate) fn settings_open_at(&mut self, _section: &str) {
-        self.settings_open();
-    }
-
-    pub(crate) fn wizard_show(&self) {
-        if self.wizard_all {
-            for i in 0..PAGES {
-                shown(self, &format!("WizP{i}"), i > 0);
+    /// The value of `p` in use now, as the draft holds it.
+    fn pref_value(&self, p: &Pref) -> Option<String> {
+        let b = |v: bool| if v { "1".to_string() } else { "0".to_string() };
+        let dflt = p.default_value();
+        Some(match p.key {
+            k if prefs::MENU.contains(&k) => b(checked(self, k)),
+            "units" => prefs::UNIT_ITEMS.iter().position(|u| checked(self, u)).unwrap_or(0).to_string(),
+            "aa" => self.settings.get("aa").and_then(|a| prefs::AA_ITEMS.iter().position(|x| *x == a)).unwrap_or(2).to_string(),
+            "palette" => crate::paint::palette().to_string(),
+            "animate" => b(self.map.scene.animate),
+            "aiWebLookup" => b(AiConfig::load().web_lookup),
+            "afterScan" => self.settings.num("afterScan").unwrap_or(0.0).clamp(0.0, 1.0).to_string(),
+            "snapshot_cap_mb" => {
+                let cap = self.settings.num("snapshot_cap_mb").unwrap_or(1024.0) as u32;
+                prefs::CAPS_MB.iter().position(|&c| c == cap).unwrap_or(1).to_string()
             }
+            "uninstaller" => self.settings.get("uninstaller").unwrap_or("").to_string(),
+            "searchDrivesOn" => self.settings.get("searchDrivesOn").unwrap_or("").to_string(),
+            k => match &p.kind {
+                Kind::Number(knob, _) => sprawl_advisor::tuning::get(knob).to_string(),
+                Kind::Switch(d) => b(self.settings.bool(k).unwrap_or(*d)),
+                _ => return dflt,
+            },
+        })
+    }
+
+    /// Put `v` (as the draft holds it) into use for `p`.
+    fn pref_apply(&mut self, p: &Pref, v: &str) {
+        let yes = v == "1";
+        let idx = |n: usize| v.parse::<usize>().unwrap_or(0).min(n.saturating_sub(1));
+        match p.key {
+            k if prefs::MENU.contains(&k) => {
+                if checked(self, k) != yes {
+                    if let Ok(t) = find::<ToggleMenuFlyoutItem>(&self.root, k) {
+                        let _ = t.SetIsChecked(yes);
+                    }
+                    self.command(k);
+                }
+            }
+            "units" | "aa" => {
+                let items: &[&str] = if p.key == "units" { &prefs::UNIT_ITEMS } else { &prefs::AA_ITEMS };
+                let item = items[idx(items.len())];
+                if let Ok(t) = find::<ToggleMenuFlyoutItem>(&self.root, item) {
+                    let _ = t.SetIsChecked(true);
+                }
+                self.command(item);
+            }
+            "palette" => {
+                let i = idx(crate::paint::PALETTES.len());
+                select(self, "PaletteBox", i);
+                self.tweak("PaletteBox", i as f64);
+            }
+            "animate" => {
+                if let Ok(t) = find::<ToggleSwitch>(&self.root, "AnimSwitch") {
+                    let _ = t.SetIsOn(yes);
+                }
+                self.tweak("AnimSwitch", if yes { 1.0 } else { 0.0 });
+            }
+            "aiWebLookup" => {
+                let mut c = AiConfig::load();
+                c.web_lookup = yes;
+                let _ = c.save();
+            }
+            "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
+            "snapshot_cap_mb" => self.settings.set("snapshot_cap_mb", prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),
+            "uninstaller" => self.settings.set("uninstaller", v.trim().trim_matches('"')),
+            "searchDrivesOn" => {
+                self.settings.set("searchDrivesOn", v);
+                self.settings.set("searchDrivesOff", "");
+                self.more_settings_changed();
+            }
+            "communityFetch" => {
+                self.advisor.memory_ready();
+                self.advisor.memory.community_off = !yes;
+                self.save_memory();
+                self.advisor_start();
+            }
+            "offline" => {
+                self.settings.set_bool("offline", yes);
+                sprawl_advisor::OFFLINE.store(yes, std::sync::atomic::Ordering::Relaxed);
+            }
+            k => match &p.kind {
+                Kind::Number(knob, _) => {
+                    let n = v.trim().replace([',', '.', ' '], "").parse::<u64>().unwrap_or(knob.default);
+                    let used = sprawl_advisor::tuning::set(knob, n);
+                    self.settings.set(k, used);
+                }
+                Kind::Switch(_) => self.settings.set_bool(k, yes),
+                _ => {}
+            },
+        }
+    }
+
+    /// Show the page or section the overlay is on.
+    pub(crate) fn wizard_show(&mut self) {
+        let settings = self.wizard_all;
+        shown(self, "PfNav", settings);
+        if let Ok(c) = find::<FrameworkElement>(&self.root, "WizCard") {
+            let _ = c.SetWidth(if settings { 940.0 } else { 640.0 });
+            let _ = c.SetHeight(if settings { 680.0 } else { 610.0 });
+        }
+        if settings {
             text(&self.root, "WizStep", "Settings");
-            text(&self.root, "WizDots", "");
+            text(&self.root, "WizDots", "Changes apply when you press Save; the buttons in a section act at once.");
             text(&self.root, "WizNextText", "Save");
             shown(self, "WizBack", false);
             text(&self.root, "WizSkipText", "Cancel");
-            return;
+            for i in 0..Sec::ALL.len() {
+                if let Ok(b) = find::<Control>(&self.root, &format!("PfSec{i}")) {
+                    let brush = load::<crate::bindings::Microsoft::UI::Xaml::Media::Brush>(&format!(
+                        r##"<SolidColorBrush {} Color="{}"/>"##,
+                        ui::NS,
+                        if i == self.prefs.sec { "#FF2C3B63" } else { "#00000000" }
+                    ));
+                    if let Ok(br) = brush {
+                        let _ = b.SetBackground(&br);
+                    }
+                }
+            }
+        } else {
+            shown(self, "WizBack", true);
+            text(&self.root, "WizSkipText", "Skip setup");
+            let p = self.wizard_page;
+            text(&self.root, "WizStep", &format!("Step {} of {PAGES}: {}", p + 1, WIZARD[p].0));
+            text(&self.root, "WizDots", &(0..PAGES).map(|i| if i == p { "●" } else { "○" }).collect::<Vec<_>>().join(" "));
+            text(&self.root, "WizNextText", if p + 1 == PAGES { "Finish" } else { "Next" });
+            if let Ok(b) = find::<Control>(&self.root, "WizBack") {
+                let _ = b.SetIsEnabled(p > 0);
+            }
         }
-        shown(self, "WizBack", true);
-        text(&self.root, "WizSkipText", "Skip setup");
-        for i in 0..PAGES {
-            shown(self, &format!("WizP{i}"), i == self.wizard_page);
+        self.prefs_render();
+    }
+
+    /// Build the rows of the page shown.
+    fn prefs_render(&mut self) {
+        let (top, keys): (String, Vec<&'static str>) = if self.wizard_all {
+            let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
+            let keys: Vec<&'static str> = PREFS.iter().filter(|p| p.sec == sec && !p.advanced).chain(PREFS.iter().filter(|p| p.sec == sec && p.advanced)).map(|p| p.key).collect();
+            (page_title(sec.glyph(), sec.title(), ""), keys)
+        } else {
+            let (title, glyph, sub, keys) = WIZARD[self.wizard_page.min(PAGES - 1)];
+            let title = if self.wizard_page == 0 { "Welcome to Sprawl" } else { title };
+            (page_title(glyph, title, sub), keys.to_vec())
+        };
+        if let (Ok(host), Ok(el)) = (find::<Border>(&self.root, "PfTop"), load::<UIElement>(&top)) {
+            let _ = host.SetChild(&el);
         }
-        let p = self.wizard_page;
-        text(&self.root, "WizStep", &format!("Step {} of {PAGES}: {}", p + 1, TITLES[p]));
-        text(&self.root, "WizDots", &(0..PAGES).map(|i| if i == p { "●" } else { "○" }).collect::<Vec<_>>().join(" "));
-        text(&self.root, "WizNextText", if p + 1 == PAGES { "Finish" } else { "Next" });
-        if let Ok(b) = find::<Control>(&self.root, "WizBack") {
-            let _ = b.SetIsEnabled(p > 0);
+        shown(self, "WizAi", keys.contains(&"ai"));
+        let mut x = format!(r##"<StackPanel {} Spacing="4">"##, ui::NS);
+        if let Some(n) = &self.prefs.note {
+            x += &format!(r##"<Border Padding="10,6" CornerRadius="6" Background="#1A4CC38A"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12"/></Border>"##, ui::esc(n));
         }
+        if !self.wizard_all && self.wizard_page == 0 {
+            x += r##"<TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before you start, all optional: nothing that sends or keeps data is on unless you choose it, and each one is in Settings (Ctrl+Shift+S) too."/>"##;
+            for (t, g, s, _) in WIZARD.iter().skip(1) {
+                x += &bullet(g, t, s);
+            }
+        }
+        let mut advanced_said = false;
+        let mut buttons = Vec::new();
+        for k in &keys {
+            let Some(p) = prefs::get(k) else { continue };
+            if p.key == "ai" {
+                continue;
+            }
+            if p.advanced && !advanced_said {
+                advanced_said = true;
+                x += r##"<TextBlock Text="Advanced" FontSize="14" FontWeight="SemiBold" Margin="0,14,0,0"/><TextBlock Text="Thresholds with a floor: none can make something look safer or be ticked for you." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
+            }
+            x += &self.pref_row(p, &mut buttons);
+        }
+        if self.wizard_all {
+            x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,16,0,0">{}</StackPanel>"##, button("PfB_reset", "Reset this section"));
+            buttons.push("PfB_reset".to_string());
+        }
+        x += "</StackPanel>";
+        self.prefs.shown = keys;
+        let fe = load::<FrameworkElement>(&x).ok();
+        if let (Ok(host), Some(el)) = (find::<Border>(&self.root, "PfHost"), fe.as_ref()) {
+            let _ = host.SetChild(el);
+        }
+        if let Some(fe) = &fe {
+            for name in buttons {
+                if let Ok(b) = find::<ButtonBase>(fe, &name) {
+                    if let Ok(t) = b.Click(move |_, _| {
+                        let n = name.clone();
+                        with(move |s| s.prefs_button(&n));
+                    }) {
+                        keep(t);
+                    }
+                }
+            }
+            // "Work offline" greys what it stops, at once
+            if let Ok(t) = find::<ToggleSwitch>(fe, "Pf_offline") {
+                if let Ok(tok) = t.Toggled(|_, _| {
+                    with(|s| s.prefs_offline_shown());
+                }) {
+                    keep(tok);
+                }
+            }
+        }
+        self.prefs.fe = fe;
+        self.prefs_offline_shown();
+        self.wizard_provider_rows();
+    }
+
+    /// One setting's row.
+    fn pref_row(&mut self, p: &Pref, buttons: &mut Vec<String>) -> String {
+        let v = self.prefs.draft.get(p.key).cloned().unwrap_or_default();
+        let name = format!("Pf_{}", p.key);
+        let row = |inner: String| format!(r##"<StackPanel x:Name="PfRow_{}" Spacing="0" Margin="0,4,0,0">{inner}</StackPanel>"##, p.key);
+        match &p.kind {
+            Kind::Switch(_) => row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="13"/>{}"##, ui::esc(p.label), on(&v), help(&p.help_line()))),
+            Kind::Number(_, unit) => row(format!(
+                r##"{}<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" Width="130" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel>{}"##,
+                label(p.label),
+                ui::esc(&v),
+                ui::esc(unit),
+                help(&p.help_line())
+            )),
+            Kind::Choice(items, _) => row(format!("{}{}{}", label(p.label), combo(&name, items, v.parse().unwrap_or(0)), help(p.help))),
+            Kind::Text(ph) => row(format!(r##"{}<TextBox x:Name="{name}" Text="{}" PlaceholderText="{}" Width="520" HorizontalAlignment="Left"/>{}"##, label(p.label), ui::esc(&v), ui::esc(ph), help(p.help))),
+            Kind::Custom => row(self.custom_row(p, &v, buttons)),
+        }
+    }
+
+    /// The rows built by their own code.
+    fn custom_row(&mut self, p: &Pref, v: &str, buttons: &mut Vec<String>) -> String {
+        let mut b = |name: &str, t: &str| {
+            buttons.push(name.to_string());
+            button(name, t)
+        };
+        let mut x = label(p.label);
+        match p.key {
+            "dataFolder" => {
+                x += &help(p.help);
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8">{}{}</StackPanel>"##, b("PfB_data", "Open the data folder"), b("PfB_resetAll", "Reset everything"));
+            }
+            "aiLog" => {
+                x += &help(p.help);
+                let size = sprawl_advisor::llm::request_log_path().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>{}{}</StackPanel>"##,
+                    ui::esc(&if size == 0 { "Empty".to_string() } else { self.size(size) }),
+                    b("PfB_logOpen", "Open"),
+                    b("PfB_logClear", "Clear")
+                );
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">{}</StackPanel>"##, b("PfB_aiForget", "Forget what the AI said"));
+            }
+            "searchDrivesOn" => {
+                x += &help(p.help);
+                let on: Vec<String> = v.split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_lowercase).collect();
+                self.prefs.drives = State::fixed_drives_pub();
+                for (i, d) in self.prefs.drives.iter().enumerate() {
+                    x += &format!(r##"<ToggleSwitch x:Name="PfDrv{i}" OnContent="{0}" OffContent="{0}" IsOn="{1}" FontSize="13"/>"##, ui::esc(d), if on.contains(&d.to_lowercase()) { "True" } else { "False" });
+                }
+                if self.prefs.drives.is_empty() {
+                    x += &help("No fixed drive found.");
+                }
+            }
+            "neverTouch" => {
+                x += &help(p.help);
+                self.advisor.memory_ready();
+                let kept = self.advisor.memory.kept_paths();
+                if kept.is_empty() {
+                    x += &help("Nothing yet. Keep on a finding adds it here.");
+                }
+                for (i, k) in kept.iter().enumerate().take(200) {
+                    x += &format!(
+                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button x:Name="PfB_unkeep{i}" Grid.Column="1" Content="Remove" Padding="8,1" FontSize="12" CornerRadius="4"/></Grid>"##,
+                        ui::esc(&k.display().to_string())
+                    );
+                    buttons.push(format!("PfB_unkeep{i}"));
+                }
+                x += &format!(
+                    r##"<Grid ColumnSpacing="8" Margin="0,4,0,0" MaxWidth="560" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="PfKeepPath" PlaceholderText="A folder or file to keep, like D:\Photos"/><Button x:Name="PfB_keepAdd" Grid.Column="1" Content="Add" Padding="10,3" FontSize="12" CornerRadius="5"/></Grid>"##
+                );
+                buttons.push("PfB_keepAdd".into());
+            }
+            "mcp" => {
+                x += &help(p.help);
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="520"/>{}</StackPanel>"##,
+                    ui::esc(&crate::bridge::setup_command()),
+                    b("PfB_mcpCopy", "Copy")
+                );
+            }
+            "historyDisk" => {
+                x += &help(p.help);
+                let (n, bytes) = sprawl_advisor::history::base_dir().map(|d| sprawl_advisor::history::list(&d)).map_or((0, 0), |l| (l.len(), l.iter().map(|e| e.bytes).sum::<u64>()));
+                let armed = self.prefs.clear_armed;
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/>{}</StackPanel>"##,
+                    ui::esc(&format!("{n} snapshots, {}", self.size(bytes))),
+                    if n > 0 { b("PfB_histClear", if armed { "Press again to delete them all" } else { "Clear" }) } else { String::new() }
+                );
+            }
+            _ => {}
+        }
+        x
+    }
+
+    /// Read the page's controls back into the draft (before the page changes, and on Save).
+    fn prefs_harvest(&mut self) {
+        let Some(fe) = self.prefs.fe.clone() else { return };
+        for k in self.prefs.shown.clone() {
+            let Some(p) = prefs::get(k) else { continue };
+            let name = format!("Pf_{k}");
+            let v = match &p.kind {
+                Kind::Switch(_) => find::<ToggleSwitch>(&fe, &name).and_then(|t| t.IsOn()).ok().map(|b| if b { "1".to_string() } else { "0".to_string() }),
+                Kind::Number(..) | Kind::Text(_) => find::<TextBox>(&fe, &name).and_then(|t| t.Text()).ok().map(|h| h.to_string_lossy()),
+                Kind::Choice(..) => find::<Selector>(&fe, &name).and_then(|s| s.SelectedIndex()).ok().map(|i| i.max(0).to_string()),
+                Kind::Custom if k == "searchDrivesOn" => {
+                    let on: Vec<String> = self.prefs.drives.iter().enumerate().filter(|(i, _)| find::<ToggleSwitch>(&fe, &format!("PfDrv{i}")).and_then(|t| t.IsOn()).unwrap_or(false)).map(|(_, d)| d.clone()).collect();
+                    Some(on.join(","))
+                }
+                Kind::Custom => None,
+            };
+            if let Some(v) = v {
+                self.prefs.draft.insert(k, v);
+            }
+        }
+    }
+
+    /// "Work offline" stops the network switches and the AI provider: shown greyed.
+    fn prefs_offline_shown(&self) {
+        let off = self
+            .prefs
+            .fe
+            .as_ref()
+            .and_then(|fe| find::<ToggleSwitch>(fe, "Pf_offline").and_then(|t| t.IsOn()).ok())
+            .unwrap_or_else(|| self.prefs.draft.get("offline").is_some_and(|v| v == "1"));
+        if let Some(fe) = &self.prefs.fe {
+            for n in ["Pf_oUpdates", "Pf_communityFetch", "Pf_aiWebLookup"] {
+                if let Ok(c) = find::<Control>(fe, n) {
+                    let _ = c.SetIsEnabled(!off);
+                }
+            }
+        }
+        if let Ok(c) = find::<Control>(&self.root, "WizProvider") {
+            let _ = c.SetIsEnabled(!off);
+        }
+    }
+
+    /// A button inside a page.
+    fn prefs_button(&mut self, name: &str) {
+        self.prefs_harvest();
+        self.prefs.note = None;
+        if name != "PfB_histClear" {
+            self.prefs.clear_armed = false;
+        }
+        match name {
+            "PfB_reset" | "PfB_resetAll" => {
+                let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
+                for p in PREFS.iter().filter(|p| name == "PfB_resetAll" || p.sec == sec) {
+                    if let Some(d) = p.default_value() {
+                        self.prefs.draft.insert(p.key, d);
+                    }
+                }
+                if name == "PfB_resetAll" || sec == Sec::Ai {
+                    select(self, "WizProvider", 0);
+                    self.wizard_provider();
+                }
+                self.prefs.note = Some(if name == "PfB_resetAll" { "Everything is back to its default. Press Save to keep that, or Cancel." } else { "This section is back to its defaults. Press Save to keep that, or Cancel." }.into());
+            }
+            "PfB_data" => {
+                if let Some(d) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Sprawl")) {
+                    let _ = std::fs::create_dir_all(&d);
+                    let _ = std::process::Command::new("explorer.exe").arg(d).spawn();
+                }
+            }
+            "PfB_logOpen" => match sprawl_advisor::llm::request_log_path().filter(|p| p.is_file()) {
+                Some(p) => {
+                    let _ = std::process::Command::new("notepad.exe").arg(p).spawn();
+                }
+                None => self.prefs.note = Some("The AI request log is empty.".into()),
+            },
+            "PfB_logClear" => {
+                if let Some(p) = sprawl_advisor::llm::request_log_path() {
+                    let _ = std::fs::remove_file(&p);
+                    let _ = std::fs::remove_file(p.with_extension("log.old"));
+                    let _ = std::fs::remove_file(p.with_extension("old"));
+                }
+                self.prefs.note = Some("The AI request log is cleared.".into());
+            }
+            "PfB_aiForget" => {
+                self.advisor.memory_ready();
+                let m = &mut self.advisor.memory;
+                let n = m.labels.iter().filter(|l| l.from == sprawl_advisor::memory::From::Model).count() + m.proposals.len() + m.cleaner_proposals.len();
+                m.labels.retain(|l| l.from != sprawl_advisor::memory::From::Model);
+                m.proposals.clear();
+                m.cleaner_proposals.clear();
+                self.advisor.cl.part_answers.clear();
+                self.save_memory();
+                self.prefs.note = Some(format!("Forgot {n} things the AI said. Rules and cleaners you approved stay."));
+            }
+            "PfB_mcpCopy" => {
+                crate::win32::copy_text(self.hwnd, &crate::bridge::setup_command());
+                self.prefs.note = Some("Copied the Claude Code setup command.".into());
+            }
+            "PfB_histClear" if !self.prefs.clear_armed => self.prefs.clear_armed = true,
+            "PfB_histClear" => {
+                self.prefs.clear_armed = false;
+                let mut n = 0;
+                if let Some(base) = sprawl_advisor::history::base_dir() {
+                    for e in sprawl_advisor::history::list(&base) {
+                        // only History's own files, in its own folder
+                        if e.file.starts_with(&base) && std::fs::remove_file(&e.file).is_ok() {
+                            n += 1;
+                        }
+                    }
+                }
+                self.prefs.note = Some(format!("Deleted {n} snapshots of History."));
+            }
+            "PfB_keepAdd" => {
+                let fe = self.prefs.fe.clone();
+                let typed = fe.as_ref().and_then(|fe| find::<TextBox>(fe, "PfKeepPath").and_then(|t| t.Text()).ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+                let path = std::path::PathBuf::from(typed.trim().trim_matches('"'));
+                if path.is_absolute() && path.exists() {
+                    self.advisor.memory_ready();
+                    let title = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    self.advisor.memory.decide(&path, &title, sprawl_advisor::memory::Verdict::Keep);
+                    self.save_memory();
+                    self.prefs.note = Some(format!("Sprawl will never offer {}.", path.display()));
+                } else {
+                    self.prefs.note = Some("Type the full path of a folder or file that exists, like D:\\Photos.".into());
+                }
+            }
+            n if n.starts_with("PfB_unkeep") => {
+                let i: usize = n["PfB_unkeep".len()..].parse().unwrap_or(usize::MAX);
+                self.advisor.memory_ready();
+                if let Some(p) = self.advisor.memory.kept_paths().get(i).cloned() {
+                    self.advisor.memory.undo(&p);
+                    self.save_memory();
+                    self.prefs.note = Some(format!("{} can be offered again (never ticked for you).", p.display()));
+                }
+            }
+            _ => {}
+        }
+        self.prefs_render();
     }
 
     /// The provider list changed: show the fields that provider needs.
@@ -277,16 +689,29 @@ impl State {
             let _ = k.SetPlaceholderText(&hint.into());
         }
         // the list of models for this provider; a text box until (and unless) it arrives. An
-        // OpenAI-compatible address is asked only on "Load models", never while it is typed.
-        if p != Provider::OpenAi {
+        // OpenAI-compatible address is asked only on "Load models", never while it is typed;
+        // nothing is asked while working offline
+        if p != Provider::OpenAi && !sprawl_advisor::offline() {
             self.wiz_models.want(p, &field(self, "WizUrl"));
         }
         self.wizard_models();
+        self.wizard_provider_rows();
+    }
+
+    /// The web-lookup switch shows only once a provider is chosen.
+    fn wizard_provider_rows(&self) {
+        let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+        if let Some(fe) = &self.prefs.fe {
+            if let Ok(e) = find::<UIElement>(fe, "PfRow_aiWebLookup") {
+                let _ = e.SetVisibility(if p == Provider::Off { Visibility::Collapsed } else { Visibility::Visible });
+            }
+        }
     }
 
     pub(crate) fn wizard_command(&mut self, name: &str) {
         match name {
             "WizBack" => {
+                self.prefs_harvest();
                 self.wizard_page = self.wizard_page.saturating_sub(1);
                 self.wizard_show();
             }
@@ -299,18 +724,25 @@ impl State {
                 self.wizard_provider();
             }
             "WizLoadModels" => {
+                if sprawl_advisor::offline() {
+                    return;
+                }
                 let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
                 self.wiz_models.reset();
                 self.wiz_models.want(p, &field(self, "WizUrl"));
                 self.wizard_models();
             }
-            "WizMcpCopy" => {
-                crate::win32::copy_text(self.hwnd, &crate::bridge::setup_command());
-                text(&self.root, "FootLeft", "Copied the Claude Code setup command.");
+            n if n.starts_with("PfSec") => {
+                self.prefs_harvest();
+                self.prefs.note = None;
+                self.prefs.clear_armed = false;
+                self.prefs.sec = n[5..].parse().unwrap_or(0);
+                self.wizard_show();
             }
             "WizNext" if self.wizard_all => self.wizard_finish(),
             "WizSkip" if self.wizard_all => shown(self, "Wizard", false),
             "WizNext" if self.wizard_page + 1 < PAGES => {
+                self.prefs_harvest();
                 self.wizard_page += 1;
                 self.wizard_show();
             }
@@ -324,63 +756,54 @@ impl State {
         }
     }
 
-    /// Apply every page through the same paths the menus use.
+    /// Apply what changed, through the same paths the menus use.
     fn wizard_finish(&mut self) {
-        let mut notes = Vec::new();
+        self.prefs_harvest();
+        let mut notes: Vec<String> = Vec::new();
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
-        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: AiConfig::load().web_lookup };
+        let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
+        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: web };
         if ai.save().is_err() {
-            notes.push("couldn't save the AI settings");
+            notes.push("couldn't save the AI settings".into());
         }
         let key = find::<PasswordBox>(&self.root, "WizKey").and_then(|k| k.Password()).map(|h| h.to_string_lossy()).unwrap_or_default();
-        let elsewhere = (p == Provider::OpenAi && key.trim().is_empty()).then(|| sprawl_advisor::llm::agent::key_elsewhere(&ai.base_url)).flatten();
-        if let Some(w) = &elsewhere {
-            notes.push(w.as_str());
+        if let Some(w) = (p == Provider::OpenAi && key.trim().is_empty()).then(|| sprawl_advisor::llm::agent::key_elsewhere(&ai.base_url)).flatten() {
+            notes.push(w);
         }
         if p.needs_key() && !key.trim().is_empty() {
             if !config::set_key(p, &key, &ai.base_url) {
-                notes.push("couldn't store the API key");
+                notes.push("couldn't store the API key".into());
             }
             if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
                 let _ = k.SetPassword(&"".into());
             }
         }
-
-        for (sw, item) in [("WizAdmin", "oAlwaysAdmin"), ("WizExplorer", "oExplorer"), ("WizMirror", "oMirror"), ("WizPulses", "oPulses")] {
-            let on = switch_on(self, sw);
-            if checked(self, item) != on {
-                if let Ok(t) = find::<ToggleMenuFlyoutItem>(&self.root, item) {
-                    let _ = t.SetIsChecked(on);
+        // what changed, and only that ("aiWebLookup" went with the AI settings above)
+        let changed: Vec<(&'static Pref, String)> = PREFS
+            .iter()
+            .filter(|p| p.key != "aiWebLookup")
+            .filter_map(|p| {
+                let v = self.prefs.draft.get(p.key)?;
+                (self.prefs.orig.get(p.key) != Some(v)).then(|| (p, v.clone()))
+            })
+            .collect();
+        for (p, v) in changed {
+            if let Kind::Number(knob, unit) = &p.kind {
+                let n = v.trim().replace([',', '.', ' '], "").parse::<u64>();
+                match n {
+                    Ok(n) if knob.clamp(n) != n => notes.push(format!("{} was held at {} {unit}", p.label.to_lowercase(), knob.clamp(n))),
+                    Err(_) => notes.push(format!("{} wasn't a number, so it stays {} {unit}", p.label.to_lowercase(), knob.default)),
+                    _ => {}
                 }
-                self.command(item);
             }
+            self.pref_apply(p, &v);
         }
-        // the start view, only when it changed (saving Settings mustn't leave a More view)
-        let pick = selected(self, "WizView").min(2);
-        let now = match self.map.scene.mode {
-            Mode::Map => 0,
-            Mode::City => 1,
-            Mode::Galaxy => 2,
-        };
-        if !self.wizard_all || pick != now {
-            self.command(["ModeMap", "ModeCity", "ModeGalaxy"][pick]);
-        }
-        select(self, "PaletteBox", selected(self, "WizPalette"));
-        if let Ok(t) = find::<ToggleSwitch>(&self.root, "AnimSwitch") {
-            let _ = t.SetIsOn(switch_on(self, "WizAnim"));
-        }
-        self.settings.set_bool("snapshots", switch_on(self, "WizSnapshots"));
-        self.settings.set("snapshot_cap_mb", CAPS_MB[selected(self, "WizCap").min(CAPS_MB.len() - 1)]);
-        self.settings.set("uninstaller", field(self, "WizUninstaller").trim().trim_matches('"'));
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
         shown(self, "Wizard", false);
-        let msg = if notes.is_empty() {
-            "Settings saved. Change them any time under Options > Settings (Ctrl+Shift+S).".to_string()
-        } else {
-            format!("Setup saved, but {}.", notes.join(" and "))
-        };
+        let msg = if notes.is_empty() { "Settings saved. Change them any time under Options > Settings (Ctrl+Shift+S).".to_string() } else { format!("Settings saved; {}.", notes.join("; ")) };
         text(&self.root, "FootLeft", &msg);
+        self.prefs.fe = None;
     }
 }
 

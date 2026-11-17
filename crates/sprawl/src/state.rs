@@ -123,6 +123,8 @@ pub(crate) struct State {
     pub(crate) update: crate::update::Updater,
     /// The Model dropdown on the setup / Settings page.
     pub(crate) wiz_models: crate::models::ModelFetch,
+    /// The wizard and Settings while open.
+    pub(crate) prefs: crate::wizard::PrefUi,
     /// The Search tab.
     pub(crate) search: crate::search::Search,
     pub(crate) hist: Option<crate::history::Hist>,
@@ -354,6 +356,11 @@ impl State {
                         self.scan_id += 1;
                         self.chat_reset();
                         self.advisor_start();
+                        // Settings > Scanning, "After a scan": open the Advisor (not for a
+                        // stopped scan, nor in a screenshot run)
+                        if self.settings.num("afterScan") == Some(1.0) && !job.progress.is_cancelled() && self.shot.is_none() && self.view != View::Advisor {
+                            self.set_view(View::Advisor);
+                        }
                     }
                     Err(e) => {
                         // The map was drawing the live preview, whose node numbers aren't the
@@ -728,6 +735,8 @@ impl State {
                         self.cleaner_command(&a[..cut], a[cut..].parse().unwrap_or(0));
                     }
                     a if a.starts_with("Adv") => self.advisor_command(a),
+                    // dev: a Settings section or a wizard button
+                    w if w.starts_with("PfSec") || w.starts_with("Wiz") => self.wizard_command(w),
                     _ => self.command(&c),
                 }
             }
