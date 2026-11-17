@@ -204,7 +204,7 @@ pub(crate) struct Advisor {
     dupes_note: Option<String>,
     show_kept: bool,
     show_memory: bool,
-    chat: Chat,
+    pub(crate) chat: Chat,
     /// When the AI run started, and when its status line last showed the time.
     ai_started: Option<std::time::Instant>,
     /// The running AI's Stop.
@@ -260,13 +260,13 @@ impl Advisor {
 
 /// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
 #[derive(Default)]
-struct Chat {
+pub(crate) struct Chat {
     /// Questions to the chat thread.
     tx: Option<Sender<String>>,
     rx: Option<Receiver<ChatMsg>>,
     /// (from the user, text)
     log: Vec<(bool, String)>,
-    status: Option<String>,
+    pub(crate) status: Option<String>,
     /// What is typed in the question box, kept across redraws.
     text: String,
     /// When the current question was asked.
@@ -386,6 +386,9 @@ pub(crate) const GOAL_EXAMPLE: &str = "20";
 /// Questions offered before the first one.
 const EXAMPLES: [&str; 4] = ["What is the biggest thing here?", "Show me videos over 1 GB", "What did I download and forget?", "What can I safely clean up?"];
 /// Ready-made questions in the Cleaners section.
+/// Under every AI answer: it isn't checked the way findings are.
+pub(crate) const UNCHECKED_LINE: &str = r##"<TextBlock Text="AI answers aren't checked the way Sprawl's findings are. Look before you rely on one." TextWrapping="Wrap" FontSize="11" Foreground="#FF7E8799" FontStyle="Italic"/>"##;
+
 const CL_EXAMPLES: [&str; 3] = ["Suggest what to clean", "Which of these come back by themselves?", "Is anything here risky to clean?"];
 
 /// What a risk means, in the words the user reads.
@@ -617,6 +620,7 @@ impl State {
         self.community_poll();
         self.own_poll();
         self.preview_poll();
+        self.ai_count_poll();
         self.tick_status();
         if self.advisor.models.poll() && self.advisor.ai_edit.is_some() && self.view == View::Advisor {
             self.read_ai_fields();
@@ -1044,8 +1048,13 @@ impl State {
                 return;
             }
             "AdvChatStop" => {
+                // at once: Claude Code's process is ended, a request in flight is dropped, a
+                // count waiting to ask is forgotten
                 self.advisor.chat.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                self.advisor.chat.status = Some("Stopping after this step".into());
+                self.advisor.cl.ai_count = None;
+                self.advisor.cl.part_q = None;
+                self.advisor.chat.status = Some("Stopping...".into());
+                self.advisor_changed();
                 return;
             }
             "AdvMcpCopy" => {
@@ -1061,7 +1070,16 @@ impl State {
                 self.suggest_tick();
             }
             "AdvClSugNo" => {
-                self.advisor.cl.suggest = None;
+                self.suggest_decline(None);
+            }
+            "AdvClSetup" => {
+                self.settings_open_at("ai");
+                return;
+            }
+            "AdvClAiFold" => {
+                let open = !self.cl_ai_open();
+                self.settings.set_bool("clAiOpen", open);
+                self.settings.save();
             }
             "AdvEx0" | "AdvEx1" | "AdvEx2" | "AdvEx3" => {
                 let i = name[5..].parse::<usize>().unwrap_or(0);
@@ -1381,6 +1399,8 @@ impl State {
             ("AdvClS", cl.1),
             ("AdvClK", cl.1),
             ("AdvClQ", cl.1),
+            ("AdvClSgT", cl.1),
+            ("AdvClSgX", cl.1),
             ("AdvClF", cl.0),
             ("AdvClU", 6),
             ("AdvClUse", cl.0),
@@ -1400,7 +1420,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
@@ -2253,6 +2273,12 @@ impl State {
             self.advisor.chat.log = log;
             return self.chat_ask(q);
         }
+        // on the Cleaners tab: what each part would really free is counted first, so the AI
+        // isn't given the scan's estimates
+        if self.advisor.section == Section::Cleaners && self.ai_count_first(&q) {
+            self.advisor_changed();
+            return;
+        }
         // asked in the Cleaners section: the cleaners as they are now go with the question
         let sent = match self.advice().filter(|_| self.advisor.section == Section::Cleaners) {
             Some(r) => format!(
@@ -2305,12 +2331,17 @@ impl State {
                     }
                 }
                 ChatMsg::Event(ChatEvent::Reply(s)) => {
+                    // a "?" about a part: the answer shows in its details too
+                    if let Some(k) = self.advisor.cl.part_q.take() {
+                        self.advisor.cl.part_answers.insert(k, s.clone());
+                    }
                     self.advisor.chat.live = None;
                     self.advisor.chat.log.push((false, s));
                     self.advisor.chat.status = None;
                     redraw = true;
                 }
                 ChatMsg::Event(ChatEvent::Failed(e)) => {
+                    self.advisor.cl.part_q = None;
                     self.advisor.chat.live = None;
                     self.advisor.chat.log.push((false, format!("(failed: {e})")));
                     self.advisor.chat.status = None;
@@ -2322,8 +2353,16 @@ impl State {
                         let _ = t.SetText(&f.as_str().into());
                     }
                 }
-                ChatMsg::Event(ChatEvent::Suggest { parts, why }) => {
-                    self.advisor.cl.suggest = Some((parts, why));
+                ChatMsg::Event(ChatEvent::Suggest { parts, why, reasons }) => {
+                    let declined = &self.advisor.memory.declined_parts;
+                    let parts: Vec<String> = parts.into_iter().filter(|p| !declined.iter().any(|d| d.eq_ignore_ascii_case(p))).collect();
+                    self.advisor.cl.sug_reasons = reasons.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
+                    // the applications with a suggested part open, so the marks are seen
+                    if let Some(r) = self.advice() {
+                        let open: Vec<String> = self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| parts.iter().any(|k| k.eq_ignore_ascii_case(&p.key)))).map(|c| c.id.clone()).collect();
+                        self.advisor.cl.open.extend(open);
+                    }
+                    self.advisor.cl.suggest = if parts.is_empty() { None } else { Some((parts, why)) };
                     redraw = true;
                 }
                 ChatMsg::Event(ChatEvent::Remember { prefs, labels, cleaners }) => {
@@ -2349,6 +2388,7 @@ impl State {
         }
     }
 
+    /// The AI's answers are not findings: said under each one.
     pub(crate) fn chat_card(&self) -> String {
         let c = &self.advisor.chat;
         let cleaning = self.advisor.section == Section::Cleaners;
@@ -2370,6 +2410,7 @@ impl State {
             } else {
                 x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/>"##);
                 x += &ui::markdown(text, 12, "#FFD5DBE8");
+                x += UNCHECKED_LINE;
             }
         }
         if c.log.is_empty() {
@@ -2391,13 +2432,15 @@ impl State {
             x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, t.split('\n').map(ui::esc).collect::<Vec<_>>().join("&#10;"));
         }
         if let Some(s) = &c.status {
+            // which provider is working, and Stop
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvChatStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ProgressRing IsActive="True" Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel><Button x:Name="AdvChatStop" Grid.Column="2" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4" VerticalAlignment="Top"/></Grid>"##,
+                ui::esc(&format!("Asking {who}")),
                 ui::esc(s)
             );
         }
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="{}"/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
+            r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="AdvChatText" TextWrapping="Wrap" AcceptsReturn="False" PlaceholderText="{}"/><Button x:Name="AdvChatSend" Grid.Column="1" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5" VerticalAlignment="Top"/><Button x:Name="AdvChatClear" Grid.Column="2" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" VerticalAlignment="Top"/></Grid>"##,
             if cleaning { "Ask about cleaning, then press Enter" } else { "Ask about this scan, then press Enter" }
         );
         x += "</StackPanel></Border>";

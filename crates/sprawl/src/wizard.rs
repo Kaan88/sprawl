@@ -230,6 +230,11 @@ impl State {
         self.wizard_open();
     }
 
+    /// Settings, at one section.
+    pub(crate) fn settings_open_at(&mut self, _section: &str) {
+        self.settings_open();
+    }
+
     pub(crate) fn wizard_show(&self) {
         if self.wizard_all {
             for i in 0..PAGES {

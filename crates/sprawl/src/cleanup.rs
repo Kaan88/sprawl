@@ -46,6 +46,8 @@ pub(crate) struct Item {
     pub title: String,
     pub bytes: u64,
     pub state: ItemState,
+    /// The rule (a cleaner part) it came from, if any: what it freed is remembered for it.
+    pub rule: Option<String>,
 }
 
 pub(crate) enum ItemState {
@@ -337,7 +339,16 @@ impl State {
                 continue;
             }
             work.push((f.path.clone(), action, f.bytes, gate));
-            items.push(Item { path: f.path.clone(), title: f.title.clone(), bytes: f.bytes, state: ItemState::Waiting });
+            items.push(Item {
+                path: f.path.clone(),
+                title: f.title.clone(),
+                bytes: f.bytes,
+                state: ItemState::Waiting,
+                rule: match &f.source {
+                    sprawl_advisor::Source::Rule(r) => Some(r.clone()),
+                    sprawl_advisor::Source::Model(_) => None,
+                },
+            });
         }
         if items.is_empty() {
             if held.is_empty() {
@@ -533,6 +544,17 @@ impl State {
                     self.advisor.memory.decide(&it.path, &it.title, sprawl_advisor::memory::Verdict::Done);
                 }
             }
+        }
+        // what each cleaner part really freed this time, for the AI's numbers next time
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let mut freed: std::collections::BTreeMap<String, u64> = Default::default();
+        for it in &run.items {
+            if let (Some(rule), ItemState::Done(o)) = (&it.rule, &it.state) {
+                *freed.entry(rule.clone()).or_default() += o.freed;
+            }
+        }
+        for (rule, b) in freed {
+            self.advisor.memory.freed.insert(rule, (b, now));
         }
         self.save_memory();
         self.advisor.cleanup.done = Some(done);

@@ -44,7 +44,8 @@ pub fn chat_specs() -> Vec<ToolSpec> {
             deleted by this. Only parts listed as safe or amber; say why in one or two sentences. One call per answer.",
         schema: json!({"type": "object", "properties": {
             "parts": {"type": "array", "items": {"type": "string"}, "description": "Part ids exactly as listed, like [id: chat.discord/cache]"},
-            "why": {"type": "string"}
+            "why": {"type": "string"},
+            "reasons": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional: one short reason per part id"}
         }, "required": ["parts", "why"]}),
     });
     v
@@ -236,6 +237,8 @@ pub struct Tools<'a> {
     pub filter: Option<String>,
     /// Cleaner parts the model suggests ticking (ids), and why: the app offers a Tick button.
     pub suggest: Option<(Vec<String>, String)>,
+    /// A reason per suggested part, where the model gave one.
+    pub suggest_reasons: Vec<(String, String)>,
     /// Asks the user whether a web search may go out; `None`: never.
     pub consent: Option<&'a dyn Fn(&str) -> bool>,
     /// The user's "Let the AI search the web" switch; off, `web_lookup` doesn't exist here.
@@ -279,6 +282,7 @@ impl<'a> Tools<'a> {
             cleaner_proposals: Vec::new(),
             filter: None,
             suggest: None,
+            suggest_reasons: Vec::new(),
             consent: None,
             web: false,
             search: web_search,
@@ -426,8 +430,12 @@ impl<'a> Tools<'a> {
                 if parts.is_empty() {
                     return Err("give `parts`: ids from the cleaners list".into());
                 }
-                let why = input["why"].as_str().unwrap_or("").chars().take(600).collect();
+                let why = clean_text_long(input["why"].as_str().unwrap_or(""), 600);
                 let n = parts.len();
+                self.suggest_reasons = input["reasons"]
+                    .as_object()
+                    .map(|o| o.iter().take(200).filter_map(|(k, v)| Some((k.trim().to_string(), clean_text_long(v.as_str()?, 240)))).collect())
+                    .unwrap_or_default();
                 self.suggest = Some((parts, why));
                 Ok(format!("Shown to the user with a Tick button ({n} parts). They review it before anything is deleted."))
             }

@@ -39,7 +39,8 @@ orange = the user's own files, red = never touch. Sprawl writes any command itse
 const CHAT: &str = "You answer questions about the user's disk inside Sprawl, a disk analyser for Windows. \
 You get a compact report of the scan and tools to look closer; use them before you answer, and answer briefly and concretely, with sizes. \
 Answer in short Markdown: the answer in one line, then bullets that start with the size. To show something on the user's map, call set_filter. You can't delete anything: to win back space, point the user to the Advisor's Findings list \
-(tick an item, then Clean up; or 'tick enough for N GB'), or to 'Ask Claude' for findings the rules missed. If you learn what a folder is, or the user states a preference, call remember.";
+(tick an item, then Clean up; or 'tick enough for N GB'), or to 'Ask Claude' for findings the rules missed. If you learn what a folder is, or the user states a preference, call remember. \
+When you are not sure what something is or what cleaning it would do, say so plainly instead of guessing.";
 
 /// Something the chat has for the app.
 #[derive(Debug)]
@@ -51,8 +52,8 @@ pub enum ChatEvent {
     /// Show this filter on the map (empty clears it).
     Filter(String),
     Remember { prefs: Vec<Pref>, labels: Vec<Label>, cleaners: Vec<CleanerProposal> },
-    /// Cleaner parts to offer ticking (ids), and why.
-    Suggest { parts: Vec<String>, why: String },
+    /// Cleaner parts to offer ticking (ids), why, and a reason per part where given.
+    Suggest { parts: Vec<String>, why: String, reasons: Vec<(String, String)> },
     Failed(String),
 }
 
@@ -232,7 +233,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
             events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels), cleaners });
         }
         if let Some((parts, why)) = tools.suggest.take() {
-            events(ChatEvent::Suggest { parts, why });
+            events(ChatEvent::Suggest { parts, why, reasons: std::mem::take(&mut tools.suggest_reasons) });
         }
         // always an answer, so the app never waits for one that isn't coming
         if !failed {

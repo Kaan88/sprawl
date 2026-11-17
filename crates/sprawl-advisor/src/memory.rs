@@ -112,6 +112,14 @@ pub struct Memory {
     /// when it opens. Only ever what the user ticked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleaner_ticks: Vec<String>,
+    /// Cleaner parts (by rule id) the user turned down when the AI suggested them: they are
+    /// not offered again, and the AI is told so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_parts: Vec<String>,
+    /// What cleaning each part (by rule id) really freed the last time: bytes, and when
+    /// (seconds since 1970). Sent to the AI so it suggests from what happens, not estimates.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub freed: std::collections::BTreeMap<String, (u64, u64)>,
     /// Cleaners the AI proposed, for the user to approve.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleaner_proposals: Vec<CleanerProposal>,
