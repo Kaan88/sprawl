@@ -180,17 +180,21 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
     }
     // sizes, dates and depths, then names; the path words after
     let (early, path_terms) = q.split_terms();
+    // a node is a 176-byte record: read it only when the query asks about it (a plain word
+    // looks at the index alone, as fast as before the keywords were added)
+    let sized = q.min.is_some() || q.max.is_some();
     let cheap = |i: usize| -> bool {
         if index.depth[i] == 0 {
             return false;
         }
         let node = &tree.nodes[i];
         match q.kind {
+            Kind::Any => {}
             Kind::Files if node.is_dir => return false,
             Kind::Folders if !node.is_dir => return false,
             _ => {}
         }
-        if !q.size_ok(node.size) {
+        if sized && !q.size_ok(node.size) {
             return false;
         }
         let it = NodeItem { tree, index, i, path: &[], opath: &[] };

@@ -268,14 +268,16 @@ impl CompactIndex {
             return Some(Vec::new());
         }
         let (early, path_terms) = q.split_terms();
+        // the flags and sizes are read only when the query asks about them
+        let sized = q.min.is_some() || q.max.is_some();
         let cheap = |i: usize| -> bool {
-            let dir = self.flags[i] & DIR != 0;
             match q.kind {
-                Kind::Files if dir => return false,
-                Kind::Folders if !dir => return false,
+                Kind::Any => {}
+                Kind::Files if self.flags[i] & DIR != 0 => return false,
+                Kind::Folders if self.flags[i] & DIR == 0 => return false,
                 _ => {}
             }
-            if !q.size_ok(self.size[i]) {
+            if sized && !q.size_ok(self.size[i]) {
                 return false;
             }
             let it = CItem { ix: self, i, path: &[], opath: &[] };

@@ -209,6 +209,7 @@ impl Term {
     }
 }
 
+#[inline]
 pub(crate) fn contains(hay: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
