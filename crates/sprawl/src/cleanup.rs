@@ -600,7 +600,7 @@ impl State {
         // the rows scroll; the boxes and buttons under them stay in view
         x += r##"<ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="8">"##;
         for (_, f) in &picked {
-            let what = crate::advisor::risk_words(f.risk);
+            let what = crate::advisor::risk_words_for(f);
             let ai = if matches!(f.source, Source::Model(_)) { " · suggested by the AI" } else { "" };
             x += &format!(
                 r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
@@ -618,6 +618,9 @@ impl State {
             );
         }
         x += "</StackPanel></ScrollViewer>";
+        for (_, f) in picked.iter().filter(|(_, f)| crate::advisor::gone_for_good(f)) {
+            x += &format!(r##"<TextBlock Text="{}: what is in it now cannot be brought back afterwards." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&f.title));
+        }
         // what the user keeps inside a ticked folder stays: say which
         let kept: Vec<PathBuf> = self
             .advisor

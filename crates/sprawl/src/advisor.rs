@@ -368,6 +368,21 @@ pub(crate) fn risk_words(r: Risk) -> &'static str {
     }
 }
 
+/// The risk words for one finding: what can't come back says so, whatever its colour.
+pub(crate) fn risk_words_for(f: &Finding) -> &'static str {
+    if gone_for_good(f) {
+        "Cannot be undone"
+    } else {
+        risk_words(f.risk)
+    }
+}
+
+/// The Recycle Bin and an old Windows: amber (nothing of the user's that they still use), but
+/// nothing brings them back.
+pub(crate) fn gone_for_good(f: &Finding) -> bool {
+    matches!(&f.source, Source::Rule(id) if id == "win.recycle-bin" || id == "win.windows-old")
+}
+
 /// The short form, for a row.
 pub(crate) fn risk_label(r: Risk) -> &'static str {
     match r {
@@ -2370,7 +2385,7 @@ impl State {
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
             if cfg.provider == Provider::Off && self.advisor.ai_edit.is_none() {
-                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Everything it claims is checked against the scan, and nothing is deleted until you press Clean up. It can use your own Claude Code (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
+                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you press Clean up. It can use your own Claude Code (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
             }
             if let Some(e) = &self.advisor.ai_edit {
                 x += &self.ai_settings(e);
@@ -2475,6 +2490,7 @@ impl State {
         let kind = match f.remedy {
             Remedy::Info | Remedy::Move => "Tip",
             Remedy::Uninstall => "Your call",
+            _ if gone_for_good(f) => "Cannot be undone",
             _ => risk_label(f.risk),
         };
         let sub = match &f.owner {
@@ -2562,18 +2578,19 @@ impl State {
         let own = self.uninstaller().filter(|_| f.remedy == Remedy::Uninstall && f.owner.is_some());
         if let (Some(exe), Some(o)) = (&own, &f.owner) {
             x += &format!(
-                r##"<Button x:Name="AdvUninstall" Content="Uninstall {}..." ToolTipService.ToolTip="Hands it to {}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##,
+                r##"<Button x:Name="AdvUninstall" Content="Hand to {}..." ToolTipService.ToolTip="Hands {} to {}: that program uninstalls it, not Sprawl" Padding="10,3" FontSize="12" CornerRadius="5"/>"##,
+                ui::esc(&exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
                 ui::esc(o),
                 ui::esc(&exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
             );
         } else if let (Some(how), Some(o)) = (how, &f.owner) {
-            let tip = match how {
-                sprawl_advisor::facts::Uninstall::Settings => "Opens Windows' Installed apps",
-                sprawl_advisor::facts::Uninstall::Steam(_) => "Opens Steam's uninstall, which asks first",
+            let (label, tip) = match how {
+                sprawl_advisor::facts::Uninstall::Settings => ("Open Installed apps...", format!("Opens Windows' Installed apps, with {o} copied to search for. Sprawl doesn't uninstall anything itself.")),
+                sprawl_advisor::facts::Uninstall::Steam(_) => ("Open Steam's uninstall...", "Opens Steam's uninstall, which asks first".to_string()),
             };
-            x += &format!(r##"<Button x:Name="AdvUninstall" Content="Uninstall {}..." ToolTipService.ToolTip="{tip}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(o));
+            x += &format!(r##"<Button x:Name="AdvUninstall" Content="{label}" ToolTipService.ToolTip="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(&tip));
         }
-        let keep_tip = if matches!(f.remedy, Remedy::Info | Remedy::Move) { "Never show this suggestion again (what is inside may still come up)" } else { "Never suggest this, or anything inside it, again" };
+        let keep_tip = if matches!(f.remedy, Remedy::Info | Remedy::Move) { "Never show this suggestion again (what is inside may still come up)" } else { "Never suggest or clean this, or anything inside it" };
         x += &format!(r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="{keep_tip}" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
         x += "</StackPanel></StackPanel></Border>";
         x

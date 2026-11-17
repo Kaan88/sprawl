@@ -66,7 +66,7 @@ pub fn xaml() -> String {
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
         <StackPanel x:Name="WizModelRow">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are. Every request is listed in the advisor's log. Web lookups always ask first."/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Requests are listed in the advisor's log; with Claude Code only the first prompt is, not what it asks Sprawl afterwards. Web lookups ask first, unless you allow them for the session."/>
         </StackPanel>"##,
         page_title("&#xE945;", "AI advisor", "Optional: who should explain your disk?"),
         label("Provider"),
@@ -108,7 +108,7 @@ pub fn xaml() -> String {
     let p5 = format!(
         r##"<StackPanel x:Name="WizP5" Spacing="2" Visibility="Collapsed">{}{}
         <TextBox x:Name="WizUninstaller" PlaceholderText="A full path to its .exe (optional)"/>
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Uninstall... in the Advisor hands an app to it (Revo, Bulk Crap Uninstaller, and the like) instead of Windows' own uninstaller."/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Hand to... in the Advisor hands an app to it (Revo, Bulk Crap Uninstaller, and the like) instead of Windows' own uninstaller."/>
         {}<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="WizMcp" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="440"/><Button x:Name="WizMcpCopy" Content="Copy" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>
         <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Run it once in a terminal; then your own Claude Code can ask Sprawl about your disk while Sprawl is open."/>
         </StackPanel>"##,

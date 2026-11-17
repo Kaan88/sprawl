@@ -135,7 +135,7 @@ impl State {
             "mUpdate" => self.update_check(true),
             "UpdateNow" | "UpdateLater" | "UpdateSkip" => self.update_command(name),
             "mShortcuts" => {
-                let mut s = String::from("Tabs: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor\nTables: arrow keys, Page Up/Down, Home/End; type a name to jump to it; Ctrl+click and Shift+click pick several\nMap: click selects, double-click goes in, wheel zooms, right-drag pans\n\n");
+                let mut s = String::from("Tabs: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor, Ctrl+5 Cleaners, Ctrl+F Search\nTables: arrow keys, Page Up/Down, Home/End; type a name to jump to it; Ctrl+click and Shift+click pick several\nMap: click selects, double-click goes in, wheel zooms, right-drag pans\n\n");
                 for (k, what) in crate::ui::shortcuts() {
                     s += &format!("{k}\t{what}\n");
                 }
@@ -268,7 +268,7 @@ impl State {
             }
             // only from the tables: the Advisor removes things only through its own review
             "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files | View::Search) => self.delete(name == "mDeleteForever"),
-            "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View and File View"),
+            "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View, File View and Search (on rows of this scan)"),
             "mExportCsv" if has_tree => {
                 // WizTree's format, so the file loads back here or in WizTree.
                 let path = user_dir("Documents").join(format!("Sprawl export {}.csv", stamp()));
