@@ -88,11 +88,21 @@ To try an update on a build that is already current, start it with
 
 ## Status
 
-Working: drive/folder scan (std::fs walk on a background thread), tree view with expand/collapse,
-file view (1000 largest files), file-type table with colours, cushion-shaded treemap with hover,
-click-to-reveal and file-type highlight, zoom in/out, units menu, show/hide panels, Explorer /
-command prompt / copy path, delete to Recycle Bin or permanently, CSV exports, treemap PNG export.
+Working:
 
-Not yet: reading the NTFS MFT directly (WizTree's speed trick), sortable columns, Select Multiple,
-Select CSV file, Reselect Child, filter, context menus, Colors / Tweaks dialogs, free space on the
-treemap, folder/file names drawn on the treemap, settings persistence.
+- Scanning: a drive or folder (several at once, or a CSV), from the NTFS MFT when run as
+  administrator and by a multi-threaded folder walk otherwise.
+- Analysis: tree view and file view with sortable columns and multi-select, the file-type table,
+  the filter, and the treemap with City, Galaxy and more views, names and free space drawn on it.
+- Row actions: Explorer, command prompt, copy path, and delete to the Recycle Bin or permanently.
+  Exports: CSV and PNG.
+- Settings and the window are remembered.
+- Advisor: findings from built-in rules with risk levels. It can clean up after a review, and it
+  leaves anything new since the scan and anything you chose to keep. It can also save a script.
+- Cleaners: per-app parts. Community cleaners are off until you turn them on.
+- Search: the scan's names, and other drives when you switch them on.
+- Optional AI: off by default. It names folders and suggests findings, but never deletes.
+- Scan history and growth, and signed updates.
+
+Not built: an uninstaller (Sprawl hands an app to Windows' Installed apps, Steam or a program you
+choose) and privacy cleaning (planned).

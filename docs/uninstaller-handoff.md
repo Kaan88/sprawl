@@ -1,11 +1,12 @@
 # Handing an uninstall to another app
 
-Sprawl never runs an uninstall command itself. By default, **Uninstall…** opens Windows'
-Installed apps, or Steam's own uninstall.
+Sprawl never runs an uninstall command itself. On an unused app's finding, **Open Installed
+apps…** opens Windows' Installed apps (with the app's name copied to search for), and **Open
+Steam's uninstall…** opens Steam's own.
 
-An uninstaller app of your own can take over instead. To set one, open the Advisor's Ask
-section and press **Change**. Under **Uninstaller**, enter the full path to its `.exe`. From
-then on, **Uninstall…** starts that program, after you confirm. Sprawl passes the details below,
+An uninstaller app of your own can take over instead. To set one, open **Options > Settings**,
+and under **Uninstaller** enter the full path to its `.exe`. From then on, the button reads
+**Hand to <program>…** and starts that program, after you confirm. Sprawl passes the details below,
 each as one `--key=value` argument:
 
 ```
