@@ -54,6 +54,8 @@ pub(crate) struct More {
     hits: Vec<(usize, usize)>,
     total: usize,
     hits_gen: u64,
+    /// What the indexing note in the main window says now ("" hidden).
+    busy_shown: String,
 }
 
 fn norm(p: &Path) -> String {
@@ -122,7 +124,7 @@ impl State {
     /// Every fixed drive the scan on screen isn't, read by itself (as administrator, from the
     /// file table), like Everything: search finds things on all drives without asking.
     fn more_all_drives(&mut self) {
-        if !sprawl_core::is_elevated() || self.settings.bool("search_all_drives") == Some(false) {
+        if !sprawl_core::is_elevated() || self.settings.bool("oSearchDrives") == Some(false) {
             return;
         }
         let cur = self.current_root();
@@ -251,7 +253,27 @@ impl State {
     }
 
     /// Each frame: places that arrived, results that arrived.
+    /// The note in the main window while names are being indexed: the drives being read, or the
+    /// scan's names, on any tab.
+    fn index_note(&mut self) {
+        let m = &self.search.more;
+        let mut what: Vec<String> = m.loading.iter().map(|l| l.replace(" (reading)", "")).collect();
+        if self.search.building.is_some() {
+            what.insert(0, "this scan".into());
+        }
+        let note = if what.is_empty() { String::new() } else { format!("Indexing {} for search...", what.join(", ")) };
+        if note == self.search.more.busy_shown {
+            return;
+        }
+        self.search.more.busy_shown = note.clone();
+        crate::state::text(&self.root, "IndexText", &note);
+        if let Ok(b) = find::<Border>(&self.root, "IndexBusy") {
+            let _ = b.cast::<UIElement>().and_then(|u| u.SetVisibility(if note.is_empty() { Visibility::Collapsed } else { Visibility::Visible }));
+        }
+    }
+
     pub(crate) fn more_poll(&mut self) {
+        self.index_note();
         let mut changed = false;
         if let Some(rx) = self.search.more.arriving.take() {
             let mut open = true;

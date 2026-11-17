@@ -336,6 +336,7 @@ pub fn page(drives: &[String]) -> String {
             ),
         ),
         toggle("oAuto", "Scan as Soon as a Drive Is Picked", true, "", ""),
+        toggle("oSearchDrives", "Search Every Drive When Search Opens", true, "", ""),
         SEP.to_string(),
         item("mAdmin", "Restart as Administrator", "", ""),
         toggle("oAlwaysAdmin", "Always Run as Administrator", false, "", ""),
@@ -508,6 +509,7 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
 
   <Grid Grid.Row="3" Margin="12,0,12,6">
+  <Border x:Name="IndexBusy" Visibility="Collapsed" HorizontalAlignment="Right" Margin="0,0,352,0" Padding="10,4" CornerRadius="6" Background="#332F6BFF" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0"/><TextBlock x:Name="IndexText" FontSize="12" Foreground="#FFCFE0FF" VerticalAlignment="Center" MaxWidth="380" TextTrimming="CharacterEllipsis"/></StackPanel></Border>
   <TextBox x:Name="FilterBox" HorizontalAlignment="Right" Width="340" Height="32" PlaceholderText="Filter: *.mp4;  node_modules;  *\cache\*" FontSize="12"/>
   <StackPanel Orientation="Horizontal" Spacing="4">
     <Button x:Name="TabTree" Content="Tree View" Padding="14,4" CornerRadius="6" Background="#FF2C3550" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>

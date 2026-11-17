@@ -26,7 +26,7 @@ pub(crate) struct Search {
     pub(crate) query: String,
     /// The index and the `tree_gen` it was built for.
     index: Option<(u64, Arc<Index>)>,
-    building: Option<(u64, Receiver<Index>)>,
+    pub(crate) building: Option<(u64, Receiver<Index>)>,
     cancel: Arc<AtomicBool>,
     running: Option<Receiver<Found>>,
     /// The search to run once the index is ready.
