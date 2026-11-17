@@ -16,7 +16,7 @@ fn main() {
     let cleaners_only = args.iter().any(|a| a == "--cleaners");
     let ts = std::time::Instant::now();
     let tree = if cleaners_only {
-        let roots = sprawl_advisor::cleaners::scan_roots(&sprawl_advisor::cleaners::catalogue(&[RulePack::builtin()]));
+        let roots = sprawl_advisor::cleaners::quick_roots(&sprawl_advisor::cleaners::catalogue(&[RulePack::builtin()])).0;
         sprawl_core::scan_many(&roots, &Progress::default()).expect("scan")
     } else {
         scan_auto(&path, &Progress::default()).expect("scan")

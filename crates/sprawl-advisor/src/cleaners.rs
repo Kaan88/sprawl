@@ -455,9 +455,11 @@ pub fn scan_roots(catalogue: &[CleanerDef]) -> Vec<std::path::PathBuf> {
         if path.is_dir() {
             // a part that is this whole folder: read its parent, since the safety checks never
             // offer a scan's own top folder; not when that is a drive's own folder (C:\Windows)
-            let parent = path.parent().filter(|p| !wild && p.components().count() > 3 && p.is_dir());
+            // nor a profile's own folder (C:\Users\name): that would read Documents and all
+            // the rest to open the tab; the part's folder is read, and held back as a scan's top
+            let parent = path.parent().filter(|p| !wild && p.components().count() > 3 && !is_profile(p) && p.is_dir());
             roots.push(parent.map_or(path.clone(), |p| p.to_path_buf()));
-        } else if let Some(parent) = path.parent().filter(|p| p.components().count() > 3 && p.is_dir() && path.extension().is_some()) {
+        } else if let Some(parent) = path.parent().filter(|p| p.components().count() > 3 && !is_profile(p) && p.is_dir() && path.extension().is_some()) {
             // a file the part names: its folder, when that isn't a drive's own folder
             // (C:\Windows\MEMORY.DMP is left to a scan of the drive)
             roots.push(parent.to_path_buf());
@@ -469,6 +471,38 @@ pub fn scan_roots(catalogue: &[CleanerDef]) -> Vec<std::path::PathBuf> {
     let all = roots.clone();
     roots.retain(|r| !all.iter().any(|o| o != r && low(r).starts_with(&format!("{}\\", low(o)))));
     roots
+}
+
+/// Large Windows folders the Cleaners tab's quick read leaves to a scan of the drive: reading
+/// them makes the tab slow to open for what is a command to run anyway.
+pub const HEAVY: &[&str] = &[r"%SystemRoot%\WinSxS", r"%SystemDrive%\Windows.old"];
+
+/// The folders the Cleaners tab reads with no scan, and those it leaves out (`HEAVY`, and
+/// anything inside them), for a scan of the drive.
+pub fn quick_roots(catalogue: &[CleanerDef]) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let heavy: Vec<String> = HEAVY.iter().map(|h| crate::rules::expand(h).trim_end_matches('\\').to_lowercase()).filter(|h| !h.contains('%')).collect();
+    scan_roots(catalogue).into_iter().partition(|r| {
+        let r = r.to_string_lossy().trim_end_matches('\\').to_lowercase();
+        !heavy.iter().any(|h| r == *h || r.starts_with(&format!("{h}\\")) || h.starts_with(&format!("{r}\\")))
+    })
+}
+
+/// Whether `path` (a part's path, as written) is in a folder `quick_roots` left out.
+pub fn left_out(path: &str, out: &[std::path::PathBuf]) -> bool {
+    let p = crate::rules::expand(path).to_lowercase();
+    out.iter().any(|o| {
+        let o = o.to_string_lossy().trim_end_matches('\\').to_lowercase();
+        p == o || p.starts_with(&format!("{o}\\"))
+    })
+}
+
+/// A user's profile folder (`X:\Users\name`, or this user's %USERPROFILE% wherever it is).
+fn is_profile(p: &std::path::Path) -> bool {
+    let low = |p: &std::path::Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    if std::env::var_os("USERPROFILE").is_some_and(|h| low(std::path::Path::new(&h)) == low(p)) {
+        return true;
+    }
+    p.parent().is_some_and(|u| u.components().count() == 3 && u.file_name().is_some_and(|n| n.eq_ignore_ascii_case("users")))
 }
 
 /// Whether `def`'s application is in the scan, elsewhere on this PC, or not here. `found`: the
@@ -590,6 +624,22 @@ mod tests {
 
     const GOOD: &str = "[[cleaner]]\nid = 'app.x'\nname = 'X'\ngroup = 'Chat'\nrunning = ['X.exe']\nrules = ['r.one']\n[[cleaner.part]]\nid = 'cache'\ntitle = 'Cache'\nrisk = 'green'\npaths = ['C:\\x\\Cache']\nwhy = 'copies'\ncost = 'Slower once.'\n[[cleaner.part]]\nid = 'logs'\ntitle = 'Logs'\nrisk = 'green'\npaths = ['C:\\x\\logs']\naction = 'match'\npattern = '*.log'\nwhy = 'logs'\n";
 
+    /// The quick read leaves the large Windows folders out, and says which parts that touches.
+    #[test]
+    fn the_quick_read_leaves_the_large_windows_folders_out() {
+        let packs = [crate::RulePack::builtin()];
+        let (read, out) = quick_roots(&catalogue(&packs));
+        let has = |v: &[std::path::PathBuf], end: &str| v.iter().any(|p| p.to_string_lossy().to_lowercase().ends_with(end));
+        assert!(!has(&read, r"\winsxs") && !has(&read, r"\windows.old"), "{read:?}");
+        if std::path::Path::new(&crate::rules::expand(r"%SystemRoot%\WinSxS")).is_dir() {
+            assert!(has(&out, r"\winsxs"), "{out:?}");
+            assert!(left_out(r"%SystemRoot%\WinSxS", &out));
+        }
+        // the small Windows places stay in it
+        assert!(!left_out(r"%SystemRoot%\Temp", &out) && !left_out(r"%SystemRoot%\Minidump", &out));
+        assert!(!left_out(r"%SystemRoot%\WinSxSFake", &out));
+    }
+
     #[test]
     fn scan_roots_are_the_fixed_starts_of_what_cleaners_name() {
         // not in %TEMP%: that is inside AppData, which is a root of its own
@@ -616,6 +666,8 @@ mod tests {
                 part(vec![format!(r"{b}\other\logs\*.log"), format!(r"{b}\missing\x"), r"?:\**\Thumbs.db".into(), r"%NOPE_NOT_SET%\x".into(), r"%SystemDrive%\Windows\*.log".into()]),
                 // any account's folder: this user's
                 part(vec![r"%SystemDrive%\Users\*\AppData\Local\sprawl-roots-test-none".into(), r"%SystemDrive%\Users\*\AppData\Local".into()]),
+                // a folder straight inside the profile: never the whole profile
+                part(vec![r"%USERPROFILE%\AppData".into()]),
             ],
             text: String::new(),
         };
@@ -630,6 +682,7 @@ mod tests {
         // a profile's AppData, whichever profile the tests run as (others change USERPROFILE)
         assert!(roots.iter().any(|p| p.ends_with("AppData") && p.to_string_lossy().to_lowercase().contains(r"\users\")), "{roots:?}");
         assert!(!roots.iter().any(|p| p.ends_with("Users")), "{roots:?}");
+        assert!(!roots.iter().any(|p| is_profile(p)), "never a whole profile: {roots:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 

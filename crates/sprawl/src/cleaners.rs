@@ -42,8 +42,9 @@ pub(crate) struct ClState {
     /// That read going on: its progress, and where its answer comes.
     pub(crate) own_reading: Option<(Arc<sprawl_core::Progress>, std::sync::mpsc::Receiver<Option<Own>>)>,
     own_count: u64,
-    /// The folders the cleaners look at (worked out once).
-    roots: std::cell::RefCell<Option<Vec<std::path::PathBuf>>>,
+    /// The folders the cleaners look at, and the large ones the quick read leaves out
+    /// (worked out once).
+    roots: std::cell::RefCell<Option<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)>>,
     /// The tab just opened: the user's remembered ticks are to be put back.
     pub(crate) restore_pending: bool,
     /// The user changed a tick: remembered at the next redraw.
@@ -145,8 +146,9 @@ fn group_of(g: &str) -> &'static str {
 }
 
 impl State {
-    /// The folders the cleaners look at: built-in and the user's own cleaners.
-    pub(crate) fn cleaner_roots(&self) -> Vec<std::path::PathBuf> {
+    /// The folders the cleaners look at (built-in and the user's own cleaners), and the large
+    /// Windows folders the tab's quick read leaves to a scan of the drive.
+    pub(crate) fn cleaner_roots_all(&self) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
         self.advisor
             .cl
             .roots
@@ -154,9 +156,14 @@ impl State {
             .get_or_insert_with(|| {
                 let mut packs = vec![sprawl_advisor::RulePack::builtin()];
                 packs.extend(sprawl_advisor::memory::load_packs().0);
-                sprawl_advisor::cleaners::scan_roots(&sprawl_advisor::cleaners::catalogue(&packs))
+                sprawl_advisor::cleaners::quick_roots(&sprawl_advisor::cleaners::catalogue(&packs))
             })
             .clone()
+    }
+
+    /// The folders the tab's quick read takes.
+    pub(crate) fn cleaner_roots(&self) -> Vec<std::path::PathBuf> {
+        self.cleaner_roots_all().0
     }
 
     /// The scan on screen covers every folder the cleaners look at (a scan of the system
@@ -924,7 +931,13 @@ impl State {
                     m if m < 120 => format!("{m} minutes ago"),
                     m => format!("{} hours ago", m / 60),
                 };
-                format!("Checked {when}: the {} folders the cleaners look at, read for this tab", o.roots)
+                let out = self.cleaner_roots_all().1;
+                let mut s = format!("Checked {when}: the {} folders the cleaners look at, read for this tab", o.roots);
+                if !out.is_empty() {
+                    let names: Vec<String> = out.iter().map(|p| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).collect();
+                    s += &format!(". Left out of this quick read, as they are large: {}; scan {} for them", names.join(" and "), std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()));
+                }
+                s
             }
             None => match self.tree.as_ref() {
                 Some(t) => format!("From this scan of {}", t.root_path.display()),
@@ -1074,6 +1087,9 @@ impl State {
                 Class::Space => crate::advisor::risk_label(p.risk).to_string(),
             }
         };
+        if self.part_left_out(r, c, p) {
+            sub += &format!(" · not in the quick read: size shown after a scan of {}", sys_drive());
+        }
         let open = p.findings.first().and_then(|&i| self.app_open(&r.findings[i]));
         match &open {
             Some((app, Closed::Must)) => sub += &format!(" · close {app} first"),
@@ -1100,6 +1116,17 @@ impl State {
                 b => self.size(b),
             },
         )
+    }
+
+    /// Part `p` looks only in folders the tab's quick read left out (the component store,
+    /// Windows.old): its size is known after a scan of the drive.
+    fn part_left_out(&self, r: &Report, c: &ClRow, p: &PartRow) -> bool {
+        if !p.findings.is_empty() || !self.own_active() {
+            return false;
+        }
+        let out = self.cleaner_roots_all().1;
+        let Some(d) = c.def.map(|k| &r.catalogue[k]) else { return false };
+        d.parts.iter().find(|x| x.rule == p.key).is_some_and(|x| !x.paths.is_empty() && x.paths.iter().all(|path| sprawl_advisor::cleaners::left_out(path, &out)))
     }
 
     /// Every finding of `p` that is an estimate has been counted now.
@@ -1146,11 +1173,17 @@ impl State {
             &p.cost
         } else if p.info {
             "Sprawl doesn't clean this itself: it is a tip."
-        } else {
+        } else if p.risk == Risk::Green {
             "Nothing you'd notice: the application makes it again when it needs it."
+        } else {
+            // never a reassurance that wasn't written for it
+            "Its definition doesn't say. Read what it is above before ticking it."
         });
         x += &label("Where");
-        if p.findings.is_empty() {
+        if self.part_left_out(r, c, p) {
+            x += &body(&format!("In a large Windows folder the quick read leaves out. Its size, and the way to clean it, show after a scan of {}.", sys_drive()));
+            x += &format!(r##"<Button x:Name="AdvClScanSys" Content="{}" Padding="10,2" FontSize="12" CornerRadius="5"/>"##, ui::esc(&format!("Scan {}", sys_drive())));
+        } else if p.findings.is_empty() {
             x += &body("Nothing of it here now.");
         }
         for &i in p.findings.iter().take(8) {
@@ -1428,6 +1461,11 @@ impl State {
         );
         x
     }
+}
+
+/// The system drive, "C:".
+fn sys_drive() -> String {
+    std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into())
 }
 
 /// What an application's own tick takes: its parts that free space and are safe or amber.
