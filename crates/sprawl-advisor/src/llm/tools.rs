@@ -37,6 +37,16 @@ pub fn chat_specs() -> Vec<ToolSpec> {
         schema: json!({"type": "object", "properties": {"path": path}, "required": ["path"]}),
     });
     v.push(ToolSpec {
+        name: "suggest_ticks",
+        description: "Suggest cleaner parts for the user to tick, when they ask what to clean (the cleaners and their part ids are in \
+            the question). Sprawl shows the suggestion with a Tick button; the user still reviews and presses Clean up, nothing is \
+            deleted by this. Only parts listed as safe or amber; say why in one or two sentences. One call per answer.",
+        schema: json!({"type": "object", "properties": {
+            "parts": {"type": "array", "items": {"type": "string"}, "description": "Part ids exactly as listed, like [id: chat.discord/cache]"},
+            "why": {"type": "string"}
+        }, "required": ["parts", "why"]}),
+    });
+    v.push(ToolSpec {
         name: "web_lookup",
         description: "Search the web to find out what a folder, file or app is. The user sees the exact query and must allow it,             so keep it short and leave out personal names and paths.",
         schema: json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
@@ -157,6 +167,8 @@ pub struct Tools<'a> {
     pub cleaner_proposals: Vec<CleanerProposal>,
     /// A filter the model asked to show (chat), for the app to apply.
     pub filter: Option<String>,
+    /// Cleaner parts the model suggests ticking (ids), and why: the app offers a Tick button.
+    pub suggest: Option<(Vec<String>, String)>,
     /// Asks the user whether a web search may go out; `None`: never.
     pub consent: Option<&'a dyn Fn(&str) -> bool>,
     /// The tools offered in this conversation; any other name is refused.
@@ -193,6 +205,7 @@ impl<'a> Tools<'a> {
             proposals: Vec::new(),
             cleaner_proposals: Vec::new(),
             filter: None,
+            suggest: None,
             consent: None,
             allowed: None,
         };
@@ -332,6 +345,16 @@ impl<'a> Tools<'a> {
                     return Err("The user didn't allow this search.".into());
                 }
                 web_search(&q)
+            }
+            "suggest_ticks" => {
+                let parts: Vec<String> = input["parts"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(200).collect()).unwrap_or_default();
+                if parts.is_empty() {
+                    return Err("give `parts`: ids from the cleaners list".into());
+                }
+                let why = input["why"].as_str().unwrap_or("").chars().take(600).collect();
+                let n = parts.len();
+                self.suggest = Some((parts, why));
+                Ok(format!("Shown to the user with a Tick button ({n} parts). They review it before anything is deleted."))
             }
             "remember" => {
                 let text = input["text"].as_str().unwrap_or("");

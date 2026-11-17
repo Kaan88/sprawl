@@ -356,6 +356,8 @@ pub(crate) const GOAL_EXAMPLE: &str = "20";
 
 /// Questions offered before the first one.
 const EXAMPLES: [&str; 4] = ["What is the biggest thing here?", "Show me videos over 1 GB", "What did I download and forget?", "What can I safely clean up?"];
+/// Ready-made questions in the Cleaners section.
+const CL_EXAMPLES: [&str; 3] = ["Suggest what to clean", "Which of these come back by themselves?", "Is anything here risky to clean?"];
 
 /// What a risk means, in the words the user reads.
 pub(crate) fn risk_words(r: Risk) -> &'static str {
@@ -483,7 +485,9 @@ impl State {
     /// Analyse the tree in the background (after a scan, a delete, or on Refresh).
     /// Open Ask with question `q` sent.
     pub(crate) fn ask_about(&mut self, q: String) {
-        self.advisor.section = Section::Ask;
+        if self.advisor.section != Section::Cleaners {
+            self.advisor.section = Section::Ask;
+        }
         self.chat_ask(q);
     }
 
@@ -956,6 +960,16 @@ impl State {
                 self.adv_say("Copied. Run it once in a terminal, then ask Claude Code about your disk while Sprawl is open.");
                 return;
             }
+            "AdvClAi0" | "AdvClAi1" | "AdvClAi2" => {
+                let i = name[7..].parse::<usize>().unwrap_or(0);
+                return self.chat_ask(CL_EXAMPLES.get(i).copied().unwrap_or_default().to_string());
+            }
+            "AdvClSugTick" => {
+                self.suggest_tick();
+            }
+            "AdvClSugNo" => {
+                self.advisor.cl.suggest = None;
+            }
             "AdvEx0" | "AdvEx1" | "AdvEx2" | "AdvEx3" => {
                 let i = name[5..].parse::<usize>().unwrap_or(0);
                 return self.chat_ask(EXAMPLES.get(i).copied().unwrap_or_default().to_string());
@@ -1271,7 +1285,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
@@ -2000,8 +2014,17 @@ impl State {
             self.advisor.chat.log = log;
             return self.chat_ask(q);
         }
+        // asked in the Cleaners section: the cleaners as they are now go with the question
+        let sent = match self.advice().filter(|_| self.advisor.section == Section::Cleaners) {
+            Some(r) => format!(
+                "{q}\n\n# Sprawl's cleaners for this scan, as the user sees them now\n{}\nIf the user wants to know what to clean, \
+                 call suggest_ticks with the part ids you recommend (safe and amber parts only), and say why in the answer.",
+                self.cleaners_text(r)
+            ),
+            None => q.clone(),
+        };
         if let Some(tx) = &self.advisor.chat.tx {
-            if tx.send(q.clone()).is_ok() {
+            if tx.send(sent).is_ok() {
                 self.advisor.chat.log.push((true, q));
                 self.advisor.chat.status = Some("Sending the question".into());
                 self.advisor.chat.asked = Some(std::time::Instant::now());
@@ -2060,6 +2083,10 @@ impl State {
                         let _ = t.SetText(&f.as_str().into());
                     }
                 }
+                ChatMsg::Event(ChatEvent::Suggest { parts, why }) => {
+                    self.advisor.cl.suggest = Some((parts, why));
+                    redraw = true;
+                }
                 ChatMsg::Event(ChatEvent::Remember { prefs, labels, cleaners }) => {
                     for c in cleaners {
                         let _ = self.advisor.memory.propose_cleaner(c);
@@ -2083,14 +2110,18 @@ impl State {
         }
     }
 
-    fn chat_card(&self) -> String {
+    pub(crate) fn chat_card(&self) -> String {
         let c = &self.advisor.chat;
+        let cleaning = self.advisor.section == Section::Cleaners;
         let who = match AiConfig::load().provider {
             Provider::ClaudeCode => "Claude Code",
             Provider::Anthropic => "Claude",
             _ => "AI",
         };
-        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Ask your disk" FontSize="13" FontWeight="SemiBold"/>"##);
+        let mut x = format!(
+            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold"/>"##,
+            if cleaning { "Ask the AI about cleaning" } else { "Ask your disk" }
+        );
         for (user, text) in c.log.iter().rev().take(12).rev() {
             if *user {
                 x += &format!(
@@ -2105,8 +2136,9 @@ impl State {
         if c.log.is_empty() {
             // ready-made questions: one click asks
             x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
-            for (i, q) in EXAMPLES.iter().enumerate() {
-                x += &format!(r##"<Button x:Name="AdvEx{i}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="12" Background="#142F7BF6"/>"##, ui::esc(q));
+            let (prefix, examples): (&str, &[&str]) = if cleaning { ("AdvClAi", &CL_EXAMPLES) } else { ("AdvEx", &EXAMPLES) };
+            for (i, q) in examples.iter().enumerate() {
+                x += &format!(r##"<Button x:Name="{prefix}{i}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="12" Background="#142F7BF6"/>"##, ui::esc(q));
             }
             x += "</StackPanel>";
         }
@@ -2125,7 +2157,10 @@ impl State {
                 ui::esc(s)
             );
         }
-        x += r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="Ask about this scan, then press Enter"/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##;
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="6"><TextBox x:Name="AdvChatText" Width="430" PlaceholderText="{}"/><Button x:Name="AdvChatSend" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvChatClear" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
+            if cleaning { "Ask about cleaning, then press Enter" } else { "Ask about this scan, then press Enter" }
+        );
         x += "</StackPanel></Border>";
         x
     }

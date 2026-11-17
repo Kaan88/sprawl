@@ -581,6 +581,8 @@ impl State {
                     }
                     q if q.starts_with("chat=") => self.advisor_chat_dev(&q[5..]),
                     "chatdemo" => self.advisor_chat_demo(),
+                    // dev: an AI suggestion of every part in the scan
+                    "suggestdemo" => self.suggest_demo(),
                     // dev: click the map a third of the way across
                     "mapclick" => self.map_click(w * 0.3, h * 0.5),
                     // dev: a Cleaners button, AdvClO0 (open), AdvClT2 (tick), AdvClS2 (files)

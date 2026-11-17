@@ -51,6 +51,8 @@ pub enum ChatEvent {
     /// Show this filter on the map (empty clears it).
     Filter(String),
     Remember { prefs: Vec<Pref>, labels: Vec<Label>, cleaners: Vec<CleanerProposal> },
+    /// Cleaner parts to offer ticking (ids), and why.
+    Suggest { parts: Vec<String>, why: String },
     Failed(String),
 }
 
@@ -191,6 +193,9 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
         }
         if !tools.prefs.is_empty() || !tools.labels.is_empty() || !cleaners.is_empty() {
             events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels), cleaners });
+        }
+        if let Some((parts, why)) = tools.suggest.take() {
+            events(ChatEvent::Suggest { parts, why });
         }
         // always an answer, so the app never waits for one that isn't coming
         if !failed {

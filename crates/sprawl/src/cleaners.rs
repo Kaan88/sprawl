@@ -34,6 +34,8 @@ pub(crate) struct ClState {
     pub(crate) fetch_checked: bool,
     /// The list of what the converter left out is shown.
     pub(crate) left_shown: bool,
+    /// Parts the AI suggests ticking (part keys), and why.
+    pub(crate) suggest: Option<(Vec<String>, String)>,
 }
 
 /// Folders no cleaner knows are listed from this size.
@@ -174,6 +176,8 @@ impl State {
         let mut x = String::from(
             r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Text="The applications on this PC, and what each keeps that can go. A part's tick is the same as its row in Findings: one bar, one review, and nothing goes before you press Clean up."/>"##,
         );
+        x += &self.suggest_card(r);
+        x += &self.chat_card();
         if !self.usual_keys(r).is_empty() {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
         }
@@ -752,8 +756,64 @@ impl State {
     }
 
     /// The cleaners as text, for the read-only MCP tool.
+    /// The parts the AI suggested that can be ticked: safe or amber, with something to tick.
+    fn suggested_parts<'a>(&self, r: &Report, rows: &'a [ClRow]) -> (Vec<(&'a ClRow, &'a PartRow)>, usize) {
+        let Some((keys, _)) = &self.advisor.cl.suggest else { return (Vec::new(), 0) };
+        let mut ok = Vec::new();
+        let mut left = 0;
+        for k in keys {
+            match rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).find(|(_, p)| p.key.eq_ignore_ascii_case(k)) {
+                Some((c, p)) if matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() => ok.push((c, p)),
+                _ => left += 1,
+            }
+        }
+        (ok, left)
+    }
+
+    /// The AI's suggestion: which parts, how much, why; Tick them adds their ticks (the review
+    /// still comes before anything is deleted).
+    fn suggest_card(&self, r: &Report) -> String {
+        let Some((_, why)) = &self.advisor.cl.suggest else { return String::new() };
+        let rows = self.cleaner_layout(r);
+        let (ok, left) = self.suggested_parts(r, &rows);
+        let bytes: u64 = ok.iter().map(|(_, p)| p.bytes(r)).sum();
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#1A2F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="6">"##);
+        x += &format!(r##"<TextBlock Text="The AI suggests ticking {} part{} ({})" FontSize="13" FontWeight="SemiBold"/>"##, ok.len(), if ok.len() == 1 { "" } else { "s" }, self.size(bytes));
+        if !why.is_empty() {
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(why));
+        }
+        for (c, p) in &ok {
+            x += &format!(r##"<TextBlock Text="{}: {}   {}" FontSize="12" Foreground="#FFB9C2D6" Margin="8,0,0,0"/>"##, ui::esc(&c.name), ui::esc(&p.title), self.size(p.bytes(r)));
+        }
+        if left > 0 {
+            x += &format!(r##"<TextBlock Text="{left} more it named can't be ticked here (not found, not safe enough, or nothing to clean); they are left out." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
+        }
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
+        if !ok.is_empty() {
+            x += r##"<Button x:Name="AdvClSugTick" Content="Tick them" Padding="12,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Adds these ticks. You still see the review before anything is deleted."/>"##;
+        }
+        x += r##"<Button x:Name="AdvClSugNo" Content="Dismiss" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##;
+        x
+    }
+
+    /// Dev: a suggestion of every part with something in it, as the AI would send it.
+    pub(crate) fn suggest_demo(&mut self) {
+        let Some(r) = self.advice() else { return };
+        let keys: Vec<String> = self.cleaner_layout(r).iter().flat_map(|c| c.parts.iter()).filter(|p| p.bytes(r) > 0).map(|p| p.key.clone()).collect();
+        self.advisor.cl.suggest = Some((keys, "These are caches and logs the apps make again by themselves; nothing you made is in them.".into()));
+        self.render_advisor();
+    }
+
+    pub(crate) fn suggest_tick(&mut self) {
+        let Some(r) = self.advice() else { return };
+        let rows = self.cleaner_layout(r);
+        let keys: Vec<String> = self.suggested_parts(r, &rows).0.iter().flat_map(|(_, p)| p.tickable(r).map(|k| key(&r.findings[k].path))).collect();
+        self.cleanup_tick_many(keys);
+        self.advisor.cl.suggest = None;
+    }
+
     pub(crate) fn cleaners_text(&self, r: &Report) -> String {
-        let rows: Vec<(String, Vec<(String, Risk, u64, Vec<String>)>)> = self
+        let rows: Vec<(String, Vec<sprawl_advisor::cleaners::PartText>)> = self
             .cleaner_layout(r)
             .into_iter()
             .filter(|c| c.presence == Presence::InScan)
@@ -762,7 +822,10 @@ impl State {
                     .parts
                     .iter()
                     .filter(|p| p.bytes(r) > 0)
-                    .map(|p| (p.title.clone(), p.risk, p.bytes(r), p.findings.iter().map(|&i| r.findings[i].path.display().to_string()).collect()))
+                    .map(|p| {
+                        let ticked = p.findings.iter().any(|&i| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path)));
+                        (p.key.clone(), p.title.clone(), p.risk, p.bytes(r), p.findings.iter().map(|&i| r.findings[i].path.display().to_string()).collect(), ticked)
+                    })
                     .collect();
                 (c.name, parts)
             })

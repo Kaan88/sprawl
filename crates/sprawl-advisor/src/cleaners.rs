@@ -301,13 +301,16 @@ pub fn part_of<'a>(catalogue: &'a [CleanerDef], rule: &str) -> Option<(&'a Clean
 
 /// The cleaners as text, for the read-only MCP tool: each application found, its parts and
 /// sizes. `parts`: (cleaner name, part title, risk, bytes, paths).
-pub fn as_text(rows: &[(String, Vec<(String, Risk, u64, Vec<String>)>)]) -> String {
+/// A cleaner's parts for a model: (id, title, risk, bytes, paths, ticked).
+pub type PartText = (String, String, Risk, u64, Vec<String>, bool);
+
+pub fn as_text(rows: &[(String, Vec<PartText>)]) -> String {
     let mut s = String::new();
     for (name, parts) in rows {
-        let total: u64 = parts.iter().map(|p| p.2).sum();
+        let total: u64 = parts.iter().map(|p| p.3).sum();
         s += &format!("## {name} ({})\n", sprawl_core::format_size(total));
-        for (title, risk, bytes, paths) in parts {
-            s += &format!("- {title}: {} [{risk:?}]", sprawl_core::format_size(*bytes));
+        for (id, title, risk, bytes, paths, ticked) in parts {
+            s += &format!("- {title}: {} [{risk:?}] [id: {id}]{}", sprawl_core::format_size(*bytes), if *ticked { " (ticked)" } else { "" });
             if !paths.is_empty() {
                 s += &format!(" at {}", paths.join(", "));
             }
