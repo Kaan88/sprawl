@@ -29,6 +29,7 @@ mod views;
 mod watch;
 mod treemap;
 mod ui;
+mod look;
 mod win32;
 mod welcome;
 mod wizard;

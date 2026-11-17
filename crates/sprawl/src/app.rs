@@ -91,6 +91,9 @@ impl IApplicationOverrides_Impl for App_Impl {
         if let Some(app) = APP.get() {
             let xcr = XamlControlsResources::new()?;
             app.Resources()?.MergedDictionaries()?.Append(&xcr.cast::<ResourceDictionary>()?)?;
+            // Sprawl's own styles (look.rs), after the controls' so they can build on them
+            let own: ResourceDictionary = crate::state::load(&crate::look::resources())?;
+            app.Resources()?.MergedDictionaries()?.Append(&own)?;
         }
         if let Err(e) = crate::launch() {
             eprintln!("start-up failed: {e:?}");

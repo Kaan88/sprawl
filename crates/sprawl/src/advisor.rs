@@ -1486,8 +1486,9 @@ impl State {
         let _ = now;
         x += &format!(
             r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-<TextBlock FontSize="15" TextWrapping="Wrap" VerticalAlignment="Center">{line}</TextBlock>
+<TextBlock {} FontSize="15" TextWrapping="Wrap" VerticalAlignment="Center">{line}</TextBlock>
 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/></StackPanel></Grid>"##,
+            crate::look::NUM,
             full.map_or(String::new(), |f| format!(r##"<Button x:Name="AdvGrowOpen" Padding="10,3" FontSize="12" CornerRadius="5" Content="{}" ToolTipService.ToolTip="At the rate this folder grew between scans: see Growth"/>"##, ui::esc(&f))),
         );
         if total > 0 {

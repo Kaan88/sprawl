@@ -829,7 +829,7 @@ impl State {
             } else {
                 x += &format!(r##"<FontIcon Glyph="{glyph}" FontSize="12" Foreground="{colour}" VerticalAlignment="Center"/>"##);
             }
-            x += &format!(r##"<TextBlock x:Name="SxE{i}" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="700"/>"##, ui::esc(line));
+            x += &format!(r##"<TextBlock x:Name="SxE{i}" Text="{}" {} FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="700"/>"##, ui::esc(line), crate::look::NUM);
             if drive.is_some() && *kind != "rereading" {
                 let label = if *kind == "failed" { "Try again" } else { "Refresh" };
                 x += &format!(r##"<Button x:Name="SxR{i}" Content="{label}" FontSize="11" Padding="8,1" ToolTipService.ToolTip="Read this drive again: new files show, deleted ones go"/>"##);

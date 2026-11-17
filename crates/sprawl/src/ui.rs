@@ -221,6 +221,7 @@ const CARD: &str = r##"CornerRadius="8" Background="#12FFFFFF" BorderBrush="#1CF
 const PANE: &str = r##"CornerRadius="8" Background="#0DFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1""##;
 
 fn hud() -> String {
+    let num = crate::look::NUM;
     let lanes: String = (0..crate::hud::LANES)
         .map(|k| {
             format!(
@@ -228,14 +229,14 @@ fn hud() -> String {
   <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
   <TextBlock x:Name="Lane{k}Name" FontSize="12" VerticalAlignment="Center"/>
   <Border x:Name="Lane{k}Bar" Grid.Column="1" Height="8" CornerRadius="4" HorizontalAlignment="Left" Width="2" Background="#FF4CC2FF"/>
-  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" FontSize="12" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" {num} FontSize="12" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
 </Grid>"##
             )
         })
         .collect();
     let stat = |label: &str, name: &str, col: u8, row: u8| {
         format!(
-            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="12" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" FontSize="17" FontWeight="SemiBold"/></StackPanel>"##
+            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="12" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" {num} FontSize="17" FontWeight="SemiBold"/></StackPanel>"##
         )
     };
     format!(
@@ -244,7 +245,7 @@ fn hud() -> String {
   <StackPanel Spacing="8">
     <Grid>
       <TextBlock x:Name="HudMethod" Text="Reading" FontSize="12" FontWeight="SemiBold" Foreground="#FF7A8296" CharacterSpacing="60"/>
-      <TextBlock x:Name="HudPct" Text="0%" FontSize="12" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
+      <TextBlock x:Name="HudPct" Text="0%" {num} FontSize="12" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
     </Grid>
     <Image x:Name="HudImage" Height="76" Stretch="Fill"/>
     <Grid ColumnSpacing="14" RowSpacing="6">
@@ -263,6 +264,7 @@ fn hud() -> String {
 }
 
 pub fn page(drives: &[String]) -> String {
+    let num = crate::look::NUM;
     let drive_items: String = drives
         .iter()
         .map(|d| format!(r##"<ComboBoxItem Content="{}"/>"##, esc(d)))
@@ -452,7 +454,7 @@ pub fn page(drives: &[String]) -> String {
             <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon x:Name="ScanButtonIcon" Glyph="&#xE721;" FontSize="13"/><TextBlock x:Name="ScanButtonText" Text="Scan"/></StackPanel>
           </Button>
         </Grid>
-        <TextBlock x:Name="StatusText" Text="Ready. Pick a drive or folder and press Scan." FontSize="12" Foreground="#FFB9C2D6"/>
+        <TextBlock x:Name="StatusText" {num} TextTrimming="CharacterEllipsis" Text="Ready. Pick a drive or folder and press Scan." FontSize="12" Foreground="#FFB9C2D6"/>
         <ProgressBar x:Name="Progress" Value="0" Maximum="100" Height="4" CornerRadius="2"/>
       </StackPanel>
     </Border>
@@ -464,10 +466,10 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock Text="Total Space:" Grid.Row="1" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock Text="Space Used:" Grid.Row="2" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock Text="Space Free:" Grid.Row="3" Foreground="#FF8E97AA" FontSize="12"/>
-        <TextBlock x:Name="SelText" Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
-        <TextBlock x:Name="TotalText" Grid.Row="1" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <TextBlock x:Name="UsedText" Grid.Row="2" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <TextBlock x:Name="FreeText" Grid.Row="3" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock x:Name="SelText" {num} Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
+        <TextBlock x:Name="TotalText" {num} Grid.Row="1" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock x:Name="UsedText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock x:Name="FreeText" {num} Grid.Row="3" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
         <Grid Grid.Row="1" Grid.RowSpan="3" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
           <Border x:Name="UsageTrack" Height="10" CornerRadius="5" Background="#14FFFFFF"/>
           <Border x:Name="UsageBar" Height="10" CornerRadius="5" HorizontalAlignment="Left" Width="0">
@@ -478,7 +480,7 @@ pub fn page(drives: &[String]) -> String {
             </Border.Background>
           </Border>
         </Grid>
-        <TextBlock x:Name="ScanInfo" Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
+        <TextBlock x:Name="ScanInfo" {num} Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
     </Border>
     <Border x:Name="BrandCard" Grid.Column="2" Width="330" {CARD} Padding="14,10">
@@ -545,7 +547,7 @@ pub fn page(drives: &[String]) -> String {
             <Button.Flyout><Flyout x:Name="SearchHelpFly" Placement="Bottom"><ScrollViewer MaxHeight="560" HorizontalScrollBarVisibility="Disabled"><Border x:Name="SearchHelpHost" MaxWidth="640"/></ScrollViewer></Flyout></Button.Flyout>
           </Button>
           <Border x:Name="SearchSaved" Grid.Column="2"/>
-          <TextBlock x:Name="SearchInfo" Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="SearchInfo" Grid.Column="3" {num} MinWidth="200" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
           <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
           <StackPanel Grid.Row="1" Grid.ColumnSpan="5" Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel>
           <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="5" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxLines="3"/>
@@ -619,8 +621,8 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
 
   <Grid Grid.Row="7" Margin="16,0,16,0">
-    <TextBlock x:Name="FootLeft" Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-    <TextBlock x:Name="FootRight" Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+    <TextBlock x:Name="FootLeft" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+    <TextBlock x:Name="FootRight" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
   </Grid>
   <Border x:Name="UpdateCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#552F7BF6" BorderThickness="1" Width="400">
     <StackPanel Spacing="6"><TextBlock x:Name="UpdateTitle" FontSize="14" FontWeight="SemiBold"/><TextBlock x:Name="UpdateSub" FontSize="12" Foreground="#FF8E97AA"/>
