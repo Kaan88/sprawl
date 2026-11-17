@@ -1,6 +1,13 @@
 # Plan: instant file-name search
 
-A plan only: nothing here is built. Numbers marked "est." are estimates to measure in phase 1.
+**Status (2026-11-18):** phases 1 to 4 are built. Other drives are read without administrator
+rights too, into a compact search-only index; the query language grew past the syntax below
+(`ext:`, `dm:`, `path:`, `size:`, `regex:`, `case:`, `exact:`, `depth:`) with filter chips under
+the box; saved and recent searches are kept beside the box (an exception to "not saved" in the
+Privacy section, at the user's request). Phase 5 (USN replay) is not built. The plan below is as
+it was written.
+
+Numbers marked "est." are estimates to measure in phase 1.
 
 ## Is it redundant? Should it be a tab?
 

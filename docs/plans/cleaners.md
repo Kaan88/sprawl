@@ -4,7 +4,16 @@ BleachBit has a list of cleaners, one per application. Each has options, a previ
 what would go and how much, then a clean. This plan gives Sprawl the same idea, fitted to what
 Sprawl already is.
 
-**Status (2026-11-17, end of day):** phases 0, 1, 2, 3 and 3b are built and pushed (commits
+**Status (2026-11-18):** all phases are built. Phase 4 (carve-outs inside browser profiles) and
+phase 5 (privacy cleaners: the `Set` action, Chromium cookies and history, Firefox cookies; off
+by default, Settings > Cleaning) are on main, with the audit follow-ups (Recycle Bin for the
+user's own files, Windows menu, administrator settings). Recent items and jump lists were left
+out (Explorer always holds them), and so was Firefox history (it shares `places.sqlite` with the
+bookmarks); see `privacy.rs`. A real clean-up has run on fixtures only, including a privacy set
+with a file held open (nothing in the set went). Waiting for: the Fable review of the deletion
+code (`.claude/fable-review-queue.md`), then the version bump and release.
+
+Earlier status (2026-11-17, end of day): phases 0, 1, 2, 3 and 3b are built and pushed (commits
 074804f, 098c56a, 6604067, 2f63c28, 3bcec86). Added on the user's request since: a Cleaners tab
 (a449a42, the Advisor's Cleaners section alone), the Use/Scan buttons fix (959d7e3), and AI in
 Cleaners (983a321: a chat card with ready-made questions; questions carry the cleaners text; the

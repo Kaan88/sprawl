@@ -3,6 +3,33 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+### New
+- **Cleaners tab.** BleachBit-style: each application with its parts (caches, logs, crash dumps), what cleaning costs and whether the application is open. It reads only the folders the cleaners look at, so it works without a full scan. Your usual ticks can come back next time (a setting). Community cleaners from winapp2.ini and BleachBit can be turned on; they are off until you do.
+- **Privacy cleaners, off by default** (Settings > Cleaning, "Show privacy cleaners"). Cookies and history of Chrome, Edge and Brave, and cookies of Firefox, one row per browser profile by its name. Each is ticked on its own, never for you, never counted as space, and has its own box to tick in the review. If the browser or another program holds one of its files, nothing in that set is removed and Sprawl says what to close. The files are deleted, not overwritten.
+- **Search tab.** File names in the scan and, when you switch them on, your other drives (also without administrator rights). Filters under the box (Kind, Type, Size, Modified, Where), keywords such as `ext:`, `size:`, `dm:`, `path:` and `regex:`, suggestions as you type, saved and recent searches. Enter opens a result, Ctrl+Enter shows it in the tree.
+- **Your own files go to the Recycle Bin** when the Advisor cleans up (Settings > Cleaning, on by default). Caches are still deleted, since in the bin they would free nothing. Sprawl counts what the bin already holds.
+- **Windows' own right-click menu** on a row, with the add-ons from other programs.
+- **The AI on the Cleaners tab**: ask it, and it can suggest parts to tick (safe and amber parts only; you still review). Claude Code's chat gets Sprawl's tools.
+- **Work offline** (Settings > Network): one switch that stops the update check, community downloads and every AI request.
+- **"Open Sprawl on"** (Settings > General): the tab you used last, or a tab you choose.
+- One activity indicator beside the filter box for everything running in the background; click it for the list.
+
+### Changed
+- The Advisor finds more, and says how sure it is: folders left behind by removed applications (shown only when they may hold your work), programs built on Chromium, build outputs graded by how idle the project is, and growth taken from your scan history. Tips are ranked by what they gain, apart from deletes.
+- The thresholds the Advisor uses (how old, how idle, how big) are settings, each with a floor it can't go below.
+- **Run as administrator:** the Windows menu, handing an app to your uninstaller, Claude Code and clean-up tools from your own folders stay off, as before, but each can now be allowed in Settings > Scanning. Sprawl asks once per session.
+- A clean-up never touches a network path, anything new since the scan, or anything you chose to keep; the review holds back what won't run on this PC and says why. A saved script says what it doesn't protect.
+- Nothing is read, fetched, chosen or ticked for a new user until they say so.
+- Numbers keep their width while they count; tabs, chips and map buttons show pointer-over, pressed and keyboard focus the same way. The map folds away on the Advisor and Cleaners tabs, and on Search in a short window it takes less room.
+- Times are shown in local time everywhere. Typing in the filter is quicker, and the tree's work no longer holds up the window.
+
+### Fixed
+- A problem in the Advisor's analysis ends that check instead of the tab.
+- Very long tables no longer stop drawing part-way.
+- The result card no longer says files were "deleted for good" when nothing was removed.
+
 ## 0.2.5 — 2026-11-17
 
 ### Fixed

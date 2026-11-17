@@ -15,7 +15,10 @@ each as one `--key=value` argument:
 ```
 
 Because each value is attached to its key with `=`, a value that starts with `-` can't be read
-as a flag. Sprawl doesn't start the uninstaller when Sprawl itself runs as administrator.
+as a flag. When Sprawl itself runs as administrator, it doesn't start the uninstaller unless
+**Options > Settings > Scanning > "As administrator, also allow: handing an application to your
+uninstaller"** is on (off by default); then it asks once per session, because the uninstaller
+will run as administrator too.
 
 | Argument | Meaning |
 |---|---|

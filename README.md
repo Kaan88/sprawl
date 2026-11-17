@@ -1,7 +1,14 @@
 # Sprawl
 
-A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8), modelled on
-[WizTree](https://diskanalyzer.com/): a 1:1 feature match, with a more modern look.
+A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8). It started as a
+[WizTree](https://diskanalyzer.com/)-style analyser (tree, file list, file types, treemap) and
+adds, in one window:
+
+- **Advisor**: what can go and why, each finding with its risk, and a clean-up that you review first.
+- **Cleaners**: per-application parts (caches, logs, crash dumps), BleachBit-style, with an
+  opt-in Privacy group for browser cookies and history.
+- **Search**: file names in the scan and on your other drives, with a small query language.
+- **Optional AI**: off by default. It explains folders and suggests what to tick; it never deletes.
 
 ![Sprawl](docs/screenshots/sprawl.png)
 
@@ -58,7 +65,15 @@ cargo build --release
 .\target\release\sprawl.exe [folder]
 ```
 
-`cargo test -p sprawl-core` runs the core tests.
+Tests:
+
+```powershell
+cargo test --release -p sprawl-core -p sprawl-advisor -p sprawl-install -p sprawl
+```
+
+The app's tests (`-p sprawl`) cover the parts of the UI that decide something (what is ticked,
+summed, saved or refused), not the drawing. None of them deletes anything outside a temporary
+folder, calls an AI provider or downloads anything.
 
 `sprawl --screenshot out.png [folder]` scans (default `C:\Program Files`), saves a picture of the
 window and exits - handy for checking the look without clicking around.
@@ -94,15 +109,25 @@ Working:
   administrator and by a multi-threaded folder walk otherwise.
 - Analysis: tree view and file view with sortable columns and multi-select, the file-type table,
   the filter, and the treemap with City, Galaxy and more views, names and free space drawn on it.
-- Row actions: Explorer, command prompt, copy path, and delete to the Recycle Bin or permanently.
-  Exports: CSV and PNG.
+- Row actions: Explorer, command prompt, copy path, Windows' own right-click menu, and delete to
+  the Recycle Bin or permanently. Exports: CSV and PNG.
 - Settings and the window are remembered.
-- Advisor: findings from built-in rules with risk levels. It can clean up after a review, and it
-  leaves anything new since the scan and anything you chose to keep. It can also save a script.
-- Cleaners: per-app parts. Community cleaners are off until you turn them on.
-- Search: the scan's names, and other drives when you switch them on.
-- Optional AI: off by default. It names folders and suggests findings, but never deletes.
+- Advisor: findings from built-in rules with risk levels: caches, build outputs of idle
+  projects, folders left behind by removed applications, old installers. It can clean up after a
+  review, and it leaves anything new since the scan and anything you chose to keep. Your own
+  files go to the Recycle Bin (a setting); caches are deleted. It can also save a script.
+- Cleaners: per-app parts, read on their own without a full scan. Community cleaners
+  (winapp2.ini, BleachBit) are off until you turn them on.
+- Privacy cleaners: off by default (Settings > Cleaning). Cookies and history of Chrome, Edge,
+  Brave and Firefox, by profile, each ticked on its own, never in a space total. The files are
+  deleted, not overwritten.
+- Search: the scan's names, and other drives when you switch them on; filters, saved searches.
+- Optional AI: off by default. It names folders and suggests what to tick, but never deletes.
+  Work offline (Settings > Network) stops every request.
+- Run as administrator: some things that would run other programs with your rights (the Windows
+  menu, your uninstaller, Claude Code, clean-up tools from your folders) are off unless you
+  allow each in Settings > Scanning.
 - Scan history and growth, and signed updates.
 
 Not built: an uninstaller (Sprawl hands an app to Windows' Installed apps, Steam or a program you
-choose) and privacy cleaning (planned).
+choose), registry cleaning and secure wiping. Plans and audits are in `docs/plans`.
