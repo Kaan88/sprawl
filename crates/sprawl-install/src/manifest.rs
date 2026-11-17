@@ -42,19 +42,33 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-/// Check `signature` (hex) over `manifest` with `key`, then read the manifest. Every file must
-/// be one Sprawl knows ([`crate::FILES`]), listed once.
-pub fn verify(manifest: &[u8], signature: &[u8], key: &[u8; 32]) -> Result<Manifest, String> {
-    let key = VerifyingKey::from_bytes(key).map_err(|_| "the update key is not valid".to_string())?;
+/// A file name a release may carry: a plain `.exe` or `.dll` name in the program's folder (no
+/// folders, no leading dot), so a later release can add a file without stranding older copies.
+pub fn valid_name(n: &str) -> bool {
+    let lower = n.to_ascii_lowercase();
+    !n.is_empty()
+        && n.len() <= 80
+        && !n.starts_with('.')
+        && !n.contains("..")
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && (lower.ends_with(".exe") || lower.ends_with(".dll"))
+}
+
+/// Check `signature` (hex) over `manifest` with any of `keys`, then read the manifest. Every
+/// file must have a [`valid_name`], listed once, and `sprawl.exe` must be there.
+pub fn verify(manifest: &[u8], signature: &[u8], keys: &[[u8; 32]]) -> Result<Manifest, String> {
     let sig = unhex(std::str::from_utf8(signature).map_err(|_| "the signature is not text")?).ok_or("the signature is not hex")?;
     let sig = Signature::from_slice(&sig).map_err(|_| "the signature has the wrong length".to_string())?;
-    key.verify_strict(manifest, &sig).map_err(|_| "the update's signature does not match; it was not applied".to_string())?;
+    let signed = keys.iter().filter_map(|k| VerifyingKey::from_bytes(k).ok()).any(|k| k.verify_strict(manifest, &sig).is_ok());
+    if !signed {
+        return Err("the update's signature does not match; it was not applied".into());
+    }
     let m: Manifest = serde_json::from_slice(manifest).map_err(|e| format!("the update's list of files can't be read: {e}"))?;
     parse_version(&m.version).ok_or("the update has no valid version")?;
     let mut seen = Vec::new();
     for f in &m.files {
-        if !crate::FILES.contains(&f.name.as_str()) || seen.contains(&f.name) {
-            return Err(format!("the update lists a file Sprawl doesn't know: {}", f.name));
+        if !valid_name(&f.name) || seen.iter().any(|s: &String| s.eq_ignore_ascii_case(&f.name)) {
+            return Err(format!("the update lists a file Sprawl can't take: {}. Get the new version from github.com/{}/releases.", f.name, crate::REPO));
         }
         if f.sha256.len() != 64 || unhex(&f.sha256).is_none() {
             return Err(format!("the update has a bad hash for {}", f.name));
@@ -94,35 +108,41 @@ mod tests {
     #[test]
     fn a_good_signature_passes() {
         let (m, s, k) = signed(GOOD);
-        assert_eq!(verify(&m, &s, &k).unwrap().version, "0.2.0");
+        assert_eq!(verify(&m, &s, &[k]).unwrap().version, "0.2.0");
+        // any key of the list will do
+        assert!(verify(&m, &s, &[[1u8; 32], k]).is_ok());
     }
 
     #[test]
     fn a_changed_manifest_fails() {
         let (_, s, k) = signed(GOOD);
         let changed = GOOD.replace("0.2.0", "9.9.9");
-        assert!(verify(changed.as_bytes(), &s, &k).is_err());
+        assert!(verify(changed.as_bytes(), &s, &[k]).is_err());
     }
 
     #[test]
     fn another_key_fails() {
         let (m, s, _) = signed(GOOD);
         let other = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
-        assert!(verify(&m, &s, &other).is_err());
+        assert!(verify(&m, &s, &[other]).is_err());
     }
 
     #[test]
     fn unknown_or_path_names_fail() {
-        for name in ["..\\\\evil.exe", "evil.dll", "sprawl.exe\",\"x"] {
+        for name in ["..\\\\evil.exe", "a\\\\evil.exe", "..evil.exe", ".evil.exe", "evil.txt", "evil.exe:ads.exe", "C:evil.exe", "sprawl.exe\",\"x"] {
             let m = GOOD.replace("sprawl.exe", name);
             let (m, s, k) = signed(&m);
-            assert!(verify(&m, &s, &k).is_err(), "{name}");
+            assert!(verify(&m, &s, &[k]).is_err(), "{name}");
         }
+        // a new, plain file name is fine
+        let m = GOOD.replace(r#"}]}"#, r#"},{"name":"helper.dll","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1}]}"#);
+        let (m, s, k) = signed(&m);
+        assert!(verify(&m, &s, &[k]).is_ok());
     }
 
     #[test]
     fn the_zero_key_never_verifies() {
         let (m, s, _) = signed(GOOD);
-        assert!(verify(&m, &s, &[0u8; 32]).is_err());
+        assert!(verify(&m, &s, &[[0u8; 32]]).is_err());
     }
 }

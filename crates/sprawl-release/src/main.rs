@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! target\release\sprawl-release keygen    once: make the signing key (kept outside the repo)
+//! target\release\sprawl-release keygen backup   once: the backup key, to keep offline
 //! target\release\sprawl-release build     build Sprawl and its installer, sign, put it all in dist\v<version>
 //! target\release\sprawl-release publish   create the GitHub release from dist\v<version> (needs gh)
 //! ```
@@ -80,8 +81,10 @@ fn run(cmd: &mut Command) {
     }
 }
 
-fn keygen() {
-    let p = key_path();
+/// `keygen` makes the release key; `keygen backup` the backup key (`BACKUP_KEY`), which belongs
+/// offline: it is only for signing if the release key is lost or leaked.
+fn keygen(backup: bool) {
+    let p = if backup { key_path().with_file_name("signing-backup.key") } else { key_path() };
     if p.exists() {
         fail(format!("{} already exists; a new key would lock out every installed copy", p.display()));
     }
@@ -92,7 +95,8 @@ fn keygen() {
     std::fs::write(&p, hex(&seed)).unwrap_or_else(|e| fail(e));
     let public: Vec<String> = key.verifying_key().to_bytes().iter().map(|b| format!("0x{b:02x}")).collect();
     println!("Wrote {}. Keep it safe and out of the repository.", p.display());
-    println!("Put this in crates/sprawl-install/src/lib.rs:\n\npub const PUBLIC_KEY: [u8; 32] = [{}];", public.join(", "));
+    let name = if backup { "BACKUP_KEY" } else { "PUBLIC_KEY" };
+    println!("Put this in crates/sprawl-install/src/lib.rs:\n\npub const {name}: [u8; 32] = [{}];", public.join(", "));
 }
 
 fn dist(v: &str) -> PathBuf {
@@ -134,7 +138,7 @@ fn build() {
     let manifest = serde_json::to_vec_pretty(&Manifest { version: v.clone(), files }).unwrap();
     let sig = hex(&key.sign(&manifest).to_bytes());
     // check it the way an installed copy will
-    sprawl_install::verify(&manifest, sig.as_bytes(), &PUBLIC_KEY).unwrap_or_else(|e| fail(e));
+    sprawl_install::verify(&manifest, sig.as_bytes(), &sprawl_install::PUBLIC_KEYS).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(MANIFEST), &manifest).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(SIGNATURE), &sig).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join("notes.md"), notes).unwrap_or_else(|e| fail(e));
@@ -162,7 +166,7 @@ fn publish() {
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
-        Some("keygen") => keygen(),
+        Some("keygen") => keygen(std::env::args().nth(2).as_deref() == Some("backup")),
         Some("build") => build(),
         Some("publish") => publish(),
         _ => fail("usage: sprawl-release keygen | build | publish"),

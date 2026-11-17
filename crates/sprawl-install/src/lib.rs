@@ -14,20 +14,30 @@
 pub mod manifest;
 pub mod setup;
 
-pub use manifest::{newer, parse_version, sha256_hex, verify, FileEntry, Manifest};
+pub use manifest::{newer, parse_version, sha256_hex, valid_name, verify, FileEntry, Manifest};
 
 /// The GitHub repository releases come from.
 pub const REPO: &str = "Kaan88/sprawl";
 
-/// The Ed25519 public key that release manifests must be signed with.
+/// The Ed25519 public key releases are signed with.
 pub const PUBLIC_KEY: [u8; 32] = [
     0x27, 0xd9, 0xd8, 0x04, 0x98, 0xdc, 0x83, 0x67, 0xda, 0xb5, 0xed, 0x91, 0x72, 0x70, 0x48, 0xbd, 0x05, 0x45, 0x20, 0x10, 0xde, 0x2b, 0x66, 0xfb, 0xf6, 0x80, 0xc6,
     0x3d, 0x95, 0xfd, 0x7e, 0x44,
 ];
 
-/// The files a release may carry, and the only names an update may write.
+/// The keys an update may be signed with: the release key, then a backup kept offline, so a
+/// lost or leaked release key doesn't strand installed copies.
+pub const PUBLIC_KEYS: [[u8; 32]; 2] = [PUBLIC_KEY, BACKUP_KEY];
+
+/// The files of today's releases. An update may carry others with a [`valid_name`].
 pub const FILES: [&str; 2] = ["sprawl.exe", "Microsoft.WindowsAppRuntime.Bootstrap.dll"];
 
 /// The manifest and its signature, as release assets.
 pub const MANIFEST: &str = "sprawl-update.json";
 pub const SIGNATURE: &str = "sprawl-update.json.sig";
+
+/// The backup key (see [`PUBLIC_KEYS`]). Its private half is kept offline.
+pub const BACKUP_KEY: [u8; 32] = [
+    0x8e, 0x92, 0xe2, 0x6d, 0xaf, 0x60, 0x3e, 0xae, 0xa5, 0x61, 0x22, 0x01, 0xd6, 0xe4, 0x70, 0x28, 0xaf, 0xd3, 0x2f, 0x11, 0x13, 0xc7, 0xd7, 0xa6, 0xbd, 0x88, 0x2d,
+    0x88, 0x9e, 0xcb, 0x05, 0xa7,
+];

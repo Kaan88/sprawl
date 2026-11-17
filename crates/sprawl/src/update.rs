@@ -10,8 +10,10 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 use sprawl_advisor::llm::http;
-use sprawl_install::{newer, verify, FileEntry, MANIFEST, PUBLIC_KEY, REPO, SIGNATURE};
+use sprawl_install::setup::{clean_stage, is_link, remove_old, swap_in, STAGE};
+use sprawl_install::{newer, verify, FileEntry, MANIFEST, PUBLIC_KEYS, REPO, SIGNATURE};
 
+use crate::bindings::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem;
 use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
 use crate::state::{find, text, State};
 
@@ -23,7 +25,9 @@ pub(crate) fn current() -> &'static str {
 }
 
 /// Where releases and their files may come from (a download redirects to GitHub's storage).
-const HOSTS: [&str; 4] = ["api.github.com", "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
+/// The storage host has changed before, so any host under githubusercontent.com will do; the
+/// signature and the hashes are what make a file trusted, not where it came from.
+const HOSTS: [&str; 3] = ["api.github.com", "github.com", ".githubusercontent.com"];
 
 #[derive(Clone)]
 pub(crate) struct Avail {
@@ -36,7 +40,7 @@ enum Msg {
     Found(Avail),
     Latest,
     Failed(String),
-    Staged(String, Vec<(String, PathBuf)>),
+    Staged(String, Staged),
     Progress(String),
 }
 
@@ -51,12 +55,17 @@ pub(crate) struct Updater {
     applying: bool,
 }
 
+/// The API answer, through the same redirect rules as a download (a renamed repository answers
+/// with a redirect).
 fn get_json(url: &str) -> Result<serde_json::Value, String> {
-    let r = http::get(url, &[("Accept", "application/vnd.github+json".into()), ("User-Agent", format!("Sprawl/{}", current()))], Duration::from_secs(20))?;
-    if r.status != 200 {
-        return Err(format!("GitHub answered {}", r.status));
-    }
-    serde_json::from_str(&r.body).map_err(|e| e.to_string())
+    let headers = [("Accept", "application/vnd.github+json".to_string()), ("User-Agent", format!("Sprawl/{}", current()))];
+    let body = http::download(url, &HOSTS, &headers, 4 << 20, Duration::from_secs(20))?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
+/// Run `f`, turning a panic into an error, so a worker can always answer.
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err("something went wrong inside Sprawl".into()))
 }
 
 fn fetch(url: &str, max: usize) -> Result<Vec<u8>, String> {
@@ -78,7 +87,7 @@ fn check() -> Result<Option<Avail>, String> {
     let url = |name: &str| assets.iter().find(|(n, _)| n == name).map(|(_, u)| u.clone()).ok_or(format!("the release has no {name}"));
     let manifest = fetch(&url(MANIFEST)?, 1 << 20)?;
     let sig = fetch(&url(SIGNATURE)?, 4 << 10)?;
-    let m = verify(&manifest, &sig, &PUBLIC_KEY)?;
+    let m = verify(&manifest, &sig, &PUBLIC_KEYS)?;
     if m.version != version {
         return Err(format!("the release says {version} but its files say {}", m.version));
     }
@@ -87,11 +96,19 @@ fn check() -> Result<Option<Avail>, String> {
     Ok(Some(Avail { version, notes, files }))
 }
 
-/// Download each file into `<dir>\.update`, checking its size and SHA-256.
-fn stage(a: &Avail, dir: &std::path::Path, progress: &dyn Fn(String)) -> Result<Vec<(String, PathBuf)>, String> {
-    let st = dir.join(".update");
-    let _ = std::fs::remove_dir_all(&st);
-    std::fs::create_dir_all(&st).map_err(|_| format!("Sprawl's folder ({}) can't be written to, so it can't update itself here. Get the new version from github.com/{REPO}/releases.", dir.display()))?;
+/// A downloaded file waiting to be swapped in: name, where it is, its expected SHA-256.
+type Staged = Vec<(String, PathBuf, String)>;
+
+/// Download each file into `<dir>\.sprawl-update`, checking its size and SHA-256.
+fn stage(a: &Avail, dir: &std::path::Path, progress: &dyn Fn(String)) -> Result<Staged, String> {
+    let st = dir.join(STAGE);
+    clean_stage(dir);
+    let cant = || format!("Sprawl's folder ({}) can't be written to, so it can't update itself here. Get the new version from github.com/{REPO}/releases.", dir.display());
+    std::fs::create_dir(&st).map_err(|_| cant())?;
+    // a folder put there as a link could send the files elsewhere
+    if is_link(&st) {
+        return Err(cant());
+    }
     let mut out = Vec::new();
     for (i, (f, url)) in a.files.iter().enumerate() {
         progress(format!("Downloading {} of {}: {} ({:.1} MB)", i + 1, a.files.len(), f.name, f.size as f64 / 1048576.0));
@@ -101,7 +118,7 @@ fn stage(a: &Avail, dir: &std::path::Path, progress: &dyn Fn(String)) -> Result<
         }
         let p = st.join(&f.name);
         std::fs::write(&p, &bytes).map_err(|e| format!("could not save {}: {e}", f.name))?;
-        out.push((f.name.clone(), p));
+        out.push((f.name.clone(), p, f.sha256.clone()));
     }
     Ok(out)
 }
@@ -128,6 +145,7 @@ impl State {
         }
     }
 
+
     /// Look for a newer release on another thread. `manual`: asked from the Help menu.
     pub(crate) fn update_check(&mut self, manual: bool) {
         if self.update.rx.is_some() {
@@ -140,13 +158,19 @@ impl State {
         let (tx, rx) = channel();
         self.update.rx = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send(match check() {
+            let _ = tx.send(match guarded(check) {
                 Ok(Some(a)) => Msg::Found(a),
                 Ok(None) => Msg::Latest,
                 Err(e) => Msg::Failed(e),
             });
         });
-        self.settings.set("update_last", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+    }
+
+    /// A check got an answer: the next daily check is a day from now, and failures start over.
+    fn update_checked(&mut self) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        self.settings.set("update_last", now);
+        self.settings.set("update_fails", 0);
         self.settings.save();
     }
 
@@ -154,17 +178,24 @@ impl State {
     pub(crate) fn update_poll(&mut self) {
         if !self.update.started {
             self.update.started = true;
-            let _ = std::env::current_exe().map(|e| e.parent().map(sprawl_install::setup::remove_old));
-            let _ = std::fs::remove_dir_all(std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(".update"))).unwrap_or_default());
+            if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) {
+                remove_old(&dir);
+                clean_stage(&dir);
+            }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let last = self.settings.num("update_last").unwrap_or(0.0) as u64;
-            let on = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem>(&self.root, "oUpdates").and_then(|t| t.IsChecked()).unwrap_or(true);
+            let on = find::<ToggleMenuFlyoutItem>(&self.root, "oUpdates").and_then(|t| t.IsChecked()).unwrap_or(true);
             if on && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) && now.saturating_sub(last) > 20 * 3600 {
                 self.update_check(false);
             }
         }
         let Some(rx) = &self.update.rx else { return };
-        let Ok(msg) = rx.try_recv() else { return };
+        let msg = match rx.try_recv() {
+            Ok(m) => m,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            // the worker is gone without an answer
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Msg::Failed("the check stopped".into()),
+        };
         match msg {
             Msg::Progress(s) => {
                 text(&self.root, "UpdateStatus", &s);
@@ -172,6 +203,7 @@ impl State {
             }
             Msg::Found(a) => {
                 self.update.rx = None;
+                self.update_checked();
                 if !self.update.manual && self.settings.get("update_skip") == Some(a.version.as_str()) {
                     return;
                 }
@@ -184,6 +216,7 @@ impl State {
             }
             Msg::Latest => {
                 self.update.rx = None;
+                self.update_checked();
                 if self.update.manual {
                     text(&self.root, "FootLeft", &format!("Sprawl {} is the latest version.", current()));
                 }
@@ -195,6 +228,14 @@ impl State {
                     text(&self.root, "UpdateStatus", &format!("The update didn't work: {e}"));
                 } else if self.update.manual {
                     text(&self.root, "FootLeft", &format!("Couldn't look for updates: {e}"));
+                } else {
+                    // the daily check stays quiet once or twice (offline), then says so
+                    let fails = self.settings.num("update_fails").unwrap_or(0.0) as u32 + 1;
+                    self.settings.set("update_fails", fails);
+                    self.settings.save();
+                    if fails >= 3 {
+                        text(&self.root, "FootLeft", &format!("Sprawl couldn't look for updates the last {fails} times ({e}). Help > Check for Updates tries again."));
+                    }
                 }
             }
             Msg::Staged(version, staged) => {
@@ -226,8 +267,10 @@ impl State {
                 self.update.rx = Some(rx);
                 std::thread::spawn(move || {
                     let ptx = tx.clone();
-                    let r = stage(&a, &dir, &move |s| {
-                        let _ = ptx.send(Msg::Progress(s));
+                    let r = guarded(|| {
+                        stage(&a, &dir, &move |s| {
+                            let _ = ptx.send(Msg::Progress(s));
+                        })
                     });
                     let _ = tx.send(match r {
                         Ok(s) => Msg::Staged(a.version.clone(), s),
@@ -240,20 +283,30 @@ impl State {
     }
 
     /// Put the checked files in place and start the new version.
-    fn update_swap(&mut self, version: &str, staged: &[(String, PathBuf)]) {
+    fn update_swap(&mut self, version: &str, staged: &Staged) {
+        let fail = |s: &mut Self, msg: String| {
+            s.update.applying = false;
+            text(&s.root, "UpdateStatus", &msg);
+        };
         if self.advisor.cleanup.running.is_some() {
-            self.update.applying = false;
-            text(&self.root, "UpdateStatus", "A clean-up is running; press Update again when it's done.");
-            return;
+            return fail(self, "A clean-up is running; press Update again when it's done.".into());
         }
         let Some(exe) = std::env::current_exe().ok() else { return };
         let Some(dir) = exe.parent().map(PathBuf::from) else { return };
-        if let Err(e) = sprawl_install::setup::swap_in(&dir, staged) {
-            self.update.applying = false;
-            text(&self.root, "UpdateStatus", &format!("The update didn't work, so nothing was changed: {e}"));
-            return;
+        // checked again right before the swap: nothing may change a file between the download
+        // and here (this copy may run as administrator from a folder the user can write to)
+        for (name, path, sha) in staged {
+            let same = !is_link(path) && std::fs::read(path).is_ok_and(|b| sprawl_install::sha256_hex(&b) == *sha);
+            if !same {
+                clean_stage(&dir);
+                return fail(self, format!("The downloaded {name} changed before it could be used, so nothing was changed. Try again."));
+            }
         }
-        let _ = std::fs::remove_dir_all(dir.join(".update"));
+        let files: Vec<(String, PathBuf)> = staged.iter().map(|(n, p, _)| (n.clone(), p.clone())).collect();
+        if let Err(e) = swap_in(&dir, &files) {
+            return fail(self, format!("The update didn't work: {e}"));
+        }
+        clean_stage(&dir);
         if sprawl_install::setup::is_installed_copy() {
             let _ = sprawl_install::setup::register(&dir, version);
         }

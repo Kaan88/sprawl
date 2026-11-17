@@ -3,6 +3,18 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.2.2 — 2026-11-17
+
+Safer updates, from a safety review of the updater.
+
+### Fixed
+- Uninstalling now removes the program files even if you take a while to close the last message, or another Sprawl window is still open.
+- Updates keep working if GitHub moves its download servers or the project is renamed.
+- If the daily update check fails three times in a row, Sprawl says so instead of staying quiet; one offline start no longer skips the next day's check.
+- A future release that adds a file no longer stops older copies from updating.
+- Each downloaded file is checked again just before it is used.
+- Updates can also be signed with a backup key kept offline.
+
 ## 0.2.1 — 2026-11-17
 
 ### Fixed

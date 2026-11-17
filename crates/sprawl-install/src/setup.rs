@@ -56,36 +56,71 @@ pub fn installed_version() -> Option<String> {
 
 /// Remove the `.old` files a previous swap left (they may still be in use until now).
 pub fn remove_old(dir: &Path) {
-    for name in crate::FILES {
-        let _ = std::fs::remove_file(dir.join(format!("{name}.old")));
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.strip_suffix(".old").is_some_and(crate::manifest::valid_name) {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
+}
+
+/// Where an update is downloaded to before it is swapped in.
+pub const STAGE: &str = ".sprawl-update";
+
+/// Empty the staging folder: only file names an update could have written, then the folder
+/// itself if that leaves it empty (never recursive, never through a link).
+pub fn clean_stage(dir: &Path) {
+    let st = dir.join(STAGE);
+    if is_link(&st) {
+        let _ = std::fs::remove_dir(&st);
+        return;
+    }
+    if let Ok(rd) = std::fs::read_dir(&st) {
+        for e in rd.flatten() {
+            if crate::manifest::valid_name(&e.file_name().to_string_lossy()) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(&st);
+}
+
+/// A junction, symbolic link or other reparse point.
+pub fn is_link(p: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink() || m.file_attributes() & 0x400 != 0)
 }
 
 /// Put `staged` files (name, path of the new file on the same drive) into `dir`. Each current
 /// file is moved aside to `<name>.old` first; if any step fails, everything is put back as it
 /// was. Only names in [`crate::FILES`] are written.
 pub fn swap_in(dir: &Path, staged: &[(String, PathBuf)]) -> Result<(), String> {
-    if let Some((n, _)) = staged.iter().find(|(n, _)| !crate::FILES.contains(&n.as_str())) {
+    if let Some((n, _)) = staged.iter().find(|(n, _)| !crate::manifest::valid_name(n)) {
         return Err(format!("refused to write {n}"));
     }
     remove_old(dir);
     let mut aside: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut placed: Vec<PathBuf> = Vec::new();
-    let undo = |aside: &[(PathBuf, PathBuf)], placed: &[PathBuf]| {
+    // put everything back; says whether that worked
+    let undo = |aside: &[(PathBuf, PathBuf)], placed: &[PathBuf]| -> bool {
+        let mut ok = true;
         for p in placed {
-            let _ = std::fs::remove_file(p);
+            ok &= std::fs::remove_file(p).is_ok();
         }
         for (cur, old) in aside {
-            let _ = std::fs::rename(old, cur);
+            ok &= std::fs::rename(old, cur).is_ok();
         }
+        ok
     };
+    let back = |ok: bool| if ok { "nothing was changed" } else { "and putting the old files back failed too; reinstall Sprawl with its Setup" };
     for (name, _) in staged {
         let cur = dir.join(name);
         if cur.exists() {
             let old = dir.join(format!("{name}.old"));
             if let Err(e) = std::fs::rename(&cur, &old) {
-                undo(&aside, &placed);
-                return Err(format!("could not move {name} aside: {e}"));
+                let ok = undo(&aside, &placed);
+                return Err(format!("could not move {name} aside ({e}); {}", back(ok)));
             }
             aside.push((cur, old));
         }
@@ -93,8 +128,10 @@ pub fn swap_in(dir: &Path, staged: &[(String, PathBuf)]) -> Result<(), String> {
     for (name, from) in staged {
         let to = dir.join(name);
         if let Err(e) = std::fs::rename(from, &to).or_else(|_| std::fs::copy(from, &to).map(|_| ())) {
-            undo(&aside, &placed);
-            return Err(format!("could not put the new {name} in place: {e}"));
+            // a copy that failed half-way leaves a partial file
+            let _ = std::fs::remove_file(&to);
+            let ok = undo(&aside, &placed);
+            return Err(format!("could not put the new {name} in place ({e}); {}", back(ok)));
         }
         placed.push(to);
     }
@@ -212,18 +249,21 @@ pub fn uninstall(quiet: bool) {
         let _ = std::fs::remove_file(l);
     }
     // only Sprawl's own files; the folder itself goes only if that leaves it empty
-    for name in crate::FILES {
-        let _ = std::fs::remove_file(dir.join(format!("{name}.old")));
-    }
-    let _ = std::fs::remove_dir_all(dir.join(".new"));
-    let _ = std::fs::remove_dir_all(dir.join(".update"));
-    // this program and the DLL it has loaded are in use: a short-lived cmd deletes them once
-    // it has closed
-    use std::os::windows::process::CommandExt;
-    let dels: String = crate::FILES.iter().map(|n| format!("del /f /q \"{}\" & ", dir.join(n).display())).collect();
-    let script = format!("ping -n 3 127.0.0.1 >nul & {dels}rmdir \"{}\"", dir.display());
-    let _ = std::process::Command::new("cmd.exe").raw_arg("/d /c").raw_arg(script).creation_flags(0x0800_0000).spawn();
+    remove_old(&dir);
+    clean_stage(&dir);
     if !quiet {
         message("Sprawl has been removed.", false, false);
     }
+    // This program and the DLL it has loaded are in use until it exits, and another Sprawl
+    // window may still be open: a short-lived cmd tries every 2 seconds for 2 minutes, then
+    // removes the folder if it is empty. cmd and ping by full path, started in System32.
+    use std::os::windows::process::CommandExt;
+    let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
+    let dels: String = crate::FILES.iter().map(|n| format!("del /f /q \"{}\" 2>nul & ", dir.join(n).display())).collect();
+    let script = format!(
+        "for /l %i in (1,1,60) do @(\"{ping}\" -n 3 127.0.0.1 >nul & {dels}rmdir \"{d}\" 2>nul & if not exist \"{d}\" exit)",
+        ping = sys.join("ping.exe").display(),
+        d = dir.display()
+    );
+    let _ = std::process::Command::new(sys.join("cmd.exe")).current_dir(&sys).raw_arg("/d /q /c").raw_arg(script).creation_flags(0x0800_0000).spawn();
 }

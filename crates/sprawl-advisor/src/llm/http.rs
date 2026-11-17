@@ -108,13 +108,23 @@ struct Raw {
     body: Vec<u8>,
 }
 
+/// Whether `host` is allowed by `hosts`: an exact name, or `.example.com` for any host under it.
+fn host_allowed(host: &str, hosts: &[&str]) -> bool {
+    let host = host.to_ascii_lowercase();
+    hosts.iter().any(|h| {
+        let h = h.to_ascii_lowercase();
+        if h.starts_with('.') { host.ends_with(&h) && host.len() > h.len() } else { host == h }
+    })
+}
+
 /// GET `url` as bytes (up to `max` bytes), following redirects (at most 5) only over HTTPS and
-/// only to a host in `hosts`. For downloads, such as Sprawl's own updates.
+/// only to a host in `hosts` (exact names, or `.example.com` for any host under it). For
+/// downloads, such as Sprawl's own updates.
 pub fn download(url: &str, hosts: &[&str], headers: &[(&str, String)], max: usize, timeout: Duration) -> Result<Vec<u8>, String> {
     let mut url = url.to_string();
     for _ in 0..6 {
         let (secure, host, _, _) = split_url(&url)?;
-        if !secure || !hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+        if !secure || !host_allowed(&host, hosts) {
             return Err(format!("refused to download from {host}"));
         }
         let r = request_raw("GET", &url, headers, None, timeout, None, max)?;
@@ -239,12 +249,18 @@ fn request_raw(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&
                 .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]))
                 .and_then(|s| s.trim().parse::<u64>().ok())
         };
+        // Location: asked again with the size WinHTTP says it needs, if 2048 characters is short
         let location = {
             let name = wide("Location");
-            let mut buf = [0u16; 2048];
+            let mut buf = vec![0u16; 2048];
             let mut size = (buf.len() * 2) as u32;
-            (WinHttpQueryHeaders(request.0, QUERY_CUSTOM, name.as_ptr(), buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut()) != 0)
-                .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]).trim().to_string())
+            let mut ok = WinHttpQueryHeaders(request.0, QUERY_CUSTOM, name.as_ptr(), buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut()) != 0;
+            if !ok && (size as usize) > buf.len() * 2 && (size as usize) < 64 << 10 {
+                buf = vec![0u16; size as usize / 2 + 1];
+                size = (buf.len() * 2) as u32;
+                ok = WinHttpQueryHeaders(request.0, QUERY_CUSTOM, name.as_ptr(), buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut()) != 0;
+            }
+            ok.then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]).trim().to_string())
         };
         // only a good answer streams; an error body is read whole, to be shown
         if !(200..300).contains(&status) {
@@ -340,5 +356,22 @@ mod tests {
         assert_eq!(r.status, 429);
         assert_eq!(r.retry_after, Some(7));
         assert!(r.body.contains("\"echo\": {\"a\":1}") && r.body.contains("\"key\": true"), "{}", r.body);
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::host_allowed;
+
+    #[test]
+    fn hosts() {
+        let h = ["github.com", ".githubusercontent.com"];
+        assert!(host_allowed("github.com", &h));
+        assert!(host_allowed("release-assets.githubusercontent.com", &h));
+        assert!(host_allowed("OBJECTS.githubusercontent.com", &h));
+        assert!(!host_allowed("githubusercontent.com", &h));
+        assert!(!host_allowed("evilgithubusercontent.com", &h));
+        assert!(!host_allowed("github.com.evil.net", &h));
+        assert!(!host_allowed("api.github.com", &h));
     }
 }
