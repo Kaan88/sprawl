@@ -80,6 +80,16 @@ fn lower_eq(p: char, c: char) -> bool {
 /// Glob match with `*` and `?`, `pat` already lower-case. Linear-ish (backtracks to the last
 /// star only).
 pub(crate) fn wildcard(pat: &[char], s: &str) -> bool {
+    wildcard_by(pat, s, lower_eq)
+}
+
+/// [`wildcard`] with upper and lower case told apart (`pat` as typed).
+pub(crate) fn wildcard_case(pat: &[char], s: &str) -> bool {
+    wildcard_by(pat, s, |p, c| p == c)
+}
+
+#[inline]
+fn wildcard_by(pat: &[char], s: &str, eq: impl Fn(char, char) -> bool) -> bool {
     let (mut p, mut si) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None; // (pattern index after '*', string index)
     let bytes = s.len();
@@ -90,7 +100,7 @@ pub(crate) fn wildcard(pat: &[char], s: &str) -> bool {
             star = Some((p, si));
             continue;
         }
-        if p < pat.len() && (pat[p] == '?' || lower_eq(pat[p], c)) {
+        if p < pat.len() && (pat[p] == '?' || eq(pat[p], c)) {
             p += 1;
             si += c.len_utf8();
             continue;

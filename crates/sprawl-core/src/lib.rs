@@ -20,6 +20,7 @@ pub mod csv;
 pub mod filter;
 pub mod mft;
 pub mod progress;
+pub mod query;
 pub mod search;
 pub mod walk;
 

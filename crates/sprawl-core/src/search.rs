@@ -2,22 +2,30 @@
 //!
 //! [`Index::build`] keeps every name once, lower-case, in one block of bytes (about 25 bytes a
 //! name), so a search is a plain scan over that block split across the cores: no second tree,
-//! nothing to keep in step. [`Query::parse`] reads the search box:
+//! nothing to keep in step. [`Query::parse`] reads the search box; the language is described
+//! in [`crate::query`] and listed for users in [`HELP`]. In short:
 //!
 //! * `report 2024`: both words, anywhere in the name, any case (a space means "and");
 //! * `"my file"`: quotes keep a space;
 //! * `*.iso`, `img_????.jpg`: `*` and `?`, matched against the whole name as in the filter box;
-//! * `\steam\ *.vdf`: a word with `\` is matched against the full path (folders end in `\`);
+//! * `\steam\ *.vdf`: a word with `\` (or `/`) is matched against the full path (folders end
+//!   in `\`);
 //! * `a|b` (or `a;b`): either; `!tmp`: not;
 //! * `>1gb`, `<10kb`, `>=5mb`: size (1 kb = 1024 bytes; a folder's size is its total);
-//! * `folder:`, `file:`: one kind only (also `folder:cache`).
+//! * `folder:`, `file:`: one kind only (also `folder:cache`);
+//! * `ext:`, `dm:`, `path:`, `size:`, `regex:`, `case:`, `exact:`, `depth:`: see [`HELP`].
 //!
 //! The rules for `*`, `?`, `|` and `\` are the filter box's (see [`crate::filter`]), so a
 //! pattern means the same in both places.
+//!
+//! Drives read only to be searched can use `crate::compact::CompactIndex` instead of a tree
+//! and this index: the same queries, in a fraction of the memory.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::filter::wildcard;
+use crate::query::{unix_secs, Item, Term, NEED_CASE_PATH};
+pub use crate::query::{Kind, Query, HELP};
 use crate::{Tree, ROOT};
 
 /// Every name of a tree, lower-case, back to back.
@@ -26,21 +34,27 @@ pub struct Index {
     blob: Vec<u8>,
     /// Where node `i`'s name starts; `starts[i + 1]` is where it ends.
     starts: Vec<u32>,
-    /// Reachable from the root: a deleted branch stays in the node list, cut off from its parent.
-    live: Vec<bool>,
+    /// 0: not reachable from the root (a deleted branch stays in the node list, cut off from
+    /// its parent); otherwise one more than the levels below the root (the root is 1), at
+    /// most 255.
+    depth: Vec<u8>,
+}
+
+/// The last part of a node's name: a "Select Multiple" child is named by its full path.
+pub(crate) fn last_name(name: &str) -> &str {
+    let name = name.trim_end_matches('\\');
+    name.rsplit('\\').next().unwrap_or(name)
 }
 
 impl Index {
-    /// Build the index of `tree` (about 1 s for 3.4 million names; run it off the UI thread).
+    /// Build the index of `tree` (about 0.2 s for 3.7 million names; run it off the UI thread).
     pub fn build(tree: &Tree) -> Index {
         let n = tree.nodes.len();
         let mut blob = Vec::with_capacity(n * 24);
         let mut starts = Vec::with_capacity(n + 1);
         for node in &tree.nodes {
             starts.push(blob.len() as u32);
-            // a "Select Multiple" child is named by its full path: its own name is the last part
-            let name = node.name.trim_end_matches('\\');
-            let name = name.rsplit('\\').next().unwrap_or(name);
+            let name = last_name(&node.name);
             if name.is_ascii() {
                 blob.extend(name.bytes().map(|b| b.to_ascii_lowercase()));
             } else {
@@ -49,17 +63,18 @@ impl Index {
         }
         starts.push(blob.len() as u32);
         blob.shrink_to_fit();
-        let mut live = vec![false; n];
+        let mut depth = vec![0u8; n];
         if n > 0 {
-            let mut stack = vec![ROOT];
-            while let Some(i) = stack.pop() {
-                if i < n && !live[i] {
-                    live[i] = true;
-                    stack.extend_from_slice(&tree.nodes[i].children);
+            let mut stack = vec![(ROOT, 1u8)];
+            while let Some((i, d)) = stack.pop() {
+                if i < n && depth[i] == 0 {
+                    depth[i] = d;
+                    let next = d.saturating_add(1);
+                    stack.extend(tree.nodes[i].children.iter().map(|&c| (c, next)));
                 }
             }
         }
-        Index { blob, starts, live }
+        Index { blob, starts, depth }
     }
 
     pub fn len(&self) -> usize {
@@ -72,7 +87,7 @@ impl Index {
 
     /// Bytes the index holds.
     pub fn memory(&self) -> usize {
-        self.blob.capacity() + self.starts.capacity() * 4 + self.live.capacity()
+        self.blob.capacity() + self.starts.capacity() * 4 + self.depth.capacity()
     }
 
     /// Node `i`'s lower-case name.
@@ -81,245 +96,57 @@ impl Index {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Kind {
-    #[default]
-    Any,
-    Files,
-    Folders,
+/// A node as the query sees it.
+struct NodeItem<'a> {
+    tree: &'a Tree,
+    index: &'a Index,
+    i: usize,
+    path: &'a [u8],
+    opath: &'a [u8],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum Pat {
-    /// Anywhere in the name.
-    Sub(Vec<u8>),
-    /// The whole name, with `*` and `?`.
-    Glob(Vec<char>),
-    /// Anywhere in the full path.
-    PathSub(Vec<u8>),
-    /// The whole path, with `*` and `?`.
-    PathGlob(Vec<char>),
-}
-
-impl Pat {
-    fn on_path(&self) -> bool {
-        matches!(self, Pat::PathSub(_) | Pat::PathGlob(_))
+impl Item for NodeItem<'_> {
+    #[inline]
+    fn name(&self) -> &[u8] {
+        self.index.name(self.i)
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct Term {
-    not: bool,
-    alts: Vec<Pat>,
-}
-
-impl Term {
-    fn on_path(&self) -> bool {
-        self.alts.iter().any(Pat::on_path)
+    fn orig_name(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(last_name(&self.tree.nodes[self.i].name).as_bytes())
     }
-
-    /// `name` lower-case; `path` lower-case with folders ending in `\` (only for path terms).
-    fn matches(&self, name: &[u8], path: &[u8]) -> bool {
-        let hit = self.alts.iter().any(|p| match p {
-            Pat::Sub(s) => contains(name, s),
-            Pat::Glob(g) => std::str::from_utf8(name).is_ok_and(|n| wildcard(g, n)),
-            Pat::PathSub(s) => contains(path, s),
-            Pat::PathGlob(g) => std::str::from_utf8(path).is_ok_and(|n| wildcard(g, n)),
-        });
-        hit != self.not
+    fn path(&self) -> &[u8] {
+        self.path
+    }
+    fn orig_path(&self) -> &[u8] {
+        self.opath
+    }
+    fn is_dir(&self) -> bool {
+        self.tree.nodes[self.i].is_dir
+    }
+    fn size(&self) -> u64 {
+        self.tree.nodes[self.i].size
+    }
+    fn modified(&self) -> Option<i64> {
+        self.tree.nodes[self.i].modified.map(unix_secs)
+    }
+    fn depth(&self) -> u32 {
+        u32::from(self.index.depth[self.i]).saturating_sub(1)
     }
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if needle.len() > hay.len() {
-        return false;
-    }
-    let first = needle[0];
-    let last = hay.len() - needle.len();
-    let mut i = 0;
-    while i <= last {
-        match hay[i..=last].iter().position(|&b| b == first) {
-            None => return false,
-            Some(k) => {
-                i += k;
-                if &hay[i..i + needle.len()] == needle {
-                    return true;
-                }
-                i += 1;
-            }
-        }
-    }
-    false
+/// How many threads a search uses.
+pub(crate) fn threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |c| c.get()).clamp(1, 16)
 }
 
-/// A parsed search.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Query {
-    terms: Vec<Term>,
-    pub kind: Kind,
-    /// Bigger than this many bytes.
-    pub min: Option<u64>,
-    /// Smaller than this many bytes.
-    pub max: Option<u64>,
-}
-
-/// `1gb`, `10 kb`, `1.5m`, `500` (bytes).
-fn parse_size(s: &str) -> Option<u64> {
-    let s = s.trim().to_ascii_lowercase();
-    let split = s.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(s.len());
-    let (num, unit) = s.split_at(split);
-    let v: f64 = num.parse().ok()?;
-    let mul = match unit.trim() {
-        "" | "b" => 1u64,
-        "k" | "kb" | "kib" => 1 << 10,
-        "m" | "mb" | "mib" => 1 << 20,
-        "g" | "gb" | "gib" => 1 << 30,
-        "t" | "tb" | "tib" => 1 << 40,
-        _ => return None,
-    };
-    Some((v * mul as f64) as u64)
-}
-
-fn tokens(q: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    for c in q.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-impl Query {
-    pub fn parse(q: &str) -> Query {
-        let mut query = Query::default();
-        for tok in tokens(q) {
-            let mut t = tok.as_str();
-            let lower = t.to_ascii_lowercase();
-            for (prefix, kind) in [("folder:", Kind::Folders), ("file:", Kind::Files)] {
-                if lower.starts_with(prefix) {
-                    query.kind = kind;
-                    t = &t[prefix.len()..];
-                    break;
-                }
-            }
-            if t.is_empty() {
-                continue;
-            }
-            // sizes
-            let size = if let Some(r) = t.strip_prefix(">=").or_else(|| t.strip_prefix('>')) {
-                parse_size(r).map(|v| (true, if t.starts_with(">=") { v.saturating_sub(1) } else { v }))
-            } else if let Some(r) = t.strip_prefix("<=").or_else(|| t.strip_prefix('<')) {
-                parse_size(r).map(|v| (false, if t.starts_with("<=") { v.saturating_add(1) } else { v }))
-            } else {
-                None
-            };
-            if let Some((bigger, v)) = size {
-                if bigger {
-                    query.min = Some(query.min.map_or(v, |m| m.max(v)));
-                } else {
-                    query.max = Some(query.max.map_or(v, |m| m.min(v)));
-                }
-                continue;
-            }
-            let (not, rest) = match t.strip_prefix('!') {
-                Some(r) => (true, r),
-                None => (false, t),
-            };
-            let alts: Vec<Pat> = rest
-                .split(['|', ';'])
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-                .map(|p| {
-                    let low = p.to_lowercase();
-                    let glob = low.contains(['*', '?']);
-                    match (low.contains('\\'), glob) {
-                        (false, false) => Pat::Sub(low.into_bytes()),
-                        (false, true) => Pat::Glob(low.chars().collect()),
-                        (true, false) => Pat::PathSub(low.into_bytes()),
-                        (true, true) => Pat::PathGlob(low.chars().collect()),
-                    }
-                })
-                .collect();
-            if !alts.is_empty() {
-                query.terms.push(Term { not, alts });
-            }
-        }
-        query
-    }
-
-    /// Nothing to look for: no words, no size, no kind.
-    pub fn is_empty(&self) -> bool {
-        self.terms.is_empty() && self.min.is_none() && self.max.is_none() && self.kind == Kind::Any
-    }
-
-    /// Some words need the full path (slower: the paths are built as the tree is walked).
-    pub fn uses_paths(&self) -> bool {
-        self.terms.iter().any(Term::on_path)
-    }
-
-    /// Where the first plain word is in `name` (byte range), to show it in bold.
-    pub fn highlight(&self, name: &str) -> Option<(usize, usize)> {
-        let lower = name.to_lowercase();
-        if lower.len() != name.len() {
-            return None;
-        }
-        self.terms.iter().filter(|t| !t.not).flat_map(|t| &t.alts).find_map(|p| match p {
-            Pat::Sub(s) => {
-                let s = std::str::from_utf8(s).ok()?;
-                lower.find(s).map(|i| (i, i + s.len()))
-            }
-            _ => None,
-        })
-    }
-}
-
-/// The nodes of `tree` that match `q` (never the root), in tree order. `None` when `cancel`
-/// was set on the way (a newer search started).
-pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Option<Vec<usize>> {
-    let n = tree.nodes.len().min(index.len());
-    if n <= 1 || q.is_empty() {
-        return Some(Vec::new());
-    }
-    let (name_terms, path_terms): (Vec<&Term>, Vec<&Term>) = q.terms.iter().partition(|t| !t.on_path());
-    let cheap = |i: usize| -> bool {
-        if !index.live[i] {
-            return false;
-        }
-        let node = &tree.nodes[i];
-        match q.kind {
-            Kind::Files if node.is_dir => return false,
-            Kind::Folders if !node.is_dir => return false,
-            _ => {}
-        }
-        if q.min.is_some_and(|m| node.size <= m) || q.max.is_some_and(|m| node.size >= m) {
-            return false;
-        }
-        let name = index.name(i);
-        name_terms.iter().all(|t| t.matches(name, &[]))
-    };
-
-    // the cheap part on every core
-    let threads = std::thread::available_parallelism().map_or(4, |c| c.get()).clamp(1, 16);
+/// The items `1..n` for which `keep` holds, in order, split across the cores. `None` when
+/// `cancel` was set on the way.
+pub(crate) fn par_filter(n: usize, cancel: &AtomicBool, keep: impl Fn(usize) -> bool + Sync) -> Option<Vec<usize>> {
+    let threads = threads();
     let chunk = n.div_ceil(threads);
     let parts: Vec<Option<Vec<usize>>> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|k| {
-                let cheap = &cheap;
+                let keep = &keep;
                 s.spawn(move || {
                     let (a, b) = ((k * chunk).max(1), ((k + 1) * chunk).min(n));
                     let mut out = Vec::new();
@@ -327,7 +154,7 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
                         if (i & 0xFFFF) == 0 && cancel.load(Ordering::Relaxed) {
                             return None;
                         }
-                        if cheap(i) {
+                        if keep(i) {
                             out.push(i);
                         }
                     }
@@ -341,9 +168,41 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
     for p in parts {
         hits.extend(p?);
     }
+    Some(hits)
+}
+
+/// The nodes of `tree` that match `q` (never the root), in tree order. `None` when `cancel`
+/// was set on the way (a newer search started). A query with [`Query::errors`] finds nothing.
+pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Option<Vec<usize>> {
+    let n = tree.nodes.len().min(index.len());
+    if n <= 1 || q.is_empty() || !q.errors().is_empty() {
+        return Some(Vec::new());
+    }
+    // sizes, dates and depths, then names; the path words after
+    let (early, path_terms) = q.split_terms();
+    let cheap = |i: usize| -> bool {
+        if index.depth[i] == 0 {
+            return false;
+        }
+        let node = &tree.nodes[i];
+        match q.kind {
+            Kind::Files if node.is_dir => return false,
+            Kind::Folders if !node.is_dir => return false,
+            _ => {}
+        }
+        if !q.size_ok(node.size) {
+            return false;
+        }
+        let it = NodeItem { tree, index, i, path: &[], opath: &[] };
+        early.iter().all(|t| t.matches(&it))
+    };
+
+    // the cheap part on every core
+    let hits = par_filter(n, cancel, cheap)?;
     if path_terms.is_empty() {
         return Some(hits);
     }
+    let threads = threads();
 
     // the path words: walk the tree with a path buffer, checking only the candidates; the
     // top of the tree is split into pieces that the cores walk side by side
@@ -351,13 +210,13 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
     for &i in &hits {
         candidate[i] = true;
     }
-    let walker = PathWalk { tree, index, terms: &path_terms, candidate: &candidate, n };
-    let mut root: Vec<u8> = tree.root_path.to_string_lossy().to_lowercase().into_bytes();
-    while root.last() == Some(&b'\\') {
-        root.pop();
-    }
+    let orig = path_terms.iter().any(|t| t.needs & NEED_CASE_PATH != 0);
+    let walker = PathWalk { tree, index, terms: &path_terms, candidate: &candidate, n, orig };
+    let root = tree.root_path.to_string_lossy();
+    let root = root.trim_end_matches('\\');
+    let root = Bufs { low: root.to_lowercase().into_bytes(), orig: if orig { root.as_bytes().to_vec() } else { Vec::new() } };
     let mut keep = Vec::new();
-    let mut items: Vec<(usize, Vec<u8>)> = vec![(ROOT, root)];
+    let mut items: Vec<(usize, Bufs)> = vec![(ROOT, root)];
     while items.len() < threads * 16 {
         let mut next = Vec::new();
         for (i, mut path) in std::mem::take(&mut items) {
@@ -404,69 +263,95 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
     Some(keep)
 }
 
+/// A path being built: lower-case, and as on disk when a word needs that.
+#[derive(Clone)]
+struct Bufs {
+    low: Vec<u8>,
+    orig: Vec<u8>,
+}
+
 struct PathWalk<'a> {
     tree: &'a Tree,
     index: &'a Index,
     terms: &'a [&'a Term],
     candidate: &'a [bool],
     n: usize,
+    /// Build the path as on disk too (for a `case:` path word).
+    orig: bool,
 }
 
 impl PathWalk<'_> {
     /// Add node `i`'s name to `path` (its parent's path).
-    fn push_name(&self, i: usize, path: &mut Vec<u8>) {
+    fn push_name(&self, i: usize, path: &mut Bufs) {
         let name = &self.tree.nodes[i].name;
         if std::path::Path::new(name).is_absolute() {
             // a "Select Multiple" child is named by its full path
-            path.clear();
-            path.extend_from_slice(name.trim_end_matches('\\').to_lowercase().as_bytes());
+            let full = name.trim_end_matches('\\');
+            path.low.clear();
+            path.low.extend_from_slice(full.to_lowercase().as_bytes());
+            if self.orig {
+                path.orig.clear();
+                path.orig.extend_from_slice(full.as_bytes());
+            }
         } else {
-            path.push(b'\\');
-            path.extend_from_slice(self.index.name(i));
+            path.low.push(b'\\');
+            path.low.extend_from_slice(self.index.name(i));
+            if self.orig {
+                path.orig.push(b'\\');
+                path.orig.extend_from_slice(last_name(name).as_bytes());
+            }
         }
     }
 
     /// `path` is node `i`'s: keep `i` if it is a candidate and the path words match.
-    fn check(&self, i: usize, path: &mut Vec<u8>, keep: &mut Vec<usize>) {
+    fn check(&self, i: usize, path: &mut Bufs, keep: &mut Vec<usize>) {
         if i == ROOT || !self.candidate[i] {
             return;
         }
         let dir = self.tree.nodes[i].is_dir;
         if dir {
-            path.push(b'\\');
+            path.low.push(b'\\');
+            if self.orig {
+                path.orig.push(b'\\');
+            }
         }
-        if self.terms.iter().all(|t| t.matches(self.index.name(i), path)) {
+        let it = NodeItem { tree: self.tree, index: self.index, i, path: &path.low, opath: &path.orig };
+        if self.terms.iter().all(|t| t.matches(&it)) {
             keep.push(i);
         }
         if dir {
-            path.pop();
+            path.low.pop();
+            if self.orig {
+                path.orig.pop();
+            }
         }
     }
 
     /// Everything from `start` down (`path` is `start`'s).
-    fn walk(&self, start: usize, path: Vec<u8>, keep: &mut Vec<usize>, cancel: &AtomicBool) -> Option<()> {
+    fn walk(&self, start: usize, path: Bufs, keep: &mut Vec<usize>, cancel: &AtomicBool) -> Option<()> {
         let mut buf = path;
-        let mut stack: Vec<(usize, usize)> = Vec::new();
-        let base = buf.len();
+        let mut stack: Vec<(usize, usize, usize)> = Vec::new();
+        let base = (buf.low.len(), buf.orig.len());
         self.check(start, &mut buf, keep);
         for &c in self.tree.nodes[start].children.iter().rev() {
             if c < self.n {
-                stack.push((c, base));
+                stack.push((c, base.0, base.1));
             }
         }
         let mut seen = 0usize;
-        while let Some((i, len)) = stack.pop() {
+        while let Some((i, len, olen)) = stack.pop() {
             seen += 1;
             if (seen & 0x3FFF) == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
             }
-            buf.truncate(len);
+            buf.low.truncate(len);
+            buf.orig.truncate(olen);
             self.push_name(i, &mut buf);
             self.check(i, &mut buf, keep);
-            let here = buf.len();
+            let here = (buf.low.len(), buf.orig.len());
             for &c in self.tree.nodes[i].children.iter().rev() {
                 if c < self.n {
-                    stack.push((c, here));
+                    stack.push((c, here.0, here.1));
                 }
             }
         }
@@ -534,25 +419,6 @@ mod tests {
         assert_eq!(find(&t, "folder: *\\games\\*"), ["Games", "Steam"]);
         // the root is never a result
         assert!(!find(&t, "data").contains(&"C:\\Data".to_string()));
-    }
-
-    #[test]
-    fn sizes_and_empty() {
-        assert_eq!(parse_size("1gb"), Some(1 << 30));
-        assert_eq!(parse_size("1.5k"), Some(1536));
-        assert_eq!(parse_size("12"), Some(12));
-        assert_eq!(parse_size("1xb"), None);
-        assert!(Query::parse("  ").is_empty());
-        assert!(Query::parse("!").is_empty());
-        // `>` with no number is a word
-        assert!(!Query::parse(">abc").terms.is_empty());
-    }
-
-    #[test]
-    fn highlight() {
-        let q = Query::parse("!x 2024");
-        assert_eq!(q.highlight("Report 2024.PDF"), Some((7, 11)));
-        assert_eq!(Query::parse("*.pdf").highlight("a.pdf"), None);
     }
 
     /// The shared patterns find the same files as the filter box.
