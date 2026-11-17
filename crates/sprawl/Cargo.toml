@@ -10,6 +10,7 @@ build = "build.rs"
 [dependencies]
 sprawl-core = { path = "../sprawl-core" }
 sprawl-advisor = { path = "../sprawl-advisor" }
+sprawl-install = { path = "../sprawl-install" }
 windows-core = "0.100"
 windows-collections = "0.100"
 windows-reference = "0.100"

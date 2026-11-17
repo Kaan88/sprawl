@@ -345,6 +345,9 @@ pub fn page(drives: &[String]) -> String {
     .concat();
     let help_menu = [
         item("mShortcuts", "Keyboard Shortcuts", "F1", ""),
+        item("mUpdate", "Check for Updates", "", ""),
+        toggle("oUpdates", "Check for Updates Automatically", true, "", ""),
+        SEP.to_string(),
         item("mAbout", "About Sprawl", "", ""),
     ]
     .concat();
@@ -579,6 +582,12 @@ pub fn page(drives: &[String]) -> String {
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
     <TextBlock x:Name="MapCaption" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,10,14,0" MaxWidth="720" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>
+    <Border x:Name="UpdateCard" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#552F7BF6" BorderThickness="1" Width="400">
+      <StackPanel Spacing="6"><TextBlock x:Name="UpdateTitle" FontSize="14" FontWeight="SemiBold"/><TextBlock x:Name="UpdateSub" FontSize="12" Foreground="#FF8E97AA"/>
+        <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto"><TextBlock x:Name="UpdateNotes" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></ScrollViewer>
+        <TextBlock x:Name="UpdateStatus" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>
+        <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="UpdateNow" Content="Update and restart" Padding="12,3" FontSize="12" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="UpdateLater" Content="Later" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="UpdateSkip" Content="Skip this version" Padding="12,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel>
+    </Border>
     <Border x:Name="SetupOffer" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="14,10" CornerRadius="8" Background="#E61A1D27" BorderBrush="#552F7BF6" BorderThickness="1" MaxWidth="360">
       <StackPanel Spacing="8"><TextBlock Text="Set up Sprawl?" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="An AI to explain unknown folders, faster scans as administrator, and history to see what grows. All optional." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>
         <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="SetupYes" Content="Set up" Padding="12,3" FontSize="12" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="SetupNo" Content="Not now" Padding="12,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel>

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/sprawl-core", "crates/sprawl-advisor", "crates/sprawl", "crates/bindgen"]
-default-members = ["crates/sprawl-core", "crates/sprawl-advisor", "crates/sprawl"]
+members = ["crates/sprawl-core", "crates/sprawl-advisor", "crates/sprawl-install", "crates/sprawl", "crates/sprawl-setup", "crates/sprawl-release", "crates/bindgen"]
+default-members = ["crates/sprawl-core", "crates/sprawl-advisor", "crates/sprawl-install", "crates/sprawl"]
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 
 [profile.release]

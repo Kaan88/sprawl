@@ -32,6 +32,7 @@ mod ui;
 mod win32;
 mod welcome;
 mod wizard;
+mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -82,7 +83,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
+    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -202,7 +203,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             }
         });
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabAdvisor", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo"] {
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabAdvisor", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -411,6 +412,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         wizard_page: 0,
         wizard_all: false,
         wizard_offered: false,
+        update: Default::default(),
         hist: None,
         scan_taken: std::time::SystemTime::now(),
         settings,
@@ -460,6 +462,11 @@ fn main() {
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if args.first().map(String::as_str) == Some("--mcp") {
         sprawl_advisor::mcp::main(&args);
+        return;
+    }
+    // `sprawl --uninstall`: from Settings > Apps
+    if args.first().map(String::as_str) == Some("--uninstall") {
+        sprawl_install::setup::uninstall(args.iter().any(|a| a == "/S"));
         return;
     }
     if let Ok(exe) = std::env::current_exe() {

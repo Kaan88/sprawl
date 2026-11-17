@@ -1,0 +1,24 @@
+[package]
+name = "sprawl-install"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Sprawl's install, uninstall and update plumbing: the signed release manifest, swapping files in place, the Start menu shortcut and the Apps entry."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = "2"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]

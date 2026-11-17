@@ -5,11 +5,28 @@ A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8), m
 
 ![Sprawl](docs/screenshots/sprawl.png)
 
+## Install
+
+Download `Sprawl-Setup-<version>.exe` from the [latest release](https://github.com/Kaan88/sprawl/releases/latest)
+and run it. It installs for you only, in `%LOCALAPPDATA%\Programs\Sprawl`, with a Start menu
+entry and an entry in Settings > Apps for uninstalling. No administrator rights are needed.
+Sprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the
+first time Sprawl starts.
+
+Sprawl looks for a new version once a day and asks before updating (Help > Check for Updates;
+the switch below it turns the daily check off). Updates are signed: a copy only accepts a release
+whose file list carries Sprawl's Ed25519 signature and whose files match it. What changed in
+each version is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Layout
 
 ```
 crates/
   sprawl-core/   UI-free logic: scanning, folder totals, file-type stats, squarified treemap layout (+ tests)
+  sprawl-advisor/ the Advisor: rules, history, clean-up, AI providers, the MCP server
+  sprawl-install/ install, uninstall and update plumbing, and the signed release manifest
+  sprawl-setup/   the installer (carries the release build)
+  sprawl-release/ builds, signs and publishes a release
   sprawl/        the WinUI 3 app (XAML loaded at run time, treemap painted into a WriteableBitmap)
     src/main.rs      start-up: arguments, window, event wiring
     src/app.rs       Windows App Runtime bootstrap, the composed XAML Application, COM interop helpers
@@ -47,6 +64,26 @@ window and exits - handy for checking the look without clicking around.
 
 To use a WinUI type or member that isn't projected yet, add it to `crates/bindgen/types.txt` and
 run `cargo run -p sprawl-bindgen` (needs the Windows SDK 10.0.26100 metadata).
+
+## Releasing
+
+1. Raise `version` in `Cargo.toml` (`[workspace.package]`) and add a `## <version>` section to
+   `CHANGELOG.md`. Commit and push.
+2. Build the release tool on its own, then let it build, sign and publish:
+
+```powershell
+cargo build --release -p sprawl-release
+.\target\release\sprawl-release build     # builds Sprawl and the installer, signs, fills dist\v<version>
+.\target\release\sprawl-release publish   # creates the GitHub release (needs gh)
+```
+
+The signing key is `%USERPROFILE%\.sprawl-release\signing.key`, made once with
+`sprawl-release keygen`. It never goes in the repository. Its public half is `PUBLIC_KEY` in
+`crates/sprawl-install/src/lib.rs`; losing the key means installed copies can't take updates
+any more (they would need a new installer), so keep a copy somewhere safe.
+
+To try an update on a build that is already current, start it with
+`SPRAWL_PRETEND_VERSION=0.0.1`; it then sees the latest release as new.
 
 ## Status
 

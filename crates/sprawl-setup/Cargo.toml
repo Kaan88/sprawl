@@ -1,0 +1,11 @@
+[package]
+name = "sprawl-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Sprawl's installer: one program that carries the release files and installs them per user."
+build = "build.rs"
+
+[dependencies]
+sprawl-install = { path = "../sprawl-install" }

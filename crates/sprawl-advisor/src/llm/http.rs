@@ -100,6 +100,33 @@ fn last_error(what: &str) -> String {
     format!("{what}: {why}")
 }
 
+/// An answer as bytes, with its `Location` header (for a redirect).
+struct Raw {
+    status: u32,
+    retry_after: Option<u64>,
+    location: Option<String>,
+    body: Vec<u8>,
+}
+
+/// GET `url` as bytes (up to `max` bytes), following redirects (at most 5) only over HTTPS and
+/// only to a host in `hosts`. For downloads, such as Sprawl's own updates.
+pub fn download(url: &str, hosts: &[&str], headers: &[(&str, String)], max: usize, timeout: Duration) -> Result<Vec<u8>, String> {
+    let mut url = url.to_string();
+    for _ in 0..6 {
+        let (secure, host, _, _) = split_url(&url)?;
+        if !secure || !hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+            return Err(format!("refused to download from {host}"));
+        }
+        let r = request_raw("GET", &url, headers, None, timeout, None, max)?;
+        match r.status {
+            200..=299 => return Ok(r.body),
+            301 | 302 | 303 | 307 | 308 => url = r.location.ok_or("a redirect without an address")?,
+            s => return Err(format!("the server answered {s}")),
+        }
+    }
+    Err("too many redirects".into())
+}
+
 /// POST `body` (JSON) to `url` with `headers`.
 pub fn post(url: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration) -> Result<Response, String> {
     request("POST", url, headers, Some(body), timeout, None)
@@ -139,8 +166,13 @@ impl Sse {
     }
 }
 
+fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]>, timeout: Duration, chunk: Option<&mut dyn FnMut(&[u8])>) -> Result<Response, String> {
+    let r = request_raw(verb, url, headers, body, timeout, chunk, 64 << 20)?;
+    Ok(Response { status: r.status, retry_after: r.retry_after, body: String::from_utf8_lossy(&r.body).into_owned() })
+}
+
 #[cfg(windows)]
-fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]>, timeout: Duration, mut chunk: Option<&mut dyn FnMut(&[u8])>) -> Result<Response, String> {
+fn request_raw(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]>, timeout: Duration, mut chunk: Option<&mut dyn FnMut(&[u8])>, max: usize) -> Result<Raw, String> {
     use ffi::*;
     use std::ptr::null;
 
@@ -207,6 +239,13 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
                 .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]))
                 .and_then(|s| s.trim().parse::<u64>().ok())
         };
+        let location = {
+            let name = wide("Location");
+            let mut buf = [0u16; 2048];
+            let mut size = (buf.len() * 2) as u32;
+            (WinHttpQueryHeaders(request.0, QUERY_CUSTOM, name.as_ptr(), buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut()) != 0)
+                .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).min(buf.len())]).trim().to_string())
+        };
         // only a good answer streams; an error body is read whole, to be shown
         if !(200..300).contains(&status) {
             chunk = None;
@@ -221,9 +260,9 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
             if avail == 0 {
                 break;
             }
-            // answers are small; refuse anything absurd
-            if out.len() + streamed + avail as usize > 64 << 20 {
-                return Err("the answer is over 64 MB".into());
+            // refuse anything over the limit
+            if out.len() + streamed + avail as usize > max {
+                return Err(format!("the answer is over {} MB", max >> 20));
             }
             let start = out.len();
             out.resize(start + avail as usize, 0);
@@ -241,12 +280,12 @@ fn request(verb: &str, url: &str, headers: &[(&str, String)], body: Option<&[u8]
                 break;
             }
         }
-        Ok(Response { status, retry_after, body: String::from_utf8_lossy(&out).into_owned() })
+        Ok(Raw { status, retry_after, location, body: out })
     }
 }
 
 #[cfg(not(windows))]
-fn request(_: &str, _: &str, _: &[(&str, String)], _: Option<&[u8]>, _: Duration, _: Option<&mut dyn FnMut(&[u8])>) -> Result<Response, String> {
+fn request_raw(_: &str, _: &str, _: &[(&str, String)], _: Option<&[u8]>, _: Duration, _: Option<&mut dyn FnMut(&[u8])>, _: usize) -> Result<Raw, String> {
     Err("HTTP is only built for Windows".into())
 }
 

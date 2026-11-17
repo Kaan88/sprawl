@@ -13,7 +13,7 @@ use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, load, text, State, Units, View};
 
 /// Options menu switches that are remembered between runs.
-const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oAlwaysAdmin"];
+const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "oUpdates"];
 const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 use crate::state::Source;
 use crate::{dialogs, paint, ui, win32};
@@ -121,6 +121,8 @@ impl State {
             }
             "mSettings" => self.settings_open(),
             "mAbout" => self.command("TabAbout"),
+            "mUpdate" => self.update_check(true),
+            "UpdateNow" | "UpdateLater" | "UpdateSkip" => self.update_command(name),
             "mShortcuts" => {
                 let mut s = String::from("Tabs: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor\nTables: arrow keys, Page Up/Down, Home/End; type a name to jump to it; Ctrl+click and Shift+click pick several\nMap: click selects, double-click goes in, wheel zooms, right-drag pans\n\n");
                 for (k, what) in crate::ui::shortcuts() {

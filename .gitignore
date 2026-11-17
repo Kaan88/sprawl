@@ -7,3 +7,6 @@
 # Session state from the Craft Anything builder that started this project (kept locally only)
 /archive/
 /.claude/
+
+# Release builds made by sprawl-release
+/dist/

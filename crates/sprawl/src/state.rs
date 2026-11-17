@@ -107,6 +107,7 @@ pub(crate) struct State {
     /// The wizard shown as the Settings page: every section at once.
     pub(crate) wizard_all: bool,
     pub(crate) wizard_offered: bool,
+    pub(crate) update: crate::update::Updater,
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
     pub(crate) scan_taken: std::time::SystemTime,
@@ -249,6 +250,7 @@ impl State {
     pub(crate) fn poll(&mut self) {
         self.advisor_poll();
         self.cleanup_poll();
+        self.update_poll();
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {
