@@ -121,12 +121,9 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
     if !matches!(f.remedy, Remedy::Delete | Remedy::Command) || f.risk == Risk::Red {
         return Some("");
     }
-    let Some((action, admin)) = clean::action(f) else { return Some("") };
+    let Some((action, _)) = clean::action(f) else { return Some("") };
     if !counted {
         return Some("Inside another item");
-    }
-    if admin && !sprawl_core::is_elevated() {
-        return Some("Needs administrator");
     }
     // a tool's own clean-up acts on the account running it: only the user's own folders
     if matches!(action, Action::Tool { .. }) {
@@ -136,6 +133,24 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// It needs administrator rights and this Sprawl doesn't have them: it can be ticked (for a
+/// script), but the in-app clean-up holds it back.
+pub(crate) fn needs_admin(f: &Finding) -> bool {
+    clean::action(f).is_some_and(|(_, admin)| admin) && !sprawl_core::is_elevated()
+}
+
+/// Why the in-app clean-up holds a ticked item back before it starts: it needs administrator,
+/// or (elevated) its command starts a program from a folder the user can change.
+pub(crate) fn held_in_app(f: &Finding) -> Option<String> {
+    if needs_admin(f) {
+        return Some("needs administrator: restart as administrator, or save as a script".into());
+    }
+    match clean::action(f) {
+        Some((Action::Tool { command }, _)) => clean::elevated_refusal(&command),
+        _ => None,
+    }
 }
 
 impl State {
@@ -183,7 +198,7 @@ impl State {
         r.findings
             .iter()
             .zip(&r.counted)
-            .filter(|(f, c)| untickable(f, **c).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
+            .filter(|(f, c)| untickable(f, **c).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
             .map(|(f, _)| key(&f.path))
             .collect()
     }
@@ -251,7 +266,7 @@ impl State {
     pub(crate) fn cleanup_select_enough(&mut self, need: u64) -> Option<u64> {
         let r = self.advice()?;
         let plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
-        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| untickable(&r.findings[i], r.counted[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
+        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
         self.advisor.cleanup.ticked = ticked;
         self.advisor.cleanup.auto = false;
@@ -283,6 +298,10 @@ impl State {
         let mut items = Vec::new();
         let mut held = Vec::new();
         for (_, f) in picked {
+            if let Some(why) = held_in_app(&f) {
+                held.push(format!("{}: not cleaned, {why}", f.title));
+                continue;
+            }
             if spare.keeps(&f.path) {
                 held.push(format!("{}: not cleaned, you chose to keep it", f.title));
                 continue;
@@ -309,7 +328,11 @@ impl State {
             items.push(Item { path: f.path.clone(), title: f.title.clone(), bytes: f.bytes, state: ItemState::Waiting });
         }
         if items.is_empty() {
-            self.adv_say("Nothing was cleaned: the items no longer pass the safety checks. Scan again.");
+            if held.is_empty() {
+                self.adv_say("Nothing was cleaned: the items no longer pass the safety checks. Scan again.");
+            } else {
+                self.adv_say(&format!("Nothing was cleaned. {}", held.join(". ")));
+            }
             return;
         }
         let (tx, rx) = channel();
@@ -552,7 +575,7 @@ impl State {
     pub(crate) fn cleanup_bar_xaml(&self, goal: &str) -> String {
         let picked = self.ticked_findings();
         let bytes: u64 = picked.iter().map(|(_, f)| f.bytes).sum();
-        let admin_waiting = self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, c)| untickable(f, *c) == Some("Needs administrator")));
+        let admin_waiting = self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, c)| untickable(f, *c).is_none() && needs_admin(f)));
         let mut x = format!(
             r##"<Border Padding="12,10" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="8">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -573,7 +596,10 @@ impl State {
 
     /// The review before anything goes.
     pub(crate) fn cleanup_review_xaml(&self) -> String {
-        let picked = self.ticked_findings();
+        let all = self.ticked_findings();
+        // what the run will hold back is shown with its reason, and not counted
+        let held: Vec<(Finding, String)> = all.iter().filter_map(|(_, f)| held_in_app(f).map(|why| (f.clone(), why))).collect();
+        let picked: Vec<(usize, Finding)> = all.into_iter().filter(|(_, f)| held_in_app(f).is_none()).collect();
         let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
         let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
@@ -615,6 +641,13 @@ impl State {
                     (b, false) if f.estimate() => format!("{} now", self.size(b)),
                     (b, false) => self.size(b),
                 }
+            );
+        }
+        for (f, why) in &held {
+            x += &format!(
+                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="&#xE7BA;" FontSize="10" Foreground="#FFF5B342"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis" Foreground="#FF8E97AA"/><TextBlock Text="Held back: {}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="2" Text="not run" FontSize="13" VerticalAlignment="Center" Foreground="#FF8E97AA"/></Grid>"##,
+                ui::esc(&f.title),
+                ui::esc(why),
             );
         }
         x += "</StackPanel></ScrollViewer>";
@@ -673,7 +706,7 @@ impl State {
                 if self.advisor.cleanup.own_ok { "True" } else { "False" }
             );
         }
-        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if own && !self.advisor.cleanup.own_ok { "False" } else { "True" });
+        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if picked.is_empty() || (own && !self.advisor.cleanup.own_ok) { "False" } else { "True" });
         x += r##"<Button x:Name="AdvReviewBack" Content="Back" Padding="14,6" FontSize="13" CornerRadius="6"/></StackPanel>"##;
         x += "</StackPanel></Border>";
         x
@@ -768,5 +801,40 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         let _ = f.write_all(s.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod admin_tests {
+    use super::*;
+    use sprawl_advisor::finding::Source;
+
+    #[test]
+    fn an_item_that_needs_administrator_can_be_ticked_for_a_script() {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Users\Sam"));
+        let mut f = Finding {
+            path: home.join(r"AppData\Local\Temp"),
+            owner: None,
+            bytes: 1 << 20,
+            risk: Risk::Green,
+            remedy: Remedy::Delete,
+            command: None,
+            title: "Temp".into(),
+            evidence: vec![],
+            confidence: 1.0,
+            source: Source::Rule("t".into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: true,
+            action: None,
+            admin: false,
+        };
+        f.set_action(Action::Clear { days: 7 }, true);
+        // tickable either way; the in-app run holds it back only when not elevated
+        assert_eq!(untickable(&f, true), None);
+        assert_eq!(held_in_app(&f).is_some(), !sprawl_core::is_elevated());
+        f.set_action(Action::Clear { days: 7 }, false);
+        assert_eq!(held_in_app(&f), None);
     }
 }

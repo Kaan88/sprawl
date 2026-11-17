@@ -744,6 +744,15 @@ pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<P
     Ok(())
 }
 
+/// Why a built-in tool command won't run from this Sprawl: it is elevated and the command starts
+/// a program from a folder the user can change (see [`elevated_tool_ok`]). None when it runs.
+pub fn elevated_refusal(command: &str) -> Option<String> {
+    if !sprawl_core::is_elevated() {
+        return None;
+    }
+    elevated_tool_ok(command, &|name| on_path(name), &system_roots()).err()
+}
+
 /// PowerShell's -EncodedCommand form: base64 of the UTF-16 text.
 fn encoded(s: &str) -> String {
     const B: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -766,10 +775,8 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
     use std::os::windows::process::CommandExt;
     let Some(sys) = system_dir() else { return o.problem(Path::new(command), "Windows' System32 folder wasn't found") };
     let elevated = sprawl_core::is_elevated();
-    if elevated {
-        if let Err(why) = elevated_tool_ok(command, &|name| on_path(name), &system_roots()) {
-            return o.problem(Path::new(command), why);
-        }
+    if let Some(why) = elevated_refusal(command) {
+        return o.problem(Path::new(command), why);
     }
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
