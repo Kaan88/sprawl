@@ -111,6 +111,13 @@ pub struct Memory {
     /// Cleaners the AI proposed, for the user to approve.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleaner_proposals: Vec<CleanerProposal>,
+    /// Community cleaners (winapp2.ini, BleachBit) are not fetched nor shown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub community_off: bool,
+    /// Community cleaners the user turned on: id to the fingerprint of the definition then (a
+    /// changed definition needs turning on again).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub community_on: std::collections::BTreeMap<String, String>,
 }
 
 fn now() -> u64 {
@@ -130,7 +137,7 @@ pub fn rules_dir() -> Option<PathBuf> {
 }
 
 /// Written next to the target and renamed over it, so a crash never leaves half a file.
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -203,6 +210,34 @@ pub fn forget_cleaner(id: &str) -> Result<(), String> {
     write_atomic(&path, &text).map_err(|e| e.to_string())
 }
 
+/// Paths a pattern could match, for the never-list: each wildcard segment both with its
+/// wildcards taken out (`Chrome*` as `Chrome`, so a protected `Google\Chrome` is seen) and
+/// filled in (`Chromex`). At most 64 forms; more wildcards than that is refused by the caller's
+/// narrowness rules anyway, and the plain form is always among them.
+pub(crate) fn sample_paths(p: &str) -> Vec<String> {
+    let base = sample_path(p);
+    let e = crate::rules::expand(p);
+    let segs: Vec<&str> = e.split('\\').filter(|s| !s.is_empty() && *s != "**").collect();
+    let mut forms: Vec<Vec<String>> = vec![Vec::new()];
+    for (i, seg) in segs.iter().enumerate() {
+        let opts: Vec<String> = if i == 0 && seg.starts_with('?') {
+            vec!["C:".into()]
+        } else if seg.contains(['*', '?']) {
+            let stripped = seg.replace(['*', '?'], "");
+            let filled = seg.replace(['*', '?'], "x");
+            if stripped.is_empty() || forms.len() >= 32 { vec![filled] } else { vec![stripped, filled] }
+        } else {
+            vec![seg.to_string()]
+        };
+        forms = forms.into_iter().flat_map(|f| opts.iter().map(move |o| { let mut g = f.clone(); g.push(o.clone()); g })).collect();
+    }
+    let mut out: Vec<String> = forms.into_iter().map(|f| { let s = f.join("\\"); if s.len() == 2 { s + "\\" } else { s } }).collect();
+    out.push(base);
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// A pattern turned into one path it could match (`?:` as C:, a wildcard as a plain name,
 /// `**` as nothing), to hold it against the never-list.
 pub(crate) fn sample_path(p: &str) -> String {
@@ -259,7 +294,7 @@ pub(crate) fn check_local_rule(r: &Rule, never: &crate::safety::Never) -> Result
             return Err(format!("{x}: a variable that isn't set"));
         }
         if r.remedy == Remedy::Delete {
-            if let Some(hit) = never.hit(&sample_path(x)) {
+            if let Some(hit) = sample_paths(x).iter().find_map(|s| never.hit(s)) {
                 return Err(format!("{x} is on or above a protected folder ({hit})"));
             }
         }
@@ -552,11 +587,36 @@ fn local_ids() -> Vec<String> {
 
 /// A pack from disk, checked as [`load_packs`] does: the whole file or nothing.
 pub fn check_pack_text(text: &str, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
+    let pack = check_pack_with(text, taken, &crate::safety::Never::default_list())?;
+    if let Some(id) = pack.all_rules().map(|r| &r.id).chain(pack.cleaners.iter().map(|c| &c.id)).find(|id| crate::community::is_community(id)) {
+        return Err(format!("{id}: that prefix is for community cleaners"));
+    }
+    Ok(pack)
+}
+
+/// A community pack (converted by [`crate::community`]): checked as a local pack, and every id
+/// carries `prefix`, it has cleaners only, and every part is at least amber.
+pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
+    let pack = check_pack_with(text, taken, never)?;
+    if !pack.rules.is_empty() {
+        return Err("a community pack has cleaners only".into());
+    }
+    for c in &pack.cleaners {
+        if !c.id.starts_with(prefix) {
+            return Err(format!("{}: not a {prefix} id", c.id));
+        }
+        if c.parts.iter().any(|p| p.risk < Risk::Amber) {
+            return Err(format!("{}: a community part is at least amber", c.id));
+        }
+    }
+    Ok(pack)
+}
+
+fn check_pack_with(text: &str, taken: &mut std::collections::HashSet<String>, never: &crate::safety::Never) -> Result<RulePack, String> {
     let mut pack = RulePack::parse(text.trim_start_matches('\u{feff}'))?;
     pack.trusted = false;
-    let never = crate::safety::Never::default_list();
     for r in pack.all_rules() {
-        check_local_rule(r, &never).map_err(|e| format!("rule {}: {e}", r.id))?;
+        check_local_rule(r, never).map_err(|e| format!("rule {}: {e}", r.id))?;
     }
     for c in &pack.cleaners {
         if c.parts.iter().any(|p| p.class == crate::cleaners::Class::Privacy) {
@@ -706,6 +766,8 @@ mod tests {
         ] {
             assert!(load(bad).is_err(), "{bad}");
         }
+        // a wildcard that could reach a protected folder: Chrome* covers Chrome
+        assert!(load("remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Google\\Chrome*\\User Data\\x']").is_err(), "a wildcard over a protected folder");
         // an id can't be used twice, nor take over a built-in one
         let mut taken = std::collections::HashSet::new();
         let ok = pack_with("remedy = 'delete'\npaths = ['%LOCALAPPDATA%\\Tool\\cache']");

@@ -15,6 +15,7 @@
 pub mod anomaly;
 pub mod clean;
 pub mod cleaners;
+pub mod community;
 pub mod config;
 pub mod dupes;
 pub mod export;

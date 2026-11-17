@@ -28,6 +28,12 @@ pub(crate) struct ClState {
     pub(crate) procs: Option<(std::time::Instant, Option<HashSet<String>>)>,
     /// What each proposed cleaner matches in the scan: by (tree generation, cleaner id).
     pub(crate) matches: std::cell::RefCell<HashMap<(u64, String), Option<(usize, u64)>>>,
+    /// Community cleaners being fetched.
+    pub(crate) fetching: Option<std::sync::mpsc::Receiver<sprawl_advisor::community::Status>>,
+    /// Whether this session already looked if a fetch is due.
+    pub(crate) fetch_checked: bool,
+    /// The list of what the converter left out is shown.
+    pub(crate) left_shown: bool,
 }
 
 /// Folders no cleaner knows are listed from this size.
@@ -100,6 +106,10 @@ impl State {
         for (k, d) in r.catalogue.iter().enumerate() {
             let presence = r.presence.get(k).cloned().unwrap_or(Presence::Absent);
             if presence == Presence::Absent {
+                continue;
+            }
+            // thousands come from the community files: only those with something here
+            if sprawl_advisor::community::is_community(&d.id) && !d.parts.iter().any(|p| by_rule.contains_key(p.rule.as_str())) {
                 continue;
             }
             let parts = d
@@ -182,7 +192,10 @@ impl State {
             let open = self.advisor.cl.open.contains(&c.id);
             let bytes: u64 = c.parts.iter().map(|p| p.bytes(r)).sum();
             let ticked = c.parts.iter().filter(|p| p.findings.iter().any(|&i| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path)))).count();
+            let community = sprawl_advisor::community::is_community(&c.id);
+            let turned_on = community && self.community_on(r, c);
             let sub = match &c.presence {
+                _ if community && !turned_on => format!("From the community, not used yet · {}", if c.id.starts_with(sprawl_advisor::community::WINAPP2) { "winapp2.ini" } else { "BleachBit" }),
                 Presence::Elsewhere(_) => "Not in this scan".to_string(),
                 _ if bytes == 0 => "Nothing to clean now".to_string(),
                 _ => {
@@ -195,6 +208,10 @@ impl State {
                 }
             };
             let scan = match &c.presence {
+                _ if community => format!(
+                    r##"<Button x:Name="AdvClUse{ci}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
+                    if turned_on { "Stop using" } else { "Use this cleaner" }
+                ),
                 Presence::Elsewhere(drive) => format!(
                     r##"<Button x:Name="AdvClScan{ci}" Content="Scan {}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0"/>"##,
                     ui::esc(drive.display().to_string().trim_end_matches('\\'))
@@ -224,7 +241,7 @@ impl State {
                 if let Some(k) = c.def {
                     let d = &r.catalogue[k];
                     let showing = self.advisor.cl.def.contains(&c.id);
-                    let forget = if d.builtin {
+                    let forget = if d.builtin || sprawl_advisor::community::is_community(&d.id) {
                         String::new()
                     } else {
                         format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
@@ -247,7 +264,92 @@ impl State {
             }
         }
         x += &self.unclaimed_card(r);
+        x += &self.community_card();
         x
+    }
+
+    /// Whether the user turned community cleaner `c` on (for its definition as it is now).
+    pub(crate) fn community_on(&self, r: &Report, c: &ClRow) -> bool {
+        let Some(d) = c.def.map(|k| &r.catalogue[k]) else { return false };
+        self.advisor.memory.community_on.get(&d.id).is_some_and(|f| *f == sprawl_advisor::community::fingerprint(&d.text))
+    }
+
+    /// Where the community cleaners come from, when they were fetched, and what was left out.
+    fn community_card(&self) -> String {
+        let off = self.advisor.memory.community_off;
+        let st = sprawl_advisor::community::status();
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF" Margin="0,8,0,0"><StackPanel Spacing="4"><TextBlock Text="Community cleaners" FontSize="13" FontWeight="SemiBold"/>"##);
+        let line = if off {
+            "Off: winapp2.ini and BleachBit's cleaners are neither fetched nor shown.".to_string()
+        } else if self.advisor.cl.fetching.is_some() {
+            "Fetching winapp2.ini and BleachBit's cleaners...".to_string()
+        } else if st.fetched == 0 {
+            "winapp2.ini and BleachBit's cleaners are fetched from GitHub once a week (a plain download; nothing about this PC is sent).".to_string()
+        } else {
+            let srcs: Vec<String> = st.sources.iter().map(|s| format!("{}: {} cleaners ({})", s.name, s.imported, s.licence)).collect();
+            format!("{}. Fetched {}. Each is checked like your own rules, at least amber, and does nothing until you turn it on.", srcs.join(", "), crate::format::fmt_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(st.fetched)))
+        };
+        x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##, ui::esc(&line));
+        for s in st.sources.iter().filter(|s| !s.error.is_empty()) {
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342"/>"##, ui::esc(&format!("{}: {}", s.name, s.error)));
+        }
+        let left: usize = st.sources.iter().map(|s| s.left_out.len()).sum();
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
+        if !off {
+            x += r##"<Button x:Name="AdvClUpd" Content="Fetch now" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+        }
+        x += &format!(r##"<Button x:Name="AdvClComm" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, if off { "Turn on" } else { "Turn off" });
+        if left > 0 && !off {
+            x += &format!(
+                r##"<Button x:Name="AdvClLeft" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/>"##,
+                ui::esc(&format!("{} {} entries left out", if self.advisor.cl.left_shown { "Hide the" } else { "Show the" }, crate::format::thousands(left as u64)))
+            );
+        }
+        x += "</StackPanel>";
+        if self.advisor.cl.left_shown && !off {
+            x += r##"<ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="1">"##;
+            for l in st.sources.iter().flat_map(|s| s.left_out.iter()).take(400) {
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(&format!("{}: {}", l.entry, l.why)));
+            }
+            x += "</StackPanel></ScrollViewer>";
+        }
+        x += "</StackPanel></Border>";
+        x
+    }
+
+    /// Fetch the community files again, off the UI thread.
+    pub(crate) fn community_fetch(&mut self) {
+        if self.advisor.cl.fetching.is_some() || self.advisor.memory.community_off {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(sprawl_advisor::community::update());
+        });
+        self.advisor.cl.fetching = Some(rx);
+        self.render_advisor();
+    }
+
+    /// Each frame: once a session, fetch when a week has passed (only while the Advisor is open,
+    /// never in a screenshot run); and take a finished fetch in.
+    pub(crate) fn community_poll(&mut self) {
+        if !self.advisor.cl.fetch_checked && self.view == crate::state::View::Advisor && !self.advisor.memory.community_off && self.shot.is_none() {
+            self.advisor.cl.fetch_checked = true;
+            if sprawl_advisor::community::due(&sprawl_advisor::community::status()) {
+                self.community_fetch();
+            }
+        }
+        let Some(rx) = &self.advisor.cl.fetching else { return };
+        let Ok(st) = rx.try_recv() else { return };
+        self.advisor.cl.fetching = None;
+        let n: usize = st.sources.iter().map(|s| s.imported).sum();
+        let errors: Vec<String> = st.sources.iter().filter(|s| !s.error.is_empty()).map(|s| format!("{}: {}", s.name, s.error)).collect();
+        if errors.is_empty() {
+            self.adv_say(&format!("Community cleaners fetched: {n} can be used on Windows. Checking again with them..."));
+        } else {
+            self.adv_say(&format!("Community cleaners: {}", errors.join("; ")));
+        }
+        self.advisor_start();
     }
 
     /// Big folders of programs no cleaner knows, each with a button that asks the AI for one.
@@ -500,6 +602,18 @@ impl State {
                     }
                     Err(e) => self.adv_say(&format!("Couldn't remove it: {e}")),
                 }
+            }
+            "AdvClUse" => {
+                let Some(d) = rows.get(i).and_then(|c| c.def).map(|k| &r.catalogue[k]).filter(|d| sprawl_advisor::community::is_community(&d.id)) else { return };
+                let (id, fp) = (d.id.clone(), sprawl_advisor::community::fingerprint(&d.text));
+                let m = &mut self.advisor.memory;
+                if m.community_on.get(&id) == Some(&fp) {
+                    m.community_on.remove(&id);
+                } else {
+                    m.community_on.insert(id, fp);
+                }
+                self.save_memory();
+                return self.advisor_start();
             }
             "AdvClApprove" => match self.advisor.memory.approve_cleaner(i) {
                 Ok(()) => {

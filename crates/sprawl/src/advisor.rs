@@ -65,6 +65,8 @@ impl Report {
     pub(crate) fn in_findings_list(&self, i: usize) -> bool {
         let f = &self.findings[i];
         match &f.source {
+            // community cleaners show in Cleaners only
+            Source::Rule(id) if sprawl_advisor::community::is_community(id) => false,
             Source::Rule(id) => self.list_min.get(id).is_none_or(|m| f.bytes >= *m),
             Source::Model(_) => true,
         }
@@ -391,8 +393,29 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     let mut packs = vec![RulePack::builtin()];
     let (local, refused) = memory::load_packs();
     packs.extend(local);
+    // community cleaners (winapp2.ini, BleachBit), converted when they were fetched
+    if !memory.community_off {
+        let mut taken: std::collections::HashSet<String> = packs.iter().flat_map(|p| p.all_rules().map(|r| r.id.to_lowercase()).chain(p.cleaners.iter().map(|c| format!("cleaner:{}", c.id.to_lowercase())))).collect();
+        packs.extend(sprawl_advisor::community::load(&mut taken));
+    }
     let (findings, held) = sprawl_advisor::advise_all(tree, &packs, &facts);
     let (mut findings, kept) = memory.filter(findings);
+    let catalogue = sprawl_advisor::cleaners::catalogue(&packs);
+    // a community cleaner does nothing until the user turns it on, for the definition seen then
+    let on: std::collections::HashSet<&str> = catalogue
+        .iter()
+        .filter(|d| sprawl_advisor::community::is_community(&d.id) && memory.community_on.get(&d.id).is_some_and(|f| *f == sprawl_advisor::community::fingerprint(&d.text)))
+        .map(|d| d.id.as_str())
+        .collect();
+    for f in &mut findings {
+        if let Source::Rule(id) = &f.source {
+            if sprawl_advisor::community::is_community(id) && !on.contains(id.split('/').next().unwrap_or("")) {
+                f.remedy = Remedy::Info;
+                f.action = None;
+                f.command = None;
+            }
+        }
+    }
     // "keep the last N days" the user chose for a part: only ever more days than its own
     for f in &mut findings {
         if let (Source::Rule(id), Some(sprawl_advisor::clean::Action::Clear { days })) = (&f.source, &f.action) {
@@ -402,7 +425,6 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
             }
         }
     }
-    let catalogue = sprawl_advisor::cleaners::catalogue(&packs);
     let presence = crate::cleaners::presences(tree, &catalogue, &findings);
     let mut list_min = std::collections::HashMap::new();
     for f in &findings {
@@ -538,6 +560,7 @@ impl State {
         // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
+        self.community_poll();
         self.tick_status();
         // a typed address: fetch its list once the typing pauses (the form is redrawn when it arrives)
         if self.view == View::Advisor && self.advisor.ai_edit.as_ref().is_some_and(|e| e.provider == Provider::OpenAi) {
@@ -846,6 +869,13 @@ impl State {
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecCleaners" => self.advisor.section = Section::Cleaners,
             "AdvClCheck" => self.cleaner_procs(true),
+            "AdvClUpd" => self.community_fetch(),
+            "AdvClLeft" => self.advisor.cl.left_shown = !self.advisor.cl.left_shown,
+            "AdvClComm" => {
+                self.advisor.memory.community_off = !self.advisor.memory.community_off;
+                self.save_memory();
+                return self.advisor_start();
+            }
             "AdvClUsual" => {
                 if let Some(r) = self.advice() {
                     let keys = self.usual_keys(r);
@@ -1205,6 +1235,7 @@ impl State {
             ("AdvClQ", cl.1),
             ("AdvClF", cl.0),
             ("AdvClU", 6),
+            ("AdvClUse", cl.0),
             ("AdvClApprove", m.cleaner_proposals.len()),
             ("AdvClDismiss", m.cleaner_proposals.len()),
         ];
@@ -1220,7 +1251,7 @@ impl State {
             }
         }
         for name in [
-            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
+            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
