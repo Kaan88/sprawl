@@ -10,12 +10,12 @@ use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
 use crate::scene::Mode;
 use crate::state::{find, text, State};
 
-pub const PAGES: usize = 5;
-const TITLES: [&str; PAGES] = ["Welcome", "AI advisor", "Scanning", "Look", "History"];
+pub const PAGES: usize = 6;
+const TITLES: [&str; PAGES] = ["Welcome", "AI advisor", "Scanning", "Look", "History", "Advisor"];
 pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
 
 /// Every control the wizard wires up: buttons, then lists.
-pub const BUTTONS: [&str; 3] = ["WizBack", "WizNext", "WizSkip"];
+pub const BUTTONS: [&str; 4] = ["WizBack", "WizNext", "WizSkip", "WizMcpCopy"];
 
 fn switch(name: &str, header: &str, note: &str) -> String {
     format!(
@@ -50,7 +50,7 @@ pub fn xaml() -> String {
     let palettes: Vec<&str> = crate::paint::PALETTES.to_vec();
     let p0 = format!(
         r##"<StackPanel x:Name="WizP0" Spacing="2">{}
-        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before your first scan. You can open this again from Options &gt; Setup Wizard; the AI can also be changed in the Advisor's Ask tab."/>
+        <TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="Your first scan is done. A few choices, all optional: each one can be changed later under Options &gt; Settings."/>
         {}{}{}{}</StackPanel>"##,
         page_title("&#xE7BE;", "Welcome to Sprawl", "Let's set it up the way you like it"),
         bullet("&#xE945;", "AI advisor", "Pick Claude, Claude Code or a local model to explain what is using your space. Optional."),
@@ -105,6 +105,17 @@ pub fn xaml() -> String {
         label("Space for history"),
         combo("WizCap", &["500 MB", "1 GB", "2 GB", "5 GB"]),
     );
+    let p5 = format!(
+        r##"<StackPanel x:Name="WizP5" Spacing="2" Visibility="Collapsed">{}{}
+        <TextBox x:Name="WizUninstaller" PlaceholderText="A full path to its .exe (optional)"/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Uninstall... in the Advisor hands an app to it (Revo, Bulk Crap Uninstaller, and the like) instead of Windows' own uninstaller."/>
+        {}<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="WizMcp" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="440"/><Button x:Name="WizMcpCopy" Content="Copy" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0" Text="Run it once in a terminal; then your own Claude Code can ask Sprawl about your disk while Sprawl is open."/>
+        </StackPanel>"##,
+        page_title("&#xE90F;", "Advisor", "Your uninstaller, and Claude Code"),
+        label("Uninstaller"),
+        label("Use Sprawl from your own Claude Code"),
+    );
     format!(
         r##"
   <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="#B8080A10">
@@ -117,10 +128,10 @@ pub fn xaml() -> String {
           <TextBlock x:Name="WizDots" Text="" FontSize="12" Foreground="#FF8FB4FF" HorizontalAlignment="Right"/>
         </Grid>
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
-          <Grid>{p0}{p1}{p2}{p3}{p4}</Grid>
+          <StackPanel Spacing="18">{p0}{p1}{p2}{p3}{p4}{p5}</StackPanel>
         </ScrollViewer>
         <Grid Grid.Row="2">
-          <Button x:Name="WizSkip" Content="Skip setup" Background="Transparent" BorderThickness="0" Foreground="#FF9AA3B8"/>
+          <Button x:Name="WizSkip" Background="Transparent" BorderThickness="0" Foreground="#FF9AA3B8"><TextBlock x:Name="WizSkipText" Text="Skip setup"/></Button>
           <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
             <Button x:Name="WizBack" Content="Back" Padding="18,6" MinWidth="90"/>
             <Button x:Name="WizNext" Padding="18,6" MinWidth="110" Background="#FF3A6FE0" Foreground="White"><TextBlock x:Name="WizNextText" Text="Next"/></Button>
@@ -201,13 +212,36 @@ impl State {
         set_switch(self, "WizSnapshots", self.settings.bool("snapshots").unwrap_or(true));
         let cap = self.settings.num("snapshot_cap_mb").unwrap_or(1024.0) as u32;
         select(self, "WizCap", CAPS_MB.iter().position(|&c| c == cap).unwrap_or(1));
+        set_field(self, "WizUninstaller", self.settings.get("uninstaller").unwrap_or("").to_string().as_str());
+        text(&self.root, "WizMcp", &crate::bridge::setup_command());
 
+        self.wizard_all = false;
         self.wizard_page = 0;
         self.wizard_show();
         shown(self, "Wizard", true);
     }
 
+    /// Options > Settings: the wizard's choices on one page (without its welcome), saved at once.
+    pub(crate) fn settings_open(&mut self) {
+        self.wizard_open();
+        self.wizard_all = true;
+        self.wizard_show();
+    }
+
     pub(crate) fn wizard_show(&self) {
+        if self.wizard_all {
+            for i in 0..PAGES {
+                shown(self, &format!("WizP{i}"), i > 0);
+            }
+            text(&self.root, "WizStep", "Settings");
+            text(&self.root, "WizDots", "");
+            text(&self.root, "WizNextText", "Save");
+            shown(self, "WizBack", false);
+            text(&self.root, "WizSkipText", "Cancel");
+            return;
+        }
+        shown(self, "WizBack", true);
+        text(&self.root, "WizSkipText", "Skip setup");
         for i in 0..PAGES {
             shown(self, &format!("WizP{i}"), i == self.wizard_page);
         }
@@ -241,6 +275,12 @@ impl State {
                 self.wizard_page = self.wizard_page.saturating_sub(1);
                 self.wizard_show();
             }
+            "WizMcpCopy" => {
+                crate::win32::copy_text(self.hwnd, &crate::bridge::setup_command());
+                text(&self.root, "FootLeft", "Copied the Claude Code setup command.");
+            }
+            "WizNext" if self.wizard_all => self.wizard_finish(),
+            "WizSkip" if self.wizard_all => shown(self, "Wizard", false),
             "WizNext" if self.wizard_page + 1 < PAGES => {
                 self.wizard_page += 1;
                 self.wizard_show();
@@ -282,19 +322,28 @@ impl State {
                 self.command(item);
             }
         }
-        let view = ["ModeMap", "ModeCity", "ModeGalaxy"][selected(self, "WizView").min(2)];
-        self.command(view);
+        // the start view, only when it changed (saving Settings mustn't leave a More view)
+        let pick = selected(self, "WizView").min(2);
+        let now = match self.map.scene.mode {
+            Mode::Map => 0,
+            Mode::City => 1,
+            Mode::Galaxy => 2,
+        };
+        if !self.wizard_all || pick != now {
+            self.command(["ModeMap", "ModeCity", "ModeGalaxy"][pick]);
+        }
         select(self, "PaletteBox", selected(self, "WizPalette"));
         if let Ok(t) = find::<ToggleSwitch>(&self.root, "AnimSwitch") {
             let _ = t.SetIsOn(switch_on(self, "WizAnim"));
         }
         self.settings.set_bool("snapshots", switch_on(self, "WizSnapshots"));
         self.settings.set("snapshot_cap_mb", CAPS_MB[selected(self, "WizCap").min(CAPS_MB.len() - 1)]);
+        self.settings.set("uninstaller", field(self, "WizUninstaller").trim().trim_matches('"'));
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
         shown(self, "Wizard", false);
         let msg = if notes.is_empty() {
-            "Setup saved. Change it any time under Options, or run Options > Setup Wizard again.".to_string()
+            "Settings saved. Change them any time under Options > Settings (Ctrl+Shift+S).".to_string()
         } else {
             format!("Setup saved, but {}.", notes.join(" and "))
         };

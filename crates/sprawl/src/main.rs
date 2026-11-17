@@ -82,7 +82,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
+    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -409,6 +409,8 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         filter_pending: None,
         child_stack: Vec::new(),
         wizard_page: 0,
+        wizard_all: false,
+        wizard_offered: false,
         hist: None,
         scan_taken: std::time::SystemTime::now(),
         settings,
@@ -432,9 +434,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
     STATE.with(|s| *s.borrow_mut() = Some(state));
     with(|s| {
         s.apply_settings();
-        if s.shot.is_none() && s.settings.bool("wizard_done") != Some(true) {
-            s.wizard_open();
-        }
+        // the welcome screen comes first; the wizard is offered when the first scan is done
         // dev: --screenshot with SPRAWL_WIZARD_PAGE=n pictures the wizard on page n
         if let Some(p) = s.shot.as_ref().and(std::env::var("SPRAWL_WIZARD_PAGE").ok()).and_then(|p| p.parse::<usize>().ok()) {
             s.wizard_open();

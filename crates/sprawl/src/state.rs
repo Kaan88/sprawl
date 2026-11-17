@@ -104,6 +104,9 @@ pub(crate) struct State {
     /// Selections left by Select Parent, for Reselect Child.
     pub(crate) child_stack: Vec<usize>,
     pub(crate) wizard_page: usize,
+    /// The wizard shown as the Settings page: every section at once.
+    pub(crate) wizard_all: bool,
+    pub(crate) wizard_offered: bool,
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
     pub(crate) scan_taken: std::time::SystemTime,
@@ -269,6 +272,11 @@ impl State {
             Some(res) => {
                 let job = self.job.take().unwrap();
                 self.scan_button(false);
+                // the first scan done: now offer the setup (once; Skip remembers)
+                if self.shot.is_none() && self.settings.bool("wizard_done") != Some(true) && !self.wizard_offered {
+                    self.wizard_offered = true;
+                    self.wizard_open();
+                }
                 self.scan_secs = job.started.elapsed().as_secs_f64();
                 if let Ok(p) = find::<ProgressBar>(&self.root, "Progress") {
                     let _ = p.SetIsIndeterminate(false);

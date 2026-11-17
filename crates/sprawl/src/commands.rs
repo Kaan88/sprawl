@@ -105,6 +105,15 @@ impl State {
                 }
             }
             "mWizard" => self.wizard_open(),
+            "mSettings" => self.settings_open(),
+            "mAbout" => self.command("TabAbout"),
+            "mShortcuts" => {
+                let mut s = String::from("Tabs: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor\nTables: arrow keys, Page Up/Down, Home/End; type a name to jump to it; Ctrl+click and Shift+click pick several\nMap: click selects, double-click goes in, wheel zooms, right-drag pans\n\n");
+                for (k, what) in crate::ui::shortcuts() {
+                    s += &format!("{k}\t{what}\n");
+                }
+                win32::info(self.hwnd, &s, "Keyboard shortcuts");
+            }
             "ModeHist" | "mHistory" => self.hist_toggle(),
             "mTweaks" => {
                 if let Ok(p) = find::<UIElement>(&self.root, "Tweaks") {

@@ -680,9 +680,6 @@ impl State {
                     self.adv_say(&msg);
                     // a chat started with the old settings ends
                     self.chat_reset();
-                    let u = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvUninstaller").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy().trim().trim_matches('"').to_string()).unwrap_or_default();
-                    self.settings.set("uninstaller", &u);
-                    self.settings.save();
                 }
             }
             "AdvShowCmd" => self.advisor.show_cmd = !self.advisor.show_cmd,
@@ -2048,10 +2045,7 @@ impl State {
                 if has { "A key is stored; leave empty to keep it" } else { "Paste the API key (stored in Windows Credential Manager)" }
             );
         }
-        x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Uninstaller" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvUninstaller" Width="260" PlaceholderText="Your uninstaller app (optional), a full path to its .exe" Text="{}" ToolTipService.ToolTip="Uninstall... hands the app to it: --sprawl-uninstall --name --kind --publisher --steam-id --folder"/></StackPanel>"##,
-            ui::esc(self.settings.get("uninstaller").unwrap_or(""))
-        );
+        x += r##"<TextBlock Text="Your uninstaller app and the Claude Code setup are under Options &gt; Settings." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
         x += r##"<Button x:Name="AdvAiSave" Content="Save" Padding="12,3" FontSize="12" CornerRadius="5"/>"##;
         x += "</StackPanel></Border>";
         x

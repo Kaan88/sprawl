@@ -162,7 +162,28 @@ mod esc_tests {
     }
 }
 
+thread_local! {
+    static SHORTCUTS: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_shortcut(text: &str, key: &str, mods: &str) {
+    if key.is_empty() {
+        return;
+    }
+    let key = key.strip_prefix("Number").unwrap_or(key);
+    let mods = mods.replace("Control", "Ctrl").replace("Menu", "Alt").replace(',', "+");
+    let combo = if mods.is_empty() { key.to_string() } else { format!("{mods}+{key}") };
+    let text = text.replace("&quot;", "\"").replace("...", "");
+    SHORTCUTS.with(|s| s.borrow_mut().push((combo, text)));
+}
+
+/// Every menu shortcut, as (keys, what it does), in menu order.
+pub(crate) fn shortcuts() -> Vec<(String, String)> {
+    SHORTCUTS.with(|s| s.borrow().clone())
+}
+
 fn item(name: &str, text: &str, key: &str, mods: &str) -> String {
+    note_shortcut(text, key, mods);
     let acc = if key.is_empty() {
         String::new()
     } else if mods.is_empty() {
@@ -174,6 +195,7 @@ fn item(name: &str, text: &str, key: &str, mods: &str) -> String {
 }
 
 fn toggle(name: &str, text: &str, checked: bool, key: &str, mods: &str) -> String {
+    note_shortcut(text, key, mods);
     let acc = if key.is_empty() {
         String::new()
     } else if mods.is_empty() {
@@ -277,38 +299,53 @@ pub fn page(drives: &[String]) -> String {
     ]
     .concat();
     let options_menu = [
-        radio("uDyn", "Display Dynamic values", true),
-        radio("uB", "Display Byte values", false),
-        radio("uKB", "Display KB values", false),
-        radio("uMB", "Display MB values", false),
-        radio("uGB", "Display GB values", false),
-        radio("uTB", "Display TB values", false),
+        item("mSettings", "Settings...", "S", "Control,Shift"),
+        item("mTweaks", "Colours and Tweaks...", "T", "Control"),
         SEP.to_string(),
-        toggle("oAuto", "Auto scan after making selection", true, "", ""),
-        SEP.to_string(),
-        toggle("oHeader", "Show Header", true, "H", "Control"),
-        toggle("oTypes", "Show File Types", true, "F8", ""),
-        toggle("oTreemap", "Show Treemap", true, "F9", ""),
-        toggle("oAlloc", "Show Allocated Size on Treemap", false, "", ""),
-        toggle("oNames", "Show Folder and File Names on Treemap", true, "N", "Control,Shift"),
-        toggle("oTilt", "3D Treemap", true, "T", "Control,Shift"),
-        toggle("oCushion", "Cushion shading on Treemap", true, "", ""),
-        toggle("oFree", "Show Free Space on Treemap", false, "", ""),
-        toggle("oMirror", "Mirror Floor under 3D Treemap", true, "", ""),
-        toggle("oPulses", "Live Change Pulses", true, "", ""),
         format!(
-            r##"<MenuFlyoutSubItem Text="3D Antialiasing">{}{}{}{}</MenuFlyoutSubItem>"##,
-            radio_in("aa", "aaOff", "Off", false),
-            radio_in("aa", "aaLow", "Low (2x)", false),
-            radio_in("aa", "aaMedium", "Medium (4x)", true),
-            radio_in("aa", "aaHigh", "High (8x)", false),
+            r##"<MenuFlyoutSubItem Text="Show">{}{}{}</MenuFlyoutSubItem>"##,
+            toggle("oHeader", "Header", true, "H", "Control"),
+            toggle("oTypes", "File Types", true, "F8", ""),
+            toggle("oTreemap", "Map", true, "F9", ""),
         ),
-        item("mTweaks", "Colors and Tweaks...", "T", "Control"),
-        item("mWizard", "Setup Wizard...", "", ""),
+        format!(
+            r##"<MenuFlyoutSubItem Text="Sizes in">{}{}{}{}{}{}</MenuFlyoutSubItem>"##,
+            radio("uDyn", "Best fit", true),
+            radio("uB", "Bytes", false),
+            radio("uKB", "KB", false),
+            radio("uMB", "MB", false),
+            radio("uGB", "GB", false),
+            radio("uTB", "TB", false),
+        ),
+        format!(
+            r##"<MenuFlyoutSubItem Text="Map">{}{}{}{}{}{}{}{}</MenuFlyoutSubItem>"##,
+            toggle("oTilt", "3D", true, "T", "Control,Shift"),
+            toggle("oNames", "Folder and File Names", true, "N", "Control,Shift"),
+            toggle("oAlloc", "Allocated Size", false, "", ""),
+            toggle("oCushion", "Cushion Shading", true, "", ""),
+            toggle("oFree", "Free Space", false, "", ""),
+            toggle("oMirror", "Mirror Floor", true, "", ""),
+            toggle("oPulses", "Live Change Pulses", true, "", ""),
+            format!(
+                r##"<MenuFlyoutSubItem Text="3D Antialiasing">{}{}{}{}</MenuFlyoutSubItem>"##,
+                radio_in("aa", "aaOff", "Off", false),
+                radio_in("aa", "aaLow", "Low (2x)", false),
+                radio_in("aa", "aaMedium", "Medium (4x)", true),
+                radio_in("aa", "aaHigh", "High (8x)", false),
+            ),
+        ),
+        toggle("oAuto", "Scan as Soon as a Drive Is Picked", true, "", ""),
         SEP.to_string(),
         item("mAdmin", "Restart as Administrator", "", ""),
         toggle("oAlwaysAdmin", "Always Run as Administrator", false, "", ""),
         toggle("oExplorer", "Add &quot;Scan with Sprawl&quot; to Explorer", false, "", ""),
+        SEP.to_string(),
+        item("mWizard", "Setup Wizard...", "", ""),
+    ]
+    .concat();
+    let help_menu = [
+        item("mShortcuts", "Keyboard Shortcuts", "F1", ""),
+        item("mAbout", "About Sprawl", "", ""),
     ]
     .concat();
     let hud = hud();
@@ -392,6 +429,7 @@ pub fn page(drives: &[String]) -> String {
   <MenuBar Grid.Row="1" Margin="6,0,0,0">
     <MenuBarItem Title="File">{file_menu}</MenuBarItem>
     <MenuBarItem Title="Options">{options_menu}</MenuBarItem>
+    <MenuBarItem Title="Help">{help_menu}</MenuBarItem>
   </MenuBar>
 
   <Grid x:Name="Header" Grid.Row="2" Margin="12,4,12,8" ColumnSpacing="10">
@@ -471,7 +509,7 @@ pub fn page(drives: &[String]) -> String {
     <Button x:Name="TabTree" Content="Tree View" Padding="14,4" CornerRadius="6" Background="#FF2C3550" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
     <Button x:Name="TabFiles" Content="File View" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number2" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
     <Button x:Name="TabAdvisor" Content="Advisor" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number3" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabAbout" Content="About" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabAbout" Visibility="Collapsed" Content="About" Padding="14,4" CornerRadius="6" Background="Transparent" BorderThickness="0"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
   </StackPanel>
   </Grid>
 
