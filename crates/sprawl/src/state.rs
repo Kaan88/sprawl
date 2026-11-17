@@ -226,6 +226,7 @@ impl State {
 
     pub(crate) fn poll(&mut self) {
         self.advisor_poll();
+        self.cleanup_poll();
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {
@@ -490,6 +491,11 @@ impl State {
                     // dev: type a goal, or press an Advisor button
                     g if g.starts_with("goal=") => self.advisor_set_goal(&g[5..]),
                     o if o.starts_with("open=") => self.advisor_open(o[5..].parse().unwrap_or(0)),
+                    t if t.starts_with("tick=") => {
+                        self.cleanup_toggle(t[5..].parse().unwrap_or(0));
+                        self.render_advisor();
+                    }
+                    "wait" => {}
                     q if q.starts_with("chat=") => self.advisor_chat_dev(&q[5..]),
                     "chatdemo" => self.advisor_chat_demo(),
                     // dev: click the map a third of the way across

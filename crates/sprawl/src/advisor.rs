@@ -47,25 +47,25 @@ pub(crate) struct Report {
     pub(crate) tree: u64,
     pub(crate) findings: Vec<Finding>,
     /// The node of each finding.
-    nodes: Vec<Option<usize>>,
+    pub(crate) nodes: Vec<Option<usize>>,
     /// Not inside another finding, so its bytes count toward the total.
-    counted: Vec<bool>,
-    held: Vec<(Finding, String)>,
+    pub(crate) counted: Vec<bool>,
+    pub(crate) held: Vec<(Finding, String)>,
     /// Hidden by the user's decisions ("Keep it", "Not now").
-    kept: Vec<(Finding, Verdict)>,
-    hidden: Option<HiddenSpace>,
+    pub(crate) kept: Vec<(Finding, Verdict)>,
+    pub(crate) hidden: Option<HiddenSpace>,
     /// How this folder grew, from History's snapshots (arrives after the report).
-    growth: Option<sprawl_advisor::growth::Growth>,
+    pub(crate) growth: Option<sprawl_advisor::growth::Growth>,
     /// Owning app of every node (index into `apps`).
-    owners: Vec<Option<u32>>,
-    apps: Vec<String>,
+    pub(crate) owners: Vec<Option<u32>>,
+    pub(crate) apps: Vec<String>,
     /// How each app is uninstalled, when Sprawl can take the user there.
-    uninstall: Vec<Option<sprawl_advisor::facts::Uninstall>>,
+    pub(crate) uninstall: Vec<Option<sprawl_advisor::facts::Uninstall>>,
     /// What each app's hand-off to the user's own uninstaller says.
-    handoff: Vec<Vec<String>>,
+    pub(crate) handoff: Vec<Vec<String>>,
     /// Risk code of every node inside a finding: 0 none, 1 green, 2 amber, 3 orange.
     pub(crate) lens: Arc<Vec<u8>>,
-    secs: f64,
+    pub(crate) secs: f64,
 }
 
 enum Msg {
@@ -82,9 +82,7 @@ enum Msg {
     Dupes(u64, Result<sprawl_advisor::dupes::Dupes, String>),
     DupesProgress(u64, String),
     /// The script measured, and (path, size planned, size now) of every item in it.
-    Verified(PathBuf, Vec<(PathBuf, u64, u64)>),
-    /// A Run now ended, measured: (path, title, size before, size now).
-    Acted(PathBuf, String, u64, u64),
+    Verified(PathBuf, Vec<(PathBuf, u64, u64)>, Vec<(PathBuf, Option<Tree>)>),
 }
 
 /// The model run for the current report.
@@ -178,7 +176,7 @@ pub(crate) struct Advisor {
     pub(crate) lens_mode: Lens,
     show_held: bool,
     /// The panel as loaded, for its named parts (its own namescope).
-    panel: Option<FrameworkElement>,
+    pub(crate) panel: Option<FrameworkElement>,
     /// What is in the "I need __ GB" box, kept across redraws.
     goal_text: String,
     ai: Ai,
@@ -209,14 +207,12 @@ pub(crate) struct Advisor {
     ai_edit: Option<AiConfig>,
     sort: Sort,
     only: Only,
-    /// A finding being run now: (its path, title, size, the file its script reports to, since).
     /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
     pub(crate) growth_lens: Option<(u64, Arc<Vec<u8>>)>,
-    acting: Option<(PathBuf, String, u64, crate::dialogs::Running, std::time::Instant)>,
-    /// What the last run freed: (title, bytes freed, bytes it had).
-    acted: Option<(String, u64, u64)>,
     /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
     picks: std::collections::HashSet<String>,
+    /// The ticks, the review and the clean-up running inside the Advisor.
+    pub(crate) cleanup: crate::cleanup::Cleanup,
 }
 
 /// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
@@ -258,7 +254,7 @@ fn risk_code(r: Risk) -> u8 {
     }
 }
 
-fn risk_hex(r: Risk) -> &'static str {
+pub(crate) fn risk_hex(r: Risk) -> &'static str {
     match r {
         Risk::Green => "#FF4CC38A",
         Risk::Amber => "#FFF5B342",
@@ -421,7 +417,6 @@ impl State {
         self.advisor.picks.clear();
         // an AI run on the old scan stops spending; its answer would be dropped anyway
         self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.advisor.acted = None;
         self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.advisor.dupes_status = None;
         self.advisor.dupes_note = None;
@@ -481,30 +476,7 @@ impl State {
 
     /// Called every frame: pick up finished work.
     /// A run in its PowerShell window writes what it freed into its report file when it ends.
-    fn act_poll(&mut self) {
-        let Some((path, title, bytes, proc, _)) = &self.advisor.acting else { return };
-        if !proc.ended() {
-            return;
-        }
-        // its window is closed: what is left there now is measured on another thread
-        let (path, title, bytes) = (path.clone(), title.clone(), *bytes);
-        self.advisor.acting = None;
-        if let Some(tx) = self.advisor.tx.clone() {
-            std::thread::spawn(move || {
-                let now = match std::fs::symlink_metadata(&path) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-                    // can't be read (access, network): counted as unchanged, never as freed
-                    Err(_) => bytes,
-                    Ok(_) => sprawl_core::scan(&path, |_| {}).map(|t| t.nodes[sprawl_core::ROOT].size).unwrap_or(bytes),
-                };
-                let _ = tx.send(Msg::Acted(path, title, bytes, now));
-            });
-        }
-        self.advisor_changed();
-    }
-
     pub(crate) fn advisor_poll(&mut self) {
-        self.act_poll();
         // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
@@ -517,6 +489,8 @@ impl State {
         let Some(rx) = &self.advisor.rx else { return };
         let msgs: Vec<Msg> = rx.try_iter().collect();
         let mut changed = false;
+        // the folders a script cleaned, measured again: into the tree after the messages
+        let mut rescanned = Vec::new();
         for m in msgs {
             match m {
                 Msg::Report(r) => {
@@ -527,6 +501,7 @@ impl State {
                     }
                     self.advisor.report = Some(r);
                     self.load_run();
+                    self.cleanup_defaults();
                     self.advisor.running = false;
                     self.advisor.open = None;
                     self.advisor.in_use = None;
@@ -595,17 +570,8 @@ impl State {
                         };
                     }
                 }
-                Msg::Acted(path, title, before, now) => {
-                    let freed = before.saturating_sub(now);
-                    // mostly gone, and never over the user's own Keep
-                    let kept = self.advisor.memory.hides(&path).is_some_and(|d| d.verdict == Verdict::Keep);
-                    if now <= before / 2 && !kept {
-                        self.advisor.memory.decide(&path, &title, Verdict::Done);
-                        self.save_memory();
-                    }
-                    self.advisor.acted = Some((title, freed, before));
-                }
-                Msg::Verified(file, v) => {
+                Msg::Verified(file, v, trees) => {
+                    rescanned.extend(trees);
                     if let Some(e) = self.advisor.exported.as_mut().filter(|e| e.file == file) {
                         // what really shrank counts as done: the model learns the user is fine with it
                         for (p, before, after) in &v {
@@ -622,6 +588,10 @@ impl State {
                 }
             }
             changed = true;
+        }
+        if !rescanned.is_empty() {
+            // the tree, the map and the findings follow (a new analysis starts)
+            return self.apply_rescans(rescanned);
         }
         if changed {
             self.advisor_changed();
@@ -725,10 +695,57 @@ impl State {
                     self.settings.save();
                 }
             }
-            "AdvRun" => return self.advisor_run(),
+            "AdvRun" => {
+                // the review, for this finding alone
+                let Some(k) = self.advisor.open.and_then(|i| self.advice().and_then(|r| r.findings.get(i))).map(|f| crate::cleanup::key(&f.path)) else { return };
+                self.advisor.cleanup.single = Some(k);
+                self.advisor.cleanup.review = true;
+                self.advisor.cleanup.own_ok = false;
+            }
+            "AdvClean" => {
+                if self.ticked_findings().is_empty() {
+                    return;
+                }
+                self.advisor.cleanup.single = None;
+                self.advisor.cleanup.review = true;
+                self.advisor.cleanup.own_ok = false;
+            }
+            "AdvReviewBack" => {
+                self.advisor.cleanup.review = false;
+                self.advisor.cleanup.single = None;
+            }
+            "AdvOwnOk" => self.advisor.cleanup.own_ok = !self.advisor.cleanup.own_ok,
+            "AdvCleanNow" => return self.cleanup_start(),
+            "AdvCleanStop" => {
+                if let Some(r) = &self.advisor.cleanup.running {
+                    r.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                return;
+            }
+            "AdvCleanedOk" => self.advisor.cleanup.done = None,
+            "AdvSelSafe" => self.cleanup_select_safe(),
+            "AdvSelNone" => self.advisor.cleanup.ticked.clear(),
+            "AdvSelGoal" => {
+                self.read_goal();
+                if self.advisor.goal_text.trim().is_empty() {
+                    self.advisor_set_goal(GOAL_EXAMPLE);
+                }
+                let Some(need) = self.goal_bytes() else {
+                    crate::state::text(&self.root, "StatusText", "Type how many GB you need, like 20.");
+                    return;
+                };
+                if let Some(got) = self.cleanup_select_enough(need) {
+                    let msg = if got >= need {
+                        format!("Ticked {} of findings for the {} you need.", self.size(got), self.size(need))
+                    } else {
+                        format!("Only {} can be found without your own files; tick those yourself if you want.", self.size(got))
+                    };
+                    crate::state::text(&self.root, "StatusText", &msg);
+                }
+            }
+            "AdvAdmin" => return self.command("mAdmin"),
             "AdvRescan" => {
-                self.advisor.acted = None;
-                // the folder that was scanned, not whatever the drive box says
+                        // the folder that was scanned, not whatever the drive box says
                 if let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)) {
                     self.start_scan(root);
                 }
@@ -1014,7 +1031,7 @@ impl State {
                 let Some(e) = e.as_ref() else { return };
                 if e.Key().is_ok_and(|k| k.0 == 13) {
                     let _ = e.SetHandled(true);
-                    with(|s| s.advisor_command("AdvPlan"));
+                    with(|s| s.advisor_command("AdvSelGoal"));
                 }
             }) {
                 keep(t);
@@ -1037,6 +1054,18 @@ impl State {
             if let Ok(b) = find::<ButtonBase>(&fe, &format!("AdvF{i}")) {
                 if let Ok(t) = b.Click(move |_, _| {
                     with(|s| s.advisor_open(i));
+                }) {
+                    keep(t);
+                }
+            }
+        }
+        for i in 0..count {
+            if let Ok(b) = find::<ButtonBase>(&fe, &format!("AdvT{i}")) {
+                if let Ok(t) = b.Click(move |_, _| {
+                    with(|s| {
+                        s.cleanup_toggle(i);
+                        s.render_advisor();
+                    });
                 }) {
                     keep(t);
                 }
@@ -1066,7 +1095,7 @@ impl State {
             "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensGrowth", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
-            "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
+            "AdvExport", "AdvVerify", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             if let Ok(b) = find::<ButtonBase>(&fe, name) {
                 if let Ok(t) = b.Click(move |_, _| {
@@ -1138,23 +1167,8 @@ impl State {
             strip.push(if d < 365.0 { format!("Full in about {d:.0} days") } else { "Room for over a year".into() });
         }
         x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(&strip.join("   ·   ")));
-        if let Some((_, title, _, _, since)) = &self.advisor.acting {
-            x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Running {} in its PowerShell window (started {} s ago). Close that window when it is done: Sprawl then measures what is left." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
-                ui::esc(title),
-                since.elapsed().as_secs()
-            );
-        }
-        if let Some((title, freed, had)) = &self.advisor.acted {
-            x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}: freed {} of {}. The map still shows the old scan." FontSize="12" Foreground="#FF4CC38A" VerticalAlignment="Center" TextWrapping="Wrap"/><Button x:Name="AdvRescan" Content="Scan again" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
-                ui::esc(title),
-                self.size(*freed),
-                self.size(*had)
-            );
-        }
         // the sections, one at a time
-        let shown = (0..r.findings.len()).filter(|&i| !matches!(r.findings[i].source, Source::Model(_))).count();
+        let shown = r.findings.len();
         let ai_tag = match &self.advisor.ai {
             Ai::Running(_) => " •".to_string(),
             Ai::Done { found, .. } if *found > 0 => format!(" ({found})"),
@@ -1165,15 +1179,14 @@ impl State {
             format!(r##"<Button x:Name="{name}" Content="{}" Padding="12,4" FontSize="12" CornerRadius="6" BorderThickness="0" Background="{}"/>"##, ui::esc(&label), if self.advisor.section == me { "#FF2C3B63" } else { "#0CFFFFFF" })
         };
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}{}</StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}</StackPanel>"##,
             tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
-            tab("AdvSecPlan", if self.current_plan().is_some() { "Plan •".into() } else { "Plan".into() }, Section::Plan),
             tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
             tab("AdvSecGrowth", "Growth".into(), Section::Growth),
             tab("AdvSecMemory", format!("Memory ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len()), Section::Memory),
         );
         match self.advisor.section {
-            Section::Plan => x += &self.ai_card(r, true),
+            Section::Plan => x += &self.findings_section(r),
             Section::Ask => {
                 x += &self.ai_card(r, false);
                 x += &self.chat_card();
@@ -1183,7 +1196,7 @@ impl State {
             Section::Findings => x += &self.findings_section(r),
         }
         x += &format!(
-            r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Nothing is deleted or run unless you press Run now and confirm; Export writes the same commands as a script for PowerShell. Checked in {:.1} s."/>"##,
+            r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF6F788C" Text="Nothing is removed until you press Clean up now. Links are removed as links, never followed. Checked in {:.1} s."/>"##,
             r.secs
         );
         x += "</StackPanel>";
@@ -1193,6 +1206,15 @@ impl State {
     /// The findings list with its sort and filter, duplicates, hidden space and what was held back.
     fn findings_section(&self, r: &Report) -> String {
         let mut x = String::new();
+        let c = &self.advisor.cleanup;
+        x += &self.cleanup_status_xaml();
+        if c.running.is_none() {
+            if c.review {
+                x += &self.cleanup_review_xaml();
+            } else if !r.findings.is_empty() {
+                x += &self.cleanup_bar_xaml(GOAL_EXAMPLE);
+            }
+        }
         let chip = |name: &str, label: &str, on: bool| {
             format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,2" FontSize="11" CornerRadius="10" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#0CFFFFFF" })
         };
@@ -1219,10 +1241,8 @@ impl State {
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
-        // the AI card shows the model's findings only when it shows its answer
-        let card_has_them = matches!(self.advisor.ai, Ai::Done { .. });
+        // the AI's findings are in the same list, marked
         let mut list: Vec<usize> = (0..r.findings.len())
-            .filter(|&i| !card_has_them || !matches!(r.findings[i].source, Source::Model(_)))
             .filter(|&i| match o {
                 Only::All => true,
                 Only::Runnable => r.findings[i].command.is_some(),
@@ -1574,78 +1594,6 @@ impl State {
         self.advisor.ai = ai;
     }
 
-    /// "Run now...": the open finding's command, after the safety checks again and the user's
-    /// confirmation (twice for their own files), in a visible PowerShell window. It is the same
-    /// script "Export" writes, with -Run.
-    fn advisor_run(&mut self) {
-        if self.advisor.acting.is_some() {
-            crate::state::text(&self.root, "StatusText", "Another run is still going: wait for its PowerShell window to finish.");
-            return;
-        }
-        let (Some(t), Some(i)) = (self.tree.clone(), self.advisor.open) else { return };
-        let Some(f) = self.advice().and_then(|r| r.findings.get(i)).cloned() else { return };
-        if f.command.is_none() || f.risk == Risk::Red {
-            return;
-        }
-        // the same checks as when it was found (the scan's sizes and links; the path must still
-        // be there); the commands' own functions check for links again as they go
-        let f = match sprawl_advisor::safety::check(&f, &t, &sprawl_advisor::safety::Never::default_list()) {
-            Ok(checked) => checked,
-            Err(why) => {
-                win32::info(self.hwnd, &format!("Not run: {why}."), "Sprawl");
-                return;
-            }
-        };
-        let cmd = f.command.clone().unwrap_or_default();
-        // a tool's own clean-up (npm, yarn, NuGet...) acts on the account running it: only for
-        // the user's own folders, not another account's seen from an administrator scan
-        if !cmd.starts_with(RM_FN) {
-            let mine = std::env::var_os("USERPROFILE").map(PathBuf::from).is_some_and(|home| {
-                let (p, h) = (f.path.to_string_lossy().to_lowercase(), home.to_string_lossy().to_lowercase());
-                PathBuf::from(p).starts_with(PathBuf::from(h))
-            });
-            if !mine {
-                win32::info(self.hwnd, "This command cleans the account that runs it, and this folder belongs to another account (or to Windows). Copy the command and run it there instead.", "Sprawl");
-                return;
-            }
-        }
-        let shown = cmd.strip_prefix(RM_FN).map(|r| format!("(Sprawl's safe-delete functions){r}")).unwrap_or_else(|| cmd.clone());
-        let admin = sprawl_advisor::export::needs_admin(&cmd);
-        let elevated = admin || sprawl_core::is_elevated();
-        // folder names can hold characters that reverse how text reads: shown as codes
-        let plain = |s: String| s.chars().map(|c| if matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}') { format!("<U+{:04X}>", c as u32) } else { c.to_string() }).collect::<String>();
-        let text = format!(
-            "{}\n{}\n\nAbout {} at\n{}\n\nThis runs in a PowerShell window{}:\n{}\n\nRun it now?",
-            f.title,
-            match f.risk {
-                Risk::Green => "Comes back by itself.",
-                Risk::Amber => "Costs something to get back.",
-                _ => "These are your own files.",
-            },
-            self.size(f.bytes),
-            plain(f.path.display().to_string()),
-            if elevated { " as administrator" } else { "" },
-            plain(shown)
-        );
-        if !win32::confirm(self.hwnd, &text, "Run now") {
-            return;
-        }
-        if f.risk >= Risk::Orange && !win32::confirm(self.hwnd, &format!("These are your own files, and they won't come back:\n{}\n\nAre you sure you want them gone?", plain(f.path.display().to_string())), "Your own files") {
-            return;
-        }
-        // the script Export writes, run from memory with -Run; the window waits to be read
-        let root = t.path_of(sprawl_core::ROOT).display().to_string();
-        let script = sprawl_advisor::export::script(&[&f], &root, std::time::SystemTime::now());
-        let command = format!("Set-Location -LiteralPath ([Environment]::SystemDirectory)\ntry {{\n& {{\n{script}\n}} -Run\n}} finally {{\nWrite-Host ''\nRead-Host 'Finished. Press Enter to close this window (Sprawl then measures what is left)' | Out-Null\n}}");
-        let Some(proc) = crate::dialogs::run_powershell(self.hwnd, &command, admin) else {
-            crate::state::text(&self.root, "StatusText", "Not run: PowerShell didn't start, administrator rights were declined, or the command is too long for one run (use Export).");
-            return;
-        };
-        self.advisor.acting = Some((f.path.clone(), f.title.clone(), f.bytes, proc, std::time::Instant::now()));
-        self.advisor.acted = None;
-        self.advisor_changed();
-    }
-
     /// The user's own uninstaller app, when one is set and exists.
     fn uninstaller(&self) -> Option<PathBuf> {
         let p = PathBuf::from(self.settings.get("uninstaller")?.trim());
@@ -1666,7 +1614,7 @@ impl State {
         }
     }
 
-    fn save_memory(&self) {
+    pub(crate) fn save_memory(&self) {
         crate::bridge::publish_memory(&self.advisor.memory);
         if let Err(e) = self.advisor.memory.save() {
             crate::state::text(&self.root, "StatusText", &format!("Couldn't save what the advisor remembers: {e}"));
@@ -1761,7 +1709,9 @@ impl State {
     fn advisor_export(&mut self) {
         let Some(r) = self.advice() else { return };
         // a plan, or everything that comes back or costs little: orange is the user's call, one by one
+        let ticked: Vec<usize> = self.ticked_findings().into_iter().map(|(i, _)| i).collect();
         let picked: Vec<usize> = match self.current_plan() {
+            _ if !ticked.is_empty() => ticked,
             Some(p) => p.plan.picked.iter().copied().filter(|&i| i < r.findings.len()).collect(),
             None => (0..r.findings.len()).filter(|&i| r.counted[i] && r.findings[i].command.is_some() && r.findings[i].risk <= Risk::Amber && r.findings[i].builtin).collect(),
         };
@@ -1808,18 +1758,30 @@ impl State {
         let items = e.items.clone();
         let file = e.file.clone();
         std::thread::spawn(move || {
+            let mut trees = Vec::new();
             let out = items
                 .into_iter()
                 .map(|(p, before, _)| {
-                    let now = if std::fs::symlink_metadata(&p).is_err() {
-                        0
-                    } else {
-                        sprawl_core::scan(&p, |_| {}).map(|t| t.nodes[sprawl_core::ROOT].size).unwrap_or(before)
+                    let now = match std::fs::symlink_metadata(&p) {
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            trees.push((p.clone(), None));
+                            0
+                        }
+                        // can't be read: counted as unchanged, and the tree keeps it
+                        Err(_) => before,
+                        Ok(_) => match sprawl_core::scan(&p, |_| {}) {
+                            Ok(t) => {
+                                let n = t.nodes[sprawl_core::ROOT].size;
+                                trees.push((p.clone(), Some(t)));
+                                n
+                            }
+                            Err(_) => before,
+                        },
                     };
                     (p, before, now)
                 })
                 .collect();
-            let _ = tx.send(Msg::Verified(file, out));
+            let _ = tx.send(Msg::Verified(file, out, trees));
         });
     }
 
@@ -2316,7 +2278,7 @@ impl State {
                 Some(Some(v)) => {
                     let freed: u64 = v.iter().map(|(_, b, a)| b.saturating_sub(*a)).sum();
                     let done = v.iter().filter(|(_, b, a)| a < b).count();
-                    format!("Freed {} of the {} planned: {done} of {} items are gone or smaller. Scan again for the full picture.", self.size(freed), self.size(planned), v.len())
+                    format!("Freed {} of the {} planned: {done} of {} items are gone or smaller. The tree and the map show them as they are now.", self.size(freed), self.size(planned), v.len())
                 }
             };
             x += &format!(
@@ -2336,8 +2298,16 @@ impl State {
     fn finding_row(&self, r: &Report, i: usize) -> String {
         let f = &r.findings[i];
         let open = self.advisor.open == Some(i);
-        let in_plan = |i: usize| self.current_plan().is_some_and(|p| p.plan.picked.contains(&i));
         let mut x = String::new();
+        let tick = match crate::cleanup::untickable(f, r.counted[i]) {
+            None => format!(
+                r##"<CheckBox x:Name="AdvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{}" IsEnabled="{}"/>"##,
+                if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { "True" } else { "False" },
+                if self.advisor.cleanup.running.is_some() { "False" } else { "True" }
+            ),
+            Some(why) => format!(r##"<TextBlock Text="{}" FontSize="9" Foreground="#FF6F788C" TextWrapping="Wrap" VerticalAlignment="Center" TextAlignment="Center"/>"##, ui::esc(why)),
+        };
+        x += &format!(r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
         let sub = match &f.owner {
             Some(o) if !f.title.contains(o.as_str()) => format!("{o} · {}", f.path.display()),
             _ => f.path.display().to_string(),
@@ -2355,13 +2325,14 @@ impl State {
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
             remedy = remedy_label(f.remedy),
-            plan = if in_plan(i) { r##"<Border Padding="7,1" CornerRadius="4" Background="#332F7BF6"><TextBlock Text="In plan" FontSize="11" Foreground="#FF8FB4FF"/></Border>"## } else { "" },
+            plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="11" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = self.size(f.bytes),
             op = if r.counted[i] { "1" } else { "0.55" },
         );
         if open {
             x += &self.finding_detail(r, i);
         }
+        x += "</StackPanel></Grid>";
         x
     }
 
@@ -2401,14 +2372,10 @@ impl State {
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if f.command.is_some() {
-            if f.risk < Risk::Red {
-                x += r##"<Button x:Name="AdvRun" Content="Run now..." Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/>"##;
+            if crate::cleanup::untickable(f, r.counted[i]).is_none() && self.advisor.cleanup.running.is_none() {
+                x += r##"<Button x:Name="AdvRun" Content="Clean up just this..." Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/>"##;
             }
-            x += r##"<Button x:Name="AdvCopy" Content="Copy command" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
-            if f.risk < Risk::Red {
-                let picked = self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase());
-                x += &format!(r##"<Button x:Name="AdvPick" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, if picked { "Remove from plan" } else { "Add to plan" });
-            }
+            x += r##"<Button x:Name="AdvCopy" Content="Copy as PowerShell" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         }
         if r.nodes[i].is_some() {
             x += r##"<Button x:Name="AdvShow" Content="Show in tree" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvExplore" Content="Show in Explorer" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;

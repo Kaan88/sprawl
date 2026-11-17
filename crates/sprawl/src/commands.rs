@@ -560,3 +560,153 @@ fn detach(t: &mut sprawl_core::Tree, n: usize, mut alloc: Option<&mut Vec<u64>>)
         }
     }
 }
+
+/// Put `sub` (a fresh scan of node `n`'s path) in place of what the tree had below `n`: the old
+/// branch is taken out, the new one added at the end, and the totals of every parent follow.
+pub(crate) fn replace_branch(t: &mut sprawl_core::Tree, n: usize, sub: &sprawl_core::Tree, mut alloc: Option<&mut Vec<u64>>) {
+    for c in t.nodes[n].children.clone() {
+        detach(t, c, alloc.as_deref_mut());
+    }
+    let new = &sub.nodes[sprawl_core::ROOT];
+    // what is left on n now (its own size, for a file) against what the scan found
+    let old_alloc = alloc.as_ref().map_or(t.nodes[n].allocated, |a| a[n]);
+    let d_size = new.size as i128 - t.nodes[n].size as i128;
+    let d_alloc = new.allocated as i128 - old_alloc as i128;
+    let d_files = new.files as i128 - t.nodes[n].files as i128;
+    let d_folders = new.folders as i128 - t.nodes[n].folders as i128;
+    let add = |v: u64, d: i128| (v as i128 + d).max(0) as u64;
+    let mut p = Some(n);
+    while let Some(i) = p {
+        let node = &mut t.nodes[i];
+        node.size = add(node.size, d_size);
+        node.allocated = add(node.allocated, d_alloc);
+        node.files = add(node.files, d_files);
+        node.folders = add(node.folders, d_folders);
+        if let Some(a) = alloc.as_deref_mut() {
+            a[i] = add(a[i], d_alloc);
+        }
+        p = node.parent;
+    }
+    t.nodes[n].is_dir = new.is_dir;
+    t.nodes[n].modified = new.modified;
+    t.nodes[n].attributes = new.attributes;
+    // the scan's nodes after its root, renumbered to follow the tree's own
+    let base = t.nodes.len();
+    let map = |i: usize| if i == sprawl_core::ROOT { n } else { base + i - 1 };
+    for node in &sub.nodes[1..] {
+        let mut k = node.clone();
+        k.parent = k.parent.map(map);
+        k.children = k.children.iter().map(|&c| map(c)).collect();
+        if let Some(a) = alloc.as_deref_mut() {
+            a.push(k.allocated);
+        }
+        t.nodes.push(k);
+    }
+    t.nodes[n].children = new.children.iter().map(|&c| map(c)).collect();
+}
+
+/// Still in the tree: every step up is among its parent's children (a detached branch isn't).
+pub(crate) fn alive(t: &sprawl_core::Tree, mut n: usize) -> bool {
+    while let Some(p) = t.nodes.get(n).and_then(|x| x.parent) {
+        if !t.nodes[p].children.contains(&n) {
+            return false;
+        }
+        n = p;
+    }
+    n == sprawl_core::ROOT
+}
+
+impl State {
+    /// After a clean-up: each path as it is now (a fresh scan of it, or None when it is gone) goes
+    /// into the tree, and the tables, the map and the findings follow.
+    pub(crate) fn apply_rescans(&mut self, now: Vec<(PathBuf, Option<sprawl_core::Tree>)>) {
+        if self.tree.is_none() || now.is_empty() {
+            return;
+        }
+        for (path, sub) in &now {
+            if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
+                if let Some(k) = sprawl_advisor::find_path(full, path).filter(|&k| k != ROOT) {
+                    match sub {
+                        Some(s) => replace_branch(full, k, s, None),
+                        None => detach(full, k, None),
+                    }
+                }
+            }
+            let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
+            if let Some(k) = sprawl_advisor::find_path(t, path) {
+                match sub {
+                    Some(s) => replace_branch(t, k, s, Some(&mut self.alloc)),
+                    None if k != ROOT => detach(t, k, Some(&mut self.alloc)),
+                    None => {}
+                }
+            }
+        }
+        let t = self.tree.as_ref().unwrap();
+        // what was selected or zoomed into may be gone: its nearest part still there
+        let up = |mut n: usize| {
+            while !alive(t, n) {
+                n = t.nodes[n].parent.unwrap_or(ROOT);
+            }
+            n
+        };
+        self.selected = self.selected.map(up);
+        self.map_root = up(self.map_root);
+        self.expanded.retain(|&n| alive(t, n));
+        let files = sprawl_core::largest_files(t, usize::MAX);
+        let root = t.path_of(ROOT);
+        self.files = files;
+        self.tree_gen += 1;
+        self.hist_close();
+        self.sort_files();
+        self.rebuild_exts();
+        self.sort_exts();
+        self.refresh_rows();
+        self.refresh_exts();
+        self.render_map();
+        self.update_header(&root);
+        if let Some(t) = self.tree.as_ref() {
+            let n = &t.nodes[ROOT];
+            let info = format!("{} files, {} folders, {} unreadable", crate::format::thousands(n.files), crate::format::thousands(n.folders), crate::format::thousands(t.errors));
+            text(&self.root, "ScanInfo", &info);
+        }
+        self.advisor_start();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_branch_is_replaced_and_totals_follow() {
+        let base = std::env::temp_dir().join(format!("sprawl-splice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("cache").join("sub")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        std::fs::write(base.join("cache").join("a.bin"), vec![0u8; 1000]).unwrap();
+        std::fs::write(base.join("cache").join("sub").join("b.bin"), vec![0u8; 500]).unwrap();
+        std::fs::write(base.join("other").join("c.bin"), vec![0u8; 300]).unwrap();
+        let mut t = sprawl_core::scan(&base, |_| {}).unwrap();
+        let mut alloc: Vec<u64> = t.nodes.iter().map(|n| n.allocated).collect();
+        assert_eq!(t.nodes[ROOT].size, 1800);
+        // the cache is cleaned to one small file
+        std::fs::remove_dir_all(base.join("cache").join("sub")).unwrap();
+        std::fs::write(base.join("cache").join("a.bin"), vec![0u8; 10]).unwrap();
+        let sub = sprawl_core::scan(&base.join("cache"), |_| {}).unwrap();
+        let k = sprawl_advisor::find_path(&t, &base.join("cache")).unwrap();
+        replace_branch(&mut t, k, &sub, Some(&mut alloc));
+        assert_eq!(t.nodes[ROOT].size, 310);
+        assert_eq!(t.nodes[ROOT].files, 2);
+        assert_eq!(t.nodes[k].folders, 0);
+        assert_eq!(alloc.len(), t.nodes.len());
+        let a = sprawl_advisor::find_path(&t, &base.join("cache").join("a.bin")).unwrap();
+        assert_eq!((t.nodes[a].size, t.nodes[a].parent), (10, Some(k)));
+        assert!(sprawl_advisor::find_path(&t, &base.join("cache").join("sub")).is_none());
+        // and a path that is gone comes out
+        let o = sprawl_advisor::find_path(&t, &base.join("other")).unwrap();
+        detach(&mut t, o, Some(&mut alloc));
+        assert_eq!(t.nodes[ROOT].size, 10);
+        assert!(!alive(&t, o) && alive(&t, a));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

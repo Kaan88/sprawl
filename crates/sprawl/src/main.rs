@@ -12,6 +12,7 @@ mod bindings;
 mod advisor;
 mod bridge;
 mod app;
+mod cleanup;
 mod commands;
 mod format;
 mod dialogs;
