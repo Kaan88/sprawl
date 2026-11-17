@@ -189,7 +189,7 @@ impl Finding {
             // left behind: deletable, or shown only when it holds the user's work
             _ if self.leftover() => Group::Leftover,
             Remedy::Delete | Remedy::Command => Group::Clean,
-            _ if self.risk == Risk::Red || matches!(&self.source, Source::Rule(id) if id.starts_with("anomaly.")) => Group::Know,
+            _ if self.risk == Risk::Red || matches!(&self.source, Source::Rule(id) if id.starts_with("anomaly.") || id.starts_with("growth.")) => Group::Know,
             _ => Group::Yourself,
         }
     }

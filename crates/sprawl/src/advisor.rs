@@ -618,6 +618,7 @@ impl State {
                         r.growth = g.clone();
                     }
                     self.advisor.report = Some(r);
+                    self.merge_growth();
                     self.load_run();
                     self.cleanup_defaults();
                     self.cleanup_measure_report();
@@ -667,6 +668,7 @@ impl State {
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
                         r.growth = g;
                     }
+                    self.merge_growth();
                     self.build_growth_lens();
                 }
                 Msg::InUse(gen, i, answer) => {
@@ -1497,7 +1499,8 @@ impl State {
             let gain = |i: usize| std::cmp::Reverse(r.findings[i].expected_gain());
             match s {
                 Sort::Size => l.sort_by_key(|&i| gain(i)),
-                Sort::Risk => l.sort_by_key(|&i| (r.findings[i].risk, gain(i))),
+                // the surer first within a risk
+                Sort::Risk => l.sort_by_key(|&i| (r.findings[i].risk, std::cmp::Reverse((r.findings[i].confidence * 100.0) as i32), gain(i))),
                 Sort::Owner => l.sort_by_key(|&i| (r.findings[i].owner.clone().unwrap_or_else(|| "~".into()).to_lowercase(), gain(i))),
             }
             l
@@ -1574,6 +1577,21 @@ impl State {
                 x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"><Run Text="{}{size}: " FontWeight="SemiBold"/><Run Text="{}"/></TextBlock>"##, ui::esc(p.label), ui::esc(&p.note));
             }
             x += "</StackPanel></Border>";
+        }
+        // what the checks held back that is big: a row each, with the reason and what blocks it
+        let mut big: Vec<&(Finding, String)> = r.held.iter().filter(|(f, _)| f.bytes >= 1 << 30).collect();
+        big.sort_by_key(|(f, _)| std::cmp::Reverse(f.bytes));
+        if !big.is_empty() && o != Only::Runnable {
+            x += r##"<TextBlock Text="Held back by the safety checks" FontSize="13" FontWeight="SemiBold" Margin="10,8,0,0"/>"##;
+            for (f, why) in big {
+                x += &format!(
+                    r##"<Border Padding="12,8" CornerRadius="7" Background="#0CFFFFFF"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF6F788A" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="13" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
+                    ui::esc(&f.title),
+                    ui::esc(why),
+                    ui::esc(&f.path.to_string_lossy()),
+                    self.size(f.bytes)
+                );
+            }
         }
         if !r.held.is_empty() {
             x += &format!(
@@ -1758,6 +1776,35 @@ impl State {
         }
         self.advisor.open = None;
         self.advisor.in_use = None;
+    }
+
+    /// Folders that grew by a gigabyte or more since about a week ago, from History's snapshots:
+    /// a line in the finding at the same place, or a finding of their own (information). Once
+    /// per report.
+    fn merge_growth(&mut self) {
+        let gen = self.tree_gen;
+        let Some(t) = self.tree.clone() else { return };
+        let Some(r) = self.advisor.report.as_ref().filter(|r| r.tree == gen) else { return };
+        let Some(g) = r.growth.as_ref() else { return };
+        let id = Source::Rule(sprawl_advisor::growth::ID.into());
+        if r.findings.iter().any(|f| f.source == id || f.evidence.iter().any(|e| e.starts_with("Grew by "))) {
+            return;
+        }
+        let list = sprawl_advisor::growth::findings(g, &t, std::time::SystemTime::now());
+        let (list, hidden) = self.advisor.memory.filter(list);
+        let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return };
+        r.kept.extend(hidden);
+        let key = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
+        for gf in list {
+            if let Some(f) = r.findings.iter_mut().find(|f| key(&f.path) == key(&gf.path)) {
+                let at = f.evidence.len().min(1);
+                f.evidence.insert(at, gf.evidence[0].clone());
+                continue;
+            }
+            r.nodes.push(sprawl_advisor::find_path(&t, &gf.path));
+            r.counted.push(true);
+            r.findings.push(gf);
+        }
     }
 
     /// Look for duplicate files of 50 MB or more, in the background (reads up to 40 GB).
@@ -2589,7 +2636,10 @@ impl State {
         };
         x += &format!(r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
         // a tip removes nothing: it says so instead of a risk
+        // left behind holding the user's work: shown, never removed by Sprawl
+        let yours = f.leftover() && f.remedy == Remedy::Info;
         let kind = match f.remedy {
+            _ if yours => "Holds your files: look before removing",
             Remedy::Info | Remedy::Move => "Tip",
             Remedy::Uninstall => "Your call",
             _ if gone_for_good(f) => "Cannot be undone",
@@ -2615,7 +2665,7 @@ impl State {
             dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
-            remedy = remedy_label(f.remedy),
+            remedy = if yours { "Look first" } else { remedy_label(f.remedy) },
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = match f.gain {
                 Some(g) => format!("about {}", self.size(g)),

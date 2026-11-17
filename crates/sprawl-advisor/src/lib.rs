@@ -19,6 +19,7 @@ pub mod clean;
 pub mod cleaners;
 pub mod community;
 pub mod config;
+pub mod confidence;
 pub mod dupes;
 pub mod export;
 pub mod facts;
@@ -147,6 +148,9 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
             found.push(f);
         }
     }
+    // how sure Sprawl is of each, from the signals above; before the checks, which may only
+    // raise a risk
+    confidence::apply(&mut found, tree, facts, std::time::SystemTime::now());
     let mut ok = Vec::new();
     let mut held = Vec::new();
     for f in found {

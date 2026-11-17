@@ -53,6 +53,29 @@ fn main() {
         let how = if f.remedy == sprawl_advisor::Remedy::Info { "shown only" } else { "deletable" };
         println!("  {:>10}  {how:<10}  {}  ({})", format_size(f.bytes), f.path.display(), f.evidence[3]);
     }
+    // how sure: counts by word, and the green ones shown amber for it
+    let mut by: std::collections::BTreeMap<&str, usize> = Default::default();
+    for f in &ok {
+        *by.entry(sprawl_advisor::confidence::words(f.confidence)).or_default() += 1;
+    }
+    println!("how sure: {by:?}");
+    for f in ok.iter().filter(|f| f.evidence.iter().any(|e| e.contains("isn't sure enough"))) {
+        println!("  shown amber, not sure enough: {} ({}) {}", f.title, format_size(f.bytes), f.evidence.iter().find(|e| e.starts_with("How sure")).unwrap());
+    }
+    // growth from History's snapshots
+    if let Some(g) = sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&tree, &b, &facts, None, std::time::SystemTime::now())) {
+        let gf = sprawl_advisor::growth::findings(&g, &tree, std::time::SystemTime::now());
+        println!("growth since {:?}: {} folders grew by 1 GB or more", g.since.map(sprawl_advisor::facts::month_year), gf.len());
+        for f in &gf {
+            let at = ok.iter().any(|o| o.path == f.path);
+            println!("  {}{}  {}", f.title, if at { "  (a line in the finding there)" } else { "" }, f.evidence[1..].join("; "));
+        }
+    } else {
+        println!("growth: no earlier snapshot of this folder");
+    }
+    for (f, why) in held.iter().filter(|(f, _)| f.bytes >= 1 << 30) {
+        println!("held back, as a row: {} ({}): {why}", f.title, format_size(f.bytes));
+    }
     let tips: u64 = ok.iter().filter(|f| f.group() == Group::Yourself).map(|f| f.expected_gain()).sum();
     let active: Vec<_> = ok.iter().filter(|f| f.in_active_project()).collect();
     println!("{} findings: {} Sprawl can clean, {} of tips by their gain", ok.len() - active.len(), format_size(total), format_size(tips));

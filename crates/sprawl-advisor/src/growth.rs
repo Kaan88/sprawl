@@ -58,6 +58,63 @@ impl Growth {
     }
 }
 
+/// The rule id of a growth finding.
+pub const ID: &str = "growth.folder";
+
+/// A folder that grew at least this much since the baseline is a finding of its own.
+pub const FINDING_MIN: i64 = 1 << 30;
+
+/// Folders that grew by [`FINDING_MIN`] or more since the snapshot `g` compares with, as
+/// information: by how much, from what to what, and why. From the user's own history, which
+/// says more than any usual size. `now` dates the baseline in days.
+pub fn findings(g: &Growth, tree: &Tree, now: SystemTime) -> Vec<crate::finding::Finding> {
+    findings_over(g, tree, now, FINDING_MIN)
+}
+
+fn findings_over(g: &Growth, tree: &Tree, now: SystemTime, min: i64) -> Vec<crate::finding::Finding> {
+    let Some(since) = g.since else { return Vec::new() };
+    let days = now.duration_since(since).map(|d| d.as_secs() / 86_400).unwrap_or(0).max(1);
+    g.grew
+        .iter()
+        .filter(|w| w.delta >= min && w.node < tree.nodes.len())
+        .map(|w| {
+            let node = &tree.nodes[w.node];
+            let was = (node.size as i64 - w.delta).max(0) as u64;
+            let mut evidence = vec![format!(
+                "Grew by {} in the last {days} days: {} then, {} now (from the scans History kept)",
+                format_size(w.delta as u64),
+                format_size(was),
+                format_size(node.size)
+            )];
+            evidence.extend(w.why.iter().map(|s| {
+                let mut c = s.chars();
+                c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+            }));
+            evidence.push("Information only: the Growth section shows the rate and what else grew".into());
+            crate::finding::Finding {
+                path: tree.path_of(w.node),
+                owner: None,
+                bytes: node.size,
+                risk: crate::finding::Risk::Amber,
+                remedy: crate::finding::Remedy::Info,
+                command: None,
+                title: format!("{} grew by {} in {days} days", node.name, format_size(w.delta as u64)),
+                evidence,
+                confidence: 0.8,
+                source: crate::finding::Source::Rule(ID.into()),
+                allow_protected: false,
+                trusted: true,
+                builtin: true,
+                on_path: true,
+                action: None,
+                admin: false,
+                carved: Vec::new(),
+                gain: None,
+            }
+        })
+        .collect()
+}
+
 pub fn signed(v: i64) -> String {
     if v < 0 {
         format!("-{}", format_size(v.unsigned_abs()))
@@ -246,6 +303,13 @@ mod tests {
         assert!(g.grew[0].why.iter().any(|w| w.contains(".log")), "{:?}", g.grew[0].why);
         assert!(g.per_day.unwrap() > 0.0 && g.full_in_days.is_some());
         assert!(g.text(&cur).contains("What grew most"));
+        // as a finding: information, from the history, with the why
+        assert!(findings(&g, &cur, SystemTime::now()).is_empty(), "300 MB is under the 1 GB floor");
+        let f = findings_over(&g, &cur, SystemTime::now(), 256 << 20);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].group(), crate::finding::Group::Know);
+        assert!(f[0].title.starts_with("app grew by 300.0 MB in 8 days"), "{}", f[0].title);
+        assert!(f[0].evidence[0].contains("then") && f[0].evidence.iter().any(|e| e.contains(".log")), "{:?}", f[0].evidence);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
