@@ -62,6 +62,10 @@ pub(crate) fn held(dir: &Path) -> u64 {
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(rest) = name.strip_prefix("$I") else { continue };
+        // a record whose item is gone (Restore leaves these behind, Windows' own too) holds nothing
+        if std::fs::symlink_metadata(dir.join(format!("$R{rest}"))).is_err() {
+            continue;
+        }
         let from_record = std::fs::read(e.path()).ok().filter(|r| r.len() >= 16).map(|r| u64::from_le_bytes(r[8..16].try_into().unwrap()));
         total = total.saturating_add(from_record.unwrap_or_else(|| std::fs::symlink_metadata(dir.join(format!("$R{rest}"))).map_or(0, |m| m.len())));
     }
@@ -201,6 +205,8 @@ mod tests {
         std::fs::write(dir.join("$ICCCCCC.bin"), b"x").unwrap();
         std::fs::write(dir.join("$RCCCCCC.bin"), vec![0u8; 30]).unwrap();
         std::fs::write(dir.join("desktop.ini"), b"[x]").unwrap();
+        // an orphan record (its item restored or gone) counts nothing
+        std::fs::write(dir.join("$IDDDDDD.iso"), record(Path::new(r"C:\big.iso"), 1 << 40, 0)).unwrap();
         assert_eq!(held(&dir), 700 + 5000 + 30);
         let _ = std::fs::remove_dir_all(&dir);
     }
