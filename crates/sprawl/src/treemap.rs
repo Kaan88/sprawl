@@ -631,6 +631,8 @@ impl State {
 
     /// Select a node and open every folder above it, then scroll it into view.
     pub(crate) fn reveal(&mut self, n: usize) {
+        // a new pick from the map starts over
+        self.marked.clear();
         let Some(t) = &self.tree else { return };
         let mut p = t.nodes[n].parent;
         while let Some(i) = p {

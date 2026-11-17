@@ -436,6 +436,8 @@ impl State {
                 }
             }
         );
+        // the rows scroll; the boxes and buttons under them stay in view
+        x += r##"<ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="8">"##;
         for (_, f) in &picked {
             let what = crate::advisor::risk_words(f.risk);
             let ai = if matches!(f.source, Source::Model(_)) { " · suggested by the AI" } else { "" };
@@ -450,6 +452,7 @@ impl State {
                 self.size(f.bytes)
             );
         }
+        x += "</StackPanel></ScrollViewer>";
         if own {
             x += &format!(
                 r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="These are my own files, I want them gone, and I know they can't be brought back" FontSize="13"/>"##,

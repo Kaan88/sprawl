@@ -771,7 +771,7 @@ impl Views {
     fn out_note(&self, n: usize, _t: &Tree, fmt: &dyn Fn(u64) -> String) -> String {
         let r = self.cache.as_ref().and_then(|c| c.4.get(n).copied()).unwrap_or(0);
         if r > 0 {
-            format!("   Â·   {} can be won back", fmt(r))
+            format!("   ·   {} can be won back", fmt(r))
         } else {
             String::new()
         }

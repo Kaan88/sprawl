@@ -562,6 +562,10 @@ impl State {
     pub(crate) fn row_menu(&mut self, y_content: f64, at: Point) {
         let k = (y_content / ROW_H) as usize;
         let Some(&(n, _)) = self.rows.get(k) else { return };
+        // right-click outside the picked rows picks just that row
+        if !self.marked.contains(&n) {
+            self.marked.clear();
+        }
         self.selected = Some(n);
         self.refresh_rows();
         self.show_selection();
@@ -584,6 +588,31 @@ impl State {
         let last = self.rows.len().saturating_sub(1);
         let page = 20;
         let mut target = k;
+        let (ctrl, shift) = crate::win32::ctrl_shift_down();
+        match key {
+            // Esc drops the picks; Ctrl+A picks every row
+            27 if !self.marked.is_empty() => {
+                self.marked.clear();
+                self.refresh_rows();
+                self.show_selection();
+                return true;
+            }
+            65 if ctrl => {
+                self.marked = self.rows.iter().map(|r| r.0).collect();
+                self.refresh_rows();
+                self.show_selection();
+                return true;
+            }
+            _ => {}
+        }
+        // moving: Shift extends the picks, otherwise they go
+        if matches!(key, 33..=40) {
+            if shift {
+                self.marked.extend(self.selected);
+            } else if !(self.view == View::Tree && matches!(key, 37 | 39)) {
+                self.marked.clear();
+            }
+        }
         match key {
             38 => target = k.saturating_sub(1),     // up
             40 => target = (k + 1).min(last),       // down
@@ -644,6 +673,11 @@ impl State {
         }
         if let Some(&(n, _)) = self.rows.get(target) {
             self.selected = Some(n);
+            if shift && matches!(key, 33..=40) {
+                // the whole run from where it started
+                let (a, b) = (k.min(target), k.max(target));
+                self.marked.extend(self.rows[a..=b].iter().map(|r| r.0));
+            }
         }
         self.refresh_rows();
         self.scroll_to_selected();
@@ -672,10 +706,10 @@ impl State {
 
     pub(crate) fn show_selection(&self) {
         if let (Some(t), false) = (&self.tree, self.marked.is_empty()) {
-            let mut all = self.marked.clone();
-            all.extend(self.selected);
-            let total: u64 = all.iter().filter(|&&n| n < t.nodes.len()).map(|&n| t.nodes[n].size).sum();
-            text(&self.root, "FootLeft", &format!("{} picked   -   {} (Delete takes them all; folders inside another count once)", all.len(), self.size(total)));
+            // what is inside another picked folder counts once, as Delete will
+            let top = self.picked_nodes();
+            let total: u64 = top.iter().map(|&n| t.nodes[n].size).sum();
+            text(&self.root, "FootLeft", &format!("{} picked   -   {}   (Delete takes them all; Esc drops the picks)", top.len(), self.size(total)));
             return;
         }
         if let (Some(t), Some(n)) = (&self.tree, self.selected) {

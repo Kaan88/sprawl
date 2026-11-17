@@ -535,7 +535,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
     }
 
     /// The picked rows (Ctrl/Shift) as top-most nodes: one inside another goes with it.
-    fn picked_nodes(&self) -> Vec<usize> {
+    pub(crate) fn picked_nodes(&self) -> Vec<usize> {
         let Some(t) = &self.tree else { return Vec::new() };
         let mut all: std::collections::BTreeSet<usize> = self.marked.clone();
         all.extend(self.selected);
