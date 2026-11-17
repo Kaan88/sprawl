@@ -31,7 +31,7 @@ impl State {
             let _ = a.SetVisibility(vis(v == View::Advisor));
         }
         let table = matches!(v, View::Tree | View::Files | View::Search);
-        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search), ("SearchMore", false)] {
+        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search), ("SearchMore", false), ("SearchEmpty", false), ("SearchSuggest", false)] {
             if let Ok(e) = find::<UIElement>(&self.root, name) {
                 let _ = e.SetVisibility(vis(on));
             }
@@ -267,8 +267,17 @@ impl State {
                 }
             }
             "mCopyPath" => {
-                if let Some(p) = self.selected_path() {
+                // in Search: every picked row of the scan, in the order shown; else a row from
+                // another drive that is picked
+                let picked = if self.view == View::Search { crate::search::picked_in_order(&self.rows, &self.marked, self.selected) } else { Vec::new() };
+                if let (Some(t), true) = (&self.tree, picked.len() > 1) {
+                    let all: Vec<String> = picked.iter().map(|&n| t.path_of(n).display().to_string()).collect();
+                    win32::copy_text(self.hwnd, &all.join("\r\n"));
+                    text(&self.root, "SearchInfo", &format!("{} paths copied.", all.len()));
+                } else if let Some(p) = self.selected_path() {
                     win32::copy_text(self.hwnd, &p.display().to_string());
+                } else if let (View::Search, Some((k, id))) = (self.view, self.search.more.sel) {
+                    self.more_command('C', k, id);
                 }
             }
             "mCopyInfo" if has_tree => {

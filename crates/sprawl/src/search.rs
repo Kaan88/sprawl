@@ -63,6 +63,16 @@ pub(crate) struct Search {
     sorting: Option<Receiver<Sorted>>,
     /// The two lists merged into the table's rows, for (`stamp`, `tree_gen`).
     merged: std::cell::RefCell<Option<((u64, u64), Vec<(usize, usize)>)>>,
+    /// The help and the empty state are made (once, when the tab first opens).
+    pub(crate) ui_built: bool,
+    /// The filter chips as made (their names are looked up in here).
+    pub(crate) chips: Option<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>,
+    /// The suggestions under the box and the highlighted one.
+    pub(crate) suggest: Option<crate::search_query::Suggestions>,
+    pub(crate) highlight: Option<usize>,
+    /// Saved and recent searches (read when first needed), and what their menu was made for.
+    pub(crate) history: Option<crate::search_query::History>,
+    pub(crate) saved_shape: String,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
@@ -97,6 +107,7 @@ impl State {
         }
         self.search.query = q;
         self.search.typed = Some(std::time::Instant::now());
+        self.search_box_state();
     }
 
     /// Start a search for what is typed (or wait for the index).
@@ -112,9 +123,9 @@ impl State {
         self.more_run(cancel.clone());
         let Some(tree) = self.tree.clone() else {
             let m = &self.search.more;
-            let note = if !m.loading.is_empty() {
+            let note = if m.is_reading() {
                 "Reading your drives; results come in as each one is ready."
-            } else if m.places.is_empty() {
+            } else if !m.has_places() {
                 "Scan a folder, or turn on Options > Search Every Drive When Search Opens."
             } else if self.search.query.trim().is_empty() {
                 "Type to search every drive."
@@ -126,7 +137,8 @@ impl State {
             return;
         };
         let q = Query::parse(&self.search.query);
-        if q.is_empty() {
+        // a word that can't be understood: nothing is searched (the hint line says why)
+        if q.is_empty() || !q.errors().is_empty() {
             self.search.pending = false;
             self.search_show(Vec::new(), String::new(), false);
             return;
@@ -299,6 +311,9 @@ impl State {
         if self.search.query.trim().is_empty() {
             return String::new();
         }
+        if !Query::parse(&self.search.query).errors().is_empty() {
+            return "Nothing searched: a word can't be understood (see below the box)".to_string();
+        }
         let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
         let mut add = |node: &sprawl_core::Node| {
             if node.is_dir {
@@ -316,10 +331,17 @@ impl State {
         let m = &self.search.more;
         let others = m.current_hits();
         for &(k, n) in others {
-            add(&m.places[k].tree.nodes[n]);
+            if let Some((ix, i)) = m.item(k, n) {
+                if ix.is_dir(i) {
+                    folders += 1;
+                } else {
+                    files += 1;
+                    bytes += ix.size(i);
+                }
+            }
         }
         let mut s = match (files, folders) {
-            (0, 0) if !m.loading.is_empty() => "Nothing yet; still reading drives".to_string(),
+            (0, 0) if m.is_reading() => "Nothing yet; still reading drives".to_string(),
             (0, 0) => "Nothing found".to_string(),
             (f, 0) => format!("{} file{}, {}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes)),
             (0, d) => format!("{} folder{}", thousands(d), if d == 1 { "" } else { "s" }),
@@ -352,26 +374,30 @@ impl State {
         match &self.tree {
             Some(t) if !others.is_empty() && !mine.is_empty() => {
                 let (c, desc) = self.search.sort;
-                let key = COLS[c.min(COLS.len() - 1)].key();
+                let by = crate::search_more::sort_by(c);
                 let (mut i, mut j) = (0, 0);
                 // by folder: both lists are in folder order, so a folder's path is built once
                 // for its run of rows, not for every comparison
-                let mut mine_dir: (Option<usize>, Vec<u8>) = (None, Vec::new());
-                let mut other_dir: (Option<(usize, usize)>, Vec<u8>) = (None, Vec::new());
+                let mut mine_dir: (Option<usize>, String) = (None, String::new());
+                let mut other_dir: (Option<(usize, u32)>, String) = (None, String::new());
                 while i < mine.len() && j < others.len() {
                     let (k, n) = others[j];
-                    let o = if key == crate::tables::Key::Folder {
-                        let (a, b) = (&t.nodes[mine[i]], &m.places[k].tree.nodes[n]);
+                    let Some((ix, id)) = m.item(k, n) else {
+                        j += 1;
+                        continue;
+                    };
+                    let a = &t.nodes[mine[i]];
+                    let o = if by == sprawl_core::compact::SortBy::Folder {
                         if mine_dir.0 != a.parent || mine_dir.1.is_empty() {
-                            mine_dir = (a.parent, crate::tables::folder_key(t, mine[i]));
+                            mine_dir = (a.parent, a.parent.map(|p| t.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default());
                         }
-                        let here = b.parent.map(|p| (k, p));
+                        let here = ix.parent(id).map(|p| (k, p));
                         if other_dir.0 != here || other_dir.1.is_empty() {
-                            other_dir = (here, crate::tables::folder_key(&m.places[k].tree, n));
+                            other_dir = (here, ix.parent(id).map(|p| ix.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default());
                         }
-                        mine_dir.1.cmp(&other_dir.1).then_with(|| crate::tables::cmp_names(&a.name, &b.name))
+                        mine_dir.1.cmp(&other_dir.1).then_with(|| a.name.to_lowercase().cmp(&ix.name(id).to_lowercase()))
                     } else {
-                        crate::tables::cmp_two(t, &self.alloc, mine[i], &m.places[k].tree, &[], n, key)
+                        crate::search_more::scan_val(t, mine[i], by).cmp(&crate::search_more::compact_val(ix, id, by))
                     };
                     let mine_first = if desc { o != std::cmp::Ordering::Less } else { o != std::cmp::Ordering::Greater };
                     if mine_first {
@@ -383,11 +409,11 @@ impl State {
                     }
                 }
                 rows.extend(mine[i..].iter().map(|&n| (n, 0)));
-                rows.extend(others[j..].iter().map(|&(k, n)| (n, k + 1)));
+                rows.extend(others[j..].iter().filter(|&&(k, n)| m.item(k, n).is_some()).map(|&(k, n)| (n, k + 1)));
             }
             _ => {
                 rows.extend(mine.iter().map(|&n| (n, 0)));
-                rows.extend(others.iter().map(|&(k, n)| (n, k + 1)));
+                rows.extend(others.iter().filter(|&&(k, n)| m.item(k, n).is_some()).map(|&(k, n)| (n, k + 1)));
             }
         }
         *self.search.merged.borrow_mut() = Some((at, rows.clone()));
@@ -420,13 +446,14 @@ impl State {
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         let (glyph, gc) = if node.is_dir { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
         let runs = self.name_runs(&node.name);
+        let full = ui::esc(&t.path_of(n).display().to_string());
         let changed = if self.search.is_changed(self.tree_gen, n, node.parent) {
             r##"<FontIcon Glyph="&#xE895;" FontSize="11" Foreground="#FFFFB547" ToolTipService.ToolTip="Changed since the scan: check it is still there"/>"##
         } else {
             ""
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             cols = crate::tables::col_defs(COLS),
             c1 = cell(1, &self.size(node.size)),
             c2 = cell(2, &self.size(self.alloc[n])),
@@ -435,11 +462,21 @@ impl State {
         )
     }
 
+    /// Esc in the results: back to the search box.
+    pub(crate) fn search_box_focus(&mut self) {
+        self.search_ui_build();
+        if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
+            let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+        }
+    }
+
     /// Ctrl+F: the Search tab, its box focused.
     pub(crate) fn search_focus(&mut self) {
         if self.view != View::Search {
             self.set_view(View::Search);
         }
+        self.search_ui_build();
+        self.search_box_state();
         self.more_open();
         if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
             let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
@@ -453,6 +490,7 @@ impl State {
             text(&self.root, "StatusText", &format!("{} isn't there any more. Scan again to update the results.", path.display()));
             return;
         };
+        self.search_note();
         let explorer = std::env::var_os("SystemRoot").map(|w| std::path::PathBuf::from(w).join("explorer.exe")).unwrap_or_else(|| "explorer.exe".into());
         // Explorer opens a folder in a window and a file with its default program
         let _ = std::process::Command::new(explorer).arg(path).spawn();
@@ -472,6 +510,7 @@ impl State {
 
     /// Ctrl+Enter or "Show in the Tree" on a result: show it in the tree.
     pub(crate) fn search_reveal(&mut self, n: usize) {
+        self.search_note();
         self.set_view(View::Tree);
         self.reveal(n);
     }
@@ -547,4 +586,26 @@ fn folder_ranks_if(tree: &sprawl_core::Tree, key: crate::tables::Key, rows: usiz
     let r = Arc::new(sprawl_core::search::folder_ranks(tree));
     *built = Some(r.clone());
     Some(r)
+}
+
+/// The scan's rows that are picked (`marked` and `selected`), in the order shown. A row from
+/// another drive or a saved scan is never one of them, whatever its number.
+pub(crate) fn picked_in_order(rows: &[(usize, usize)], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>) -> Vec<usize> {
+    let mut seen = std::collections::BTreeSet::new();
+    rows.iter().filter(|r| r.1 == 0 && (marked.contains(&r.0) || selected == Some(r.0)) && seen.insert(r.0)).map(|r| r.0).collect()
+}
+
+#[cfg(test)]
+mod picked_tests {
+    use super::picked_in_order;
+
+    #[test]
+    fn only_the_scans_rows_in_the_order_shown() {
+        // node 5 of the scan and item 5 of another drive (place 0) are different things
+        let rows = [(9, 0), (5, 1), (5, 0), (2, 0), (7, 2)];
+        let marked = [2, 5, 7].into_iter().collect();
+        assert_eq!(picked_in_order(&rows, &marked, Some(9)), [9, 5, 2]);
+        assert_eq!(picked_in_order(&rows, &Default::default(), Some(7)), Vec::<usize>::new(), "7 is only another drive's row");
+        assert_eq!(picked_in_order(&rows, &Default::default(), None), Vec::<usize>::new());
+    }
 }

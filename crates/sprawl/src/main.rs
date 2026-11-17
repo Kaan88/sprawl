@@ -37,6 +37,8 @@ mod cleaners;
 mod models;
 mod search;
 mod search_more;
+mod search_query;
+mod search_box;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -352,14 +354,15 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
     keep(find::<TextBox>(&root, "SearchBox")?.TextChanged(|s, _| {
         let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
         let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
-        with(|st| st.search_changed(v));
+        let caret = t.SelectionStart().unwrap_or(i32::MAX).max(0) as usize;
+        with(|st| st.search_typed(v, caret));
     })?);
-    // Enter or Down in the search box goes to the results
-    keep(find::<UIElement>(&root, "SearchBox")?.KeyDown(|_, e| {
+    // Enter or Down in the search box goes to the results; with suggestions showing, Up, Down,
+    // Enter, Tab and Esc may be theirs (search_query::box_key)
+    keep(find::<UIElement>(&root, "SearchBox")?.PreviewKeyDown(|_, e| {
         let Some(e) = e.as_ref() else { return };
         let Ok(k) = e.Key() else { return };
-        if k.0 == 13 || k.0 == 40 {
-            with(|st| st.search_box_down());
+        if with(|st| st.search_box_key(k.0)).unwrap_or(false) {
             let _ = e.SetHandled(true);
         }
     })?);

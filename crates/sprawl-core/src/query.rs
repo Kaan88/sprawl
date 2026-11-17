@@ -510,24 +510,165 @@ fn date_value(s: &str, today: Option<Day>) -> Option<(i64, i64)> {
 type Ch = (char, bool);
 
 fn tokens(q: &str) -> Vec<Vec<Ch>> {
+    token_spans(q).into_iter().map(|t| t.chars).collect()
+}
+
+/// A word of the query with where it is: `start..end` in the text (quotes included), and the
+/// byte offset in the text of each of its characters.
+struct Token {
+    start: usize,
+    end: usize,
+    chars: Vec<Ch>,
+    at: Vec<usize>,
+}
+
+fn token_spans(q: &str) -> Vec<Token> {
     let mut out = Vec::new();
-    let mut cur = Vec::new();
+    let mut cur = Token { start: 0, end: 0, chars: Vec::new(), at: Vec::new() };
     let mut quoted = false;
-    for c in q.chars() {
+    // where the word began (its first quote counts), if one has
+    let mut begun: Option<usize> = None;
+    for (i, c) in q.char_indices() {
         match c {
-            '"' => quoted = !quoted,
+            '"' => {
+                quoted = !quoted;
+                begun.get_or_insert(i);
+            }
             c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
+                if let Some(s) = begun.take() {
+                    if !cur.chars.is_empty() {
+                        cur.start = s;
+                        cur.end = i;
+                        out.push(std::mem::replace(&mut cur, Token { start: 0, end: 0, chars: Vec::new(), at: Vec::new() }));
+                    }
                 }
             }
-            c => cur.push((c, quoted)),
+            c => {
+                begun.get_or_insert(i);
+                cur.chars.push((c, quoted));
+                cur.at.push(i);
+            }
         }
     }
-    if !cur.is_empty() {
-        out.push(cur);
+    if let Some(s) = begun {
+        if !cur.chars.is_empty() {
+            cur.start = s;
+            cur.end = q.len();
+            out.push(cur);
+        }
     }
     out
+}
+
+/// Which keyword a word of the box uses, for the app's filter chips ([`Query::words`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordKey {
+    /// A name or path word (with its modifiers in [`Word`]).
+    Text,
+    Ext,
+    Date,
+    /// `size:`.
+    Size,
+    /// A bare `>1gb`, `<=10kb`.
+    Compare,
+    Depth,
+    Regex,
+    /// Only `folder:` or `file:`, nothing after it.
+    None,
+}
+
+/// A word of the box as [`Query::parse`] reads it, and where it is in the text, so the app can
+/// light a chip for it or take it out. Byte offsets are into the text given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+    /// The whole word, quotes included.
+    pub span: std::ops::Range<usize>,
+    /// `folder:` or `file:` in front of it.
+    pub kind: Kind,
+    /// Where that `folder:`/`file:` ends (`span.start` without one).
+    pub kind_end: usize,
+    /// `!` after it.
+    pub not: bool,
+    /// Where the `!` ends (`kind_end` without one): the modifiers and keyword start here.
+    pub prefix_end: usize,
+    /// The first alternative's keyword and modifiers.
+    pub key: WordKey,
+    pub case: bool,
+    pub exact: bool,
+    pub path: bool,
+    /// Where what follows the modifiers and keyword starts (an opening quote included).
+    pub value_at: usize,
+    /// That value as the query reads it (without quotes).
+    pub value: String,
+}
+
+impl Query {
+    /// The words of `q` and the keyword each one uses, for showing them as filters. Reads the
+    /// text the way [`Query::parse`] does; whether a value can be understood is not checked
+    /// (see [`Query::errors`]).
+    pub fn words(q: &str) -> Vec<Word> {
+        let mut out = Vec::new();
+        for tok in token_spans(q) {
+            let n = tok.chars.len();
+            // the text offset just after the first `k` characters of the word (a quote that
+            // follows them is not part of them)
+            let after = |k: usize| if k == 0 { tok.start } else { tok.at[k - 1] + tok.chars[k - 1].0.len_utf8() };
+            let mut t: &[Ch] = &tok.chars;
+            let mut kind = Kind::Any;
+            for (kw, k) in [("folder:", Kind::Folders), ("file:", Kind::Files)] {
+                if let Some(r) = strip_kw(t, kw) {
+                    kind = k;
+                    t = r;
+                    break;
+                }
+            }
+            let kind_end = after(n - t.len());
+            let mut w = Word {
+                span: tok.start..tok.end,
+                kind,
+                kind_end,
+                not: false,
+                prefix_end: kind_end,
+                key: WordKey::None,
+                case: false,
+                exact: false,
+                path: false,
+                value_at: kind_end,
+                value: String::new(),
+            };
+            if t.is_empty() {
+                out.push(w);
+                continue;
+            }
+            if matches!(t[0], ('>' | '<', false)) && t.iter().all(|c| !c.1) && size_compare(&text(t)).is_some() {
+                w.key = WordKey::Compare;
+                w.value = text(t);
+                out.push(w);
+                continue;
+            }
+            if t[0] == ('!', false) {
+                w.not = true;
+                t = &t[1..];
+            }
+            w.prefix_end = after(n - t.len());
+            let (p, rest) = prefix(t);
+            w.key = match p.key {
+                Key::Text => WordKey::Text,
+                Key::Ext => WordKey::Ext,
+                Key::Date => WordKey::Date,
+                Key::Size => WordKey::Size,
+                Key::Depth => WordKey::Depth,
+                Key::Regex => WordKey::Regex,
+            };
+            w.case = p.case;
+            w.exact = p.exact;
+            w.path = p.path;
+            w.value_at = after(n - rest.len());
+            w.value = text(rest);
+            out.push(w);
+        }
+        out
+    }
 }
 
 fn text(t: &[Ch]) -> String {
@@ -1148,6 +1289,46 @@ mod tests {
         // "now" is the one given
         let later = local(2027, 3, 1, 12);
         assert!(!md("dm:today", later, &today));
+    }
+
+    #[test]
+    fn words_say_where_and_what() {
+        let q = "folder:cache !ext:tmp  size:>1gb >1mb \"dm:x\" case:exact:README dm: file: path:\"my dir\" ünï regex:a|b";
+        let w = Query::words(q);
+        let at = |i: usize| &q[w[i].span.clone()];
+        assert_eq!(w.len(), 11);
+        assert_eq!(at(0), "folder:cache");
+        assert_eq!((w[0].kind, w[0].key, &w[0].value[..]), (Kind::Folders, WordKey::Text, "cache"));
+        assert_eq!(&q[w[0].span.start..w[0].kind_end], "folder:");
+        assert_eq!(&q[w[0].value_at..w[0].span.end], "cache");
+        assert_eq!(at(1), "!ext:tmp");
+        assert!(w[1].not);
+        assert_eq!((w[1].key, &w[1].value[..]), (WordKey::Ext, "tmp"));
+        assert_eq!(&q[w[1].prefix_end..w[1].value_at], "ext:");
+        assert_eq!((w[2].key, &w[2].value[..]), (WordKey::Size, ">1gb"));
+        assert_eq!((w[3].key, &w[3].value[..]), (WordKey::Compare, ">1mb"));
+        assert_eq!(at(4), "\"dm:x\"");
+        assert_eq!((w[4].key, &w[4].value[..]), (WordKey::Text, "dm:x"), "a quoted keyword is text");
+        assert!(w[5].case && w[5].exact && !w[5].path);
+        assert_eq!(&q[w[5].prefix_end..w[5].value_at], "case:exact:");
+        assert_eq!((w[6].key, &w[6].value[..]), (WordKey::Date, ""));
+        assert_eq!((w[7].kind, w[7].key), (Kind::Files, WordKey::None));
+        assert_eq!(at(8), "path:\"my dir\"");
+        assert!(w[8].path);
+        assert_eq!(w[8].value, "my dir");
+        assert_eq!(&q[w[8].value_at..w[8].span.end], "\"my dir\"", "the value's opening quote is the value's");
+        assert_eq!(at(9), "ünï");
+        assert_eq!((w[10].key, &w[10].value[..]), (WordKey::Regex, "a|b"));
+        // the same words as the parser reads
+        for q in ["", "  ", "\"\"", "a\" \"b c", "!", "folder:", "\"a b\"|c d"] {
+            let n = tokens(q).len();
+            assert_eq!(Query::words(q).len(), n, "{q:?}");
+            for (t, w) in tokens(q).iter().zip(Query::words(q)) {
+                let mut again = tokens(&q[w.span.clone()]);
+                assert_eq!(again.len(), 1, "{q:?}");
+                assert_eq!(again.pop().unwrap(), *t);
+            }
+        }
     }
 
     #[test]

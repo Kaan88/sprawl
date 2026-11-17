@@ -691,10 +691,23 @@ impl State {
                     }
                     // dev: type into the search box
                     q if q.starts_with("find=") => {
-                        if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
-                            let _ = b.SetText(&q[5..].into());
+                        let t = q[5..].to_string();
+                        self.search_set_box(&t, t.len());
+                    }
+                    // dev: the saved searches menu open
+                    "saved" => self.search_saved_open(),
+                    // dev: a key in the search box (boxkey=40 is Down)
+                    k if k.starts_with("boxkey=") => {
+                        self.search_box_key(k[7..].parse().unwrap_or(0));
+                    }
+                    // dev: Search's filter chips: chip=k_i picks option i of chip k, chipclick=k
+                    // clicks chip k (lit: takes its words out)
+                    p if p.starts_with("chip=") => {
+                        if let Some((k, i)) = p[5..].split_once('_') {
+                            self.search_chip_pick(k.parse().unwrap_or(0), i.parse().unwrap_or(0));
                         }
                     }
+                    p if p.starts_with("chipclick=") => self.search_chip_click(p[10..].parse().unwrap_or(0), false),
                     // dev: type into a text box, field=Name=text
                     f if f.starts_with("field=") => {
                         if let Some((n, v)) = f[6..].split_once('=') {
