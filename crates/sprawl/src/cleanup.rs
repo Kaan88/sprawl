@@ -127,6 +127,17 @@ impl State {
             c.pending = None;
             return;
         }
+        // ticks the user chose stay, for findings that are still there and can be ticked
+        if !self.advisor.cleanup.auto && self.advisor.cleanup.ticked_for.is_some() {
+            let old = &self.advisor.cleanup.ticked;
+            let kept: HashSet<String> = r.findings.iter().zip(&r.counted).filter(|(f, c)| untickable(f, **c).is_none()).map(|(f, _)| key(&f.path)).filter(|k| old.contains(k)).collect();
+            let c = &mut self.advisor.cleanup;
+            c.ticked = kept;
+            c.ticked_for = Some(gen);
+            c.review = false;
+            c.single = None;
+            return;
+        }
         let ticked: HashSet<String> = r
             .findings
             .iter()
@@ -314,6 +325,7 @@ impl State {
 
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
+        log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
         let mut done = Done { freed: 0, items: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
@@ -369,10 +381,12 @@ impl State {
             }
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
+            let fine = d.problems.is_empty() && !d.stopped && d.freed > 0;
+            let (bg, border, glyph, colour) = if fine { ("#144CC38A", "#554CC38A", "&#xE73E;", "#FF4CC38A") } else { ("#14F5B342", "#55F5B342", "&#xE7BA;", "#FFF5B342") };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = if d.stopped { format!("Stopped. Freed {} from {items}.", self.size(d.freed)) } else { format!("Freed {} from {items}.", self.size(d.freed)) };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="#144CC38A" BorderBrush="#554CC38A" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE73E;" FontSize="16" Foreground="#FF4CC38A"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="They were deleted for good. The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvCleanLog" Content="See what was removed" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
                 ui::esc(&head),
                 self.tree.as_ref().and_then(|t| crate::win32::disk_space(&t.path_of(sprawl_core::ROOT))).map_or(String::new(), |(_, free)| ui::esc(&format!(" The disk now has {} free.", self.size(free))))
             );
@@ -513,5 +527,40 @@ impl State {
         }
         x += "</StackPanel>";
         x
+    }
+}
+
+/// `%LOCALAPPDATA%\Sprawl\cleanup-log.txt`: what each clean-up removed, kept for the user.
+pub(crate) fn log_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Sprawl").join("cleanup-log.txt"))
+}
+
+/// Add a clean-up to the log (time, each item's path, what it freed and what couldn't go).
+fn log_run(items: &[Item], held: &[String], stopped: bool) {
+    let Some(p) = log_path() else { return };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut s = format!("\r\n== {}{}\r\n", crate::format::fmt_time(std::time::SystemTime::now()), if stopped { " (stopped)" } else { "" });
+    for it in items {
+        match &it.state {
+            ItemState::Done(o) => {
+                s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
+                for pr in &o.problems {
+                    s += &format!("\t  not removed: {pr}\r\n");
+                }
+                if o.more_problems > 0 {
+                    s += &format!("\t  and {} more not removed\r\n", o.more_problems);
+                }
+            }
+            _ => s += &format!("{}\tnot started\r\n", it.path.display()),
+        }
+    }
+    for h in held {
+        s += &format!("held back: {h}\r\n");
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = f.write_all(s.as_bytes());
     }
 }

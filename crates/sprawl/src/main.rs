@@ -202,7 +202,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             }
         });
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabAdvisor", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly"] {
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabAdvisor", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -342,7 +342,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             let _ = e.SetHandled(true);
         }
     })?);
-    // Filter box and the Colors and Tweaks panel.
+    // Filter box and the Colours and Tweaks panel.
     keep(find::<TextBox>(&root, "FilterBox")?.TextChanged(|s, _| {
         let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
         let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();

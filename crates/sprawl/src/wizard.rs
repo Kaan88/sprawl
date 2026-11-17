@@ -90,7 +90,7 @@ pub fn xaml() -> String {
         page_title("&#xE790;", "Look", "How the map is drawn"),
         label("Start in"),
         combo("WizView", &["Treemap: lit 3D tiles", "City: folders as buildings", "Galaxy: folders as stars"]),
-        label("Colors"),
+        label("Colours"),
         combo("WizPalette", &palettes),
         switch("WizMirror", "Mirror floor", "A glossy reflection under the map."),
         switch("WizPulses", "Live change pulses", "Tiles pulse when their files change."),
@@ -190,7 +190,8 @@ impl State {
         text(&self.root, "WizDetected", &det.summary());
         let saved = AiConfig::load();
         let first = self.settings.bool("wizard_done") != Some(true);
-        let ai = if first && saved.provider == Provider::Off { det.suggest() } else { saved };
+        // the wizard suggests what is installed; Settings shows what is saved, never more
+        let ai = if first && !self.wizard_all && saved.provider == Provider::Off { det.suggest() } else { saved };
         let pi = Provider::ALL.iter().position(|&p| p == ai.provider).unwrap_or(0);
         select(self, "WizProvider", pi);
         set_field(self, "WizUrl", &ai.base_url);
@@ -215,7 +216,6 @@ impl State {
         set_field(self, "WizUninstaller", self.settings.get("uninstaller").unwrap_or("").to_string().as_str());
         text(&self.root, "WizMcp", &crate::bridge::setup_command());
 
-        self.wizard_all = false;
         self.wizard_page = 0;
         self.wizard_show();
         shown(self, "Wizard", true);
@@ -223,9 +223,8 @@ impl State {
 
     /// Options > Settings: the wizard's choices on one page (without its welcome), saved at once.
     pub(crate) fn settings_open(&mut self) {
-        self.wizard_open();
         self.wizard_all = true;
-        self.wizard_show();
+        self.wizard_open();
     }
 
     pub(crate) fn wizard_show(&self) {

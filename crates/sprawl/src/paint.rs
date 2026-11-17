@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// How many file types get their own colour; everything else is grey (as in the original).
 pub const COUNT: usize = 20;
 
-/// The colour scheme names, in the order of the Colors menu.
+/// The colour scheme names, in the order of the Colours list.
 pub const PALETTES: [&str; 5] = ["Classic", "Neon", "Pastel", "Ocean", "Sunset"];
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);

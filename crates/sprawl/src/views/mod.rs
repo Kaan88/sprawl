@@ -448,11 +448,13 @@ impl State {
                 top.iter().take(6).map(|e| swatch(self.colours.get(&e.ext).map(|&k| palette(k)).unwrap_or(grey), &if e.ext.is_empty() { "(none)".to_string() } else { format!(".{}", e.ext) })).collect::<String>()
             }
             Paint::Risk if !report => note("Risk needs the Advisor's check: open the Advisor tab."),
+            Paint::Risk if self.advice().is_some_and(|r| !r.lens.iter().any(|&c| c > 0)) => note("Risk: nothing here can be cleaned, so nothing is lit."),
             Paint::Risk => [(1u8, "Safe to delete"), (2, "Takes time to get back"), (3, "Your own files")].iter().map(|(c, l)| swatch(crate::advisor::lens_colour(*c), l)).collect::<String>() + &swatch(grey, "Nothing found"),
-            Paint::Owner if !self.views_on() => note("Owner colours show in the More views."),
+            Paint::Owner if !self.views_on() => note("Owner colours show only in the More views (Rings, Suds and others)."),
             Paint::Owner if !report => note("Owner needs the Advisor's check: open the Advisor tab."),
             Paint::Owner => note("One colour per app") + &swatch(grey, "No known owner"),
-            Paint::Growth if !report || self.advice().is_some_and(|r| r.growth.is_none()) => note("Growth needs an earlier scan of this folder."),
+            Paint::Growth if !report || self.advice().is_some_and(|r| r.growth.is_none()) => note("Growth needs an earlier scan of this folder, a day or more ago. History plays what there is."),
+            Paint::Growth if self.advisor.growth_lens.as_ref().is_none_or(|(_, l)| !l.iter().any(|&c| c > 0)) => note("Growth: nothing grew since the scan before."),
             Paint::Growth => note("Lit: what grew since the scan before. More in Advisor > Growth."),
         };
         let xaml = format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="12">{body}</StackPanel>"##, crate::ui::NS);

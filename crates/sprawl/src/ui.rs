@@ -268,7 +268,7 @@ pub fn page(drives: &[String]) -> String {
         .map(|d| format!(r##"<ComboBoxItem Content="{}"/>"##, esc(d)))
         .collect();
     let file_menu = [
-        item("mScan", "Scan", "F5", ""),
+        item("mScan", "Scan Again", "F5", ""),
         item("mSelectFolder", "Select Folder...", "F3", ""),
         item("mSelectMultiple", "Select Multiple Folders...", "F3", "Shift"),
         item("mSelectCsv", "Open CSV File...", "O", "Control"),
@@ -378,10 +378,10 @@ pub fn page(drives: &[String]) -> String {
       <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
       <StackPanel Spacing="4">
         <Grid>
-          <TextBlock Text="Colors and Tweaks" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          <TextBlock Text="Colours and Tweaks" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
           <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="12"/></Button>
         </Grid>
-        <TextBlock Text="Colors" FontSize="12" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
+        <TextBlock Text="Colours" FontSize="12" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
         <ComboBox x:Name="PaletteBox" HorizontalAlignment="Stretch" SelectedIndex="0">{palettes}</ComboBox>
         <TextBlock Text="Tile height when hovered" FontSize="12" Foreground="#FF8E97AA" Margin="0,8,0,0"/>
         <Slider x:Name="LiftSlider" Minimum="0" Maximum="250" Value="100" StepFrequency="5"/>
@@ -579,6 +579,10 @@ pub fn page(drives: &[String]) -> String {
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
     <TextBlock x:Name="MapCaption" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,10,14,0" MaxWidth="720" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>
+    <Border x:Name="SetupOffer" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="14,10" CornerRadius="8" Background="#E61A1D27" BorderBrush="#552F7BF6" BorderThickness="1" MaxWidth="360">
+      <StackPanel Spacing="8"><TextBlock Text="Set up Sprawl?" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="An AI to explain unknown folders, faster scans as administrator, and history to see what grows. All optional." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>
+        <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="SetupYes" Content="Set up" Padding="12,3" FontSize="12" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="SetupNo" Content="Not now" Padding="12,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel>
+    </Border>
     <Border x:Name="MapKey" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Padding="10,6" CornerRadius="6" Background="#B314161E"/>
     {welcome}
     {hud}

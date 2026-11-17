@@ -76,6 +76,12 @@ impl State {
         match name {
             // while scanning the button is Stop
             "ScanButton" if self.job.is_some() => self.stop_scan(),
+            // F5 and File > Scan: the folder on screen again (the button scans what the box says)
+            "mScan" if self.tree.as_ref().is_some_and(|t| t.method != sprawl_core::ScanMethod::Csv && t.nodes[ROOT].name != sprawl_core::MULTIPLE) => {
+                if let Some(root) = self.tree.as_ref().map(|t| t.path_of(ROOT)) {
+                    self.start_scan(root);
+                }
+            }
             "mScan" | "ScanButton" => {
                 let idx = find::<Selector>(&self.root, "DriveBox").and_then(|c| c.SelectedIndex()).unwrap_or(0);
                 if let Some(d) = self.drives.get(idx.max(0) as usize) {
@@ -109,7 +115,10 @@ impl State {
                     let _ = b.Focus(FocusState::Programmatic);
                 }
             }
-            "mWizard" => self.wizard_open(),
+            "mWizard" => {
+                self.wizard_all = false;
+                self.wizard_open();
+            }
             "mSettings" => self.settings_open(),
             "mAbout" => self.command("TabAbout"),
             "mShortcuts" => {
@@ -367,6 +376,19 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
                 }
             }
             "ViewOnly" => self.views_only_toggle(),
+            "SetupYes" | "SetupNo" => {
+                if let Ok(e) = find::<UIElement>(&self.root, "SetupOffer") {
+                    let _ = e.SetVisibility(crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed);
+                }
+                if name == "SetupYes" {
+                    self.wizard_all = false;
+                    self.wizard_open();
+                } else {
+                    self.settings.set_bool("wizard_done", true);
+                    self.settings.save();
+                    text(&self.root, "FootLeft", "You can set things up any time under Options > Settings.");
+                }
+            }
             "ModeMap" | "ModeCity" | "ModeGalaxy" => {
                 let mode = match name {
                     "ModeCity" => crate::scene::Mode::City,
@@ -470,7 +492,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         }
     }
 
-    /// A slider, switch or list in the Colors and Tweaks panel changed.
+    /// A slider, switch or list in the Colours and Tweaks panel changed.
     pub(crate) fn tweak(&mut self, name: &str, v: f64) {
         match name {
             "LiftSlider" => self.map.scene.lift_scale = (v / 100.0) as f32,

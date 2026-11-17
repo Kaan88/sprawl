@@ -272,10 +272,12 @@ impl State {
             Some(res) => {
                 let job = self.job.take().unwrap();
                 self.scan_button(false);
-                // the first scan done: now offer the setup (once; Skip remembers)
-                if self.shot.is_none() && self.settings.bool("wizard_done") != Some(true) && !self.wizard_offered {
+                // the first scan that worked: a small offer to set things up (Not now remembers)
+                if res.is_ok() && !job.progress.is_cancelled() && self.shot.is_none() && self.settings.bool("wizard_done") != Some(true) && !self.wizard_offered {
                     self.wizard_offered = true;
-                    self.wizard_open();
+                    if let Ok(e) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "SetupOffer") {
+                        let _ = e.SetVisibility(crate::bindings::Microsoft::UI::Xaml::Visibility::Visible);
+                    }
                 }
                 self.scan_secs = job.started.elapsed().as_secs_f64();
                 if let Ok(p) = find::<ProgressBar>(&self.root, "Progress") {

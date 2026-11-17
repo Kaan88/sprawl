@@ -713,6 +713,12 @@ impl State {
                 return;
             }
             "AdvCleanedOk" => self.advisor.cleanup.done = None,
+            "AdvCleanLog" => {
+                if let Some(p) = crate::cleanup::log_path().filter(|p| p.is_file()) {
+                    let _ = std::process::Command::new("notepad.exe").arg(p).spawn();
+                }
+                return;
+            }
             "AdvCleanMore" => {
                 self.advisor.cleanup.done = None;
                 self.advisor.section = Section::Ask;
@@ -733,10 +739,17 @@ impl State {
                     return;
                 };
                 if let Some(got) = self.cleanup_select_enough(need) {
+                    // what costs something to get back is named, so it isn't ticked unnoticed
+                    let amber: Vec<String> = self.ticked_findings().iter().filter(|(_, f)| f.risk == Risk::Amber).map(|(_, f)| f.title.clone()).collect();
+                    let named = match amber.len() {
+                        0 => String::new(),
+                        1..=3 => format!(" Takes time to get back: {}.", amber.join(", ")),
+                        n => format!(" Takes time to get back: {} and {} more.", amber[..3].join(", "), n - 3),
+                    };
                     let msg = if got >= need {
-                        format!("Ticked {} of findings for the {} you need.", self.size(got), self.size(need))
+                        format!("Ticked {} of findings for the {} you need.{named}", self.size(got), self.size(need))
                     } else {
-                        format!("Only {} can be found without your own files; tick those yourself if you want.", self.size(got))
+                        format!("Only {} can be found without your own files; tick those yourself if you want.{named}", self.size(got))
                     };
                     self.adv_say(&msg);
                 }
@@ -850,7 +863,8 @@ impl State {
                 self.advisor.section = Section::Ask;
                 self.advisor_ask();
             }
-            "AdvSetup" => return self.command("mWizard"),
+            // the AI's choices right here, not the whole wizard
+            "AdvSetup" => self.advisor.ai_edit = Some(AiConfig::load()),
             "AdvExport" => self.advisor_export(),
             "AdvVerify" => self.advisor_verify(),
             "AdvLog" => {
@@ -1100,7 +1114,7 @@ impl State {
             "AdvSecFindings", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
+            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
@@ -2047,8 +2061,11 @@ impl State {
 
     fn growth_card(&self, r: &Report) -> String {
         use sprawl_advisor::growth::signed;
-        let not_yet = r##"<TextBlock Text="Growth over time shows here once History has scans of this folder at least a day apart. Everything about growth is gathered here: the map colours, the History time-lapse and the Tideline view start from this tab." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
+        let not_yet = r##"<TextBlock Text="Growth rates and 'full in N days' need scans of this folder at least a day apart. Scans closer together still show in History and Tideline." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
         let Some(t) = self.tree.as_ref() else { return String::new() };
+        let links = r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,2,0,4"><Button x:Name="AdvGrowHist" Content="Play it in History" Padding="8,2" FontSize="12" CornerRadius="4"/><Button x:Name="AdvGrowTide" Content="See it as Tideline" Padding="8,2" FontSize="12" CornerRadius="4"/></StackPanel>"##;
+        let not_yet = format!("{not_yet}{links}");
+        let not_yet = not_yet.as_str();
         let Some(g) = &r.growth else { return not_yet.to_string() };
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="4">"##);
         let mut head = String::new();

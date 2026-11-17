@@ -284,6 +284,8 @@ impl State {
                 crate::views::Paint::Growth => self.advisor.growth_lens.as_ref().filter(|(g, _)| self.advice().is_some_and(|r| r.tree == *g)).map(|(_, l)| (l.clone(), true)),
                 _ => None,
             }
+            // nothing lit: no darkened map
+            .filter(|(l, _)| l.iter().any(|&c| c > 0))
         };
         self.update_map_key();
         // A selected folder lights up its whole block on the map.
