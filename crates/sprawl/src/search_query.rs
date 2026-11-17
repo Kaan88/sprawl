@@ -117,6 +117,12 @@ fn cap(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
+/// The `path:` word for "inside this folder": quoted, ending in `\` so the folder's own name
+/// as a prefix of another folder's does not match (`C:\Data\` is not `C:\Database`).
+pub(crate) fn folder_term(dir: &str) -> String {
+    format!("path:\"{}\\\"", dir.trim_end_matches('\\'))
+}
+
 /// The same day a year earlier ("2025-11-17" for "2026-11-17"; 29 February becomes the 28th).
 pub(crate) fn year_before(today: &str) -> String {
     let mut p = today.split('-').map(|x| x.parse::<u32>().unwrap_or(1));
@@ -729,6 +735,12 @@ mod tests {
         assert_eq!(add_modifier("!tmp", "case:").0, "!case:tmp");
         assert_eq!(add_modifier("ext:pdf", "case:").0, "ext:pdf case:");
         assert_eq!(add_modifier("case:x", "case:").0, "case:x");
+        // inside a folder: quoted, with its \
+        let (t, _) = put("x", Chip::Where, &folder_term("C:\\My Data\\"));
+        assert_eq!(t, "x path:\"C:\\My Data\\\"");
+        assert_eq!(lit_at(&t, Chip::Where).as_deref(), Some("C:\\My Data\\"));
+        assert!(Query::parse(&t).errors().is_empty());
+        assert_eq!(folder_term("D:\\"), "path:\"D:\\\"");
         assert_eq!(year_before("2028-02-29"), "2027-02-28");
         assert_eq!(today().len(), 10);
     }

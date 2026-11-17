@@ -65,6 +65,8 @@ pub(crate) struct Search {
     merged: std::cell::RefCell<Option<((u64, u64), Vec<(usize, usize)>)>>,
     /// The help and the empty state are made (once, when the tab first opens).
     pub(crate) ui_built: bool,
+    /// The filter chips as made (their names are looked up in here).
+    pub(crate) chips: Option<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;

@@ -5,7 +5,8 @@
 use sprawl_core::query::Query;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, FlyoutBase};
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, TextBox};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, MenuFlyout, MenuFlyoutItem, TextBox};
+use crate::bindings::Microsoft::UI::Xaml::Media::Brush;
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
 use crate::search_query as sq;
 use crate::state::{find, keep, load, text, with, State, View};
@@ -65,7 +66,110 @@ impl State {
                 }
             }
         }
+        self.search_chips_build();
         self.search_box_state();
+    }
+
+    /// The filter chips under the box: a button that shows the chip (and takes its words out
+    /// of the box when lit) and a menu of options that write words into the box.
+    fn search_chips_build(&mut self) {
+        let Ok(host) = find::<Border>(&self.root, "SearchChips") else { return };
+        let today = sq::today();
+        let mut x = format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="6">"##, ui::NS);
+        for (k, chip) in sq::CHIPS.iter().enumerate() {
+            let items: String = chip
+                .options(&today)
+                .iter()
+                .enumerate()
+                .map(|(i, (label, _))| format!(r##"<MenuFlyoutItem x:Name="Ck{k}_{i}" Text="{}"/>"##, ui::esc(label)))
+                .collect();
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal"><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><Button x:Name="Chip{k}" Padding="10,2" FontSize="12" CornerRadius="4,0,0,4" BorderThickness="0" Background="#14FFFFFF" ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis"/></Button><Button x:Name="ChipMenu{k}" Padding="6,2" CornerRadius="0,4,4,0" BorderThickness="0" Background="#14FFFFFF" ToolTipService.ToolTip="Choose"><FontIcon Glyph="&#xE70D;" FontSize="10"/></Button></StackPanel>"##,
+                t = ui::esc(chip.title()),
+            );
+        }
+        x += "</StackPanel>";
+        let Ok(content) = load::<UIElement>(&x) else { return };
+        let _ = host.SetChild(&content);
+        let Ok(fe) = content.cast::<FrameworkElement>() else { return };
+        for (k, chip) in sq::CHIPS.iter().enumerate() {
+            for (name, open) in [(format!("Chip{k}"), false), (format!("ChipMenu{k}"), true)] {
+                if let Ok(b) = find::<ButtonBase>(&fe, &name) {
+                    if let Ok(t) = b.Click(move |_, _| {
+                        with(|s| s.search_chip_click(k, open));
+                    }) {
+                        keep(t);
+                    }
+                }
+            }
+            for i in 0..chip.options(&today).len() {
+                if let Ok(m) = find::<MenuFlyoutItem>(&fe, &format!("Ck{k}_{i}")) {
+                    if let Ok(t) = m.Click(move |_, _| {
+                        with(|s| s.search_chip_pick(k, i));
+                    }) {
+                        keep(t);
+                    }
+                }
+            }
+        }
+        self.search.chips = Some(fe);
+    }
+
+    /// A chip was clicked: lit, its words come out of the box; otherwise (or on its arrow) its
+    /// options show.
+    pub(crate) fn search_chip_click(&mut self, k: usize, open: bool) {
+        let Some(&chip) = sq::CHIPS.get(k) else { return };
+        let lit = sq::lit(&self.search.query)[k].is_some();
+        if lit && !open {
+            let t = sq::remove(&self.search.query, chip);
+            let at = t.len();
+            self.search_set_box(&t, at);
+            return;
+        }
+        let Some(fe) = self.search.chips.clone() else { return };
+        if let (Ok(m), Ok(b)) = (find::<MenuFlyout>(&fe, &format!("ChipFly{k}")), find::<FrameworkElement>(&fe, &format!("Chip{k}"))) {
+            let _ = m.ShowAt(&b);
+        }
+    }
+
+    /// Option `i` of chip `k`: its word goes into the box (replacing the chip's word).
+    pub(crate) fn search_chip_pick(&mut self, k: usize, i: usize) {
+        let Some(&chip) = sq::CHIPS.get(k) else { return };
+        let Some((_, pick)) = chip.options(&sq::today()).into_iter().nth(i) else { return };
+        let q = self.search.query.clone();
+        let (t, at) = match pick {
+            sq::Pick::Term(term) => sq::put(&q, chip, &term),
+            sq::Pick::Prompt(kw) => sq::put(&q, chip, kw),
+            sq::Pick::Modifier(m) => sq::add_modifier(&q, m),
+            sq::Pick::Folder => {
+                let Some(dir) = crate::dialogs::pick_folders(self.hwnd, false).pop() else { return };
+                sq::put(&q, chip, &sq::folder_term(&dir.display().to_string()))
+            }
+        };
+        self.search_set_box(&t, at);
+    }
+
+    /// The chips lit from the words in the box.
+    fn search_chips_state(&self) {
+        let Some(fe) = &self.search.chips else { return };
+        let lit = sq::lit(&self.search.query);
+        let on = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="#FF2C3B63"/>"##, ui::NS));
+        let off = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="#14FFFFFF"/>"##, ui::NS));
+        for (k, chip) in sq::CHIPS.iter().enumerate() {
+            let label = match &lit[k] {
+                Some(v) => format!("{}: {v}   \u{2715}", chip.title()),
+                None => chip.title().to_string(),
+            };
+            text(fe, &format!("ChipText{k}"), &label);
+            let brush = if lit[k].is_some() { &on } else { &off };
+            if let Ok(br) = brush {
+                for name in [format!("Chip{k}"), format!("ChipMenu{k}")] {
+                    if let Ok(c) = find::<Control>(fe, &name) {
+                        let _ = c.SetBackground(br);
+                    }
+                }
+            }
+        }
     }
 
     /// An example from the help: added to what is typed.
@@ -99,6 +203,7 @@ impl State {
             format!("{} {}: {}", if n == 1 { "This word" } else { "These words" }, "can't be understood, so nothing is searched", errors.join("   ·   "))
         };
         text(&self.root, "SearchHint", &hint);
+        self.search_chips_state();
         if let Ok(t) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBlock>(&self.root, "SearchHint") {
             let colour = if errors.is_empty() { "#FF8E97AA" } else { "#FFFFB547" };
             if let Ok(b) = load::<crate::bindings::Microsoft::UI::Xaml::Media::Brush>(&format!(r##"<SolidColorBrush {} Color="{colour}"/>"##, ui::NS)) {

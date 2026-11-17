@@ -548,7 +548,7 @@ pub fn page(drives: &[String]) -> String {
           <Border x:Name="SearchSaved" Grid.Column="2"/>
           <TextBlock x:Name="SearchInfo" Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
           <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
-          <Border x:Name="SearchChips" Grid.Row="1" Grid.ColumnSpan="5"/>
+          <StackPanel Grid.Row="1" Grid.ColumnSpan="5" Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel>
           <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="5" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxLines="3"/>
         </Grid>
         <Border x:Name="SearchEmpty" Grid.Row="2" Visibility="Collapsed" Background="Transparent"><ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="16,12"><Border x:Name="SearchEmptyHost"/></ScrollViewer></Border>

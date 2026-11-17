@@ -695,6 +695,14 @@ impl State {
                             let _ = b.SetText(&q[5..].into());
                         }
                     }
+                    // dev: Search's filter chips: chip=k_i picks option i of chip k, chipclick=k
+                    // clicks chip k (lit: takes its words out)
+                    p if p.starts_with("chip=") => {
+                        if let Some((k, i)) = p[5..].split_once('_') {
+                            self.search_chip_pick(k.parse().unwrap_or(0), i.parse().unwrap_or(0));
+                        }
+                    }
+                    p if p.starts_with("chipclick=") => self.search_chip_click(p[10..].parse().unwrap_or(0), false),
                     // dev: type into a text box, field=Name=text
                     f if f.starts_with("field=") => {
                         if let Some((n, v)) = f[6..].split_once('=') {
