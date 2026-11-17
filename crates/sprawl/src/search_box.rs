@@ -5,8 +5,7 @@
 use sprawl_core::query::Query;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, FlyoutBase};
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, MenuFlyout, MenuFlyoutItem, TextBox};
-use crate::bindings::Microsoft::UI::Xaml::Media::Brush;
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, MenuFlyout, MenuFlyoutItem, TextBox};
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
 use crate::search_query as sq;
 use crate::state::{find, keep, load, text, with, State, View};
@@ -84,8 +83,9 @@ impl State {
                 .map(|(i, (label, _))| format!(r##"<MenuFlyoutItem x:Name="Ck{k}_{i}" Text="{}"/>"##, ui::esc(label)))
                 .collect();
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal"><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><Button x:Name="Chip{k}" Padding="10,2" FontSize="12" CornerRadius="4,0,0,4" BorderThickness="0" Background="#14FFFFFF" ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis"/></Button><Button x:Name="ChipMenu{k}" Padding="6,2" CornerRadius="0,4,4,0" BorderThickness="0" Background="#14FFFFFF" ToolTipService.ToolTip="Choose"><FontIcon Glyph="&#xE70D;" FontSize="10"/></Button></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal"><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><Button x:Name="Chip{k}" {off} Padding="10,2" CornerRadius="4,0,0,4" ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis"/></Button><Button x:Name="ChipMenu{k}" {off} Padding="6,2" CornerRadius="0,4,4,0" ToolTipService.ToolTip="Choose"><FontIcon Glyph="&#xE70D;" FontSize="10"/></Button></StackPanel>"##,
                 t = ui::esc(chip.title()),
+                off = crate::look::pick(crate::look::Pick::Chip, false),
             );
         }
         x += "</StackPanel>";
@@ -153,21 +153,14 @@ impl State {
     fn search_chips_state(&self) {
         let Some(fe) = &self.search.chips else { return };
         let lit = sq::lit(&self.search.query);
-        let on = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="#FF2C3B63"/>"##, ui::NS));
-        let off = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="#14FFFFFF"/>"##, ui::NS));
         for (k, chip) in sq::CHIPS.iter().enumerate() {
             let label = match &lit[k] {
                 Some(v) => format!("{}: {v}   \u{2715}", chip.title()),
                 None => chip.title().to_string(),
             };
             text(fe, &format!("ChipText{k}"), &label);
-            let brush = if lit[k].is_some() { &on } else { &off };
-            if let Ok(br) = brush {
-                for name in [format!("Chip{k}"), format!("ChipMenu{k}")] {
-                    if let Ok(c) = find::<Control>(fe, &name) {
-                        let _ = c.SetBackground(br);
-                    }
-                }
+            for name in [format!("Chip{k}"), format!("ChipMenu{k}")] {
+                crate::look::paint(fe, &name, crate::look::Pick::Chip, lit[k].is_some());
             }
         }
     }

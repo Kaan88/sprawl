@@ -1511,7 +1511,7 @@ impl State {
         };
         let m = &self.advisor.memory;
         let tab = |name: &str, label: String, me: Section| {
-            format!(r##"<Button x:Name="{name}" Content="{}" Padding="12,4" FontSize="12" CornerRadius="6" BorderThickness="0" Background="{}"/>"##, ui::esc(&label), if self.advisor.section == me { "#FF2C3B63" } else { "#0CFFFFFF" })
+            format!(r##"<Button x:Name="{name}" Content="{}" {} Padding="12,4"/>"##, ui::esc(&label), crate::look::pick(crate::look::Pick::Chip, self.advisor.section == me))
         };
         // the cleaners are their own tab; here they are one group of the findings
         let _ = cleaners;
@@ -1543,7 +1543,7 @@ impl State {
     fn findings_section(&self, r: &Report) -> String {
         let mut x = String::new();
         let chip = |name: &str, label: &str, on: bool| {
-            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,2" FontSize="12" CornerRadius="10" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#0CFFFFFF" })
+            format!(r##"<Button x:Name="{name}" Content="{label}" {} Padding="8,2" CornerRadius="10"/>"##, crate::look::pick(crate::look::Pick::Chip, on))
         };
         let (s, o) = (self.advisor.sort, self.advisor.only);
         x += &format!(
@@ -2536,7 +2536,7 @@ impl State {
     /// Choosing the provider and model, here instead of the setup wizard.
     fn ai_settings(&self, e: &AiConfig) -> String {
         let chip = |name: &str, label: &str, on: bool| {
-            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="10,3" FontSize="12" CornerRadius="12" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#14FFFFFF" })
+            format!(r##"<Button x:Name="{name}" Content="{label}" {} Padding="10,3" CornerRadius="12"/>"##, crate::look::pick(crate::look::Pick::Chip, on))
         };
         let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF"><StackPanel Spacing="8">"##);
         x += &format!(

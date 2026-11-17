@@ -384,18 +384,10 @@ impl State {
         if k.is_some() {
             // the three buttons all look off while another view is on
             for name in ["ModeMap", "ModeCity", "ModeGalaxy"] {
-                if let Ok(b) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
-                    if let Some(br) = crate::hud::brush((30, 33, 44)) {
-                        let _ = b.SetBackground(&br);
-                    }
-                }
+                crate::look::paint(&self.root, name, crate::look::Pick::Mode, false);
             }
         }
-        if let Ok(b) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "ViewMore") {
-            if let Some(br) = crate::hud::brush(if k.is_some() { (44, 59, 99) } else { (30, 33, 44) }) {
-                let _ = b.SetBackground(&br);
-            }
-        }
+        crate::look::paint(&self.root, "ViewMore", crate::look::Pick::Mode, k.is_some());
         text(&self.root, "ViewMoreText", k.map_or("More views", |k| k.name()));
         if let Ok(e) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "ViewOnly") {
             let _ = e.SetVisibility(if k == Some(Kind::Waffle) { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });

@@ -71,7 +71,7 @@ fn template(target: &str, arrow: bool) -> String {
     let (cols, arrow) = if arrow {
         (
             r##"<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>"##,
-            r##"<FontIcon x:Name="Arrow" Grid.Column="1" Glyph="&#xE70D;" FontSize="8" Margin="0,0,9,0" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}"/>"##,
+            r##"<FontIcon x:Name="Arrow" Grid.Column="1" Glyph="&#xE70D;" FontSize="8" Margin="2,0,10,0" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}"/>"##,
         )
     } else {
         ("", "")
