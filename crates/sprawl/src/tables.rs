@@ -494,6 +494,45 @@ impl State {
         let Some(e) = self.exts.get(k) else { return };
         self.ext_selected = if self.ext_selected.as_deref() == Some(e.ext.as_str()) { None } else { Some(e.ext.clone()) };
         self.refresh_exts();
+        // so the arrow keys work here next
+        if let Ok(sv) = find::<UIElement>(&self.root, "ExtScroll") {
+            let _ = sv.Focus(FocusState::Pointer);
+        }
+    }
+
+    /// Arrow keys, Page Up/Down, Home/End and Escape in the types table. True when used.
+    pub(crate) fn ext_key(&mut self, key: i32) -> bool {
+        if self.exts.is_empty() {
+            return false;
+        }
+        let last = self.exts.len() - 1;
+        let k = self.ext_selected.as_ref().and_then(|s| self.exts.iter().position(|e| &e.ext == s));
+        let target = match (key, k) {
+            (27, _) => {
+                self.ext_selected = None;
+                self.refresh_exts();
+                return true;
+            }
+            (38, Some(k)) => k.saturating_sub(1),
+            (40, Some(k)) => (k + 1).min(last),
+            (33, Some(k)) => k.saturating_sub(20),
+            (34, Some(k)) => (k + 20).min(last),
+            (38 | 40 | 33 | 34, None) | (36, _) => 0,
+            (35, _) => last,
+            _ => return false,
+        };
+        self.ext_selected = Some(self.exts[target].ext.clone());
+        self.refresh_exts();
+        if let Ok(sv) = find::<ScrollViewer>(&self.root, "ExtScroll") {
+            let off = sv.VerticalOffset().unwrap_or(0.0);
+            let vh = sv.ViewportHeight().unwrap_or(0.0);
+            let (top, bottom) = (target as f64 * ROW_H, (target + 1) as f64 * ROW_H);
+            let to = if top < off { Some(top) } else if bottom > off + vh { Some(bottom - vh) } else { None };
+            if let Some(y) = to {
+                let _ = sv.ChangeView(None, Some(y), None);
+            }
+        }
+        true
     }
 
     /// Right-click on a row: select it and open the row menu at the pointer.
@@ -552,6 +591,30 @@ impl State {
                     }
                     13 => self.toggle(n),
                     _ => return false,
+                }
+            }
+            // type-to-find: letters and digits typed within a second jump to the next row whose
+            // name starts with them
+            48..=57 | 65..=90 if !crate::win32::ctrl_or_alt_down() => {
+                thread_local! {
+                    static TYPED: std::cell::RefCell<(String, Option<std::time::Instant>)> = const { std::cell::RefCell::new((String::new(), None)) };
+                }
+                let typed = TYPED.with(|b| {
+                    let mut b = b.borrow_mut();
+                    if b.1.is_none_or(|at| at.elapsed().as_millis() > 1000) {
+                        b.0.clear();
+                    }
+                    b.0.push((key as u8 as char).to_ascii_lowercase());
+                    b.1 = Some(std::time::Instant::now());
+                    b.0.clone()
+                });
+                // one letter moves on to the next match; more letters refine from here
+                let start = if typed.chars().count() == 1 { k + 1 } else { k };
+                let n = self.rows.len();
+                let hit = (0..n).map(|i| (start + i) % n.max(1)).find(|&i| t.nodes[self.rows[i].0].name.to_lowercase().starts_with(&typed));
+                match hit {
+                    Some(i) => target = i,
+                    None => return true,
                 }
             }
             _ => return false,

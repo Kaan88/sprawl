@@ -208,6 +208,16 @@ pub fn fit_work_area(h: HWND) {
     }
 }
 
+#[link(name = "user32")]
+extern "system" {
+    fn GetKeyState(vk: i32) -> i16;
+}
+
+/// Ctrl or Alt held down now (type-to-find leaves shortcuts alone).
+pub fn ctrl_or_alt_down() -> bool {
+    unsafe { GetKeyState(0x11) < 0 || GetKeyState(0x12) < 0 }
+}
+
 #[link(name = "comctl32")]
 extern "system" {
     fn SetWindowSubclass(h: HWND, f: unsafe extern "system" fn(HWND, u32, usize, isize, usize, usize) -> isize, id: usize, data: usize) -> i32;

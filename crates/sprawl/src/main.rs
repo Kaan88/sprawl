@@ -305,6 +305,13 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             }
         })?);
     }
+    keep(find::<UIElement>(&root, "ExtScroll")?.KeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.ext_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
     let tree_sv: UIElement = find(&root, "TreeScroll")?;
     keep(tree_sv.DoubleTapped(move |s, e| {
         let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
