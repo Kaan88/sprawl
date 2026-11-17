@@ -131,10 +131,13 @@ pub fn onedrive(tree: &Tree) -> Vec<Finding> {
     let mut stack = vec![ROOT];
     while let Some(n) = stack.pop() {
         let node = &tree.nodes[n];
-        if !node.is_dir || (n != ROOT && node.is_reparse_point()) {
+        let is_onedrive = n != ROOT && node.name.to_lowercase().starts_with("onedrive");
+        // OneDrive's own folder may carry a cloud reparse mark: it is still looked at (only
+        // what the scan holds is counted, and nothing is read from disk here)
+        if !node.is_dir || (n != ROOT && node.is_reparse_point() && !is_onedrive) {
             continue;
         }
-        if !node.name.to_lowercase().starts_with("onedrive") || n == ROOT {
+        if !is_onedrive {
             if segments(&tree.path_of(n).to_string_lossy()).len() < 4 {
                 stack.extend(node.children.iter().copied().filter(|&c| tree.nodes[c].is_dir));
             }
@@ -232,6 +235,44 @@ mod tests {
     #[test]
     fn ratios() {
         assert!(lzx_ratio("dll") > 0.3 && lzx_ratio("mp4") == 0.0 && lzx_ratio("zip") == 0.0 && lzx_ratio("(none)") > 0.0);
+    }
+
+    /// A built tree: OneDrive with old local files, online-only files and a pinned one.
+    #[test]
+    fn onedrive_counts_old_local_files() {
+        use sprawl_core::{Node, ScanMethod};
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(200 * 86_400);
+        let node = |name: &str, dir: bool, size: u64, attributes: u32, parent: Option<usize>, children: Vec<usize>| Node {
+            name: name.into(),
+            is_dir: dir,
+            size,
+            allocated: size,
+            files: if dir { 0 } else { 1 },
+            folders: 0,
+            modified: Some(old),
+            attributes,
+            parent,
+            children,
+        };
+        let mut tree = Tree {
+            root_path: r"C:\Users\sam".into(),
+            nodes: vec![
+                node(r"C:\Users\sam", true, 0, 0, None, vec![1]),
+                // the sync root marked as a cloud reparse point
+                node("OneDrive", true, 0, 0x400, Some(0), vec![2, 3, 4]),
+                node("photos.zip", false, 3 * GB, 0, Some(1), vec![]),
+                node("video.mp4", false, 5 * GB, RECALL_ON_DATA_ACCESS, Some(1), vec![]),
+                node("pinned.iso", false, GB, PINNED, Some(1), vec![]),
+            ],
+            errors: 0,
+            method: ScanMethod::Walk,
+        };
+        tree.compute_totals();
+        let f = onedrive(&tree);
+        assert_eq!(f.len(), 1);
+        assert!(f[0].title.contains("4.0 GB"), "local and old: 3 GB + the pinned 1 GB, not the online-only 5 GB: {}", f[0].title);
+        assert!(f[0].evidence.iter().any(|e| e.contains("Always keep")));
+        assert!(f[0].evidence.iter().any(|e| e.contains("attrib +U -P '")), "{:?}", f[0].evidence);
     }
 
     #[test]
