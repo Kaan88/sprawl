@@ -148,6 +148,30 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     (ok != 0).then_some((total, free))
 }
 
+#[link(name = "comctl32")]
+extern "system" {
+    fn SetWindowSubclass(h: HWND, f: unsafe extern "system" fn(HWND, u32, usize, isize, usize, usize) -> isize, id: usize, data: usize) -> i32;
+    fn DefSubclassProc(h: HWND, m: u32, w: usize, l: isize) -> isize;
+}
+
+static MAY_CLOSE: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+unsafe extern "system" fn close_proc(h: HWND, m: u32, w: usize, l: isize, _id: usize, _data: usize) -> isize {
+    // WM_CLOSE: the close button, Alt+F4 and the taskbar's Close all come here
+    if m == 0x0010 && MAY_CLOSE.get().is_some_and(|f| !f()) {
+        return 0;
+    }
+    unsafe { DefSubclassProc(h, m, w, l) }
+}
+
+/// Ask `may_close` before the window closes; false keeps it open.
+pub fn on_close(h: HWND, may_close: fn() -> bool) {
+    let _ = MAY_CLOSE.set(may_close);
+    unsafe {
+        SetWindowSubclass(h, close_proc, 1, 0);
+    }
+}
+
 pub fn confirm(owner: HWND, text: &str, caption: &str) -> bool {
     let (t, c) = (wide(text), wide(caption));
     // MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2: Enter or a stray click means No

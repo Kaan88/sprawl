@@ -110,6 +110,7 @@ impl State {
                     let _ = p.SetVisibility(if shown { Visibility::Collapsed } else { Visibility::Visible });
                 }
             }
+            "mAdmin" if self.advisor.cleanup.running.is_some() => text(&self.root, "FootLeft", "A clean-up is running: restart as administrator when it has finished."),
             "mAdmin" => {
                 let arg = self.tree.as_ref().map(|t| dialogs::quote(&t.root_path)).unwrap_or_default();
                 if sprawl_core::is_elevated() {
@@ -240,6 +241,13 @@ impl State {
                     s += &format!("\"{}\",\"{}\",{:.1},{},{},{}\r\n", e.ext, file_type(&e.ext), e.percent, e.size, e.alloc, e.files);
                 }
                 self.save_text("Sprawl file types", &s);
+            }
+            "mExit" if self.advisor.cleanup.running.is_some() => {
+                if win32::confirm(self.hwnd, "A clean-up is still running. Close Sprawl anyway?
+
+What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
+                    std::process::exit(0);
+                }
             }
             "mExit" => std::process::exit(0),
             "uDyn" | "uB" | "uKB" | "uMB" | "uGB" | "uTB" => {
