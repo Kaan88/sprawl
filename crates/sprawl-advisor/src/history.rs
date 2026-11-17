@@ -54,6 +54,8 @@ fn secs(t: SystemTime) -> u64 {
 
 /// Bodies are encoded by the caller (on its thread); this compresses and writes them.
 pub struct Pending {
+    /// The scanned folder's size, kept beside the snapshots (the welcome screen shows it).
+    pub size: u64,
     pub root: PathBuf,
     pub taken: SystemTime,
     pub folders: Vec<u8>,
@@ -64,7 +66,7 @@ pub struct Pending {
 pub fn prepare(tree: &Tree, taken: SystemTime, full: bool) -> Pending {
     let folders = snapshot::encode(&snapshot::folders_only(tree), taken);
     let full = full.then(|| snapshot::encode(tree, taken));
-    Pending { root: tree.root_path.clone(), taken, folders, full }
+    Pending { size: tree.nodes[sprawl_core::ROOT].size, root: tree.root_path.clone(), taken, folders, full }
 }
 
 impl Pending {
@@ -74,6 +76,8 @@ impl Pending {
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("root.txt"), self.root.to_string_lossy().as_bytes())?;
         let t = secs(self.taken);
+        // "<when> <bytes>" of the last scan
+        let _ = fs::write(dir.join("last.txt"), format!("{t} {}", self.size));
         let write = |name: String, body: &[u8]| -> io::Result<()> {
             let tmp = dir.join(format!("{name}.tmp"));
             let mut f = io::BufWriter::new(fs::File::create(&tmp)?);
@@ -87,6 +91,22 @@ impl Pending {
         }
         prune(base, cap_bytes, SystemTime::now())
     }
+}
+
+/// Each scanned root's last scan: (root, when, the folder's size then), newest first. Roots
+/// saved before the size was kept are left out.
+pub fn last_scans(base: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
+    let mut out = Vec::new();
+    let Ok(dirs) = fs::read_dir(base) else { return out };
+    for d in dirs.flatten() {
+        let (Ok(root), Ok(last)) = (fs::read_to_string(d.path().join("root.txt")), fs::read_to_string(d.path().join("last.txt"))) else { continue };
+        let mut it = last.split_whitespace().map(|v| v.parse::<u64>());
+        let (Some(Ok(t)), Some(Ok(size))) = (it.next(), it.next()) else { continue };
+        let Some(when) = UNIX_EPOCH.checked_add(Duration::from_secs(t)) else { continue };
+        out.push((PathBuf::from(root.trim()), when, size));
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
 }
 
 /// Every snapshot under `base`, oldest first.

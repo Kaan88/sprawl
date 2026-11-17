@@ -101,7 +101,8 @@ pub struct Running(isize);
 
 impl Running {
     pub fn ended(&self) -> bool {
-        unsafe { WaitForSingleObject(self.0, 0) == 0 }
+        // WAIT_TIMEOUT (258) is the only "still running"; a failed wait mustn't block for good
+        unsafe { WaitForSingleObject(self.0, 0) != 258 }
     }
 }
 

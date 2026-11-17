@@ -143,6 +143,11 @@ impl Chat for Metered {
         let t = self.inner.turn()?;
         self.usage.borrow_mut().add(t.usage);
         if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            // the turn is in the history already: its tool calls get an answer, or the next
+            // question would be refused (a tool call must be followed by its result)
+            if !t.calls.is_empty() {
+                self.inner.answer(t.calls.iter().map(|c| (c.id.clone(), "Stopped by the user.".to_string(), true)).collect());
+            }
             return Err(STOPPED.into());
         }
         Ok(t)

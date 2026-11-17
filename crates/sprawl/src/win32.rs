@@ -104,6 +104,8 @@ fn from_wide(buf: &[u16]) -> String {
 pub struct Drive {
     pub root: String,
     pub label: String,
+    /// GetDriveType: 2 removable, 3 fixed, 4 network, 5 optical.
+    pub kind: u32,
 }
 
 pub fn drives() -> Vec<Drive> {
@@ -131,7 +133,7 @@ pub fn drives() -> Vec<Drive> {
             }
             .to_string();
         }
-        out.push(Drive { root, label });
+        out.push(Drive { root, label, kind });
     }
     out
 }

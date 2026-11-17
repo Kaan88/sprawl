@@ -491,7 +491,12 @@ impl State {
         self.advisor.acting = None;
         if let Some(tx) = self.advisor.tx.clone() {
             std::thread::spawn(move || {
-                let now = if std::fs::symlink_metadata(&path).is_err() { 0 } else { sprawl_core::scan(&path, |_| {}).map(|t| t.nodes[sprawl_core::ROOT].size).unwrap_or(bytes) };
+                let now = match std::fs::symlink_metadata(&path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+                    // can't be read (access, network): counted as unchanged, never as freed
+                    Err(_) => bytes,
+                    Ok(_) => sprawl_core::scan(&path, |_| {}).map(|t| t.nodes[sprawl_core::ROOT].size).unwrap_or(bytes),
+                };
                 let _ = tx.send(Msg::Acted(path, title, bytes, now));
             });
         }
@@ -763,6 +768,9 @@ impl State {
                         return;
                     }
                     let args = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.handoff.get(k).cloned())).unwrap_or_default();
+                    if args.is_empty() {
+                        return;
+                    }
                     let msg = match std::process::Command::new(&exe).args(&args).spawn() {
                         Ok(_) => format!("{owner} is handed to {}.", exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
                         Err(e) => format!("Your uninstaller didn't start: {e}"),
@@ -1630,7 +1638,7 @@ impl State {
         let script = sprawl_advisor::export::script(&[&f], &root, std::time::SystemTime::now());
         let command = format!("Set-Location -LiteralPath ([Environment]::SystemDirectory)\ntry {{\n& {{\n{script}\n}} -Run\n}} finally {{\nWrite-Host ''\nRead-Host 'Finished. Press Enter to close this window (Sprawl then measures what is left)' | Out-Null\n}}");
         let Some(proc) = crate::dialogs::run_powershell(self.hwnd, &command, admin) else {
-            crate::state::text(&self.root, "StatusText", "Not run: PowerShell didn't start (or administrator rights were declined).");
+            crate::state::text(&self.root, "StatusText", "Not run: PowerShell didn't start, administrator rights were declined, or the command is too long for one run (use Export).");
             return;
         };
         self.advisor.acting = Some((f.path.clone(), f.title.clone(), f.bytes, proc, std::time::Instant::now()));
@@ -1919,10 +1927,15 @@ impl State {
 
     fn chat_poll(&mut self) {
         let Some(rx) = &self.advisor.chat.rx else { return };
-        let msgs: Vec<ChatMsg> = rx.try_iter().collect();
+        let mut msgs: Vec<ChatMsg> = rx.try_iter().collect();
         if msgs.is_empty() {
             return;
         }
+        // a piece of the answer followed by another: only the newest counts
+        let partial = |m: &ChatMsg| matches!(m, ChatMsg::Event(ChatEvent::Partial(_)));
+        let keep: Vec<bool> = (0..msgs.len()).map(|i| !(partial(&msgs[i]) && msgs.get(i + 1).is_some_and(partial))).collect();
+        let mut k = keep.into_iter();
+        msgs.retain(|_| k.next().unwrap_or(true));
         let mut redraw = false;
         for m in msgs {
             match m {
@@ -2015,7 +2028,7 @@ impl State {
             );
         }
         if let Some(t) = &c.live {
-            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc(t));
+            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, t.split('\n').map(ui::esc).collect::<Vec<_>>().join("&#10;"));
         }
         if let Some(s) = &c.status {
             x += &format!(

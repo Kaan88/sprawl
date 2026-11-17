@@ -5,13 +5,16 @@ Installed apps, or Steam's own uninstall.
 
 An uninstaller app of your own can take over instead. To set one, open the Advisor's Ask
 section and press **Change**. Under **Uninstaller**, enter the full path to its `.exe`. From
-then on, **Uninstall…** starts that program. Sprawl passes the details below, and each value is
-its own argument:
+then on, **Uninstall…** starts that program, after you confirm. Sprawl passes the details below,
+each as one `--key=value` argument:
 
 ```
-<uninstaller.exe> --sprawl-uninstall --name <display name> --kind <kind>
-                  [--publisher <publisher>] [--steam-id <id>] [--folder <path>]...
+<uninstaller.exe> --sprawl-uninstall --name=<display name> --kind=<kind>
+                  [--publisher=<publisher>] [--steam-id=<id>] [--folder=<path>]...
 ```
+
+Because each value is attached to its key with `=`, a value that starts with `-` can't be read
+as a flag. Sprawl doesn't start the uninstaller when Sprawl itself runs as administrator.
 
 | Argument | Meaning |
 |---|---|

@@ -112,15 +112,16 @@ impl App {
             AppKind::Gog => "gog",
             AppKind::Wsl => "wsl",
         };
-        let mut a = vec!["--sprawl-uninstall".to_string(), "--name".into(), self.name.clone(), "--kind".into(), kind.into()];
+        // --key=value: a value that starts with "-" (registry text can) can't pass for a flag
+        let mut a = vec!["--sprawl-uninstall".to_string(), format!("--name={}", self.name), format!("--kind={kind}")];
         if let Some(p) = &self.publisher {
-            a.extend(["--publisher".into(), p.clone()]);
+            a.push(format!("--publisher={p}"));
         }
         if let Some(Uninstall::Steam(id)) = self.uninstall() {
-            a.extend(["--steam-id".into(), id]);
+            a.push(format!("--steam-id={id}"));
         }
         for l in &self.locations {
-            a.extend(["--folder".into(), l.display().to_string()]);
+            a.push(format!("--folder={}", l.display()));
         }
         a
     }

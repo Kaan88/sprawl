@@ -129,6 +129,10 @@ impl Chunks {
         }
         for tc in c["delta"]["tool_calls"].as_array().into_iter().flatten() {
             let i = tc["index"].as_u64().unwrap_or(0) as usize;
+            // the server picks the index: a few dozen calls at most
+            if i > 63 {
+                continue;
+            }
             while self.calls.len() <= i {
                 self.calls.push(Default::default());
             }
@@ -136,8 +140,11 @@ impl Chunks {
             if let Some(id) = tc["id"].as_str() {
                 e.0 = id.to_string();
             }
+            // some servers repeat the name in every piece
             if let Some(n) = tc["function"]["name"].as_str() {
-                e.1.push_str(n);
+                if e.1 != n {
+                    e.1.push_str(n);
+                }
             }
             if let Some(a) = tc["function"]["arguments"].as_str() {
                 e.2.push_str(a);

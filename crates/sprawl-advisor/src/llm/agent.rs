@@ -99,7 +99,8 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
     // the answer as it is written, straight to the app
     let stream = |c: &mut Box<dyn Chat>| {
         let p = partial.clone();
-        c.stream_to(Some(Box::new(move |t: &str| p(t))));
+        // cleaned like the finished reply: no control or direction-changing characters
+        c.stream_to(Some(Box::new(move |t: &str| p(&super::tools::clean_text_long(t, 6000)))));
     };
     stream(&mut chat);
     let mut with_tools = tools_ok;

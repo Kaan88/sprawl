@@ -25,19 +25,10 @@ pub(crate) fn types_hint() -> &'static str {
     r##"<TextBlock x:Name="TypesHint" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="13" Foreground="#FF6E7789" Text="File types show up here.&#x0a;Click one to light up its files."/>"##
 }
 
-/// Roots of what was scanned before, newest first: (root, when, bytes).
+/// Roots of what was scanned before, newest first: (root, when, the folder's size then).
 fn recent() -> Vec<(PathBuf, SystemTime, u64)> {
     let Some(base) = sprawl_advisor::history::base_dir() else { return Vec::new() };
-    let mut all = sprawl_advisor::history::list(&base);
-    all.sort_by(|a, b| b.taken.cmp(&a.taken));
-    let mut out: Vec<(PathBuf, SystemTime, u64)> = Vec::new();
-    for e in all {
-        let key = e.root.to_string_lossy().to_lowercase();
-        if !out.iter().any(|(r, _, _)| r.to_string_lossy().to_lowercase() == key) {
-            out.push((e.root, e.taken, e.bytes));
-        }
-    }
-    out
+    sprawl_advisor::history::last_scans(&base)
 }
 
 fn ago(t: SystemTime) -> String {
@@ -87,7 +78,9 @@ impl State {
         // the drives, as cards
         x += r##"<VariableSizedWrapGrid Orientation="Horizontal" ItemWidth="260" ItemHeight="128">"##;
         for (i, d) in drives.iter().enumerate().take(12) {
-            let (total, free) = crate::win32::disk_space(std::path::Path::new(&d.root)).unwrap_or((0, 0));
+            // network and optical drives can take long to answer: not asked on the UI thread
+            let local = matches!(d.kind, 2 | 3);
+            let (total, free) = if local { crate::win32::disk_space(std::path::Path::new(&d.root)).unwrap_or((0, 0)) } else { (0, 0) };
             let used = total.saturating_sub(free);
             let pct = if total == 0 { 0.0 } else { used as f64 / total as f64 };
             let colour = if pct > 0.9 { "#FFE5534B" } else if pct > 0.75 { "#FFE8A33D" } else { "#FF4C8DF6" };
@@ -103,14 +96,13 @@ impl State {
 <StackPanel Spacing="6">
 <StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xEDA2;" FontSize="18" Foreground="{colour}"/><TextBlock Text="{name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxWidth="180"/></StackPanel>
 <Grid Height="6" CornerRadius="3" Background="#22FFFFFF"><Border HorizontalAlignment="Left" Width="{w:.0}" CornerRadius="3" Background="{colour}"/></Grid>
-<TextBlock FontSize="12" Foreground="#FFD5DBE8" Text="{free} free of {total}"/>
+<TextBlock FontSize="12" Foreground="#FFD5DBE8" Text="{space}"/>
 <TextBlock FontSize="11" Foreground="#FF8E97AA" Text="{last}" TextTrimming="CharacterEllipsis"/>
 </StackPanel></Button>"##,
                 root = ui::esc(&d.root),
                 name = ui::esc(&name),
                 w = (pct * 226.0).max(6.0),
-                free = self.size(free),
-                total = self.size(total),
+                space = if total > 0 { format!("{} free of {}", self.size(free), self.size(total)) } else if d.kind == 4 { "Network drive".to_string() } else { "Drive".to_string() },
                 last = ui::esc(&last),
             );
         }
@@ -120,7 +112,8 @@ impl State {
         x += "</VariableSizedWrapGrid>";
 
         // folders scanned before (drives are on their cards)
-        let folders: Vec<&(PathBuf, SystemTime, u64)> = recent.iter().filter(|(r, _, _)| r.to_string_lossy().len() > 3 && r.exists()).take(5).collect();
+        // only local folders are checked for still being there (a network path could hang)
+        let folders: Vec<&(PathBuf, SystemTime, u64)> = recent.iter().filter(|(r, _, _)| { let s = r.to_string_lossy(); s.len() > 3 && !s.starts_with(r"\\") && r.exists() }).take(5).collect();
         self.welcome_recent = folders.iter().map(|(r, _, _)| r.clone()).collect();
         if !folders.is_empty() {
             x += r##"<StackPanel Spacing="2"><TextBlock Text="Scanned before" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4"/>"##;

@@ -110,17 +110,29 @@ pub(crate) struct Assembler {
     partial: Vec<String>,
     pub(crate) text: String,
     pub(crate) error: Option<String>,
+    /// message_stop arrived: the message is complete.
+    done: bool,
 }
 
 impl Assembler {
     pub(crate) fn event(&mut self, data: &str) {
         let Ok(e) = serde_json::from_str::<Value>(data) else { return };
+        if !e.is_object() {
+            return;
+        }
         match e["type"].as_str() {
-            Some("message_start") => self.msg = e["message"].clone(),
+            Some("message_start") if e["message"].is_object() => self.msg = e["message"].clone(),
             Some("content_block_start") => {
+                if !e["content_block"].is_object() {
+                    return;
+                }
+                if e["content_block"]["type"] == "text" && !self.text.is_empty() && !self.text.ends_with('\n') {
+                    self.text.push('\n');
+                }
                 self.blocks.push(e["content_block"].clone());
                 self.partial.push(String::new());
             }
+            Some("message_stop") => self.done = true,
             Some("content_block_delta") => {
                 let (Some(b), Some(p)) = (self.blocks.last_mut(), self.partial.last_mut()) else { return };
                 let d = &e["delta"];
@@ -148,10 +160,16 @@ impl Assembler {
                 }
             }
             Some("message_delta") => {
+                if !self.msg.is_object() {
+                    self.msg = json!({});
+                }
                 for (k, v) in e["delta"].as_object().into_iter().flatten() {
                     self.msg[k.as_str()] = v.clone();
                 }
                 if let Some(o) = e["usage"]["output_tokens"].as_u64() {
+                    if !self.msg["usage"].is_object() {
+                        self.msg["usage"] = json!({});
+                    }
                     self.msg["usage"]["output_tokens"] = json!(o);
                 }
             }
@@ -163,6 +181,25 @@ impl Assembler {
     pub(crate) fn message(mut self) -> Result<Value, String> {
         if let Some(e) = self.error {
             return Err(e);
+        }
+        // a stream that ended early is not an answer: echoed back, it would break every turn after
+        if !self.done || !self.msg.is_object() {
+            return Err("the answer was cut off".into());
+        }
+        // a server-side fallback mid-answer: what the declined model thought or called before the
+        // last fallback block goes (as a request without streaming leaves it out)
+        if let Some(last) = self.blocks.iter().rposition(|b| b["type"] == "fallback") {
+            let mut i = 0;
+            self.blocks.retain(|b| {
+                let keep = i >= last || !matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking" | "tool_use"));
+                i += 1;
+                keep
+            });
+        }
+        // nothing to echo: an empty assistant turn would be refused next time
+        self.blocks.retain(|b| b["type"] != "text" || b["text"].as_str().is_some_and(|t| !t.is_empty()));
+        if self.blocks.is_empty() {
+            return Err("the answer came back empty".into());
         }
         self.msg["content"] = Value::Array(self.blocks);
         Ok(self.msg)
@@ -231,6 +268,7 @@ mod tests {
             r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\\\\x\"}"}}"#,
             r#"{"type":"content_block_stop","index":2}"#,
             r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}"#,
+            r#"{"type":"message_stop"}"#,
         ] {
             a.event(e);
         }
@@ -245,6 +283,32 @@ mod tests {
         let mut bad = Assembler::default();
         bad.event(r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#);
         assert!(bad.message().is_err());
+        // cut off: no message_stop
+        let mut cut = Assembler::default();
+        cut.event(r#"{"type":"message_start","message":{"model":"m","usage":{}}}"#);
+        cut.event(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#);
+        cut.event(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hal"}}"#);
+        assert!(cut.message().is_err(), "a cut-off stream is not an answer");
+        // junk doesn't panic
+        let mut junk = Assembler::default();
+        for e in [r#"[1]"#, r#"{"type":"message_start","message":5}"#, r#"{"type":"content_block_start","content_block":"x"}"#, r#"{"type":"message_delta","delta":{"a":1},"usage":{"output_tokens":3}}"#, r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}"#] {
+            junk.event(e);
+        }
+        // a fallback: the declined model's thinking and tool calls before it go
+        let mut fb = Assembler::default();
+        for e in [
+            r#"{"type":"message_start","message":{"model":"m","usage":{}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"a","signature":"s1"}}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t0","name":"largest","input":{}}}"#,
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"fallback"}}"#,
+            r#"{"type":"content_block_start","index":3,"content_block":{"type":"text","text":"ok"}}"#,
+            r#"{"type":"message_stop"}"#,
+        ] {
+            fb.event(e);
+        }
+        let m = fb.message().unwrap();
+        let kinds: Vec<&str> = m["content"].as_array().unwrap().iter().map(|b| b["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["fallback", "text"]);
     }
 
     #[test]
