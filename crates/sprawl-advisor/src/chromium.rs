@@ -64,6 +64,20 @@ pub fn recognise(tree: &Tree, n: usize) -> Option<&'static str> {
     None
 }
 
+/// A browser's folder rather than an app's: called `User Data` (or a profile in one), or
+/// holding `Default\Preferences` or a `Profile N` folder, or a profile (`Default`,
+/// `Profile N`) beside `Local State`. A browser the never-list doesn't know (a beta, a fork)
+/// is open more often and for longer than an app: its caches are amber, "close it first".
+pub fn browser_like(tree: &Tree, n: usize) -> bool {
+    let name = |k: usize| tree.nodes[k].name.to_lowercase();
+    let profile = |k: usize| name(k) == "default" || name(k).starts_with("profile ");
+    let parent = tree.nodes[n].parent.filter(|&p| p != ROOT);
+    name(n) == "user data"
+        || parent.is_some_and(|p| name(p) == "user data" || (profile(n) && file(tree, p, "Local State").is_some()))
+        || dir(tree, n, "Default").and_then(|d| file(tree, d, "Preferences")).is_some()
+        || tree.nodes[n].children.iter().any(|&c| tree.nodes[c].is_dir && name(c).starts_with("profile "))
+}
+
 /// Chromium's own `Cache` holds `Cache_Data` (or, older, an `index` file): anything else called
 /// Cache in its folder is not offered.
 fn chromium_cache(tree: &Tree, c: usize) -> bool {
@@ -80,7 +94,7 @@ fn app_name(tree: &Tree, n: usize, facts: &crate::facts::Facts) -> String {
     let mut k = n;
     for _ in 0..3 {
         let name = tree.nodes[k].name.to_lowercase();
-        let generic = ["user data", "default", "electron", "ebwebview", "webview2", "cefcache", "cef", "client", "browser", "htmlcache", "browsercache", "chromium-cache", "web", "webview"].contains(&name.as_str())
+        let generic = ["user data", "default", "saved", "electron", "ebwebview", "webview2", "cefcache", "cef", "client", "browser", "htmlcache", "browsercache", "chromium-cache", "web", "webview"].contains(&name.as_str())
             || name.starts_with("profile ")
             || name.starts_with("webcache")
             || name.starts_with("wv2profile")
@@ -122,6 +136,7 @@ pub fn find(tree: &Tree, facts: &crate::facts::Facts, seen: &HashSet<String>, mi
             continue;
         }
         let app = app_name(tree, n, facts);
+        let browser = browser_like(tree, n);
         for &(rel, risk, why) in PARTS {
             let mut k = Some(n);
             for seg in rel.split('\\') {
@@ -143,14 +158,18 @@ pub fn find(tree: &Tree, facts: &crate::facts::Facts, seen: &HashSet<String>, mi
                 path,
                 owner: Some(app.clone()),
                 bytes: part.size,
-                risk,
+                risk: if browser { risk.max(Risk::Amber) } else { risk },
                 remedy: Remedy::Delete,
                 command: None,
                 title: format!("{app}: {}", rel.rsplit('\\').next().unwrap_or(rel)),
                 evidence: vec![
                     why.to_string(),
                     format!("{app} is built on Chromium: Sprawl knows its folder by {how}, and what Chromium keeps there"),
-                    "Its cookies, local storage and sign-ins sit beside it and stay; close it first for the most to go".into(),
+                    if browser {
+                        "It looks like a web browser's: close the browser first. Its cookies, local storage and sign-ins sit beside it and stay".into()
+                    } else {
+                        "Its cookies, local storage and sign-ins sit beside it and stay; close it first for the most to go".into()
+                    },
                     format!("{} files in {} folders", part.files, part.folders),
                 ],
                 confidence: 0.9,
@@ -213,6 +232,19 @@ mod tests {
         assert!(found.iter().all(|f| f.source == Source::Rule(ID.into()) && f.action == Some(Action::Clear { days: 0 })));
         assert_eq!(found.iter().find(|f| f.title.ends_with("CacheStorage")).unwrap().risk, Risk::Amber);
         assert!(found.iter().filter(|f| !f.title.ends_with("CacheStorage")).all(|f| f.risk == Risk::Green));
+        assert!(found.iter().all(|f| !f.evidence[2].contains("browser")));
+        // a browser the never-list doesn't know: amber, "close the browser first"
+        let beta = base.join("Local").join("Fork").join("Browser Beta").join("User Data");
+        write(&beta.join("Local State"), 10);
+        write(&beta.join("Default").join("Preferences"), 10);
+        write(&beta.join("Default").join("Network").join("Cookies"), 10);
+        write(&beta.join("Default").join("Cache").join("Cache_Data").join("f"), 3000);
+        write(&beta.join("Default").join("GPUCache").join("index"), 1500);
+        let t3 = sprawl_core::scan(&base, |_| {}).unwrap();
+        let b: Vec<Finding> = find(&t3, &facts, &HashSet::new(), 1000).into_iter().filter(|f| f.path.starts_with(&beta)).collect();
+        assert_eq!(b.len(), 2, "{:?}", b.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(b.iter().all(|f| f.risk == Risk::Amber && f.evidence[2].contains("close the browser first")));
+        assert!(b.iter().all(|f| f.title.starts_with("Browser Beta:")), "{:?}", b.iter().map(|f| &f.title).collect::<Vec<_>>());
         // already found by a rule or cleaner: not again
         let seen: HashSet<String> = [app.join("Cache").to_string_lossy().to_lowercase()].into();
         assert_eq!(find(&tree, &facts, &seen, 1000).len(), found.len() - 1);
