@@ -269,15 +269,24 @@ impl State {
         // the plan preview: only the plan lit, its tiles shrinking away
         let preview = if self.view == crate::state::View::Advisor && self.map.live.is_none() { self.plan_preview() } else { None };
         self.map.scene.shrink = preview.clone();
-        self.map.scene.lens = if let Some(p) = preview { Some((p, true)) } else { match self.advisor.lens_mode {
-            crate::advisor::Lens::Off => None,
-            // not on the live picture of a scan: its node numbers are its own
-            crate::advisor::Lens::Growth if self.view == crate::state::View::Advisor && self.map.live.is_none() => {
-                self.advisor.growth_lens.as_ref().filter(|(g, _)| self.advice().is_some_and(|r| r.tree == *g)).map(|(_, l)| (l.clone(), true))
+        // the colour switch: Risk and Growth light the map on every tab (not the live picture of a
+        // scan: its node numbers are its own)
+        let paint = self.map.views.paint;
+        if paint == crate::views::Paint::Growth && self.advice().is_some_and(|r| self.advisor.growth_lens.as_ref().is_none_or(|(g, _)| *g != r.tree)) {
+            self.build_growth_lens();
+        }
+        self.map.scene.lens = if let Some(p) = preview {
+            Some((p, true))
+        } else if self.map.live.is_some() {
+            None
+        } else {
+            match paint {
+                crate::views::Paint::Risk => self.advice().map(|r| (r.lens.clone(), true)),
+                crate::views::Paint::Growth => self.advisor.growth_lens.as_ref().filter(|(g, _)| self.advice().is_some_and(|r| r.tree == *g)).map(|(_, l)| (l.clone(), true)),
+                _ => None,
             }
-            mode if self.view == crate::state::View::Advisor && self.map.live.is_none() => self.advice().map(|r| (r.lens.clone(), mode == crate::advisor::Lens::Risk)),
-            _ => None,
-        } };
+        };
+        self.update_map_key();
         // A selected folder lights up its whole block on the map.
         if self.map.live.is_none() {
             if let Some(t) = &self.tree {

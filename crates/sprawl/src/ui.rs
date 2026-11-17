@@ -313,7 +313,22 @@ pub fn page(drives: &[String]) -> String {
     .concat();
     let hud = hud();
     let welcome = crate::welcome::xaml();
-    let view_items: String = crate::views::ALL.iter().map(|(_, cmd, name, _)| format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}"/>"##)).collect();
+    let item = |k: crate::views::Kind| {
+        let (_, cmd, name, _) = crate::views::ALL.iter().find(|a| a.0 == k).copied().unwrap();
+        format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}: {}" ToolTipService.ToolTip="{}"/>"##, crate::ui::esc(k.short()), crate::ui::esc(k.hint()))
+    };
+    let mut view_items = String::new();
+    for (g, (group, kinds)) in crate::views::GROUPS.iter().enumerate() {
+        if g + 1 == crate::views::GROUPS.len() {
+            view_items += &format!(r##"<MenuFlyoutSeparator/><MenuFlyoutSubItem Text="{group}">{}</MenuFlyoutSubItem>"##, kinds.iter().map(|&k| item(k)).collect::<String>());
+        } else {
+            if g > 0 {
+                view_items += "<MenuFlyoutSeparator/>";
+            }
+            view_items += &format!(r##"<MenuFlyoutItem Text="{group}" IsEnabled="False" FontSize="11"/>"##);
+            view_items += &kinds.iter().map(|&k| item(k)).collect::<String>();
+        }
+    }
     let paint_items: String = crate::views::PAINTS.iter().map(|(_, cmd, name)| format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}"/>"##)).collect();
     let tree_hint = crate::welcome::tree_hint();
     let types_hint = crate::welcome::types_hint();
@@ -515,7 +530,7 @@ pub fn page(drives: &[String]) -> String {
       <Button x:Name="ModeGalaxy" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
       <DropDownButton x:Name="ViewMore" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="12"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="12"/></StackPanel>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{view_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
-      <DropDownButton x:Name="ViewPaint" Visibility="Collapsed" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
+      <DropDownButton x:Name="ViewPaint" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{paint_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
     </StackPanel>
     <Button x:Name="ModeHist" HorizontalAlignment="Right" Padding="10,3" CornerRadius="5" BorderThickness="0" Background="#FF1E212C" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
@@ -523,6 +538,8 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
+    <TextBlock x:Name="MapCaption" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,10,14,0" MaxWidth="720" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>
+    <Border x:Name="MapKey" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Padding="10,6" CornerRadius="6" Background="#B314161E"/>
     {welcome}
     {hud}
     {tweaks}

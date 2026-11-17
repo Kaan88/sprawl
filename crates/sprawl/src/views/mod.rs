@@ -70,14 +70,30 @@ pub(crate) enum Paint {
 
 pub(crate) const PAINTS: [(Paint, &str, &str); 4] = [(Paint::Types, "PaintTypes", "Types"), (Paint::Risk, "PaintRisk", "Risk"), (Paint::Owner, "PaintOwner", "Owner"), (Paint::Growth, "PaintGrowth", "Growth")];
 
+/// The More views menu: (group, its views). The last group is a submenu.
+pub(crate) const GROUPS: [(&str, &[Kind]); 4] = [
+    ("Size", &[Kind::Rings, Kind::Flame, Kind::Waffle, Kind::Suds, Kind::Glass]),
+    ("What can go", &[Kind::Flow]),
+    ("Over time", &[Kind::Tideline]),
+    ("For fun", &[Kind::Library, Kind::Spectrum, Kind::Strata, Kind::TreeRings, Kind::Isobars, Kind::Rose, Kind::Grove, Kind::Lens, Kind::Ridgeline, Kind::Molecule]),
+];
+
 impl Kind {
+    /// The hint's first clause: what the view shows, for its menu entry.
+    pub(crate) fn short(self) -> &'static str {
+        let h = self.hint();
+        let body = h.split_once(": ").map_or(h, |x| x.1);
+        let end = body.find(['.', ';', ',']).unwrap_or(body.len());
+        &body[..end]
+    }
+
     pub(crate) fn is_3d(self) -> bool {
         matches!(self, Kind::Rose | Kind::Ridgeline | Kind::Molecule)
     }
     pub(crate) fn name(self) -> &'static str {
         ALL.iter().find(|a| a.0 == self).map_or("", |a| a.2)
     }
-    fn hint(self) -> &'static str {
+    pub(crate) fn hint(self) -> &'static str {
         ALL.iter().find(|a| a.0 == self).map_or("", |a| a.3)
     }
 }
@@ -319,6 +335,8 @@ impl Default for Cam {
 pub(crate) struct Views {
     pub kind: Option<Kind>,
     pub paint: Paint,
+    /// The map key's XAML, as last loaded.
+    pub key_shown: String,
     pub out: Out,
     pub hover: Option<usize>,
     /// When the view or its root last changed (program seconds).
@@ -376,11 +394,17 @@ impl State {
             }
         }
         text(&self.root, "ViewMoreText", k.map_or("More views", |k| k.name()));
-        if let Ok(e) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "ViewPaint") {
+        // the view's hint as a caption on the map, where it is looked at
+        text(&self.root, "MapCaption", k.map_or("", |k| k.hint()));
+        if let Ok(e) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "MapCaption") {
             let _ = e.SetVisibility(if k.is_some() { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
         }
+        // remembered for next time
         if let Some(k) = k {
-            text(&self.root, "FootLeft", k.hint());
+            if let Some(cmd) = ALL.iter().find(|a| a.0 == k).map(|a| a.1) {
+                self.settings.set("view", cmd);
+                self.settings.save();
+            }
         }
         self.map.drawn_once = false;
         self.render_map();
@@ -389,7 +413,51 @@ impl State {
     pub(crate) fn set_paint(&mut self, p: Paint) {
         self.map.views.paint = p;
         text(&self.root, "ViewPaintText", &format!("Colour: {}", PAINTS.iter().find(|x| x.0 == p).map_or("", |x| x.2)));
+        if let Some(cmd) = PAINTS.iter().find(|x| x.0 == p).map(|x| x.1) {
+            self.settings.set("paint", cmd);
+            self.settings.save();
+        }
         self.map.drawn_once = false;
+        self.render_map();
+    }
+
+    /// The key in the map's corner: what the colours mean now, or why there is nothing to show.
+    pub(crate) fn update_map_key(&mut self) {
+        let hex = |c: [f32; 3]| format!("#FF{:02X}{:02X}{:02X}", (c[0].clamp(0.0, 1.0) * 255.0) as u8, (c[1].clamp(0.0, 1.0) * 255.0) as u8, (c[2].clamp(0.0, 1.0) * 255.0) as u8);
+        let swatch = |c: [f32; 3], label: &str| {
+            format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="5"><Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="11" Foreground="#FFD5DBE8"/></StackPanel>"##,
+                hex(c),
+                crate::ui::esc(label)
+            )
+        };
+        let note = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="11" Foreground="#FFB9C2D6"/>"##, crate::ui::esc(t));
+        let grey = [0.30, 0.33, 0.40];
+        let paint = self.map.views.paint;
+        let report = self.advice().is_some();
+        let body = match paint {
+            Paint::Types => {
+                let mut top: Vec<&crate::state::ExtRow> = self.exts.iter().collect();
+                top.sort_by_key(|e| std::cmp::Reverse(e.size));
+                top.iter().take(6).map(|e| swatch(self.colours.get(&e.ext).map(|&k| palette(k)).unwrap_or(grey), &if e.ext.is_empty() { "(none)".to_string() } else { format!(".{}", e.ext) })).collect::<String>()
+            }
+            Paint::Risk if !report => note("Risk needs the Advisor's check: open the Advisor tab."),
+            Paint::Risk => [(1u8, "Safe to delete"), (2, "Takes time to get back"), (3, "Your own files")].iter().map(|(c, l)| swatch(crate::advisor::lens_colour(*c), l)).collect::<String>() + &swatch(grey, "Nothing found"),
+            Paint::Owner if !self.views_on() => note("Owner colours show in the More views."),
+            Paint::Owner if !report => note("Owner needs the Advisor's check: open the Advisor tab."),
+            Paint::Owner => note("One colour per app") + &swatch(grey, "No known owner"),
+            Paint::Growth if !report || self.advice().is_some_and(|r| r.growth.is_none()) => note("Growth needs an earlier scan of this folder."),
+            Paint::Growth => note("Lit: what grew since the scan before"),
+        };
+        let xaml = format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="12">{body}</StackPanel>"##, crate::ui::NS);
+        if self.map.views.key_shown == xaml {
+            return;
+        }
+        let Ok(host) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::Controls::Border>(&self.root, "MapKey") else { return };
+        if let Ok(el) = crate::state::load::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&xaml) {
+            let _ = host.SetChild(&el);
+            self.map.views.key_shown = xaml;
+        }
     }
 
     /// The colours, reclaimable bytes and risk of every node, worked out again when the tree, the
@@ -455,14 +523,20 @@ impl State {
         }
         let mut acc = vec![[0f64; 4]; n];
         let mut out = vec![grey; n];
+        // (size, colour) of each folder's biggest child, for Types
+        let mut biggest: Vec<(u64, Option<[f32; 3]>)> = vec![(0, None); n];
         for &i in order.iter().rev() {
             let c = match fixed(i) {
                 Some(c) => c,
+                None if paint == Paint::Types && biggest[i].1.is_some() => biggest[i].1.unwrap(),
                 None if acc[i][3] > 0.0 => [(acc[i][0] / acc[i][3]) as f32, (acc[i][1] / acc[i][3]) as f32, (acc[i][2] / acc[i][3]) as f32],
                 None => grey,
             };
             out[i] = c;
             if let Some(p) = t.nodes[i].parent {
+                if t.nodes[i].size >= biggest[p].0 {
+                    biggest[p] = (t.nodes[i].size, Some(c));
+                }
                 let w = t.nodes[i].size.max(1) as f64;
                 for k in 0..3 {
                     acc[p][k] += c[k] as f64 * w;

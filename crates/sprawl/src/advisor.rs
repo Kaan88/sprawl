@@ -30,17 +30,6 @@ use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
 use crate::state::{find, keep, load, with, State, View};
 use crate::{ui, win32};
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Lens {
-    /// Findings keep their colours, everything else dims.
-    #[default]
-    Opportunities,
-    /// Findings coloured by risk.
-    Risk,
-    /// Tiles coloured by how much their folder grew since the growth baseline.
-    Growth,
-    Off,
-}
 
 pub(crate) struct Report {
     /// `State::tree_gen` of the tree this was made from; stale once that changes.
@@ -173,7 +162,6 @@ pub(crate) struct Advisor {
     open: Option<usize>,
     /// (finding, programs that have its files open); `None` inside while checking.
     in_use: Option<(usize, InUse)>,
-    pub(crate) lens_mode: Lens,
     show_held: bool,
     /// A finding's command is shown in its details.
     show_cmd: bool,
@@ -257,6 +245,15 @@ fn risk_code(r: Risk) -> u8 {
         Risk::Amber => 2,
         Risk::Orange => 3,
         Risk::Red => 4,
+    }
+}
+
+/// A finding's colour code on the map: tips (compress, move) remove nothing, so they don't light up.
+fn lens_code(f: &Finding) -> u8 {
+    if matches!(f.remedy, Remedy::Info | Remedy::Move) {
+        0
+    } else {
+        risk_code(f.risk)
     }
 }
 
@@ -384,7 +381,7 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     let counted: Vec<bool> = findings.iter().map(|f| !inside_another(&findings, f)).collect();
     for (f, n) in findings.iter().zip(&nodes) {
         let Some(n) = *n else { continue };
-        let code = risk_code(f.risk);
+        let code = lens_code(f);
         let mut stack = vec![n];
         while let Some(k) = stack.pop() {
             lens[k] = lens[k].max(code);
@@ -662,13 +659,6 @@ impl State {
         // a message is about the last thing pressed
         *self.advisor.msg.borrow_mut() = None;
         match name {
-            "AdvLensOpp" => self.advisor.lens_mode = Lens::Opportunities,
-            "AdvLensRisk" => self.advisor.lens_mode = Lens::Risk,
-            "AdvLensOff" => self.advisor.lens_mode = Lens::Off,
-            "AdvLensGrowth" => {
-                self.advisor.lens_mode = Lens::Growth;
-                self.build_growth_lens();
-            }
             "AdvRefresh" => return self.advisor_start(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
@@ -937,7 +927,7 @@ impl State {
     /// A finding was clicked: open (or close) its details and light it up on the map.
     /// The growth lens from the report's growth: each grown folder's tiles by how much it grew,
     /// deeper folders over the folders around them.
-    fn build_growth_lens(&mut self) {
+    pub(crate) fn build_growth_lens(&mut self) {
         let (Some(t), Some(r)) = (self.tree.clone(), self.advice()) else { return };
         let Some(g) = &r.growth else { return };
         let gen = r.tree;
@@ -973,11 +963,12 @@ impl State {
     /// A click on a lit tile in the Advisor: its finding opens (or, in the growth lens, the
     /// Growth section). True when it did.
     pub(crate) fn advisor_map_click(&mut self, n: usize) -> bool {
-        if self.view != View::Advisor || self.advisor.lens_mode == Lens::Off {
+        let paint = self.map.views.paint;
+        if self.view != View::Advisor || !matches!(paint, crate::views::Paint::Risk | crate::views::Paint::Growth) {
             return false;
         }
         let Some(t) = self.tree.clone() else { return false };
-        if self.advisor.lens_mode == Lens::Growth {
+        if paint == crate::views::Paint::Growth {
             let lit = self.advisor.growth_lens.as_ref().is_some_and(|(_, l)| l.get(n).is_some_and(|&c| c > 0));
             if lit {
                 self.advisor.section = Section::Growth;
@@ -1131,7 +1122,7 @@ impl State {
         for name in [
             "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvLensOpp", "AdvLensRisk", "AdvLensGrowth", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
+            "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
@@ -1167,10 +1158,6 @@ impl State {
         let green = sum(&|f| actionable(f) && f.risk == Risk::Green);
         let amber = sum(&|f| actionable(f) && f.risk == Risk::Amber);
         let orange = sum(&|f| actionable(f) && f.risk >= Risk::Orange);
-        let lens_btn = |name: &str, label: &str, on: bool| {
-            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "Transparent" })
-        };
-        let lm = self.advisor.lens_mode;
         let now = sum(&|f| actionable(f) && f.risk <= Risk::Amber);
         // one line: what can be cleaned, how much of it is safe, what is the user's to decide
         let mut line = if total == 0 {
@@ -1193,11 +1180,7 @@ impl State {
         x += &format!(
             r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 <TextBlock FontSize="15" TextWrapping="Wrap" VerticalAlignment="Center">{line}</TextBlock>
-<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><TextBlock Text="Map:" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center"/><StackPanel Orientation="Horizontal" Spacing="2" Padding="2" CornerRadius="7" Background="#14FFFFFF">{b1}{b2}{b4}{b3}</StackPanel><Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/></StackPanel></Grid>"##,
-            b1 = lens_btn("AdvLensOpp", "What can go", lm == Lens::Opportunities),
-            b2 = lens_btn("AdvLensRisk", "By risk", lm == Lens::Risk),
-            b3 = lens_btn("AdvLensOff", "Off", lm == Lens::Off),
-            b4 = if r.growth.as_ref().is_some_and(|g| g.grew.iter().any(|w| w.delta > 0)) { lens_btn("AdvLensGrowth", "Grew", lm == Lens::Growth) } else { String::new() },
+<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/></StackPanel></Grid>"##,
         );
         if total > 0 {
             let share = |v: u64| (v as f64 * 1000.0 / total as f64).max(if v > 0 { 4.0 } else { 0.0 });
@@ -1448,7 +1431,7 @@ impl State {
             let mut lens = vec![0u8; t.nodes.len()];
             for (f, n) in r.findings.iter().zip(&r.nodes) {
                 let Some(n) = *n else { continue };
-                let code = risk_code(f.risk);
+                let code = lens_code(f);
                 let mut stack = vec![n];
                 while let Some(k) = stack.pop() {
                     lens[k] = lens[k].max(code);
@@ -1474,7 +1457,7 @@ impl State {
             let _ = n.map(|n| lens.get(n).copied());
             r.counted.push(!inside_another(&r.findings, &f));
             if let Some(n) = n {
-                let code = risk_code(f.risk);
+                let code = lens_code(&f);
                 let mut stack = vec![n];
                 while let Some(k) = stack.pop() {
                     lens[k] = lens[k].max(code);
@@ -1676,7 +1659,7 @@ impl State {
         let mut lens = vec![0u8; t.nodes.len()];
         for (f, n) in r.findings.iter().zip(&r.nodes) {
             let Some(n) = *n else { continue };
-            let code = risk_code(f.risk);
+            let code = lens_code(f);
             let mut stack = vec![n];
             while let Some(k) = stack.pop() {
                 lens[k] = lens[k].max(code);

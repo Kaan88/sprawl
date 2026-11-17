@@ -120,6 +120,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     win32::set_app_icon(hwnd);
 
     if a.shot.is_some() {
+        crate::settings::READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
         win32::show_behind(hwnd);
     } else {
         window.Activate()?;

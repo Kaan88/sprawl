@@ -4,6 +4,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// Set for screenshot runs: nothing is written.
+pub static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Default)]
 pub struct Settings {
     values: BTreeMap<String, String>,
@@ -27,6 +30,10 @@ impl Settings {
     }
 
     pub fn save(&self) {
+        // a screenshot run (and the dev steps it plays) leaves the user's settings alone
+        if READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let Some(p) = path() else { return };
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);

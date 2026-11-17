@@ -422,8 +422,11 @@ impl State {
             self.command(&a);
         }
         // only a view name: the settings file must never be able to run another command
-        if let Some(v) = self.settings.get("view").filter(|v| matches!(*v, "ModeMap" | "ModeCity" | "ModeGalaxy")).map(str::to_string) {
+        if let Some(v) = self.settings.get("view").filter(|v| matches!(*v, "ModeMap" | "ModeCity" | "ModeGalaxy") || crate::views::ALL.iter().any(|a| a.1 == *v)).map(str::to_string) {
             self.command(&v);
+        }
+        if let Some(p) = self.settings.get("paint").filter(|p| crate::views::PAINTS.iter().any(|a| a.1 == *p)).map(str::to_string) {
+            self.command(&p);
         }
         if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, "oExplorer") {
             dialogs::migrate_explorer_menu();
