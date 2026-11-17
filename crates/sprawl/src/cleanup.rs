@@ -135,6 +135,17 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
     None
 }
 
+/// "3 hours" when the scan began an hour or more before `now`; None for a fresh one.
+pub(crate) fn scan_age_words(began: std::time::SystemTime, now: std::time::SystemTime) -> Option<String> {
+    let mins = now.duration_since(began).ok()?.as_secs() / 60;
+    match mins {
+        0..=59 => None,
+        60..=119 => Some("an hour".into()),
+        120..=2879 => Some(format!("{} hours", mins / 60)),
+        _ => Some(format!("{} days", mins / 1440)),
+    }
+}
+
 /// It needs administrator rights and this Sprawl doesn't have them: it can be ticked (for a
 /// script), but the in-app clean-up holds it back.
 pub(crate) fn needs_admin(f: &Finding) -> bool {
@@ -390,12 +401,30 @@ impl State {
     /// The review opened: count what each pattern or keep-days item would free now, by the
     /// clean-up's own tests, off the UI thread.
     pub(crate) fn cleanup_measure(&mut self) {
+        // the report's own count is still going, and covers these
+        if self.advisor.cleanup.measuring.is_some() {
+            return;
+        }
+        let c = &self.advisor.cleanup;
+        let ticked: Vec<Finding> = self.ticked_findings().into_iter().map(|(_, f)| f).filter(|f| !c.measured.contains_key(&key(&f.path))).collect();
+        self.measure(ticked);
+    }
+
+    /// A new report: what each "up to" finding would free now, so the headline and the bar
+    /// count that, not the scan's whole folder.
+    pub(crate) fn cleanup_measure_report(&mut self) {
+        self.advisor.cleanup.measured.clear();
+        let all: Vec<Finding> = self.advice().map(|r| r.findings.iter().zip(&r.counted).filter(|(_, c)| **c).map(|(f, _)| f.clone()).collect()).unwrap_or_default();
+        self.measure(all);
+    }
+
+    /// Count again, on a thread, what the run would free for each of `findings` that is an
+    /// estimate; the answers replace the earlier ones as they come.
+    fn measure(&mut self, findings: Vec<Finding>) {
         let spare = clean::Spare { since: Some(self.scan_began), keep: self.advisor.memory.kept_paths() };
-        let work: Vec<(PathBuf, Action)> = self.ticked_findings().into_iter().filter(|(_, f)| f.estimate()).filter_map(|(_, f)| Some((f.path.clone(), clean::action(&f)?.0))).collect();
+        let work: Vec<(PathBuf, Action)> = findings.into_iter().filter(|f| f.estimate()).filter_map(|f| Some((f.path.clone(), clean::action(&f)?.0))).collect();
         let c = &mut self.advisor.cleanup;
-        c.measured.clear();
         if work.is_empty() {
-            c.measuring = None;
             return;
         }
         let (tx, rx) = channel();
@@ -412,7 +441,7 @@ impl State {
     }
 
     /// The size the review shows for a ticked finding: counted now, or "up to" the scan's.
-    fn review_size(&self, f: &Finding) -> (u64, bool) {
+    pub(crate) fn review_size(&self, f: &Finding) -> (u64, bool) {
         match self.advisor.cleanup.measured.get(&key(&f.path)) {
             Some(&b) => (b, false),
             None => (f.bytes, f.estimate()),
@@ -422,12 +451,23 @@ impl State {
     /// Progress from the clean-up thread; at the end, the tree is updated in place.
     pub(crate) fn cleanup_poll(&mut self) {
         if let Some(rx) = &self.advisor.cleanup.measuring {
-            let got: Vec<(String, u64)> = rx.try_iter().collect();
-            if !got.is_empty() {
-                self.advisor.cleanup.measured.extend(got);
-                if self.advisor.cleanup.review && self.advisor.cleanup.running.is_none() {
-                    self.advisor_redraw();
+            let mut got = Vec::new();
+            let done = loop {
+                match rx.try_recv() {
+                    Ok(m) => got.push(m),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break false,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
                 }
+            };
+            if done {
+                self.advisor.cleanup.measuring = None;
+            }
+            let any = !got.is_empty();
+            self.advisor.cleanup.measured.extend(got);
+            // the review as answers come; the headline and the bar once all are in
+            let review = self.advisor.cleanup.review && self.advisor.cleanup.running.is_none();
+            if (review && any) || done {
+                self.advisor_redraw();
             }
         }
         let Some(run) = self.advisor.cleanup.running.as_mut() else { return };
@@ -574,7 +614,8 @@ impl State {
     /// The bar above the findings: what is ticked, and the ways to tick and clean.
     pub(crate) fn cleanup_bar_xaml(&self, goal: &str) -> String {
         let picked = self.ticked_findings();
-        let bytes: u64 = picked.iter().map(|(_, f)| f.bytes).sum();
+        let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
+        let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
         let admin_waiting = self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, c)| untickable(f, *c).is_none() && needs_admin(f)));
         let mut x = format!(
             r##"<Border Padding="12,10" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="8">
@@ -582,7 +623,7 @@ impl State {
 <StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/></StackPanel>
 <Button x:Name="AdvClean" Grid.Column="1" Content="Clean up..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></Grid>
 <StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
-            if picked.is_empty() { "Nothing ticked".to_string() } else { format!("{} ticked · {}", picked.len(), self.size(bytes)) },
+            if picked.is_empty() { "Nothing ticked".to_string() } else { format!("{} ticked · {}{}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes)) },
             if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then Clean up." } else { "Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." },
             if picked.is_empty() { "False" } else { "True" },
         );
@@ -651,6 +692,12 @@ impl State {
             );
         }
         x += "</StackPanel></ScrollViewer>";
+        // everything changed since the scan began stays: an old scan leaves most of it
+        if let Some(age) = scan_age_words(self.scan_began, std::time::SystemTime::now()) {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE823;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="The scan is {age} old. What changed since it began is left alone, so this may free less than shown. Scan again first for a full clean-up." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" MaxWidth="760" VerticalAlignment="Center"/><Button x:Name="AdvRescanOld" Content="Scan again" Padding="10,2" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/></StackPanel>"##
+            );
+        }
         for (_, f) in picked.iter().filter(|(_, f)| crate::advisor::gone_for_good(f)) {
             x += &format!(r##"<TextBlock Text="{}: what is in it now cannot be brought back afterwards." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&f.title));
         }
@@ -836,5 +883,20 @@ mod admin_tests {
         assert_eq!(held_in_app(&f).is_some(), !sprawl_core::is_elevated());
         f.set_action(Action::Clear { days: 7 }, false);
         assert_eq!(held_in_app(&f), None);
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    #[test]
+    fn an_old_scan_says_how_old() {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let after = |m: u64| t + std::time::Duration::from_secs(m * 60);
+        assert_eq!(super::scan_age_words(t, after(59)), None);
+        assert_eq!(super::scan_age_words(t, after(61)).as_deref(), Some("an hour"));
+        assert_eq!(super::scan_age_words(t, after(185)).as_deref(), Some("3 hours"));
+        assert_eq!(super::scan_age_words(t, after(3 * 1440)).as_deref(), Some("3 days"));
+        // a clock set back: nothing to say
+        assert_eq!(super::scan_age_words(after(10), t), None);
     }
 }

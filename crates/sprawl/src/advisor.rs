@@ -613,6 +613,7 @@ impl State {
                     self.advisor.report = Some(r);
                     self.load_run();
                     self.cleanup_defaults();
+                    self.cleanup_measure_report();
                     self.advisor.running = false;
                     self.advisor.open = None;
                     self.advisor.in_use = None;
@@ -900,7 +901,7 @@ impl State {
                 }
             }
             "AdvAdmin" => return self.command("mAdmin"),
-            "AdvRescan" => {
+            "AdvRescan" | "AdvRescanOld" => {
                         // the folder that was scanned, not whatever the drive box says
                 if let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)) {
                     self.start_scan(root);
@@ -1323,7 +1324,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
@@ -1353,7 +1354,10 @@ impl State {
             x += "</StackPanel>";
             return x;
         };
-        let sum = |pred: &dyn Fn(&Finding) -> bool| -> u64 { r.findings.iter().zip(&r.counted).filter(|(f, c)| **c && pred(f)).map(|(f, _)| f.bytes).sum() };
+        // what the run would free: counted now where it was, the scan's size ("up to") otherwise
+        let sum = |pred: &dyn Fn(&Finding) -> bool| -> u64 { r.findings.iter().zip(&r.counted).filter(|(f, c)| **c && pred(f)).map(|(f, _)| self.review_size(f).0).sum() };
+        let up_to = |pred: &dyn Fn(&Finding) -> bool| r.findings.iter().zip(&r.counted).any(|(f, c)| *c && pred(f) && self.review_size(f).1);
+        let upto = |yes: bool| if yes { "up to " } else { "" };
         // what deleting or a command wins back; uninstalling is the user's call, shown below
         let actionable = |f: &Finding| matches!(f.remedy, Remedy::Delete | Remedy::Command);
         let total = sum(&|f| actionable(f));
@@ -1366,9 +1370,9 @@ impl State {
             let tips = r.findings.len();
             format!(r##"<Run Text="{}" FontWeight="SemiBold"/>"##, if tips == 0 { "Nothing to clean here".to_string() } else { format!("{tips} {}, nothing to clean", if tips == 1 { "tip" } else { "tips" }) })
         } else {
-            let mut l = format!(r##"<Run Text="{}" FontWeight="SemiBold"/><Run Text=" can be cleaned" Foreground="#FFB9C2D6"/>"##, self.size(total));
+            let mut l = format!(r##"<Run Text="{}{}" FontWeight="SemiBold"/><Run Text=" can be cleaned" Foreground="#FFB9C2D6"/>"##, upto(up_to(&|f| actionable(f))), self.size(total));
             if green > 0 {
-                l += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="#FF4CC38A" FontWeight="SemiBold"/><Run Text=" safe to delete" Foreground="#FFB9C2D6"/>"##, self.size(green));
+                l += &format!(r##"<Run Text="   ·   "/><Run Text="{}{}" Foreground="#FF4CC38A" FontWeight="SemiBold"/><Run Text=" safe to delete" Foreground="#FFB9C2D6"/>"##, upto(up_to(&|f| actionable(f) && f.risk == Risk::Green)), self.size(green));
             }
             l
         };
