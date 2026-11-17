@@ -34,6 +34,7 @@ mod welcome;
 mod wizard;
 mod update;
 mod models;
+mod search;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -84,7 +85,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
+    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mSearch", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -204,7 +205,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             }
         });
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabAdvisor", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
+    for name in ["ScanButton", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "SearchToFilter", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -344,6 +345,29 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             let _ = e.SetHandled(true);
         }
     })?);
+    keep(find::<TextBox>(&root, "SearchBox")?.TextChanged(|s, _| {
+        let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
+        let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
+        with(|st| st.search_changed(v));
+    })?);
+    // Enter or Down in the search box goes to the results
+    keep(find::<UIElement>(&root, "SearchBox")?.KeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if k.0 == 13 || k.0 == 40 {
+            with(|st| {
+                if let Some(&(n, _)) = st.rows.first() {
+                    if !st.rows.iter().any(|r| Some(r.0) == st.selected) {
+                        st.selected = Some(n);
+                    }
+                    st.refresh_rows();
+                    st.show_selection();
+                    st.focus_main();
+                }
+            });
+            let _ = e.SetHandled(true);
+        }
+    })?);
     // Filter box and the Colours and Tweaks panel.
     keep(find::<TextBox>(&root, "FilterBox")?.TextChanged(|s, _| {
         let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
@@ -415,6 +439,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         wizard_offered: false,
         update: Default::default(),
         wiz_models: Default::default(),
+        search: crate::search::Search::new(),
         wiz_url: Default::default(),
         hist: None,
         scan_taken: std::time::SystemTime::now(),

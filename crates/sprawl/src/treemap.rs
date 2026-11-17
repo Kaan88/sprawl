@@ -276,6 +276,8 @@ impl State {
         }
         self.map.scene.lens = if let Some(p) = preview {
             Some((p, true))
+        } else if self.view == crate::state::View::Search && self.map.live.is_none() && self.search.results_gen == self.tree_gen && self.search.lens.is_some() {
+            self.search.lens.clone().map(|l| (l, true))
         } else if self.map.live.is_some() {
             None
         } else {

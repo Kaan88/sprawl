@@ -56,6 +56,14 @@ pub(crate) const FILES: &[Col] = &[
     col("Modified", 130.0, true, Key::Modified),
     col("Folder", -3.0, false, Key::Folder),
 ];
+/// The Search tab: files and folders together.
+pub(crate) const FILES_LIKE: &[Col] = &[
+    col("Name", -2.0, false, Key::Name),
+    col("Size", 92.0, true, Key::Size),
+    col("Allocated", 92.0, true, Key::Alloc),
+    col("Modified", 130.0, true, Key::Modified),
+    col("Folder", -3.0, false, Key::Folder),
+];
 pub(crate) const EXTS: &[Col] = &[
     col("", 22.0, false, Key::None),
     col("Extension", 78.0, false, Key::Name),
@@ -100,7 +108,21 @@ impl Default for Tables {
     }
 }
 
-fn col_defs(cols: &[Col]) -> String {
+impl Col {
+    pub(crate) fn key(&self) -> Key {
+        self.key
+    }
+}
+
+/// Sort `v` (node indices) by `key`, the way the tables do.
+pub(crate) fn sort_nodes(t: &Tree, alloc: &[u64], key: Key, desc: bool, v: &mut [usize]) {
+    v.sort_by(|&a, &b| {
+        let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
+        if desc { o.reverse() } else { o }
+    });
+}
+
+pub(crate) fn col_defs(cols: &[Col]) -> String {
     let mut s = String::from("<Grid.ColumnDefinitions>");
     for c in cols {
         if c.width < 0.0 {
@@ -181,6 +203,8 @@ impl State {
     fn main_cols(&self) -> (&'static [Col], (usize, bool)) {
         if self.view == View::Files {
             (FILES, self.tables.files_sort)
+        } else if self.view == View::Search {
+            (FILES_LIKE, self.search.sort)
         } else {
             (TREE, self.tables.tree_sort)
         }
@@ -255,6 +279,11 @@ impl State {
                 self.sort_files();
                 self.refresh_rows();
             }
+            Which::Main if self.view == View::Search => {
+                flip(&mut self.search.sort);
+                self.search_sort();
+                self.refresh_rows();
+            }
             Which::Main => {
                 flip(&mut self.tables.tree_sort);
                 self.sort_tree();
@@ -283,14 +312,22 @@ impl State {
     /// Rebuild the main table (tree or file list) after the data, selection or view changed.
     pub(crate) fn refresh_rows(&mut self) {
         let Some(t) = &self.tree else { return };
-        self.rows = if self.view == View::Files { self.files.iter().map(|&f| (f, 0)).collect() } else { self.visible_rows() };
+        self.rows = match self.view {
+            View::Files => self.files.iter().map(|&f| (f, 0)).collect(),
+            View::Search => self.search_rows(),
+            _ => self.visible_rows(),
+        };
         let (cols, sort) = self.main_cols();
         if let (Ok(h), Ok(head)) = (find::<Border>(&self.root, "TreeHeader"), load::<UIElement>(&header(cols, sort))) {
             let _ = h.SetChild(&head);
         }
         let total = t.nodes[ROOT].size;
         let items = t.nodes[ROOT].items();
-        text(&self.root, "FootRight", &format!("{} items  |  {}", thousands(items), self.size(total)));
+        if self.view == View::Search {
+            text(&self.root, "FootRight", &format!("{} found  |  {} items scanned", thousands(self.rows.len() as u64), thousands(items)));
+        } else {
+            text(&self.root, "FootRight", &format!("{} items  |  {}", thousands(items), self.size(total)));
+        }
         self.tables.main_span = (0, 0, usize::MAX);
         self.fill(Which::Main);
     }
@@ -343,6 +380,7 @@ impl State {
         for k in a..b {
             xaml += &match which {
                 Which::Main if self.view == View::Files => self.file_row(k),
+                Which::Main if self.view == View::Search => self.search_row(k),
                 Which::Main => self.tree_row(k),
                 Which::Exts => self.ext_row(k),
             };
@@ -489,6 +527,10 @@ impl State {
             self.show_selection();
             return;
         }
+        if double && self.view == View::Search {
+            self.search_reveal(n);
+            return;
+        }
         self.marked.clear();
         self.selected = Some(n);
         if self.view == View::Tree && (double || on_chevron) {
@@ -506,7 +548,7 @@ impl State {
         }
     }
 
-    fn focus_main(&self) {
+    pub(crate) fn focus_main(&self) {
         if let Ok(sv) = find::<UIElement>(&self.root, "TreeScroll") {
             let _ = sv.Focus(FocusState::Pointer);
         }
@@ -620,6 +662,12 @@ impl State {
             34 => target = (k + page).min(last),    // page down
             36 => target = 0,                       // home
             35 => target = last,                    // end
+            13 if self.view == View::Search => {
+                if let Some(&(n, _)) = self.rows.get(k) {
+                    self.search_reveal(n);
+                }
+                return true;
+            }
             39 | 37 | 13 if self.view == View::Tree => {
                 let Some(&(n, _)) = self.rows.get(k) else { return false };
                 let node = &t.nodes[n];

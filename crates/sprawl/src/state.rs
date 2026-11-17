@@ -33,6 +33,7 @@ pub(crate) enum Units {
 pub(crate) enum View {
     Tree,
     Files,
+    Search,
     Advisor,
     About,
 }
@@ -110,6 +111,8 @@ pub(crate) struct State {
     pub(crate) update: crate::update::Updater,
     /// The Model dropdown on the setup / Settings page.
     pub(crate) wiz_models: crate::models::ModelFetch,
+    /// The Search tab.
+    pub(crate) search: crate::search::Search,
     pub(crate) wiz_url: crate::models::Settle,
     pub(crate) hist: Option<crate::history::Hist>,
     /// When the current tree's scan finished (its snapshot carries this time).
@@ -260,6 +263,7 @@ impl State {
         self.advisor_poll();
         self.cleanup_poll();
         self.update_poll();
+        self.search_poll();
         if self.wiz_models.poll() {
             self.wizard_models();
         }
@@ -381,6 +385,7 @@ impl State {
         let Some(t) = &self.tree else { return };
         for p in &seen {
             let n = crate::watch::find(t, p);
+            self.search.changed(self.tree_gen, n);
             self.map.scene.pulse(t, n);
             self.map.galaxy.pulse(t, n);
         }

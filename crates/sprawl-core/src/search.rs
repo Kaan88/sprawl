@@ -26,6 +26,8 @@ pub struct Index {
     blob: Vec<u8>,
     /// Where node `i`'s name starts; `starts[i + 1]` is where it ends.
     starts: Vec<u32>,
+    /// Reachable from the root: a deleted branch stays in the node list, cut off from its parent.
+    live: Vec<bool>,
 }
 
 impl Index {
@@ -47,7 +49,17 @@ impl Index {
         }
         starts.push(blob.len() as u32);
         blob.shrink_to_fit();
-        Index { blob, starts }
+        let mut live = vec![false; n];
+        if n > 0 {
+            let mut stack = vec![ROOT];
+            while let Some(i) = stack.pop() {
+                if i < n && !live[i] {
+                    live[i] = true;
+                    stack.extend_from_slice(&tree.nodes[i].children);
+                }
+            }
+        }
+        Index { blob, starts, live }
     }
 
     pub fn len(&self) -> usize {
@@ -60,7 +72,7 @@ impl Index {
 
     /// Bytes the index holds.
     pub fn memory(&self) -> usize {
-        self.blob.capacity() + self.starts.capacity() * 4
+        self.blob.capacity() + self.starts.capacity() * 4 + self.live.capacity()
     }
 
     /// Node `i`'s lower-case name.
@@ -285,6 +297,9 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
     }
     let (name_terms, path_terms): (Vec<&Term>, Vec<&Term>) = q.terms.iter().partition(|t| !t.on_path());
     let cheap = |i: usize| -> bool {
+        if !index.live[i] {
+            return false;
+        }
         let node = &tree.nodes[i];
         match q.kind {
             Kind::Files if node.is_dir => return false,
@@ -552,6 +567,14 @@ mod tests {
             b.sort();
             assert_eq!(a, b, "{pat}");
         }
+    }
+
+    #[test]
+    fn deleted_branches_are_skipped() {
+        let mut t = sample();
+        t.nodes[0].children.retain(|&c| c != 1); // Games cut off, as a delete leaves it
+        assert!(find(&t, "*.vdf").is_empty());
+        assert_eq!(find(&t, "setup"), ["setup.exe"]);
     }
 
     #[test]

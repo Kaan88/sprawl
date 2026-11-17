@@ -30,13 +30,13 @@ impl State {
         if let Ok(a) = find::<UIElement>(&self.root, "AdvisorPanel") {
             let _ = a.SetVisibility(vis(v == View::Advisor));
         }
-        let table = v == View::Tree || v == View::Files;
-        for (name, on) in [("TreeScroll", table), ("TreeHeader", table)] {
+        let table = matches!(v, View::Tree | View::Files | View::Search);
+        for (name, on) in [("TreeScroll", table), ("TreeHeader", table), ("SearchBar", v == View::Search)] {
             if let Ok(e) = find::<UIElement>(&self.root, name) {
                 let _ = e.SetVisibility(vis(on));
             }
         }
-        for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabAdvisor", View::Advisor), ("TabAbout", View::About)] {
+        for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabSearch", View::Search), ("TabAdvisor", View::Advisor), ("TabAbout", View::About)] {
             if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, name) {
                 let brush: windows_core::Result<crate::bindings::Microsoft::UI::Xaml::Media::Brush> =
                     load(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if me == v { "#FF2C3550" } else { "Transparent" }));
@@ -253,7 +253,7 @@ impl State {
                 text(&self.root, "FootLeft", "Copied the visible rows to the clipboard");
             }
             // only from the tables: the Advisor removes things only through its own review
-            "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files) => self.delete(name == "mDeleteForever"),
+            "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files | View::Search) => self.delete(name == "mDeleteForever"),
             "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View and File View"),
             "mExportCsv" if has_tree => {
                 // WizTree's format, so the file loads back here or in WizTree.
@@ -403,6 +403,8 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
             }
             "TabTree" => self.set_view(View::Tree),
             "TabFiles" => self.set_view(View::Files),
+            "TabSearch" | "mSearch" => self.search_focus(),
+            "SearchToFilter" => self.search_to_filter(),
             "TabAdvisor" => self.set_view(View::Advisor),
             "TabAbout" => self.set_view(View::About),
             _ => {}
