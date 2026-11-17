@@ -312,7 +312,7 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
         out.biggest = heap.into_sorted_vec().into_iter().map(|std::cmp::Reverse((b, p))| (p, b)).collect();
         return Some(out);
     }
-    let mut stack: Vec<PathBuf> = list(path).ok()?;
+    let mut stack: Vec<PathBuf> = list(path).ok()?.0;
     if let Some(cut) = cut {
         stack.retain(|k| !is_new(k, cut));
     }
@@ -327,7 +327,7 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
         }
         if m.is_dir() {
             if !born_new(&m) {
-                stack.extend(list(&k).unwrap_or_default());
+                stack.extend(list(&k).map(|l| l.0).unwrap_or_default());
             }
         } else if pattern.is_none_or(|p| like(&name, p)) && !new(&m) {
             take(k, m.len(), &mut out);
@@ -600,7 +600,11 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
         }
     }
     let kids = match list(path) {
-        Ok(k) => k,
+        Ok((k, 0)) => k,
+        Ok((k, n)) => {
+            o.problem(path, unreadable(n));
+            k
+        }
         Err(e) => return o.problem(path, e),
     };
     // Clear leaves what is new; that is decided for the root's own children only
@@ -672,7 +676,12 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
                 }
             }
             match list(&k) {
-                Ok(kids) => stack.push(Frame { h, path: k, kids: kids.into_iter(), remove: pattern.is_none() && !recycling }),
+                Ok((kids, unread)) => {
+                    if unread > 0 {
+                        o.problem(&k, unreadable(unread));
+                    }
+                    stack.push(Frame { h, path: k, kids: kids.into_iter(), remove: pattern.is_none() && !recycling })
+                }
                 Err(e) => o.problem(&k, e),
             }
         } else if info.attrs & REPARSE != 0 && info.attrs & DIRECTORY != 0 {
@@ -729,13 +738,14 @@ impl std::fmt::Display for Moved {
 }
 
 /// Everything in folder `p` would go by a Remove: nothing in it is new since the scan, kept,
-/// on the never-list or oddly named, and all of it can be read. Its bytes and files (links are
-/// moved as they are and count nothing).
+/// on the never-list or oddly named, no link or junction (those are removed as links, one item
+/// at a time, never put in the bin), and all of it can be read. Its bytes and files.
 fn whole(p: &Path, spare: &Spare) -> Option<(u64, u64)> {
     use std::os::windows::fs::MetadataExt;
     let since = spare.since.map(filetime);
     let (mut bytes, mut files) = (0u64, 0u64);
-    let mut stack = list(p).ok()?;
+    let readable = |p: &Path| list(p).ok().filter(|l| l.1 == 0).map(|l| l.0);
+    let mut stack = readable(p)?;
     while let Some(k) = stack.pop() {
         if odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
             return None;
@@ -743,16 +753,13 @@ fn whole(p: &Path, spare: &Spare) -> Option<(u64, u64)> {
         let m = std::fs::symlink_metadata(&k).ok()?;
         let born = m.creation_time() as i64;
         if attrs(&m) & REPARSE != 0 {
-            if since.is_some_and(|s| born > s) {
-                return None;
-            }
-            continue;
+            return None;
         }
         if m.is_dir() {
             if since.is_some_and(|s| born > s) {
                 return None;
             }
-            stack.extend(list(&k).ok()?);
+            stack.extend(readable(&k)?);
         } else {
             if since.is_some_and(|s| born > s || m.last_write_time() as i64 > s) {
                 return None;
@@ -811,8 +818,21 @@ fn recycle_one(p: &Path, h: &win::Handle, bytes: u64, files: u64, bin: &mut Resu
     Err(Moved::Held("not sent to the Recycle Bin, no free name in it; left as it is".into()))
 }
 
-fn list(p: &Path) -> std::io::Result<Vec<PathBuf>> {
-    Ok(std::fs::read_dir(p)?.flatten().map(|e| e.path()).collect())
+/// The entries of folder `p`, and how many of them couldn't be read.
+fn list(p: &Path) -> std::io::Result<(Vec<PathBuf>, usize)> {
+    let (mut got, mut unread) = (Vec::new(), 0);
+    for e in std::fs::read_dir(p)? {
+        match e {
+            Ok(e) => got.push(e.path()),
+            Err(_) => unread += 1,
+        }
+    }
+    Ok((got, unread))
+}
+
+/// Said on a folder some of whose entries couldn't be read: they, and the folder, stay.
+fn unreadable(n: usize) -> String {
+    format!("{n} item{} in it couldn't be read; left as {}", if n == 1 { "" } else { "s" }, if n == 1 { "it is" } else { "they are" })
 }
 
 fn never() -> &'static crate::safety::Never {
@@ -1893,6 +1913,10 @@ mod tests {
             assert!(o.problems.is_empty(), "{:?}", o.problems);
             assert_eq!(o.recycled, 7, "the link counts nothing");
             assert!(outside.join("precious.txt").exists());
+            // the folder went one item at a time: the link removed as a link, never into the bin
+            assert!(std::fs::symlink_metadata(withlink.join("link")).is_err(), "the link itself went");
+            let got: Vec<PathBuf> = in_bin(&base).into_iter().map(|g| g.0).collect();
+            assert_eq!(got, vec![withlink.join("f.txt")], "only the file is in the bin");
             let _ = std::fs::remove_dir_all(base.join("bin"));
         }
 
@@ -1906,6 +1930,19 @@ mod tests {
         assert_eq!((o.recycled, o.freed), (11, 0), "{:?}", o.problems);
         assert!(!cache.join("a.msi").exists() && cache.join("b.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_unreadable_entry_is_said_on_its_folder() {
+        // read_dir can't be made to fail on one entry in a test; the count and the words can
+        let dir = std::env::temp_dir().join(format!("sprawl-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), b"x").unwrap();
+        assert_eq!(list(&dir).unwrap(), (vec![dir.join("a")], 0));
+        assert_eq!(unreadable(1), "1 item in it couldn't be read; left as it is");
+        assert_eq!(unreadable(3), "3 items in it couldn't be read; left as they are");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
