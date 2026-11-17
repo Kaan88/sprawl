@@ -568,6 +568,11 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: Enter in the search box, or a key in the main table (key=40 is Down)
+                    "boxenter" => self.search_box_down(),
+                    k if k.starts_with("key=") => {
+                        self.table_key(k[4..].parse().unwrap_or(0));
+                    }
                     // dev: type into the search box
                     q if q.starts_with("find=") => {
                         if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
