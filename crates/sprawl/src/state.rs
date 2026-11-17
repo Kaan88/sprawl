@@ -80,6 +80,8 @@ pub(crate) struct State {
     pub(crate) alloc: Vec<u64>,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) selected: Option<usize>,
+    /// More rows picked with Ctrl or Shift, besides `selected` (Delete takes them all).
+    pub(crate) marked: std::collections::BTreeSet<usize>,
     pub(crate) rows: Vec<(usize, usize)>, // (node, depth)
     pub(crate) files: Vec<usize>,
     pub(crate) exts: Vec<ExtRow>,
@@ -368,6 +370,7 @@ impl State {
         self.tree_gen += 1;
         self.expanded = HashSet::from([ROOT]);
         self.selected = Some(ROOT);
+        self.marked.clear();
         self.map_root = ROOT;
         self.ext_selected = None;
         self.rebuild_exts();

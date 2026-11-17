@@ -370,7 +370,7 @@ impl State {
         let t = self.tree.as_ref().unwrap();
         let (n, d) = self.rows[k];
         let node = &t.nodes[n];
-        let bg = self.row_bg(k, Some(n) == self.selected);
+        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
         let pct = t.percent_of_parent(n);
         let has_kids = node.is_dir && !node.children.is_empty();
         let chevron = if !has_kids { "" } else if self.expanded.contains(&n) { "&#xE70D;" } else { "&#xE76C;" };
@@ -414,7 +414,7 @@ impl State {
         let t = self.tree.as_ref().unwrap();
         let n = self.rows[k].0;
         let node = &t.nodes[n];
-        let bg = self.row_bg(k, Some(n) == self.selected);
+        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         format!(
@@ -467,6 +467,29 @@ impl State {
         let k = (y / ROW_H) as usize;
         let Some(&(n, d)) = self.rows.get(k) else { return };
         let on_chevron = self.view == View::Tree && x < (8 + d * 16 + 20) as f64;
+        // Ctrl adds or takes away a row, Shift picks the run from the selected row
+        let (ctrl, shift) = if double || on_chevron { (false, false) } else { crate::win32::ctrl_shift_down() };
+        if shift {
+            let from = self.selected.and_then(|s| self.rows.iter().position(|r| r.0 == s)).unwrap_or(k);
+            let (a, b) = (from.min(k), from.max(k));
+            self.marked = self.rows[a..=b].iter().map(|r| r.0).collect();
+            self.refresh_rows();
+            self.show_selection();
+            return;
+        }
+        if ctrl {
+            if let Some(s) = self.selected {
+                self.marked.insert(s);
+            }
+            if !self.marked.remove(&n) {
+                self.marked.insert(n);
+            }
+            self.selected = Some(n);
+            self.refresh_rows();
+            self.show_selection();
+            return;
+        }
+        self.marked.clear();
         self.selected = Some(n);
         if self.view == View::Tree && (double || on_chevron) {
             self.toggle(n);
@@ -648,6 +671,13 @@ impl State {
     }
 
     pub(crate) fn show_selection(&self) {
+        if let (Some(t), false) = (&self.tree, self.marked.is_empty()) {
+            let mut all = self.marked.clone();
+            all.extend(self.selected);
+            let total: u64 = all.iter().filter(|&&n| n < t.nodes.len()).map(|&n| t.nodes[n].size).sum();
+            text(&self.root, "FootLeft", &format!("{} picked   -   {} (Delete takes them all; folders inside another count once)", all.len(), self.size(total)));
+            return;
+        }
         if let (Some(t), Some(n)) = (&self.tree, self.selected) {
             text(&self.root, "FootLeft", &format!("{}   -   {}", t.path_of(n).display(), self.size(t.nodes[n].size)));
         }

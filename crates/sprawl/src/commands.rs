@@ -523,7 +523,32 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         }
     }
 
+    /// The picked rows (Ctrl/Shift) as top-most nodes: one inside another goes with it.
+    fn picked_nodes(&self) -> Vec<usize> {
+        let Some(t) = &self.tree else { return Vec::new() };
+        let mut all: std::collections::BTreeSet<usize> = self.marked.clone();
+        all.extend(self.selected);
+        all.remove(&ROOT);
+        all.iter()
+            .copied()
+            .filter(|&n| n < t.nodes.len())
+            .filter(|&n| {
+                let mut p = t.nodes[n].parent;
+                while let Some(q) = p {
+                    if all.contains(&q) {
+                        return false;
+                    }
+                    p = t.nodes[q].parent;
+                }
+                true
+            })
+            .collect()
+    }
+
     pub(crate) fn delete(&mut self, permanent: bool) {
+        if self.marked.len() > 1 || (self.marked.len() == 1 && self.selected.is_some_and(|s| !self.marked.contains(&s))) {
+            return self.delete_many(permanent);
+        }
         let Some(n) = self.selected.filter(|&n| n != ROOT) else { return };
         let Some(path) = self.selected_path() else { return };
         if let Some(why) = self.delete_refusal(n, &path) {
@@ -565,6 +590,72 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         self.render_map();
         // what was found there may be gone, and the totals changed
         self.advisor_start();
+    }
+
+    /// Delete with several rows picked: every one is checked first, then one confirm for all.
+    fn delete_many(&mut self, permanent: bool) {
+        let nodes = self.picked_nodes();
+        let Some(t) = self.tree.clone() else { return };
+        if nodes.is_empty() {
+            return;
+        }
+        for &n in &nodes {
+            let path = t.path_of(n);
+            if let Some(why) = self.delete_refusal(n, &path) {
+                win32::info(self.hwnd, &format!("{why}\n\n{}\n\nNothing was deleted.", path.display()), "Sprawl");
+                return;
+            }
+        }
+        let total: u64 = nodes.iter().map(|&n| t.nodes[n].size).sum();
+        let list: String = nodes.iter().take(12).map(|&n| format!("{}\n", t.path_of(n).display())).collect();
+        let more = if nodes.len() > 12 { format!("...and {} more\n", nodes.len() - 12) } else { String::new() };
+        let what = if permanent {
+            format!("Delete these {} items permanently? They can't be brought back.\n\n{}", nodes.len(), self.size(total))
+        } else {
+            format!("Move these {} items to the Recycle Bin?\n\n{}", nodes.len(), self.size(total))
+        };
+        if !win32::confirm(self.hwnd, &format!("{what}\n\n{list}{more}"), "Sprawl") {
+            return;
+        }
+        let mut failed = Vec::new();
+        let mut gone = Vec::new();
+        for &n in &nodes {
+            let path = t.path_of(n);
+            self.own_deletes.push((path.to_string_lossy().trim_end_matches('\\').to_lowercase(), std::time::Instant::now()));
+            if win32::delete_path(self.hwnd, &path, permanent) {
+                gone.push((n, path));
+            } else {
+                failed.push(path);
+            }
+        }
+        for (n, path) in &gone {
+            if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
+                if let Some(k) = sprawl_advisor::find_path(full, path) {
+                    detach(full, k, None);
+                }
+            }
+            let tm = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
+            detach(tm, *n, Some(&mut self.alloc));
+        }
+        if !gone.is_empty() {
+            self.tree_gen += 1;
+            self.hist_close();
+            let tr = self.tree.as_ref().unwrap();
+            self.selected = gone.first().and_then(|(n, _)| tr.nodes[*n].parent);
+            self.files.retain(|&f| !tr.nodes[f].is_dir);
+        }
+        self.marked.clear();
+        self.rebuild_exts();
+        self.refresh_rows();
+        self.refresh_exts();
+        self.render_map();
+        if !failed.is_empty() {
+            let list: String = failed.iter().take(8).map(|p| format!("{}\n", p.display())).collect();
+            win32::info(self.hwnd, &format!("{} of {} couldn't be deleted (in use or protected):\n\n{list}", failed.len(), nodes.len()), "Sprawl");
+        }
+        if !gone.is_empty() {
+            self.advisor_start();
+        }
     }
 }
 

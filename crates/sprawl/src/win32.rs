@@ -213,6 +213,11 @@ extern "system" {
     fn GetKeyState(vk: i32) -> i16;
 }
 
+/// (Ctrl, Shift) held down now.
+pub fn ctrl_shift_down() -> (bool, bool) {
+    unsafe { (GetKeyState(0x11) < 0, GetKeyState(0x10) < 0) }
+}
+
 /// Ctrl or Alt held down now (type-to-find leaves shortcuts alone).
 pub fn ctrl_or_alt_down() -> bool {
     unsafe { GetKeyState(0x11) < 0 || GetKeyState(0x12) < 0 }
