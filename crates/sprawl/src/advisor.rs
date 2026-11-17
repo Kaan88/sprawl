@@ -2602,7 +2602,7 @@ impl State {
             };
             x += &format!(r##"<Button x:Name="AdvUninstall" Content="{label}" ToolTipService.ToolTip="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(&tip));
         }
-        let keep_tip = if matches!(f.remedy, Remedy::Info | Remedy::Move) { "Never show this suggestion again (what is inside may still come up)" } else { "Never suggest or clean this, or anything inside it" };
+        let keep_tip = if matches!(f.remedy, Remedy::Info | Remedy::Move) { "Never show this suggestion again, and never clean it (what is inside may still be suggested)" } else { "Never suggest or clean this, or anything inside it" };
         x += &format!(r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="{keep_tip}" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
         x += "</StackPanel></StackPanel></Border>";
         x

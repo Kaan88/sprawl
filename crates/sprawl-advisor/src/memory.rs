@@ -384,10 +384,10 @@ impl Memory {
     }
 
     /// What a clean-up must leave, with everything inside: the folders and files the user chose
-    /// to keep. A Keep of one suggestion only ([`Decision::exact`]) is about advice, not about
-    /// deleting, and is not listed.
+    /// to keep, whatever suggestion the Keep came from. (A Keep of one suggestion only,
+    /// [`Decision::exact`], hides just that suggestion; it still keeps the path from a clean-up.)
     pub fn kept_paths(&self) -> Vec<PathBuf> {
-        self.decisions.iter().filter(|d| d.verdict == Verdict::Keep && !d.exact).map(|d| d.path.clone()).collect()
+        self.decisions.iter().filter(|d| d.verdict == Verdict::Keep).map(|d| d.path.clone()).collect()
     }
 
     /// The decision that hides `path`: kept (it or a folder above it), or "not now" lately.
@@ -682,6 +682,18 @@ pub fn local_packs() -> Vec<RulePack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_keep_is_kept_from_a_clean_up() {
+        let mut m = Memory::default();
+        m.decide(Path::new(r"C:\Users\Sam\Downloads"), "Downloads", Verdict::Keep);
+        m.keep_exact(Path::new(r"C:\Users\Sam\Videos"), "Move Videos");
+        m.decide(Path::new(r"C:\Users\Sam\Temp"), "Temp", Verdict::Later);
+        let kept = m.kept_paths();
+        assert!(kept.contains(&PathBuf::from(r"C:\Users\Sam\Downloads")));
+        assert!(kept.contains(&PathBuf::from(r"C:\Users\Sam\Videos")), "an exact Keep protects too");
+        assert_eq!(kept.len(), 2);
+    }
 
     #[test]
     fn reads_the_old_exact_keep() {
