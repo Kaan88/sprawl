@@ -26,8 +26,6 @@ tools/
   fetch-pkg.ps1    downloads + unzips one NuGet package (used by setup.ps1)
   probe.ps1        read-only check of the build environment (runtime, Windows Kits, VS tools)
 docs/
-  reference/screenshots/   the original WizTree 4.33 (main window, File and Options menus)
-  reference/analysis/      static analysis of WizTree64.exe (triage, strings)
   screenshots/             Sprawl screenshots
 ```
 
