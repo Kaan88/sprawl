@@ -38,6 +38,7 @@ fn info(tree: &Tree, n: usize, id: &str, title: String, evidence: Vec<String>, b
         on_path: false,
         action: None,
         admin: false,
+        carved: Vec::new(),
     }
 }
 

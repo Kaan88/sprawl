@@ -80,6 +80,7 @@ pub fn find(tree: &Tree) -> Vec<Finding> {
                 on_path: false,
                 action: None,
                 admin: false,
+                carved: Vec::new(),
             });
         }
     }

@@ -129,6 +129,8 @@ pub struct Outcome {
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
     pub kept_chosen: u64,
+    /// Items left because they are on the never-list (a mail store, a disk image).
+    pub kept_protected: u64,
 }
 
 /// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
@@ -334,8 +336,8 @@ fn tree(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, o: &mut 
             continue;
         }
         let name = k.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        if let Some(rule) = never().name_hit(&name) {
-            o.problem(&k, format!("kept, it is on the never-list ({rule})"));
+        if never().name_hit(&name).is_some() {
+            o.kept_protected += 1;
             continue;
         }
         if spare.keeps(&k) {
@@ -885,6 +887,7 @@ mod tests {
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
         }
     }
 
@@ -1144,6 +1147,53 @@ mod tests {
             let o = run(&base, &Action::Remove, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
             assert_eq!(o.freed, 3, "{:?}", o.problems);
             assert!(!base.exists());
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The report's case: a temp folder with a mail store and a link inside. The finding is
+    /// kept, the mail store carved out of it; the run leaves it and removes the link as a link.
+    #[test]
+    fn what_is_protected_inside_is_carved_out_and_left() {
+        let base = std::env::temp_dir().join(format!("sprawl-carve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (temp, outside) = (base.join("Temp"), base.join("outside"));
+        std::fs::create_dir_all(temp.join("old")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(temp.join("a.tmp"), vec![0u8; 1000]).unwrap();
+        std::fs::write(temp.join("old").join("mail.pst"), vec![0u8; 3_000_000]).unwrap(); // past the size tolerance
+        std::fs::write(temp.join("old").join("b.tmp"), vec![0u8; 200]).unwrap();
+        std::fs::write(outside.join("precious.txt"), b"keep me").unwrap();
+        let linked = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(temp.join("link")).arg(&outside).output().is_ok_and(|o| o.status.success());
+        let tree = sprawl_core::scan(&base, |_| {}).unwrap();
+        let n = crate::find_path(&tree, &temp).unwrap();
+        let mut fd = f(&temp.display().to_string(), String::new());
+        fd.bytes = tree.nodes[n].size;
+        fd.trusted = true;
+        fd.builtin = true;
+        fd.set_action(Action::Clear { days: 0 }, false);
+        let never = crate::safety::Never::default_list();
+        let ok = crate::safety::check(&fd, &tree, &never).expect("kept, with the mail store carved out");
+        assert_eq!(ok.carved.len(), 1);
+        assert_eq!(ok.bytes, 1200, "the mail store isn't counted");
+        assert!(ok.evidence.iter().any(|e| e.contains("mail.pst")));
+        if linked {
+            assert!(ok.evidence.iter().any(|e| e.contains("removed as links")), "{:?}", ok.evidence);
+        }
+        // checked again just before the run (as the app does): still kept, nothing repeated
+        let again = crate::safety::check(&ok, &tree, &never).expect("a carved finding passes again");
+        assert_eq!((again.bytes, again.carved.len(), again.evidence.len()), (ok.bytes, 1, ok.evidence.len()));
+        // what the review would count, and what the run frees, agree
+        assert_eq!(would_free(&temp, &Action::Match { pattern: "*".into() }, &Spare::default()), Some(1200));
+        let o = run(&temp, &Action::Clear { days: 0 }, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
+        assert_eq!(o.freed, 1200, "{:?}", o.problems);
+        assert_eq!(o.kept_protected, 1);
+        assert!(o.problems.is_empty(), "a carved item is not a problem: {:?}", o.problems);
+        assert!(temp.join("old").join("mail.pst").exists(), "the mail store stays");
+        assert!(!temp.join("a.tmp").exists() && !temp.join("old").join("b.tmp").exists());
+        assert!(outside.join("precious.txt").exists(), "the link's target stays");
+        if linked {
+            assert!(std::fs::symlink_metadata(temp.join("link")).is_err(), "the link itself went");
         }
         let _ = std::fs::remove_dir_all(&base);
     }

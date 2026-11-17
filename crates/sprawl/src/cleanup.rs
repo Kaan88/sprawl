@@ -72,6 +72,7 @@ pub(crate) struct Done {
     /// Left because they were new since the scan, or kept by the user.
     pub kept_new: u64,
     pub kept_chosen: u64,
+    pub kept_protected: u64,
     pub problems: Vec<String>,
     pub stopped: bool,
     pub output: Vec<String>,
@@ -511,7 +512,7 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, kept_new: 0, kept_chosen: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
                 if o.freed > 0 {
@@ -520,6 +521,7 @@ impl State {
                 done.freed += o.freed;
                 done.kept_new += o.kept_new;
                 done.kept_chosen += o.kept_chosen;
+                done.kept_protected += o.kept_protected;
                 done.problems.extend(o.problems.iter().take(3).cloned());
                 if o.more_problems > 0 || o.problems.len() > 3 {
                     done.problems.push(format!("{}: and {} more", it.title, o.more_problems + o.problems.len().saturating_sub(3) as u64));
@@ -590,13 +592,16 @@ impl State {
                     x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(p));
                 }
             }
-            if d.kept_new + d.kept_chosen > 0 {
+            if d.kept_new + d.kept_chosen + d.kept_protected > 0 {
                 let mut parts = Vec::new();
                 if d.kept_new > 0 {
                     parts.push(format!("{} new since the scan", d.kept_new));
                 }
                 if d.kept_chosen > 0 {
                     parts.push(format!("{} you chose to keep", d.kept_chosen));
+                }
+                if d.kept_protected > 0 {
+                    parts.push(format!("{} protected (mail stores, disk images and the like)", d.kept_protected));
                 }
                 x += &format!(r##"<TextBlock Text="Left alone: {}." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(&parts.join(", ")));
             }
@@ -876,6 +881,7 @@ mod admin_tests {
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
         };
         f.set_action(Action::Clear { days: 7 }, true);
         // tickable either way; the in-app run holds it back only when not elevated

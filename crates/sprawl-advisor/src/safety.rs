@@ -248,6 +248,28 @@ impl Never {
         self.patterns.iter().find(|(_, pat)| forms.iter().any(|p| pat.matches(p) || pat.is_above(p))).map(|(s, _)| s.as_str())
     }
 
+    /// Every never-list item below node `n` by name (a disk image, a vault), not looking inside
+    /// one found: node and the entry. What Sprawl's own clean-up skips by [`Never::name_hit`].
+    pub fn hits_inside(&self, tree: &Tree, n: usize) -> Vec<(usize, &str)> {
+        let names: Vec<(&str, &str)> = self.patterns.iter().filter_map(|(s, p)| p.any_depth_name().map(|m| (m, s.as_str()))).collect();
+        let tails: Vec<&str> = names.iter().map(|(m, _)| m.trim_start_matches('*')).collect();
+        let mut out = Vec::new();
+        let mut stack = tree.nodes[n].children.clone();
+        while let Some(k) = stack.pop() {
+            let raw = &tree.nodes[k].name;
+            let maybe = tails.iter().any(|t| raw.len() >= t.len() && raw.is_char_boundary(raw.len() - t.len()) && raw[raw.len() - t.len()..].eq_ignore_ascii_case(t));
+            if maybe {
+                let name = raw.to_lowercase();
+                if let Some((_, s)) = names.iter().find(|(m, _)| crate::rules::seg_match(m, &name)) {
+                    out.push((k, *s));
+                    continue;
+                }
+            }
+            stack.extend_from_slice(&tree.nodes[k].children);
+        }
+        out
+    }
+
     /// A never-list entry found anywhere below node `n` (a disk image, a vault) by name.
     pub fn hit_inside(&self, tree: &Tree, n: usize) -> Option<(String, &str)> {
         let names: Vec<(&str, &str)> = self.patterns.iter().filter_map(|(s, p)| p.any_depth_name().map(|m| (m, s.as_str()))).collect();
@@ -300,7 +322,9 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
         return Err(Rejection::Missing);
     }
     let actual = tree.nodes[n].size;
-    if !close_enough(f.bytes, actual) {
+    // checked again (just before a clean-up): its size already leaves out what was carved
+    let carved_before: u64 = f.carved.iter().map(|c| c.bytes).sum();
+    if !close_enough(f.bytes, actual) && !(carved_before > 0 && close_enough(f.bytes, actual.saturating_sub(carved_before))) {
         return Err(Rejection::SizeMismatch { claimed: f.bytes, actual });
     }
     // Command text is only ever taken from the built-in pack; a model or a local pack names a
@@ -320,6 +344,16 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     // Every other command is treated as acting on the files at `path`, and so is an exempt
     // one that names `path` itself (a recursive Remove-Item): only the never-list is waived.
     let destructive = removes || (f.command.is_some() && (!exempt || f.on_path));
+    // Sprawl's own clean-up of a rule's finding: it skips never-list names at any depth and
+    // removes links as links, so protected items inside are carved out rather than vetoing the
+    // finding (a rule's "command" remedy with a typed clear is Sprawl's own run too). A move, a
+    // tool's command or a model's finding keeps the veto.
+    let own_run = matches!(f.remedy, Remedy::Delete | Remedy::Command)
+        && !from_model
+        && matches!(f.action, Some(crate::finding::Action::Remove | crate::finding::Action::Clear { .. } | crate::finding::Action::Match { .. }))
+        && crate::clean::action(f).is_some();
+    let mut carved = Vec::new();
+    let mut links = 0usize;
     if (destructive || from_model) && !exempt {
         if never.incomplete {
             return Err(Rejection::NeverListIncomplete);
@@ -333,8 +367,11 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
         if n == sprawl_core::ROOT || multi_top {
             return Err(Rejection::ScanRoot);
         }
-        if let Some((at, p)) = never.hit_inside(tree, n) {
-            return Err(Rejection::Never(format!("{at} ({p})")));
+        for (k, p) in never.hits_inside(tree, n) {
+            if !own_run {
+                return Err(Rejection::Never(format!("{} ({p})", tree.path_of(k).display())));
+            }
+            carved.push(crate::finding::Carve { path: tree.path_of(k), bytes: tree.nodes[k].size, rule: p.to_string() });
         }
         // no junctions on the way down from the scan root
         let mut i = Some(n);
@@ -348,13 +385,33 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
         let mut stack = tree.nodes[n].children.clone();
         while let Some(k) = stack.pop() {
             if tree.nodes[k].is_reparse_point() {
-                return Err(Rejection::LinksInside(tree.path_of(k).display().to_string()));
+                if !own_run {
+                    return Err(Rejection::LinksInside(tree.path_of(k).display().to_string()));
+                }
+                links += 1;
             }
             stack.extend_from_slice(&tree.nodes[k].children);
         }
     }
     let mut out = f.clone();
-    out.bytes = actual;
+    let kept: u64 = carved.iter().map(|c| c.bytes).sum();
+    out.bytes = actual.saturating_sub(kept);
+    // a check made again doesn't repeat its own lines
+    out.evidence.retain(|e| !e.starts_with(CARVED_LINE) && !e.ends_with(LINKS_LINE));
+    if !carved.is_empty() {
+        let first = &carved[0];
+        let more = if carved.len() > 1 { format!(" and {} more", carved.len() - 1) } else { String::new() };
+        out.evidence.push(format!(
+            "{CARVED_LINE} ({} in all): {}{more}, on the never-list as {}",
+            sprawl_core::format_size(kept),
+            first.path.display(),
+            first.rule
+        ));
+    }
+    out.carved = carved;
+    if links > 0 {
+        out.evidence.push(format!("{links} junction or link{} inside{LINKS_LINE}", if links == 1 { "" } else { "s" }));
+    }
     // Risk is only taken on trust from the built-in rules: anything else that removes files is
     // at least Amber (a local pack) or Orange (a model), whatever it claims.
     if removes && !f.builtin {
@@ -369,7 +426,7 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     other_account_floor(&mut out, f.other_account());
     // A build output found by its project's marker file is regenerable wherever it lives
     // (projects usually sit in Documents or source); anything else in the user's folders is theirs.
-    let build_output = f.builtin && matches!(&f.source, crate::finding::Source::Rule(id) if id == "project.build-output");
+    let build_output = f.builtin && matches!(&f.source, crate::finding::Source::Rule(id) if crate::projects::is_build_output(id));
     if never.is_user_data(&path) && out.risk < Risk::Orange && !build_output {
         out.risk = Risk::Orange;
         out.evidence.push("Inside your own files, so only you can decide".into());
@@ -377,6 +434,9 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
     let _ = segments;
     Ok(out)
 }
+
+const CARVED_LINE: &str = "Keeps what is protected inside";
+const LINKS_LINE: &str = ": removed as links, what they point to is not touched";
 
 /// A delete or command inside another account's profile is at least Amber.
 fn other_account_floor(out: &mut Finding, other_account: bool) {
@@ -410,6 +470,7 @@ mod tests {
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
         };
         assert!(f.other_account());
         let mut out = f.clone();

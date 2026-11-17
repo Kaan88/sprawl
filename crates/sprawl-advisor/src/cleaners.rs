@@ -516,6 +516,7 @@ pub fn by_shape(tree: &sprawl_core::Tree, seen: &std::collections::HashSet<Strin
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
         };
         f.set_action(Action::Clear { days: 0 }, false);
         out.push(f);

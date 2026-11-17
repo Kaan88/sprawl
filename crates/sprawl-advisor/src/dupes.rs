@@ -235,6 +235,7 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                     on_path: false,
                     action: None,
                     admin: false,
+                    carved: Vec::new(),
                 });
             }
         }

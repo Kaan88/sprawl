@@ -119,6 +119,7 @@ mod tests {
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
         }
     }
 

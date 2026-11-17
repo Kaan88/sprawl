@@ -27,8 +27,9 @@ pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
         .filter(|&i| counted.get(i).copied().unwrap_or(true))
         // only Sprawl's own rules: a local or AI-proposed rule's deletes are the user's call
         .filter(|&i| matches!(findings[i].remedy, Remedy::Delete | Remedy::Command) && findings[i].command.is_some() && findings[i].risk <= Risk::Amber && findings[i].builtin)
-        // nor a guess by shape, nor anything in another account's profile
-        .filter(|&i| !findings[i].heuristic() && !findings[i].other_account())
+        // nor a guess by shape, nor anything in another account's profile, nor the build output
+        // of a project the user is working on
+        .filter(|&i| !findings[i].heuristic() && !findings[i].other_account() && !findings[i].in_active_project())
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();
@@ -88,6 +89,7 @@ mod tests {
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
         }
     }
 
@@ -110,6 +112,15 @@ mod tests {
         // a finding inside another doesn't count twice
         let p = plan(&v, &[true, false, true, true], 10 << 30);
         assert!(!p.picked.contains(&1));
+    }
+
+    #[test]
+    fn a_project_being_worked_on_is_never_planned() {
+        let mut busy = f(Risk::Amber, 40);
+        busy.source = Source::Rule(crate::projects::ACTIVE.into());
+        let v = vec![busy, f(Risk::Green, 2)];
+        let p = plan(&v, &[true, true], 30 << 30);
+        assert_eq!(p.picked, vec![1], "the active project's output is the user's to tick");
     }
 
     #[test]

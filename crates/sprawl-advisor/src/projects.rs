@@ -274,7 +274,56 @@ fn last_change(tree: &Tree, n: usize, outputs: &[usize]) -> Option<SystemTime> {
     best
 }
 
-/// Build outputs of projects unchanged for `days`, each at least `min_bytes`.
+/// The rule id of build outputs of projects being worked on: shown as their own group, never
+/// ticked, planned or counted in the headline for the user.
+pub const ACTIVE: &str = "project.build-output.active";
+
+/// A build output finding, idle or active.
+pub fn is_build_output(id: &str) -> bool {
+    id == "project.build-output" || id == ACTIVE
+}
+
+/// Newest modification of any file inside `n` (links not followed).
+fn newest_inside(tree: &Tree, n: usize) -> Option<SystemTime> {
+    let mut best = None;
+    let mut stack = vec![n];
+    while let Some(k) = stack.pop() {
+        let node = &tree.nodes[k];
+        if !node.is_dir {
+            best = best.max(node.modified);
+        } else if k == n || !node.is_reparse_point() {
+            stack.extend_from_slice(&node.children);
+        }
+    }
+    best
+}
+
+/// The parts of a big output a project being worked on is offered by: Cargo's `target` by
+/// profile (`debug`, `release`, ...), each with how it comes back. Anything else is one piece.
+fn pieces(tree: &Tree, n: usize, how: &'static str, cargo: bool) -> Vec<(usize, &'static str)> {
+    if !cargo {
+        return vec![(n, how)];
+    }
+    let dirs: Vec<usize> = tree.nodes[n].children.iter().copied().filter(|&c| tree.nodes[c].is_dir && !tree.nodes[c].is_reparse_point()).collect();
+    if dirs.len() < 2 {
+        return vec![(n, how)];
+    }
+    dirs.into_iter()
+        .map(|c| {
+            let how = match tree.nodes[c].name.to_lowercase().as_str() {
+                "debug" => "the next debug build (cargo build, cargo test)",
+                "release" => "the next release build (cargo build --release)",
+                "doc" => "the next cargo doc",
+                _ => how,
+            };
+            (c, how)
+        })
+        .collect()
+}
+
+/// Build outputs of projects, each at least `min_bytes`. Projects unchanged for `days` are
+/// offered as before; the others (changed lately, a program in an output ran lately, or no date
+/// known) as [`ACTIVE`]: amber, with the rebuild named, and Cargo's `target` one level down.
 /// `facts` says which folders belong to installed apps (an app shipped with its `node_modules`
 /// is not a project) and when programs in the outputs last ran.
 pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Facts, days: u64, min_bytes: u64) -> Vec<Finding> {
@@ -285,22 +334,28 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             continue;
         }
         let idle = |t: SystemTime| now.duration_since(t).is_ok_and(|age| age.as_secs() >= days.saturating_mul(86_400));
-        // an unknown date is not "old"; a recent one needs no look at the outputs
-        let Some(changed) = p.last_change.filter(|&t| idle(t)) else { continue };
+        let changed = p.last_change;
         // a tool run from target\release keeps its project in use (one walk per output)
-        let progs: Vec<_> = p.outputs.iter().map(|&(o, _, _)| facts.output_programs(tree, o)).collect();
-        let ran = progs.iter().filter_map(|g| g.last_run).max();
-        if ran.is_some_and(|r| !idle(r)) {
-            continue;
-        }
+        let ran = p.outputs.iter().filter_map(|&(o, _, _)| facts.output_programs(tree, o).last_run).max();
+        let ran_lately = ran.is_some_and(|r| !idle(r));
+        let active = !changed.is_some_and(idle) || ran_lately;
         let project_name = tree.nodes[p.node].name.clone();
         let total = tree.nodes[p.node].size;
         let kinds: Vec<&str> = p.kinds.iter().map(|k| k.label()).collect();
-        for (&(n, how, risk), progs) in p.outputs.iter().zip(&progs) {
+        let parts: Vec<(usize, &'static str, Risk)> = p
+            .outputs
+            .iter()
+            .flat_map(|&(n, how, risk)| {
+                let cargo = active && p.kinds.contains(&Kind::Rust) && tree.nodes[n].name.eq_ignore_ascii_case("target");
+                pieces(tree, n, how, cargo).into_iter().map(move |(k, h)| (k, h, risk))
+            })
+            .collect();
+        for (n, how, risk) in parts {
             let node = &tree.nodes[n];
             if node.size < min_bytes {
                 continue;
             }
+            let progs = facts.output_programs(tree, n);
             // programs in it, and no way to know whether they run (Prefetch unreadable without
             // administrator rights): it may be a tool in daily use
             if !facts.runs_complete && progs.any {
@@ -309,18 +364,37 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             // Prefetch remembers about a thousand programs: no record isn't proof one never ran
             let unseen_programs = progs.unseen;
             let risk = if unseen_programs { risk.max(Risk::Amber) } else { risk };
+            let risk = if active { risk.max(Risk::Amber) } else { risk };
             let path = tree.path_of(n);
             let source = total.saturating_sub(p.output_bytes(tree));
-            let mut evidence = vec![
-                format!("Build output of the {} project {project_name}", kinds.join(" / ")),
-                format!("The project's own files last changed in {}", month_year(changed)),
-                format!("Comes back with {how}"),
-            ];
+            let mut evidence = if active {
+                vec![
+                    format!("Build output of the {} project {project_name}, which you are working on", kinds.join(" / ")),
+                    match changed {
+                        Some(c) => format!("The project's own files changed in {}", month_year(c)),
+                        None => "When the project's files last changed isn't known (too many to look through)".into(),
+                    },
+                    format!("Deleting it costs a rebuild: it comes back with {how}"),
+                ]
+            } else {
+                vec![
+                    format!("Build output of the {} project {project_name}", kinds.join(" / ")),
+                    format!("The project's own files last changed in {}", changed.map(month_year).unwrap_or_default()),
+                    format!("Comes back with {how}"),
+                ]
+            };
+            if let Some(t) = newest_inside(tree, n) {
+                evidence.push(format!("The newest file in it is from {}", month_year(t)));
+            }
             if unseen_programs {
                 evidence.push("Holds programs Windows has no record of starting lately; if you run one from here, keep it".into());
             }
-            if let Some(r) = ran.filter(|&r| r > changed) {
-                evidence.push(format!("A program in its output last ran in {}", month_year(r)));
+            if let Some(r) = progs.last_run.filter(|&r| changed.is_none_or(|c| r > c)) {
+                evidence.push(if ran_lately && !idle(r) {
+                    format!("A program in it ran in {}: if it is a tool you use, keep it", month_year(r))
+                } else {
+                    format!("A program in its output last ran in {}", month_year(r))
+                });
             }
             if source > 0 {
                 evidence.push(format!("{:.0}x the size of the project's own files", node.size as f64 / source as f64));
@@ -335,16 +409,21 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
                 bytes: node.size,
                 risk,
                 remedy: Remedy::Delete,
-                title: format!("{} in {project_name}", node.name),
+                title: match node.parent.filter(|&q| q != p.node) {
+                    // one level down: "target\debug in app"
+                    Some(q) => format!("{}\\{} in {project_name}", tree.nodes[q].name, node.name),
+                    None => format!("{} in {project_name}", node.name),
+                },
                 evidence,
                 confidence: 0.9,
-                source: Source::Rule("project.build-output".into()),
+                source: Source::Rule(if active { ACTIVE } else { "project.build-output" }.into()),
                 allow_protected: false,
                 trusted: true,
                 builtin: true,
                 on_path: true,
                 action: None,
                 admin: false,
+                carved: Vec::new(),
             };
             // removes links inside without following them
             f.set_action(crate::finding::Action::Remove, false);
@@ -400,9 +479,33 @@ mod tests {
         let outs: Vec<&str> = p.outputs.iter().map(|&(n, _, _)| tree.nodes[n].name.as_str()).collect();
         assert!(outs.contains(&"target") && outs.contains(&"node_modules"));
         assert!(p.last_change.is_some());
-        // just written, so not old enough to suggest
+        // just written: offered as a project being worked on, amber, never as the idle kind
         let mut facts = crate::facts::Facts::from_apps(Vec::new());
-        assert!(build_outputs(&tree, &ps, &facts, 30, 0).is_empty());
+        facts.runs_complete = true;
+        let active = build_outputs(&tree, &ps, &facts, 30, 0);
+        assert!(!active.is_empty());
+        for f in &active {
+            assert_eq!(f.source, Source::Rule(ACTIVE.into()), "{}", f.title);
+            assert!(f.risk >= Risk::Amber, "{}", f.title);
+            assert!(f.evidence.iter().any(|e| e.contains("costs a rebuild")));
+            assert!(f.evidence.iter().any(|e| e.contains("newest file in it")));
+        }
+        // Cargo's target one level down once it holds two profiles: release (with app.exe)
+        // apart from debug
+        std::fs::create_dir_all(app.join("target").join("debug")).unwrap();
+        std::fs::write(app.join("target").join("debug").join("app.d"), b"x").unwrap();
+        let t2 = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let split = build_outputs(&t2, &find(&t2), &facts, 30, 0);
+        let titles: Vec<&str> = split.iter().map(|f| f.title.as_str()).collect();
+        assert!(titles.contains(&r"target\release in app") && titles.contains(&r"target\debug in app"), "{titles:?}");
+        assert!(!titles.contains(&"target in app"));
+        assert!(split.iter().any(|f| f.evidence.iter().any(|e| e.contains("next debug build"))));
+        // an idle project's target stays whole
+        let idle = build_outputs(&t2, &find(&t2), &facts, 0, 0);
+        assert!(idle.iter().all(|f| f.source == Source::Rule("project.build-output".into())));
+        assert!(idle.iter().any(|f| f.title == "target in app"));
+        std::fs::remove_dir_all(app.join("target").join("debug")).unwrap();
+        facts.runs_complete = false;
         // target holds app.exe: without Prefetch nobody knows whether it runs, so it stays
         assert!(build_outputs(&tree, &ps, &facts, 0, 1000).is_empty());
         facts.runs_complete = true;

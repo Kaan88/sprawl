@@ -45,9 +45,15 @@ fn main() {
     let t2 = std::time::Instant::now();
     let owners = facts.owner_map(&tree);
     println!("advise_all {t_adv:.2} s, owner_map {:.2} s ({} nodes owned)", t2.elapsed().as_secs_f64(), owners.iter().filter(|o| o.is_some()).count());
-    let total: u64 = ok.iter().map(|f| f.bytes).sum();
-    println!("{} findings, {} in total", ok.len(), format_size(total));
-    for f in &ok {
+    let total: u64 = ok.iter().filter(|f| !f.in_active_project()).map(|f| f.bytes).sum();
+    let active: Vec<_> = ok.iter().filter(|f| f.in_active_project()).collect();
+    println!("{} findings, {} in total", ok.len() - active.len(), format_size(total));
+    println!("build outputs of projects being worked on: {}, {}", active.len(), format_size(active.iter().map(|f| f.bytes).sum()));
+    let carved: Vec<_> = ok.iter().filter(|f| !f.carved.is_empty()).collect();
+    for f in &carved {
+        println!("  carved: {} ({}), {} kept", f.title, format_size(f.bytes), f.carved.len());
+    }
+    for f in ok.iter().filter(|f| !f.in_active_project()) {
         let rule = match &f.source {
             sprawl_advisor::Source::Rule(id) => id.as_str(),
             sprawl_advisor::Source::Model(m) => m.as_str(),

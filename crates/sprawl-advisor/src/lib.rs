@@ -264,6 +264,7 @@ mod tests {
             on_path: true,
             action: None,
             admin: false,
+            carved: Vec::new(),
             path: tree.path_of(ROOT),
             bytes: tree.nodes[ROOT].size,
             ..good.clone()
@@ -274,8 +275,25 @@ mod tests {
         let t2 = sprawl_core::scan(&dir, |_| {}).unwrap();
         let n = find_path(&t2, &dir.join("cache")).unwrap();
         assert!(never.hit_inside(&t2, n).is_some());
+        // Sprawl's own clean-up skips it: the finding stays, the image carved out of it
         let with_image = Finding { bytes: t2.nodes[n].size, ..good.clone() };
-        assert!(matches!(safety::check(&with_image, &t2, &never), Err(safety::Rejection::Never(_))));
+        let carved = safety::check(&with_image, &t2, &never).expect("carved out, not held back");
+        assert_eq!(carved.carved.len(), 1);
+        assert_eq!(carved.carved[0].path, dir.join("cache").join("deep").join("vm.vhdx"));
+        assert_eq!(carved.bytes, t2.nodes[n].size - 1);
+        assert_eq!(carved.carved_note().as_deref(), Some("1 protected item kept"));
+        // a typed clear under a "command" remedy is Sprawl's own run: carved too
+        let typed = Finding { remedy: Remedy::Command, ..with_image.clone() };
+        assert_eq!(safety::check(&typed, &t2, &never).map(|f| f.carved.len()), Ok(1));
+        // a tool's command, a move or a model's finding can't skip it: still held back
+        let tool = Finding { remedy: Remedy::Command, action: Some(crate::finding::Action::Tool { command: "x".into() }), trusted: true, builtin: true, ..with_image.clone() };
+        assert!(matches!(safety::check(&tool, &t2, &never), Err(safety::Rejection::Never(_))));
+        let moved = Finding { remedy: Remedy::Move, ..with_image.clone() };
+        assert!(matches!(safety::check(&moved, &t2, &never), Err(safety::Rejection::Never(_))));
+        let from_model = Finding { source: Source::Model("m".into()), ..with_image.clone() };
+        assert!(matches!(safety::check(&from_model, &t2, &never), Err(safety::Rejection::Never(_))));
+        let no_action = Finding { action: None, ..with_image.clone() };
+        assert!(matches!(safety::check(&no_action, &t2, &never), Err(safety::Rejection::Never(_))));
         // a local pack's delete is never shown as green
         assert!(good.risk >= Risk::Amber);
 

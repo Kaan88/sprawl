@@ -173,6 +173,8 @@ pub(crate) struct Advisor {
     /// (finding, programs that have its files open); `None` inside while checking.
     in_use: Option<(usize, InUse)>,
     show_held: bool,
+    /// The group of build outputs of projects being worked on is open.
+    show_active: bool,
     /// A finding's command is shown in its details.
     show_cmd: bool,
     /// The last message for the user, shown in the panel's foot next to the buttons.
@@ -765,6 +767,7 @@ impl State {
         match name {
             "AdvRefresh" => return self.advisor_start(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
+            "AdvActive" => self.advisor.show_active = !self.advisor.show_active,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
             "AdvAiEdit" => self.advisor.ai_edit = if self.advisor.ai_edit.is_some() { None } else { Some(AiConfig::load()) },
@@ -1325,7 +1328,7 @@ impl State {
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
+            "AdvRefresh", "AdvHeld", "AdvActive", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
             for r in &roots {
@@ -1359,7 +1362,8 @@ impl State {
         let up_to = |pred: &dyn Fn(&Finding) -> bool| r.findings.iter().zip(&r.counted).any(|(f, c)| *c && pred(f) && self.review_size(f).1);
         let upto = |yes: bool| if yes { "up to " } else { "" };
         // what deleting or a command wins back; uninstalling is the user's call, shown below
-        let actionable = |f: &Finding| matches!(f.remedy, Remedy::Delete | Remedy::Command);
+        // (build outputs of projects being worked on are a group of their own, below the list)
+        let actionable = |f: &Finding| matches!(f.remedy, Remedy::Delete | Remedy::Command) && !f.in_active_project();
         let total = sum(&|f| actionable(f));
         let green = sum(&|f| actionable(f) && f.risk == Risk::Green);
         let amber = sum(&|f| actionable(f) && f.risk == Risk::Amber);
@@ -1464,7 +1468,7 @@ impl State {
         }
         // the AI's findings are in the same list, marked
         let mut list: Vec<usize> = (0..r.findings.len())
-            .filter(|&i| r.in_findings_list(i))
+            .filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project())
             .filter(|&i| match o {
                 Only::All => true,
                 Only::Runnable => crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none(),
@@ -1481,6 +1485,23 @@ impl State {
         }
         for i in list {
             x += &self.finding_row(r, i);
+        }
+        // build outputs of projects being worked on: a group, largest first, never ticked for the user
+        let mut active: Vec<usize> = (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && r.findings[i].in_active_project()).collect();
+        if !active.is_empty() && o != Only::Decide {
+            active.sort_by_key(|&i| std::cmp::Reverse(r.findings[i].bytes));
+            let bytes: u64 = active.iter().filter(|&&i| r.counted[i]).map(|&i| r.findings[i].bytes).sum();
+            x += &format!(
+                r##"<Button x:Name="AdvActive" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Build outputs of projects you are working on" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="They come back with your next build, which then takes longer. Not counted above, and never ticked for you." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                active.len(),
+                self.size(bytes),
+                if self.advisor.show_active { "hide" } else { "show" }
+            );
+            if self.advisor.show_active {
+                for i in active {
+                    x += &self.finding_row(r, i);
+                }
+            }
         }
         if let Some(h) = r.hidden.as_ref().filter(|h| h.notable) {
             x += &format!(
@@ -1917,7 +1938,7 @@ impl State {
                 let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
                 let mut left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
                 if keeping > 0 {
-                    left += &format!(" {keeping} ticked item(s) with something you keep inside were left out: clean those here, which leaves what you keep.");
+                    left += &format!(" {keeping} ticked item(s) with something kept inside (yours, or protected) were left out: clean those here, which leaves it.");
                 }
                 self.adv_say(&format!("Script saved with the {} ticked item(s). Read it, then run it in PowerShell: as it is, it only measures.{left}", owned.len()));
                 self.advisor.exported = Some(Exported { file, items, verify: None });
@@ -2513,6 +2534,10 @@ impl State {
             _ if gone_for_good(f) => "Cannot be undone",
             _ => risk_label(f.risk),
         };
+        let kind = match f.carved_note() {
+            Some(n) => format!("{kind} · {n}"),
+            None => kind.to_string(),
+        };
         let sub = match &f.owner {
             Some(o) if !f.title.contains(o.as_str()) => format!("{} · {o} · {}", kind, f.path.display()),
             _ => format!("{} · {}", kind, f.path.display()),
@@ -2620,11 +2645,12 @@ impl State {
 /// What "Save as a script" writes: the ticked findings with a command, never a guess by shape
 /// (the script has fewer checks than Sprawl's own clean-up), and how many guesses were left out.
 /// The ticked findings a script may hold, and how many were left out: (items, guesses by
-/// shape, items with something the user keeps inside). The script can't spare a kept folder
-/// inside an item, so such an item stays out; it is cleaned in Sprawl, which does.
+/// shape, items with something kept inside). The script can't spare a kept folder or a
+/// protected item (a mail store) inside an item, so such an item stays out; it is cleaned in
+/// Sprawl, which does.
 pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Finding>, usize, usize) {
     let guesses = ticked.iter().filter(|f| f.heuristic()).count();
-    let holds_kept = |f: &Finding| kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path));
+    let holds_kept = |f: &Finding| !f.carved.is_empty() || kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path));
     let keeping = ticked.iter().filter(|f| !f.heuristic() && holds_kept(f)).count();
     (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some() && !holds_kept(f)).collect(), guesses, keeping)
 }
@@ -2653,15 +2679,20 @@ mod script_tests {
                 on_path: true,
                 action: None,
                 admin: false,
+                carved: Vec::new(),
             };
             f.set_action(sprawl_advisor::clean::Action::Clear { days: 0 }, false);
             f
         };
         let ticked = vec![mk(r"C:\a", "r.a"), mk(r"C:\b", sprawl_advisor::cleaners::SHAPE), mk(r"C:\c", "r.c")];
+        let mut ticked = ticked;
+        let mut carved = mk(r"C:\d", "r.d");
+        carved.carved.push(sprawl_advisor::finding::Carve { path: r"C:\d\mail.pst".into(), bytes: 1, rule: r"?:\**\*.pst".into() });
+        ticked.push(carved);
         let (out, guesses, keeping) = script_items(ticked, &[PathBuf::from(r"C:\c\mine")]);
         assert_eq!(out.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), vec![r"C:\a"]);
         assert_eq!(guesses, 1);
-        assert_eq!(keeping, 1, "a folder the user keeps is inside C:\\c: the script can't spare it");
+        assert_eq!(keeping, 2, "a folder the user keeps is inside C:\\c, a mail store in C:\\d: the script can't spare them");
         assert!(script_items(Vec::new(), &[]).0.is_empty(), "nothing ticked: nothing written");
     }
 }

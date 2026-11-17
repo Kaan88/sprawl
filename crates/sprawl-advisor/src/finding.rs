@@ -84,6 +84,19 @@ pub struct Finding {
     /// The action needs administrator rights.
     #[serde(skip)]
     pub admin: bool,
+    /// What Sprawl's clean-up leaves inside `path` because it is protected (a mail store, a disk
+    /// image): already taken off `bytes`. Set by the safety check, never by the finding's source.
+    #[serde(skip)]
+    pub carved: Vec<Carve>,
+}
+
+/// One protected item inside a finding that its clean-up leaves where it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Carve {
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// The never-list entry it falls under.
+    pub rule: String,
 }
 
 /// `p` is `base` or inside it (case and a trailing separator aside).
@@ -145,6 +158,21 @@ impl Finding {
     /// Everything else (this user's folders, Windows' own, a project on D:) keeps its rule's risk.
     pub fn other_account(&self) -> bool {
         other_account(&self.path, std::env::var_os("USERPROFILE").as_deref().map(std::path::Path::new))
+    }
+
+    /// The build output of a project the user is working on: shown on its own, never ticked,
+    /// planned or counted in the headline for them.
+    pub fn in_active_project(&self) -> bool {
+        matches!(&self.source, Source::Rule(id) if id == crate::projects::ACTIVE)
+    }
+
+    /// "1 protected file kept", when the clean-up leaves something inside.
+    pub fn carved_note(&self) -> Option<String> {
+        match self.carved.len() {
+            0 => None,
+            1 => Some("1 protected item kept".into()),
+            n => Some(format!("{n} protected items kept")),
+        }
     }
 
     /// Give the finding its action, and the command text "Save as script" writes for it.
