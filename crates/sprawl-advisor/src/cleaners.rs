@@ -62,7 +62,7 @@ fn other() -> String {
     "Other".into()
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cleaner {
     pub id: String,
@@ -80,7 +80,7 @@ pub struct Cleaner {
     pub parts: Vec<Part>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Part {
     pub id: String,
@@ -239,6 +239,59 @@ pub struct PartDef {
     pub info: bool,
     /// The paths it looks at.
     pub paths: Vec<String>,
+}
+
+/// What cleaner `c` finds in `tree` now: (parts with something, bytes). For an AI's proposal:
+/// it must match something in the scan, and the card says how much.
+pub fn match_now(tree: &sprawl_core::Tree, c: &Cleaner) -> Result<(usize, u64), String> {
+    let mut pack = RulePack::empty("check");
+    pack.cleaners.push(c.clone());
+    let pack = RulePack::parse(&toml::to_string(&pack).map_err(|e| e.to_string())?)?;
+    let found = crate::rules::run(tree, std::slice::from_ref(&pack));
+    let mut parts = std::collections::HashSet::new();
+    let mut bytes = 0;
+    for f in &found {
+        if let crate::Source::Rule(id) = &f.source {
+            parts.insert(id.clone());
+            bytes += f.bytes;
+        }
+    }
+    Ok((parts.len(), bytes))
+}
+
+/// Folders no cleaner looks into, directly in %LOCALAPPDATA% and %APPDATA%, of `min` bytes or
+/// more, the biggest first: where the AI could be asked for a cleaner.
+pub fn unclaimed(tree: &sprawl_core::Tree, catalogue: &[CleanerDef], min: u64) -> Vec<(std::path::PathBuf, u64)> {
+    let roots: Vec<String> = ["%LOCALAPPDATA%", "%APPDATA%"].iter().map(|v| crate::rules::expand(v)).filter(|r| !r.contains('%')).collect();
+    unclaimed_in(tree, catalogue, min, &roots)
+}
+
+fn unclaimed_in(tree: &sprawl_core::Tree, catalogue: &[CleanerDef], min: u64, roots: &[String]) -> Vec<(std::path::PathBuf, u64)> {
+    // Windows' own and Sprawl's, and folders of installed programs rather than their data
+    const SKIP: &[&str] = &["microsoft", "packages", "programs", "temp", "sprawl", "comms", "connecteddevicesplatform", "d3dscache", "crashdumps", "publishers", "virtualstore"];
+    let claims: Vec<String> = catalogue
+        .iter()
+        .flat_map(|d| d.parts.iter().flat_map(|p| p.paths.iter()).chain(d.present.iter()))
+        .map(|p| crate::rules::expand(p).to_lowercase())
+        .collect();
+    let mut out = Vec::new();
+    for root in roots {
+        let Some(n) = crate::find_path(tree, std::path::Path::new(root)) else { continue };
+        let low = format!("{}\\", root.trim_end_matches('\\').to_lowercase());
+        for &c in &tree.nodes[n].children {
+            let node = &tree.nodes[c];
+            let name = node.name.to_lowercase();
+            if !node.is_dir || node.is_reparse_point() || node.size < min || SKIP.contains(&name.as_str()) {
+                continue;
+            }
+            let claimed = claims.iter().any(|p| p.strip_prefix(&low).and_then(|rest| rest.split('\\').next()).is_some_and(|seg| crate::rules::seg_match(seg, &name)));
+            if !claimed {
+                out.push((std::path::PathBuf::from(format!("{low}{}", node.name)), node.size));
+            }
+        }
+    }
+    out.sort_by_key(|x| std::cmp::Reverse(x.1));
+    out
 }
 
 /// The cleaner and part a rule's findings belong to.
@@ -547,6 +600,68 @@ mod tests {
         assert_eq!(cat[0].parts.iter().map(|p| p.rule.as_str()).collect::<Vec<_>>(), ["app.t/cache", "app.t/logs"]);
         assert_eq!(presence(&tree, &cat[0], false), Presence::InScan);
         // found by shape: a Cache folder of an unknown program
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the AI proposes is made plain and amber, and checked like a hand-made pack.
+    #[test]
+    fn ai_cleaners_are_checked() {
+        std::env::set_var("LOCALAPPDATA", r"C:\Users\sam\AppData\Local");
+        std::env::set_var("APPDATA", r"C:\Users\sam\AppData\Roaming");
+        std::env::set_var("USERPROFILE", r"C:\Users\sam");
+        let c: Cleaner = serde_json::from_value(serde_json::json!({
+            "id": "Tool X!", "name": "Tool X", "group": "Other", "running": ["ToolX.exe"],
+            "part": [{"id": "cache", "title": "Cache", "risk": "green", "paths": ["%LOCALAPPDATA%\\ToolX\\Cache"], "why": "copies"}]
+        }))
+        .unwrap();
+        let mut m = crate::memory::Memory::default();
+        m.propose_cleaner(crate::memory::CleanerProposal { cleaner: c.clone(), note: String::new() }).unwrap();
+        let got = &m.cleaner_proposals[0].cleaner;
+        assert_eq!(got.id, "local.ToolX");
+        assert_eq!(got.parts[0].risk, Risk::Amber, "a proposal is at least amber");
+        assert!(m.propose_cleaner(crate::memory::CleanerProposal { cleaner: c.clone(), note: String::new() }).is_err(), "the same id twice");
+        let mut bad = c.clone();
+        bad.id = "docs".into();
+        bad.parts[0].paths = vec![r"%USERPROFILE%\Documents".into()];
+        assert!(m.propose_cleaner(crate::memory::CleanerProposal { cleaner: bad, note: String::new() }).is_err(), "the never-list");
+        let mut bad = c.clone();
+        bad.id = "priv".into();
+        bad.parts[0].class = Class::Privacy;
+        bad.parts[0].closed = Closed::Must;
+        assert!(m.propose_cleaner(crate::memory::CleanerProposal { cleaner: bad, note: String::new() }).is_err(), "privacy comes only with Sprawl");
+        let mut bad = c;
+        bad.id = "admin".into();
+        bad.parts[0].admin = true;
+        let mut m2 = crate::memory::Memory::default();
+        m2.propose_cleaner(crate::memory::CleanerProposal { cleaner: bad, note: String::new() }).unwrap();
+        assert!(!m2.cleaner_proposals[0].cleaner.parts[0].admin, "never as administrator");
+    }
+
+    #[test]
+    fn unclaimed_folders_are_found() {
+        let dir = std::env::temp_dir().join(format!("sprawl-uncl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["Known", "Unknown", "Microsoft", "Tiny"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for d in ["Known", "Unknown", "Microsoft"] {
+            std::fs::write(dir.join(d).join("a.bin"), vec![1u8; 2 << 20]).unwrap();
+        }
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let def = CleanerDef {
+            id: "k".into(),
+            name: "K".into(),
+            group: "Other".into(),
+            present: vec![format!("{}\\Kn*", dir.display())],
+            running: vec![],
+            builtin: true,
+            pack: "x".into(),
+            parts: vec![],
+            text: String::new(),
+        };
+        let got = unclaimed_in(&tree, &[def], 1 << 20, &[dir.display().to_string()]);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].0.ends_with("Unknown"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

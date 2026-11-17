@@ -26,7 +26,14 @@ pub(crate) struct ClState {
     pub(crate) def: HashSet<String>,
     /// The programs running in this session, and when that was read (`None` inside: unknown).
     pub(crate) procs: Option<(std::time::Instant, Option<HashSet<String>>)>,
+    /// What each proposed cleaner matches in the scan: by (tree generation, cleaner id).
+    pub(crate) matches: std::cell::RefCell<HashMap<(u64, String), Option<(usize, u64)>>>,
 }
+
+/// Folders no cleaner knows are listed from this size.
+const UNCLAIMED_MIN: u64 = 100 << 20;
+/// At most this many of them.
+const UNCLAIMED_MAX: usize = 6;
 
 /// The "keep the last N days" choices offered for a part whose definition keeps `def`.
 fn day_choices(def: u32) -> Vec<u32> {
@@ -217,8 +224,13 @@ impl State {
                 if let Some(k) = c.def {
                     let d = &r.catalogue[k];
                     let showing = self.advisor.cl.def.contains(&c.id);
+                    let forget = if d.builtin {
+                        String::new()
+                    } else {
+                        format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
+                    };
                     x += &format!(
-                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
+                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>{forget}</StackPanel>"##,
                         ui::esc(&format!("From {}", d.pack)),
                         if showing { "Hide the definition" } else { "Show the definition" }
                     );
@@ -234,7 +246,85 @@ impl State {
                 part_no += c.parts.len();
             }
         }
+        x += &self.unclaimed_card(r);
         x
+    }
+
+    /// Big folders of programs no cleaner knows, each with a button that asks the AI for one.
+    fn unclaimed_card(&self, r: &Report) -> String {
+        let list = self.unclaimed_list(r);
+        if list.is_empty() {
+            return String::new();
+        }
+        let mut x = String::from(
+            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF" Margin="0,8,0,0"><StackPanel Spacing="4"><TextBlock Text="Folders no cleaner knows" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Big folders of programs in your AppData. The AI can look inside and propose a cleaner; you approve it before it is used." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+        );
+        for (i, (p, bytes)) in list.iter().enumerate() {
+            x += &format!(
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button x:Name="AdvClU{i}" Grid.Column="1" Content="Ask the AI for a cleaner" Padding="8,1" FontSize="12" CornerRadius="4"/><TextBlock Grid.Column="2" Text="{}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
+                ui::esc(&p.display().to_string()),
+                self.size(*bytes)
+            );
+        }
+        x += "</StackPanel></Border>";
+        x
+    }
+
+    pub(crate) fn unclaimed_list(&self, r: &Report) -> Vec<(std::path::PathBuf, u64)> {
+        let Some(t) = &self.tree else { return Vec::new() };
+        let mut v = sprawl_advisor::cleaners::unclaimed(t, &r.catalogue, UNCLAIMED_MIN);
+        v.truncate(UNCLAIMED_MAX);
+        v
+    }
+
+    /// The card of cleaners the AI proposes, in Remembered.
+    pub(crate) fn cleaner_proposals_card(&self) -> String {
+        let m = &self.advisor.memory;
+        if m.cleaner_proposals.is_empty() {
+            return String::new();
+        }
+        let mut x = String::from(
+            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Cleaners the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved cleaners join your own rules and show in Cleaners. Their parts are at least amber, never run as administrator, and nothing is cleaned until you tick it and press Clean up." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+        );
+        for (i, p) in m.cleaner_proposals.iter().enumerate() {
+            let c = &p.cleaner;
+            let now = match self.proposal_matches(c) {
+                Some((0, _)) => "Matches nothing in this scan now".to_string(),
+                Some((n, b)) => format!("Matches {} in {n} {} now", self.size(b), if n == 1 { "part" } else { "parts" }),
+                None => "Can't be matched against this scan".to_string(),
+            };
+            x += &format!(
+                r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClApprove{i}" Content="Approve" Padding="8,1" FontSize="12" CornerRadius="4"/><Button x:Name="AdvClDismiss{i}" Content="Dismiss" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
+                ui::esc(&c.name),
+                ui::esc(&now)
+            );
+            for part in &c.parts {
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="12,0,0,0"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" MaxWidth="600"/></StackPanel><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="28,0,0,0"/>"##,
+                    crate::advisor::risk_hex(part.risk),
+                    ui::esc(&format!("{}: {}", part.title, part.why)),
+                    ui::esc(&part.paths.join("   "))
+                );
+            }
+            if !p.note.is_empty() {
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" FontStyle="Italic" TextWrapping="Wrap" Margin="12,0,0,0"/>"##, ui::esc(&p.note));
+            }
+            x += "</StackPanel>";
+        }
+        x += "</StackPanel></Border>";
+        x
+    }
+
+    /// What a proposed cleaner matches in the scan now (kept per scan).
+    fn proposal_matches(&self, c: &sprawl_advisor::cleaners::Cleaner) -> Option<(usize, u64)> {
+        let t = self.tree.as_ref()?;
+        let k = (self.tree_gen, c.id.clone());
+        if let Some(v) = self.advisor.cl.matches.borrow().get(&k) {
+            return *v;
+        }
+        let v = sprawl_advisor::cleaners::match_now(t, c).ok();
+        self.advisor.cl.matches.borrow_mut().insert(k, v);
+        v
     }
 
     fn part_row(&self, r: &Report, c: &ClRow, p: &PartRow, n: usize, running: bool) -> String {
@@ -300,7 +390,7 @@ impl State {
             sub = ui::esc(&sub),
             files = if bytes > 0 {
                 format!(
-                    r##"<Button x:Name="AdvClS{n}" Grid.Column="2" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" VerticalAlignment="Center" ToolTipService.ToolTip="What would go, and where it is on the map"/>"##,
+                    r##"<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"><Button x:Name="AdvClQ{n}" Content="&#xE897;" FontFamily="Segoe Fluent Icons" Padding="6,3" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What happens if I clean this? (asks the AI)" AutomationProperties.Name="What happens if I clean this?"/><Button x:Name="AdvClS{n}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What would go, and where it is on the map"/></StackPanel>"##,
                     if shown { "Hide files" } else { "Show files" }
                 )
             } else {
@@ -379,6 +469,51 @@ impl State {
                 let keys: Vec<String> = p.tickable(r).map(|k| key(&r.findings[k].path)).collect();
                 self.cleanup_tick_many(keys);
                 self.advisor.focus_after = Some(format!("AdvClT{i}"));
+            }
+            "AdvClQ" => {
+                let Some((c, p)) = rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).nth(i) else { return };
+                let paths: Vec<String> = p.findings.iter().map(|&k| r.findings[k].path.display().to_string()).collect();
+                let q = format!(
+                    "What happens if I clean \"{}: {}\" ({}, {})? What would I notice afterwards, and is there a reason to keep it?",
+                    c.name,
+                    p.title,
+                    paths.join(", "),
+                    sprawl_core::format_size(p.bytes(r))
+                );
+                self.ask_about(q);
+            }
+            "AdvClU" => {
+                let Some((path, bytes)) = self.unclaimed_list(r).into_iter().nth(i) else { return };
+                let q = format!(
+                    "Look inside {} ({}). Which program is it, and which of its folders come back by themselves (caches, logs, crash dumps)? If some do, propose a cleaner for them with propose_cleaner; leave out anything that is the user's own data, settings or sign-ins.",
+                    path.display(),
+                    sprawl_core::format_size(bytes)
+                );
+                self.ask_about(q);
+            }
+            "AdvClF" => {
+                let Some(id) = rows.get(i).filter(|c| c.def.is_some_and(|k| !r.catalogue[k].builtin)).map(|c| c.id.clone()) else { return };
+                match sprawl_advisor::memory::forget_cleaner(&id) {
+                    Ok(()) => {
+                        self.adv_say("Cleaner removed from your rules. Checking again without it...");
+                        return self.advisor_start();
+                    }
+                    Err(e) => self.adv_say(&format!("Couldn't remove it: {e}")),
+                }
+            }
+            "AdvClApprove" => match self.advisor.memory.approve_cleaner(i) {
+                Ok(()) => {
+                    self.save_memory();
+                    self.adv_say("Cleaner added to your rules. Checking again with it...");
+                    return self.advisor_start();
+                }
+                Err(e) => self.adv_say(&format!("Couldn't add the cleaner: {e}")),
+            },
+            "AdvClDismiss" => {
+                if i < self.advisor.memory.cleaner_proposals.len() {
+                    self.advisor.memory.cleaner_proposals.remove(i);
+                    self.save_memory();
+                }
             }
             "AdvClK" => {
                 let Some(p) = rows.iter().flat_map(|c| c.parts.iter()).nth(i) else { return };

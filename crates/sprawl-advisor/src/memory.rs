@@ -81,6 +81,15 @@ pub struct Proposal {
     pub min_bytes: Option<u64>,
 }
 
+/// A cleaner the AI proposes, waiting for the user: checked like a pack of the user's own, and
+/// with the second opinion's note.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CleanerProposal {
+    pub cleaner: crate::cleaners::Cleaner,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
     #[serde(default)]
@@ -99,6 +108,9 @@ pub struct Memory {
     /// usual ones" (never ticked by Sprawl itself).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub usual: Vec<String>,
+    /// Cleaners the AI proposed, for the user to approve.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleaner_proposals: Vec<CleanerProposal>,
 }
 
 fn now() -> u64 {
@@ -155,6 +167,40 @@ fn check_proposal(p: &Proposal) -> Result<(), String> {
     let mut r = Rule::new(&p.id, &p.title, p.paths.clone(), p.risk, p.remedy, &p.why);
     r.kind = Kind::Any;
     check_local_rule(&r, &crate::safety::Never::default_list())
+}
+
+/// A cleaner as a pack of its own, checked as a hand-made one is, against the ids already
+/// taken by Sprawl's and the user's packs.
+fn check_cleaner(c: &crate::cleaners::Cleaner) -> Result<(), String> {
+    let mut pack = RulePack::empty("Your rules");
+    pack.cleaners.push(c.clone());
+    let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
+    let builtin = RulePack::builtin();
+    let mut taken: std::collections::HashSet<String> = builtin.all_rules().map(|r| r.id.to_lowercase()).collect();
+    taken.extend(builtin.cleaners.iter().map(|c| format!("cleaner:{}", c.id.to_lowercase())));
+    for p in local_packs() {
+        taken.extend(p.all_rules().map(|r| r.id.to_lowercase()));
+        taken.extend(p.cleaners.iter().map(|c| format!("cleaner:{}", c.id.to_lowercase())));
+    }
+    check_pack_text(&text, &mut taken).map(|_| ())
+}
+
+/// Remove cleaner `id` (and the rules it groups) from the user's local.toml.
+pub fn forget_cleaner(id: &str) -> Result<(), String> {
+    let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
+    let elsewhere = || format!("{id} isn't in local.toml: it comes from another file in {}; remove it there", path.parent().map(|p| p.display().to_string()).unwrap_or_default());
+    let text = std::fs::read_to_string(&path).map_err(|_| elsewhere())?;
+    let mut pack = RulePack::parse(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?;
+    let grouped: Vec<String> = pack.cleaners.iter().filter(|c| c.id == id).flat_map(|c| c.rules.clone()).collect();
+    let before = pack.cleaners.len();
+    pack.cleaners.retain(|c| c.id != id);
+    if pack.cleaners.len() == before {
+        return Err(elsewhere());
+    }
+    pack.rules.retain(|r| !grouped.contains(&r.id));
+    let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
+    RulePack::parse(&text)?;
+    write_atomic(&path, &text).map_err(|e| e.to_string())
 }
 
 /// A pattern turned into one path it could match (`?:` as C:, a wildcard as a plain name,
@@ -380,6 +426,67 @@ impl Memory {
             return Err("50 proposals are already waiting".into());
         }
         self.proposals.push(p);
+        Ok(())
+    }
+
+    /// Check a cleaner the model proposes and keep it for the user to approve. Made plain on the
+    /// way in: a local id, every part at least amber, space only, never as administrator.
+    pub fn propose_cleaner(&mut self, mut p: CleanerProposal) -> Result<(), String> {
+        let c = &mut p.cleaner;
+        c.id = format!("local.{}", c.id.trim_start_matches("local.").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect::<String>());
+        if c.id == "local." {
+            return Err("give the cleaner an id".into());
+        }
+        c.name = clean_text(&c.name).chars().take(60).collect();
+        if !crate::cleaners::GROUPS.contains(&c.group.as_str()) {
+            c.group = "Other".into();
+        }
+        c.rules.clear();
+        for part in &mut c.parts {
+            part.title = clean_text(&part.title).chars().take(80).collect();
+            part.why = clean_text(&part.why);
+            part.cost = clean_text(&part.cost);
+            part.risk = part.risk.max(Risk::Amber);
+            part.admin = false;
+            part.min_bytes = None;
+            part.paths = part.paths.iter().map(|x| x.trim().replace('/', "\\")).collect();
+        }
+        p.note = clean_text(&p.note);
+        check_cleaner(&p.cleaner)?;
+        if self.cleaner_proposals.iter().any(|q| q.cleaner.id.eq_ignore_ascii_case(&p.cleaner.id)) {
+            return Err(format!("a cleaner {} is already waiting", p.cleaner.id));
+        }
+        if self.cleaner_proposals.len() >= 20 {
+            return Err("20 cleaners are already waiting".into());
+        }
+        self.cleaner_proposals.push(p);
+        Ok(())
+    }
+
+    /// Move cleaner proposal `i` into the local rule pack (local.toml); the whole rules folder
+    /// must load with it, or the file is put back as it was.
+    pub fn approve_cleaner(&mut self, i: usize) -> Result<(), String> {
+        let p = self.cleaner_proposals.get(i).cloned().ok_or("no such proposal")?;
+        check_cleaner(&p.cleaner)?;
+        let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
+        let old = std::fs::read_to_string(&path).ok();
+        let mut pack = match &old {
+            Some(t) => RulePack::parse(t).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?,
+            None => RulePack::empty("Your rules"),
+        };
+        pack.cleaners.retain(|c| c.id != p.cleaner.id);
+        pack.cleaners.push(p.cleaner);
+        let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
+        RulePack::parse(&text)?;
+        write_atomic(&path, &text).map_err(|e| e.to_string())?;
+        if let Some((_, e)) = load_packs().1.into_iter().find(|(f, _)| f == &path) {
+            match old {
+                Some(t) => write_atomic(&path, &t).map_err(|e| e.to_string())?,
+                None => std::fs::remove_file(&path).map_err(|e| e.to_string())?,
+            }
+            return Err(e);
+        }
+        self.cleaner_proposals.remove(i);
         Ok(())
     }
 

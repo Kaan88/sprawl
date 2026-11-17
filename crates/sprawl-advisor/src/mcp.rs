@@ -27,7 +27,7 @@ fn local_specs(driven: bool) -> Vec<ToolSpec> {
     let mut v: Vec<ToolSpec> = chat_specs().into_iter().filter(|t| look.contains(&t.name)).collect();
     v.insert(0, report_spec());
     if driven {
-        let report = ["report_finding", "remember", "propose_rule", "finish"];
+        let report = ["report_finding", "remember", "propose_rule", "propose_cleaner", "finish"];
         v.extend(specs().into_iter().filter(|t| report.contains(&t.name)));
     }
     v
@@ -90,7 +90,7 @@ impl<'a> Local<'a> {
         if let Some(f) = self.out.as_mut() {
             let what = crate::facts::clean_text(input["path"].as_str().or(input["title"].as_str()).unwrap_or(""));
             let _ = writeln!(f, "{}", json!({"progress": format!("{} {what}", name.replace('_', " "))}));
-            if matches!(name, "report_finding" | "remember" | "propose_rule" | "finish") {
+            if matches!(name, "report_finding" | "remember" | "propose_rule" | "propose_cleaner" | "finish") {
                 let _ = writeln!(f, "{}", json!({"tool": name, "input": input}));
             }
             let _ = f.flush();

@@ -457,6 +457,12 @@ impl State {
     }
 
     /// Analyse the tree in the background (after a scan, a delete, or on Refresh).
+    /// Open Ask with question `q` sent.
+    pub(crate) fn ask_about(&mut self, q: String) {
+        self.advisor.section = Section::Ask;
+        self.chat_ask(q);
+    }
+
     pub(crate) fn advisor_start(&mut self) {
         // whatever was shown is for an earlier tree, and earlier jobs' answers are dropped
         self.advisor.report = None;
@@ -1196,6 +1202,11 @@ impl State {
             ("AdvClT", cl.1),
             ("AdvClS", cl.1),
             ("AdvClK", cl.1),
+            ("AdvClQ", cl.1),
+            ("AdvClF", cl.0),
+            ("AdvClU", 6),
+            ("AdvClApprove", m.cleaner_proposals.len()),
+            ("AdvClDismiss", m.cleaner_proposals.len()),
         ];
         for (kind, n) in counts {
             for i in 0..n {
@@ -1297,7 +1308,7 @@ impl State {
             tab("AdvSecCleaners", format!("Cleaners ({cleaners})"), Section::Cleaners),
             tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
             tab("AdvSecGrowth", "Growth".into(), Section::Growth),
-            tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
+            tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + m.cleaner_proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
         );
         match self.advisor.section {
             Section::Ask => {
@@ -1515,6 +1526,9 @@ impl State {
         }
         for p in run.proposals {
             let _ = m.propose(p);
+        }
+        for p in run.cleaner_proposals {
+            let _ = m.propose_cleaner(p);
         }
         self.save_memory();
         Ai::Done {
@@ -1877,7 +1891,7 @@ impl State {
     }
 
     /// Send a question. While one is being answered the next waits its turn.
-    fn chat_ask(&mut self, q: String) {
+    pub(crate) fn chat_ask(&mut self, q: String) {
         let q = q.trim().to_string();
         if q.is_empty() {
             return;
@@ -1994,7 +2008,10 @@ impl State {
                         let _ = t.SetText(&f.as_str().into());
                     }
                 }
-                ChatMsg::Event(ChatEvent::Remember { prefs, labels }) => {
+                ChatMsg::Event(ChatEvent::Remember { prefs, labels, cleaners }) => {
+                    for c in cleaners {
+                        let _ = self.advisor.memory.propose_cleaner(c);
+                    }
                     for p in &prefs {
                         let _ = self.advisor.memory.add_pref(&p.text, memory::From::Model);
                     }
@@ -2098,6 +2115,7 @@ impl State {
             }
             x += "</StackPanel></Border>";
         }
+        x += &self.cleaner_proposals_card();
         if !m.proposals.is_empty() {
             x += r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
             for (i, p) in m.proposals.iter().enumerate() {

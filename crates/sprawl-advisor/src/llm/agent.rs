@@ -17,7 +17,7 @@ use crate::config::{self, AiConfig, Detected, Provider};
 use crate::facts::Facts;
 use crate::finding::Finding;
 use crate::hidden::HiddenSpace;
-use crate::memory::{Label, Memory, Pref, Proposal};
+use crate::memory::{CleanerProposal, Label, Memory, Pref, Proposal};
 
 const SYSTEM: &str = "You are the disk-space advisor inside Sprawl, a disk analyser for Windows. \
 The user is a power user who wants to win back space safely. You get a compact report of one scan and tools to look closer. \
@@ -50,7 +50,7 @@ pub enum ChatEvent {
     Reply(String),
     /// Show this filter on the map (empty clears it).
     Filter(String),
-    Remember { prefs: Vec<Pref>, labels: Vec<Label> },
+    Remember { prefs: Vec<Pref>, labels: Vec<Label>, cleaners: Vec<CleanerProposal> },
     Failed(String),
 }
 
@@ -181,8 +181,16 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
             }
             chat.answer(results);
         }
-        if !tools.prefs.is_empty() || !tools.labels.is_empty() {
-            events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels) });
+        let mut cleaners = std::mem::take(&mut tools.cleaner_proposals);
+        if !cleaners.is_empty() && !failed {
+            events(ChatEvent::Progress("Getting a second opinion on the proposed cleaner...".into()));
+            let usage = Rc::new(RefCell::new(Usage::default()));
+            for d in check_cleaners(cfg, &model, &mut cleaners, &stop, &usage) {
+                reply.push_str(&format!("\n\n({d})"));
+            }
+        }
+        if !tools.prefs.is_empty() || !tools.labels.is_empty() || !cleaners.is_empty() {
+            events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels), cleaners });
         }
         // always an answer, so the app never waits for one that isn't coming
         if !failed {
@@ -210,6 +218,7 @@ pub struct AiRun {
     pub prefs: Vec<Pref>,
     pub labels: Vec<Label>,
     pub proposals: Vec<Proposal>,
+    pub cleaner_proposals: Vec<CleanerProposal>,
 }
 
 enum Mode {
@@ -252,6 +261,7 @@ fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[
     let mut run = run_driven_inner(tree, facts, model, report, already, memory, exe, stop, progress)?;
     let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), base_url: String::new() };
     second_opinion(&cfg, model, &mut run, stop, progress);
+    run_cleaner_check(&cfg, model, &mut run, stop, progress);
     Ok(run)
 }
 
@@ -316,7 +326,7 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
         let reports: Vec<serde_json::Value> = recorded
             .lines()
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .filter(|v| matches!(v["tool"].as_str(), Some("report_finding" | "remember" | "propose_rule" | "finish")))
+            .filter(|v| matches!(v["tool"].as_str(), Some("report_finding" | "remember" | "propose_rule" | "propose_cleaner" | "finish")))
             .take(500)
             .collect();
         turns += recorded.lines().filter(|l| l.contains("\"progress\"")).count();
@@ -338,6 +348,7 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
         run.prefs = std::mem::take(&mut tools.prefs);
         run.labels = std::mem::take(&mut tools.labels);
         run.proposals = std::mem::take(&mut tools.proposals);
+        run.cleaner_proposals = std::mem::take(&mut tools.cleaner_proposals);
         Ok(run)
     })();
     result
@@ -361,18 +372,8 @@ fn second_opinion(cfg: &AiConfig, model: &str, run: &mut AiRun, stop: &Stop, pro
     for (i, f) in run.findings.iter().enumerate() {
         list.push_str(&format!("{i}. {} ({:?}, {:?}, {} bytes): {}\n   {}\n", f.title, f.risk, f.remedy, f.bytes, f.path.display(), f.evidence.join(" | ")));
     }
-    let chat: Result<Box<dyn Chat>, String> = match cfg.provider {
-        Provider::Anthropic => config::key(Provider::Anthropic)
-            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-            .filter(|k| !k.trim().is_empty())
-            .map(|k| Box::new(Anthropic::new(k, model, SECOND.into(), list.clone(), &[])) as Box<dyn Chat>)
-            .ok_or_else(|| "no key".to_string()),
-        Provider::OpenAi => openai_key(&cfg.base_url).map(|k| Box::new(OpenAi::new(&cfg.base_url, k, model, SECOND.into(), list.clone(), &[])) as Box<dyn Chat>),
-        Provider::ClaudeCode => Detected::probe().claude_code.map(|exe| Box::new(ClaudeCode::new(&exe, model, SECOND, &list).with_stop(stop.clone())) as Box<dyn Chat>).ok_or_else(|| "no claude".to_string()),
-        Provider::Off => Err("off".into()),
-    };
     let usage = Rc::new(RefCell::new(Usage::default()));
-    let verdicts = chat.map(|c| Metered::new(c, stop.clone(), usage.clone())).and_then(|mut c| c.turn()).ok().and_then(|t| json_in(&t.text)).and_then(|v| v["verdicts"].as_array().cloned());
+    let verdicts = one_shot(cfg, model, SECOND, list, stop, &usage).and_then(|t| json_in(&t)).and_then(|v| v["verdicts"].as_array().cloned());
     run.usage.add(*usage.borrow());
     let Some(verdicts) = verdicts else {
         run.summary.push_str("\n\n(The second opinion didn't answer; the findings passed Sprawl's own checks.)");
@@ -392,6 +393,83 @@ fn second_opinion(cfg: &AiConfig, model: &str, run: &mut AiRun, stop: &Stop, pro
         let f = run.findings.remove(i);
         run.rejected.push((f, format!("second opinion: {why}")));
     }
+}
+
+/// One question to a fresh conversation without tools; its answer, or None.
+fn one_shot(cfg: &AiConfig, model: &str, system: &str, text: String, stop: &Stop, usage: &Rc<RefCell<Usage>>) -> Option<String> {
+    let chat: Result<Box<dyn Chat>, String> = match cfg.provider {
+        Provider::Anthropic => config::key(Provider::Anthropic)
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+            .filter(|k| !k.trim().is_empty())
+            .map(|k| Box::new(Anthropic::new(k, model, system.into(), text.clone(), &[])) as Box<dyn Chat>)
+            .ok_or_else(|| "no key".to_string()),
+        Provider::OpenAi => openai_key(&cfg.base_url).map(|k| Box::new(OpenAi::new(&cfg.base_url, k, model, system.into(), text.clone(), &[])) as Box<dyn Chat>),
+        Provider::ClaudeCode => Detected::probe().claude_code.map(|exe| Box::new(ClaudeCode::new(&exe, model, system, &text).with_stop(stop.clone())) as Box<dyn Chat>).ok_or_else(|| "no claude".to_string()),
+        Provider::Off => Err("off".into()),
+    };
+    chat.ok().map(|c| Metered::new(c, stop.clone(), usage.clone())).and_then(|mut c| c.turn().ok()).map(|t| t.text)
+}
+
+const CLEANER_CHECK: &str = "You are a careful second reviewer for a disk cleaner. Another model proposed the cleaners below: for one application each, \
+folders that can be emptied. Judge each from what is written and what you know of the application. Keep it only when every part holds data the \
+application makes again by itself (caches, logs, crash dumps, temporary files), the paths are narrow, and no part holds the user's own files, \
+settings, saved games, sign-ins, downloads or history. Answer with one JSON object and nothing else, repeating each id exactly: \
+{\"verdicts\": [{\"index\": 0, \"id\": \"local.x\", \"keep\": true, \"why\": \"...\"}]}";
+
+/// A second opinion on proposed cleaners, from a fresh conversation. Those it drops are taken
+/// out and returned as lines for the user; the rest carry its note. If it can't answer, all are
+/// kept with a note saying so (they passed Sprawl's own checks, and the user approves each).
+pub(crate) fn check_cleaners(cfg: &AiConfig, model: &str, list: &mut Vec<CleanerProposal>, stop: &Stop, usage: &Rc<RefCell<Usage>>) -> Vec<String> {
+    if list.is_empty() {
+        return Vec::new();
+    }
+    let mut text = String::new();
+    for (i, p) in list.iter().enumerate() {
+        text += &format!("{i}. {} ({})\n", p.cleaner.name, p.cleaner.id);
+        for part in &p.cleaner.parts {
+            text += &format!("   - {} [{:?}]: {}\n     {}\n", part.title, part.risk, part.paths.join(" | "), part.why);
+        }
+    }
+    let verdicts = one_shot(cfg, model, CLEANER_CHECK, text, stop, usage).and_then(|t| json_in(&t)).and_then(|v| v["verdicts"].as_array().cloned());
+    let Some(verdicts) = verdicts else {
+        for p in list.iter_mut() {
+            p.note = "The second opinion didn't answer; it passed Sprawl's own checks.".into();
+        }
+        return Vec::new();
+    };
+    let mut dropped = Vec::new();
+    let mut keep = Vec::new();
+    for (i, mut p) in std::mem::take(list).into_iter().enumerate() {
+        // the index and the id must agree, so an off-by-one answer judges nothing
+        let v = verdicts.iter().find(|v| v["index"].as_u64() == Some(i as u64) && v["id"].as_str() == Some(p.cleaner.id.as_str()));
+        let why = v.and_then(|v| v["why"].as_str()).map(|w| super::tools::clean_text_long(w, 300)).unwrap_or_default();
+        match v.and_then(|v| v["keep"].as_bool()) {
+            Some(false) => dropped.push(format!("The second opinion turned down the cleaner for {}: {why}", p.cleaner.name)),
+            Some(true) => {
+                p.note = format!("Second opinion: {why}");
+                keep.push(p);
+            }
+            None => {
+                p.note = "The second opinion didn't judge this one.".into();
+                keep.push(p);
+            }
+        }
+    }
+    *list = keep;
+    dropped
+}
+
+/// [`check_cleaners`] for an analysis run: what it drops goes into the summary.
+fn run_cleaner_check(cfg: &AiConfig, model: &str, run: &mut AiRun, stop: &Stop, progress: &mut dyn FnMut(String)) {
+    if run.cleaner_proposals.is_empty() || run.stopped || stop.load(Ordering::Relaxed) {
+        return;
+    }
+    progress("Getting a second opinion on the proposed cleaners...".into());
+    let usage = Rc::new(RefCell::new(Usage::default()));
+    for d in check_cleaners(cfg, model, &mut run.cleaner_proposals, stop, &usage) {
+        run.summary.push_str(&format!("\n\n({d})"));
+    }
+    run.usage.add(*usage.borrow());
 }
 
 /// The key for an OpenAI-compatible endpoint. `OPENAI_API_KEY` from the environment goes only to
@@ -537,9 +615,11 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     run.prefs = std::mem::take(&mut tools.prefs);
     run.labels = std::mem::take(&mut tools.labels);
     run.proposals = std::mem::take(&mut tools.proposals);
+    run.cleaner_proposals = std::mem::take(&mut tools.cleaner_proposals);
     run.findings.sort_by(|a, b| b.bytes.cmp(&a.bytes));
     run.usage = *usage.borrow();
     second_opinion(cfg, &model, &mut run, &stop, progress);
+    run_cleaner_check(cfg, &model, &mut run, &stop, progress);
     Ok(run)
 }
 

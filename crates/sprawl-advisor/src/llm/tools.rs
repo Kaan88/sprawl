@@ -16,14 +16,14 @@ use super::report::{node_line, types_below};
 use super::ToolSpec;
 use crate::facts::{clean_text, month_year, Facts};
 use crate::finding::{Finding, Remedy, Risk, Source};
-use crate::memory::{self, Label, Memory, Pref, Proposal};
+use crate::memory::{self, CleanerProposal, Label, Memory, Pref, Proposal};
 use crate::safety::{self, Never};
 use crate::{find_path, segments};
 
 /// The tools of the "Ask your disk" chat: looking, remembering, filtering the map, reading small
 /// manifests and (with the user's consent each time) searching the web. No findings here.
 pub fn chat_specs() -> Vec<ToolSpec> {
-    let keep = ["list_children", "largest", "by_type", "owner_of", "remember"];
+    let keep = ["list_children", "largest", "by_type", "owner_of", "remember", "propose_cleaner"];
     let mut v: Vec<ToolSpec> = specs().into_iter().filter(|t| keep.contains(&t.name)).collect();
     let path = json!({"type": "string", "description": "Absolute Windows path"});
     v.push(ToolSpec {
@@ -107,6 +107,29 @@ pub fn specs() -> Vec<ToolSpec> {
             }, "required": ["id", "title", "paths", "risk", "remedy", "why"]}),
         },
         ToolSpec {
+            name: "propose_cleaner",
+            description: "Propose a cleaner for one application: the folders of it in this scan that come back by themselves (caches, logs, crash dumps, \
+                temporary files), as parts the user ticks in Sprawl's Cleaners section. The user approves it first, a second model checks it, and every \
+                part is at least amber. Never the user's own files, settings, saved games, sign-ins or history.",
+            schema: json!({"type": "object", "properties": {
+                "id": {"type": "string", "description": "Short id, letters and dashes"},
+                "name": {"type": "string", "description": "The application's name"},
+                "group": {"type": "string", "enum": crate::cleaners::GROUPS},
+                "running": {"type": "array", "items": {"type": "string"}, "description": "Its program files, like Tool.exe: parts wait while it runs"},
+                "present": {"type": "array", "items": {"type": "string"}, "description": "Folders that show it is installed"},
+                "part": {"type": "array", "items": {"type": "object", "properties": {
+                    "id": {"type": "string", "description": "Short id, letters and dashes"},
+                    "title": {"type": "string", "description": "Like Cache or Old logs"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Absolute patterns, e.g. %LOCALAPPDATA%\\Tool\\Cache"},
+                    "risk": {"type": "string", "enum": ["green", "amber", "orange"]},
+                    "why": {"type": "string", "description": "What it is and why it comes back"},
+                    "cost": {"type": "string", "description": "What the user notices after, like: slower first start"},
+                    "closed": {"type": "string", "enum": ["must", "warn", "no"], "description": "must: only while the app is closed; warn: files in use are skipped"},
+                    "keep_days": {"type": "integer", "description": "Keep files changed in the last N days"}
+                }, "required": ["id", "title", "paths", "risk", "why"]}}
+            }, "required": ["id", "name", "part"]}),
+        },
+        ToolSpec {
             name: "finish",
             description: "End the analysis with a summary for the user. Markdown, short: one sentence, then at most 6 bullets under the bold headings **Quick wins**, **Check first** and **Leave alone** (leave out empty ones). Start each bullet with the size, like '- 7.3 GB: Android build output in E:\\x, regenerates'. No long paragraphs.",
             schema: json!({"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}),
@@ -131,6 +154,7 @@ pub struct Tools<'a> {
     pub prefs: Vec<Pref>,
     pub labels: Vec<Label>,
     pub proposals: Vec<Proposal>,
+    pub cleaner_proposals: Vec<CleanerProposal>,
     /// A filter the model asked to show (chat), for the app to apply.
     pub filter: Option<String>,
     /// Asks the user whether a web search may go out; `None`: never.
@@ -167,6 +191,7 @@ impl<'a> Tools<'a> {
             prefs: Vec::new(),
             labels: Vec::new(),
             proposals: Vec::new(),
+            cleaner_proposals: Vec::new(),
             filter: None,
             consent: None,
             allowed: None,
@@ -346,6 +371,23 @@ impl<'a> Tools<'a> {
                     self.proposals.push(p);
                 }
                 Ok("Proposed. The user will see it and decide.".into())
+            }
+            "propose_cleaner" => {
+                let mut v = input.clone();
+                if v["group"].is_null() {
+                    v["group"] = json!("Other");
+                }
+                let c: crate::cleaners::Cleaner = serde_json::from_value(v).map_err(|e| format!("not a cleaner: {e}"))?;
+                self.memory.propose_cleaner(CleanerProposal { cleaner: c, note: String::new() })?;
+                let p = self.memory.cleaner_proposals.last().cloned().ok_or("not kept")?;
+                // it must find something here: a cleaner for what the scan doesn't hold is a guess
+                let (n, bytes) = crate::cleaners::match_now(self.tree, &p.cleaner)?;
+                if n == 0 {
+                    self.memory.cleaner_proposals.pop();
+                    return Err("none of its parts matches anything in this scan (a part shows from 1 MB): check the paths".into());
+                }
+                self.cleaner_proposals.push(p);
+                Ok(format!("Proposed: {n} of its parts match {} in this scan now. The user will see it and decide.", format_size(bytes)))
             }
             "finish" => {
                 self.summary = Some(clean_text_long(input["summary"].as_str().unwrap_or(""), 1500));
