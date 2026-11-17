@@ -269,6 +269,9 @@ impl State {
         self.map.scene.lens = if let Some(p) = preview { Some((p, true)) } else { match self.advisor.lens_mode {
             crate::advisor::Lens::Off => None,
             // not on the live picture of a scan: its node numbers are its own
+            crate::advisor::Lens::Growth if self.view == crate::state::View::Advisor && self.map.live.is_none() => {
+                self.advisor.growth_lens.as_ref().filter(|(g, _)| self.advice().is_some_and(|r| r.tree == *g)).map(|(_, l)| (l.clone(), true))
+            }
             mode if self.view == crate::state::View::Advisor && self.map.live.is_none() => self.advice().map(|r| (r.lens.clone(), mode == crate::advisor::Lens::Risk)),
             _ => None,
         } };
@@ -520,6 +523,10 @@ impl State {
 
     pub(crate) fn map_click(&mut self, x: f64, y: f64) {
         let Some(n) = self.map_node_at(x, y) else { return };
+        // in the Advisor, a lit tile opens its finding there, staying on that tab
+        if self.advisor_map_click(n) {
+            return;
+        }
         self.reveal(n);
     }
 

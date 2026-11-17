@@ -37,12 +37,14 @@ pub(crate) enum Lens {
     Opportunities,
     /// Findings coloured by risk.
     Risk,
+    /// Tiles coloured by how much their folder grew since the growth baseline.
+    Growth,
     Off,
 }
 
 pub(crate) struct Report {
     /// `State::tree_gen` of the tree this was made from; stale once that changes.
-    tree: u64,
+    pub(crate) tree: u64,
     pub(crate) findings: Vec<Finding>,
     /// The node of each finding.
     nodes: Vec<Option<usize>>,
@@ -208,6 +210,8 @@ pub(crate) struct Advisor {
     sort: Sort,
     only: Only,
     /// A finding being run now: (its path, title, size, the file its script reports to, since).
+    /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
+    pub(crate) growth_lens: Option<(u64, Arc<Vec<u8>>)>,
     acting: Option<(PathBuf, String, u64, crate::dialogs::Running, std::time::Instant)>,
     /// What the last run freed: (title, bytes freed, bytes it had).
     acted: Option<(String, u64, u64)>,
@@ -269,6 +273,12 @@ pub(crate) fn lens_colour(code: u8) -> [f32; 3] {
         1 => [0.20, 0.72, 0.42],
         2 => [0.95, 0.62, 0.16],
         3 => [0.98, 0.36, 0.18],
+        // growth, from a little to the most
+        10 => [0.42, 0.36, 0.20],
+        11 => [0.70, 0.52, 0.16],
+        12 => [0.95, 0.62, 0.14],
+        13 => [1.00, 0.40, 0.22],
+        14 => [1.00, 0.22, 0.48],
         _ => [0.85, 0.20, 0.22],
     }
 }
@@ -552,6 +562,7 @@ impl State {
                     if let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == key) {
                         r.growth = g;
                     }
+                    self.build_growth_lens();
                 }
                 Msg::InUse(gen, i, answer) => {
                     if gen == self.tree_gen && self.advisor.in_use.as_ref().is_some_and(|(j, _)| *j == i) {
@@ -660,6 +671,10 @@ impl State {
             "AdvLensOpp" => self.advisor.lens_mode = Lens::Opportunities,
             "AdvLensRisk" => self.advisor.lens_mode = Lens::Risk,
             "AdvLensOff" => self.advisor.lens_mode = Lens::Off,
+            "AdvLensGrowth" => {
+                self.advisor.lens_mode = Lens::Growth;
+                self.build_growth_lens();
+            }
             "AdvRefresh" => return self.advisor_start(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
@@ -866,6 +881,72 @@ impl State {
     }
 
     /// A finding was clicked: open (or close) its details and light it up on the map.
+    /// The growth lens from the report's growth: each grown folder's tiles by how much it grew,
+    /// deeper folders over the folders around them.
+    fn build_growth_lens(&mut self) {
+        let (Some(t), Some(r)) = (self.tree.clone(), self.advice()) else { return };
+        let Some(g) = &r.growth else { return };
+        let gen = r.tree;
+        let mut grew: Vec<(usize, usize, i64)> = g
+            .grew
+            .iter()
+            .filter(|w| w.delta > 0 && w.node < t.nodes.len())
+            .map(|w| {
+                let mut depth = 0;
+                let mut k = w.node;
+                while let Some(p) = t.nodes[k].parent {
+                    depth += 1;
+                    k = p;
+                }
+                (depth, w.node, w.delta)
+            })
+            .collect();
+        let max = grew.iter().map(|w| w.2).max().unwrap_or(1).max(1) as f64;
+        grew.sort();
+        let mut lens = vec![0u8; t.nodes.len()];
+        for (_, n, delta) in grew {
+            let share = delta as f64 / max;
+            let code = 10 + [0.05, 0.15, 0.35, 0.65].iter().filter(|&&s| share > s).count() as u8;
+            let mut stack = vec![n];
+            while let Some(k) = stack.pop() {
+                lens[k] = code;
+                stack.extend_from_slice(&t.nodes[k].children);
+            }
+        }
+        self.advisor.growth_lens = Some((gen, Arc::new(lens)));
+    }
+
+    /// A click on a lit tile in the Advisor: its finding opens (or, in the growth lens, the
+    /// Growth section). True when it did.
+    pub(crate) fn advisor_map_click(&mut self, n: usize) -> bool {
+        if self.view != View::Advisor || self.advisor.lens_mode == Lens::Off {
+            return false;
+        }
+        let Some(t) = self.tree.clone() else { return false };
+        if self.advisor.lens_mode == Lens::Growth {
+            let lit = self.advisor.growth_lens.as_ref().is_some_and(|(_, l)| l.get(n).is_some_and(|&c| c > 0));
+            if lit {
+                self.advisor.section = Section::Growth;
+                self.advisor_changed();
+            }
+            return lit;
+        }
+        let Some(r) = self.advice() else { return false };
+        // the deepest finding the tile is in
+        let mut k = Some(n);
+        while let Some(at) = k {
+            if let Some(i) = r.nodes.iter().position(|m| *m == Some(at)) {
+                self.advisor.section = Section::Findings;
+                if self.advisor.open != Some(i) {
+                    self.advisor_open(i);
+                }
+                return true;
+            }
+            k = t.nodes[at].parent;
+        }
+        false
+    }
+
     pub(crate) fn advisor_open(&mut self, i: usize) {
         if self.advisor.open == Some(i) {
             self.advisor.open = None;
@@ -976,7 +1057,7 @@ impl State {
         for name in [
             "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
+            "AdvLensOpp", "AdvLensRisk", "AdvLensGrowth", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
             if let Ok(b) = find::<ButtonBase>(&fe, name) {
@@ -1019,7 +1100,7 @@ impl State {
 <StackPanel><TextBlock Text="{total}" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="can be won back" FontSize="12" Foreground="#FF8E97AA"/></StackPanel>
 <StackPanel Grid.Column="1"><TextBlock Text="{green}" FontSize="26" FontWeight="SemiBold" Foreground="#FF4CC38A"/><TextBlock Text="of it comes back by itself" FontSize="12" Foreground="#FF8E97AA"/></StackPanel>
 <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Top" Spacing="6">
-<StackPanel Orientation="Horizontal" Spacing="2" Padding="2" CornerRadius="7" Background="#14FFFFFF">{b1}{b2}{b3}</StackPanel>
+<StackPanel Orientation="Horizontal" Spacing="2" Padding="2" CornerRadius="7" Background="#14FFFFFF">{b1}{b2}{b4}{b3}</StackPanel>
 <Button x:Name="AdvRefresh" HorizontalAlignment="Right" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/>
 </StackPanel></Grid>"##,
             total = self.size(total),
@@ -1027,6 +1108,7 @@ impl State {
             b1 = lens_btn("AdvLensOpp", "Opportunities", lm == Lens::Opportunities),
             b2 = lens_btn("AdvLensRisk", "By risk", lm == Lens::Risk),
             b3 = lens_btn("AdvLensOff", "Normal", lm == Lens::Off),
+            b4 = if r.growth.as_ref().is_some_and(|g| g.grew.iter().any(|w| w.delta > 0)) { lens_btn("AdvLensGrowth", "Grew", lm == Lens::Growth) } else { String::new() },
         );
         if total > 0 {
             let share = |v: u64| (v as f64 * 1000.0 / total as f64).max(if v > 0 { 4.0 } else { 0.0 });
