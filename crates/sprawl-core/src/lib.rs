@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod csv;
 pub mod filter;
+pub mod kinds;
 pub mod mft;
 pub mod progress;
 pub mod search;

@@ -891,6 +891,38 @@ mod admin_tests {
         f.set_action(Action::Clear { days: 7 }, false);
         assert_eq!(held_in_app(&f), None);
     }
+
+    /// What a gone application left that holds the user's work is shown only: no tick. One
+    /// without stays tickable, through the own-files box.
+    #[test]
+    fn a_leftover_holding_the_users_work_cannot_be_ticked() {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Users\Sam"));
+        let mut f = Finding {
+            path: home.join(r"AppData\Local\GoneGame"),
+            owner: None,
+            bytes: 100 << 20,
+            risk: Risk::Orange,
+            remedy: Remedy::Info,
+            command: None,
+            title: "GoneGame (left behind, holds your saved games)".into(),
+            evidence: vec![],
+            confidence: 0.6,
+            source: Source::Rule(sprawl_advisor::leftovers::ID.into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: true,
+            action: None,
+            admin: false,
+            carved: Vec::new(),
+            gain: None,
+        };
+        assert!(untickable(&f, true).is_some());
+        f.remedy = Remedy::Delete;
+        f.set_action(Action::Remove, false);
+        assert_eq!(untickable(&f, true), None);
+        assert!(f.risk >= Risk::Orange, "the own-files box is needed");
+    }
 }
 
 #[cfg(test)]

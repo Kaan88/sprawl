@@ -172,27 +172,44 @@ fn holds_chromium(tree: &Tree, n: usize) -> bool {
     false
 }
 
-/// A folder of saved games in the first levels of `n` (`SaveGames`, `PC_ProfileSaves`,
-/// `GameSave`): its path inside `n`. Unreal's `Saved` alone holds settings, logs and caches.
-fn saves_in(tree: &Tree, n: usize) -> Option<String> {
+/// Folder names that hold the user's own work, not an application's.
+pub const WORK_FOLDERS: &[&str] = &[
+    "sketches", "projects", "documents", "worlds", "maps", "profiles", "screenshots", "recordings", "replays", "backups", "exports", "library", "libraries", "workspace",
+];
+
+/// What in the first levels of `n` is the user's own work: saved games (a folder whose name
+/// says save, but Unreal's `Saved` alone, which holds settings, logs and caches), a folder
+/// [`WORK_FOLDERS`] names, or a document, image project or source file
+/// ([`sprawl_core::kinds::user_work`]). Its path inside `n`, and whether it is saved games.
+fn work_in(tree: &Tree, n: usize) -> Option<(String, bool)> {
     let mut stack = vec![(n, 0, String::new())];
+    let mut file = None;
     while let Some((k, d, rel)) = stack.pop() {
         for &c in &tree.nodes[k].children {
             let node = &tree.nodes[c];
-            if !node.is_dir || node.is_reparse_point() {
-                continue;
-            }
             let name = node.name.to_lowercase();
             let rel = if rel.is_empty() { node.name.clone() } else { format!(r"{rel}\{}", node.name) };
-            if name.contains("save") && name != "saved" {
-                return Some(rel);
+            if !node.is_dir {
+                if file.is_none() && name.rsplit_once('.').is_some_and(|(_, e)| sprawl_core::kinds::user_work(e)) {
+                    file = Some(rel);
+                }
+                continue;
             }
-            if d < 3 {
+            if node.is_reparse_point() {
+                continue;
+            }
+            if name.contains("save") && name != "saved" {
+                return Some((rel, true));
+            }
+            if WORK_FOLDERS.contains(&name.as_str()) {
+                return Some((rel, false));
+            }
+            if d < 2 {
                 stack.push((c, d + 1, rel));
             }
         }
     }
-    None
+    file.map(|f| (f, false))
 }
 
 /// Lower-case program names (`.exe`) in the first levels of `n`.
@@ -279,20 +296,27 @@ pub(crate) fn find_in(tree: &Tree, facts: &Facts, roots: &[PathBuf], seen: &Hash
                     "Windows Prefetch couldn't be read (Sprawl isn't running as administrator), so only starts from the Start menu were checked: it is offered because nothing in it changed for {IDLE_DAYS} days"
                 ),
             };
+            // the user's own work in it: shown, never deleted by Sprawl
+            let work = work_in(tree, n);
             let mut f = Finding {
                 path,
                 owner: None,
                 bytes: node.size,
                 risk: Risk::Orange,
-                remedy: Remedy::Delete,
+                remedy: if work.is_some() { Remedy::Info } else { Remedy::Delete },
                 command: None,
-                title: format!("{} (left behind)", node.name),
+                title: match &work {
+                    Some((_, true)) => format!("{} (left behind, holds your saved games)", node.name),
+                    Some(_) => format!("{} (left behind, holds your files)", node.name),
+                    None => format!("{} (left behind)", node.name),
+                },
                 evidence: vec![
                     format!("No installed application by this name ({} checked: Windows' list, the Store, Steam, Epic, GOG)", facts.apps.len()),
                     format!("Nothing in it changed since {}", month_year(newest)),
                     runs,
-                    match saves_in(tree, n) {
-                        Some(rel) => format!("It holds saved games ({rel}), and may hold settings of an application you might install again"),
+                    match &work {
+                        Some((rel, true)) => format!("It holds your saved games ({rel}): look before removing it; Sprawl won't"),
+                        Some((rel, false)) => format!("It holds your own files ({rel}): look before removing it; Sprawl won't"),
                         None => "It may hold settings or saved games of an application you might install again".into(),
                     },
                     format!("{} files in {} folders", node.files, node.folders),
@@ -308,7 +332,9 @@ pub(crate) fn find_in(tree: &Tree, facts: &Facts, roots: &[PathBuf], seen: &Hash
                 carved: Vec::new(),
                 gain: None,
             };
-            f.set_action(Action::Remove, false);
+            if work.is_none() {
+                f.set_action(Action::Remove, false);
+            }
             out.push(f);
         }
     }
@@ -390,6 +416,8 @@ mod tests {
         big(&roaming.join("CrashDumps").join("x.dmp"), true);
         // something protected inside
         big(&roaming.join("Mailer").join("store.mbox"), true);
+        // the user's sketches
+        big(&roaming.join("Tinker").join("sketches").join("blink").join("blink.bin"), true);
         // small
         std::fs::create_dir_all(roaming.join("Tiny")).unwrap();
         std::fs::write(roaming.join("Tiny").join("a"), b"x").unwrap();
@@ -421,26 +449,41 @@ mod tests {
         ]);
         let found = find_in(&tree, &facts, &[roaming.clone()], &HashSet::new(), SystemTime::now());
         let names: Vec<String> = found.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, ["GoneApp", "Google"], "{names:?}");
+        assert_eq!(names, ["GoneApp", "Google", "Tinker"], "{names:?}");
         for f in &found {
             assert_eq!(f.risk, Risk::Orange);
             assert!(f.heuristic(), "never picked for the user nor scripted");
-            assert_eq!(f.action, Some(Action::Remove));
-            assert!(f.evidence.iter().any(|e| e.contains("saved games")));
+            assert!(f.leftover() && f.group() == crate::finding::Group::Leftover);
             assert!(f.evidence.iter().any(|e| e.starts_with("Nothing in it changed since")));
         }
-        assert!(found[1].evidence[3].starts_with(r"It holds saved games (Saved\SaveGames)"), "{:?}", found[1].evidence);
-        assert!(found[0].evidence[3].starts_with("It may hold"));
+        // without the user's work: deletable through the review
+        assert_eq!(found[0].action, Some(Action::Remove));
+        assert_eq!(found[0].remedy, Remedy::Delete);
+        assert!(found[0].evidence[3].starts_with("It may hold settings or saved games"));
+        // saved games, or sketches: shown only, nothing to run
+        for (f, what) in [(&found[1], r"saved games (Saved\SaveGames)"), (&found[2], r"own files (sketches)")] {
+            assert_eq!(f.remedy, Remedy::Info, "{}", f.title);
+            assert!(f.action.is_none() && f.command.is_none());
+            assert!(f.evidence[3].contains(what), "{:?}", f.evidence);
+        }
+        assert!(found[1].title.contains("holds your saved games") && found[2].title.contains("holds your files"));
         // already found by something else: not again
         let seen: HashSet<String> = [roaming.join("GoneApp").join("cache").to_string_lossy().to_lowercase()].into();
-        assert_eq!(find_in(&tree, &facts, &[roaming.clone()], &seen, SystemTime::now()).len(), 1);
+        assert_eq!(find_in(&tree, &facts, &[roaming.clone()], &seen, SystemTime::now()).len(), 2);
         // a program of its name started lately keeps it
         let mut facts = facts;
         facts.set_run("goneapp.exe", SystemTime::now());
-        assert_eq!(find_in(&tree, &facts, &[roaming.clone()], &HashSet::new(), SystemTime::now()).len(), 1);
+        assert_eq!(find_in(&tree, &facts, &[roaming.clone()], &HashSet::new(), SystemTime::now()).len(), 2);
         // never planned: orange, and a guess
         let n = found.len();
         assert!(crate::plan::plan(&found, &vec![true; n], 1 << 40).picked.is_empty());
+        // a document inside is the user's work too; a settings file isn't
+        let doc = roaming.join("Writer");
+        big(&doc.join("notes.docx"), true);
+        big(&doc.join("settings.json"), true);
+        let t2 = sprawl_core::scan(&base, |_| {}).unwrap();
+        assert!(work_in(&t2, crate::find_path(&t2, &doc).unwrap()).is_some_and(|(r, s)| r == "notes.docx" && !s));
+        assert!(work_in(&t2, crate::find_path(&t2, &roaming.join("GoneApp")).unwrap()).is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -186,7 +186,8 @@ impl Finding {
     /// Where it is listed: what Sprawl removes, what the user can do, what is worth knowing.
     pub fn group(&self) -> Group {
         match self.remedy {
-            Remedy::Delete | Remedy::Command if self.leftover() => Group::Leftover,
+            // left behind: deletable, or shown only when it holds the user's work
+            _ if self.leftover() => Group::Leftover,
             Remedy::Delete | Remedy::Command => Group::Clean,
             _ if self.risk == Risk::Red || matches!(&self.source, Source::Rule(id) if id.starts_with("anomaly.")) => Group::Know,
             _ => Group::Yourself,

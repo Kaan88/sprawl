@@ -1512,9 +1512,10 @@ impl State {
         }
         // folders left by applications that are gone: Sprawl can remove them, the user decides each
         if !left.is_empty() {
-            let bytes: u64 = left.iter().filter(|&&i| r.counted[i]).map(|&i| r.findings[i].bytes).sum();
+            // only what Sprawl would remove: those holding the user's work are shown, not counted
+            let bytes: u64 = left.iter().filter(|&&i| r.counted[i] && r.findings[i].remedy == Remedy::Delete).map(|&i| r.findings[i].bytes).sum();
             x += &format!(
-                r##"<Button x:Name="AdvLeft" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Left behind by applications that are no longer installed" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="Sprawl found no installed application by these names, and nothing in them changed for half a year. They may hold settings or saved games: decide each one. Never ticked for you." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                r##"<Button x:Name="AdvLeft" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Left behind by applications that are no longer installed" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="Sprawl found no installed application by these names, and nothing in them changed for half a year. They may hold settings or saved games: decide each one. Never ticked for you; one holding your saved games or files is only shown: look before removing it." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
                 left.len(),
                 self.size(bytes),
                 if self.advisor.hide_left { "show" } else { "hide" }

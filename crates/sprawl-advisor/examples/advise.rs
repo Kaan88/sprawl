@@ -50,7 +50,8 @@ fn main() {
     let left: Vec<_> = ok.iter().filter(|f| f.group() == Group::Leftover).collect();
     println!("left behind by applications no longer installed: {}, {}", left.len(), format_size(left.iter().map(|f| f.bytes).sum()));
     for f in &left {
-        println!("  {:>10}  {}  ({})", format_size(f.bytes), f.path.display(), f.evidence[1..3].join("; "));
+        let how = if f.remedy == sprawl_advisor::Remedy::Info { "shown only" } else { "deletable" };
+        println!("  {:>10}  {how:<10}  {}  ({})", format_size(f.bytes), f.path.display(), f.evidence[3]);
     }
     let tips: u64 = ok.iter().filter(|f| f.group() == Group::Yourself).map(|f| f.expected_gain()).sum();
     let active: Vec<_> = ok.iter().filter(|f| f.in_active_project()).collect();

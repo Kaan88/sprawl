@@ -236,18 +236,7 @@ pub(crate) fn glass(c: &Ctx, o: &mut Out, seeds: &mut Vec<(usize, [f32; 2], f32)
 }
 
 /// A file type's family, for grouping the bars.
-fn family(ext: &str) -> u8 {
-    match ext {
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "heic" | "tif" | "tiff" | "raw" | "cr2" | "nef" | "arw" | "dng" | "psd" | "svg" | "ico" => 0,
-        "mp4" | "mkv" | "mov" | "avi" | "wmv" | "webm" | "m4v" | "ts" => 1,
-        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" => 2,
-        "zip" | "7z" | "rar" | "gz" | "xz" | "tar" | "cab" | "msi" | "iso" | "zst" | "bz2" => 3,
-        "exe" | "dll" | "sys" | "so" | "lib" | "a" | "node" | "pyd" | "jar" | "class" => 4,
-        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "rtf" | "odt" => 5,
-        "js" | "ts2" | "py" | "rs" | "c" | "cpp" | "h" | "cs" | "java" | "go" | "json" | "xml" | "html" | "css" | "yml" | "yaml" | "toml" => 6,
-        _ => 7,
-    }
-}
+use sprawl_core::kinds::family;
 
 /// Every file type as a bar around a ring, grouped by family; length is the square root of bytes.
 pub(crate) fn spectrum(c: &Ctx, o: &mut Out) {
