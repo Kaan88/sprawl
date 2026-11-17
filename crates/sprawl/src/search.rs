@@ -70,6 +70,9 @@ pub(crate) struct Search {
     /// The suggestions under the box and the highlighted one.
     pub(crate) suggest: Option<crate::search_query::Suggestions>,
     pub(crate) highlight: Option<usize>,
+    /// Saved and recent searches (read when first needed), and what their menu was made for.
+    pub(crate) history: Option<crate::search_query::History>,
+    pub(crate) saved_shape: String,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
@@ -487,6 +490,7 @@ impl State {
             text(&self.root, "StatusText", &format!("{} isn't there any more. Scan again to update the results.", path.display()));
             return;
         };
+        self.search_note();
         let explorer = std::env::var_os("SystemRoot").map(|w| std::path::PathBuf::from(w).join("explorer.exe")).unwrap_or_else(|| "explorer.exe".into());
         // Explorer opens a folder in a window and a file with its default program
         let _ = std::process::Command::new(explorer).arg(path).spawn();
@@ -506,6 +510,7 @@ impl State {
 
     /// Ctrl+Enter or "Show in the Tree" on a result: show it in the tree.
     pub(crate) fn search_reveal(&mut self, n: usize) {
+        self.search_note();
         self.set_view(View::Tree);
         self.reveal(n);
     }

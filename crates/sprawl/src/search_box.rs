@@ -275,6 +275,7 @@ impl State {
             }
             sq::BoxKey::Results => {
                 self.search_suggest_close();
+                self.search_note();
                 self.search_box_down();
                 true
             }
@@ -304,7 +305,146 @@ impl State {
         if let Ok(e) = find::<UIElement>(&self.root, "SearchEmpty") {
             let _ = e.SetVisibility(if empty { Visibility::Visible } else { Visibility::Collapsed });
         }
+        self.search_saved_state();
     }
+
+    /// Keep a history of searches (on unless switched off).
+    fn search_keeps_history(&self) -> bool {
+        self.settings.bool("searchHistory") != Some(false)
+    }
+
+    /// A search was used (Enter to the results, a result opened or shown in the tree): it
+    /// goes first among the recent ones, unless the history is off.
+    pub(crate) fn search_note(&mut self) {
+        if !self.search_keeps_history() || !Query::parse(&self.search.query).errors().is_empty() {
+            return;
+        }
+        let h = self.search.history.get_or_insert_with(sq::history_load);
+        if h.note(&self.search.query) {
+            sq::history_save(h);
+            self.search_saved_state();
+        }
+    }
+
+    /// The saved and recent searches button at the right of the box: its menu is made again
+    /// only when what it lists changes.
+    fn search_saved_state(&mut self) {
+        if !self.search.ui_built {
+            return;
+        }
+        let Ok(host) = find::<Border>(&self.root, "SearchSaved") else { return };
+        let keep_on = self.search_keeps_history();
+        let h = self.search.history.get_or_insert_with(sq::history_load).clone();
+        let q = self.search.query.trim().to_string();
+        let pinned = h.is_pinned(&q);
+        let shape = format!("{}|{}|{}|{keep_on}", h.to_text(), q.is_empty(), pinned);
+        if shape == self.search.saved_shape {
+            return;
+        }
+        self.search.saved_shape = shape;
+        // (label, what it does)
+        let mut items: Vec<(String, SavedAct)> = Vec::new();
+        let mut x = format!(
+            r##"<Button {} x:Name="SxSaved" Height="32" Padding="10,3" ToolTipService.ToolTip="Saved and recent searches"><FontIcon Glyph="&#xE81C;" FontSize="14"/><Button.Flyout><MenuFlyout x:Name="SxSavedFly" Placement="BottomEdgeAlignedRight">"##,
+            ui::NS
+        );
+        let mut item = |x: &mut String, label: String, act: SavedAct, icon: &str, enabled: bool| {
+            let i = items.len();
+            let icon = if icon.is_empty() { String::new() } else { format!(r##"<MenuFlyoutItem.Icon><FontIcon Glyph="{icon}"/></MenuFlyoutItem.Icon>"##) };
+            *x += &format!(r##"<MenuFlyoutItem x:Name="SxSv{i}" Text="{}" IsEnabled="{}">{icon}</MenuFlyoutItem>"##, ui::esc(&label), if enabled { "True" } else { "False" });
+            items.push((label, act));
+        };
+        for p in &h.pinned {
+            item(&mut x, p.clone(), SavedAct::Use(p.clone()), "&#xE718;", true);
+        }
+        if !h.pinned.is_empty() && !h.recent.is_empty() {
+            x += "<MenuFlyoutSeparator/>";
+        }
+        for r in &h.recent {
+            item(&mut x, r.clone(), SavedAct::Use(r.clone()), "&#xE81C;", true);
+        }
+        if h.pinned.is_empty() && h.recent.is_empty() {
+            let none = if keep_on { "No saved or recent searches yet" } else { "No saved searches" };
+            item(&mut x, none.into(), SavedAct::Nothing, "", false);
+        }
+        x += "<MenuFlyoutSeparator/>";
+        if pinned {
+            item(&mut x, "Unpin this search".into(), SavedAct::Unpin(q.clone()), "&#xE77A;", true);
+        } else {
+            item(&mut x, "Pin this search".into(), SavedAct::Pin(q.clone()), "&#xE718;", !q.is_empty());
+        }
+        item(&mut x, "Clear recent searches".into(), SavedAct::Clear, "&#xE74D;", !h.recent.is_empty());
+        let i = items.len();
+        x += &format!(
+            r##"<ToggleMenuFlyoutItem x:Name="SxSv{i}" Text="Keep a history of searches" IsChecked="{}"/>"##,
+            if keep_on { "True" } else { "False" }
+        );
+        items.push((String::new(), SavedAct::Keep));
+        x += "</MenuFlyout></Button.Flyout></Button>";
+        let Ok(content) = load::<UIElement>(&x) else { return };
+        let _ = host.SetChild(&content);
+        let Ok(fe) = content.cast::<FrameworkElement>() else { return };
+        for (i, (_, act)) in items.into_iter().enumerate() {
+            if let Ok(m) = find::<MenuFlyoutItem>(&fe, &format!("SxSv{i}")) {
+                if let Ok(t) = m.Click(move |_, _| {
+                    let act = act.clone();
+                    with(|s| s.search_saved_pick(act));
+                }) {
+                    keep(t);
+                }
+            }
+        }
+    }
+
+    /// Open the saved searches menu (a dev step for screenshots).
+    pub(crate) fn search_saved_open(&mut self) {
+        eprintln!("saved searches: {:?}", self.search.history);
+        let Ok(host) = find::<Border>(&self.root, "SearchSaved") else { return };
+        let Some(fe) = host.Child().ok().and_then(|c| c.cast::<FrameworkElement>().ok()) else { return };
+        if let (Ok(m), Ok(b)) = (find::<MenuFlyout>(&fe, "SxSavedFly"), find::<FrameworkElement>(&fe, "SxSaved")) {
+            let _ = m.ShowAt(&b);
+        }
+    }
+
+    fn search_saved_pick(&mut self, act: SavedAct) {
+        let h = self.search.history.get_or_insert_with(sq::history_load);
+        match act {
+            SavedAct::Use(q) => {
+                let at = q.len();
+                self.search_set_box(&q, at);
+                return;
+            }
+            SavedAct::Pin(q) => h.pin(&q),
+            SavedAct::Unpin(q) => h.unpin(&q),
+            SavedAct::Clear => h.recent.clear(),
+            SavedAct::Keep => {
+                let on = !self.search_keeps_history();
+                self.settings.set_bool("searchHistory", on);
+                self.settings.save();
+                // switched off: what was kept goes (pinned searches stay)
+                if !on {
+                    let h = self.search.history.get_or_insert_with(sq::history_load);
+                    h.recent.clear();
+                }
+            }
+            SavedAct::Nothing => return,
+        }
+        if let Some(h) = &self.search.history {
+            sq::history_save(h);
+        }
+        self.search_saved_state();
+    }
+}
+
+/// What an item of the saved searches menu does.
+#[derive(Clone)]
+enum SavedAct {
+    Use(String),
+    Pin(String),
+    Unpin(String),
+    Clear,
+    Keep,
+    Nothing,
 }
 
 use windows_core::Interface;

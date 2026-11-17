@@ -694,6 +694,8 @@ impl State {
                         let t = q[5..].to_string();
                         self.search_set_box(&t, t.len());
                     }
+                    // dev: the saved searches menu open
+                    "saved" => self.search_saved_open(),
                     // dev: a key in the search box (boxkey=40 is Down)
                     k if k.starts_with("boxkey=") => {
                         self.search_box_key(k[7..].parse().unwrap_or(0));
