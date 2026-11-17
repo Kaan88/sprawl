@@ -209,11 +209,11 @@ impl State {
             };
             let scan = match &c.presence {
                 _ if community => format!(
-                    r##"<Button x:Name="AdvClUse{ci}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
+                    r##"<Button x:Name="AdvClUse{ci}" Grid.Column="1" VerticalAlignment="Center" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
                     if turned_on { "Stop using" } else { "Use this cleaner" }
                 ),
                 Presence::Elsewhere(drive) => format!(
-                    r##"<Button x:Name="AdvClScan{ci}" Content="Scan {}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0"/>"##,
+                    r##"<Button x:Name="AdvClScan{ci}" Grid.Column="1" VerticalAlignment="Center" Content="Scan {}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0"/>"##,
                     ui::esc(drive.display().to_string().trim_end_matches('\\'))
                 ),
                 _ => String::new(),
