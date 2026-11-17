@@ -291,7 +291,7 @@ impl State {
             return;
         }
         // checked against the whole scan, not a filtered view of it
-        let Some(t) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
+        let Some(t) = self.active_tree() else { return };
         let picked = self.ticked_findings();
         if picked.is_empty() {
             return;
@@ -303,7 +303,7 @@ impl State {
         }
         let never = sprawl_advisor::safety::Never::default_list();
         // what the run leaves: anything new since the scan began, and what the user keeps
-        let spare = clean::Spare { since: Some(self.scan_began), keep: self.advisor.memory.kept_paths() };
+        let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>)> = Vec::new();
@@ -422,7 +422,7 @@ impl State {
     /// Count again, on a thread, what the run would free for each of `findings` that is an
     /// estimate; the answers replace the earlier ones as they come.
     fn measure(&mut self, findings: Vec<Finding>) {
-        let spare = clean::Spare { since: Some(self.scan_began), keep: self.advisor.memory.kept_paths() };
+        let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
         let work: Vec<(PathBuf, Action)> = findings.into_iter().filter(|f| f.estimate()).filter_map(|f| Some((f.path.clone(), clean::action(&f)?.0))).collect();
         let c = &mut self.advisor.cleanup;
         if work.is_empty() {
@@ -536,11 +536,16 @@ impl State {
         }
         self.save_memory();
         self.advisor.cleanup.done = Some(done);
-        // what went no longer counts as ticked
+        // what went no longer counts as ticked, nor is put back by the Cleaners tab on this report
+        self.advisor.cl.preview = None;
         self.advisor.cleanup.ticked.clear();
         self.advisor.cleanup.ticked_for = None;
         // the tree as it is now: each item's folder scanned again, or taken out when gone
         self.apply_rescans(run.rescans);
+        // the Cleaners tab's own read: read again
+        if self.own_active() {
+            self.own_start();
+        }
     }
 
     /// The clean-up's panel: running, or the result.
@@ -626,11 +631,19 @@ impl State {
             r##"<Border Padding="12,10" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="8">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 <StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/></StackPanel>
-<Button x:Name="AdvClean" Grid.Column="1" Content="Clean up..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></Grid>
+<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">{prev}<Button x:Name="AdvClean" Content="Clean up..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></StackPanel></Grid>
 <StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
             if picked.is_empty() { "Nothing ticked".to_string() } else { format!("{} ticked · {}{}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes)) },
             if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then Clean up." } else { "Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." },
             if picked.is_empty() { "False" } else { "True" },
+            prev = if self.advisor.cleaners_tab_on() {
+                format!(
+                    r##"<Button x:Name="AdvClPrev" Content="Preview" Padding="14,6" FontSize="13" CornerRadius="6" IsEnabled="{}" ToolTipService.ToolTip="The exact files that would go, counted now. Nothing is deleted."/>"##,
+                    if picked.is_empty() || matches!(self.advisor.cl.preview, Some(crate::cleaners::PreviewRun::Counting(_))) { "False" } else { "True" }
+                )
+            } else {
+                String::new()
+            },
         );
         if admin_waiting {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
@@ -657,7 +670,7 @@ impl State {
                 let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
                 let own = format!(
                     "Sprawl removes them itself. Links inside are removed as links (what they point to stays), files a program has locked are skipped, and anything created or changed since the scan began ({}) is left alone, as is anything you chose to keep.",
-                    sprawl_core::local_time(self.scan_began)
+                    sprawl_core::local_time(self.active_began())
                 );
                 let tool = "Each item with a program of its own runs that program's clean-up command, shown below, without a window. The program decides what goes: files new since the scan, or ones you chose to keep, may go too.";
                 if tools == picked.len() {
@@ -698,7 +711,7 @@ impl State {
         }
         x += "</StackPanel></ScrollViewer>";
         // everything changed since the scan began stays: an old scan leaves most of it
-        if let Some(age) = scan_age_words(self.scan_began, std::time::SystemTime::now()) {
+        if let Some(age) = scan_age_words(self.active_began(), std::time::SystemTime::now()) {
             x += &format!(
                 r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE823;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="The scan is {age} old. What changed since it began is left alone, so this may free less than shown. Scan again first for a full clean-up." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" MaxWidth="760" VerticalAlignment="Center"/><Button x:Name="AdvRescanOld" Content="Scan again" Padding="10,2" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/></StackPanel>"##
             );

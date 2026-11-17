@@ -36,7 +36,57 @@ pub(crate) struct ClState {
     pub(crate) left_shown: bool,
     /// Parts the AI suggests ticking (part keys), and why.
     pub(crate) suggest: Option<(Vec<String>, String)>,
+    /// The Cleaners tab's own read of the cleaners' folders, for when the scan on screen
+    /// doesn't cover them (no scan, another drive, one folder).
+    pub(crate) own: Option<Own>,
+    /// That read going on: its progress, and where its answer comes.
+    pub(crate) own_reading: Option<(Arc<sprawl_core::Progress>, std::sync::mpsc::Receiver<Option<Own>>)>,
+    own_count: u64,
+    /// The folders the cleaners look at (worked out once).
+    roots: std::cell::RefCell<Option<Vec<std::path::PathBuf>>>,
+    /// The tab just opened: the user's remembered ticks are to be put back.
+    pub(crate) restore_pending: bool,
+    /// The user changed a tick: remembered at the next redraw.
+    pub(crate) user_ticked: bool,
+    /// The part shown in the details pane, by its key.
+    pub(crate) sel: Option<String>,
+    /// What a clean-up of the ticks would remove, counted without removing anything.
+    pub(crate) preview: Option<PreviewRun>,
+    /// The Cleaners group in the Advisor's findings is folded.
+    pub(crate) hide_group: bool,
 }
+
+/// How many applications the Advisor's Cleaners group lists.
+const GROUP_APPS: usize = 5;
+
+/// One ticked item, previewed.
+pub(crate) struct PrevItem {
+    pub(crate) title: String,
+    pub(crate) key: String,
+    /// None: a program's own command decides what goes.
+    pub(crate) got: Option<sprawl_advisor::clean::Preview>,
+}
+
+pub(crate) enum PreviewRun {
+    Counting(std::sync::mpsc::Receiver<Vec<PrevItem>>),
+    /// The items, and the ticks they were counted for.
+    Done(Vec<PrevItem>, Vec<String>),
+}
+
+/// How many of the biggest files a preview lists.
+const PREVIEW_FILES: usize = 25;
+
+/// The cleaners' folders as read by the Cleaners tab itself, and the report made from them.
+pub(crate) struct Own {
+    pub(crate) tree: Arc<sprawl_core::Tree>,
+    pub(crate) report: Report,
+    /// When the read began: anything newer stays, as with a scan.
+    pub(crate) began: std::time::SystemTime,
+    pub(crate) roots: usize,
+}
+
+/// Report generations of the tab's own reads: apart from the scans' own.
+const OWN_GEN: u64 = 1 << 62;
 
 /// Folders no cleaner knows are listed from this size.
 const UNCLAIMED_MIN: u64 = 100 << 20;
@@ -95,6 +145,130 @@ fn group_of(g: &str) -> &'static str {
 }
 
 impl State {
+    /// The folders the cleaners look at: built-in and the user's own cleaners.
+    pub(crate) fn cleaner_roots(&self) -> Vec<std::path::PathBuf> {
+        self.advisor
+            .cl
+            .roots
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let mut packs = vec![sprawl_advisor::RulePack::builtin()];
+                packs.extend(sprawl_advisor::memory::load_packs().0);
+                sprawl_advisor::cleaners::scan_roots(&sprawl_advisor::cleaners::catalogue(&packs))
+            })
+            .clone()
+    }
+
+    /// The scan on screen covers every folder the cleaners look at (a scan of the system
+    /// drive does), with no filter on: the Cleaners tab then uses its report.
+    pub(crate) fn scan_covers_cleaners(&self) -> bool {
+        let Some(t) = self.tree.as_ref() else { return false };
+        if self.full_tree.is_some() || t.method == sprawl_core::ScanMethod::Csv {
+            return false;
+        }
+        let low = |p: &str| p.trim_end_matches('\\').to_lowercase();
+        let tops: Vec<String> = if t.nodes[sprawl_core::ROOT].name == sprawl_core::MULTIPLE {
+            t.nodes[sprawl_core::ROOT].children.iter().map(|&k| low(&t.nodes[k].name)).collect()
+        } else {
+            vec![low(&t.root_path.to_string_lossy())]
+        };
+        self.cleaner_roots().iter().all(|r| {
+            let r = low(&r.to_string_lossy());
+            tops.iter().any(|top| r == *top || r.starts_with(&format!("{top}\\")))
+        })
+    }
+
+    /// The tree the report on show was made from: the tab's own read, or the whole scan (not a
+    /// filtered view of it).
+    pub(crate) fn active_tree(&self) -> Option<Arc<sprawl_core::Tree>> {
+        if self.own_active() {
+            return self.advisor.cl.own.as_ref().map(|o| o.tree.clone());
+        }
+        self.full_tree.clone().or_else(|| self.tree.clone())
+    }
+
+    /// When the tree on show began to be read: anything newer is left alone.
+    pub(crate) fn active_began(&self) -> std::time::SystemTime {
+        match self.advisor.cl.own.as_ref().filter(|_| self.own_active()) {
+            Some(o) => o.began,
+            None => self.scan_began,
+        }
+    }
+
+    /// The Cleaners tab is on show and works from its own read, not the scan's report.
+    pub(crate) fn own_active(&self) -> bool {
+        self.view == crate::state::View::Advisor && self.advisor.cleaners_tab_on() && !self.scan_covers_cleaners()
+    }
+
+    /// Read the cleaners' folders and check them, off the UI thread (the tab opened, Check
+    /// again, or after a clean-up). Every finding passes the same safety checks, against this
+    /// read.
+    pub(crate) fn own_start(&mut self) {
+        if self.advisor.cl.own_reading.is_some() {
+            return;
+        }
+        // the user's decisions (what they keep) apply to this read too
+        self.advisor.memory_ready();
+        let roots = self.cleaner_roots();
+        self.advisor.cl.own_count += 1;
+        let gen = OWN_GEN + self.advisor.cl.own_count;
+        let memory = self.advisor.memory.clone();
+        let progress = Arc::new(sprawl_core::Progress::default());
+        let p2 = progress.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let began = std::time::SystemTime::now();
+            let own = (|| {
+                if roots.is_empty() {
+                    return None;
+                }
+                let tree = Arc::new(sprawl_core::scan_many(&roots, &p2).ok()?);
+                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory))?;
+                Some(Own { tree, report, began, roots: roots.len() })
+            })();
+            let _ = tx.send(own);
+        });
+        self.advisor.cl.own_reading = Some((progress, rx));
+    }
+
+    /// The tab's own read, when it is done.
+    pub(crate) fn own_poll(&mut self) {
+        let Some((progress, rx)) = &self.advisor.cl.own_reading else { return };
+        let got = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // the count as it goes, without a redraw
+                if let Some(p) = self.advisor.panel.as_ref().filter(|_| self.own_active()) {
+                    crate::state::text(p, "ClReading", &format!("Reading the folders the cleaners look at... {} items", crate::format::thousands(progress.items())));
+                }
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.advisor.cl.own_reading = None;
+        if got.is_none() {
+            self.adv_say("The cleaners' folders couldn't be read. Press Check again.");
+        }
+        self.advisor.cl.own = got.or(self.advisor.cl.own.take());
+        if self.own_active() {
+            self.cleanup_defaults();
+            self.cleanup_measure_report();
+            self.render_advisor();
+        }
+    }
+
+    /// The Cleaners tab opened: read the cleaners' folders when the scan doesn't cover them
+    /// and the last read is older than a few minutes.
+    pub(crate) fn own_on_open(&mut self) {
+        if !self.own_active() {
+            return;
+        }
+        let old = self.advisor.cl.own.as_ref().is_none_or(|o| o.began.elapsed().map_or(true, |d| d.as_secs() > 300));
+        if old {
+            self.own_start();
+        }
+    }
+
     /// The cleaners to list for report `r`, in order: by group, then the biggest first. Cleaners
     /// whose application isn't on this PC are left out.
     pub(crate) fn cleaner_layout(&self, r: &Report) -> Vec<ClRow> {
@@ -193,108 +367,6 @@ impl State {
         let Some(r) = self.advice() else { return (0, 0) };
         let rows = self.cleaner_layout(r);
         (rows.len(), rows.iter().map(|c| c.parts.len()).sum())
-    }
-
-    /// The Cleaners section.
-    pub(crate) fn cleaners_section(&self, r: &Report) -> String {
-        let rows = self.cleaner_layout(r);
-        let mut x = String::from(
-            r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Text="The applications on this PC, and what each keeps that can go. A part's tick is the same as its row in Findings: one bar, one review, and nothing goes before you press Clean up."/>"##,
-        );
-        x += &self.suggest_card(r);
-        x += &self.chat_card();
-        if !self.usual_keys(r).is_empty() {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
-        }
-        if rows.is_empty() {
-            x += r##"<TextBlock Text="No application Sprawl knows is in this scan." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
-            return x;
-        }
-        let running = self.advisor.cleanup.running.is_some();
-        let mut part_no = 0usize;
-        let mut last_group = "";
-        for (ci, c) in rows.iter().enumerate() {
-            if c.group != last_group {
-                last_group = c.group;
-                x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,6,0,0"/>"##, ui::esc(c.group));
-            }
-            let open = self.advisor.cl.open.contains(&c.id);
-            let bytes: u64 = c.parts.iter().map(|p| p.bytes(r)).sum();
-            let ticked = c.parts.iter().filter(|p| p.findings.iter().any(|&i| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path)))).count();
-            let community = sprawl_advisor::community::is_community(&c.id);
-            let turned_on = community && self.community_on(r, c);
-            let sub = match &c.presence {
-                _ if community && !turned_on => format!("From the community, not used yet · {}", if c.id.starts_with(sprawl_advisor::community::WINAPP2) { "winapp2.ini" } else { "BleachBit" }),
-                Presence::Elsewhere(_) => "Not in this scan".to_string(),
-                _ if bytes == 0 => "Nothing to clean now".to_string(),
-                _ => {
-                    let n = c.parts.iter().filter(|p| p.bytes(r) > 0).count();
-                    let mut s = format!("{n} {}", if n == 1 { "part" } else { "parts" });
-                    if ticked > 0 {
-                        s += &format!(" · {ticked} ticked");
-                    }
-                    s
-                }
-            };
-            let scan = match &c.presence {
-                _ if community => format!(
-                    r##"<Button x:Name="AdvClUse{ci}" Grid.Column="1" VerticalAlignment="Center" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
-                    if turned_on { "Stop using" } else { "Use this cleaner" }
-                ),
-                Presence::Elsewhere(drive) => format!(
-                    r##"<Button x:Name="AdvClScan{ci}" Grid.Column="1" VerticalAlignment="Center" Content="Scan {}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="8,0,0,0"/>"##,
-                    ui::esc(drive.display().to_string().trim_end_matches('\\'))
-                ),
-                _ => String::new(),
-            };
-            x += &format!(
-                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Button x:Name="AdvClO{ci}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="7" BorderThickness="0" Background="{bg}" AutomationProperties.Name="{name}">
-<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
-<FontIcon Glyph="{chev}" FontSize="10" Foreground="#FF8E97AA" VerticalAlignment="Center"/>
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
-<TextBlock Grid.Column="2" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
-</Grid></Button>{scan}</Grid>"##,
-                bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
-                name = ui::esc(&c.name),
-                chev = if open { "&#xE70D;" } else { "&#xE76C;" },
-                sub = ui::esc(&sub),
-                size = if bytes > 0 { self.size(bytes) } else { String::new() },
-                op = if bytes > 0 { "1" } else { "0.5" },
-            );
-            if open {
-                x += r##"<StackPanel Spacing="2" Margin="22,0,0,4">"##;
-                for p in &c.parts {
-                    x += &self.part_row(r, c, p, part_no, running);
-                    part_no += 1;
-                }
-                if let Some(k) = c.def {
-                    let d = &r.catalogue[k];
-                    let showing = self.advisor.cl.def.contains(&c.id);
-                    let forget = if d.builtin || sprawl_advisor::community::is_community(&d.id) {
-                        String::new()
-                    } else {
-                        format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
-                    };
-                    x += &format!(
-                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>{forget}</StackPanel>"##,
-                        ui::esc(&format!("From {}", d.pack)),
-                        if showing { "Hide the definition" } else { "Show the definition" }
-                    );
-                    if showing {
-                        x += &format!(
-                            r##"<Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
-                            d.text.lines().map(ui::esc).collect::<Vec<_>>().join("&#10;")
-                        );
-                    }
-                }
-                x += "</StackPanel>";
-            } else {
-                part_no += c.parts.len();
-            }
-        }
-        x += &self.unclaimed_card(r);
-        x += &self.community_card();
-        x
     }
 
     /// Whether the user turned community cleaner `c` on (for its definition as it is now).
@@ -458,90 +530,9 @@ impl State {
         v
     }
 
-    fn part_row(&self, r: &Report, c: &ClRow, p: &PartRow, n: usize, running: bool) -> String {
-        let bytes = p.bytes(r);
-        let tickable: Vec<usize> = p.tickable(r).collect();
-        let all_ticked = !tickable.is_empty() && tickable.iter().all(|&i| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path)));
-        // why a part with something in it can't be ticked: the first finding's reason
-        let why_not = p.findings.first().and_then(|&i| untickable(&r.findings[i], r.counted[i])).filter(|w| !w.is_empty());
-        let tick = if !tickable.is_empty() {
-            format!(
-                r##"<CheckBox x:Name="AdvClT{n}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Clean up {}"/>"##,
-                if all_ticked { "True" } else { "False" },
-                if running { "False" } else { "True" },
-                ui::esc(&format!("{}: {}", c.name, p.title))
-            )
-        } else if let (Some(w), true) = (why_not, bytes > 0) {
-            format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(w))
-        } else {
-            String::new()
-        };
-        let label = if p.info {
-            "Tip".to_string()
-        } else {
-            match p.class {
-                Class::Privacy => "Privacy".to_string(),
-                Class::Space => crate::advisor::risk_label(p.risk).to_string(),
-            }
-        };
-        let mut sub = label;
-        let days = self.part_days(p);
-        if days > 0 && !p.clears {
-            sub += &format!(" · keeps the last {days} days");
-        }
-        if p.closed == Closed::Must {
-            sub += " · only with the app closed";
-        }
-        if !p.cost.is_empty() {
-            sub += &format!(" · {}", p.cost);
-        }
-        // the application being open
-        let open = p.findings.first().and_then(|&i| self.app_open(&r.findings[i]));
-        let warn = match &open {
-            Some((app, Closed::Must)) => format!(r##"<TextBlock Text="Close {} first: this can't be cleaned while it is open." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(app)),
-            Some((app, Closed::Warn)) => format!(r##"<TextBlock Text="{} is open: files it is using will be skipped." FontSize="12" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(app)),
-            _ => String::new(),
-        };
-        let keep = if p.clears && !p.info && bytes > 0 {
-            format!(
-                r##"<Button x:Name="AdvClK{n}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" Foreground="#FF8FB4FF" ToolTipService.ToolTip="What changed lately stays. Press to keep more days." Margin="-8,0,0,0"/>"##,
-                if days == 0 { "Keep the newest files?".to_string() } else { format!("Keeps the last {days} days (more)") }
-            )
-        } else {
-            String::new()
-        };
-        let shown = self.advisor.cl.show.as_deref() == Some(p.key.as_str());
-        let mut x = format!(
-            r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>{tick}
-<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,4,0,4"><Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Top" Margin="0,5,0,0"/><StackPanel Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxWidth="560"/>{warn}{keep}</StackPanel></StackPanel>
-{files}<TextBlock Grid.Column="3" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
-            op = if bytes > 0 { "1" } else { "0.55" },
-            dot = if p.info { "#FF8E97AA" } else { crate::advisor::risk_hex(p.risk) },
-            title = ui::esc(&p.title),
-            sub = ui::esc(&sub),
-            files = if bytes > 0 {
-                format!(
-                    r##"<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"><Button x:Name="AdvClQ{n}" Content="&#xE897;" FontFamily="Segoe Fluent Icons" Padding="6,3" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What happens if I clean this? (asks the AI)" AutomationProperties.Name="What happens if I clean this?"/><Button x:Name="AdvClS{n}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What would go, and where it is on the map"/></StackPanel>"##,
-                    if shown { "Hide files" } else { "Show files" }
-                )
-            } else {
-                String::new()
-            },
-            size = match bytes {
-                0 => "-".into(),
-                b if p.findings.iter().any(|&i| r.findings[i].estimate()) => format!("up to {}", self.size(b)),
-                b => self.size(b),
-            },
-        );
-        if shown {
-            x += &self.part_files(r, p);
-        }
-        x
-    }
-
     /// The biggest files a part would remove, and where they are.
     fn part_files(&self, r: &Report, p: &PartRow) -> String {
-        let Some(t) = &self.tree else { return String::new() };
+        let Some(t) = self.active_tree() else { return String::new() };
         let mut files: Vec<usize> = Vec::new();
         let mut count = 0u64;
         for &i in &p.findings {
@@ -599,11 +590,39 @@ impl State {
                 }
                 return;
             }
+            "AdvClA" => {
+                let Some(c) = rows.get(i) else { return };
+                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).map(|k| key(&r.findings[k].path))).collect();
+                // partly ticked: the first press unticks the app, as a box that shows a mark
+                let any = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&k| self.advisor.cleanup.ticked.contains(&key(&r.findings[k].path)));
+                let all = !keys.is_empty() && keys.iter().all(|k| self.advisor.cleanup.ticked.contains(k));
+                if any && !all {
+                    let mine: Vec<String> = c.parts.iter().flat_map(|p| p.findings.iter()).map(|&k| key(&r.findings[k].path)).collect();
+                    for k in mine {
+                        self.advisor.cleanup.ticked.remove(&k);
+                    }
+                    let c = &mut self.advisor.cleanup;
+                    c.single = None;
+                    c.own_ok = false;
+                    c.auto = false;
+                } else {
+                    self.cleanup_tick_many(keys);
+                }
+                self.advisor.focus_after = Some(format!("AdvClA{i}"));
+                self.advisor.cl.user_ticked = true;
+            }
+            "AdvClP" => {
+                let Some(p) = rows.iter().flat_map(|c| c.parts.iter()).nth(i) else { return };
+                let k = p.key.clone();
+                self.advisor.cl.preview = None;
+                self.advisor.cl.sel = if self.advisor.cl.sel.as_deref() == Some(k.as_str()) { None } else { Some(k) };
+            }
             "AdvClT" => {
                 let Some(p) = rows.iter().flat_map(|c| c.parts.iter()).nth(i) else { return };
                 let keys: Vec<String> = p.tickable(r).map(|k| key(&r.findings[k].path)).collect();
                 self.cleanup_tick_many(keys);
                 self.advisor.focus_after = Some(format!("AdvClT{i}"));
+                self.advisor.cl.user_ticked = true;
             }
             "AdvClQ" => {
                 let Some((c, p)) = rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).nth(i) else { return };
@@ -869,6 +888,552 @@ impl State {
         }
         self.advisor.cl.lens.as_ref().filter(|(g, _)| *g == self.tree_gen).map(|(_, l)| l.clone())
     }
+}
+
+impl State {
+    /// The Cleaners tab: the applications and their parts on the left, the part picked (or the
+    /// preview) on the right. No map: the list takes the room.
+    pub(crate) fn cleaners_tab_xaml(&self) -> String {
+        let mut x = format!(r##"<Grid {} Padding="18,14,18,8" RowSpacing="10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>"##, ui::NS);
+        let reading = self.advisor.cl.own_reading.as_ref().map(|(p, _)| p.items());
+        let Some(r) = self.advice() else {
+            let msg = match reading {
+                Some(n) => format!("Reading the folders the cleaners look at... {} items", crate::format::thousands(n)),
+                None if self.own_active() => "Press Check to read the folders the cleaners look at.".into(),
+                None if self.advisor.running => "Looking for what the cleaners can clean...".into(),
+                None => self.advisor.note.unwrap_or("Scan a drive or folder, and the cleaners show what can go.").into(),
+            };
+            x += &format!(
+                r##"<StackPanel Spacing="10"><StackPanel Orientation="Horizontal" Spacing="10">{}<TextBlock x:Name="ClReading" Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13" VerticalAlignment="Center"/></StackPanel>{}</StackPanel></Grid>"##,
+                if reading.is_some() || self.advisor.running { r##"<ProgressRing IsActive="True" Width="18" Height="18"/>"## } else { "" },
+                ui::esc(&msg),
+                if reading.is_none() && !self.advisor.running { r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check"/>"## } else { "" }
+            );
+            return x;
+        };
+        let rows = self.cleaner_layout(r);
+        let total: u64 = rows.iter().flat_map(|c| c.parts.iter()).filter(|p| !p.info).map(|p| p.bytes(r)).sum();
+        let apps = rows.iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count();
+        // where the list comes from: this scan, or the tab's own read just now
+        let from = match self.advisor.cl.own.as_ref().filter(|_| self.own_active()) {
+            Some(o) => {
+                let mins = o.began.elapsed().map_or(0, |d| d.as_secs() / 60);
+                let when = match mins {
+                    0 => "just now".to_string(),
+                    1 => "a minute ago".to_string(),
+                    m if m < 120 => format!("{m} minutes ago"),
+                    m => format!("{} hours ago", m / 60),
+                };
+                format!("Checked {when}: the {} folders the cleaners look at, read for this tab", o.roots)
+            }
+            None => match self.tree.as_ref() {
+                Some(t) => format!("From this scan of {}", t.root_path.display()),
+                None => String::new(),
+            },
+        };
+        x += &format!(
+            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
+            if total > 0 { self.size(total) } else { "Nothing to clean".into() },
+            if total > 0 { format!(" in {apps} {}", if apps == 1 { "application" } else { "applications" }) } else { String::new() },
+            ui::esc(&from),
+            if reading.is_some() { r##"<ProgressRing IsActive="True" Width="16" Height="16"/>"## } else { "" },
+            if reading.is_some() || self.advisor.cleanup.running.is_some() { "False" } else { "True" },
+        );
+        x += r##"<Grid Grid.Row="1" ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="380"/></Grid.ColumnDefinitions>"##;
+        x += r##"<ScrollViewer x:Name="ClScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="4">"##;
+        x += &self.cleaners_tab_list(r, &rows);
+        x += "</StackPanel></ScrollViewer>";
+        x += r##"<ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
+        x += &self.cleaners_tab_side(r, &rows);
+        x += "</StackPanel></ScrollViewer></Grid></Grid>";
+        x
+    }
+
+    /// The applications, each with a tick for all its parts, and its parts under it when open.
+    fn cleaners_tab_list(&self, r: &Report, rows: &[ClRow]) -> String {
+        let mut x = String::new();
+        if !self.usual_keys(r).is_empty() {
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
+        }
+        if rows.is_empty() {
+            x += r##"<TextBlock Text="No application Sprawl knows is here." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            return x;
+        }
+        let running = self.advisor.cleanup.running.is_some();
+        let ticked = |i: usize| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path));
+        let mut part_no = 0usize;
+        let mut last_group = "";
+        for (ci, c) in rows.iter().enumerate() {
+            if c.group != last_group {
+                last_group = c.group;
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,8,0,0"/>"##, ui::esc(c.group));
+            }
+            let open = self.advisor.cl.open.contains(&c.id);
+            let bytes: u64 = c.parts.iter().filter(|p| !p.info).map(|p| p.bytes(r)).sum();
+            let app_tickable: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).collect();
+            let n_ticked = c.parts.iter().filter(|p| p.findings.iter().any(|&i| ticked(i))).count();
+            let community = sprawl_advisor::community::is_community(&c.id);
+            let turned_on = community && self.community_on(r, c);
+            let sub = match &c.presence {
+                _ if community && !turned_on => format!("From the community, not used yet · {}", if c.id.starts_with(sprawl_advisor::community::WINAPP2) { "winapp2.ini" } else { "BleachBit" }),
+                Presence::Elsewhere(_) => "Not in what was read".to_string(),
+                _ if bytes == 0 => "Nothing to clean now".to_string(),
+                _ => {
+                    let n = c.parts.iter().filter(|p| p.bytes(r) > 0).count();
+                    let mut s = format!("{n} {}", if n == 1 { "part" } else { "parts" });
+                    if n_ticked > 0 {
+                        s += &format!(" · {n_ticked} ticked");
+                    }
+                    s
+                }
+            };
+            // the app's tick: its safe and amber space parts (privacy parts are ticked one by one)
+            let state = if app_tickable.is_empty() {
+                None
+            } else if app_tickable.iter().all(|&i| ticked(i)) {
+                Some("True")
+            } else if app_tickable.iter().any(|&i| ticked(i)) || n_ticked > 0 {
+                Some("{x:Null}")
+            } else {
+                Some("False")
+            };
+            let tick = match state {
+                Some(s) => format!(
+                    r##"<CheckBox x:Name="AdvClA{ci}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsThreeState="False" IsChecked="{s}" IsEnabled="{}" AutomationProperties.Name="Clean up {}" ToolTipService.ToolTip="Ticks its caches and logs. Privacy parts (sign-ins, history) are ticked one by one."/>"##,
+                    if running { "False" } else { "True" },
+                    ui::esc(&c.name)
+                ),
+                None => String::new(),
+            };
+            let side = match &c.presence {
+                _ if community => format!(
+                    r##"<Button x:Name="AdvClUse{ci}" Grid.Column="2" VerticalAlignment="Center" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
+                    if turned_on { "Stop using" } else { "Use this cleaner" }
+                ),
+                Presence::Elsewhere(drive) => format!(
+                    r##"<Button x:Name="AdvClScan{ci}" Grid.Column="2" VerticalAlignment="Center" Content="Scan {}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##,
+                    ui::esc(drive.display().to_string().trim_end_matches('\\'))
+                ),
+                _ => String::new(),
+            };
+            x += &format!(
+                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{tick}<Button x:Name="AdvClO{ci}" Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,6" CornerRadius="7" BorderThickness="0" Background="{bg}" AutomationProperties.Name="{name}">
+<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+<FontIcon Glyph="{chev}" FontSize="10" Foreground="#FF8E97AA" VerticalAlignment="Center"/>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
+<TextBlock Grid.Column="2" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
+</Grid></Button>{side}</Grid>"##,
+                bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
+                name = ui::esc(&c.name),
+                chev = if open { "&#xE70D;" } else { "&#xE76C;" },
+                sub = ui::esc(&sub),
+                size = if bytes > 0 { self.size(bytes) } else { String::new() },
+                op = if bytes > 0 { "1" } else { "0.5" },
+            );
+            if open {
+                x += r##"<StackPanel Spacing="1" Margin="40,0,0,4">"##;
+                for p in &c.parts {
+                    x += &self.tab_part_row(r, c, p, part_no, running);
+                    part_no += 1;
+                }
+                x += "</StackPanel>";
+            } else {
+                part_no += c.parts.len();
+            }
+        }
+        x += &self.unclaimed_card(r);
+        x += &self.cleaner_proposals_card();
+        x += &self.community_card();
+        x
+    }
+
+    /// One part in the list: its tick, and a button that shows it in the details pane. A part
+    /// with a real cost says so while it is ticked.
+    fn tab_part_row(&self, r: &Report, c: &ClRow, p: &PartRow, n: usize, running: bool) -> String {
+        let bytes = p.bytes(r);
+        let tickable: Vec<usize> = p.tickable(r).collect();
+        let all_ticked = !tickable.is_empty() && tickable.iter().all(|&i| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path)));
+        let why_not = p.findings.first().and_then(|&i| untickable(&r.findings[i], r.counted[i])).filter(|w| !w.is_empty());
+        let tick = if !tickable.is_empty() {
+            format!(
+                r##"<CheckBox x:Name="AdvClT{n}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Clean up {}"/>"##,
+                if all_ticked { "True" } else { "False" },
+                if running { "False" } else { "True" },
+                ui::esc(&format!("{}: {}", c.name, p.title))
+            )
+        } else if let (Some(w), true) = (why_not, bytes > 0) {
+            format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(w))
+        } else {
+            String::new()
+        };
+        let mut sub = if p.info {
+            "Tip".to_string()
+        } else {
+            match p.class {
+                Class::Privacy => "Privacy".to_string(),
+                Class::Space => crate::advisor::risk_label(p.risk).to_string(),
+            }
+        };
+        let open = p.findings.first().and_then(|&i| self.app_open(&r.findings[i]));
+        match &open {
+            Some((app, Closed::Must)) => sub += &format!(" · close {app} first"),
+            Some((app, Closed::Warn)) => sub += &format!(" · {app} is open"),
+            _ => {}
+        }
+        let cost = if all_ticked && !p.cost.is_empty() && p.risk >= Risk::Amber {
+            format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&format!("Ticked: {}", p.cost)))
+        } else {
+            String::new()
+        };
+        let sel = self.advisor.cl.sel.as_deref() == Some(p.key.as_str());
+        format!(
+            r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<Button x:Name="AdvClP{n}" Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8,4" CornerRadius="6" BorderThickness="0" Background="{bg}" AutomationProperties.Name="{title}: details">
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{dot}" VerticalAlignment="Top" Margin="0,6,0,0"/><StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="13" VerticalAlignment="Center"/></Grid></Button></Grid>"##,
+            op = if bytes > 0 { "1" } else { "0.55" },
+            bg = if sel { "#FF2C3B63" } else { "Transparent" },
+            dot = if p.info { "#FF8E97AA" } else { crate::advisor::risk_hex(p.risk) },
+            title = ui::esc(&p.title),
+            sub = ui::esc(&sub),
+            size = match bytes {
+                0 => "-".into(),
+                b if p.findings.iter().any(|&i| r.findings[i].estimate()) && !self.part_measured(r, p) => format!("up to {}", self.size(b)),
+                b => self.size(b),
+            },
+        )
+    }
+
+    /// Every finding of `p` that is an estimate has been counted now.
+    fn part_measured(&self, r: &Report, p: &PartRow) -> bool {
+        p.findings.iter().filter(|&&i| r.findings[i].estimate()).all(|&i| self.advisor.cleanup.measured.contains_key(&key(&r.findings[i].path)))
+    }
+
+    /// The right of the tab: the preview when there is one, else the part picked; then the AI.
+    fn cleaners_tab_side(&self, r: &Report, rows: &[ClRow]) -> String {
+        let mut x = String::new();
+        if let Some(pv) = &self.advisor.cl.preview {
+            x += &self.preview_xaml(pv);
+        } else {
+            let found = rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).enumerate().find(|(_, (_, p))| self.advisor.cl.sel.as_deref() == Some(p.key.as_str()));
+            match found {
+                Some((n, (c, p))) => x += &self.part_details(r, c, p, n),
+                None => {
+                    x += r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><TextBlock Text="Pick a part to see what it is, what cleaning it costs, where it is and whether its application is open. Nothing goes before you press Clean up and confirm." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></Border>"##
+                }
+            }
+        }
+        x += &self.suggest_card(r);
+        x += &self.chat_card();
+        x
+    }
+
+    /// A part in full: what it is, its cost, where it is, the application being open, the
+    /// days it keeps, and its biggest files.
+    fn part_details(&self, r: &Report, c: &ClRow, p: &PartRow, n: usize) -> String {
+        let bytes = p.bytes(r);
+        let label = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,4,0,0"/>"##, ui::esc(t));
+        let body = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(t));
+        let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="3">"##);
+        x += &format!(
+            r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="15" FontWeight="SemiBold"/></Grid>"##,
+            ui::esc(&p.title),
+            ui::esc(&format!("{} · {}", c.name, if p.info { "Tip" } else if p.class == Class::Privacy { "Privacy" } else { crate::advisor::risk_label(p.risk) })),
+            if bytes == 0 { "-".into() } else if p.findings.iter().any(|&i| r.findings[i].estimate()) && !self.part_measured(r, p) { format!("up to {}", self.size(bytes)) } else { self.size(bytes) }
+        );
+        x += &label("What it is");
+        x += &body(if p.why.is_empty() { "No description." } else { &p.why });
+        x += &label("If it goes");
+        x += &body(if !p.cost.is_empty() {
+            &p.cost
+        } else if p.info {
+            "Sprawl doesn't clean this itself: it is a tip."
+        } else {
+            "Nothing you'd notice: the application makes it again when it needs it."
+        });
+        x += &label("Where");
+        if p.findings.is_empty() {
+            x += &body("Nothing of it here now.");
+        }
+        for &i in p.findings.iter().take(8) {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FFB9C2D6" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
+        }
+        if p.findings.len() > 8 {
+            x += &body(&format!("and {} more places", p.findings.len() - 8));
+        }
+        // the application being open
+        let d = c.def.map(|k| &r.catalogue[k]);
+        let open = p.findings.first().and_then(|&i| self.app_open(&r.findings[i]));
+        x += &label("In use");
+        x += &match (&open, d) {
+            (Some((app, Closed::Must)), _) => format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open, or that can't be told: close it first. This can't be cleaned while it runs."))),
+            (Some((app, _)), _) => format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open: files it is using are skipped."))),
+            (None, Some(d)) if !d.running.is_empty() && p.closed != Closed::No => body(&format!("{} isn't open.", d.name)),
+            _ => body("Can be cleaned while the application runs; files in use are skipped."),
+        };
+        // keep the newest
+        if p.clears && !p.info {
+            let days = self.part_days(p);
+            x += &label("Keeps");
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" VerticalAlignment="Center"/><Button x:Name="AdvClK{n}" Content="Keep more days" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What changed lately stays. Press to keep more days."/></StackPanel>"##,
+                ui::esc(&if days == 0 { "Everything in it goes.".to_string() } else { format!("What changed in the last {days} days stays.") })
+            );
+        }
+        if bytes > 0 {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,6,0,0"><Button x:Name="AdvClS{n}" Content="{}" Padding="10,2" FontSize="12" CornerRadius="5"/><Button x:Name="AdvClQ{n}" Content="?" Padding="10,2" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="What happens if I clean this? (asks the AI)" AutomationProperties.Name="What happens if I clean this?"/></StackPanel>"##,
+                if self.advisor.cl.show.as_deref() == Some(p.key.as_str()) { "Hide the biggest files" } else { "Show the biggest files" }
+            );
+            if self.advisor.cl.show.as_deref() == Some(p.key.as_str()) {
+                x += &self.part_files(r, p);
+            }
+        }
+        if let Some(k) = c.def {
+            let d = &r.catalogue[k];
+            let showing = self.advisor.cl.def.contains(&c.id);
+            let ci = self.cleaner_layout(r).iter().position(|o| o.id == c.id).unwrap_or(0);
+            let forget = if d.builtin || sprawl_advisor::community::is_community(&d.id) {
+                String::new()
+            } else {
+                format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
+            };
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>{forget}</StackPanel>"##,
+                ui::esc(&format!("From {}", d.pack)),
+                if showing { "Hide the definition" } else { "Show the definition" }
+            );
+            if showing {
+                x += &format!(
+                    r##"<Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
+                    d.text.lines().map(ui::esc).collect::<Vec<_>>().join("&#10;")
+                );
+            }
+        }
+        x += "</StackPanel></Border>";
+        x
+    }
+
+    /// Preview: the exact files the ticks would remove, counted by the clean-up's own tests.
+    fn preview_xaml(&self, pv: &PreviewRun) -> String {
+        let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="4">"##);
+        match pv {
+            PreviewRun::Counting(_) => {
+                x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="Counting what would go..." FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel><TextBlock Text="Nothing is deleted: this only looks." FontSize="12" Foreground="#FFB9C2D6"/>"##;
+            }
+            PreviewRun::Done(items, keys) => {
+                let bytes: u64 = items.iter().filter_map(|it| it.got.as_ref()).map(|g| g.bytes).sum();
+                let files: u64 = items.iter().filter_map(|it| it.got.as_ref()).map(|g| g.files).sum();
+                x += &format!(
+                    r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><Button x:Name="AdvClPrevX" Grid.Column="1" Content="Close" Padding="10,2" FontSize="12" CornerRadius="5"/></Grid>"##,
+                    ui::esc(&format!("{} {} would go, {}", crate::format::thousands(files), if files == 1 { "file" } else { "files" }, self.size(bytes)))
+                );
+                x += r##"<TextBlock Text="Counted now by the clean-up's own tests: what is protected, kept by you, or new since the read stays. Nothing was deleted." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##;
+                let mut now: Vec<String> = self.ticked_findings().into_iter().map(|(_, f)| key(&f.path)).collect();
+                now.sort();
+                if now != *keys {
+                    x += r##"<TextBlock Text="The ticks changed since: preview again for these numbers." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##;
+                }
+                for it in items {
+                    let what = match &it.got {
+                        Some(g) => format!("{} files, {}", crate::format::thousands(g.files), self.size(g.bytes)),
+                        None => "its program decides".into(),
+                    };
+                    x += &format!(
+                        r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="12" Foreground="#FFB9C2D6"/></Grid>"##,
+                        ui::esc(&it.title),
+                        ui::esc(&what)
+                    );
+                }
+                let mut biggest: Vec<&(std::path::PathBuf, u64)> = items.iter().filter_map(|it| it.got.as_ref()).flat_map(|g| g.biggest.iter()).collect();
+                biggest.sort_by_key(|(_, b)| std::cmp::Reverse(*b));
+                if !biggest.is_empty() {
+                    x += r##"<TextBlock Text="The biggest of them:" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,6,0,0"/>"##;
+                }
+                for (p, b) in biggest.into_iter().take(PREVIEW_FILES) {
+                    x += &format!(
+                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="11" FontFamily="Consolas" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" ToolTipService.ToolTip="{0}"/><TextBlock Grid.Column="1" Text="{}" FontSize="11" Foreground="#FFB9C2D6"/></Grid>"##,
+                        ui::esc(&p.display().to_string()),
+                        self.size(*b)
+                    );
+                }
+            }
+        }
+        x += "</StackPanel></Border>";
+        x
+    }
+
+    /// Preview the ticks: count, off the UI thread, what the run would remove from each.
+    pub(crate) fn preview_start(&mut self) {
+        let picked = self.ticked_findings();
+        if picked.is_empty() {
+            return;
+        }
+        let spare = sprawl_advisor::clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let work: Vec<(String, String, std::path::PathBuf, Option<sprawl_advisor::clean::Action>)> =
+            picked.into_iter().map(|(_, f)| (f.title.clone(), key(&f.path), f.path.clone(), sprawl_advisor::clean::action(&f).map(|a| a.0))).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let items = work
+                .into_iter()
+                .map(|(title, key, path, action)| {
+                    let got = action.and_then(|a| sprawl_advisor::clean::preview(&path, &a, &spare, PREVIEW_FILES));
+                    PrevItem { title, key, got }
+                })
+                .collect();
+            let _ = tx.send(items);
+        });
+        self.advisor.cl.preview = Some(PreviewRun::Counting(rx));
+    }
+
+    /// The preview, when counted: its numbers are the review's too.
+    pub(crate) fn preview_poll(&mut self) {
+        let Some(PreviewRun::Counting(rx)) = &self.advisor.cl.preview else { return };
+        let items = match rx.try_recv() {
+            Ok(v) => v,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Vec::new(),
+        };
+        for it in &items {
+            if let Some(g) = &it.got {
+                self.advisor.cleanup.measured.insert(it.key.clone(), g.bytes);
+            }
+        }
+        let mut keys: Vec<String> = items.iter().map(|it| it.key.clone()).collect();
+        keys.sort();
+        self.advisor.cl.preview = Some(PreviewRun::Done(items, keys));
+        if self.view == crate::state::View::Advisor {
+            self.render_advisor();
+        }
+    }
+
+    /// The Cleaners tab's ticks: when the tab opens, the user's own from last time are put
+    /// back; after the user changes a tick, they are remembered. Never what Sprawl ticked by
+    /// itself, and a clean-up clearing its ticks doesn't count as a change.
+    pub(crate) fn cleaner_ticks_sync(&mut self) {
+        if !self.advisor.cleaners_tab_on() || self.advisor.cleanup.running.is_some() || self.advice().is_none() {
+            return;
+        }
+        self.advisor.memory_ready();
+        let restore = std::mem::take(&mut self.advisor.cl.restore_pending);
+        let changed = std::mem::take(&mut self.advisor.cl.user_ticked);
+        if restore {
+            let keys: Vec<String> = {
+                let r = self.advice().unwrap();
+                let want = &self.advisor.memory.cleaner_ticks;
+                self.cleaner_layout(r).iter().flat_map(|c| c.parts.iter()).filter(|p| want.contains(&p.key)).flat_map(|p| p.tickable(r).map(|i| key(&r.findings[i].path))).collect()
+            };
+            self.advisor.cleanup.ticked.extend(keys);
+            return;
+        }
+        if !changed {
+            return;
+        }
+        let r = self.advice().unwrap();
+        let rows = self.cleaner_layout(r);
+        // the parts of this report as ticked now; remembered parts not here stay remembered
+        let ticked = &self.advisor.cleanup.ticked;
+        let here: HashSet<&str> = rows.iter().flat_map(|c| c.parts.iter()).filter(|p| p.tickable(r).next().is_some()).map(|p| p.key.as_str()).collect();
+        let mut now: Vec<String> = self.advisor.memory.cleaner_ticks.iter().filter(|k| !here.contains(k.as_str())).cloned().collect();
+        now.extend(
+            rows.iter()
+                .flat_map(|c| c.parts.iter())
+                .filter(|p| {
+                    let t: Vec<usize> = p.tickable(r).collect();
+                    !t.is_empty() && t.iter().all(|&i| ticked.contains(&key(&r.findings[i].path)))
+                })
+                .map(|p| p.key.clone()),
+        );
+        now.sort();
+        now.dedup();
+        if now != self.advisor.memory.cleaner_ticks {
+            self.advisor.memory.cleaner_ticks = now;
+            self.save_memory();
+        }
+    }
+}
+
+impl State {
+    /// The findings Sprawl can clean now that a cleaner found (a part's, a guess by shape, a
+    /// Chromium cache): in the Advisor they are the Cleaners group, not rows of the list.
+    pub(crate) fn cleaner_findings(&self, r: &Report) -> HashSet<usize> {
+        use sprawl_advisor::finding::Group;
+        self.cleaner_layout(r)
+            .iter()
+            .filter(|c| c.presence == Presence::InScan)
+            .flat_map(|c| c.parts.iter().flat_map(|p| p.findings.iter().copied()))
+            .filter(|&i| r.findings[i].group() == Group::Clean && !r.findings[i].in_active_project())
+            // what can go now, as the headline counts it; what needs administrator stays a row
+            .filter(|&i| untickable(&r.findings[i], r.counted[i]).is_none() && crate::cleanup::held_in_app(&r.findings[i]).is_none())
+            .collect()
+    }
+
+    /// The Advisor's Cleaners group: the total, the biggest few applications (each ticked
+    /// there as on the Cleaners tab), and the way to the tab. Its bytes are in the headline and
+    /// in "tick enough" like any other finding's.
+    pub(crate) fn cleaners_group(&self, r: &Report) -> String {
+        let mine = self.cleaner_findings(r);
+        if mine.is_empty() {
+            return String::new();
+        }
+        let rows = self.cleaner_layout(r);
+        let bytes_of = |c: &ClRow| -> u64 { c.parts.iter().flat_map(|p| p.findings.iter()).filter(|&&i| mine.contains(&i) && r.counted[i]).map(|&i| self.review_size(&r.findings[i]).0).sum() };
+        let mut apps: Vec<(usize, u64)> = rows.iter().enumerate().map(|(ci, c)| (ci, bytes_of(c))).filter(|(_, b)| *b > 0).collect();
+        apps.sort_by_key(|(_, b)| std::cmp::Reverse(*b));
+        let total: u64 = apps.iter().map(|(_, b)| b).sum();
+        let mut x = format!(
+            r##"<Button x:Name="AdvClGrp" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Cleaners" FontWeight="SemiBold"/><Run Text="   Caches of {} {}, {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="Caches, logs and crash reports the applications make again. Tick an application here for its caches and logs, or see each part in Cleaners." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+            apps.len(),
+            if apps.len() == 1 { "application" } else { "applications" },
+            self.size(total),
+            if self.advisor.cl.hide_group { "show" } else { "hide" }
+        );
+        if self.advisor.cl.hide_group {
+            return x;
+        }
+        let running = self.advisor.cleanup.running.is_some();
+        let ticked = |i: usize| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path));
+        x += r##"<StackPanel Spacing="2" Margin="10,0,0,0">"##;
+        for &(ci, b) in apps.iter().take(GROUP_APPS) {
+            let c = &rows[ci];
+            let takes: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).collect();
+            let some = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&i| ticked(i));
+            let state = if takes.is_empty() {
+                None
+            } else if takes.iter().all(|&i| ticked(i)) {
+                Some("True")
+            } else if some {
+                Some("{x:Null}")
+            } else {
+                Some("False")
+            };
+            let n = c.parts.iter().filter(|p| p.findings.iter().any(|i| mine.contains(i))).count();
+            x += &format!(
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
+                match state {
+                    Some(s) => format!(
+                        r##"<CheckBox x:Name="AdvClA{ci}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{s}" IsEnabled="{}" AutomationProperties.Name="Clean up {}" ToolTipService.ToolTip="Ticks its caches and logs. Privacy parts are ticked one by one, in Cleaners."/>"##,
+                        if running { "False" } else { "True" },
+                        ui::esc(&c.name)
+                    ),
+                    None => String::new(),
+                },
+                ui::esc(&c.name),
+                ui::esc(&format!("{n} {}", if n == 1 { "part" } else { "parts" })),
+                self.size(b)
+            );
+        }
+        let more = apps.len().saturating_sub(GROUP_APPS);
+        x += &format!(
+            r##"<Button x:Name="AdvClAll" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="34,4,0,0"/></StackPanel>"##,
+            if more > 0 { format!("See all in Cleaners ({more} more)") } else { "See all in Cleaners".to_string() }
+        );
+        x
+    }
+}
+
+/// What an application's own tick takes: its parts that free space and are safe or amber.
+/// Privacy parts and the user's own files are ticked one by one.
+fn app_tick_takes(p: &PartRow) -> bool {
+    !p.info && p.class == Class::Space && p.risk <= Risk::Amber
 }
 
 /// The cleaners and where each one's application is, for a report (off the UI thread).

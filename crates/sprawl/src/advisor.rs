@@ -166,9 +166,9 @@ pub(crate) struct Advisor {
     rx: Option<Receiver<Msg>>,
     /// For follow-up work (the in-use check) on the same channel.
     tx: Option<Sender<Msg>>,
-    running: bool,
+    pub(crate) running: bool,
     /// Why there is no report (no scan, a CSV, a filter).
-    note: Option<&'static str>,
+    pub(crate) note: Option<&'static str>,
     open: Option<usize>,
     /// (finding, programs that have its files open); `None` inside while checking.
     in_use: Option<(usize, InUse)>,
@@ -234,6 +234,27 @@ impl Advisor {
     /// The Cleaners section is the one on show.
     pub(crate) fn cleaners_on(&self) -> bool {
         self.section == Section::Cleaners
+    }
+
+    /// What the advisor remembers, read from disk the first time it is needed (a scan's
+    /// check, or the Cleaners tab with no scan).
+    pub(crate) fn memory_ready(&mut self) {
+        if !self.memory_loaded {
+            self.memory = Memory::load();
+            self.memory_loaded = true;
+            crate::bridge::publish_memory(&self.memory);
+        }
+    }
+
+    /// The memory to write, only once it was read: an empty one written before that would
+    /// erase the user's decisions.
+    pub(crate) fn memory_to_save(&self) -> Option<&Memory> {
+        self.memory_loaded.then_some(&self.memory)
+    }
+
+    /// The Cleaners tab (not the Advisor's Cleaners section) is the one open.
+    pub(crate) fn cleaners_tab_on(&self) -> bool {
+        self.cleaners_tab
     }
 }
 
@@ -413,7 +434,7 @@ fn remedy_label(r: Remedy) -> &'static str {
 }
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
-fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
+pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
     // the built-in rules, then the user's own (approved proposals): never trusted
@@ -501,6 +522,10 @@ fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
 impl State {
     /// The report for the tree on screen, if it is current.
     pub(crate) fn advice(&self) -> Option<&Report> {
+        // the Cleaners tab with no scan that covers the cleaners: its own read
+        if self.own_active() {
+            return self.advisor.cl.own.as_ref().map(|o| &o.report);
+        }
         self.tree.as_ref()?;
         self.advisor.report.as_ref().filter(|r| r.tree == self.tree_gen)
     }
@@ -529,11 +554,7 @@ impl State {
         self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.advisor.dupes_status = None;
         self.advisor.dupes_note = None;
-        if !self.advisor.memory_loaded {
-            self.advisor.memory = Memory::load();
-            self.advisor.memory_loaded = true;
-            crate::bridge::publish_memory(&self.advisor.memory);
-        }
+        self.advisor.memory_ready();
         crate::bridge::publish_findings(String::new());
         let Some(t) = self.tree.clone() else {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
@@ -594,6 +615,8 @@ impl State {
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
         self.community_poll();
+        self.own_poll();
+        self.preview_poll();
         self.tick_status();
         if self.advisor.models.poll() && self.advisor.ai_edit.is_some() && self.view == View::Advisor {
             self.read_ai_fields();
@@ -771,7 +794,14 @@ impl State {
     pub(crate) fn advisor_command(&mut self, name: &str) {
         // a message is about the last thing pressed
         *self.advisor.msg.borrow_mut() = None;
+        // the user's own change of the ticks, remembered by the Cleaners tab
+        if matches!(name, "AdvSelNone" | "AdvSelSafe" | "AdvSelGoal" | "AdvClUsual" | "AdvClSugTick") {
+            self.advisor.cl.user_ticked = true;
+        }
         match name {
+            "AdvRefresh" if self.own_active() => {
+                self.own_start();
+            }
             "AdvRefresh" => return self.advisor_start(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvActive" => self.advisor.show_active = !self.advisor.show_active,
@@ -924,6 +954,15 @@ impl State {
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecCleaners" => self.advisor.section = Section::Cleaners,
             "AdvClCheck" => self.cleaner_procs(true),
+            "AdvClPrev" => self.preview_start(),
+            "AdvClGrp" => self.advisor.cl.hide_group = !self.advisor.cl.hide_group,
+            "AdvClAll" => {
+                // to the Cleaners tab, as its tab button does
+                self.set_cleaners_tab(true);
+                self.set_view(View::Advisor);
+                self.own_on_open();
+            }
+            "AdvClPrevX" => self.advisor.cl.preview = None,
             "AdvClUpd" => self.community_fetch(),
             "AdvClLeft" => self.advisor.cl.left_shown = !self.advisor.cl.left_shown,
             "AdvClComm" => {
@@ -1188,6 +1227,8 @@ impl State {
     pub(crate) fn set_cleaners_tab(&mut self, on: bool) {
         if on {
             self.advisor.section = Section::Cleaners;
+            // the user's ticks from last time come back each time the tab opens
+            self.advisor.cl.restore_pending = true;
         }
         self.advisor.cleaners_tab = on;
     }
@@ -1220,11 +1261,25 @@ impl State {
                 self.advisor.chat.text = h.to_string_lossy();
             }
         }
-        let Ok(host) = find::<Border>(&self.root, "AdvHost") else { return };
+        // the Cleaners tab: its own two columns, each scrolling, in place of the Advisor's list
+        let tab = self.advisor.cleaners_tab;
+        if tab {
+            self.cleaner_ticks_sync();
+        }
+        for (name, on) in [("AdvScroll", !tab), ("ClHost", tab)] {
+            if let Ok(e) = find::<UIElement>(&self.root, name) {
+                let _ = e.SetVisibility(if on { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
+            }
+        }
+        let Ok(host) = find::<Border>(&self.root, if tab { "ClHost" } else { "AdvHost" }) else { return };
         // the list stays where it was scrolled to
-        let scroll = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "AdvScroll").ok();
+        let scroll = if tab {
+            self.advisor.panel.as_ref().and_then(|p| find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(p, "ClScroll").ok())
+        } else {
+            find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "AdvScroll").ok()
+        };
         let offset = scroll.as_ref().and_then(|s| s.VerticalOffset().ok());
-        let xaml = self.advisor_xaml();
+        let xaml = if tab { self.cleaners_tab_xaml() } else { self.advisor_xaml() };
         let Ok(el) = load::<UIElement>(&xaml) else {
             eprintln!("advisor panel failed to load");
             return;
@@ -1293,6 +1348,7 @@ impl State {
                 }
             }
         }
+        let scroll = if tab { find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&fe, "ClScroll").ok() } else { scroll };
         if let (Some(sv), Some(y)) = (&scroll, offset) {
             let _ = sv.ChangeView(None, Some(y), None);
         }
@@ -1312,6 +1368,8 @@ impl State {
             ("AdvForgetL", m.labels.len()),
             ("AdvGrow", self.advice().and_then(|r| r.growth.as_ref()).map_or(0, |g| g.grew.len())),
             ("AdvClO", cl.0),
+            ("AdvClA", cl.0),
+            ("AdvClP", cl.1),
             ("AdvClDef", cl.0),
             ("AdvClScan", cl.0),
             ("AdvClT", cl.1),
@@ -1337,7 +1395,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvClPrev", "AdvClPrevX", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
         ] {
@@ -1429,11 +1487,12 @@ impl State {
         let tab = |name: &str, label: String, me: Section| {
             format!(r##"<Button x:Name="{name}" Content="{}" Padding="12,4" FontSize="12" CornerRadius="6" BorderThickness="0" Background="{}"/>"##, ui::esc(&label), if self.advisor.section == me { "#FF2C3B63" } else { "#0CFFFFFF" })
         };
+        // the cleaners are their own tab; here they are one group of the findings
+        let _ = cleaners;
         if !self.advisor.cleaners_tab {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}{}</StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}</StackPanel>"##,
                 tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
-                tab("AdvSecCleaners", format!("Cleaners ({cleaners})"), Section::Cleaners),
                 tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
                 tab("AdvSecGrowth", "Growth".into(), Section::Growth),
                 tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + m.cleaner_proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
@@ -1447,7 +1506,8 @@ impl State {
             Section::Growth => x += &self.growth_card(r),
             Section::Memory => x += &self.memory_cards(r),
             Section::Findings => x += &self.findings_section(r),
-            Section::Cleaners => x += &self.cleaners_section(r),
+            // the Cleaners tab draws itself (cleaners_tab_xaml)
+            Section::Cleaners => {}
         }
         x += "</StackPanel>";
         x
@@ -1487,9 +1547,11 @@ impl State {
         // (with the active projects' build outputs apart), what the user can do, what is worth
         // knowing; each ranked by what it would win back
         use sprawl_advisor::finding::Group;
+        // what the cleaners found is one group of its own, below
+        let by_cleaners = self.cleaner_findings(r);
         let pick = |g: Group| -> Vec<usize> {
             let mut l: Vec<usize> = (0..r.findings.len())
-                .filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project() && r.findings[i].group() == g)
+                .filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project() && r.findings[i].group() == g && !by_cleaners.contains(&i))
                 .filter(|&i| match o {
                     Only::All => true,
                     Only::Runnable => crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none(),
@@ -1507,11 +1569,14 @@ impl State {
         };
         let list = pick(Group::Clean);
         let (yourself, know, left) = (pick(Group::Yourself), pick(Group::Know), pick(Group::Leftover));
-        if list.is_empty() && yourself.is_empty() && know.is_empty() && left.is_empty() && !r.findings.is_empty() && o == Only::All {
+        if list.is_empty() && by_cleaners.is_empty() && yourself.is_empty() && know.is_empty() && left.is_empty() && !r.findings.is_empty() && o == Only::All {
             x += r##"<TextBlock Text="Nothing big enough for this list. Smaller things that can go are in Cleaners." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
         for i in list {
             x += &self.finding_row(r, i);
+        }
+        if o != Only::Decide {
+            x += &self.cleaners_group(r);
         }
         // folders left by applications that are gone: Sprawl can remove them, the user decides each
         if !left.is_empty() {
@@ -1926,8 +1991,10 @@ impl State {
     }
 
     pub(crate) fn save_memory(&self) {
-        crate::bridge::publish_memory(&self.advisor.memory);
-        if let Err(e) = self.advisor.memory.save() {
+        // a memory never read from disk is never written over it
+        let Some(m) = self.advisor.memory_to_save() else { return };
+        crate::bridge::publish_memory(m);
+        if let Err(e) = m.save() {
             self.adv_say(&format!("Couldn't save what the advisor remembers: {e}"));
         }
     }
@@ -2814,7 +2881,7 @@ mod script_tests {
 }
 
 /// `f`'s answer, or None when it panicked (the panic hook has already noted it).
-fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
+pub(crate) fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
 }
 
@@ -2825,5 +2892,19 @@ mod caught_tests {
         assert_eq!(super::caught(|| 7), Some(7));
         let r: Option<u8> = super::caught(|| panic!("a rule went wrong"));
         assert_eq!(r, None);
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    /// With no scan, nothing has read the memory yet: saving then (a tick on the Cleaners
+    /// tab) must not write an empty memory over the user's decisions.
+    #[test]
+    fn a_memory_never_read_is_never_saved() {
+        let mut a = super::Advisor::default();
+        a.memory.cleaner_ticks = vec!["web.firefox-cache".into()];
+        assert!(a.memory_to_save().is_none());
+        a.memory_loaded = true;
+        assert!(a.memory_to_save().is_some());
     }
 }

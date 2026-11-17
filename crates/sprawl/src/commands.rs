@@ -48,7 +48,7 @@ impl State {
         // and the whole height: the map folds away while the Advisor or Cleaners is open
         self.map_room();
         if self.welcome == Some(true) {
-            crate::welcome::tree_hint_shown(self, v != View::Search);
+            crate::welcome::tree_hint_shown(self, matches!(v, View::Tree | View::Files));
         }
         if table {
             self.refresh_rows();
@@ -443,6 +443,11 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
             "TabCleaners" => {
                 self.set_cleaners_tab(true);
                 self.set_view(View::Advisor);
+                // no scan that covers the cleaners: the tab reads their folders itself
+                if self.own_active() && self.advisor.cl.own_reading.is_none() {
+                    self.own_on_open();
+                    self.render_advisor();
+                }
             }
             "TabAbout" => self.set_view(View::About),
             _ => {}
