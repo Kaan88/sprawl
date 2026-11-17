@@ -190,10 +190,15 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                 if free.is_empty() {
                     continue;
                 }
-                let keep_note = kept.first().map(|(_, p)| format!("Keep the copy in {}: it is in a protected place.", p.display()));
+                // every protected copy stays, and is named; only the others may go
+                let keep_note = (!kept.is_empty()).then(|| format!("Keep {}: in a protected place.", kept.iter().map(|(_, p)| p.display().to_string()).collect::<Vec<_>>().join(" and ")));
+                let may_go = if kept.is_empty() { free.len() - 1 } else { free.len() };
+                if may_go == 0 {
+                    continue;
+                }
                 // the finding points at a copy that may go
                 let cl: Vec<(usize, PathBuf)> = free.into_iter().chain(kept).collect();
-                let extra = size * (cl.len() as u64 - 1);
+                let extra = size * may_go as u64;
                 out.wasted += extra;
                 let name = tree.nodes[cl[0].0].name.clone();
                 let mut evidence = vec![format!("{} identical copies, {} each: byte for byte the same.", cl.len(), format_size(size))];
@@ -203,10 +208,15 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                 if cl.len() > 8 {
                     evidence.push(format!("and {} more", cl.len() - 8));
                 }
+                let protected_kept = keep_note.is_some();
                 if let Some(k) = keep_note {
                     evidence.push(k);
                 }
-                evidence.push("Keep one and delete the others, or, where a copy must stay in its place, replace it with a hard link to the one you keep (New-Item -ItemType HardLink): then a change to one changes all.".into());
+                evidence.push(if protected_kept {
+                    "Delete only the copies outside protected places, or replace them with hard links to a kept one (New-Item -ItemType HardLink): then a change to one changes all.".into()
+                } else {
+                    "Keep one and delete the others, or, where a copy must stay in its place, replace it with a hard link to the one you keep (New-Item -ItemType HardLink): then a change to one changes all.".to_string()
+                });
                 out.findings.push(Finding {
                     path: cl[0].1.clone(),
                     owner: None,

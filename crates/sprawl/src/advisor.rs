@@ -201,6 +201,10 @@ pub(crate) struct Advisor {
     section: Section,
     sort: Sort,
     only: Only,
+    /// A finding being run now: (its path, title, size, the file its script reports to, since).
+    acting: Option<(PathBuf, String, u64, PathBuf, std::time::Instant)>,
+    /// What the last run freed: (title, bytes freed, bytes it had).
+    acted: Option<(String, u64, u64)>,
     /// Findings the user added to the plan themselves (lower-case paths): any risk but red.
     picks: std::collections::HashSet<String>,
 }
@@ -391,6 +395,8 @@ impl State {
         self.advisor.ai = Ai::Idle;
         self.advisor.plan = None;
         self.advisor.preview = false;
+        // a pick was for a finding as it was then: a new analysis asks again
+        self.advisor.picks.clear();
         self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.advisor.dupes_status = None;
         self.advisor.dupes_note = None;
@@ -449,7 +455,30 @@ impl State {
     }
 
     /// Called every frame: pick up finished work.
+    /// A run in its PowerShell window writes what it freed into its report file when it ends.
+    fn act_poll(&mut self) {
+        let Some((path, title, bytes, report, since)) = &self.advisor.acting else { return };
+        let done = std::fs::read_to_string(report).ok().and_then(|t| t.trim().trim_start_matches('\u{feff}').parse::<u64>().ok());
+        if let Some(freed) = done {
+            let (path, title, bytes) = (path.clone(), title.clone(), *bytes);
+            let _ = std::fs::remove_file(report);
+            let _ = std::fs::remove_file(report.with_extension("ps1"));
+            if freed * 2 >= bytes {
+                self.advisor.memory.decide(&path, &title, Verdict::Done);
+                self.save_memory();
+            }
+            self.advisor.acting = None;
+            self.advisor.acted = Some((title, freed, bytes));
+            self.advisor_changed();
+        } else if since.elapsed().as_secs() > 3600 {
+            // the window was closed early, or it is still going after an hour: stop watching
+            self.advisor.acting = None;
+            self.advisor_changed();
+        }
+    }
+
     pub(crate) fn advisor_poll(&mut self) {
+        self.act_poll();
         // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         self.chat_poll();
@@ -614,6 +643,11 @@ impl State {
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvRejected" => self.advisor.show_rejected = !self.advisor.show_rejected,
             "AdvKeptShow" => self.advisor.show_kept = !self.advisor.show_kept,
+            "AdvRun" => return self.advisor_run(),
+            "AdvRescan" => {
+                self.advisor.acted = None;
+                return self.command("ScanButton");
+            }
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecPlan" => self.advisor.section = Section::Plan,
             "AdvSecAsk" => self.advisor.section = Section::Ask,
@@ -630,8 +664,8 @@ impl State {
                 if !self.advisor.picks.remove(&p) {
                     self.advisor.picks.insert(p);
                 }
-                // the plan follows at once
-                return self.advisor_plan();
+                // the plan follows at once, and the panel shows it
+                self.advisor_plan();
             }
             "AdvDupes" => self.advisor_dupes(),
             "AdvDupesStop" => self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed),
@@ -854,7 +888,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecPlan", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvPick", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvPick", "AdvRun", "AdvRescan", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvLensOpp", "AdvLensRisk", "AdvLensOff", "AdvRefresh", "AdvHeld", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvPlan", "AdvPreview", "AdvClearPlan",
             "AdvExport", "AdvVerify", "AdvLog", "AdvRejected",
         ] {
@@ -927,6 +961,21 @@ impl State {
             strip.push(if d < 365.0 { format!("Full in about {d:.0} days") } else { "Room for over a year".into() });
         }
         x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(&strip.join("   ·   ")));
+        if let Some((_, title, _, _, since)) = &self.advisor.acting {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Running {} in its PowerShell window (started {} s ago). This updates when it ends." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
+                ui::esc(title),
+                since.elapsed().as_secs()
+            );
+        }
+        if let Some((title, freed, had)) = &self.advisor.acted {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}: freed {} of {}. The map still shows the old scan." FontSize="12" Foreground="#FF4CC38A" VerticalAlignment="Center" TextWrapping="Wrap"/><Button x:Name="AdvRescan" Content="Scan again" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                ui::esc(title),
+                self.size(*freed),
+                self.size(*had)
+            );
+        }
         // the sections, one at a time
         let shown = (0..r.findings.len()).filter(|&i| !matches!(r.findings[i].source, Source::Model(_))).count();
         let ai_tag = match &self.advisor.ai {
@@ -993,8 +1042,10 @@ impl State {
         if r.findings.is_empty() {
             x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
         }
+        // the AI card shows the model's findings only when it shows its answer
+        let card_has_them = matches!(self.advisor.ai, Ai::Done { .. });
         let mut list: Vec<usize> = (0..r.findings.len())
-            .filter(|&i| !matches!(r.findings[i].source, Source::Model(_)))
+            .filter(|&i| !card_has_them || !matches!(r.findings[i].source, Source::Model(_)))
             .filter(|&i| match o {
                 Only::All => true,
                 Only::Runnable => r.findings[i].command.is_some(),
@@ -1092,7 +1143,11 @@ impl State {
         let mut plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
         // and what the user added themselves (anything with a command but red)
         for (i, f) in r.findings.iter().enumerate() {
-            if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) && f.command.is_some() && f.risk < Risk::Red && !plan.picked.contains(&i) {
+            let overlaps = plan.picked.iter().any(|&j| {
+                let (a, b) = (r.findings[j].path.to_string_lossy().to_lowercase(), f.path.to_string_lossy().to_lowercase());
+                a.starts_with(&b) || b.starts_with(&a)
+            });
+            if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) && f.command.is_some() && f.risk < Risk::Red && !overlaps {
                 plan.picked.push(i);
                 plan.bytes = plan.bytes.saturating_add(f.bytes);
             }
@@ -1174,8 +1229,10 @@ impl State {
             r.lens = Arc::new(lens);
         }
         let found = run.findings.len();
-        // indexes past the rules' findings change: what pointed at them goes
+        // indexes past the rules' findings change: what pointed at them goes, and picks of the
+        // model's earlier findings with them
         self.advisor.plan = None;
+        self.advisor.picks.clear();
         self.advisor.preview = false;
         self.advisor.open = None;
         self.advisor.in_use = None;
@@ -1343,6 +1400,66 @@ impl State {
         self.advisor.ai = ai;
     }
 
+    /// "Run now...": the open finding's command, after the safety checks again and the user's
+    /// confirmation (twice for their own files), in a visible PowerShell window. It is the same
+    /// script "Export" writes, with -Run.
+    fn advisor_run(&mut self) {
+        if self.advisor.acting.is_some() {
+            crate::state::text(&self.root, "StatusText", "Another run is still going: wait for its PowerShell window to finish.");
+            return;
+        }
+        let (Some(t), Some(i)) = (self.tree.clone(), self.advisor.open) else { return };
+        let Some(f) = self.advice().and_then(|r| r.findings.get(i)).cloned() else { return };
+        if f.command.is_none() || f.risk == Risk::Red {
+            return;
+        }
+        // the same checks as when it was found, against the disk as it is now
+        if let Err(why) = sprawl_advisor::safety::check(&f, &t, &sprawl_advisor::safety::Never::default_list()) {
+            win32::info(self.hwnd, &format!("Not run: {why}."), "Sprawl");
+            return;
+        }
+        let cmd = f.command.clone().unwrap_or_default();
+        let shown = cmd.strip_prefix(RM_FN).map(|r| format!("(Sprawl's safe-delete functions){r}")).unwrap_or_else(|| cmd.clone());
+        let admin = cmd.contains("# as administrator");
+        let text = format!(
+            "{}\n{}\n\nAbout {} at\n{}\n\nThis runs in a PowerShell window{}:\n{}\n\nRun it now?",
+            f.title,
+            match f.risk {
+                Risk::Green => "Comes back by itself.",
+                Risk::Amber => "Costs something to get back.",
+                _ => "These are your own files.",
+            },
+            self.size(f.bytes),
+            f.path.display(),
+            if admin { " as administrator" } else { "" },
+            shown
+        );
+        if !win32::confirm(self.hwnd, &text, "Run now") {
+            return;
+        }
+        if f.risk >= Risk::Orange && !win32::confirm(self.hwnd, &format!("These are your own files, and they won't come back:\n{}\n\nAre you sure you want them gone?", f.path.display()), "Your own files") {
+            return;
+        }
+        let root = t.path_of(sprawl_core::ROOT).display().to_string();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let script = std::env::temp_dir().join(format!("sprawl-run-{stamp}.ps1"));
+        let report = script.with_extension("txt");
+        let _ = std::fs::remove_file(&report);
+        if let Err(e) = sprawl_advisor::export::write_script(&script, &sprawl_advisor::export::script(&[&f], &root, std::time::SystemTime::now())) {
+            win32::info(self.hwnd, &format!("Couldn't write the script: {e}"), "Sprawl");
+            return;
+        }
+        let args = vec!["-Run".to_string(), "-Report".to_string(), crate::dialogs::quote(&report)];
+        if !crate::dialogs::run_powershell(self.hwnd, &script, &args, admin) {
+            let _ = std::fs::remove_file(&script);
+            crate::state::text(&self.root, "StatusText", "Not run: PowerShell didn't start (or administrator rights were declined).");
+            return;
+        }
+        self.advisor.acting = Some((f.path.clone(), f.title.clone(), f.bytes, report, std::time::Instant::now()));
+        self.advisor.acted = None;
+        self.advisor_changed();
+    }
+
     fn save_memory(&self) {
         crate::bridge::publish_memory(&self.advisor.memory);
         if let Err(e) = self.advisor.memory.save() {
@@ -1362,8 +1479,12 @@ impl State {
         r.nodes.remove(i);
         r.counted.remove(i);
         // keeping an information finding about a whole folder keeps that one only, not all inside
-        let verdict = if verdict == Verdict::Keep && matches!(f.remedy, Remedy::Info | Remedy::Move) { Verdict::KeepExact } else { verdict };
-        self.advisor.memory.decide(&f.path, &f.title, verdict);
+        // keeping a suggestion about a whole folder keeps that one only, not all inside
+        if verdict == Verdict::Keep && matches!(f.remedy, Remedy::Info | Remedy::Move) {
+            self.advisor.memory.keep_exact(&f.path, &f.title);
+        } else {
+            self.advisor.memory.decide(&f.path, &f.title, verdict);
+        }
         r.kept.push((f, verdict));
         // the lens without it
         let mut lens = vec![0u8; t.nodes.len()];
@@ -1442,7 +1563,18 @@ impl State {
             crate::state::text(&self.root, "StatusText", "Nothing to export: no finding has a command to run.");
             return;
         }
-        let list: Vec<&Finding> = picked.iter().map(|&i| &r.findings[i]).collect();
+        // what the user added themselves says so in the script
+        let owned: Vec<Finding> = picked
+            .iter()
+            .map(|&i| {
+                let mut f = r.findings[i].clone();
+                if self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase()) {
+                    f.title = format!("{} (added by you)", f.title);
+                }
+                f
+            })
+            .collect();
+        let list: Vec<&Finding> = owned.iter().collect();
         let root = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT).display().to_string()).unwrap_or_default();
         let text = sprawl_advisor::export::script(&list, &root, std::time::SystemTime::now());
         let items: Vec<(PathBuf, u64, String)> = list.iter().filter(|f| f.command.is_some()).map(|f| (f.path.clone(), f.bytes, f.title.clone())).collect();
@@ -1691,7 +1823,7 @@ impl State {
             if self.advisor.show_kept {
                 for (i, (f, v)) in r.kept.iter().enumerate() {
                     let why = match v {
-                        Verdict::Keep | Verdict::KeepExact => "kept",
+                        Verdict::Keep => "kept",
                         Verdict::Later => "not now",
                         Verdict::Done => "done",
                     };
@@ -1985,6 +2117,9 @@ impl State {
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if f.command.is_some() {
+            if f.risk < Risk::Red {
+                x += r##"<Button x:Name="AdvRun" Content="Run now..." Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/>"##;
+            }
             x += r##"<Button x:Name="AdvCopy" Content="Copy command" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
             if f.risk < Risk::Red {
                 let picked = self.advisor.picks.contains(&f.path.to_string_lossy().to_lowercase());
@@ -2003,7 +2138,8 @@ impl State {
             };
             x += &format!(r##"<Button x:Name="AdvUninstall" Content="Uninstall {}..." ToolTipService.ToolTip="{tip}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(o));
         }
-        x += r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="Never suggest this, or anything inside it, again" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+        let keep_tip = if matches!(f.remedy, Remedy::Info | Remedy::Move) { "Never show this suggestion again (what is inside may still come up)" } else { "Never suggest this, or anything inside it, again" };
+        x += &format!(r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="{keep_tip}" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
         x += "</StackPanel></StackPanel></Border>";
         x
     }

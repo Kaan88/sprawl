@@ -18,7 +18,8 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     s.push_str("  Read it before running it. As it is, it only measures (a dry run):\n");
     s.push_str("      powershell -ExecutionPolicy Bypass -File <this file>\n");
     s.push_str("  To clean up, add -Run. Items marked Admin need an administrator PowerShell.\n#>\n");
-    s.push_str("param([switch]$Run)\n");
+    // -Report <file>: the bytes freed are written there at the end (Sprawl's Run now reads it)
+    s.push_str("param([switch]$Run, [string]$Report)\n");
     s.push_str("$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\n");
     s.push_str(RM_FN);
     s.push('\n');
@@ -65,7 +66,8 @@ foreach ($i in $items) {\n\
   $total += $freed\n\
   Write-Host ('  freed {0:N2} GB' -f ($freed / 1GB))\n\
 }\n\
-if ($Run) { Write-Host ('Freed {0:N2} GB in all.' -f ($total / 1GB)) -ForegroundColor Green } else { Write-Host ('Would free about {0:N2} GB.' -f ($total / 1GB)) -ForegroundColor Cyan }\n",
+if ($Run) { Write-Host ('Freed {0:N2} GB in all.' -f ($total / 1GB)) -ForegroundColor Green } else { Write-Host ('Would free about {0:N2} GB.' -f ($total / 1GB)) -ForegroundColor Cyan }\n\
+if ($Run -and $Report) { Set-Content -LiteralPath $Report -Value $total -Encoding ascii }\n",
     );
     if !by_hand.is_empty() {
         s.push_str("\n<# To do by hand (no command):\n");
@@ -120,7 +122,7 @@ mod tests {
         assert!(s.contains("Admin = $true") && s.contains("Admin = $false"));
         // the administrator comment sits on its own line, so it can't swallow the closing brace
         assert!(s.contains("7   # as administrator\n  } }"));
-        assert!(s.contains("param([switch]$Run)") && s.contains("Dry run"));
+        assert!(s.contains("param([switch]$Run, [string]$Report)") && s.contains("Dry run"));
         assert!(s.contains("To do by hand") && s.contains(r"D:\Games\Old"));
         let p = std::env::temp_dir().join(format!("sprawl-export-{}.ps1", std::process::id()));
         write_script(&p, &s).unwrap();
@@ -154,8 +156,11 @@ mod tests {
         };
         let dry = run(&[]);
         assert!(dry.contains("Dry run") && cache.join("sub").join("a.bin").exists(), "{dry}");
-        let real = run(&["-Run"]);
+        let report = base.join("freed.txt");
+        let real = run(&["-Run", "-Report", &report.display().to_string()]);
         assert!(real.contains("Freed"), "{real}");
+        let freed: u64 = std::fs::read_to_string(&report).unwrap().trim().parse().unwrap();
+        assert_eq!(freed, 3000, "what -Report says was freed");
         assert!(std::fs::read_dir(&cache).unwrap().next().is_none(), "emptied: {real}");
         assert!(base.join("victim").join("keep.txt").exists(), "the junction's target is untouched");
         let _ = std::fs::remove_dir_all(&base);

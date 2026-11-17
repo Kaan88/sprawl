@@ -82,6 +82,22 @@ pub fn restart_elevated(owner: isize, args: &str) -> bool {
     r.0 as isize > 32
 }
 
+/// Run `script` in a new, visible Windows PowerShell window with `args` (each already quoted
+/// with [`quote`] if it is a path), elevated when `admin` (the UAC prompt appears). The window
+/// stays open afterwards so its output can be read. False when it couldn't start or the user
+/// declined elevation.
+pub fn run_powershell(owner: isize, script: &std::path::Path, args: &[String], admin: bool) -> bool {
+    let ps = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\WindowsPowerShell\v1.0\powershell.exe")).unwrap_or_else(|| "powershell.exe".into());
+    let mut all = format!("-NoProfile -ExecutionPolicy Bypass -NoExit -File {}", quote(script));
+    for a in args {
+        all.push(' ');
+        all.push_str(a);
+    }
+    let verb = if admin { w!("runas") } else { w!("open") };
+    let r = unsafe { ShellExecuteW(Some(hwnd(owner)), verb, &HSTRING::from(ps.as_os_str()), &HSTRING::from(all), PCWSTR::null(), SW_SHOWNORMAL) };
+    r.0 as isize > 32
+}
+
 /// Command-line argument quoting for a path.
 pub fn quote(p: &std::path::Path) -> String {
     let s = p.display().to_string();

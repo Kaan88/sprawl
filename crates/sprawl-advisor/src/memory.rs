@@ -31,9 +31,6 @@ pub enum Verdict {
     Later,
     /// The user cleaned it up (measured after running the script).
     Done,
-    /// Never suggest this one again, but what is inside it may still come up (for information
-    /// findings about a whole folder: moving it, compressing it).
-    KeepExact,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,6 +40,11 @@ pub struct Decision {
     pub verdict: Verdict,
     /// Unix seconds.
     pub when: u64,
+    /// A Keep of this one suggestion only: what is inside may still come up (information
+    /// findings about a whole folder: moving it, compressing it). A separate flag, so an older
+    /// Sprawl reads it as a full Keep, which hides more.
+    #[serde(default)]
+    pub exact: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,11 +182,19 @@ impl Memory {
     pub fn decide(&mut self, path: &Path, title: &str, verdict: Verdict) {
         let key = path.to_string_lossy().to_lowercase();
         self.decisions.retain(|d| d.path.to_string_lossy().to_lowercase() != key);
-        self.decisions.push(Decision { path: path.to_path_buf(), title: clean_text(title), verdict, when: now() });
+        self.decisions.push(Decision { path: path.to_path_buf(), title: clean_text(title), verdict, when: now(), exact: false });
         // the oldest go first past 2000
         if self.decisions.len() > 2000 {
             let extra = self.decisions.len() - 2000;
             self.decisions.drain(..extra);
+        }
+    }
+
+    /// Keep this one suggestion only (see [`Decision::exact`]).
+    pub fn keep_exact(&mut self, path: &Path, title: &str) {
+        self.decide(path, title, Verdict::Keep);
+        if let Some(d) = self.decisions.last_mut() {
+            d.exact = true;
         }
     }
 
@@ -207,9 +217,9 @@ impl Memory {
         self.decisions.iter().find(|d| {
             let k = segments(&d.path.to_string_lossy());
             match d.verdict {
+                Verdict::Keep if d.exact => p == k,
                 Verdict::Keep => p.len() >= k.len() && p[..k.len()] == k[..],
                 Verdict::Later => p == k && t.saturating_sub(d.when) < LATER_DAYS * 86_400,
-                Verdict::KeepExact => p == k,
                 Verdict::Done => false,
             }
         })
