@@ -432,12 +432,12 @@ impl State {
         let hex = |c: [f32; 3]| format!("#FF{:02X}{:02X}{:02X}", (c[0].clamp(0.0, 1.0) * 255.0) as u8, (c[1].clamp(0.0, 1.0) * 255.0) as u8, (c[2].clamp(0.0, 1.0) * 255.0) as u8);
         let swatch = |c: [f32; 3], label: &str| {
             format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="5"><Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="11" Foreground="#FFD5DBE8"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="5"><Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8"/></StackPanel>"##,
                 hex(c),
                 crate::ui::esc(label)
             )
         };
-        let note = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="11" Foreground="#FFB9C2D6"/>"##, crate::ui::esc(t));
+        let note = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6"/>"##, crate::ui::esc(t));
         let grey = [0.30, 0.33, 0.40];
         let paint = self.map.views.paint;
         let report = self.advice().is_some();

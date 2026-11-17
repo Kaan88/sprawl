@@ -1212,11 +1212,11 @@ impl State {
     fn findings_section(&self, r: &Report) -> String {
         let mut x = String::new();
         let chip = |name: &str, label: &str, on: bool| {
-            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,2" FontSize="11" CornerRadius="10" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#0CFFFFFF" })
+            format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,2" FontSize="12" CornerRadius="10" BorderThickness="0" Background="{}"/>"##, if on { "#FF2C3B63" } else { "#0CFFFFFF" })
         };
         let (s, o) = (self.advisor.sort, self.advisor.only);
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}</StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}</StackPanel>"##,
             chip("AdvSortSize", "Size", s == Sort::Size),
             chip("AdvSortRisk", "Risk", s == Sort::Risk),
             chip("AdvSortOwner", "Owner", s == Sort::Owner),
@@ -1226,7 +1226,7 @@ impl State {
         );
         x += &match &self.advisor.dupes_status {
             Some(s) => format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="AdvDupesStatus" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvDupesStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="AdvDupesStatus" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvDupesStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
                 ui::esc(s)
             ),
             None => format!(
@@ -1915,13 +1915,13 @@ impl State {
             // ready-made questions: one click asks
             x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
             for (i, q) in EXAMPLES.iter().enumerate() {
-                x += &format!(r##"<Button x:Name="AdvEx{i}" Content="{}" Padding="10,3" FontSize="11" CornerRadius="12" Background="#142F7BF6"/>"##, ui::esc(q));
+                x += &format!(r##"<Button x:Name="AdvEx{i}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="12" Background="#142F7BF6"/>"##, ui::esc(q));
             }
             x += "</StackPanel>";
         }
         if let Some((q, _)) = &c.consent {
             x += &format!(
-                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="11" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebSession" Content="Allow for this session" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebDeny" Content="Don't search" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##,
+                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="12" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebSession" Content="Allow for this session" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebDeny" Content="Don't search" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##,
                 ui::esc(q)
             );
         }
@@ -1930,7 +1930,7 @@ impl State {
         }
         if let Some(s) = &c.status {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvChatStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvChatStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
                 ui::esc(s)
             );
         }
@@ -1941,7 +1941,7 @@ impl State {
 
     fn memory_cards(&self, r: &Report) -> String {
         let m = &self.advisor.memory;
-        let small = |name: String, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,1" FontSize="11" CornerRadius="4"/>"##);
+        let small = |name: String, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,1" FontSize="12" CornerRadius="4"/>"##);
         let mut x = String::new();
         if !r.kept.is_empty() {
             x += &format!(
@@ -1966,10 +1966,10 @@ impl State {
             }
         }
         if !m.proposals.is_empty() {
-            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA"/>"##;
+            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
             for (i, p) in m.proposals.iter().enumerate() {
                 x += &format!(
-                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="11" Foreground="#FFB9C2D6"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="11" FontFamily="Consolas" Foreground="#FF8E97AA"/></StackPanel>"##,
+                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" FontFamily="Consolas" Foreground="#FF8E97AA"/></StackPanel>"##,
                     // a local rule's deletes are at least amber, whatever it proposes
                     risk_hex(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }),
                     ui::esc(&p.title),
@@ -1983,7 +1983,7 @@ impl State {
             x += "</StackPanel></Border>";
         }
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center"/><TextBlock Text="{}" FontFamily="Consolas" FontSize="11" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
             ui::esc(&crate::bridge::setup_command())
         );
         x += &format!(
@@ -2091,7 +2091,7 @@ impl State {
                 continue;
             }
             x += &format!(
-                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" VerticalAlignment="Center" Foreground="#FFF5B342"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="11" CornerRadius="4" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" VerticalAlignment="Center" Foreground="#FFF5B342"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="12" CornerRadius="4" VerticalAlignment="Center"/></Grid>"##,
                 ui::esc(&t.path_of(gr.node).display().to_string()),
                 ui::esc(&gr.why.join("; ")),
                 ui::esc(&signed(gr.delta)),
@@ -2115,7 +2115,7 @@ impl State {
         {
             let model = if cfg.model.is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.clone() };
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8">{ask}<TextBlock Text="{}" VerticalAlignment="Center" FontSize="11" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Content="{}" Padding="8,1" FontSize="11" CornerRadius="4" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8">{ask}<TextBlock Text="{}" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
                 if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) },
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
@@ -2130,7 +2130,7 @@ impl State {
             Ai::Idle => {}
             Ai::Running(s) => {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvStop" Content="Stop" Padding="8,1" FontSize="11" CornerRadius="4"/></StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
                     ui::esc(s)
                 )
             }
@@ -2147,7 +2147,7 @@ impl State {
                     how += &format!(" · {}, still the same size in this scan", ago(*t));
                 }
                 x += &format!(
-                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="#FF8E97AA" FontSize="11"/></TextBlock>"##,
+                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="#FF8E97AA" FontSize="12"/></TextBlock>"##,
                     match found {
                         0 => "Nothing more found".to_string(),
                         1 => "1 more finding".to_string(),
@@ -2167,20 +2167,20 @@ impl State {
                 }
                 if !rejected.is_empty() {
                     x += &format!(
-                        r##"<Button x:Name="AdvRejected" Padding="10,2" FontSize="11" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} claims didn't pass the checks ({})"/>"##,
+                        r##"<Button x:Name="AdvRejected" Padding="10,2" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} claims didn't pass the checks ({})"/>"##,
                         rejected.len(),
                         if self.advisor.show_rejected { "hide" } else { "show" }
                     );
                     if self.advisor.show_rejected {
                         for (f, why) in rejected {
-                            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA" Margin="10,0,0,0" Text="{}: {}"/>"##, ui::esc(&f.path.display().to_string()), ui::esc(why));
+                            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="10,0,0,0" Text="{}: {}"/>"##, ui::esc(&f.path.display().to_string()), ui::esc(why));
                         }
                     }
                 }
             }
         }
         if cfg.provider != Provider::Off {
-            x += r##"<Button x:Name="AdvLog" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="See what was sent to the AI"/>"##;
+            x += r##"<Button x:Name="AdvLog" Padding="0" FontSize="12" BorderThickness="0" Background="Transparent" Foreground="#FF8E97AA" Content="See what was sent to the AI"/>"##;
         }
         x += "</StackPanel></Border>";
         x
@@ -2212,12 +2212,13 @@ impl State {
         let mut x = String::new();
         let tick = match crate::cleanup::untickable(f, r.counted[i]) {
             None => format!(
-                r##"<CheckBox x:Name="AdvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{}" IsEnabled="{}"/>"##,
+                r##"<CheckBox x:Name="AdvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Clean up {}"/>"##,
                 if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { "True" } else { "False" },
-                if self.advisor.cleanup.running.is_some() { "False" } else { "True" }
+                if self.advisor.cleanup.running.is_some() { "False" } else { "True" },
+                ui::esc(&f.title)
             ),
             Some("") => String::new(),
-            Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {}"/>"##, ui::esc(why)),
+            Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(why)),
         };
         x += &format!(r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
         // a tip removes nothing: it says so instead of a risk
@@ -2234,16 +2235,16 @@ impl State {
             r##"<Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="7" BorderThickness="0" Background="{bg}">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="86"/></Grid.ColumnDefinitions>
 <Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/>
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="11" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
-<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}<Border Padding="7,1" CornerRadius="4" Background="#1AFFFFFF"><TextBlock Text="{remedy}" FontSize="11" Foreground="#FFB9C2D6"/></Border></StackPanel>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
+<StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}<Border Padding="7,1" CornerRadius="4" Background="#1AFFFFFF"><TextBlock Text="{remedy}" FontSize="12" Foreground="#FFB9C2D6"/></Border></StackPanel>
 <TextBlock Grid.Column="3" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button>"##,
             bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
-            dot = risk_hex(f.risk),
+            dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
             remedy = remedy_label(f.remedy),
-            plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="11" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
+            plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = self.size(f.bytes),
             op = if r.counted[i] { "1" } else { "0.55" },
         );
@@ -2260,7 +2261,7 @@ impl State {
         for e in &f.evidence {
             x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="• {}"/>"##, ui::esc(e));
         }
-        x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
+        x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
         let line = |colour: &str, text: &str| format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{colour}" Text="{}"/>"##, ui::esc(text));
         match &self.advisor.in_use {
             Some((j, state)) if *j == i => {
@@ -2287,7 +2288,7 @@ impl State {
                     None => (c.clone(), "The command, in PowerShell"),
                 };
                 x += &format!(
-                    r##"<TextBlock Text="{}" FontSize="11" Foreground="#FFA0A8B8" TextWrapping="Wrap"/><Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
+                    r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/><Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
                     label,
                     ui::esc(&shown)
                 );

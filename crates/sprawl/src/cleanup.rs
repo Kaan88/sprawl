@@ -356,7 +356,7 @@ impl State {
             );
             for (i, it) in run.items.iter().enumerate() {
                 let (glyph, colour, state) = match &it.state {
-                    ItemState::Waiting => ("&#xE823;", "#FF6F788C", "Waiting".to_string()),
+                    ItemState::Waiting => ("&#xE823;", "#FF8E97AA", "Waiting".to_string()),
                     ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", format!("Removing... {}", self.size(*f))),
                     ItemState::Done(o) if o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("Freed {}", self.size(o.freed))),
                     ItemState::Done(o) => ("&#xE7BA;", "#FFF5B342", format!("Freed {}; some couldn't go", self.size(o.freed))),
@@ -379,12 +379,12 @@ impl State {
             if !d.problems.is_empty() {
                 x += r##"<TextBlock Text="Some things couldn't go (in use, or no access): they stay as they were." FontSize="12" Foreground="#FFF5B342"/>"##;
                 for p in d.problems.iter().take(8) {
-                    x += &format!(r##"<TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(p));
+                    x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(p));
                 }
             }
             if !d.output.is_empty() {
                 x += &format!(
-                    r##"<Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="11" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
+                    r##"<Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
                     d.output.iter().map(|l| ui::esc(l)).collect::<Vec<_>>().join("&#10;")
                 );
             }
@@ -411,7 +411,7 @@ impl State {
         if admin_waiting {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
         }
-        x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="#FF6F788C" Content="Save as a script instead..."/>"##;
+        x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="12" BorderThickness="0" Background="Transparent" Foreground="#FF8E97AA" Content="Save as a script instead..."/>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -440,7 +440,7 @@ impl State {
             let what = crate::advisor::risk_words(f.risk);
             let ai = if matches!(f.source, Source::Model(_)) { " · suggested by the AI" } else { "" };
             x += &format!(
-                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="11" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
                 crate::advisor::risk_hex(f.risk),
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {

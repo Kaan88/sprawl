@@ -204,16 +204,16 @@ fn hud() -> String {
             format!(
                 r##"<Grid x:Name="Lane{k}" Height="20" VerticalAlignment="Top" Opacity="0" ColumnSpacing="8">
   <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
-  <TextBlock x:Name="Lane{k}Name" FontSize="11.5" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Lane{k}Name" FontSize="12" VerticalAlignment="Center"/>
   <Border x:Name="Lane{k}Bar" Grid.Column="1" Height="8" CornerRadius="4" HorizontalAlignment="Left" Width="2" Background="#FF4CC2FF"/>
-  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" FontSize="11.5" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" FontSize="12" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
 </Grid>"##
             )
         })
         .collect();
     let stat = |label: &str, name: &str, col: u8, row: u8| {
         format!(
-            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="10.5" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" FontSize="17" FontWeight="SemiBold"/></StackPanel>"##
+            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="12" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" FontSize="17" FontWeight="SemiBold"/></StackPanel>"##
         )
     };
     format!(
@@ -221,8 +221,8 @@ fn hud() -> String {
   <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
   <StackPanel Spacing="8">
     <Grid>
-      <TextBlock x:Name="HudMethod" Text="Reading" FontSize="11" FontWeight="SemiBold" Foreground="#FF7A8296" CharacterSpacing="60"/>
-      <TextBlock x:Name="HudPct" Text="0%" FontSize="11" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
+      <TextBlock x:Name="HudMethod" Text="Reading" FontSize="12" FontWeight="SemiBold" Foreground="#FF7A8296" CharacterSpacing="60"/>
+      <TextBlock x:Name="HudPct" Text="0%" FontSize="12" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
     </Grid>
     <Image x:Name="HudImage" Height="76" Stretch="Fill"/>
     <Grid ColumnSpacing="14" RowSpacing="6">
@@ -325,7 +325,7 @@ pub fn page(drives: &[String]) -> String {
             if g > 0 {
                 view_items += "<MenuFlyoutSeparator/>";
             }
-            view_items += &format!(r##"<MenuFlyoutItem Text="{group}" IsEnabled="False" FontSize="11"/>"##);
+            view_items += &format!(r##"<MenuFlyoutItem Text="{group}" IsEnabled="False" FontSize="12"/>"##);
             view_items += &kinds.iter().map(|&k| item(k)).collect::<String>();
         }
     }
@@ -342,15 +342,15 @@ pub fn page(drives: &[String]) -> String {
       <StackPanel Spacing="4">
         <Grid>
           <TextBlock Text="Colors and Tweaks" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="11"/></Button>
+          <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="12"/></Button>
         </Grid>
-        <TextBlock Text="Colors" FontSize="11" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
+        <TextBlock Text="Colors" FontSize="12" Foreground="#FF8E97AA" Margin="0,6,0,0"/>
         <ComboBox x:Name="PaletteBox" HorizontalAlignment="Stretch" SelectedIndex="0">{palettes}</ComboBox>
-        <TextBlock Text="Tile height when hovered" FontSize="11" Foreground="#FF8E97AA" Margin="0,8,0,0"/>
+        <TextBlock Text="Tile height when hovered" FontSize="12" Foreground="#FF8E97AA" Margin="0,8,0,0"/>
         <Slider x:Name="LiftSlider" Minimum="0" Maximum="250" Value="100" StepFrequency="5"/>
-        <TextBlock Text="Cushion shading" FontSize="11" Foreground="#FF8E97AA"/>
+        <TextBlock Text="Cushion shading" FontSize="12" Foreground="#FF8E97AA"/>
         <Slider x:Name="CushionSlider" Minimum="0" Maximum="200" Value="100" StepFrequency="5"/>
-        <TextBlock Text="Tilt" FontSize="11" Foreground="#FF8E97AA"/>
+        <TextBlock Text="Tilt" FontSize="12" Foreground="#FF8E97AA"/>
         <Slider x:Name="TiltSlider" Minimum="0" Maximum="100" Value="55" StepFrequency="1"/>
         <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="12"/>
       </StackPanel>
@@ -436,7 +436,7 @@ pub fn page(drives: &[String]) -> String {
             </Border.Background>
           </Border>
         </Grid>
-        <TextBlock x:Name="ScanInfo" Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="11" Foreground="#FF8E97AA"/>
+        <TextBlock x:Name="ScanInfo" Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
     </Border>
     <Border Grid.Column="2" {CARD} Padding="14,10">
@@ -459,7 +459,7 @@ pub fn page(drives: &[String]) -> String {
         <StackPanel VerticalAlignment="Center" Spacing="2">
           <TextBlock Text="Sprawl {version}" FontSize="17" FontWeight="SemiBold"/>
           <TextBlock Text="Rust + WinUI 3 disk space analyser" FontSize="12" Foreground="#FF8E97AA"/>
-          <TextBlock x:Name="BrandLine" Text="Wheel zooms, right-drag pans" FontSize="11" Foreground="#FF6F788C"/>
+          <TextBlock x:Name="BrandLine" Text="Wheel zooms, right-drag pans" FontSize="12" Foreground="#FF8E97AA"/>
         </StackPanel>
       </StackPanel>
     </Border>
@@ -548,8 +548,8 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
 
   <Grid Grid.Row="7" Margin="16,0,16,0">
-    <TextBlock x:Name="FootLeft" Text="" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-    <TextBlock x:Name="FootRight" Text="" FontSize="11" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+    <TextBlock x:Name="FootLeft" Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+    <TextBlock x:Name="FootRight" Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
   </Grid>
   {wizard}
 </Grid>"##

@@ -19,12 +19,12 @@ pub const BUTTONS: [&str; 3] = ["WizBack", "WizNext", "WizSkip"];
 
 fn switch(name: &str, header: &str, note: &str) -> String {
     format!(
-        r##"<StackPanel Spacing="0"><ToggleSwitch x:Name="{name}" Header="{header}" FontSize="13"/><TextBlock Text="{note}" TextWrapping="Wrap" FontSize="11.5" Foreground="#FF8E97AA" Margin="0,-4,0,6"/></StackPanel>"##
+        r##"<StackPanel Spacing="0"><ToggleSwitch x:Name="{name}" Header="{header}" FontSize="13"/><TextBlock Text="{note}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,-4,0,6"/></StackPanel>"##
     )
 }
 
 fn label(t: &str) -> String {
-    format!(r##"<TextBlock Text="{t}" FontSize="11.5" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##)
+    format!(r##"<TextBlock Text="{t}" FontSize="12" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##)
 }
 
 fn page_title(glyph: &str, title: &str, sub: &str) -> String {
@@ -66,7 +66,7 @@ pub fn xaml() -> String {
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/></StackPanel>
         <StackPanel x:Name="WizModelRow">{}<TextBox x:Name="WizModel" PlaceholderText="Model name"/></StackPanel>
-        <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are. Every request is listed in the advisor's log. Web lookups always ask first."/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the advisor runs, folder and file paths from your scan are sent to the provider as they are. Every request is listed in the advisor's log. Web lookups always ask first."/>
         </StackPanel>"##,
         page_title("&#xE945;", "AI advisor", "Optional: who should explain your disk?"),
         label("Provider"),
@@ -98,7 +98,7 @@ pub fn xaml() -> String {
     );
     let p4 = format!(
         r##"<StackPanel x:Name="WizP4" Spacing="2" Visibility="Collapsed">{}{}{}{}
-        <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="Snapshots are kept in %LOCALAPPDATA%\Sprawl\snapshots on this PC only. The oldest are thinned out first when the limit is reached."/>
+        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="Snapshots are kept in %LOCALAPPDATA%\Sprawl\snapshots on this PC only. The oldest are thinned out first when the limit is reached."/>
         </StackPanel>"##,
         page_title("&#xE81C;", "History", "See how your disk changes over time"),
         switch("WizSnapshots", "Keep scan history", "After each scan Sprawl saves a compact snapshot: about 5 MB for a whole system drive, and the last 3 in full detail (about 27 MB each). It powers growth over time, &quot;what grew since last week&quot;, the time-lapse and scan comparisons."),
@@ -113,8 +113,8 @@ pub fn xaml() -> String {
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid>
-          <TextBlock x:Name="WizStep" Text="Step 1 of 5" FontSize="11.5" Foreground="#FF8E97AA"/>
-          <TextBlock x:Name="WizDots" Text="" FontSize="11.5" Foreground="#FF8FB4FF" HorizontalAlignment="Right"/>
+          <TextBlock x:Name="WizStep" Text="Step 1 of 5" FontSize="12" Foreground="#FF8E97AA"/>
+          <TextBlock x:Name="WizDots" Text="" FontSize="12" Foreground="#FF8FB4FF" HorizontalAlignment="Right"/>
         </Grid>
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
           <Grid>{p0}{p1}{p2}{p3}{p4}</Grid>

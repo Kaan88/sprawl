@@ -97,7 +97,7 @@ impl State {
 <StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xEDA2;" FontSize="18" Foreground="{colour}"/><TextBlock Text="{name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxWidth="180"/></StackPanel>
 <Grid Height="6" CornerRadius="3" Background="#22FFFFFF"><Border HorizontalAlignment="Left" Width="{w:.0}" CornerRadius="3" Background="{colour}"/></Grid>
 <TextBlock FontSize="12" Foreground="#FFD5DBE8" Text="{space}"/>
-<TextBlock FontSize="11" Foreground="#FF8E97AA" Text="{last}" TextTrimming="CharacterEllipsis"/>
+<TextBlock FontSize="12" Foreground="#FF8E97AA" Text="{last}" TextTrimming="CharacterEllipsis"/>
 </StackPanel></Button>"##,
                 root = ui::esc(&d.root),
                 name = ui::esc(&name),

@@ -119,7 +119,7 @@ fn header(cols: &[Col], sort: (usize, bool)) -> String {
         let arrow = if i == sort.0 { if sort.1 { "&#xE70D;" } else { "&#xE70E;" } } else { "" };
         let colour = if i == sort.0 { "#FFE6EBF5" } else { "#FFB9C2D6" };
         s += &format!(
-            r##"<StackPanel Grid.Column="{i}" Orientation="Horizontal" Spacing="5" HorizontalAlignment="{align}" Margin="10,0,10,0"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{colour}" VerticalAlignment="Center"/><FontIcon Glyph="{arrow}" FontSize="9" Foreground="#FF4CC2FF" VerticalAlignment="Center"/></StackPanel>"##,
+            r##"<StackPanel Grid.Column="{i}" Orientation="Horizontal" Spacing="5" HorizontalAlignment="{align}" Margin="10,0,10,0"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{colour}" VerticalAlignment="Center"/><FontIcon Glyph="{arrow}" FontSize="12" Foreground="#FF4CC2FF" VerticalAlignment="Center"/></StackPanel>"##,
             ui::esc(c.title)
         );
     }
@@ -171,7 +171,7 @@ pub(crate) fn cell(col: usize, s: &str) -> String {
 pub(crate) fn pct_bar(col: usize, pct: f64, a: &str, b: &str) -> String {
     let w = pct.clamp(0.0, 100.0);
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="#18FFFFFF"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="#18FFFFFF"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 
@@ -386,7 +386,7 @@ impl State {
         let hidden = n != ROOT && (node.is_hidden() || node.is_system());
         let fg = if hidden { "#FF7D8494" } else { "#FFFFFFFF" };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="9" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(TREE),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
@@ -401,8 +401,8 @@ impl State {
                 // an uninstall mark where the app starts, when Sprawl knows where it is uninstalled
                 Some((name, inherited, can_uninstall)) => format!(
                     r##"<TextBlock Grid.Column="6" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,
-                    if inherited { "#FF6F788C" } else { "#FFB9C2D6" },
-                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="11" Foreground="#FF8E97AA"/>"## } else { "" },
+                    if inherited { "#FF8E97AA" } else { "#FFB9C2D6" },
+                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="12" Foreground="#FF8E97AA"/>"## } else { "" },
                     ui::esc(name),
                 ),
                 None => String::new(),
