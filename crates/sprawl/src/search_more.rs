@@ -47,6 +47,8 @@ pub(crate) struct More {
     /// What is being read ("C:\ (saved 12 Nov)", "D:").
     pub(crate) loading: Vec<String>,
     drives_on: HashSet<String>,
+    /// Drives the user switched off this session: not read again by themselves.
+    drives_off: HashSet<String>,
     running: Option<Receiver<Hits>>,
     /// (place, node), biggest first, at most SHOWN; and how many there were.
     hits: Vec<(usize, usize)>,
@@ -71,6 +73,7 @@ impl State {
     /// The tab opened: load the saved scans (once a session) that the current scan doesn't cover.
     pub(crate) fn more_open(&mut self) {
         self.more_forget_covered();
+        self.more_all_drives();
         if self.search.more.snapshots_tried {
             self.render_more();
             return;
@@ -116,11 +119,31 @@ impl State {
         self.render_more();
     }
 
+    /// Every fixed drive the scan on screen isn't, read by itself (as administrator, from the
+    /// file table), like Everything: search finds things on all drives without asking.
+    fn more_all_drives(&mut self) {
+        if !sprawl_core::is_elevated() || self.settings.bool("search_all_drives") == Some(false) {
+            return;
+        }
+        let cur = self.current_root();
+        for d in crate::win32::drives().into_iter().filter(|d| d.kind == 3) {
+            let m = &self.search.more;
+            if cur.as_ref().is_some_and(|c| norm(Path::new(&d.root)) == *c) || m.drives_on.contains(&d.root) || m.drives_off.contains(&d.root) {
+                continue;
+            }
+            if let Some(letter) = d.root.chars().next() {
+                self.more_drive(letter);
+            }
+        }
+    }
+
     /// A drive chip: read that drive (administrator, MFT) or forget it.
     pub(crate) fn more_drive(&mut self, letter: char) {
         let root = format!("{letter}:\\");
         let m = &mut self.search.more;
+        m.drives_off.remove(&root);
         if m.drives_on.remove(&root) {
+            m.drives_off.insert(root.clone());
             m.places.retain(|p| norm(&p.tree.root_path) != norm(Path::new(&root)));
             m.gen += 1;
             self.search_run();
@@ -354,13 +377,13 @@ impl State {
                 let letter = d.root.chars().next().unwrap_or('C');
                 let on = m.drives_on.contains(&d.root);
                 x += &format!(
-                    r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Read {root} from its file table (kept in memory until Sprawl closes)" Content="{letter}:"/>"##,
+                    r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" ToolTipService.ToolTip="Search {root} too (read from its file table, kept in memory until Sprawl closes). Press to leave it out." Content="{letter}:"/>"##,
                     on = if on { "True" } else { "False" },
                     root = ui::esc(&d.root),
                 );
             }
         } else if !offer.is_empty() {
-            x += r##"<TextBlock Text="Other drives can be searched as administrator." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
+            x += r##"<TextBlock Text="Other drives are searched too when Sprawl runs as administrator." FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>"##;
         }
         x += "</StackPanel>";
         if !m.hits.is_empty() && m.hits_gen == m.gen {
