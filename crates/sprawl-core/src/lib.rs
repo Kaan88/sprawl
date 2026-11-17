@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod compact;
 pub mod csv;
 pub mod filter;
 pub mod mft;

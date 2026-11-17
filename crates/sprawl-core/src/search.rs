@@ -18,7 +18,7 @@
 //! The rules for `*`, `?`, `|` and `\` are the filter box's (see [`crate::filter`]), so a
 //! pattern means the same in both places.
 //!
-//! Drives read only to be searched can use `crate::compact::CompactIndex` instead of a tree
+//! Drives read only to be searched can use [`crate::compact::CompactIndex`] instead of a tree
 //! and this index: the same queries, in a fraction of the memory.
 
 use std::borrow::Cow;
