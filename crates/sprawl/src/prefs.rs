@@ -98,7 +98,7 @@ pub const AFTER_SCAN: [&str; 2] = ["Stay where I am", "Open the Advisor"];
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 50] = [
+pub static PREFS: [Pref; 51] = [
     // General
     p("units", Sec::General, "Sizes in", "How sizes are written. Sizes are binary: 1 GB is 1,024 MB.", Kind::Choice(&UNITS, 0)),
     p("dataFolder", Sec::General, "Your data", "Settings, what the Advisor remembers, scan history and logs: all on this PC, in your own folders.", Kind::Custom),
@@ -162,6 +162,13 @@ pub static PREFS: [Pref; 50] = [
         "Your own files and leftovers (orange) go to the Recycle Bin, where Explorer can put them back; their space is freed when the bin is emptied. Caches are still deleted: in the bin they would free nothing. What can't go to the bin is left as it is, never deleted instead.",
         Kind::Switch(true),
     ),
+    p(
+        "privacyCleaners",
+        Sec::Cleaning,
+        "Show privacy cleaners",
+        "Adds a Privacy group to Cleaners: cookies and history of this account's browsers, by profile. They free almost no space, and each is ticked on its own. Off, Sprawl doesn't look at them.",
+        Kind::Switch(false),
+    ),
     p("neverTouch", Sec::Cleaning, "Never touch", "Folders and files you chose to keep: Sprawl never offers them and a clean-up leaves them. Add one, or take one off the list.", Kind::Custom),
     p("clUsualTicks", Sec::Cleaning, "Open Cleaners with my usual ticks", "Cleaners opens with the parts you ticked last time. Sprawl never ticks anything for you.", Kind::Switch(true)),
     p("tuneCommunityDays", Sec::Cleaning, "Community cleaners: fetch every", "When fetching is on (Network).", Kind::Number(&tuning::COMMUNITY_DAYS, "days")),
@@ -198,7 +205,7 @@ pub const WIZARD: [(&str, &str, &str, &[&str]); 7] = [
     ("Network", "&#xE774;", "What Sprawl may fetch, and when", &["oUpdates", "communityFetch", "offline"]),
     ("Scanning and search", "&#xEDA2;", "How Sprawl reads your drives", &["oAlwaysAdmin", "oExplorer", "searchDrivesOn", "searchHistory"]),
     ("History", "&#xE81C;", "See how your disk changes over time", &["snapshots", "snapshot_cap_mb"]),
-    ("Cleaning", "&#xE74D;", "What happens to your own files", &["recycleOwn"]),
+    ("Cleaning", "&#xE74D;", "What happens to your own files", &["recycleOwn", "privacyCleaners"]),
     ("Look", "&#xE790;", "How the map is drawn", &["palette", "animate"]),
 ];
 
@@ -262,6 +269,7 @@ mod tests {
             ("animate", "1"),
             ("clUsualTicks", "1"),
             ("recycleOwn", "1"),
+            ("privacyCleaners", "0"),
             ("adminShellMenu", "0"),
             ("adminHandOff", "0"),
             ("adminClaudeCode", "0"),

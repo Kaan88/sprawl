@@ -54,7 +54,7 @@ pub(crate) struct ClState {
     own_count: u64,
     /// The folders the cleaners look at, and the large ones the quick read leaves out
     /// (worked out once).
-    roots: std::cell::RefCell<Option<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)>>,
+    pub(crate) roots: std::cell::RefCell<Option<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)>>,
     /// The tab just opened: the user's remembered ticks are to be put back.
     pub(crate) restore_pending: bool,
     /// The user changed a tick: remembered at the next redraw.
@@ -166,7 +166,8 @@ impl State {
             .get_or_insert_with(|| {
                 let mut packs = vec![sprawl_advisor::RulePack::builtin()];
                 packs.extend(sprawl_advisor::memory::load_packs().0);
-                sprawl_advisor::cleaners::quick_roots(&sprawl_advisor::cleaners::catalogue(&packs))
+                // with privacy cleaners on, the browsers' profile folders are read too
+                sprawl_advisor::cleaners::quick_roots(&sprawl_advisor::cleaners::catalogue_with(&packs, self.privacy_on()))
             })
             .clone()
     }
@@ -230,6 +231,7 @@ impl State {
         self.advisor.cl.own_count += 1;
         let gen = OWN_GEN + self.advisor.cl.own_count;
         let memory = self.advisor.memory.clone();
+        let privacy_on = self.privacy_on();
         let progress = Arc::new(sprawl_core::Progress::default());
         let p2 = progress.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -240,7 +242,7 @@ impl State {
                     return None;
                 }
                 let tree = Arc::new(sprawl_core::scan_many(&roots, &p2).ok()?);
-                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory))?;
+                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on))?;
                 Some(Own { tree, report, began, roots: roots.len() })
             })();
             let _ = tx.send(own);
@@ -297,6 +299,10 @@ impl State {
         }
         let mut rows: Vec<ClRow> = Vec::new();
         for (k, d) in r.catalogue.iter().enumerate() {
+            // the privacy cleaners have a group of their own (privacy_group), never these rows
+            if sprawl_advisor::privacy::is_privacy_id(&d.id) || d.id.to_lowercase().starts_with("privacy.") {
+                continue;
+            }
             let presence = r.presence.get(k).cloned().unwrap_or(Presence::Absent);
             if presence == Presence::Absent {
                 continue;
@@ -821,7 +827,7 @@ impl State {
         r.findings
             .iter()
             .enumerate()
-            .filter(|(i, f)| matches!(&f.source, Source::Rule(id) if usual.contains(id)) && untickable(f, r.counted[*i]).is_none())
+            .filter(|(i, f)| crate::cleanup::counts_as_space(f) && matches!(&f.source, Source::Rule(id) if usual.contains(id)) && untickable(f, r.counted[*i]).is_none())
             .map(|(_, f)| key(&f.path))
             .filter(|k| !self.advisor.cleanup.ticked.contains(k))
             .collect()
@@ -832,7 +838,7 @@ impl State {
         let Some(r) = self.advice() else { return };
         let mut ids: Vec<String> = picked
             .iter()
-            .filter(|f| f.risk == Risk::Amber)
+            .filter(|f| f.risk == Risk::Amber && crate::cleanup::counts_as_space(f))
             .filter_map(|f| if let Source::Rule(id) = &f.source { Some(id.clone()) } else { None })
             .filter(|id| sprawl_advisor::cleaners::part_of(&r.catalogue, id).is_some_and(|(_, p)| p.class == Class::Space))
             .collect();
@@ -851,7 +857,8 @@ impl State {
         let mut ok = Vec::new();
         let mut left = 0;
         for k in keys {
-            let declined = self.advisor.memory.declined_parts.iter().any(|d| d.eq_ignore_ascii_case(k));
+            // a privacy part is never suggested, whatever the model sent
+            let declined = self.advisor.memory.declined_parts.iter().any(|d| d.eq_ignore_ascii_case(k)) || k.to_lowercase().starts_with("privacy.");
             match rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).find(|(_, p)| p.key.eq_ignore_ascii_case(k)) {
                 // safe and amber space only: never a privacy part, nor one the user turned down
                 Some((c, p)) if !declined && p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() && self.part_true(r, p).0 > 0 => ok.push((c, p)),
@@ -1157,6 +1164,7 @@ impl State {
         }
         if rows.is_empty() {
             x += r##"<TextBlock Text="No application Sprawl knows is here." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            x += &self.privacy_group(r);
             return x;
         }
         let running = self.advisor.cleanup.running.is_some();
@@ -1241,6 +1249,7 @@ impl State {
                 part_no += c.parts.len();
             }
         }
+        x += &self.privacy_group(r);
         x += &self.unclaimed_card(r);
         x += &self.cleaner_proposals_card();
         x += &self.community_card();
@@ -1705,6 +1714,79 @@ impl State {
             r##"<Button x:Name="AdvClAll" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="34,4,0,0"/></StackPanel>"##,
             if more > 0 { format!("See all in Cleaners ({more} more)") } else { "See all in Cleaners".to_string() }
         );
+        x
+    }
+}
+
+/// The Privacy group's wording, held to `privacy::PROMISE_WORDS` by a test.
+pub(crate) const PV_HEAD: &str = "Privacy";
+pub(crate) const PV_SUB: &str = "Cookies and history in this account's browsers, by profile. They free almost no space: each is ticked on its own, and nothing here is ticked for you.";
+pub(crate) const PV_NONE: &str = "No browser profile of this account was found in what was read.";
+pub(crate) const PV_HELD: &str = "held back by Sprawl's checks";
+
+impl State {
+    /// Settings > Cleaning, "Show privacy cleaners" (off unless switched on).
+    pub(crate) fn privacy_on(&self) -> bool {
+        self.settings.bool(sprawl_advisor::privacy::SETTING) == Some(true)
+    }
+
+    /// The Privacy group, after the space groups: one row per browser profile, by the name the
+    /// browser gives it (its folder in the tooltip when they differ), each part with a tick of
+    /// its own. No application tick, no size total. Nothing with the setting off.
+    fn privacy_group(&self, r: &Report) -> String {
+        if !r.privacy_on {
+            return String::new();
+        }
+        let running = self.advisor.cleanup.running.is_some();
+        let mut x = format!(
+            r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,8,0,0"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##,
+            PV_HEAD,
+            ui::esc(PV_SUB)
+        );
+        if r.privacy_rows.is_empty() {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="34,2,0,0"/>"##, ui::esc(PV_NONE));
+        }
+        for row in &r.privacy_rows {
+            let name = format!("{} · {}", row.browser.short, row.shown);
+            let tip = if row.shown.eq_ignore_ascii_case(&row.folder) { String::new() } else { format!(r##" ToolTipService.ToolTip="Profile folder: {}""##, ui::esc(&row.folder)) };
+            x += &format!(r##"<StackPanel Spacing="1" Margin="34,2,0,4"><TextBlock Text="{}" FontSize="13"{tip}/>"##, ui::esc(&name));
+            for &i in &row.parts {
+                let f = &r.privacy[i];
+                let part = match &f.source {
+                    Source::Rule(id) => sprawl_advisor::privacy::part(id),
+                    _ => None,
+                };
+                let ticked = self.advisor.cleanup.privacy_ticked.contains(&key(&f.path));
+                // not the space labels ("your own files"): what it is, and whether it can go now
+                let mut sub = "Privacy".to_string();
+                match self.app_open(f) {
+                    Some((app, _)) => sub += &format!(" · close {app} first"),
+                    None => {}
+                }
+                x += &format!(
+                    r##"<Grid ColumnSpacing="6" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvPvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="{}"/><StackPanel Grid.Column="1" Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="13" ToolTipService.ToolTip="{}"/></StackPanel><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/><TextBlock Text="{}" FontSize="12" Foreground="{}" TextWrapping="Wrap"/></StackPanel></Grid>"##,
+                    if ticked { "True" } else { "False" },
+                    if running { "False" } else { "True" },
+                    ui::esc(&f.title),
+                    crate::advisor::risk_hex(f.risk),
+                    ui::esc(part.map_or(f.title.as_str(), |p| p.title)),
+                    ui::esc(part.map_or("", |p| p.why)),
+                    ui::esc(&sub),
+                    ui::esc(part.map_or("", |p| p.cost)),
+                    if ticked { "#FFF5B342" } else { "#FFB9C2D6" },
+                );
+            }
+            x += "</StackPanel>";
+        }
+        if !r.privacy_held.is_empty() {
+            let why: Vec<String> = r.privacy_held.iter().map(|(f, w)| format!("{}: {w}", f.title)).collect();
+            x += &format!(
+                r##"<TextBlock Text="{} {}" FontSize="12" Foreground="#FF8E97AA" Margin="34,2,0,0" ToolTipService.ToolTip="{}"/>"##,
+                r.privacy_held.len(),
+                PV_HELD,
+                ui::esc(&why.join("&#10;"))
+            );
+        }
         x
     }
 }

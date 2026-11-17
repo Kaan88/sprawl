@@ -39,6 +39,11 @@ pub(crate) struct Cleanup {
     /// What a pattern or keep-days item would free now, counted when the review opens (by path key).
     pub measured: std::collections::HashMap<String, u64>,
     measuring: Option<Receiver<(String, u64)>>,
+    /// Ticked privacy parts (Report::privacy), by lower-case path: only ever by the user, one by
+    /// one. A set that went is unticked; one held back stays ticked for "Check again".
+    pub privacy_ticked: HashSet<String>,
+    /// "I understand what each of these removes" is ticked.
+    pub privacy_ok: bool,
 }
 
 pub(crate) struct Item {
@@ -50,6 +55,8 @@ pub(crate) struct Item {
     pub rule: Option<String>,
     /// It goes to the Recycle Bin (the user's own files, with the setting on).
     pub recycle: bool,
+    /// A privacy part's set: not counted in what was freed.
+    pub privacy: bool,
 }
 
 pub(crate) enum ItemState {
@@ -76,6 +83,9 @@ pub(crate) struct Done {
     /// Sent to the Recycle Bin (freed when the bin is emptied), and the items that sent some.
     pub recycled: u64,
     pub recycled_items: usize,
+    /// Privacy sets that went, and the browsers that held one back (open).
+    pub privacy_items: usize,
+    pub privacy_open: Vec<String>,
     /// Left because they were new since the scan, or kept by the user.
     pub kept_new: u64,
     pub kept_chosen: u64,
@@ -165,7 +175,18 @@ pub(crate) fn scan_age_words_after(began: std::time::SystemTime, now: std::time:
 /// amber) are deleted: recycling them would free nothing. A program's own clean-up command
 /// decides for itself.
 pub(crate) fn goes_to_bin(f: &Finding, on: bool) -> bool {
-    on && f.risk >= Risk::Orange && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
+    on && f.risk >= Risk::Orange && !f.privacy() && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
+}
+
+/// Whether `f` may be in a sum of space, a tick Sprawl makes, the usual set or a suggestion:
+/// never a privacy part. The report keeps those apart already; this holds every such place to it.
+pub(crate) fn counts_as_space(f: &Finding) -> bool {
+    !f.privacy()
+}
+
+/// What "Tick the safe ones" may tick.
+pub(crate) fn safe_tick(f: &Finding, counted: bool) -> bool {
+    counts_as_space(f) && untickable(f, counted).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20
 }
 
 /// It needs administrator rights and this Sprawl doesn't have them: it can be ticked (for a
@@ -228,12 +249,7 @@ impl State {
     /// guess by shape), inside the user's own profile, 1 MB or more.
     fn safe_ticks(&self) -> HashSet<String> {
         let Some(r) = self.advice() else { return HashSet::new() };
-        r.findings
-            .iter()
-            .zip(&r.counted)
-            .filter(|(f, c)| untickable(f, **c).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20)
-            .map(|(f, _)| key(&f.path))
-            .collect()
+        r.findings.iter().zip(&r.counted).filter(|(f, c)| safe_tick(f, **c)).map(|(f, _)| key(&f.path)).collect()
     }
 
     /// The ticked findings of the report on screen, in list order (index, finding).
@@ -252,6 +268,26 @@ impl State {
             })
             .map(|(i, f)| (i, f.clone()))
             .collect()
+    }
+
+    /// The ticked privacy parts of the report on screen. Never for a one-row review.
+    pub(crate) fn ticked_privacy(&self) -> Vec<Finding> {
+        let Some(r) = self.advice() else { return Vec::new() };
+        if self.advisor.cleanup.single.is_some() {
+            return Vec::new();
+        }
+        r.privacy.iter().filter(|f| self.advisor.cleanup.privacy_ticked.contains(&key(&f.path))).cloned().collect()
+    }
+
+    /// Tick or untick privacy part `i` (the user's own tick: the only way one is ticked).
+    pub(crate) fn privacy_toggle(&mut self, i: usize) {
+        let Some(k) = self.advice().and_then(|r| r.privacy.get(i)).map(|f| key(&f.path)) else { return };
+        let c = &mut self.advisor.cleanup;
+        if !c.privacy_ticked.remove(&k) {
+            c.privacy_ticked.insert(k);
+        }
+        c.privacy_ok = false;
+        c.single = None;
     }
 
     pub(crate) fn cleanup_toggle(&mut self, i: usize) {
@@ -299,7 +335,7 @@ impl State {
     pub(crate) fn cleanup_select_enough(&mut self, need: u64) -> Option<u64> {
         let r = self.advice()?;
         let plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
-        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
+        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
         self.advisor.cleanup.ticked = ticked;
         self.advisor.cleanup.auto = false;
@@ -314,7 +350,12 @@ impl State {
         // checked against the whole scan, not a filtered view of it
         let Some(t) = self.active_tree() else { return };
         let picked = self.ticked_findings();
-        if picked.is_empty() {
+        let privacy = self.ticked_privacy();
+        if picked.is_empty() && privacy.is_empty() {
+            return;
+        }
+        if !privacy.is_empty() && !self.advisor.cleanup.privacy_ok {
+            self.adv_say("Tick \"I understand what each of these removes\" first, or untick the privacy items.");
             return;
         }
         let needs_ok = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
@@ -339,7 +380,8 @@ impl State {
         let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>, bool)> = Vec::new();
         let mut items = Vec::new();
         let mut held = Vec::new();
-        for (_, f) in picked {
+        // the privacy sets after the rest, checked the same way (their own set checks inside)
+        for f in picked.into_iter().map(|(_, f)| f).chain(privacy) {
             if let Some(why) = held_in_app(&f) {
                 held.push(format!("{}: not cleaned, {why}", f.title));
                 continue;
@@ -378,6 +420,7 @@ impl State {
                     sprawl_advisor::Source::Model(_) => None,
                 },
                 recycle,
+                privacy: f.privacy(),
             });
         }
         if items.is_empty() {
@@ -559,9 +602,26 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
+                // a privacy set: counted on its own, never in what was freed; one that went is
+                // unticked, one held back stays ticked for "Check again"
+                if it.privacy {
+                    let browser = it.rule.as_deref().and_then(sprawl_advisor::privacy::part).map(|p| p.browser().short);
+                    if o.problems.is_empty() && o.files > 0 {
+                        done.privacy_items += 1;
+                        self.advisor.cleanup.privacy_ticked.remove(&key(&it.path));
+                    } else {
+                        for who in o.problems.iter().filter_map(|p| holder(p, browser)) {
+                            if !done.privacy_open.contains(&who) {
+                                done.privacy_open.push(who);
+                            }
+                        }
+                    }
+                    done.problems.extend(o.problems.iter().map(|p| format!("{}: {p}", it.title)));
+                    continue;
+                }
                 if o.freed > 0 {
                     done.items += 1;
                 }
@@ -589,7 +649,7 @@ impl State {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut freed: std::collections::BTreeMap<String, u64> = Default::default();
         for it in &run.items {
-            if let (Some(rule), ItemState::Done(o)) = (&it.rule, &it.state) {
+            if let (Some(rule), ItemState::Done(o), false) = (&it.rule, &it.state, it.privacy) {
                 *freed.entry(rule.clone()).or_default() += o.freed;
             }
         }
@@ -615,7 +675,7 @@ impl State {
         let c = &self.advisor.cleanup;
         let mut x = String::new();
         if let Some(run) = &c.running {
-            let freed: u64 = run.items.iter().filter(|it| !it.recycle).map(|it| match &it.state {
+            let freed: u64 = run.items.iter().filter(|it| !it.recycle && !it.privacy).map(|it| match &it.state {
                 ItemState::Running(f) => *f,
                 ItemState::Done(o) => o.freed,
                 ItemState::Waiting => 0,
@@ -627,6 +687,9 @@ impl State {
             for (i, it) in run.items.iter().enumerate() {
                 let (glyph, colour, state) = match &it.state {
                     ItemState::Waiting => ("&#xE823;", "#FF8E97AA", "Waiting".to_string()),
+                    ItemState::Running(_) if it.privacy => ("&#xE895;", "#FF8FB4FF", "Removing...".to_string()),
+                    ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", "Removed".to_string()),
+                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", "#FFF5B342", "Held back: nothing in this set went".to_string()),
                     ItemState::Running(f) if it.recycle => ("&#xE895;", "#FF8FB4FF", format!("To the Recycle Bin... {}", self.size(*f))),
                     ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", format!("Removing... {}", self.size(*f))),
                     ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("{} to the Recycle Bin", self.size(o.recycled))),
@@ -642,12 +705,12 @@ impl State {
             }
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
-            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled > 0;
+            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled + d.privacy_items as u64 > 0;
             let (bg, border, glyph, colour) = if fine { ("#144CC38A", "#554CC38A", "&#xE73E;", "#FF4CC38A") } else { ("#14F5B342", "#55F5B342", "&#xE7BA;", "#FFF5B342") };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = match (d.stopped, d.items) {
-                (true, 0) if d.recycled == 0 => "Stopped. Nothing was freed.".to_string(),
-                (false, 0) if d.recycled == 0 => "Nothing was freed.".to_string(),
+                (true, 0) if d.recycled == 0 && d.privacy_items == 0 => "Stopped. Nothing was freed.".to_string(),
+                (false, 0) if d.recycled == 0 && d.privacy_items == 0 => "Nothing was freed.".to_string(),
                 (true, 0) => "Stopped.".to_string(),
                 (false, 0) => String::new(),
                 (true, _) => format!("Stopped. Freed {} from {items}.", self.size(d.freed)),
@@ -658,10 +721,16 @@ impl State {
                 0 => head,
                 r => format!("{head} {} ({binned}) sent to the Recycle Bin.", self.size(r)).trim().to_string(),
             };
+            let head = match d.privacy_items {
+                0 => head,
+                n => format!("{head} {} removed.", privacy_count(n)).trim().to_string(),
+            };
             // what happened to them, in plain words
             let gone = match (d.items > 0, d.recycled > 0) {
                 (true, true) => "Caches were deleted for good; your own files are in the Recycle Bin, and their space is freed when the bin is emptied.",
                 (false, true) => "They are in the Recycle Bin: Explorer can put them back, and their space is freed when the bin is emptied.",
+                (false, false) if d.privacy_items > 0 => PV_DONE,
+                (false, false) => "Nothing was removed.",
                 _ => "They were deleted for good.",
             };
             x += &format!(
@@ -669,6 +738,13 @@ impl State {
                 ui::esc(&head),
                 self.tree.as_ref().and_then(|t| crate::win32::disk_space(&t.path_of(sprawl_core::ROOT))).map_or(String::new(), |(_, free)| ui::esc(&format!(" The disk now has {} free.", self.size(free))))
             );
+            // a privacy set held because its browser was open leads somewhere
+            if !d.privacy_open.is_empty() {
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="AdvPvAgain" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                    ui::esc(&close_then(&d.privacy_open))
+                );
+            }
             if !d.problems.is_empty() {
                 x += r##"<TextBlock Text="Some things couldn't go (in use, no access, or no room in the Recycle Bin): they stay as they were." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##;
                 for p in d.problems.iter().take(8) {
@@ -702,6 +778,7 @@ impl State {
     /// The bar above the findings: what is ticked, and the ways to tick and clean.
     pub(crate) fn cleanup_bar_xaml(&self, goal: &str) -> String {
         let picked = self.ticked_findings();
+        let privacy = self.ticked_privacy().len();
         let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
         let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
         let admin_waiting = self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, c)| untickable(f, *c).is_none() && needs_admin(f)));
@@ -711,9 +788,14 @@ impl State {
 <StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/></StackPanel>
 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">{prev}<Button x:Name="AdvClean" Content="Clean up..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></StackPanel></Grid>
 <StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
-            if picked.is_empty() { "Nothing ticked".to_string() } else { format!("{} ticked · {}{}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes)) },
+            match (picked.is_empty(), privacy) {
+                (true, 0) => "Nothing ticked".to_string(),
+                (true, n) => format!("{} ticked", privacy_count(n)),
+                (false, 0) => format!("{} ticked · {}{}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes)),
+                (false, n) => format!("{} ticked · {}{}, and {}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes), privacy_count(n)),
+            },
             if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then Clean up." } else { "Tick what should go, then Clean up. Sprawl removes it itself and shows what was freed." },
-            if picked.is_empty() { "False" } else { "True" },
+            if picked.is_empty() && privacy == 0 { "False" } else { "True" },
             prev = if self.advisor.cleaners_tab_on() {
                 format!(
                     r##"<Button x:Name="AdvClPrev" Content="Preview" Padding="14,6" FontSize="13" CornerRadius="6" IsEnabled="{}" ToolTipService.ToolTip="The exact files that would go, counted now. Nothing is deleted."/>"##,
@@ -737,17 +819,30 @@ impl State {
         // what the run will hold back is shown with its reason, and not counted
         let held: Vec<(Finding, String)> = all.iter().filter_map(|(_, f)| held_in_app(f).map(|why| (f.clone(), why))).collect();
         let picked: Vec<(usize, Finding)> = all.into_iter().filter(|(_, f)| held_in_app(f).is_none()).collect();
+        let privacy = self.ticked_privacy();
         let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
         let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         let bin_on = self.recycle_on();
         let mut x = format!(
-            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="Clean up {}, {}?" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
-            if picked.len() == 1 { "1 item".to_string() } else { format!("{} items", picked.len()) },
-            if up_to { format!("up to {}", self.size(bytes)) } else { format!("about {}", self.size(bytes)) },
+            r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="{}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            {
+                // the privacy items: by number, never in the space
+                let space = match picked.len() {
+                    0 => String::new(),
+                    n => format!("{}, {}", if n == 1 { "1 item".to_string() } else { format!("{n} items") }, if up_to { format!("up to {}", self.size(bytes)) } else { format!("about {}", self.size(bytes)) }),
+                };
+                match (space.is_empty(), privacy.len()) {
+                    (_, 0) => format!("Clean up {space}?"),
+                    (true, n) => format!("Clean up {}?", privacy_count(n)),
+                    (false, n) => format!("Clean up {space}, and {}?", privacy_count(n)),
+                }
+            },
             {
                 let binned = picked.iter().filter(|(_, f)| goes_to_bin(f, bin_on)).count();
-                if binned == 0 {
+                if picked.is_empty() {
+                    String::new()
+                } else if binned == 0 {
                     "Deleted for good, not sent to the Recycle Bin.".to_string()
                 } else if binned == picked.len() {
                     "Sent to the Recycle Bin: Explorer can put them back. Their space is freed when the bin is emptied. What can't go to the bin (too big for it, or a drive without one) is left as it is.".to_string()
@@ -762,7 +857,9 @@ impl State {
                     sprawl_core::local_time(self.active_began())
                 );
                 let tool = "Each item with a program of its own runs that program's clean-up command, shown below, without a window. The program decides what goes: files new since the scan, or ones you chose to keep, may go too.";
-                if tools == picked.len() {
+                if picked.is_empty() {
+                    String::new()
+                } else if tools == picked.len() {
                     tool.to_string()
                 } else if tools > 0 {
                     format!("{own} {tool}")
@@ -771,6 +868,10 @@ impl State {
                 }
             }
         );
+        // only privacy items: no space lines, no space list
+        if picked.is_empty() {
+            x = x.replace(r##"<TextBlock Text="" FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342" TextWrapping="Wrap"/><TextBlock Text="" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, "");
+        }
         // the rows scroll; the boxes and buttons under them stay in view
         x += r##"<ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="8">"##;
         for (_, f) in &picked {
@@ -800,6 +901,10 @@ impl State {
             );
         }
         x += "</StackPanel></ScrollViewer>";
+        if picked.is_empty() && held.is_empty() {
+            x = x.replace(r##"<ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="8"></StackPanel></ScrollViewer>"##, "");
+        }
+        x += &self.privacy_review_xaml(&privacy);
         // everything changed since the scan began stays: an old scan leaves most of it
         if let Some(age) = scan_age_words(self.active_began(), std::time::SystemTime::now()) {
             x += &format!(
@@ -833,6 +938,7 @@ impl State {
         // an open application: a part that must have it closed stays, the rest skip what it holds
         let mut must: Vec<String> = Vec::new();
         let mut warn: Vec<String> = Vec::new();
+        // (a privacy set's browser is said in its own block)
         for (_, f) in &picked {
             match self.app_open(f) {
                 Some((app, sprawl_advisor::cleaners::Closed::Must)) if !must.contains(&app) => must.push(app),
@@ -864,7 +970,7 @@ impl State {
                 if all_binned { "These are my own files and I want them gone (to the Recycle Bin)" } else { "These are my own files, I want them gone, and I know they can't be brought back" }
             );
         }
-        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if picked.is_empty() || (own && !self.advisor.cleanup.own_ok) { "False" } else { "True" });
+        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if (picked.is_empty() && privacy.is_empty()) || (own && !self.advisor.cleanup.own_ok) || (!privacy.is_empty() && !self.advisor.cleanup.privacy_ok) { "False" } else { "True" });
         x += r##"<Button x:Name="AdvReviewBack" Content="Back" Padding="14,6" FontSize="13" CornerRadius="6"/></StackPanel>"##;
         x += "</StackPanel></Border>";
         x
@@ -917,11 +1023,85 @@ impl State {
         if c.running.is_none() {
             if c.review {
                 x += &self.cleanup_review_xaml();
-            } else if self.advice().is_some_and(|r| r.findings.iter().zip(&r.counted).any(|(f, k)| !matches!(untickable(f, *k), Some("")))) {
+            } else if self.advice().is_some_and(|r| !r.privacy.is_empty() || r.findings.iter().zip(&r.counted).any(|(f, k)| !matches!(untickable(f, *k), Some("")))) {
                 x += &self.cleanup_bar_xaml(crate::advisor::GOAL_EXAMPLE);
             }
         }
         x += "</StackPanel>";
+        x
+    }
+}
+
+/// The privacy wording of the review and the result card, held to `privacy::PROMISE_WORDS`.
+pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, not counted in the space above. Each set goes whole, or not at all, and only with its browser closed:";
+pub(crate) const PV_OK: &str = "I understand what each of these removes";
+pub(crate) const PV_DONE: &str = "The privacy items' files were deleted; the browser starts new, empty ones the next time it opens.";
+
+/// "1 privacy item", "3 privacy items".
+pub(crate) fn privacy_count(n: usize) -> String {
+    if n == 1 { "1 privacy item".into() } else { format!("{n} privacy items") }
+}
+
+/// Who held a privacy set back, from the executor's reason: its browser when that was open (or
+/// Windows couldn't say), else the programs Windows named as using its files.
+pub(crate) fn holder(problem: &str, browser: Option<&str>) -> Option<String> {
+    if let Some(b) = browser.filter(|b| problem.contains(&format!("{b} is open")) || problem.contains(&format!("whether {b} is open"))) {
+        return Some(b.to_string());
+    }
+    let rest = problem.split_once("in use by ")?.1;
+    Some(rest.split_once(';').map_or(rest, |(names, _)| names).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// What a set held back by an open program asks of the user.
+pub(crate) fn close_then(browsers: &[String]) -> String {
+    format!("Close {}, then Check again.", browsers.join(" and "))
+}
+
+impl State {
+    /// The review's privacy block: each ticked part, what it removes and its exact files (the
+    /// executor's own preview), a browser that is open, and a tick box of its own.
+    fn privacy_review_xaml(&self, privacy: &[Finding]) -> String {
+        if privacy.is_empty() {
+            return String::new();
+        }
+        let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let mut x = format!(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF" BorderBrush="#33F5B342" BorderThickness="1"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(PV_REVIEW_HEAD));
+        let mut open: Vec<String> = Vec::new();
+        for f in privacy {
+            let part = match &f.source {
+                Source::Rule(id) => sprawl_advisor::privacy::part(id),
+                _ => None,
+            };
+            let files = clean::action(f).and_then(|(a, _)| clean::preview(&f.path, &a, &spare, 0)).map(|p| p.biggest.iter().map(|(p, b)| format!("{} ({})", p.display(), self.size(*b))).collect::<Vec<_>>()).unwrap_or_default();
+            let held = self.app_open(f).map(|(app, _)| app);
+            if let Some(app) = &held {
+                let short = part.map_or(app.as_str(), |p| p.browser().short).to_string();
+                if !open.contains(&short) {
+                    open.push(short);
+                }
+            }
+            x += &format!(
+                r##"<StackPanel Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="13"/></StackPanel><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" Margin="16,0,0,0"/>"##,
+                crate::advisor::risk_hex(f.risk),
+                ui::esc(&f.title),
+                ui::esc(part.map_or("", |p| p.cost))
+            );
+            if files.is_empty() {
+                x += r##"<TextBlock Text="Its files couldn't be listed now: it will be held back." FontSize="12" Foreground="#FF8E97AA" Margin="16,0,0,0"/>"##;
+            }
+            for line in &files {
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis" Margin="16,0,0,0" ToolTipService.ToolTip="{0}"/>"##, ui::esc(line));
+            }
+            x += "</StackPanel>";
+        }
+        x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::privacy::DELETED_NOTE));
+        if !open.is_empty() {
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="AdvClCheck" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                ui::esc(&close_then(&open))
+            );
+        }
+        x += &format!(r##"<CheckBox x:Name="AdvPrivOk" IsChecked="{}" Content="{}" FontSize="13"/></StackPanel></Border>"##, if self.advisor.cleanup.privacy_ok { "True" } else { "False" }, PV_OK);
         x
     }
 }
@@ -974,6 +1154,90 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
 mod admin_tests {
     use super::*;
     use sprawl_advisor::finding::Source;
+
+    /// A privacy part as the engine makes one (cookies of a Chrome profile).
+    fn privacy_finding(risk: Risk) -> Finding {
+        let path = PathBuf::from(r"C:\Users\Sam\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies");
+        let mut f = Finding {
+            path: path.clone(),
+            owner: Some("Google Chrome".into()),
+            bytes: 2 << 20,
+            risk,
+            remedy: Remedy::Delete,
+            command: None,
+            title: "Chrome: Cookies (Sam)".into(),
+            evidence: vec![],
+            confidence: 1.0,
+            source: Source::Rule("privacy.chrome/cookies".into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: true,
+            action: None,
+            admin: false,
+            carved: Vec::new(),
+            gain: None,
+        };
+        f.set_action(Action::Set { part: "privacy.chrome/cookies".into(), files: vec![path] }, false);
+        f
+    }
+
+    /// Every place that sums, ticks, plans, saves or suggests skips a privacy part, whatever its
+    /// risk or size: the headline sums and "Tick the safe ones" (counts_as_space, safe_tick),
+    /// "tick enough for N GB" (the plan, and counts_as_space after it), the usual set
+    /// (counts_as_space), the saved script, and the Recycle Bin.
+    #[test]
+    fn privacy_parts_are_never_summed_ticked_planned_or_saved() {
+        for risk in [Risk::Green, Risk::Amber, Risk::Orange] {
+            let f = privacy_finding(risk);
+            assert!(f.privacy());
+            assert!(!counts_as_space(&f), "headline sums and the usual set");
+            assert!(!safe_tick(&f, true), "Tick the safe ones");
+            assert!(sprawl_advisor::plan::plan(std::slice::from_ref(&f), &[true], 1).picked.is_empty(), "tick enough for N GB");
+            let s = sprawl_advisor::export::script(&[&f], r"C:\", std::time::SystemTime::now());
+            assert!(!s.contains("Cookies"), "the saved script");
+            assert!(!goes_to_bin(&f, true), "a privacy set is never recycled");
+        }
+    }
+
+    /// The app's privacy wording promises nothing: the engine's word list, for every string the
+    /// Privacy group, the review, the result card and Settings show.
+    #[test]
+    fn the_privacy_wording_promises_nothing() {
+        let pref = crate::prefs::get("privacyCleaners").unwrap();
+        let texts = [
+            crate::cleaners::PV_HEAD.to_string(),
+            crate::cleaners::PV_SUB.into(),
+            crate::cleaners::PV_NONE.into(),
+            crate::cleaners::PV_HELD.into(),
+            PV_REVIEW_HEAD.into(),
+            PV_OK.into(),
+            PV_DONE.into(),
+            privacy_count(1),
+            privacy_count(3),
+            close_then(&["Chrome".into(), "Edge".into()]),
+            pref.label.into(),
+            pref.help.into(),
+            "Removing...".into(),
+            "Removed".into(),
+            "Held back: nothing in this set went".into(),
+            "Tick \"I understand what each of these removes\" first, or untick the privacy items.".into(),
+        ];
+        for t in &texts {
+            let low = t.to_lowercase();
+            for w in sprawl_advisor::privacy::PROMISE_WORDS {
+                assert!(!low.contains(w), "{t:?} says {w:?}");
+            }
+        }
+        assert_eq!(close_then(&["Chrome".into()]), "Close Chrome, then Check again.");
+        // the program that held the set is the one named
+        assert_eq!(holder(r"C:\x\Cookies: Chrome is open; nothing in this set was deleted", Some("Chrome")).as_deref(), Some("Chrome"));
+        assert_eq!(holder(r"C:\x\Cookies: Windows couldn't say whether Chrome is open; nothing in this set was deleted", Some("Chrome")).as_deref(), Some("Chrome"));
+        assert_eq!(holder(r"C:\x\Cookies: in use by Windows PowerShell 5.1, Notepad; nothing in this set was deleted", Some("Chrome")).as_deref(), Some("Windows PowerShell 5.1, Notepad"));
+        assert_eq!(holder("no longer there, so the set changed since the scan; nothing in this set was deleted", Some("Chrome")), None);
+        assert!(!"Nothing was removed.".to_lowercase().contains("for good"));
+        assert_eq!(pref.default_value().as_deref(), Some("0"), "off by default");
+    }
 
     /// Only the user's own files go to the Recycle Bin, and only with the setting on; caches and
     /// a program's own clean-up command are not recycled.

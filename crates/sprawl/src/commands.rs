@@ -489,6 +489,15 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         sprawl_advisor::OFFLINE.store(self.settings.bool("offline") == Some(true), std::sync::atomic::Ordering::Relaxed);
         // a setting switched off takes back this session's yes
         self.admin_flags();
+        // privacy cleaners switched on or off: the report and the tab's own read again
+        let privacy = self.privacy_on();
+        if self.advisor.report.as_ref().is_some_and(|r| r.privacy_on != privacy) || self.advisor.cl.own.as_ref().is_some_and(|o| o.report.privacy_on != privacy) {
+            *self.advisor.cl.roots.borrow_mut() = None;
+            self.advisor.cl.own = None;
+            if self.tree.is_some() {
+                self.advisor_start();
+            }
+        }
         for k in sprawl_advisor::tuning::ALL {
             if let Some(v) = self.settings.num(k.key).filter(|v| v.is_finite() && *v >= 0.0) {
                 sprawl_advisor::tuning::set(k, v as u64);

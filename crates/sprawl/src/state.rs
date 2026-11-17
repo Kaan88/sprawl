@@ -739,6 +739,11 @@ impl State {
                         let cut = a.trim_end_matches(|c: char| c.is_ascii_digit()).len();
                         self.cleaner_command(&a[..cut], a[cut..].parse().unwrap_or(0));
                     }
+                    // dev: a privacy part's tick, AdvPvT0
+                    a if a.starts_with("AdvPvT") => {
+                        self.privacy_toggle(a[6..].parse().unwrap_or(0));
+                        self.advisor_redraw();
+                    }
                     a if a.starts_with("Adv") => self.advisor_command(a),
                     // dev: a Settings section or a wizard button
                     w if w.starts_with("PfSec") || w.starts_with("Wiz") => self.wizard_command(w),

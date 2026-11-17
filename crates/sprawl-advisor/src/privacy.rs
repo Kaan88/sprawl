@@ -45,6 +45,10 @@ pub const SETTING: &str = "privacyCleaners";
 /// write-ahead log and shared-memory index.
 pub const SIDE_FILES: &[&str] = &["-journal", "-wal", "-shm"];
 
+/// Words no privacy text may use: each says or implies that the files are beyond recovery, or
+/// that removing them is without cost. For the app's own wording as well as this file's.
+pub const PROMISE_WORDS: &[&str] = &["wipe", "secure", "unrecoverable", "irrecoverable", "recoverable", "safe", "shred", "permanent", "forever", "for good", "erase", "scrub", "no trace", "untraceable", "gone completely", "cannot be recovered", "can't be recovered", "can not be recovered", "overwritten so", "clean slate", "harmless", "nothing to lose"];
+
 /// Said on every part: Sprawl deletes; it doesn't overwrite.
 pub const DELETED_NOTE: &str = "Deleted, not overwritten: recovery tools may still find it.";
 
@@ -584,7 +588,7 @@ pub(crate) mod tests {
     /// cleaning it is without cost.
     #[test]
     fn the_words_promise_nothing() {
-        const BANNED: &[&str] = &["wipe", "secure", "unrecoverable", "irrecoverable", "recoverable", "safe", "shred", "permanent", "forever", "for good", "erase", "scrub", "no trace", "untraceable", "gone completely", "cannot be recovered", "can't be recovered", "can not be recovered", "overwritten so", "clean slate", "harmless", "nothing to lose"];
+        const BANNED: &[&str] = PROMISE_WORDS;
         let mut texts: Vec<String> = Vec::new();
         for p in PARTS {
             texts.extend([p.title, p.cost, p.why].map(String::from));

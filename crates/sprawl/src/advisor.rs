@@ -58,6 +58,46 @@ pub(crate) struct Report {
     pub(crate) presence: Vec<sprawl_advisor::cleaners::Presence>,
     /// By rule id: the smallest finding the Findings list shows (smaller ones are in Cleaners only).
     pub(crate) list_min: std::collections::HashMap<String, u64>,
+    /// Settings > Cleaning, "Show privacy cleaners", as it was for this report.
+    pub(crate) privacy_on: bool,
+    /// Privacy parts (cookies, history), checked: a list of their own, so no sum, tick, plan,
+    /// script or suggestion made from `findings` ever takes one. Empty with the setting off.
+    pub(crate) privacy: Vec<Finding>,
+    pub(crate) privacy_held: Vec<(Finding, String)>,
+    /// The Privacy group's rows: one per browser profile.
+    pub(crate) privacy_rows: Vec<PrivRow>,
+}
+
+/// One browser profile in the Privacy group.
+pub(crate) struct PrivRow {
+    pub(crate) browser: &'static sprawl_advisor::privacy::Browser,
+    /// As the browser names the profile, and its folder's name.
+    pub(crate) shown: String,
+    pub(crate) folder: String,
+    /// Its parts (indices into `Report::privacy`).
+    pub(crate) parts: Vec<usize>,
+}
+
+/// The Privacy group's rows: `privacy` by browser and profile, each profile by the name the
+/// browser gives it.
+fn privacy_rows(privacy: &[Finding]) -> Vec<PrivRow> {
+    use sprawl_advisor::privacy;
+    let Some(places) = privacy::Places::current() else { return Vec::new() };
+    let mut names: std::collections::HashMap<&str, std::collections::HashMap<String, String>> = Default::default();
+    let mut rows: Vec<PrivRow> = Vec::new();
+    for (i, f) in privacy.iter().enumerate() {
+        let Source::Rule(id) = &f.source else { continue };
+        let Some(part) = privacy::part(id) else { continue };
+        let Some(m) = privacy::member(part, &f.path, &places) else { continue };
+        let b = part.browser();
+        let folder = m.profile.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let shown = names.entry(b.cleaner).or_insert_with(|| privacy::profile_names(b, &places)).get(&folder.to_lowercase()).cloned().unwrap_or_else(|| folder.clone());
+        match rows.iter_mut().find(|r| r.browser.cleaner == b.cleaner && r.folder.eq_ignore_ascii_case(&folder)) {
+            Some(r) => r.parts.push(i),
+            None => rows.push(PrivRow { browser: b, shown, folder, parts: vec![i] }),
+        }
+    }
+    rows
 }
 
 impl Report {
@@ -437,7 +477,7 @@ fn remedy_label(r: Remedy) -> &'static str {
 }
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
-pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, Facts) {
+pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: bool) -> (Report, Facts) {
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
     // the built-in rules, then the user's own (approved proposals): never trusted
@@ -449,9 +489,11 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, F
         let mut taken: std::collections::HashSet<String> = packs.iter().flat_map(|p| p.all_rules().map(|r| r.id.to_lowercase()).chain(p.cleaners.iter().map(|c| format!("cleaner:{}", c.id.to_lowercase())))).collect();
         packs.extend(sprawl_advisor::community::load(&mut taken));
     }
-    let (findings, held) = sprawl_advisor::advise_all(tree, &packs, &facts);
+    // privacy parts only with the setting on; off, nothing about them is read
+    let adv = sprawl_advisor::advise_report(tree, &packs, &facts, privacy_on);
+    let (findings, held) = (adv.findings, adv.held);
     let (mut findings, kept) = memory.filter(findings);
-    let catalogue = sprawl_advisor::cleaners::catalogue(&packs);
+    let catalogue = sprawl_advisor::cleaners::catalogue_with(&packs, privacy_on);
     // a community cleaner does nothing until the user turns it on, for the definition seen then
     let on: std::collections::HashSet<&str> = catalogue
         .iter()
@@ -518,6 +560,10 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory) -> (Report, F
         presence,
         list_min,
         findings,
+        privacy_on,
+        privacy_rows: privacy_rows(&adv.privacy),
+        privacy: adv.privacy,
+        privacy_held: adv.privacy_held.into_iter().map(|(f, why)| (f, why.to_string())).collect(),
     };
     (r, facts)
 }
@@ -579,9 +625,10 @@ impl State {
         let memory = self.advisor.memory.clone();
         let scan_id = self.scan_id;
         let want_growth = self.advisor.growth_cache.as_ref().is_none_or(|(id, _)| *id != scan_id);
+        let privacy_on = self.privacy_on();
         std::thread::spawn(move || {
             // a fault in the rules ends this check, not the tab: it says so and offers Check again
-            let Some((r, facts)) = caught(|| analyse(&t, gen, &memory)) else {
+            let Some((r, facts)) = caught(|| analyse(&t, gen, &memory, privacy_on)) else {
                 let _ = tx.send(Msg::Failed(gen));
                 return;
             };
@@ -885,12 +932,15 @@ impl State {
                 self.cleanup_measure();
             }
             "AdvClean" => {
-                if self.ticked_findings().is_empty() {
+                if self.ticked_findings().is_empty() && self.ticked_privacy().is_empty() {
                     return;
                 }
                 self.advisor.cleanup.single = None;
                 self.advisor.cleanup.review = true;
                 self.advisor.cleanup.own_ok = false;
+                self.advisor.cleanup.privacy_ok = false;
+                // the browsers: as they are now
+                self.cleaner_procs(true);
                 self.cleanup_measure();
             }
             "AdvReviewBack" => {
@@ -919,6 +969,8 @@ impl State {
             "AdvSelSafe" => self.cleanup_select_safe(),
             "AdvSelNone" => {
                 self.advisor.cleanup.ticked.clear();
+                self.advisor.cleanup.privacy_ticked.clear();
+                self.advisor.cleanup.privacy_ok = false;
                 self.advisor.cleanup.single = None;
                 self.advisor.cleanup.own_ok = false;
             }
@@ -958,6 +1010,18 @@ impl State {
             "AdvSecFindings" => self.advisor.section = Section::Findings,
             "AdvSecCleaners" => self.advisor.section = Section::Cleaners,
             "AdvClCheck" => self.cleaner_procs(true),
+            "AdvPrivOk" => self.advisor.cleanup.privacy_ok = !self.advisor.cleanup.privacy_ok,
+            // a privacy set held because its browser was open: the review again, browsers read now
+            "AdvPvAgain" => {
+                self.advisor.cleanup.done = None;
+                self.cleaner_procs(true);
+                if !self.ticked_privacy().is_empty() {
+                    self.advisor.cleanup.single = None;
+                    self.advisor.cleanup.review = true;
+                    self.advisor.cleanup.own_ok = false;
+                    self.advisor.cleanup.privacy_ok = false;
+                }
+            }
             "AdvClPrev" => self.preview_start(),
             "AdvClScanSys" => {
                 let d = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
@@ -1406,6 +1470,7 @@ impl State {
             ("AdvClU", 6),
             ("AdvClUse", cl.0),
             ("AdvClApprove", m.cleaner_proposals.len()),
+            ("AdvPvT", self.advice().map_or(0, |r| r.privacy.len())),
             ("AdvClDismiss", m.cleaner_proposals.len()),
         ];
         for (kind, n) in counts {
@@ -1423,7 +1488,7 @@ impl State {
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk",
+            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
         ] {
             for r in &roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
@@ -1458,7 +1523,7 @@ impl State {
         // what deleting or a command wins back; uninstalling is the user's call, shown below
         // only what Sprawl can remove now: tickable and runnable here (build outputs of projects
         // being worked on are a group of their own, below the list)
-        let can_now = |f: &Finding| crate::cleanup::untickable(f, true).is_none() && crate::cleanup::held_in_app(f).is_none();
+        let can_now = |f: &Finding| crate::cleanup::counts_as_space(f) && crate::cleanup::untickable(f, true).is_none() && crate::cleanup::held_in_app(f).is_none();
         let actionable = |f: &Finding| can_now(f) && !f.in_active_project();
         let as_admin = sum(&|f| crate::cleanup::untickable(f, true).is_none() && crate::cleanup::held_in_app(f).is_some() && !f.in_active_project());
         let total = sum(&|f| actionable(f));
@@ -2071,6 +2136,11 @@ impl State {
 
     /// A numbered button: undo a decision, approve or dismiss a proposal, forget a memory.
     fn advisor_indexed(&mut self, kind: &str, i: usize) {
+        if kind == "AdvPvT" {
+            self.privacy_toggle(i);
+            self.advisor.focus_after = Some(format!("AdvPvT{i}"));
+            return self.advisor_redraw();
+        }
         if kind.starts_with("AdvCl") {
             return self.cleaner_command(kind, i);
         }
