@@ -312,9 +312,10 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
 }
 
 const SECOND: &str = "You are a careful second reviewer for a disk-space advisor. Another model suggested the findings below. \
-For each, judge only from what is written: is it clearly safe to act on as described, given its risk label? Drop anything that could be the \
-user's own work, a program still in use, or that the evidence doesn't support. Answer with one JSON object and nothing else: \
-{\"verdicts\": [{\"index\": 0, \"keep\": true, \"why\": \"...\"}]}";
+For each, judge only from what is written. Orange means the user decides, so an orange finding about their own files may stay if it says so honestly. \
+Drop a finding only when it is wrong: the evidence doesn't support it, the risk is understated (a program still in use, something that doesn't come back \
+but is called green), or it would break something. Answer with one JSON object and nothing else, repeating each path exactly: \
+{\"verdicts\": [{\"index\": 0, \"path\": \"C:\\\\...\", \"keep\": true, \"why\": \"...\"}]}";
 
 /// A second opinion: a fresh conversation, no tools, judges each finding the first one made.
 /// Findings it drops go to `run.rejected` with its reason; if it can't answer, all are kept
@@ -346,6 +347,8 @@ fn second_opinion(cfg: &AiConfig, model: &str, run: &mut AiRun, progress: &mut d
     let mut drop: Vec<(usize, String)> = verdicts
         .iter()
         .filter(|v| v["keep"].as_bool() == Some(false))
+        // the index and the path must agree, so an off-by-one answer drops nothing
+        .filter(|v| v["index"].as_u64().and_then(|i| run.findings.get(i as usize)).is_some_and(|f| v["path"].as_str().is_some_and(|p| p.eq_ignore_ascii_case(&f.path.display().to_string()))))
         .filter_map(|v| Some((v["index"].as_u64()? as usize, super::tools::clean_text_long(v["why"].as_str().unwrap_or("no reason given"), 300))))
         .filter(|(i, _)| *i < run.findings.len())
         .collect();

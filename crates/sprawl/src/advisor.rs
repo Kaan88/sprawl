@@ -1013,7 +1013,10 @@ impl State {
         let lens = Arc::make_mut(&mut r.lens);
         for f in run.findings {
             let n = sprawl_advisor::find_path(&t, &f.path);
-            r.counted.push(n.is_none_or(|n| lens.get(n).copied().unwrap_or(0) == 0) && !inside_another(&r.findings, &f));
+            // inside a finding that removes it already: not counted twice (information findings
+            // about a whole folder don't count here)
+            let _ = n.map(|n| lens.get(n).copied());
+            r.counted.push(!inside_another(&r.findings, &f));
             if let Some(n) = n {
                 let code = risk_code(f.risk);
                 let mut stack = vec![n];
@@ -1053,6 +1056,10 @@ impl State {
         r.nodes.retain(|_| *k.next().unwrap_or(&true));
         let mut k = keep.iter();
         r.counted.retain(|_| *k.next().unwrap_or(&true));
+        // the user's decisions count for these too
+        let (list, hidden) = self.advisor.memory.filter(list);
+        let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return };
+        r.kept.extend(hidden);
         for f in list {
             r.nodes.push(sprawl_advisor::find_path(&t, &f.path));
             r.counted.push(true);
@@ -1107,6 +1114,8 @@ impl State {
         let f = r.findings.remove(i);
         r.nodes.remove(i);
         r.counted.remove(i);
+        // keeping an information finding about a whole folder keeps that one only, not all inside
+        let verdict = if verdict == Verdict::Keep && matches!(f.remedy, Remedy::Info | Remedy::Move) { Verdict::KeepExact } else { verdict };
         self.advisor.memory.decide(&f.path, &f.title, verdict);
         r.kept.push((f, verdict));
         // the lens without it
@@ -1432,7 +1441,7 @@ impl State {
             if self.advisor.show_kept {
                 for (i, (f, v)) in r.kept.iter().enumerate() {
                     let why = match v {
-                        Verdict::Keep => "kept",
+                        Verdict::Keep | Verdict::KeepExact => "kept",
                         Verdict::Later => "not now",
                         Verdict::Done => "done",
                     };

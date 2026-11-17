@@ -31,6 +31,9 @@ pub enum Verdict {
     Later,
     /// The user cleaned it up (measured after running the script).
     Done,
+    /// Never suggest this one again, but what is inside it may still come up (for information
+    /// findings about a whole folder: moving it, compressing it).
+    KeepExact,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -206,6 +209,7 @@ impl Memory {
             match d.verdict {
                 Verdict::Keep => p.len() >= k.len() && p[..k.len()] == k[..],
                 Verdict::Later => p == k && t.saturating_sub(d.when) < LATER_DAYS * 86_400,
+                Verdict::KeepExact => p == k,
                 Verdict::Done => false,
             }
         })

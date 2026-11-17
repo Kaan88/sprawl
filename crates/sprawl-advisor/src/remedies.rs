@@ -8,6 +8,7 @@ use std::path::Path;
 use sprawl_core::{format_size, Tree, ROOT};
 
 use crate::finding::{Finding, Remedy, Risk, Source};
+use crate::rules::ps_quote;
 use crate::segments;
 
 const GB: u64 = 1 << 30;
@@ -44,7 +45,8 @@ fn lzx_ratio(ext: &str) -> f64 {
         "exe" | "dll" | "sys" | "ocx" | "node" | "pyd" | "so" => 0.45,
         "pdb" | "lib" | "obj" | "a" => 0.6,
         "json" | "xml" | "txt" | "js" | "css" | "html" | "htm" | "py" | "lua" | "ini" | "cfg" | "log" | "md" | "ts" | "map" => 0.65,
-        "dat" | "bin" | "pak" | "" => 0.15,
+        // extension() says "(none)" for a file without one
+        "dat" | "bin" | "pak" | "" | "(none)" => 0.15,
         _ => 0.0,
     }
 }
@@ -67,8 +69,13 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
             }
             continue;
         }
-        // Steam's own folder holds its games, which are suggested one by one
-        if node.size < 2 * GB || node.name.eq_ignore_ascii_case("steam") {
+        // Steam's own folder holds its games, which are suggested one by one: look inside it
+        if node.name.eq_ignore_ascii_case("steam") {
+            stack.extend(node.children.iter().copied().filter(|&c| tree.nodes[c].is_dir));
+            continue;
+        }
+        // Store apps: nobody may write there, and taking ownership breaks them
+        if node.size < 2 * GB || node.name.eq_ignore_ascii_case("windowsapps") {
             continue;
         }
         // already compressed (on disk smaller than the data)? then nothing to gain
@@ -100,7 +107,8 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
             format!("Compress {} (about {})", tree.nodes[n].name, format_size(saving)),
             vec![
                 format!("Windows can store these program files compressed: about {} of {} saved, the program runs as before.", format_size(saving), format_size(node.size)),
-                format!("In an administrator PowerShell: compact /c /s /i /exe:lzx \"{}\\*\"", path.display()),
+                // single-quoted: a folder name can't run anything in the admin shell it is pasted into
+                format!("In an administrator PowerShell: compact /c /s /i /exe:lzx {}", ps_quote(&format!("{}\\*", path.display()))),
                 if game { "An update or 'verify files' in Steam writes some files back uncompressed; run it again after big updates.".into() } else { "An update writes changed files back uncompressed; run it again after big updates.".into() },
                 "Undo with: compact /u /s /exe /i on the same folder.".into(),
             ],
@@ -156,7 +164,7 @@ pub fn onedrive(tree: &Tree) -> Vec<Finding> {
         let mut ev = vec![
             format!("{} of files untouched for 3 months are stored on this PC as well as in OneDrive.", format_size(local)),
             "Right-click the folder in Explorer > Free up space: they stay listed and download again when opened. Needs the internet then.".into(),
-            format!("Or in PowerShell: attrib +U -P \"{}\\*\" /s /d", path.display()),
+            format!("Or in PowerShell: attrib +U -P {} /s /d", ps_quote(&format!("{}\\*", path.display()))),
         ];
         if pinned > 0 {
             ev.push(format!("{} of it is set to 'Always keep on this device'; Free up space undoes that.", format_size(pinned)));
@@ -193,7 +201,8 @@ pub fn moves(tree: &Tree, drives: &[(char, u64, u64)]) -> Vec<Finding> {
     let profile = std::env::var("USERPROFILE").unwrap_or_default();
     for (sub, label) in [("Videos", "Videos"), ("Downloads", "Downloads"), ("Pictures", "Pictures"), ("Music", "Music")] {
         if let Some(n) = find(&format!("{profile}\\{sub}")) {
-            add(n, "move-known-folder", format!("Move {label} to {other}:"), "Right-click the folder > Properties > Location > Move: Windows moves the files and points everything at the new place.");
+            let how = format!("Create {other}:\\{label} first, then right-click {label} > Properties > Location, choose that new folder and Move. Never choose {other}:\\ itself: the whole drive would become your {label} folder.");
+            add(n, "move-known-folder", format!("Move {label} to {other}:"), &how);
         }
     }
     // Steam libraries on this drive
@@ -222,13 +231,22 @@ mod tests {
 
     #[test]
     fn ratios() {
-        assert!(lzx_ratio("dll") > 0.3 && lzx_ratio("mp4") == 0.0 && lzx_ratio("zip") == 0.0);
+        assert!(lzx_ratio("dll") > 0.3 && lzx_ratio("mp4") == 0.0 && lzx_ratio("zip") == 0.0 && lzx_ratio("(none)") > 0.0);
+    }
+
+    #[test]
+    fn shown_commands_quote_paths() {
+        for name in ["x$(calc)", "x`y", "x\u{201d}; calc"] {
+            let q = ps_quote(&format!("D:\\Games\\{name}\\*"));
+            assert!(q.starts_with('\'') && q.ends_with('\''), "{q}");
+            assert!(!q[1..q.len() - 1].replace("''", "").contains('\''), "{q}");
+        }
     }
 
     #[test]
     fn moves_only_when_full_and_room_elsewhere() {
         let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
-        // not a drive root: nothing
+        // this scan's folder isn't on a drive that is nearly full: nothing
         assert!(moves(&tree, &[('C', 100 * GB, GB), ('D', 500 * GB, 400 * GB)]).is_empty());
     }
 }

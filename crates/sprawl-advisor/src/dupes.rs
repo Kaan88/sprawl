@@ -75,7 +75,7 @@ fn fill(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
 
 /// The same bytes all the way through. Counts what it read into `read`.
 fn same(a: &PathBuf, b: &PathBuf, read: &mut u64, cancel: &AtomicBool) -> bool {
-    let (Ok(mut x), Ok(mut y)) = (File::open(a), File::open(b)) else { return false };
+    let (Ok(mut x), Ok(mut y)) = (open(a), open(b)) else { return false };
     let mut bx = vec![0u8; 1 << 20];
     let mut by = vec![0u8; 1 << 20];
     loop {
@@ -103,7 +103,26 @@ pub struct Dupes {
 
 /// Look for duplicate files of at least `min_size` bytes, reading at most `budget` bytes in
 /// full comparisons. `progress` gets a line now and then.
+/// Cloud placeholders and offline files: reading them would download them.
+const NOT_LOCAL: u32 = 0x1000 | 0x0004_0000 | 0x0040_0000;
+
+/// Open without recalling a cloud file's data.
+fn open(p: &std::path::Path) -> std::io::Result<File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        o.custom_flags(0x0010_0000); // FILE_FLAG_OPEN_NO_RECALL
+    }
+    o.open(p)
+}
+
 pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progress: &mut dyn FnMut(String)) -> Dupes {
+    let never = crate::safety::Never::default_list();
+    // a copy in a protected place (Windows, Program Files, the Installer cache, a VM disk) is
+    // the one to keep
+    let protected = |p: &std::path::Path| never.hit(&p.to_string_lossy().to_lowercase()).is_some() || !never.complete();
     let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
     let mut stack = vec![sprawl_core::ROOT];
     while let Some(k) = stack.pop() {
@@ -112,7 +131,7 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
             if k == sprawl_core::ROOT || !n.is_reparse_point() {
                 stack.extend_from_slice(&n.children);
             }
-        } else if n.size >= min_size && !n.is_reparse_point() {
+        } else if n.size >= min_size && !n.is_reparse_point() && n.attributes & NOT_LOCAL == 0 {
             by_size.entry(n.size).or_default().push(k);
         }
     }
@@ -134,8 +153,12 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
         let mut seen = std::collections::HashSet::new();
         let mut by_sample: HashMap<u64, Vec<(usize, PathBuf)>> = HashMap::new();
         for n in nodes {
+            if cancel.load(Ordering::Relaxed) {
+                out.partial = true;
+                break;
+            }
             let p = tree.path_of(n);
-            let Ok(mut f) = File::open(&p) else { continue };
+            let Ok(mut f) = open(&p) else { continue };
             if let Some(id) = file_id(&f) {
                 if !seen.insert(id) {
                     continue;
@@ -150,12 +173,26 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
             // clusters of identical files, each checked against its first member
             let mut clusters: Vec<Vec<(usize, PathBuf)>> = Vec::new();
             for c in cands {
+                // the budget and Stop count inside a group too
+                if cancel.load(Ordering::Relaxed) || read > budget {
+                    out.partial = true;
+                    break;
+                }
+                progress(format!("Comparing {} files byte for byte, {} read", format_size(size), format_size(read)));
                 match clusters.iter_mut().find(|cl| same(&cl[0].1, &c.1, &mut read, cancel)) {
                     Some(cl) => cl.push(c),
                     None => clusters.push(vec![c]),
                 }
             }
-            for cl in clusters.into_iter().filter(|cl| cl.len() > 1) {
+            for mut cl in clusters.into_iter().filter(|cl| cl.len() > 1) {
+                // copies in protected places stay; if every copy is protected, it isn't a suggestion
+                let (kept, free): (Vec<_>, Vec<_>) = cl.drain(..).partition(|(_, p)| protected(p));
+                if free.is_empty() {
+                    continue;
+                }
+                let keep_note = kept.first().map(|(_, p)| format!("Keep the copy in {}: it is in a protected place.", p.display()));
+                // the finding points at a copy that may go
+                let cl: Vec<(usize, PathBuf)> = free.into_iter().chain(kept).collect();
                 let extra = size * (cl.len() as u64 - 1);
                 out.wasted += extra;
                 let name = tree.nodes[cl[0].0].name.clone();
@@ -165,6 +202,9 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                 }
                 if cl.len() > 8 {
                     evidence.push(format!("and {} more", cl.len() - 8));
+                }
+                if let Some(k) = keep_note {
+                    evidence.push(k);
                 }
                 evidence.push("Keep one and delete the others, or, where a copy must stay in its place, replace it with a hard link to the one you keep (New-Item -ItemType HardLink): then a change to one changes all.".into());
                 out.findings.push(Finding {

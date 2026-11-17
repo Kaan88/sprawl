@@ -173,7 +173,13 @@ impl<'a> Tools<'a> {
             allowed: None,
         };
         for f in already {
-            t.remember(&f.path);
+            // only what removes something closes the folders inside and around it; an
+            // information finding (move, compress, a duplicate) blocks just its own path
+            if matches!(f.remedy, Remedy::Delete | Remedy::Command | Remedy::Uninstall) {
+                t.remember(&f.path);
+            } else {
+                t.known.insert(f.path.to_string_lossy().to_lowercase());
+            }
         }
         t
     }
