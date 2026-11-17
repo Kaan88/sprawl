@@ -265,7 +265,12 @@ impl Facts {
             }
             out.any = true;
             match self.runs.get(&run_key(&name)) {
-                Some(&(t, _)) => out.last_run = out.last_run.max(Some(t)),
+                Some(&(t, _)) => {
+                    if out.last_run.is_none_or(|l| t > l) {
+                        out.last_run = Some(t);
+                        out.last_name = Some(node.name.clone());
+                    }
+                }
                 None if copies || name == "apphost.exe" => {}
                 None => out.unseen = true,
             }
@@ -280,10 +285,12 @@ impl Facts {
 }
 
 /// See [`Facts::output_programs`].
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct OutputPrograms {
     pub any: bool,
     pub last_run: Option<SystemTime>,
+    /// The program that ran last (its file name).
+    pub last_name: Option<String>,
     /// At least one has no record of starting.
     pub unseen: bool,
 }

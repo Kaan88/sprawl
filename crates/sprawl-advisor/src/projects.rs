@@ -278,6 +278,10 @@ fn last_change(tree: &Tree, n: usize, outputs: &[usize]) -> Option<SystemTime> {
 /// ticked, planned or counted in the headline for the user.
 pub const ACTIVE: &str = "project.build-output.active";
 
+/// The end of the evidence line of an active output holding a program that ran lately: such a
+/// row is listed last in its group.
+pub const TOOL_IN_USE: &str = ": if it is a tool you use, keep it";
+
 /// A build output finding, idle or active.
 pub fn is_build_output(id: &str) -> bool {
     id == "project.build-output" || id == ACTIVE
@@ -389,9 +393,16 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
             if unseen_programs {
                 evidence.push("Holds programs Windows has no record of starting lately; if you run one from here, keep it".into());
             }
-            if let Some(r) = progs.last_run.filter(|&r| changed.is_none_or(|c| r > c)) {
-                evidence.push(if ran_lately && !idle(r) {
-                    format!("A program in it ran in {}: if it is a tool you use, keep it", month_year(r))
+            if let Some(r) = progs.last_run.filter(|&r| changed.is_none_or(|c| r > c) || !idle(r)) {
+                evidence.push(if !idle(r) {
+                    let days = now.duration_since(r).map_or(0, |d| d.as_secs() / 86_400);
+                    let when = match days {
+                        0 => "today".to_string(),
+                        1 => "yesterday".to_string(),
+                        d => format!("{d} days ago"),
+                    };
+                    let name = progs.last_name.as_deref().unwrap_or("A program");
+                    format!("{name} in it ran {when}{TOOL_IN_USE}")
                 } else {
                     format!("A program in its output last ran in {}", month_year(r))
                 });
@@ -500,6 +511,15 @@ mod tests {
         assert!(titles.contains(&r"target\release in app") && titles.contains(&r"target\debug in app"), "{titles:?}");
         assert!(!titles.contains(&"target in app"));
         assert!(split.iter().any(|f| f.evidence.iter().any(|e| e.contains("next debug build"))));
+        // app.exe in target\release ran today: named, with when, and that row goes last
+        let mut ran = crate::facts::Facts::from_apps(Vec::new());
+        ran.runs_complete = true;
+        ran.set_run("app.exe", SystemTime::now());
+        let busy = build_outputs(&t2, &find(&t2), &ran, 30, 0);
+        let rel = busy.iter().find(|f| f.title == r"target\release in app").unwrap();
+        assert!(rel.evidence.iter().any(|e| e == &format!("app.exe in it ran today{TOOL_IN_USE}")), "{:?}", rel.evidence);
+        assert!(rel.holds_tool_in_use());
+        assert!(!busy.iter().find(|f| f.title == r"target\debug in app").unwrap().holds_tool_in_use());
         // an idle project's target stays whole
         let idle = build_outputs(&t2, &find(&t2), &facts, 0, 0);
         assert!(idle.iter().all(|f| f.source == Source::Rule("project.build-output".into())));

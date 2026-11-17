@@ -166,6 +166,11 @@ impl Finding {
         matches!(&self.source, Source::Rule(id) if id == crate::projects::ACTIVE)
     }
 
+    /// An active project's output holding a program that ran lately: last in its group.
+    pub fn holds_tool_in_use(&self) -> bool {
+        self.in_active_project() && self.evidence.iter().any(|e| e.ends_with(crate::projects::TOOL_IN_USE))
+    }
+
     /// "1 protected file kept", when the clean-up leaves something inside.
     pub fn carved_note(&self) -> Option<String> {
         match self.carved.len() {

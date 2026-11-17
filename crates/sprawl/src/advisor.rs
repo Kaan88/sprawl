@@ -1401,7 +1401,8 @@ impl State {
             );
         }
         // the sections, one at a time
-        let shown = (0..r.findings.len()).filter(|&i| r.in_findings_list(i)).count();
+        // the group of active projects' build outputs has its count on its own header
+        let shown = (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project()).count();
         let cleaners = self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count();
         let ai_tag = match &self.advisor.ai {
             Ai::Running(_) => " •".to_string(),
@@ -1489,7 +1490,8 @@ impl State {
         // build outputs of projects being worked on: a group, largest first, never ticked for the user
         let mut active: Vec<usize> = (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && r.findings[i].in_active_project()).collect();
         if !active.is_empty() && o != Only::Decide {
-            active.sort_by_key(|&i| std::cmp::Reverse(r.findings[i].bytes));
+            // largest first; one holding a program that ran lately last
+            active.sort_by_key(|&i| (r.findings[i].holds_tool_in_use(), std::cmp::Reverse(r.findings[i].bytes)));
             let bytes: u64 = active.iter().filter(|&&i| r.counted[i]).map(|&i| r.findings[i].bytes).sum();
             x += &format!(
                 r##"<Button x:Name="AdvActive" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Build outputs of projects you are working on" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="They come back with your next build, which then takes longer. Not counted above, and never ticked for you." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
