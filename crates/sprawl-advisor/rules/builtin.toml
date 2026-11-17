@@ -128,26 +128,6 @@ why = "Indexes JetBrains IDEs build for your projects. Close the IDE first; it r
 # ------------------------------------------------------------------ browsers and graphics
 
 [[rule]]
-id = "web.chrome-cache"
-title = "Chrome cache"
-owner = "Google Chrome"
-paths = ['%SystemDrive%\Users\*\AppData\Local\Google\Chrome\User Data\*\Cache', '%SystemDrive%\Users\*\AppData\Local\Google\Chrome\User Data\*\Code Cache']
-risk = "green"
-remedy = "info"
-min_bytes = 209715200
-why = "Web pages and scripts Chrome saved to load sites faster. It sits inside your Chrome profile, so clear it from Chrome: Settings > Privacy > Delete browsing data > Cached images and files."
-
-[[rule]]
-id = "web.edge-cache"
-title = "Edge cache"
-owner = "Microsoft Edge"
-paths = ['%SystemDrive%\Users\*\AppData\Local\Microsoft\Edge\User Data\*\Cache', '%SystemDrive%\Users\*\AppData\Local\Microsoft\Edge\User Data\*\Code Cache']
-risk = "green"
-remedy = "info"
-min_bytes = 209715200
-why = "Web pages and scripts Edge saved to load sites faster. It sits inside your Edge profile, so clear it from Edge: Settings > Privacy > Clear browsing data > Cached images and files."
-
-[[rule]]
 id = "web.firefox-cache"
 title = "Firefox cache"
 owner = "Mozilla Firefox"
@@ -437,13 +417,26 @@ rules = ["web.firefox-cache"]
   cost = "New-tab tiles show without pictures for a while."
   why = "Small pictures of pages for the new-tab page."
 
+# Chromium browsers. Their profiles are on the never-list; these caches are allowed only by the
+# exact carve-outs in safety.rs (CACHE_CARVE_OUTS): this cleaner's id, a `Default` or
+# `Profile N` folder, the folder itself cleared. `Profile *` here may match more (`Profile
+# Backup`): the safety check holds those back.
 [[cleaner]]
 id = "app.chrome"
 name = "Google Chrome"
 group = "Browsers"
 present = ['%LOCALAPPDATA%\Google\Chrome']
 running = ["chrome.exe"]
-rules = ["web.chrome-cache"]
+
+  [[cleaner.part]]
+  id = "cache"
+  title = "Cache"
+  risk = "amber"
+  paths = ['%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache', '%LOCALAPPDATA%\Google\Chrome\User Data\Profile *\Cache', '%LOCALAPPDATA%\Google\Chrome\User Data\Default\Code Cache', '%LOCALAPPDATA%\Google\Chrome\User Data\Profile *\Code Cache', '%LOCALAPPDATA%\Google\Chrome\User Data\Default\GPUCache', '%LOCALAPPDATA%\Google\Chrome\User Data\Profile *\GPUCache']
+  action = "clear"
+  closed = "must"
+  cost = "Pages load a little slower the first time you open them again."
+  why = "Pages, images and scripts Chrome saved to load sites faster, scripts it compiled ahead, and shaders compiled for the graphics card. Chrome downloads or makes them again. Sign-ins, cookies, bookmarks, history, passwords, extensions and open tabs are in other files and stay."
 
 [[cleaner]]
 id = "app.edge"
@@ -451,7 +444,33 @@ name = "Microsoft Edge"
 group = "Browsers"
 present = ['%LOCALAPPDATA%\Microsoft\Edge']
 running = ["msedge.exe"]
-rules = ["web.edge-cache"]
+
+  [[cleaner.part]]
+  id = "cache"
+  title = "Cache"
+  risk = "amber"
+  paths = ['%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Cache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\Profile *\Cache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Code Cache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\Profile *\Code Cache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\GPUCache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\Profile *\GPUCache']
+  action = "clear"
+  closed = "must"
+  cost = "Pages load a little slower the first time you open them again."
+  why = "Pages, images and scripts Edge saved to load sites faster, scripts it compiled ahead, and shaders compiled for the graphics card. Edge downloads or makes them again. Sign-ins, cookies, favorites, history, passwords, extensions and open tabs are in other files and stay."
+
+[[cleaner]]
+id = "app.brave"
+name = "Brave"
+group = "Browsers"
+present = ['%LOCALAPPDATA%\BraveSoftware\Brave-Browser']
+running = ["brave.exe"]
+
+  [[cleaner.part]]
+  id = "cache"
+  title = "Cache"
+  risk = "amber"
+  paths = ['%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Cache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Profile *\Cache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Code Cache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Profile *\Code Cache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\GPUCache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Profile *\GPUCache']
+  action = "clear"
+  closed = "must"
+  cost = "Pages load a little slower the first time you open them again."
+  why = "Pages, images and scripts Brave saved to load sites faster, scripts it compiled ahead, and shaders compiled for the graphics card. Brave downloads or makes them again. Sign-ins, cookies, bookmarks, history, passwords, extensions and open tabs are in other files and stay."
 
 [[cleaner]]
 id = "app.discord"
