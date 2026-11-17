@@ -189,7 +189,97 @@ impl State {
             let _ = b.Select(sq::utf16_at(t, at) as i32, 0);
         }
         // the box's own TextChanged may come later (or while the state is busy): not waited for
-        self.search_changed(t.to_string());
+        self.search_typed_at(t.to_string(), at);
+    }
+
+    /// The box changed (its TextChanged), the caret at `caret16` (UTF-16 units).
+    pub(crate) fn search_typed(&mut self, t: String, caret16: usize) {
+        let at = sq::byte_at(&t, caret16);
+        self.search_typed_at(t, at);
+    }
+
+    fn search_typed_at(&mut self, t: String, at: usize) {
+        self.search_changed(t);
+        let exts: Vec<String> = self.exts.iter().take(60).map(|e| e.ext.clone()).collect();
+        let s = sq::suggest(&self.search.query, at, &exts);
+        if s != self.search.suggest {
+            self.search.suggest = s;
+            self.search.highlight = None;
+            self.search_suggest_render();
+        }
+    }
+
+    /// The suggestion list under the box (hidden when there is none).
+    fn search_suggest_render(&mut self) {
+        let Ok(host) = find::<Border>(&self.root, "SearchSuggest") else { return };
+        let shown = self.view == View::Search && self.search.suggest.is_some();
+        let _ = host.cast::<UIElement>().and_then(|u| u.SetVisibility(if shown { Visibility::Visible } else { Visibility::Collapsed }));
+        let Some(s) = self.search.suggest.clone().filter(|_| shown) else { return };
+        let mut x = format!(r##"<StackPanel {} Spacing="1">"##, ui::NS);
+        for (i, (label, _)) in s.items.iter().enumerate() {
+            let bg = if self.search.highlight == Some(i) { "#FF2C3B63" } else { "Transparent" };
+            x += &format!(
+                r##"<Button x:Name="SxSug{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,3" FontSize="12" BorderThickness="0" Background="{bg}" IsTabStop="False"><TextBlock Text="{}" FontFamily="Consolas"/></Button>"##,
+                ui::esc(label)
+            );
+        }
+        x += r##"<TextBlock Text="Up and Down pick, Enter or Tab takes it, Esc closes" FontSize="11" Foreground="#FF7A8296" Margin="8,2,8,2"/></StackPanel>"##;
+        let Ok(content) = load::<UIElement>(&x) else { return };
+        let _ = host.SetChild(&content);
+        let Ok(fe) = content.cast::<FrameworkElement>() else { return };
+        for i in 0..s.items.len() {
+            if let Ok(b) = find::<ButtonBase>(&fe, &format!("SxSug{i}")) {
+                if let Ok(t) = b.Click(move |_, _| {
+                    with(|st| st.search_suggest_take(i));
+                }) {
+                    keep(t);
+                }
+            }
+        }
+    }
+
+    fn search_suggest_close(&mut self) {
+        if self.search.suggest.is_some() {
+            self.search.suggest = None;
+            self.search.highlight = None;
+            self.search_suggest_render();
+        }
+    }
+
+    fn search_suggest_take(&mut self, i: usize) {
+        let Some(s) = self.search.suggest.take() else { return };
+        self.search.highlight = None;
+        self.search_suggest_render();
+        if let Some((t, at)) = sq::take(&self.search.query, &s, i) {
+            self.search_set_box(&t, at);
+        }
+    }
+
+    /// A key in the search box, before the box sees it. True when it was used here: the
+    /// suggestions never take a key from plain typing.
+    pub(crate) fn search_box_key(&mut self, key: i32) -> bool {
+        let open = self.search.suggest.as_ref().map_or(0, |s| s.items.len());
+        match sq::box_key(key, open, self.search.highlight) {
+            sq::BoxKey::Highlight(h) => {
+                self.search.highlight = h;
+                self.search_suggest_render();
+                true
+            }
+            sq::BoxKey::Take(i) => {
+                self.search_suggest_take(i);
+                true
+            }
+            sq::BoxKey::Close => {
+                self.search_suggest_close();
+                true
+            }
+            sq::BoxKey::Results => {
+                self.search_suggest_close();
+                self.search_box_down();
+                true
+            }
+            sq::BoxKey::Pass => false,
+        }
     }
 
     /// The hint line and the empty state, for what is typed now.

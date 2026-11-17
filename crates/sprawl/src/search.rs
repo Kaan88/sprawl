@@ -67,6 +67,9 @@ pub(crate) struct Search {
     pub(crate) ui_built: bool,
     /// The filter chips as made (their names are looked up in here).
     pub(crate) chips: Option<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>,
+    /// The suggestions under the box and the highlighted one.
+    pub(crate) suggest: Option<crate::search_query::Suggestions>,
+    pub(crate) highlight: Option<usize>,
 }
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
