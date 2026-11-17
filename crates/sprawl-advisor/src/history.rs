@@ -171,7 +171,7 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
         // full: newest 3
         let mut full: Vec<&&Entry> = mine.iter().filter(|e| e.full).collect();
         full.sort_by(|a, b| b.taken.cmp(&a.taken));
-        kill.extend(full.iter().skip(KEEP_FULL).map(|e| e.file.clone()));
+        kill.extend(full.iter().skip(crate::tuning::get(&crate::tuning::KEEP_FULL) as usize).map(|e| e.file.clone()));
         // folders only: buckets by age
         let mut fo: Vec<&Entry> = mine.iter().copied().filter(|e| !e.full).collect();
         fo.sort_by(|a, b| b.taken.cmp(&a.taken)); // newest first

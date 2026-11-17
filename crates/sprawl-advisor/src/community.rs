@@ -79,7 +79,7 @@ pub fn status() -> Status {
 
 /// Whether it is time to fetch the files again.
 pub fn due(s: &Status) -> bool {
-    now().saturating_sub(s.fetched) >= EVERY
+    now().saturating_sub(s.fetched) >= crate::tuning::get(&crate::tuning::COMMUNITY_DAYS) * 86_400
 }
 
 /// The converted packs, each checked whole as it is loaded (a file changed by hand that no

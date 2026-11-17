@@ -411,7 +411,7 @@ impl Memory {
             match d.verdict {
                 Verdict::Keep if d.exact => p == k,
                 Verdict::Keep => p.len() >= k.len() && p[..k.len()] == k[..],
-                Verdict::Later => p == k && t.saturating_sub(d.when) < LATER_DAYS * 86_400,
+                Verdict::Later => p == k && t.saturating_sub(d.when) < crate::tuning::get(&crate::tuning::LATER_DAYS) * 86_400,
                 Verdict::Done => false,
             }
         })

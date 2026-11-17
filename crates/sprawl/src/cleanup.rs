@@ -140,9 +140,15 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
 
 /// "3 hours" when the scan began an hour or more before `now`; None for a fresh one.
 pub(crate) fn scan_age_words(began: std::time::SystemTime, now: std::time::SystemTime) -> Option<String> {
+    scan_age_words_after(began, now, sprawl_advisor::tuning::get(&sprawl_advisor::tuning::OLD_SCAN_MINUTES))
+}
+
+/// [`scan_age_words`] with the warning from `after` minutes (Settings, at least 5).
+pub(crate) fn scan_age_words_after(began: std::time::SystemTime, now: std::time::SystemTime, after: u64) -> Option<String> {
     let mins = now.duration_since(began).ok()?.as_secs() / 60;
     match mins {
-        0..=59 => None,
+        m if m < after.max(1) => None,
+        0..=59 => Some(format!("{mins} minutes")),
         60..=119 => Some("an hour".into()),
         120..=2879 => Some(format!("{} hours", mins / 60)),
         _ => Some(format!("{} days", mins / 1440)),
@@ -972,5 +978,8 @@ mod age_tests {
         assert_eq!(super::scan_age_words(t, after(3 * 1440)).as_deref(), Some("3 days"));
         // a clock set back: nothing to say
         assert_eq!(super::scan_age_words(after(10), t), None);
+        // the user's own warning time
+        assert_eq!(super::scan_age_words_after(t, after(20), 15).as_deref(), Some("20 minutes"));
+        assert_eq!(super::scan_age_words_after(t, after(20), 30), None);
     }
 }

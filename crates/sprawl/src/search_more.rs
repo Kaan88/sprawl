@@ -26,11 +26,11 @@ use crate::format::{fmt_time, thousands};
 use crate::state::{find, keep, load, with, State, View};
 use crate::ui;
 
-/// Matches from other drives kept at most (the first ones in the sort order).
-pub(crate) const MAX_HITS: usize = 100_000;
-/// Saved scans loaded at most.
-const MAX_SNAPSHOTS: usize = 3;
-
+/// Matches from other drives kept at most (the first ones in the sort order): 100,000 unless
+/// the user changed it (Settings > Search, `searchMaxHits`).
+pub(crate) fn max_hits() -> usize {
+    sprawl_advisor::tuning::get(&sprawl_advisor::tuning::SEARCH_MAX_HITS) as usize
+}
 /// A place that isn't the scan on screen, as a search-only index.
 pub(crate) struct Place {
     pub(crate) ix: Arc<CompactIndex>,
@@ -273,7 +273,7 @@ fn sort_and_cap(places: &[Option<Arc<Place>>], mut all: Vec<Vec<u32>>, (c, desc)
             p.ix.sort(hits, by, desc);
         }
     }
-    let shown = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, by)), desc, MAX_HITS);
+    let shown = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, by)), desc, max_hits());
     Some((all, shown))
 }
 
@@ -349,7 +349,7 @@ impl State {
             }
             newest.push(e);
         }
-        newest.truncate(MAX_SNAPSHOTS);
+        newest.truncate(sprawl_advisor::tuning::get(&sprawl_advisor::tuning::SEARCH_SNAPSHOTS) as usize);
         for e in newest {
             let (tx, rx) = channel();
             let label = format!("{} (saved {})", e.root.display(), fmt_time(e.taken));

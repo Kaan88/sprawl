@@ -1916,7 +1916,7 @@ impl State {
             let mut progress = move |s: String| {
                 let _ = ptx.send(Msg::DupesProgress(gen, s));
             };
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::dupes::find(&t, 50 << 20, 40 << 30, &stop, &mut progress)))
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::dupes::find(&t, sprawl_advisor::tuning::get(&sprawl_advisor::tuning::DUPES_MIN_MB) << 20, sprawl_advisor::tuning::get(&sprawl_advisor::tuning::DUPES_BUDGET_GB) << 30, &stop, &mut progress)))
                 .map_err(|_| "The duplicate search stopped with an internal error.".to_string());
             let _ = tx.send(Msg::Dupes(gen, r));
         });

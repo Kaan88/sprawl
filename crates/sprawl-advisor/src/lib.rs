@@ -39,6 +39,7 @@ pub mod remedies;
 pub mod rules;
 pub mod safety;
 pub mod snapshot;
+pub mod tuning;
 #[cfg(windows)]
 pub(crate) mod reg;
 
@@ -118,9 +119,9 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     }
     let mut seen: std::collections::HashSet<String> = found.iter().map(|f| f.path.to_string_lossy().to_lowercase()).collect();
     let projects = projects::find(tree);
-    let extra = facts::unused_apps(tree, facts, UNUSED_DAYS, 1 << 30)
+    let extra = facts::unused_apps(tree, facts, tuning::get(&tuning::UNUSED_APP_DAYS), 1 << 30)
         .into_iter()
-        .chain(projects::build_outputs(tree, &projects, facts, PROJECT_IDLE_DAYS, 100 << 20))
+        .chain(projects::build_outputs(tree, &projects, facts, tuning::get(&tuning::PROJECT_IDLE_DAYS), 100 << 20))
         .chain(anomaly::find(tree))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
@@ -132,7 +133,7 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     }
     // caches of programs built on Chromium, known by their folder; then caches of programs no
     // cleaner knows, last, so a known one names them first
-    for f in chromium::find(tree, facts, &seen, cleaners::PART_MIN) {
+    for f in chromium::find(tree, facts, &seen, cleaners::part_min()) {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);
         }

@@ -58,6 +58,11 @@ pub const GROUPS: &[&str] = &["Browsers", "Chat", "Games", "Media", "Developer t
 /// The smallest part a cleaner shows (the Findings list keeps its own, larger thresholds).
 pub const PART_MIN: u64 = 1 << 20;
 
+/// The smallest part listed now: [`PART_MIN`], or more if the user raised it.
+pub fn part_min() -> u64 {
+    crate::tuning::get(&crate::tuning::PART_MIN_KB) << 10
+}
+
 fn other() -> String {
     "Other".into()
 }
@@ -138,7 +143,7 @@ impl Part {
         r.pattern = self.pattern.clone();
         r.keep_days = self.keep_days;
         r.admin = self.admin;
-        r.min_bytes = Some(self.min_bytes.unwrap_or(PART_MIN));
+        r.min_bytes = Some(self.min_bytes.unwrap_or_else(part_min));
         r.cost = (!self.cost.is_empty()).then(|| self.cost.clone());
         r
     }
@@ -534,17 +539,17 @@ pub fn presence(tree: &sprawl_core::Tree, def: &CleanerDef, found: bool) -> Pres
 /// smaller ones show in Cleaners only.
 pub fn list_min(packs: &[RulePack], rule: &str) -> Option<u64> {
     if rule == SHAPE || rule == crate::chromium::ID {
-        return Some(crate::rules::DEFAULT_MIN);
+        return Some(crate::rules::default_min());
     }
     if rule.contains('/') {
         // a part: the Findings list shows it from the usual size
-        return packs.iter().flat_map(|p| p.part_rules.iter()).find(|r| r.id == rule).map(|_| crate::rules::DEFAULT_MIN);
+        return packs.iter().flat_map(|p| p.part_rules.iter()).find(|r| r.id == rule).map(|_| crate::rules::default_min());
     }
     let grouped = packs.iter().any(|p| p.cleaners.iter().any(|c| c.rules.iter().any(|r| r == rule)));
     if !grouped {
         return None;
     }
-    packs.iter().flat_map(|p| p.rules.iter()).find(|r| r.id == rule).map(|r| r.min_bytes.unwrap_or(crate::rules::DEFAULT_MIN))
+    packs.iter().flat_map(|p| p.rules.iter()).find(|r| r.id == rule).map(|r| r.min_bytes.unwrap_or_else(crate::rules::default_min))
 }
 
 /// Whether a rule is grouped into a cleaner (its findings are kept from [`PART_MIN`]).
@@ -572,7 +577,7 @@ pub fn by_shape(tree: &sprawl_core::Tree, seen: &std::collections::HashSet<Strin
     let mut out = Vec::new();
     for n in crate::rules::matching_nodes(tree, &pats) {
         let node = &tree.nodes[n];
-        if !node.is_dir || node.size < PART_MIN || node.is_reparse_point() {
+        if !node.is_dir || node.size < part_min() || node.is_reparse_point() {
             continue;
         }
         let path = tree.path_of(n);

@@ -252,13 +252,16 @@ pub fn find(tree: &Tree, facts: &Facts, seen: &HashSet<String>) -> Vec<Finding> 
 pub(crate) fn find_in(tree: &Tree, facts: &Facts, roots: &[PathBuf], seen: &HashSet<String>, now: SystemTime) -> Vec<Finding> {
     let never = crate::safety::Never::default_list();
     let names = app_names(facts);
-    let since = now.checked_sub(Duration::from_secs(IDLE_DAYS * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
+    // the user's thresholds (Settings > Advisor), never below their floors
+    let idle_days = crate::tuning::get(&crate::tuning::LEFTOVER_IDLE_DAYS);
+    let min_bytes = crate::tuning::get(&crate::tuning::LEFTOVER_MIN_MB) << 20;
+    let since = now.checked_sub(Duration::from_secs(idle_days * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
     let mut out = Vec::new();
     for root in roots {
         let Some(r) = crate::find_path(tree, root) else { continue };
         for &n in &tree.nodes[r].children {
             let node = &tree.nodes[n];
-            if !node.is_dir || node.is_reparse_point() || node.size < MIN_BYTES || not_an_app(&node.name) {
+            if !node.is_dir || node.is_reparse_point() || node.size < min_bytes || not_an_app(&node.name) {
                 continue;
             }
             // the folder's name, and the names of the folders in it (LocalLow\IronGate\Valheim)
@@ -293,7 +296,7 @@ pub(crate) fn find_in(tree: &Tree, facts: &Facts, roots: &[PathBuf], seen: &Hash
                 (true, Some((t, from))) => format!("No program by this name started since {} ({})", month_year(t), from.label()),
                 (true, None) => "No program by this name, or in it, started as far as Windows remembers".to_string(),
                 (false, _) => format!(
-                    "Windows Prefetch couldn't be read (Sprawl isn't running as administrator), so only starts from the Start menu were checked: it is offered because nothing in it changed for {IDLE_DAYS} days"
+                    "Windows Prefetch couldn't be read (Sprawl isn't running as administrator), so only starts from the Start menu were checked: it is offered because nothing in it changed for {idle_days} days"
                 ),
             };
             // the user's own work in it: shown, never deleted by Sprawl

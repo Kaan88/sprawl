@@ -398,7 +398,14 @@ impl Pattern {
     }
 }
 
+/// The default of the smallest finding listed (tuning::FINDING_MIN_MB, checked there).
+#[allow(dead_code)]
 pub(crate) const DEFAULT_MIN: u64 = 50 * 1024 * 1024;
+
+/// The smallest finding listed now: [`DEFAULT_MIN`], or more if the user raised it.
+pub(crate) fn default_min() -> u64 {
+    crate::tuning::get(&crate::tuning::FINDING_MIN_MB) << 20
+}
 
 /// Not modified for `days` (no date known counts as not old enough).
 fn old_enough(node: &sprawl_core::Node, days: Option<u32>) -> bool {
@@ -424,8 +431,8 @@ pub fn run(tree: &Tree, packs: &[RulePack]) -> Vec<Finding> {
         for rule in pack.all_rules() {
             // a rule grouped into a cleaner shows there from a megabyte; the Findings list
             // keeps its own threshold
-            let min = rule.min_bytes.unwrap_or(DEFAULT_MIN);
-            let min = if crate::cleaners::grouped(pack, &rule.id) { min.min(crate::cleaners::PART_MIN) } else { min };
+            let min = rule.min_bytes.unwrap_or_else(default_min);
+            let min = if crate::cleaners::grouped(pack, &rule.id) { min.min(crate::cleaners::part_min()) } else { min };
             for pat in rule.paths.iter().map(|p| Pattern::new(p)) {
                 for (start, base) in &starts {
                     let mut s = pat.start();
