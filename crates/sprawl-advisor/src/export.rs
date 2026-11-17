@@ -23,7 +23,11 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     let _ = writeln!(s, "<#\n  Sprawl clean-up script for {}, made {}.", scan_root.replace("#>", "# >"), month_year(made));
     s.push_str("  Read it before running it. As it is, it only measures (a dry run):\n");
     s.push_str("      powershell -ExecutionPolicy Bypass -File <this file>\n");
-    s.push_str("  To clean up, add -Run. Items marked Admin need an administrator PowerShell.\n#>\n");
+    s.push_str("  To clean up, add -Run. Items marked Admin need an administrator PowerShell.\n\n");
+    s.push_str("  Unlike Clean up in Sprawl, this script deletes what it finds when it runs: it does not\n");
+    s.push_str("  leave files created or changed since the scan, and it was not checked again against a\n");
+    s.push_str("  new scan. (Items holding a folder you chose to keep were left out of it.) Run it soon,\n");
+    s.push_str("  or scan again and save a new one.\n#>\n");
     // -Report <file>: the bytes freed are written there at the end (Sprawl's Run now reads it)
     s.push_str("param([switch]$Run, [string]$Report)\n");
     s.push_str("$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\n");

@@ -1896,9 +1896,10 @@ impl State {
             self.adv_say("Nothing to export: tick what the script should clean first.");
             return;
         }
-        let (owned, guesses) = script_items(ticked.into_iter().map(|(_, f)| f).collect());
+        let kept = self.advisor.memory.kept_paths();
+        let (owned, guesses, keeping) = script_items(ticked.into_iter().map(|(_, f)| f).collect(), &kept);
         if owned.is_empty() {
-            self.adv_say("Nothing to export: what is ticked was found by its shape only, so clean it here, where it is checked again first.");
+            self.adv_say("Nothing to export: what is ticked was found by its shape only, or holds something you chose to keep, so clean it here, where it is checked again first.");
             return;
         }
         let list: Vec<&Finding> = owned.iter().collect();
@@ -1914,7 +1915,10 @@ impl State {
                 use std::os::windows::process::CommandExt;
                 // quoted for Explorer itself: a comma in the path would split it
                 let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
-                let left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
+                let mut left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
+                if keeping > 0 {
+                    left += &format!(" {keeping} ticked item(s) with something you keep inside were left out: clean those here, which leaves what you keep.");
+                }
                 self.adv_say(&format!("Script saved with the {} ticked item(s). Read it, then run it in PowerShell: as it is, it only measures.{left}", owned.len()));
                 self.advisor.exported = Some(Exported { file, items, verify: None });
             }
@@ -2615,9 +2619,14 @@ impl State {
 
 /// What "Save as a script" writes: the ticked findings with a command, never a guess by shape
 /// (the script has fewer checks than Sprawl's own clean-up), and how many guesses were left out.
-pub(crate) fn script_items(ticked: Vec<Finding>) -> (Vec<Finding>, usize) {
+/// The ticked findings a script may hold, and how many were left out: (items, guesses by
+/// shape, items with something the user keeps inside). The script can't spare a kept folder
+/// inside an item, so such an item stays out; it is cleaned in Sprawl, which does.
+pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Finding>, usize, usize) {
     let guesses = ticked.iter().filter(|f| f.heuristic()).count();
-    (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some()).collect(), guesses)
+    let holds_kept = |f: &Finding| kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path));
+    let keeping = ticked.iter().filter(|f| !f.heuristic() && holds_kept(f)).count();
+    (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some() && !holds_kept(f)).collect(), guesses, keeping)
 }
 
 #[cfg(test)]
@@ -2648,11 +2657,12 @@ mod script_tests {
             f.set_action(sprawl_advisor::clean::Action::Clear { days: 0 }, false);
             f
         };
-        let ticked = vec![mk(r"C:\a", "r.a"), mk(r"C:\b", sprawl_advisor::cleaners::SHAPE)];
-        let (out, guesses) = script_items(ticked);
+        let ticked = vec![mk(r"C:\a", "r.a"), mk(r"C:\b", sprawl_advisor::cleaners::SHAPE), mk(r"C:\c", "r.c")];
+        let (out, guesses, keeping) = script_items(ticked, &[PathBuf::from(r"C:\c\mine")]);
         assert_eq!(out.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), vec![r"C:\a"]);
         assert_eq!(guesses, 1);
-        assert!(script_items(Vec::new()).0.is_empty(), "nothing ticked: nothing written");
+        assert_eq!(keeping, 1, "a folder the user keeps is inside C:\\c: the script can't spare it");
+        assert!(script_items(Vec::new(), &[]).0.is_empty(), "nothing ticked: nothing written");
     }
 }
 
