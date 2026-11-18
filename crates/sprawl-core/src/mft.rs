@@ -575,7 +575,7 @@ impl TopTracker {
         TopTracker { root: root as usize, memo: vec![T_UNKNOWN; records], slots: HashMap::new(), path: Vec::new() }
     }
 
-    fn slot_for(&mut self, idx: &Index, file: usize, progress: &Progress) -> Option<usize> {
+    fn child_for(&mut self, idx: &Index, file: usize) -> Option<u32> {
         self.path.clear();
         let mut cur = file;
         let result;
@@ -611,6 +611,11 @@ impl TopTracker {
         if result == T_OUTSIDE {
             return None;
         }
+        Some(result)
+    }
+
+    fn slot_for(&mut self, idx: &Index, file: usize, progress: &Progress) -> Option<usize> {
+        let result = self.child_for(idx, file)?;
         if let Some(&s) = self.slots.get(&result) {
             return Some(s);
         }
@@ -618,6 +623,19 @@ impl TopTracker {
         let s = progress.top_push(name, 0);
         self.slots.insert(result, s);
         Some(s)
+    }
+
+    /// Parser chunks arrive in any order; unresolved live contributions are not retried on
+    /// every chunk. Reconcile from merged records once all ancestors/extensions are present.
+    fn final_totals(&mut self, idx: &Index) -> Vec<(String, u64)> {
+        self.memo.resize(idx.recs.len(), T_UNKNOWN);
+        self.memo.fill(T_UNKNOWN);
+        let mut totals: HashMap<u32, u64> = HashMap::new();
+        for (file, rec) in idx.recs.iter().enumerate() {
+            if rec.flags & F_DIR != 0 || !idx.listed(file) { continue; }
+            if let Some(top) = self.child_for(idx, file) { *totals.entry(top).or_default() += rec.size; }
+        }
+        totals.into_iter().map(|(file, bytes)| (idx.names[file as usize].clone(), bytes)).collect()
     }
 }
 
@@ -1020,6 +1038,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
         Ok(())
     });
     outcome?;
+    if let Some(top) = &mut top { progress.top_reset(top.final_totals(&index)); }
     Ok(index)
 }
 
@@ -1405,6 +1424,22 @@ mod tests {
         assert_eq!(t.slot_for(&idx, 23, &p), None);
         let names: Vec<String> = p.snapshot().top.into_iter().map(|t| t.0).collect();
         assert!(names.contains(&"Windows".to_string()) && names.contains(&"System32".to_string()));
+    }
+
+    #[test]
+    fn final_top_totals_include_files_merged_before_their_parents() {
+        let mut idx = Index::with_capacity(64);
+        idx.merge(rec(22, 1, 21, 1, "early.dll", false, Some((10, 0))));
+        let progress = Progress::new();
+        let mut tracker = TopTracker::new(5, 64);
+        assert_eq!(tracker.slot_for(&idx, 22, &progress), None);
+        idx.merge(rec(5, 5, 5, 5, ".", true, None));
+        idx.merge(rec(20, 1, 5, 5, "Windows", true, None));
+        idx.merge(rec(21, 1, 20, 1, "System32", true, None));
+        idx.merge(rec(23, 1, 5, 5, "other.bin", false, Some((5, 0))));
+        let mut totals = tracker.final_totals(&idx);
+        totals.sort();
+        assert_eq!(totals, vec![("Windows".into(), 10), ("other.bin".into(), 5)]);
     }
 
     /// The whole reader pipeline (boot sector, record 0, fragmented MFT, chunked unbuffered
