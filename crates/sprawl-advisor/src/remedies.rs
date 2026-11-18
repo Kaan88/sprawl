@@ -594,6 +594,11 @@ mod compress_tests {
         assert!(o.problems.is_empty(), "{:?} {:?}", o.problems, o.output);
         assert!(after < before / 2, "before {before}, after {after}, {:?}", o.output);
         assert_eq!(std::fs::read_to_string(dir.join("sub").join("b.json")).unwrap(), text);
+        let walk = sprawl_core::walk::walk(&dir, &sprawl_core::Progress::new()).unwrap();
+        assert_eq!(walk.errors, 0);
+        assert!(walk.nodes.iter().filter(|n| !n.is_dir).all(|n| n.is_compressed()), "WOF hidden by FindFirstFile must still be recorded");
+        let file_walk = sprawl_core::walk::walk(&dir.join("a.txt"), &sprawl_core::Progress::new()).unwrap();
+        assert!(file_walk.nodes[ROOT].is_compressed(), "an explicit compressed file root needs the same evidence");
         // and Uncompress puts them back as they were
         assert!(uncompress_scope(&dir, &[dir.join("sub/b.json")], &[]).is_err(), "kept descendants block the whole operation");
         assert!(uncompress_scope(&dir, &[], &[dir.join("sub/b.json")]).is_err(), "excluded descendants block the whole operation");

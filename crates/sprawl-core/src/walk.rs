@@ -1,7 +1,8 @@
 //! Fast folder walk that needs no admin rights.
 //!
 //! * `FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)`: size, attributes and
-//!   modified time come straight from the directory listing - no per-file metadata call.
+//!   modified time come straight from the directory listing. Plain nonempty files also get
+//!   a pinned metadata-only WOF query: Windows can hide compression from that listing.
 //! * Directories are spread over a pool of worker threads (a shared LIFO work queue, so the walk
 //!   stays roughly depth-first and memory stays low).
 //! * Reparse points (junctions, symbolic links, mount points) are listed as themselves and
@@ -76,7 +77,7 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
 
 /// [`walk`] with an explicit number of worker threads (for benchmarks).
 pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
-    let pinned = crate::local::scope(path)?;
+    let pinned = crate::local::storage(path)?;
     let path = &pinned.path;
     if progress.excludes(path) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "This folder is excluded in Settings > Scanning"));
@@ -94,12 +95,20 @@ pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result
         ..Default::default()
     };
     if !meta.is_dir() {
+        let mut errors = 0;
+        if root.attributes & attr::COMPRESSED == 0 && meta.len() > 0 {
+            match pinned.externally_backed() {
+                Ok(true) => root.attributes |= attr::WOF,
+                Ok(false) => {},
+                Err(_) => { errors += 1; progress.add_errors(1); }
+            }
+        }
         root.size = meta.len();
         root.allocated = round_up(root.size, cluster);
         root.files = 1;
         progress.add_counts(1, 0, root.size);
         progress.set_phase("Done");
-        return Ok(Tree { root_path: path.to_path_buf(), nodes: vec![root], errors: 0, method: ScanMethod::Walk });
+        return Ok(Tree { root_path: path.to_path_buf(), nodes: vec![root], errors, method: ScanMethod::Walk });
     }
     let errors_before = progress.errors();
 
@@ -222,7 +231,7 @@ fn list_dir(
     let mut entries = Vec::new();
     // A queued folder may have been replaced since its parent's listing. Pin and validate
     // the whole live chain before FindFirstFile can follow it anywhere.
-    let _pinned = match crate::local::directory(Path::new(&display_path(&job.path))) {
+    let pinned = match crate::local::directory(Path::new(&display_path(&job.path))) {
         Ok(p) => p,
         Err(_) => { sh.progress.add_errors(1); return entries; }
     };
@@ -261,8 +270,15 @@ fn list_dir(
         let excluded = !dot && sh.progress.has_exclusions() && sh.progress.excludes(&Path::new(&display_path(&job.path)).join(String::from_utf16_lossy(wname)));
         if !dot && !excluded {
             let name = String::from_utf16_lossy(wname);
-            let attrs = find.dwFileAttributes | if find.dwFileAttributes & attr::REPARSE_POINT != 0 && find.dwReserved0 == 0x8000_0017 { attr::WOF } else { 0 };
+            let mut attrs = find.dwFileAttributes | if find.dwFileAttributes & attr::REPARSE_POINT != 0 && find.dwReserved0 == 0x8000_0017 { attr::WOF } else { 0 };
             let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
+            if size > 0 && attrs & (attr::DIRECTORY | attr::REPARSE_POINT | attr::COMPRESSED | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0 {
+                match pinned.child_externally_backed(&name) {
+                    Ok(true) => attrs |= attr::WOF,
+                    Ok(false) => {},
+                    Err(_) => sh.progress.add_errors(1),
+                }
+            }
             let modified = (u64::from(find.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(find.ftLastWriteTime.dwLowDateTime);
             let is_dir = attrs & attr::DIRECTORY != 0;
             let slot = if is_root { entries.len() as u32 } else { job.top };

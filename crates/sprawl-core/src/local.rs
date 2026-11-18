@@ -66,12 +66,29 @@ impl Directory {
     /// WOF intentionally hides its reparse attribute from ordinary directory listings.
     /// Query only while this exact local path and all its ancestors remain pinned.
     pub fn externally_backed(&self) -> io::Result<bool> {
-        use std::os::windows::ffi::OsStrExt;
-        let name: Vec<u16> = self.path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut name = crate::walk::long_path(&self.path);
+        name.push(0);
         let (mut external, mut provider) = (0i32, 0u32);
         let hr = unsafe { WofIsExternalFile(name.as_ptr(), &mut external, &mut provider, std::ptr::null_mut(), std::ptr::null_mut()) };
         if hr < 0 { return Err(io::Error::other(format!("WOF backing could not be checked: {hr:08X}"))); }
         Ok(external != 0)
+    }
+
+    /// Query a listed plain child while this parent chain and the exact child remain pinned.
+    /// Metadata access only: no file contents, cloud recall, or leaf redirection.
+    pub(crate) fn child_externally_backed(&self, name: &str) -> io::Result<bool> {
+        let parts: Vec<_> = Path::new(name).components().collect();
+        if !matches!(parts.as_slice(), [std::path::Component::Normal(_)]) || name.contains([':', '\\', '/', '\0', '*', '?']) {
+            return Err(io::Error::other("Not one plain child name"));
+        }
+        let path = self.path.join(name);
+        let leaf = std::fs::OpenOptions::new().access_mode(0x80).share_mode(1).custom_flags(FLAGS).open(&path)?;
+        let metadata = leaf.metadata()?;
+        if !metadata.is_file() || metadata.file_attributes() & (crate::attr::REPARSE_POINT | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 {
+            return Err(io::Error::other("The listed child is no longer a plain local file"));
+        }
+        if !same(&final_path(&leaf)?, &crate::canonical_root(&path)) { return Err(io::Error::other("The listed child resolved elsewhere")); }
+        Directory { path, _handles: vec![leaf] }.externally_backed()
     }
 }
 
