@@ -76,8 +76,10 @@ App Runtime 1.8; if it's missing, Windows offers to install it the first time Sp
 Sprawl looks for a new version when it starts (and once a day while open) and asks before updating (Help > Check for Updates;
 Settings > Network turns the automatic check off). Updates are signed: a copy only accepts a release
 whose file list carries Sprawl's Ed25519 signature and whose files match it.
-Self-update runs without administrator rights. Before replacing files, it keeps the complete
-previous program in `.sprawl-recovery` beside the installation. If an update is interrupted,
+Self-update runs without administrator rights. Before replacing files, it closes other Sprawl
+processes from this exact installation under your
+Windows account, including lingering MCP servers. MCP clients can reconnect after restart.
+It keeps the complete previous program in `.sprawl-recovery` beside the installation. If an update is interrupted,
 open `sprawl.exe` inside that folder, then reinstall with Sprawl Setup. Keep its accompanying
 DLL beside it. Recovery is removed after a matching, complete version starts successfully;
 unknown files in that folder are preserved.

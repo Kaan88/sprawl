@@ -16,6 +16,7 @@
 pub mod manifest;
 pub mod setup;
 pub mod recovery;
+pub mod processes;
 
 pub use manifest::{newer, parse_version, sha256_hex, valid_name, verify, FileEntry, Manifest};
 

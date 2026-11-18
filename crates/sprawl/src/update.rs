@@ -337,6 +337,8 @@ impl State {
         }
         let Some(exe) = std::env::current_exe().ok() else { return };
         let Some(dir) = exe.parent().map(PathBuf::from) else { return };
+        text(&self.root, "UpdateStatus", "Closing other Sprawl processes before updating...");
+        if let Err(e) = sprawl_install::processes::stop_other_instances() { return fail(self, e); }
         // The installer hashes open sources and publishes those exact handles.
         if let Err(e) = swap_in(&dir, version, staged) {
             return fail(self, format!("The update didn't work: {e}"));
