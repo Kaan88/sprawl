@@ -12,6 +12,15 @@ in-app updater shows.
 - Ask what a finding is and approve reusable AI recognisers for future scans.
 - Settings now offers decimal sizes and exact folders to skip. Skipped scopes also prevent cleanup of a containing folder.
 - Preserve folder-name space in narrow tree panes, and find filesystem-compressed items with `compressed:`. Tree labels distinguish filesystem compression from Sprawl's earlier compression records.
+- Recheck cleanup targets, linked copies, Recycle Bin destinations, excluded scopes and protected data before acting. Undo compression uses the current Keep and exclusion choices.
+- Preserve credential and personal-folder protections for relocated profiles and redirected Documents, Downloads and other Windows folders.
+- Tie remembered cleaner choices and confirmation to the reviewed definitions, actions and scan. Late AI answers cannot apply suggestions to a different report.
+- Keep MCP reports, facts and filters tied to their source scan, isolate connections by Windows account, and reject tools outside the advertised set.
+- Keep History saves distinct during simultaneous scans, validate stored roots and bound snapshot decoding. Growth comparisons use observations earlier than the scan being discussed.
+- Require known active/default versions before offering Rust or Node removals, and strengthen installer-source and extracted-ZIP evidence.
+- Credit owner-tool savings only after success and complete comparable measurements. Failed or incomplete results do not teach successful cleanup.
+- Keep a complete previous launch bundle for interrupted updates. Update and restart closes other Sprawl processes from the same account and installation, including lingering MCP servers.
+- Detect WOF compression hidden by Windows directory listings, and reconcile MFT top-folder progress after out-of-order parser results.
 
 These changes await the queued independent review; no release has been published.
 

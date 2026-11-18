@@ -165,9 +165,9 @@ ignore this override and always require a version newer than the compiled versio
 
 Not built on purpose: an uninstaller, registry cleaning, secure wiping, scheduled cleaning.
 
-Planned: [future features](docs/plans/future-features.md) (compressing program folders, older
-versions side by side, shrinking virtual disks, duplicates resolved by linking, a headless
-report, a low-space alert) and [where the Advisor could go next](docs/plans/advisor-next.md).
+Design notes and further ideas: [feature plans](docs/plans/future-features.md) and
+[where the Advisor could go next](docs/plans/advisor-next.md). These documents also retain
+the implementation plans for features already available in Sprawl.
 The audit behind version 0.3.0 is in [docs/plans](docs/plans).
 
 ## Licence
