@@ -2402,8 +2402,9 @@ impl State {
         let gen = self.tree_gen;
         let Some(t) = self.tree.clone() else { return };
         let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return };
-        // the duplicates of an earlier search go
-        let keep: Vec<bool> = r.findings.iter().map(|f| f.source != Source::Rule("remedy.duplicates".into())).collect();
+        // the duplicates of an earlier search go, and the files the scan only guessed at (A3):
+        // this search has read them (copies of whole folders stay: it doesn't compare folders)
+        let keep: Vec<bool> = r.findings.iter().map(|f| f.source != Source::Rule("remedy.duplicates".into()) && f.source != Source::Rule(sprawl_advisor::dupes::LIKELY.into())).collect();
         let mut k = keep.iter();
         r.findings.retain(|_| *k.next().unwrap_or(&true));
         let mut k = keep.iter();

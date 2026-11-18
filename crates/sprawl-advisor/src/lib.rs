@@ -149,6 +149,8 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         .chain(projects::build_outputs(tree, &projects, facts, tuning::get(&tuning::PROJECT_IDLE_DAYS), 100 << 20))
         .chain(anomaly::find(tree))
         .chain(versions::find(tree, &projects, &facts.apps))
+        // A3: copies the scan alone shows (same name and size; whole folders), nothing read
+        .chain(dupes::likely(tree, tuning::get(&tuning::DUPES_MIN_MB) << 20, 1 << 30))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));

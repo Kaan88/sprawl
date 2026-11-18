@@ -247,6 +247,177 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
     out
 }
 
+// ---------------------------------------------------------------- from the scan alone (A3)
+
+/// Files only named alike count as one name: `movie.mp4`, `movie (1).mp4`, `movie - Copy.mp4`.
+fn same_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    let (stem, ext) = match lower.rfind('.') {
+        Some(i) if i > 0 => (&lower[..i], &lower[i..]),
+        _ => (lower.as_str(), ""),
+    };
+    let mut s = stem.trim_end().to_string();
+    loop {
+        let before = s.len();
+        // " (2)", "(2)"
+        if s.ends_with(')') {
+            if let Some(i) = s.rfind('(') {
+                if i > 0 && s[i + 1..s.len() - 1].chars().all(|c| c.is_ascii_digit()) && i + 2 < s.len() {
+                    s.truncate(i);
+                }
+            }
+        }
+        for suffix in [" - copy", " copy", "_copy", "-copy"] {
+            if let Some(t) = s.strip_suffix(suffix) {
+                s = t.to_string();
+            }
+        }
+        s = s.trim_end().to_string();
+        if s.len() == before {
+            break;
+        }
+    }
+    format!("{s}{ext}")
+}
+
+fn hash_of(parts: &[(String, u64, u64)]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    parts.hash(&mut h);
+    h.finish()
+}
+
+/// Copies found from the scan alone, nothing read: files of the same size and name in two
+/// places (at least `min_file` bytes), and whole folders with the same file names and sizes all
+/// the way down (at least `min_folder` bytes): a copied game, a backup of a backup. "Probably":
+/// "Find duplicate files" reads the files to be sure. Protected places (Windows, Program Files)
+/// and cloud files are left out.
+pub fn likely(tree: &Tree, min_file: u64, min_folder: u64) -> Vec<Finding> {
+    let never = crate::safety::Never::default_list();
+    if !never.complete() {
+        return Vec::new();
+    }
+    let protected = |n: usize| never.hit(&tree.path_of(n).to_string_lossy().to_lowercase()).is_some();
+    let n_nodes = tree.nodes.len();
+    // post-order: a folder's signature from its children's (name, size, signature)
+    let mut sig = vec![0u64; n_nodes];
+    let mut files_in = vec![0u64; n_nodes];
+    let mut order = Vec::with_capacity(n_nodes);
+    let mut stack = vec![(sprawl_core::ROOT, false)];
+    while let Some((k, done)) = stack.pop() {
+        let node = &tree.nodes[k];
+        if done || !node.is_dir {
+            order.push(k);
+            continue;
+        }
+        stack.push((k, true));
+        if k == sprawl_core::ROOT || !node.is_reparse_point() {
+            stack.extend(node.children.iter().map(|&c| (c, false)));
+        }
+    }
+    for &k in &order {
+        let node = &tree.nodes[k];
+        if node.is_dir {
+            let mut parts: Vec<(String, u64, u64)> = node.children.iter().map(|&c| (tree.nodes[c].name.to_lowercase(), tree.nodes[c].size, sig[c])).collect();
+            parts.sort();
+            sig[k] = hash_of(&parts);
+            files_in[k] = node.children.iter().map(|&c| if tree.nodes[c].is_dir { files_in[c] } else { 1 }).sum();
+        } else {
+            sig[k] = hash_of(&[(node.name.to_lowercase(), node.size, 0)]);
+        }
+    }
+    let mut out = Vec::new();
+    // folders: the biggest groups first; a group inside one already named is part of it
+    let mut by_sig: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
+    for &k in &order {
+        let node = &tree.nodes[k];
+        if k != sprawl_core::ROOT && node.is_dir && !node.is_reparse_point() && node.size >= min_folder && files_in[k] >= 2 {
+            by_sig.entry((sig[k], node.size)).or_default().push(k);
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = by_sig.into_values().filter(|v| v.len() > 1).collect();
+    groups.sort_by_key(|g| std::cmp::Reverse(tree.nodes[g[0]].size * (g.len() as u64 - 1)));
+    let mut named: Vec<PathBuf> = Vec::new();
+    let inside_named = |p: &std::path::Path, named: &[PathBuf]| named.iter().any(|d| crate::finding::within(p, d));
+    for g in groups {
+        let paths: Vec<PathBuf> = g.iter().map(|&n| tree.path_of(n)).collect();
+        // nested copies (a folder and its own copy inside it) or already named
+        if paths.iter().any(|p| inside_named(p, &named)) || paths.iter().any(|a| paths.iter().any(|b| a != b && crate::finding::within(a, b))) {
+            continue;
+        }
+        if g.iter().any(|&n| protected(n)) {
+            continue;
+        }
+        let size = tree.nodes[g[0]].size;
+        let mut evidence = vec![format!(
+            "The same {} file names and sizes all the way down, {} each. Sprawl hasn't read them: the names and sizes say they are probably copies.",
+            files_in[g[0]],
+            format_size(size)
+        )];
+        evidence.extend(paths.iter().take(8).map(|p| p.display().to_string()));
+        evidence.push("Often a copied game or a backup of a backup. Check which one a program or a backup uses before removing the other.".into());
+        out.push(likely_finding(paths[0].clone(), size * (g.len() as u64 - 1), format!("Probably {} copies of the folder {}", g.len(), tree.nodes[g[0]].name), evidence, "remedy.folder-dupes"));
+        named.extend(paths);
+    }
+    // files: same size and name, outside the folders named above
+    let mut by_name: HashMap<(u64, String), Vec<usize>> = HashMap::new();
+    for &k in &order {
+        let node = &tree.nodes[k];
+        if !node.is_dir && node.size >= min_file && !node.is_reparse_point() && node.attributes & NOT_LOCAL == 0 {
+            by_name.entry((node.size, same_name(&node.name))).or_default().push(k);
+        }
+    }
+    let mut groups: Vec<(u64, Vec<usize>)> = by_name.into_iter().filter(|(_, v)| v.len() > 1).map(|((s, _), v)| (s, v)).collect();
+    groups.sort_by_key(|(s, g)| std::cmp::Reverse(s * (g.len() as u64 - 1)));
+    for (size, g) in groups {
+        let g: Vec<usize> = g.into_iter().filter(|&n| !protected(n)).collect();
+        if g.len() < 2 {
+            continue;
+        }
+        let paths: Vec<PathBuf> = g.iter().map(|&n| tree.path_of(n)).collect();
+        if paths.iter().all(|p| inside_named(p, &named)) {
+            continue;
+        }
+        let mut evidence = vec![format!("The same name and size, {} each, in {} places. Sprawl hasn't read them: Find duplicate files compares them byte for byte.", format_size(size), g.len())];
+        evidence.extend(paths.iter().take(8).map(|p| p.display().to_string()));
+        if paths.len() > 8 {
+            evidence.push(format!("and {} more", paths.len() - 8));
+        }
+        // named by the plainest of them: "film.mkv", not "film (1).mkv"
+        let name = g.iter().map(|&n| tree.nodes[n].name.as_str()).min_by_key(|n| (n.len(), *n)).unwrap_or_default();
+        out.push(likely_finding(paths[0].clone(), size * (g.len() as u64 - 1), format!("Probably {} copies of {}", g.len(), name), evidence, LIKELY));
+    }
+    out.sort_by_key(|f| std::cmp::Reverse(f.bytes));
+    out.truncate(50);
+    out
+}
+
+/// The source of a file group found from the scan alone; "Find duplicate files" replaces them.
+pub const LIKELY: &str = "remedy.likely-dupes";
+
+fn likely_finding(path: PathBuf, bytes: u64, title: String, evidence: Vec<String>, id: &str) -> Finding {
+    Finding {
+        path,
+        owner: None,
+        bytes,
+        risk: Risk::Orange,
+        remedy: Remedy::Info,
+        command: None,
+        title,
+        evidence,
+        confidence: 0.6,
+        source: Source::Rule(id.into()),
+        allow_protected: false,
+        trusted: true,
+        builtin: true,
+        on_path: false,
+        action: None,
+        admin: false,
+        carved: Vec::new(),
+        gain: None,
+        forced_from: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +442,42 @@ mod tests {
         assert_eq!(d.findings.len(), 1, "{:?}", d.findings.iter().map(|f| &f.evidence).collect::<Vec<_>>());
         assert!(d.findings[0].title.starts_with("2 copies"), "{}", d.findings[0].title);
         assert_eq!(d.wasted, 300_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn names_alike_are_one_name() {
+        assert_eq!(same_name("Movie (1).MP4"), "movie.mp4");
+        assert_eq!(same_name("movie - Copy.mp4"), "movie.mp4");
+        assert_eq!(same_name("movie - Copy (2).mp4"), "movie.mp4");
+        assert_eq!(same_name("report 2024.pdf"), "report 2024.pdf");
+        assert_eq!(same_name("(1)"), "(1)");
+    }
+
+    /// A copied folder is one finding, its files aren't listed again; loose copies of a file
+    /// are found by name and size, nothing read.
+    #[test]
+    fn likely_copies_from_the_scan() {
+        let dir = std::env::temp_dir().join(format!("sprawl-likely-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for top in ["game", r"backup\game"] {
+            std::fs::create_dir_all(dir.join(top).join("data")).unwrap();
+            std::fs::write(dir.join(top).join("game.exe"), vec![1u8; 4000]).unwrap();
+            std::fs::write(dir.join(top).join("data").join("level.pak"), vec![2u8; 9000]).unwrap();
+        }
+        // same names, one size different: not a copy
+        std::fs::create_dir_all(dir.join("other").join("data")).unwrap();
+        std::fs::write(dir.join("other").join("game.exe"), vec![1u8; 4000]).unwrap();
+        std::fs::write(dir.join("other").join("data").join("level.pak"), vec![2u8; 9001]).unwrap();
+        std::fs::create_dir_all(dir.join("dl")).unwrap();
+        std::fs::write(dir.join("dl").join("film.mkv"), vec![3u8; 20000]).unwrap();
+        std::fs::write(dir.join("film (1).mkv"), vec![4u8; 20000]).unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let f = likely(&tree, 10_000, 10_000);
+        let titles: Vec<&str> = f.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(titles, vec!["Probably 2 copies of film.mkv", "Probably 2 copies of the folder game"], "{titles:?}");
+        assert_eq!(f[1].bytes, 13_000);
+        assert!(f.iter().all(|f| f.remedy == Remedy::Info && f.action.is_none()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
