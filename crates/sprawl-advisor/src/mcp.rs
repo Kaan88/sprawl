@@ -168,13 +168,12 @@ impl<'a> Local<'a> {
     }
 
     pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+        if !local_specs(self.mode).iter().any(|t| t.name == name) {
+            return Err(format!("there is no tool called {name}"));
+        }
         if name == "scan_report" {
             let found = self.found.get_or_insert_with(|| rules_for(self.tree, self.facts));
             return Ok(crate::llm::report::build(self.tree, self.facts, Some(found), None, None));
-        }
-        let allowed = local_specs(self.mode);
-        if !allowed.iter().any(|t| t.name == name) {
-            return Err(format!("there is no tool called {name}"));
         }
         let chat = matches!(self.mode, Mode::Chat { .. });
         // every call is noted, so the app can show what Claude Code is doing; the reports are
@@ -238,7 +237,9 @@ pub fn handle(msg: &Value, specs: &[ToolSpec], call: &mut dyn FnMut(&str, &Value
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or("");
             let args = msg["params"].get("arguments").cloned().unwrap_or_else(|| json!({}));
-            let (text, err) = match call(name, &args) {
+            let result = if specs.iter().any(|t| t.name == name) { call(name, &args) }
+                else { Err(format!("there is no tool called {name}")) };
+            let (text, err) = match result {
                 Ok(t) => (t, false),
                 Err(e) => (e, true),
             };
@@ -358,6 +359,9 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
     let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
     let Ok(req) = serde_json::from_str::<Value>(line) else { return reply(false, "bad request".into()) };
     let name = req["tool"].as_str().unwrap_or("");
+    if !user_specs().iter().any(|t| t.name == name) {
+        return reply(false, format!("there is no tool called {name}"));
+    }
     let input = &req["input"];
     let as_reply = |a: Result<String, String>| match a {
         Ok(t) => reply(true, t),
@@ -427,6 +431,22 @@ pub fn chat_config(exe: &Path, tree_file: &Path, out_file: &Path, model: &str, w
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unadvertised_calls_never_reach_effects_or_scan_analysis() {
+        let mut calls = 0;
+        for name in ["propose_rule", "propose_cleaner", "report_finding", "web_lookup", "remember", "finish"] {
+            let request = json!({"id": 1, "method": "tools/call", "params": {"name": name}});
+            let result = handle(&request, &user_specs(), &mut |_, _| { calls += 1; Ok("unexpected".into()) }).unwrap();
+            assert_eq!(result["result"]["isError"], true);
+            let mut index = crate::mcp_scan::Index::default();
+            let input = json!({"path": "Q:\\other", "title": "draft"});
+            assert!(index.answer(name, &input, &Memory::default(), false).unwrap_err().starts_with("there is no tool called"));
+            let result = answer_bridge(&json!({"tool": name, "input": input}).to_string(), None, None, &Facts::default(), &Memory::default(), "", None, &mut index, &mut |_| panic!("unexpected filter"));
+            assert!(result.contains("there is no tool called"));
+        }
+        assert_eq!(calls, 0);
+    }
 
     #[test]
     fn protocol() {

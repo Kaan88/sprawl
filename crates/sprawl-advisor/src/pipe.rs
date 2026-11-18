@@ -4,9 +4,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 
 /// `\\.\pipe\sprawl-mcp-<user>`: one per Windows user.
-pub fn name() -> String {
-    let user: String = std::env::var("USERNAME").unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
-    format!(r"\\.\pipe\sprawl-mcp-{user}")
+pub fn name() -> std::io::Result<String> {
+    Ok(format!(r"\\.\pipe\sprawl-mcp-{}", sprawl_core::identity::account_sid()?))
 }
 
 #[cfg(windows)]
@@ -20,9 +19,18 @@ mod ffi {
         pub fn FlushFileBuffers(h: isize) -> i32;
         pub fn CloseHandle(h: isize) -> i32;
         pub fn GetNamedPipeServerProcessId(h: isize, pid: *mut u32) -> i32;
+        pub fn GetNamedPipeClientProcessId(h: isize, pid: *mut u32) -> i32;
         pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         pub fn QueryFullProcessImageNameW(h: isize, flags: u32, name: *mut u16, size: *mut u32) -> i32;
     }
+    #[repr(C)]
+    pub struct SecurityAttributes { pub length: u32, pub descriptor: *mut c_void, pub inherit: i32 }
+    #[link(name = "advapi32")]
+    extern "system" {
+        pub fn ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl: *const u16, revision: u32, out: *mut *mut c_void, size: *mut u32) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" { pub fn LocalFree(ptr: *mut c_void) -> *mut c_void; }
     pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     /// SECURITY_IDENTIFICATION: the server may learn who connects, not act as them.
     pub const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
@@ -37,14 +45,24 @@ mod ffi {
 #[cfg(windows)]
 pub fn serve(mut answer: impl FnMut(&str) -> String) -> std::io::Result<()> {
     use std::os::windows::io::FromRawHandle;
-    let wide: Vec<u16> = name().encode_utf16().chain(Some(0)).collect();
-    let h = unsafe { ffi::CreateNamedPipeW(wide.as_ptr(), ffi::ACCESS_DUPLEX | ffi::FIRST_INSTANCE, ffi::REJECT_REMOTE, 1, 64 << 10, 64 << 10, 0, std::ptr::null()) };
-    if h == -1 {
+    let sid = sprawl_core::identity::account_sid()?;
+    let wide: Vec<u16> = name()?.encode_utf16().chain(Some(0)).collect();
+    // A protected DACL admits only this account. No inherited Everyone/Admins grants.
+    let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid})").encode_utf16().chain(Some(0)).collect();
+    let mut descriptor = std::ptr::null_mut();
+    if unsafe { ffi::ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) } == 0 {
         return Err(std::io::Error::last_os_error());
+    }
+    let sa = ffi::SecurityAttributes { length: std::mem::size_of::<ffi::SecurityAttributes>() as u32, descriptor, inherit: 0 };
+    let h = unsafe { ffi::CreateNamedPipeW(wide.as_ptr(), ffi::ACCESS_DUPLEX | ffi::FIRST_INSTANCE, ffi::REJECT_REMOTE, 1, 64 << 10, 64 << 10, 0, (&sa as *const ffi::SecurityAttributes).cast()) };
+    let error = (h == -1).then(std::io::Error::last_os_error);
+    unsafe { ffi::LocalFree(descriptor); }
+    if h == -1 {
+        return Err(error.unwrap());
     }
     loop {
         let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
-        if ok {
+        if ok && peer_is_us(h, false) {
             // the handle stays ours: the File is never dropped
             let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(h as _) });
             let mut reader = BufReader::new(&*file);
@@ -86,19 +104,28 @@ pub struct Client {
 #[cfg(windows)]
 fn server_is_us(f: &std::fs::File) -> bool {
     use std::os::windows::io::AsRawHandle;
+    peer_is_us(f.as_raw_handle() as isize, true)
+}
+
+#[cfg(windows)]
+fn peer_is_us(pipe: isize, server: bool) -> bool {
     let mut pid = 0u32;
-    if unsafe { ffi::GetNamedPipeServerProcessId(f.as_raw_handle() as isize, &mut pid) } == 0 {
+    let ok = unsafe { if server { ffi::GetNamedPipeServerProcessId(pipe, &mut pid) } else { ffi::GetNamedPipeClientProcessId(pipe, &mut pid) } };
+    if ok == 0 {
         return false;
     }
     let h = unsafe { ffi::OpenProcess(ffi::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if h == 0 {
         return false;
     }
+    // Hold the same process while querying both token and image: no PID reuse between them.
+    let peer = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(h as _) };
+    let same_account = sprawl_core::identity::account_sid().ok().zip(sprawl_core::identity::process_account_sid(peer).ok()).is_some_and(|(ours, theirs)| ours == theirs);
     let mut buf = [0u16; 1024];
     let mut len = buf.len() as u32;
     let ok = unsafe { ffi::QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) } != 0;
     unsafe { ffi::CloseHandle(h) };
-    if !ok {
+    if !ok || !same_account {
         return false;
     }
     let theirs = String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())]);
@@ -121,7 +148,7 @@ impl Client {
         // (ERROR_PIPE_BUSY) for a moment, which isn't the same as the app being gone
         let mut tries = 0;
         let f = loop {
-            match o.open(name()) {
+            match o.open(name().ok()?) {
                 Ok(f) => break f,
                 Err(e) if e.raw_os_error() == Some(231) && tries < 40 => {
                     tries += 1;
@@ -148,5 +175,16 @@ impl Client {
             return Err(std::io::Error::other("the app closed the connection"));
         }
         Ok(out.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pipe_identity_is_the_windows_token_account() {
+        let sid = sprawl_core::identity::account_sid().unwrap();
+        assert_eq!(super::name().unwrap(), format!(r"\\.\pipe\sprawl-mcp-{sid}"));
+        let process = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(windows_sys::Win32::System::Threading::GetCurrentProcess()) };
+        assert_eq!(sprawl_core::identity::process_account_sid(process).unwrap(), sid);
     }
 }

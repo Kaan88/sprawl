@@ -2,16 +2,26 @@
 use std::io;
 
 pub fn account_sid() -> io::Result<String> {
+    unsafe { token_account_sid(windows_sys::Win32::System::Threading::GetCurrentProcess()) }
+}
+
+/// The actual account token of a local peer, independent of its environment or image name.
+pub fn process_account_sid(process: std::os::windows::io::BorrowedHandle<'_>) -> io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    unsafe { token_account_sid(process.as_raw_handle()) }
+}
+
+unsafe fn token_account_sid(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
     #[link(name = "advapi32")]
     extern "system" { fn ConvertSidToStringSidW(sid: *mut core::ffi::c_void, out: *mut *mut u16) -> i32; }
     #[link(name = "kernel32")]
     extern "system" { fn LocalFree(ptr: *mut core::ffi::c_void) -> *mut core::ffi::c_void; }
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 { return Err(io::Error::last_os_error()); }
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 { return Err(io::Error::last_os_error()); }
         let mut buf = [0u64; 64];
         let mut used = 0;
         let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), std::mem::size_of_val(&buf) as u32, &mut used);

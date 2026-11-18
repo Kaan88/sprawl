@@ -306,6 +306,7 @@ impl Index {
 
     /// Answer `scan_path`, `scan_status` or `list_scans`.
     pub fn scan_call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+        if !is_scan_tool(name) { return Err(format!("there is no tool called {name}")); }
         // an app running as administrator would scan with its rights: the server does it
         if self.in_app && sprawl_core::is_elevated() {
             return Err(PASS_TO_SERVER.into());
@@ -455,6 +456,9 @@ impl Index {
     /// Answer a query tool from the freshest tree that holds the call's path (any tree when it
     /// names none): a scan made here, or History's newest full snapshot.
     pub fn answer(&mut self, name: &str, input: &Value, memory: &Memory, app_running: bool) -> Result<String, String> {
+        if !crate::mcp::bridge_specs().iter().any(|t| t.name == name) {
+            return Err(format!("there is no tool called {name}"));
+        }
         self.poll();
         let path = path_of(input);
         let i = self.pick(path.as_deref()).ok_or_else(|| match &path {
