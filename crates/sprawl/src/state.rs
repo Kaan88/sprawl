@@ -259,7 +259,7 @@ impl State {
             return;
         }
         // a new scan would replace the tree the clean-up is checking and rescanning
-        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() {
+        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.update.applying {
             text(&self.root, "FootLeft", "A file operation is running: scan again when it has finished.");
             return;
         }

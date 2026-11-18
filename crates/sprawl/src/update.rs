@@ -10,18 +10,29 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 use sprawl_advisor::llm::http;
-use sprawl_install::setup::{clean_stage, is_link, remove_old, swap_in, STAGE};
+use sprawl_install::setup::{clean_stage, remove_old, swap_in, STAGE};
 use sprawl_install::{newer, verify, FileEntry, MANIFEST, PUBLIC_KEYS, REPO, SIGNATURE};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem;
 use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
 use crate::state::{find, text, State};
 
-/// This version. `SPRAWL_PRETEND_VERSION` (for testing updates) makes it look older; the
-/// signature and file checks are the same either way.
+/// This version. Only debug builds accept the update-test override; production's floor is
+/// always the compiled version, regardless of the process environment.
 pub(crate) fn current() -> &'static str {
+    #[cfg(not(debug_assertions))]
+    { env!("CARGO_PKG_VERSION") }
+    #[cfg(debug_assertions)]
+    {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| std::env::var("SPRAWL_PRETEND_VERSION").ok().filter(|v| sprawl_install::parse_version(v).is_some()).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()))
+    }
+}
+
+#[cfg(all(test, not(debug_assertions)))]
+#[test]
+fn release_version_is_always_the_compiled_floor() {
+    assert_eq!(current(), env!("CARGO_PKG_VERSION"));
 }
 
 /// Where releases and their files may come from (a download redirects to GitHub's storage).
@@ -52,7 +63,7 @@ pub(crate) struct Updater {
     manual: bool,
     started: bool,
     /// Downloading or swapping: the buttons do nothing meanwhile.
-    applying: bool,
+    pub(crate) applying: bool,
     /// When a Sprawl left open looks again (a day after the last look).
     next: Option<std::time::Instant>,
 }
@@ -106,23 +117,27 @@ type Staged = Vec<(String, PathBuf, String)>;
 
 /// Download each file into `<dir>\.sprawl-update`, checking its size and SHA-256.
 fn stage(a: &Avail, dir: &std::path::Path, progress: &dyn Fn(String)) -> Result<Staged, String> {
+    use std::io::Write;
+    sprawl_install::setup::per_user_only()?;
+    let root = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
+    let dir = &root.path;
     let st = dir.join(STAGE);
     clean_stage(dir);
     let cant = || format!("Sprawl's folder ({}) can't be written to, so it can't update itself here. Get the new version from github.com/{REPO}/releases.", dir.display());
     std::fs::create_dir(&st).map_err(|_| cant())?;
     // a folder put there as a link could send the files elsewhere
-    if is_link(&st) {
-        return Err(cant());
-    }
+    let _stage = sprawl_core::local::directory(&st).map_err(|_| cant())?;
     let mut out = Vec::new();
     for (i, (f, url)) in a.files.iter().enumerate() {
+        if !sprawl_install::valid_name(&f.name) { return Err("Invalid update file name".into()); }
         progress(format!("Downloading {} of {}: {} ({:.1} MB)", i + 1, a.files.len(), f.name, f.size as f64 / 1048576.0));
         let bytes = fetch(url, (f.size as usize).saturating_add(1).min(512 << 20))?;
         if bytes.len() as u64 != f.size || sprawl_install::sha256_hex(&bytes) != f.sha256 {
             return Err(format!("{} didn't download intact; nothing was changed", f.name));
         }
         let p = st.join(&f.name);
-        std::fs::write(&p, &bytes).map_err(|e| format!("could not save {}: {e}", f.name))?;
+        let mut target = std::fs::OpenOptions::new().write(true).create_new(true).open(&p).map_err(|e| format!("could not create {}: {e}", f.name))?;
+        target.write_all(&bytes).and_then(|_| target.sync_all()).map_err(|e| format!("could not save {}: {e}", f.name))?;
         out.push((f.name.clone(), p, f.sha256.clone()));
     }
     Ok(out)
@@ -189,9 +204,11 @@ impl State {
     pub(crate) fn update_poll(&mut self) {
         if !self.update.started {
             self.update.started = true;
+            if !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) && self.shot.is_none() && sprawl_install::setup::per_user_only().is_ok() {
             if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) {
                 remove_old(&dir);
                 clean_stage(&dir);
+            }
             }
             // every start looks (a release since yesterday's look is offered at once)
             self.update.next = Some(std::time::Instant::now() + AGAIN);
@@ -277,6 +294,11 @@ impl State {
                 if self.update.applying || self.update.rx.is_some() {
                     return;
                 }
+                if let Err(e) = sprawl_install::setup::per_user_only() { text(&self.root, "UpdateStatus", &e); return; }
+                if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.shot.is_some() { return; }
+                if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
+                    text(&self.root, "UpdateStatus", "A scan or file operation is running. Update when it has finished."); return;
+                }
                 let Some(a) = self.update.avail.clone() else { return };
                 let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else { return };
                 self.update.applying = true;
@@ -305,24 +327,22 @@ impl State {
             s.update.applying = false;
             text(&s.root, "UpdateStatus", &msg);
         };
-        if self.advisor.cleanup.running.is_some() {
-            return fail(self, "A clean-up is running; press Update again when it's done.".into());
+        if let Err(e) = sprawl_install::setup::per_user_only() { return fail(self, e); }
+        if !newer(version, current()) { return fail(self, "This update is not newer than this copy of Sprawl.".into()); }
+        if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.shot.is_some() { return fail(self, "Updates are disabled in this run.".into()); }
+        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
+            return fail(self, "A scan or file operation is running; press Update again when it's done.".into());
         }
         let Some(exe) = std::env::current_exe().ok() else { return };
         let Some(dir) = exe.parent().map(PathBuf::from) else { return };
-        // checked again right before the swap: nothing may change a file between the download
-        // and here (this copy may run as administrator from a folder the user can write to)
-        for (name, path, sha) in staged {
-            let same = !is_link(path) && std::fs::read(path).is_ok_and(|b| sprawl_install::sha256_hex(&b) == *sha);
-            if !same {
-                clean_stage(&dir);
-                return fail(self, format!("The downloaded {name} changed before it could be used, so nothing was changed. Try again."));
-            }
-        }
-        let files: Vec<(String, PathBuf)> = staged.iter().map(|(n, p, _)| (n.clone(), p.clone())).collect();
-        if let Err(e) = swap_in(&dir, &files) {
+        // The installer hashes open sources and publishes those exact handles.
+        if let Err(e) = swap_in(&dir, staged) {
             return fail(self, format!("The update didn't work: {e}"));
         }
+        let _launch = match sprawl_install::setup::verified_launch(&dir, staged) {
+            Ok(held) => held,
+            Err(e) => return fail(self, format!("The replacement could not be verified for launch: {e}. Reinstall with Sprawl Setup.")),
+        };
         clean_stage(&dir);
         if sprawl_install::setup::is_installed_copy() {
             let _ = sprawl_install::setup::register(&dir, version);

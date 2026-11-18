@@ -18,6 +18,15 @@ const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstal
 /// The Explorer "Scan with Sprawl" entries (see the app's dialogs.rs); removed on uninstall.
 const MENU_KEYS: [&str; 2] = [r"Software\Classes\Directory\shell\Sprawl", r"Software\Classes\Drive\shell\Sprawl"];
 
+/// Updates and per-user maintenance never inherit an administrator token.
+pub fn per_user_only() -> Result<(), String> {
+    match sprawl_core::elevation() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err("Close Sprawl and reopen it normally to update or maintain this per-user installation.".into()),
+        Err(_) => Err("Windows could not establish that Sprawl is running without administrator rights.".into()),
+    }
+}
+
 /// `%LOCALAPPDATA%\Programs\Sprawl`.
 pub fn install_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Programs").join("Sprawl"))
@@ -71,10 +80,15 @@ fn is_legacy_copy() -> bool {
 
 /// Remove the `.old` files a previous swap left (they may still be in use until now).
 pub fn remove_old(dir: &Path) {
+    if per_user_only().is_err() { return; }
+    let Ok(_held) = sprawl_core::local::directory(dir) else { return; };
+    // An interrupted swap may have left the old bundle as the only usable copy. Do not
+    // discard any backup while a required current file is missing or redirected.
+    let Ok(_current) = crate::FILES.iter().map(|name| sprawl_core::local::file(&dir.join(name), 512 << 20)).collect::<Result<Vec<_>, _>>() else { return; };
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        if n.strip_suffix(".old").is_some_and(crate::manifest::valid_name) {
+        if n.strip_suffix(".old").is_some_and(|name| crate::FILES.iter().any(|owned| owned.eq_ignore_ascii_case(name))) {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -86,18 +100,18 @@ pub const STAGE: &str = ".sprawl-update";
 /// Empty the staging folder: only file names an update could have written, then the folder
 /// itself if that leaves it empty (never recursive, never through a link).
 pub fn clean_stage(dir: &Path) {
+    if per_user_only().is_err() { return; }
+    let Ok(_held) = sprawl_core::local::directory(dir) else { return; };
     let st = dir.join(STAGE);
-    if is_link(&st) {
-        let _ = std::fs::remove_dir(&st);
-        return;
-    }
+    let Ok(_stage) = sprawl_core::local::directory(&st) else { return; };
     if let Ok(rd) = std::fs::read_dir(&st) {
         for e in rd.flatten() {
-            if crate::manifest::valid_name(&e.file_name().to_string_lossy()) {
+            if crate::FILES.iter().any(|owned| owned.eq_ignore_ascii_case(&e.file_name().to_string_lossy())) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
     }
+    drop(_stage);
     let _ = std::fs::remove_dir(&st);
 }
 
@@ -107,48 +121,132 @@ pub fn is_link(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink() || m.file_attributes() & 0x400 != 0)
 }
 
+fn check_hash(file: &mut std::fs::File, sha: &str) -> Result<(), String> {
+    use std::io::Read;
+    use sha2::{Digest, Sha256};
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    if len > 512 << 20 { return Err("The update file exceeds 512 MB".into()); }
+    let mut hash = Sha256::new();
+    let mut buf = [0u8; 64 << 10];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        hash.update(&buf[..n]);
+    }
+    if format!("{:x}", hash.finalize()) != sha { return Err("An update file changed before it could be used".into()); }
+    Ok(())
+}
+
+/// Keep all newly installed launch files stable, after hashing their open handles, until
+/// the caller has started the replacement process. No elevated launch is permitted.
+pub fn verified_launch(dir: &Path, staged: &[(String, PathBuf, String)]) -> Result<Vec<sprawl_core::local::LocalFile>, String> {
+    per_user_only()?;
+    staged.iter().map(|(name, _, sha)| {
+        if !crate::manifest::valid_name(name) { return Err("Invalid update name".into()); }
+        let mut held = sprawl_core::local::file(&dir.join(name), 512 << 20).map_err(|e| e.to_string())?;
+        check_hash(&mut held.file, sha)?;
+        Ok(held)
+    }).collect()
+}
+
+fn rename_open(file: &std::fs::File, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+    #[link(name = "kernel32")]
+    extern "system" { fn SetFileInformationByHandle(file: *mut core::ffi::c_void, class: u32, info: *const core::ffi::c_void, size: u32) -> i32; }
+    let name: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{}", to.display())).encode_wide().collect();
+    let head = 8 + std::mem::size_of::<usize>() + 4;
+    let size = head + name.len() * 2 + 2;
+    let mut buf = vec![0u64; size.div_ceil(8)];
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), buf.len() * 8) };
+    bytes[8 + std::mem::size_of::<usize>()..head].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
+    for (i, c) in name.iter().enumerate() { bytes[head + i * 2..head + i * 2 + 2].copy_from_slice(&c.to_le_bytes()); }
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle().cast(), 3, buf.as_ptr().cast(), size as u32) } != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+fn delete_open(file: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" { fn SetFileInformationByHandle(file: *mut core::ffi::c_void, class: u32, info: *const core::ffi::c_void, size: u32) -> i32; }
+    // POSIX disposition removes this checked publication's name immediately, allowing its
+    // old file to be restored without closing the handle or touching a replacement name.
+    let flags = 3u32;
+    unsafe { SetFileInformationByHandle(file.as_raw_handle().cast(), 21, (&flags as *const u32).cast(), 4) != 0 }
+}
+
 /// Put `staged` files (name, path of the new file on the same drive) into `dir`. Each current
 /// file is moved aside to `<name>.old` first; if any step fails, everything is put back as it
 /// was. Only names in [`crate::FILES`] are written.
-pub fn swap_in(dir: &Path, staged: &[(String, PathBuf)]) -> Result<(), String> {
-    if let Some((n, _)) = staged.iter().find(|(n, _)| !crate::manifest::valid_name(n)) {
+pub fn swap_in(dir: &Path, staged: &[(String, PathBuf, String)]) -> Result<(), String> {
+    swap_in_with(dir, staged, || {})
+}
+
+fn swap_in_with(dir: &Path, staged: &[(String, PathBuf, String)], before_publish: impl FnOnce()) -> Result<(), String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    per_user_only()?;
+    let root = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
+    let dir = &root.path;
+    let _stage = sprawl_core::local::directory(&dir.join(STAGE)).map_err(|e| e.to_string())?;
+    if let Some((n, _, _)) = staged.iter().find(|(n, _, _)| !crate::manifest::valid_name(n)) {
         return Err(format!("refused to write {n}"));
     }
+    if !staged.iter().any(|(name, _, _)| name == "sprawl.exe") { return Err("The update has no program file".into()); }
+    let mut seen = std::collections::HashSet::new();
+    let mut checked = Vec::new();
+    for (name, from, sha) in staged {
+        if !seen.insert(name.to_ascii_lowercase()) || sprawl_core::local::lexical(from).map_err(|e| e.to_string())? != dir.join(STAGE).join(name) { return Err("Invalid or repeated staged update path".into()); }
+        // DELETE is needed for a rename by handle. Delete sharing lets the checked handle
+        // move; withholding write sharing keeps the bytes stable through hashing/publication.
+        let mut file = std::fs::OpenOptions::new().access_mode(0x8000_0000 | 0x0001_0000).share_mode(1 | 4)
+            .custom_flags(0x0020_0000 | 0x0010_0000).open(from).map_err(|e| e.to_string())?;
+        let m = file.metadata().map_err(|e| e.to_string())?;
+        if !m.is_file() || m.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 { return Err("An update file is linked or offline".into()); }
+        check_hash(&mut file, sha)?;
+        checked.push((name.clone(), file));
+    }
     remove_old(dir);
-    let mut aside: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut placed: Vec<PathBuf> = Vec::new();
+    let mut aside: Vec<(PathBuf, std::fs::File)> = Vec::new();
+    let mut placed: Vec<usize> = Vec::new();
     // put everything back; says whether that worked
-    let undo = |aside: &[(PathBuf, PathBuf)], placed: &[PathBuf]| -> bool {
+    let undo = |aside: &[(PathBuf, std::fs::File)], placed: &[usize], checked: Vec<(String, std::fs::File)>| -> bool {
         let mut ok = true;
-        for p in placed {
-            ok &= std::fs::remove_file(p).is_ok();
+        for (i, (_, file)) in checked.into_iter().enumerate() {
+            if placed.contains(&i) { ok &= delete_open(&file); }
+            drop(file);
         }
         for (cur, old) in aside {
-            ok &= std::fs::rename(old, cur).is_ok();
+            ok &= rename_open(old, cur).is_ok();
         }
         ok
     };
     let back = |ok: bool| if ok { "nothing was changed" } else { "and putting the old files back failed too; reinstall Sprawl with its Setup" };
-    for (name, _) in staged {
+    for (name, _, _) in staged {
         let cur = dir.join(name);
-        if cur.exists() {
+        let current = std::fs::OpenOptions::new().access_mode(0x0001_0080).share_mode(1 | 2 | 4)
+            .custom_flags(0x0020_0000 | 0x0010_0000).open(&cur);
+        match current {
+            Ok(current) => {
+            let valid = current.metadata().is_ok_and(|m| m.is_file() && m.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0);
+            if !valid { let ok = undo(&aside, &placed, checked); return Err(format!("The current {name} is linked or offline; {}", back(ok))); }
             let old = dir.join(format!("{name}.old"));
-            if let Err(e) = std::fs::rename(&cur, &old) {
-                let ok = undo(&aside, &placed);
+            if let Err(e) = rename_open(&current, &old) {
+                let ok = undo(&aside, &placed, checked);
                 return Err(format!("could not move {name} aside ({e}); {}", back(ok)));
             }
-            aside.push((cur, old));
+            aside.push((cur, current));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => { let ok = undo(&aside, &placed, checked); return Err(format!("could not open {name} for updating ({e}); {}", back(ok))); }
         }
     }
-    for (name, from) in staged {
-        let to = dir.join(name);
-        if let Err(e) = std::fs::rename(from, &to).or_else(|_| std::fs::copy(from, &to).map(|_| ())) {
-            // a copy that failed half-way leaves a partial file
-            let _ = std::fs::remove_file(&to);
-            let ok = undo(&aside, &placed);
+    before_publish();
+    for i in 0..checked.len() {
+        let name = checked[i].0.to_string();
+        let to = dir.join(&name);
+        if let Err(e) = rename_open(&checked[i].1, &to) {
+            let ok = undo(&aside, &placed, checked);
             return Err(format!("could not put the new {name} in place ({e}); {}", back(ok)));
         }
-        placed.push(to);
+        placed.push(i);
     }
     Ok(())
 }
@@ -164,6 +262,7 @@ fn set_str(key: HKEY, name: &str, value: &str) {
 /// After an update: the version in the Apps entry of the install in `dir`. Only an entry that
 /// exists and points at `dir` is touched; none is created.
 pub fn register(dir: &Path, version: &str) -> Result<(), String> {
+    per_user_only()?;
     let key_name = if inno_dir().is_some_and(|d| same(dir, &d)) {
         INNO_KEY
     } else if reg_str(UNINSTALL_KEY, "DisplayVersion").is_some() && install_dir().is_some_and(|d| same(dir, &d)) {
@@ -195,6 +294,7 @@ pub fn message(text: &str, question: bool, warn: bool) -> bool {
 /// Apps entry, the Explorer menu entries and the program files. Settings, history and the clean-up log stay
 /// (they are in %APPDATA%\Sprawl and %LOCALAPPDATA%\Sprawl). `quiet` skips the questions.
 pub fn uninstall(quiet: bool) {
+    if let Err(e) = per_user_only() { if !quiet { message(&e, false, true); } return; }
     let Some(dir) = install_dir() else { return };
     if !is_legacy_copy() {
         if !quiet {
@@ -244,4 +344,91 @@ pub fn uninstall(quiet: bool) {
         d = dir.display()
     );
     let _ = std::process::Command::new(sys.join("cmd.exe")).current_dir(&sys).raw_arg("/d /q /c").raw_arg(script).creation_flags(0x0800_0000).spawn();
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    fn fixture(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sprawl-update-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(dir.join(STAGE)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn checked_source_is_renamed_even_after_its_name_changes() {
+        let dir = fixture("handle");
+        let source = dir.join(STAGE).join("sprawl.exe");
+        std::fs::write(&source, b"verified replacement").unwrap();
+        let mut file = std::fs::OpenOptions::new().access_mode(0x8000_0000 | 0x0001_0000).share_mode(1 | 4).open(&source).unwrap();
+        check_hash(&mut file, &crate::sha256_hex(b"verified replacement")).unwrap();
+        assert!(std::fs::write(&source, b"changed").is_err());
+        let moved = dir.join(STAGE).join("moved.exe");
+        std::fs::rename(&source, &moved).unwrap();
+        std::fs::write(&source, b"unrelated new arrival").unwrap();
+        rename_open(&file, &dir.join("sprawl.exe")).unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"verified replacement");
+        assert_eq!(std::fs::read(source).unwrap(), b"unrelated new arrival");
+        assert!(!moved.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn update_preflight_and_launch_guards_preserve_checked_bytes() {
+        let dir = fixture("swap");
+        std::fs::write(dir.join("sprawl.exe"), b"old program").unwrap();
+        std::fs::write(dir.join(STAGE).join("sprawl.exe"), b"new program").unwrap();
+        let mut files = vec![("sprawl.exe".into(), dir.join(STAGE).join("sprawl.exe"), crate::sha256_hex(b"wrong"))];
+        assert!(swap_in(&dir, &files).is_err());
+        assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"old program");
+        if per_user_only().is_ok() {
+            files[0].2 = crate::sha256_hex(b"new program");
+            swap_in(&dir, &files).unwrap();
+            assert_eq!(std::fs::read(dir.join("sprawl.exe.old")).unwrap(), b"old program");
+            let launch = verified_launch(&dir, &files).unwrap();
+            assert!(std::fs::write(dir.join("sprawl.exe"), b"changed").is_err());
+            assert!(std::fs::rename(dir.join("sprawl.exe"), dir.join("displaced.exe")).is_err());
+            drop(launch);
+            assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"new program");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn maintenance_keeps_unrelated_files_and_stage_subfolders() {
+        let dir = fixture("maintenance");
+        for name in crate::FILES { std::fs::write(dir.join(name), b"current").unwrap(); }
+        for name in ["sprawl.exe.old", "another.exe.old", "notes.old"] { std::fs::write(dir.join(name), b"keep or remove by ownership").unwrap(); }
+        for name in ["sprawl.exe", "another.exe", "notes.txt"] { std::fs::write(dir.join(STAGE).join(name), b"staged").unwrap(); }
+        std::fs::create_dir(dir.join(STAGE).join("private")).unwrap();
+        remove_old(&dir);
+        clean_stage(&dir);
+        assert!(dir.join("another.exe.old").exists() && dir.join("notes.old").exists());
+        assert!(dir.join(STAGE).join("another.exe").exists() && dir.join(STAGE).join("private").exists());
+        if per_user_only().is_ok() { assert!(!dir.join("sprawl.exe.old").exists() && !dir.join(STAGE).join("sprawl.exe").exists()); }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_second_publication_keeps_new_arrivals_and_restores_by_handle() {
+        if per_user_only().is_err() { return; }
+        let dir = fixture("rollback");
+        let files: Vec<_> = crate::FILES.iter().map(|&name| {
+            std::fs::write(dir.join(name), format!("old {name}")).unwrap();
+            let new = format!("new {name}");
+            let source = dir.join(STAGE).join(name);
+            std::fs::write(&source, &new).unwrap();
+            (name.to_string(), source, crate::sha256_hex(new.as_bytes()))
+        }).collect();
+        let blocked = dir.join(crate::FILES[1]);
+        let result = swap_in_with(&dir, &files, || std::fs::write(&blocked, b"unrelated new arrival").unwrap());
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"old sprawl.exe");
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"unrelated new arrival");
+        assert_eq!(std::fs::read(dir.join(format!("{}.old", crate::FILES[1]))).unwrap(), format!("old {}", crate::FILES[1]).as_bytes());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

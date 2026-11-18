@@ -607,7 +607,7 @@ impl State {
     /// Why the selected item may not be deleted from here, if it may not.
     fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
         if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.job.is_some()
-            || self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() {
+            || self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.update.applying {
             return Some("Deletion waits until scanning and other file operations finish; screenshot runs cannot delete.".into());
         }
         if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {

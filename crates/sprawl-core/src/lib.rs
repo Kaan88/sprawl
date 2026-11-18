@@ -312,6 +312,11 @@ pub(crate) fn top_of(tree: &Tree) -> Vec<(String, u64)> {
 
 /// True when the process runs elevated (as administrator), which reading the MFT needs.
 pub fn is_elevated() -> bool {
+    elevation().unwrap_or(false)
+}
+
+/// Checked elevation state. Callers guarding per-user writes must refuse an unknown state.
+pub fn elevation() -> io::Result<bool> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -319,7 +324,7 @@ pub fn is_elevated() -> bool {
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return false;
+            return Err(io::Error::last_os_error());
         }
         let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
         let mut len = 0u32;
@@ -330,8 +335,11 @@ pub fn is_elevated() -> bool {
             std::mem::size_of::<TOKEN_ELEVATION>() as u32,
             &mut len,
         );
+        let error = (ok == 0).then(io::Error::last_os_error);
         CloseHandle(token);
-        ok != 0 && elevation.TokenIsElevated != 0
+        if let Some(error) = error { return Err(error); }
+        if len as usize != std::mem::size_of::<TOKEN_ELEVATION>() { return Err(io::Error::other("Windows returned an incomplete elevation state")); }
+        Ok(elevation.TokenIsElevated != 0)
     }
 }
 

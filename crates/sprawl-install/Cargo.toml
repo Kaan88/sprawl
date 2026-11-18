@@ -7,6 +7,7 @@ publish = false
 description = "Sprawl's install, uninstall and update plumbing: the signed release manifest, swapping files in place, the Start menu shortcut and the Apps entry."
 
 [dependencies]
+sprawl-core = { path = "../sprawl-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

@@ -748,7 +748,7 @@ impl State {
     /// own clean-up, Explorer). Then the rules run over the tree as it is now. Before, they ran
     /// over the same tree and found the same things.
     pub(crate) fn advisor_recheck(&mut self) {
-        if self.advisor.recheck.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
+        if self.advisor.recheck.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() || self.update.applying {
             return;
         }
         let (Some(t), Some(r)) = (self.tree.as_ref(), self.advisor.report.as_ref()) else { return self.advisor_start() };
@@ -2157,7 +2157,7 @@ impl State {
 
     /// Uncompress the `i`th folder Sprawl compressed, after a question (it needs the space back).
     pub(crate) fn uncompress_ask(&mut self, i: usize) {
-        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() { return; }
+        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() || self.update.applying { return; }
         let Some(c) = self.advisor.memory.compressed.get(i).cloned() else { return };
         let path = std::path::PathBuf::from(&c.path);
         let pf = |v: &str| std::env::var_os(v).is_some_and(|d| sprawl_advisor::finding::within(&path, std::path::Path::new(&d)));
@@ -2170,7 +2170,7 @@ impl State {
     }
 
     fn uncompress_start(&mut self, record: sprawl_advisor::memory::Compressed) {
-        if self.advisor.uncompress.is_some() || self.advisor.cleanup.running.is_some() || self.job.is_some()
+        if self.advisor.uncompress.is_some() || self.advisor.cleanup.running.is_some() || self.job.is_some() || self.update.applying
             || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
