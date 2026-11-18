@@ -22,6 +22,7 @@ pub mod filter;
 pub mod kinds;
 pub mod mft;
 pub mod progress;
+pub mod local;
 pub mod query;
 pub mod search;
 pub mod walk;
@@ -185,7 +186,8 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 /// `progress.snapshot().method` and in [`Tree::method`]. Cancelling via [`Progress::cancel`]
 /// returns `ErrorKind::Interrupted`.
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
-    let path = &canonical_root(path);
+    let pinned = local::scope(path)?;
+    let path = &pinned.path;
     if is_elevated() && !progress.has_exclusions() {
         match mft::scan(path, progress) {
             Ok(tree) => return Ok(tree),
@@ -205,7 +207,8 @@ pub fn scan_many(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
     if paths.len() == 1 {
         return scan_auto(&paths[0], progress);
     }
-    let abs: Vec<PathBuf> = paths.iter().map(|p| canonical_root(p)).collect();
+    let pinned: Vec<_> = paths.iter().map(|p| local::scope(p)).collect::<io::Result<_>>()?;
+    let abs: Vec<PathBuf> = pinned.iter().map(|p| p.path.clone()).collect();
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
     if is_elevated() && !progress.has_exclusions() {

@@ -106,7 +106,11 @@ fn refusal(path: &Path) -> Option<String> {
     if !path.is_absolute() {
         return Some(format!("{} isn't a full path: give one such as D:\\ or C:\\Users\\me\\Projects.", path.display()));
     }
-    let root = sprawl_core::canonical_root(path);
+    let pinned = match sprawl_core::local::directory(path) {
+        Ok(p) => p,
+        Err(e) => return Some(format!("{} isn't a plain local folder Sprawl can open; network, device and redirected paths are refused: {e}", path.display())),
+    };
+    let root = pinned.path.clone();
     let s = root.to_string_lossy();
     if s.starts_with(r"\\") && !s.starts_with(r"\\?\Volume") {
         return Some(format!("{} is a network path: Sprawl doesn't scan those.", path.display()));
@@ -314,7 +318,8 @@ impl Index {
                 if let Some(r) = refusal(&path) {
                     return Err(r);
                 }
-                let root = sprawl_core::canonical_root(&path);
+                let pinned = sprawl_core::local::directory(&path).map_err(|e| format!("The scan root changed or cannot be opened: {e}"))?;
+                let root = pinned.path.clone();
                 if let Some(j) = self.running() {
                     if j.root == root {
                         let id = j.id;

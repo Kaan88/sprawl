@@ -531,6 +531,11 @@ impl<'a> Tools<'a> {
 
     /// The start of a small, plainly descriptive text file in the scan.
     fn read_manifest(&self, input: &Value) -> Result<String, String> {
+        let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+        self.read_manifest_for(input, home.as_deref())
+    }
+
+    fn read_manifest_for(&self, input: &Value, home: Option<&std::path::Path>) -> Result<String, String> {
         let (n, _) = self.node(input)?;
         let node = &self.tree.nodes[n];
         if node.is_dir || node.is_reparse_point() {
@@ -555,28 +560,22 @@ impl<'a> Tools<'a> {
         if self.never.hit(&lower).is_some() {
             return Err("that is in a protected folder".into());
         }
-        // not other people's profiles (an administrator Sprawl could open them)
-        let segs = segments(&lower);
-        let me = std::env::var("USERNAME").unwrap_or_default().to_lowercase();
-        if segs.get(1).is_some_and(|s| s == "users") && segs.get(2).is_some_and(|u| u != &me && u != "public") {
+        if crate::finding::other_account(&path, home) {
             return Err("that is in another user's profile".into());
+        }
+        if crate::exclusions::intersects(&path, &crate::exclusions::configured()) {
+            return Err("that is excluded in Settings > Scanning".into());
         }
         if node.size > 256 << 10 {
             return Err("over 256 KB; that isn't a manifest".into());
         }
-        // the file and every folder on the way must still be what the scan saw: no links
-        let mut p = path.clone();
-        loop {
-            if std::fs::symlink_metadata(&p).map_err(|e| format!("couldn't open it: {e}"))?.file_type().is_symlink() {
-                return Err("it, or a folder on the way, is a link".into());
-            }
-            if !p.pop() || p.parent().is_none() {
-                break;
-            }
+        let mut opened = sprawl_core::local::file(&path, 256 << 10).map_err(|e| format!("couldn't read a plain local manifest: {e}"))?;
+        let meta = opened.file.metadata().map_err(|e| e.to_string())?;
+        if meta.len() != node.size || meta.modified().ok() != node.modified {
+            return Err("the manifest changed since this scan; scan again before reading it".into());
         }
         let mut buf = Vec::new();
-        let f = std::fs::File::open(&path).map_err(|e| format!("couldn't open it: {e}"))?;
-        std::io::Read::read_to_end(&mut std::io::Read::take(f, 16 << 10), &mut buf).map_err(|e| e.to_string())?;
+        std::io::Read::read_to_end(&mut std::io::Read::take(&mut opened.file, 16 << 10), &mut buf).map_err(|e| e.to_string())?;
         if buf.contains(&0) {
             return Err("it isn't text".into());
         }
@@ -803,7 +802,7 @@ mod tests {
         std::fs::write(dir.join("hosts.yml"), "oauth_token: x").unwrap();
         let tree2 = sprawl_core::scan(&dir, |_| {}).unwrap();
         let t2 = Tools::new(&tree2, &facts, "m", &[], &Memory::default());
-        assert!(t2.read_manifest(&json!({"path": dir.join("package.json").display().to_string()})).unwrap().contains("\"name\""));
+        assert!(t2.read_manifest_for(&json!({"path": dir.join("package.json").display().to_string()}), Some(&dir)).unwrap().contains("\"name\""));
         assert!(t2.read_manifest(&json!({"path": dir.join("api-key.json").display().to_string()})).is_err(), "nothing that looks private");
         assert!(t2.read_manifest(&json!({"path": dir.join("hosts.yml").display().to_string()})).is_err(), "named manifests only");
         assert!(t2.read_manifest(&json!({"path": cache.join("x").join("a.bin").display().to_string()})).is_err(), "only descriptive files");

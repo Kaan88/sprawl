@@ -8,7 +8,12 @@ pub fn parse(text: &str) -> Result<Vec<PathBuf>, String> {
         if !p.is_absolute() || value.contains(['*', '?', '%', '\r', '\n']) || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
             return Err("Folders to skip must be full absolute paths separated by semicolons, without wildcards, variables or ..".into());
         }
-        let p = sprawl_core::canonical_root(&p);
+        let p = sprawl_core::local::lexical(&p).map_err(|e| e.to_string())?;
+        let p = match sprawl_core::local::scope(&p) {
+            Ok(pinned) => pinned.path.clone(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => p,
+            Err(e) => return Err(format!("The skipped scope isn't a plain local path: {e}")),
+        };
         if !paths.contains(&p) { paths.push(p); }
         if paths.len() > 100 { return Err("Use at most 100 folders to skip.".into()); }
     }
@@ -25,8 +30,7 @@ pub fn progress() -> std::sync::Arc<sprawl_core::Progress> { sprawl_core::Progre
 
 pub fn intersects(path: &Path, excluded: &[PathBuf]) -> bool {
     if excluded.is_empty() { return false; }
-    let p = sprawl_core::canonical_root(path);
-    excluded.iter().any(|e| crate::finding::within(&p, e) || crate::finding::within(e, &p))
+    excluded.iter().any(|e| crate::finding::within(path, e) || crate::finding::within(e, path))
 }
 
 #[cfg(test)]

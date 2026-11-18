@@ -76,7 +76,9 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
 
 /// [`walk`] with an explicit number of worker threads (for benchmarks).
 pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
-    if progress.excludes(&crate::canonical_root(path)) {
+    let pinned = crate::local::scope(path)?;
+    let path = &pinned.path;
+    if progress.excludes(path) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "This folder is excluded in Settings > Scanning"));
     }
     progress.set_method(ScanMethod::Walk);
@@ -218,6 +220,12 @@ fn list_dir(
     batch: &mut LiveBatch,
 ) -> Vec<Entry> {
     let mut entries = Vec::new();
+    // A queued folder may have been replaced since its parent's listing. Pin and validate
+    // the whole live chain before FindFirstFile can follow it anywhere.
+    let _pinned = match crate::local::directory(Path::new(&display_path(&job.path))) {
+        Ok(p) => p,
+        Err(_) => { sh.progress.add_errors(1); return entries; }
+    };
     pattern.clear();
     pattern.extend_from_slice(&job.path);
     if pattern.last() != Some(&(b'\\' as u16)) {
@@ -498,6 +506,8 @@ mod tests {
         let l = root.children.iter().map(|&c| &tree.nodes[c]).find(|n| n.name == "link").unwrap();
         assert!(l.is_reparse_point());
         assert!(l.children.is_empty());
+        assert!(walk(&link, &Progress::new()).is_err(), "an explicit junction root must not be entered");
+        assert!(crate::scan_auto(&link.join("big.bin"), &Progress::new()).is_err(), "a junction ancestor must not be followed either");
         let _ = fs::remove_dir_all(&dir);
     }
 

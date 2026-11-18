@@ -130,10 +130,29 @@ pub fn within(p: &std::path::Path, base: &std::path::Path) -> bool {
     !b.as_os_str().is_empty() && n(p).starts_with(b)
 }
 
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    #[test]
+    fn nested_relocated_profile_uses_the_actual_container() {
+        let home = std::path::Path::new(r"C:\Corp\Profiles\sam");
+        assert!(other_account(std::path::Path::new(r"C:\Corp\Profiles\other\secret"), Some(home)));
+        assert!(!other_account(std::path::Path::new(r"C:\Corp\Profiles\sam\data"), Some(home)));
+        assert!(!other_account(std::path::Path::new(r"D:\Profiles\project"), Some(home)), "an unrelated equal basename isn't a profile container");
+    }
+}
+
 /// `p` is in the Users folder of its drive (`X:\Users\...`, or the folder the user's own profile
 /// sits in) and not inside `home`. The Users folder itself counts: it holds other profiles. A
 /// network path (`\\server\...`) counts too: whose folder it is can't be told from here.
 pub fn other_account(p: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    // A relocated profile's actual parent, including every level, identifies its siblings.
+    // A bare drive root is not a profile container.
+    if let Some(home) = home {
+        if let Some(parent) = home.parent().filter(|p| p.parent().is_some()) {
+            if within(p, parent) && !within(p, home) { return true; }
+        }
+    }
     let s = p.to_string_lossy().replace('/', "\\");
     if s.starts_with("\\\\") && !s.starts_with("\\\\?\\") || s.to_lowercase().starts_with("\\\\?\\unc\\") {
         return true;
@@ -145,9 +164,8 @@ pub fn other_account(p: &std::path::Path, home: Option<&std::path::Path>) -> boo
         return false;
     }
     // the name of the folder profiles live in: "Users", and whatever this user's sits in
-    let users_dir = home.and_then(|h| h.parent()).and_then(|u| u.file_name()).map(|n| n.to_string_lossy().to_lowercase());
     let top = top.to_lowercase();
-    let in_users = top == "users" || users_dir.is_some_and(|u| u == top);
+    let in_users = top == "users";
     in_users && !home.is_some_and(|h| within(p, h))
 }
 

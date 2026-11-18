@@ -117,7 +117,7 @@ impl Progress {
 
     /// Exact absolute folder scopes, omitted before enumeration. Immutable for this scan.
     pub fn with_exclusions(paths: &[std::path::PathBuf]) -> Arc<Self> {
-        Arc::new(Self { excluded: paths.iter().map(|p| exclusion_key(&crate::canonical_root(p))).collect(), ..Self::default() })
+        Arc::new(Self { excluded: paths.iter().map(|p| exclusion_key(p)).collect(), ..Self::default() })
     }
 
     pub fn has_exclusions(&self) -> bool { !self.excluded.is_empty() }
