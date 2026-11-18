@@ -23,6 +23,7 @@ pub mod confidence;
 pub mod dupes;
 pub mod export;
 pub mod facts;
+pub mod kinds;
 pub mod finding;
 pub mod growth;
 pub mod hidden;
@@ -152,6 +153,8 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         .chain(versions::find(tree, &projects, &facts.apps))
         // A3: copies the scan alone shows (same name and size; whole folders), nothing read
         .chain(dupes::likely(tree, tuning::get(&tuning::DUPES_MIN_MB) << 20, 1 << 30))
+        // A2: what things are, by their layout (an archive already extracted beside it)
+        .chain(kinds::archives(tree, 50 << 20))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));
