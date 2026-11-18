@@ -218,7 +218,7 @@ pub(crate) fn expand(pack: &RulePack) -> Result<Vec<Rule>, String> {
 }
 
 /// One cleaner as the Cleaners section shows it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CleanerDef {
     pub id: String,
     pub name: String,
@@ -233,7 +233,7 @@ pub struct CleanerDef {
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PartDef {
     /// The rule whose findings are this part's.
     pub rule: String,
@@ -250,6 +250,12 @@ pub struct PartDef {
     pub info: bool,
     /// The paths it looks at.
     pub paths: Vec<String>,
+}
+
+/// Remembered choices apply only to the exact cleaner semantics and provenance reviewed.
+pub fn selection_fingerprint(definitions: &[CleanerDef], part: &str) -> Option<String> {
+    let (definition, _) = part_of(definitions, part)?;
+    Some(crate::community::fingerprint(&format!("{definition:?}")))
 }
 
 /// What cleaner `c` finds in `tree` now: (parts with something, bytes). For an AI's proposal:
@@ -727,6 +733,26 @@ mod tests {
         let again = RulePack::parse(&toml::to_string(&p).unwrap()).unwrap();
         assert_eq!(again.part_rules.len(), 2);
         assert_eq!(again.rules.len(), 1, "parts aren't written out as rules");
+    }
+
+    #[test]
+    fn remembered_choices_expire_on_semantics_or_provenance_changes() {
+        let original = catalogue(&[pack(GOOD).unwrap()]);
+        let part = &original[0].parts[0].rule;
+        let fingerprint = selection_fingerprint(&original, part).unwrap();
+        assert_eq!(selection_fingerprint(&original.clone(), part).unwrap(), fingerprint);
+        for field in 0..3 {
+            let mut changed = original.clone();
+            match field {
+                0 => changed[0].parts[0].paths.push(r"C:\broader".into()),
+                1 => changed[0].builtin = !changed[0].builtin,
+                _ => changed[0].text.push_str("\n# revised definition"),
+            }
+            assert_ne!(selection_fingerprint(&changed, part).unwrap(), fingerprint);
+        }
+        assert_eq!(selection_fingerprint(&original, "missing"), None);
+        let legacy: crate::memory::Memory = toml::from_str("usual = ['app.x/cache']\ncleaner_ticks = ['app.x/cache']").unwrap();
+        assert!(legacy.usual_definitions.is_empty() && legacy.cleaner_tick_definitions.is_empty(), "legacy IDs alone cannot authorize restoration");
     }
 
     /// Every built-in part that deletes names a place the never-list allows (a part on it would

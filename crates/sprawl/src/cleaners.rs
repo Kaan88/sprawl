@@ -769,7 +769,8 @@ impl State {
                 }
                 self.save_memory();
                 // the findings of this report act on the new number now
-                if let Some(r) = self.advisor.report.as_mut() {
+                let r = if self.own_active() { self.advisor.cl.own.as_mut().map(|o| &mut o.report) } else { self.advisor.report.as_mut() };
+                if let Some(r) = r {
                     for k in findings {
                         if let Some(f) = r.findings.get_mut(k) {
                             if let Some(sprawl_advisor::clean::Action::Clear { .. }) = f.action {
@@ -779,6 +780,7 @@ impl State {
                         }
                     }
                 }
+                self.cleanup_accept_context();
             }
             "AdvClS" => {
                 let Some(p) = rows.iter().flat_map(|c| c.parts.iter()).nth(i) else { return };
@@ -854,7 +856,8 @@ impl State {
         r.findings
             .iter()
             .enumerate()
-            .filter(|(i, f)| auto_takes(r, *i) && matches!(&f.source, Source::Rule(id) if usual.contains(id)))
+            .filter(|(i, f)| auto_takes(r, *i) && matches!(&f.source, Source::Rule(id) if usual.contains(id)
+                && sprawl_advisor::cleaners::selection_fingerprint(&r.catalogue, id).is_some_and(|fp| self.advisor.memory.usual_definitions.get(id) == Some(&fp))))
             .map(|(_, f)| key(&f.path))
             .filter(|k| !self.advisor.cleanup.ticked.contains(k))
             .collect()
@@ -871,8 +874,10 @@ impl State {
             .collect();
         ids.sort();
         ids.dedup();
-        if !ids.is_empty() && ids != self.advisor.memory.usual {
+        let definitions = ids.iter().filter_map(|id| sprawl_advisor::cleaners::selection_fingerprint(&r.catalogue, id).map(|fp| (id.clone(), fp))).collect();
+        if !ids.is_empty() && (ids != self.advisor.memory.usual || definitions != self.advisor.memory.usual_definitions) {
             self.advisor.memory.usual = ids;
+            self.advisor.memory.usual_definitions = definitions;
             self.save_memory();
         }
     }
@@ -1638,7 +1643,9 @@ impl State {
             let keys: Vec<String> = {
                 let r = self.advice().unwrap();
                 let want = &self.advisor.memory.cleaner_ticks;
-                self.cleaner_layout(r).iter().flat_map(|c| c.parts.iter()).filter(|p| want.contains(&p.key)).flat_map(|p| p.tickable(r).filter(|&i| auto_takes(r, i)).map(|i| key(&r.findings[i].path))).collect()
+                self.cleaner_layout(r).iter().flat_map(|c| c.parts.iter()).filter(|p| want.contains(&p.key)
+                    && sprawl_advisor::cleaners::selection_fingerprint(&r.catalogue, &p.key).is_some_and(|fp| self.advisor.memory.cleaner_tick_definitions.get(&p.key) == Some(&fp)))
+                    .flat_map(|p| p.tickable(r).filter(|&i| auto_takes(r, i)).map(|i| key(&r.findings[i].path))).collect()
             };
             self.advisor.cleanup.ticked.extend(keys);
             self.advisor.cleanup.own_ok = false;
@@ -1664,8 +1671,15 @@ impl State {
         );
         now.sort();
         now.dedup();
-        if now != self.advisor.memory.cleaner_ticks {
+        // Only explicit choices made for definitions present now receive a new binding.
+        let mut definitions = self.advisor.memory.cleaner_tick_definitions.clone();
+        definitions.retain(|id, _| now.contains(id));
+        for id in now.iter().filter(|id| here.contains(id.as_str())) {
+            if let Some(fp) = sprawl_advisor::cleaners::selection_fingerprint(&r.catalogue, id) { definitions.insert(id.clone(), fp); }
+        }
+        if now != self.advisor.memory.cleaner_ticks || definitions != self.advisor.memory.cleaner_tick_definitions {
             self.advisor.memory.cleaner_ticks = now;
+            self.advisor.memory.cleaner_tick_definitions = definitions;
             self.save_memory();
         }
     }

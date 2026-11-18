@@ -110,10 +110,14 @@ pub struct Memory {
     /// usual ones" (never ticked by Sprawl itself).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub usual: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub usual_definitions: std::collections::BTreeMap<String, String>,
     /// The cleaner parts (by rule id) the user had ticked on the Cleaners tab, ticked again
     /// when it opens. Only ever what the user ticked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleaner_ticks: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub cleaner_tick_definitions: std::collections::BTreeMap<String, String>,
     /// Cleaner parts (by rule id) the user turned down when the AI suggested them: they are
     /// not offered again, and the AI is told so.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

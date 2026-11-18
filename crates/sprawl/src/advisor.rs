@@ -1708,6 +1708,7 @@ impl State {
     }
 
     pub(crate) fn render_advisor(&mut self) {
+        self.cleanup_context_sync();
         let t0 = std::time::Instant::now();
         // a button that leads to another section (a question for the AI) leaves the Cleaners tab
         if self.advisor.cleaners_tab && self.advisor.section != Section::Cleaners {

@@ -19,6 +19,8 @@ use crate::ui;
 /// The ticks and the clean-up's state, kept in the Advisor.
 #[derive(Default)]
 pub(crate) struct Cleanup {
+    context: Option<SelectionContext>,
+    confirmation_selection: Option<(HashSet<String>, HashSet<String>, Option<String>)>,
     /// Ticked findings, by lower-case path.
     pub ticked: HashSet<String>,
     /// The report generation the default ticks were set for.
@@ -50,6 +52,58 @@ pub(crate) struct Cleanup {
     /// Ticked from the AI's suggestion (R9), by lower-case path: shown in the AI's purple
     /// until the user touches the row.
     pub ai_ticked: HashSet<String>,
+}
+
+struct SelectionContext {
+    tree: std::sync::Weak<Tree>,
+    findings: Vec<Finding>,
+    privacy: Vec<Finding>,
+    definitions: Vec<sprawl_advisor::cleaners::CleanerDef>,
+}
+
+impl SelectionContext {
+    fn same(&self, other: &Self) -> bool {
+        self.tree.upgrade().zip(other.tree.upgrade()).is_some_and(|(a, b)| Arc::ptr_eq(&a, &b))
+            && self.findings == other.findings && self.privacy == other.privacy && self.definitions == other.definitions
+    }
+
+    fn unchanged(&self, finding: &Finding, next: &Self) -> bool {
+        self.findings.iter().chain(&self.privacy).any(|old| old == finding)
+            && match &finding.source {
+                Source::Rule(id) => sprawl_advisor::cleaners::selection_fingerprint(&self.definitions, id)
+                    == sprawl_advisor::cleaners::selection_fingerprint(&next.definitions, id),
+                _ => true,
+            }
+    }
+}
+
+impl Cleanup {
+    fn sync_confirmation_selection(&mut self) -> bool {
+        let next = (self.ticked.clone(), self.privacy_ticked.clone(), self.single.clone());
+        if self.confirmation_selection.as_ref() == Some(&next) { return false; }
+        self.own_ok = false;
+        self.privacy_ok = false;
+        self.confirmation_selection = Some(next);
+        true
+    }
+
+    fn bind(&mut self, next: Option<SelectionContext>) -> bool {
+        if self.context.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| a.same(b)) || self.context.is_none() && next.is_none() { return false; }
+        if let Some(old) = &self.context {
+            self.ticked.retain(|path| next.as_ref().is_some_and(|n| n.findings.iter().any(|f| key(&f.path) == *path && old.unchanged(f, n))));
+            self.privacy_ticked.retain(|path| next.as_ref().is_some_and(|n| n.privacy.iter().any(|f| key(&f.path) == *path && old.unchanged(f, n))));
+        }
+        self.own_ok = false;
+        self.privacy_ok = false;
+        self.review = false;
+        self.single = None;
+        self.armed = None;
+        self.ai_ticked.clear();
+        self.measured.clear();
+        self.measuring = None;
+        self.context = next;
+        true
+    }
 }
 
 pub(crate) struct Item {
@@ -312,9 +366,37 @@ pub(crate) fn held_in_app(f: &Finding) -> Option<String> {
 }
 
 impl State {
+    fn selection_context(&self) -> Option<SelectionContext> {
+        let (tree, r) = (self.active_tree()?, self.advice()?);
+        Some(SelectionContext { tree: Arc::downgrade(&tree), findings: r.findings.clone(), privacy: r.privacy.clone(), definitions: r.catalogue.clone() })
+    }
+
+    pub(crate) fn cleanup_context_sync(&mut self) -> bool {
+        let unchanged = self.advisor.cleanup.context.as_ref().zip(self.active_tree()).zip(self.advice()).is_some_and(|((old, tree), report)|
+            old.tree.upgrade().is_some_and(|previous| Arc::ptr_eq(&previous, &tree))
+                && old.findings == report.findings && old.privacy == report.privacy && old.definitions == report.catalogue);
+        if unchanged { return self.advisor.cleanup.sync_confirmation_selection(); }
+        let next = self.selection_context();
+        let changed = self.advisor.cleanup.bind(next);
+        let selection_changed = self.advisor.cleanup.sync_confirmation_selection();
+        if changed { self.advisor.cl.preview = None; }
+        changed || selection_changed
+    }
+
+    /// An explicit user change to a finding keeps their ticks, but requires fresh consent.
+    pub(crate) fn cleanup_accept_context(&mut self) {
+        self.advisor.cleanup.context = self.selection_context();
+        self.advisor.cleanup.own_ok = false;
+        self.advisor.cleanup.privacy_ok = false;
+        self.advisor.cleanup.measured.clear();
+        self.advisor.cleanup.measuring = None;
+        self.advisor.cl.preview = None;
+    }
+
     /// Ticks for a new report: the user's own ticks that still apply, else none. Sprawl never
     /// ticks a delete by itself; "Tick the safe ones" does it on request.
     pub(crate) fn cleanup_defaults(&mut self) {
+        self.cleanup_context_sync();
         let Some(r) = self.advice() else { return };
         if self.advisor.cleanup.ticked_for == Some(r.tree) {
             return;
@@ -449,6 +531,7 @@ impl State {
                 c.single = None;
                 c.own_ok = false;
                 c.auto = false;
+                self.cleanup_accept_context();
             }
             Err(why) => {
                 let title = f.title.clone();
@@ -501,6 +584,11 @@ impl State {
     /// Start cleaning what is ticked: each item is checked again first.
     pub(crate) fn cleanup_start(&mut self) {
         if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() || self.update.applying {
+            return;
+        }
+        if self.cleanup_context_sync() {
+            self.adv_say("The scan or cleanup actions changed. Review the current items and confirm again.");
+            self.render_advisor();
             return;
         }
         // checked against the whole scan, not a filtered view of it
@@ -1628,6 +1716,47 @@ mod accounting_tests {
         assert_eq!(complete_size(Some(&None)), Some(0));
         assert_eq!(complete_size(Some(&Some(tree(1)))), None);
         assert_eq!(complete_size(Some(&Some(tree(0)))), Some(40));
+    }
+}
+
+#[cfg(test)]
+mod selection_context_tests {
+    use super::*;
+
+    #[test]
+    fn changed_definitions_actions_and_selection_require_fresh_consent() {
+        let tree = || Arc::new(Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node::default()], errors: 0, method: sprawl_core::ScanMethod::Walk });
+        let a = tree();
+        let b = tree();
+        let definitions = sprawl_advisor::cleaners::catalogue(&[sprawl_advisor::rules::RulePack::builtin()]);
+        let rule = &definitions[0].parts[0].rule;
+        let finding: Finding = serde_json::from_value(serde_json::json!({"path": "C:\\Data\\item", "bytes": 10, "risk": "amber", "remedy": "delete", "title": "item", "evidence": [], "confidence": 1.0, "source": {"kind": "rule", "id": rule}})).unwrap();
+        let context = |tree: &Arc<Tree>, f: Finding, defs: Vec<sprawl_advisor::cleaners::CleanerDef>| SelectionContext { tree: Arc::downgrade(tree), findings: vec![f], privacy: vec![], definitions: defs };
+        let mut c = Cleanup::default();
+        c.bind(Some(context(&a, finding.clone(), definitions.clone())));
+        c.ticked.insert(key(&finding.path));
+        c.sync_confirmation_selection();
+        c.own_ok = true;
+        c.privacy_ok = true;
+        assert!(!c.bind(Some(context(&a, finding.clone(), definitions.clone()))));
+        assert!(c.own_ok && c.privacy_ok);
+        assert!(c.bind(Some(context(&b, finding.clone(), definitions.clone()))));
+        assert!(c.ticked.contains(&key(&finding.path)), "an identical action may stay selected after a fresh scan");
+        assert!(!c.own_ok && !c.privacy_ok);
+        let mut changed = definitions.clone();
+        changed[0].text.push_str("\n# changed");
+        assert!(c.bind(Some(context(&b, finding.clone(), changed))));
+        assert!(c.ticked.is_empty(), "same rule ID cannot carry a tick to another definition");
+        c.ticked.insert(key(&finding.path));
+        let mut raised = finding.clone();
+        raised.risk = Risk::Orange;
+        c.bind(Some(context(&b, raised, definitions)));
+        assert!(c.ticked.is_empty(), "raised risk cannot inherit the old tick");
+        c.own_ok = true;
+        c.privacy_ok = true;
+        c.privacy_ticked.insert("new privacy selection".into());
+        assert!(c.sync_confirmation_selection());
+        assert!(!c.own_ok && !c.privacy_ok);
     }
 }
 
