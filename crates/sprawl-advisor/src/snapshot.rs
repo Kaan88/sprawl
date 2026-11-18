@@ -324,6 +324,7 @@ pub const FILES_HERE: &str = "<files>";
 /// [`FILES_HERE`]) holding the total of the files directly inside it. Folder totals still add
 /// up exactly; only individual files are gone.
 pub fn folders_only(t: &Tree) -> Tree {
+    if t.nodes.first().is_some_and(|root| !root.is_dir) { return t.clone(); }
     let mut map = vec![usize::MAX; t.nodes.len()];
     let mut nodes: Vec<Node> = Vec::new();
     for (i, n) in t.nodes.iter().enumerate() {

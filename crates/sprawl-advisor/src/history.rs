@@ -33,7 +33,12 @@ pub fn base_dir() -> Option<PathBuf> {
 pub fn key(root: &Path) -> String {
     use sha2::{Digest, Sha256};
     let identity = root_id(root).unwrap_or_else(|| root.to_string_lossy().into_owned());
-    format!("v2-{:x}", Sha256::digest(identity.as_bytes()))
+    format!("v3-{:x}", Sha256::digest(identity.as_bytes()))
+}
+
+fn folded_key(root: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    format!("v2-{:x}", Sha256::digest(root_id(root).unwrap_or_default().to_lowercase().as_bytes()))
 }
 
 fn root_id(root: &Path) -> Option<String> {
@@ -48,7 +53,29 @@ fn root_id(root: &Path) -> Option<String> {
     } else if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' { &s[3..] }
     else { return None; };
     if parts.split('\\').any(|p| matches!(p, "." | "..") || p.contains([':', '*', '?', '"', '<', '>', '|'])) { return None; }
-    Some(s.trim_end_matches('\\').to_lowercase())
+    let parts = parts.split('\\').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\\");
+    if s.starts_with(r"\\") { Some(format!(r"\\{parts}")) }
+    else { Some(format!("{}:\\{parts}", b[0].to_ascii_uppercase() as char).trim_end_matches('\\').to_string()) }
+}
+
+/// Observation identity preserves component case. Live scans already supply canonical names.
+pub fn covers(root: &Path, path: &Path) -> bool {
+    root_id(root).zip(root_id(path)).is_some_and(|(root, path)| path == root || path.strip_prefix(&root).is_some_and(|tail| tail.starts_with('\\')))
+}
+
+pub fn find_path(tree: &Tree, path: &Path) -> Option<usize> {
+    let wanted = root_id(path)?;
+    let starts = if tree.nodes.first()?.name == sprawl_core::MULTIPLE { tree.nodes[ROOT].children.clone() } else { vec![ROOT] };
+    for start in starts {
+        let base = root_id(&tree.path_of(start))?;
+        if wanted != base && !wanted.strip_prefix(&base).is_some_and(|tail| tail.starts_with('\\')) { continue; }
+        let mut node = start;
+        for part in wanted[base.len()..].split('\\').filter(|part| !part.is_empty()) {
+            node = tree.nodes[node].children.iter().copied().find(|&child| tree.nodes[child].name == part)?;
+        }
+        return Some(node);
+    }
+    None
 }
 
 fn legacy_key(root: &Path) -> String {
@@ -94,7 +121,7 @@ fn bucket(path: &Path) -> io::Result<(sprawl_core::local::Directory, PathBuf)> {
     let root = PathBuf::from(text(&held.path.join("root.txt"), 128 << 10)?);
     root_id(&root).ok_or_else(bad)?;
     let name = held.path.file_name().ok_or_else(bad)?.to_string_lossy();
-    if name != key(&root) && name != legacy_key(&root) { return Err(bad()); }
+    if name != key(&root) && name != folded_key(&root) && name != legacy_key(&root) { return Err(bad()); }
     Ok((held, root))
 }
 
@@ -230,13 +257,9 @@ pub fn list(base: &Path) -> Vec<Entry> {
 /// Snapshots that cover `root` (taken of it or of a folder above it), one per moment (the
 /// full one when both exist), oldest first.
 pub fn covering(base: &Path, root: &Path) -> Vec<Entry> {
-    let want = crate::segments(&root.to_string_lossy());
     let mut v: Vec<Entry> = list(base)
         .into_iter()
-        .filter(|e| {
-            let r = crate::segments(&e.root.to_string_lossy());
-            want.len() >= r.len() && want[..r.len()] == r[..]
-        })
+        .filter(|e| covers(&e.root, root))
         .collect();
     // prefer the full snapshot of the same moment and root; then the closest root
     v.sort_by(|a, b| a.taken.cmp(&b.taken).then(b.full.cmp(&a.full)).then(b.root.as_os_str().len().cmp(&a.root.as_os_str().len())));
@@ -361,12 +384,12 @@ pub fn remove_entry(e: &Entry) -> io::Result<()> {
 /// a share of that folder's old `<files>` total in proportion to their size now.
 pub fn project(cur: &Tree, old: &Tree) -> Vec<u64> {
     let mut w = vec![0u64; cur.nodes.len()];
-    let Some(start) = crate::find_path(old, &cur.path_of(ROOT)) else { return w };
-    let lower = |s: &str| s.to_lowercase();
+    let Some(start) = find_path(old, &cur.path_of(ROOT)) else { return w };
     let mut stack = vec![(ROOT, start)];
     while let Some((c, o)) = stack.pop() {
         let cn = &cur.nodes[c];
         if !cn.is_dir {
+            if !old.nodes[o].is_dir { w[c] = old.nodes[o].size; }
             continue;
         }
         let on = &old.nodes[o];
@@ -376,14 +399,14 @@ pub fn project(cur: &Tree, old: &Tree) -> Vec<u64> {
             if old.nodes[k].name == FILES_HERE && !old.nodes[k].is_dir {
                 files_here = Some(old.nodes[k].size);
             } else {
-                by_name.insert(lower(&old.nodes[k].name), k);
+                by_name.insert(old.nodes[k].name.clone(), k);
             }
         }
         let direct_now: u64 = cn.children.iter().filter(|&&k| !cur.nodes[k].is_dir).map(|&k| cur.nodes[k].size).sum();
         let mut shared = Vec::new();
         for &k in &cn.children {
             let kn = &cur.nodes[k];
-            match by_name.get(&lower(&kn.name)) {
+            match by_name.get(&kn.name) {
                 Some(&ok) if old.nodes[ok].is_dir == kn.is_dir => {
                     if kn.is_dir {
                         stack.push((k, ok));
@@ -496,6 +519,42 @@ mod tests {
     }
 
     #[test]
+    fn case_distinct_roots_and_single_file_snapshots_remain_separate() {
+        let (dir, base, mut upper) = fixture("case-identity");
+        upper.root_path = PathBuf::from(r"C:\CaseSensitive\Project");
+        upper.nodes[ROOT].name = upper.root_path.display().to_string();
+        let mut lower = upper.clone();
+        lower.root_path = PathBuf::from(r"C:\CaseSensitive\project");
+        lower.nodes[ROOT].name = lower.root_path.display().to_string();
+        let taken = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 60);
+        prepare(&upper, taken, true).save(&base, u64::MAX).unwrap();
+        prepare(&lower, taken, true).save(&base, u64::MAX).unwrap();
+        assert_ne!(key(&upper.root_path), key(&lower.root_path));
+        for tree in [&upper, &lower] {
+            let entries = covering(&base, &tree.root_path);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(load(&entries[0]).unwrap().root_path, tree.root_path);
+        }
+        assert!(project(&upper, &lower).iter().all(|bytes| *bytes == 0));
+        assert!(find_path(&upper, &upper.root_path.join("A.bin")).is_none(), "descendant names also preserve case");
+        let legacy = base.join(folded_key(&upper.root_path));
+        fs::create_dir(&legacy).unwrap();
+        fs::write(legacy.join("root.txt"), upper.root_path.display().to_string()).unwrap();
+        let legacy_file = legacy.join(format!("{}.full.dtsn", secs(taken)));
+        snapshot::write(&lower, taken, 3, &mut fs::File::create(&legacy_file).unwrap()).unwrap();
+        let entry = list(&base).into_iter().find(|entry| entry.file == legacy_file).unwrap();
+        assert!(load(&entry).is_err(), "a legacy folded bucket cannot relabel a case-distinct snapshot");
+        let file = Tree { root_path: r"C:\Files\one.bin".into(), nodes: vec![sprawl_core::Node { name: r"C:\Files\one.bin".into(), size: 40, allocated: 4096, files: 1, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk };
+        prepare(&file, taken, false).save(&base, u64::MAX).unwrap();
+        let entry = covering(&base, &file.root_path).pop().unwrap();
+        let back = load(&entry).unwrap();
+        assert_eq!(back.nodes.len(), 1);
+        assert!(!back.nodes[ROOT].is_dir);
+        assert_eq!(project(&file, &back), vec![40]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn legacy_buckets_load_only_their_recorded_root() {
         let (dir, base, tree) = fixture("legacy");
         let bucket = base.join(legacy_key(&tree.root_path));
@@ -574,7 +633,8 @@ mod tests {
         assert_eq!(legacy_key(Path::new(r"C:\")), "C");
         assert_eq!(legacy_key(Path::new(r"C:\Program Files")), "C~Program Files");
         assert_ne!(key(Path::new(r"C:\a~b")), key(Path::new(r"C:\a\b")));
-        assert_eq!(key(Path::new(r"C:\Program Files\")), key(Path::new(r"c:/program files")));
+        assert_eq!(key(Path::new(r"C:\Program Files\")), key(Path::new(r"c:/Program Files")));
+        assert_ne!(key(Path::new(r"C:\Program Files")), key(Path::new(r"C:\program files")));
         assert_eq!(key(Path::new(r"\\?\C:\Program Files")), key(Path::new(r"C:\Program Files")));
     }
 

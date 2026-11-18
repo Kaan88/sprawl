@@ -88,11 +88,9 @@ fn is_stale(t: SystemTime) -> bool {
     t.elapsed().is_ok_and(|d| d.as_secs() > STALE_SECS)
 }
 
-/// `root` holds `path` (same folder or inside it), compared as the tools compare paths.
+/// Select an observation by exact canonical component identity, including case.
 fn covers(root: &Path, path: &Path) -> bool {
-    let r = crate::segments(&root.to_string_lossy());
-    let p = crate::segments(&path.to_string_lossy());
-    p.len() >= r.len() && p[..r.len()] == r[..]
+    crate::history::covers(root, path)
 }
 
 /// The `path` a call names, if any.
@@ -519,7 +517,7 @@ mod tests {
     #[test]
     fn covers_by_segments() {
         assert!(covers(Path::new(r"C:\"), Path::new(r"c:\Users\x")));
-        assert!(covers(Path::new(r"C:\Users"), Path::new(r"C:\users")));
+        assert!(!covers(Path::new(r"C:\Users"), Path::new(r"C:\users")));
         assert!(!covers(Path::new(r"C:\Users"), Path::new(r"C:\Users2")));
         assert!(!covers(Path::new(r"D:\"), Path::new(r"C:\x")));
     }

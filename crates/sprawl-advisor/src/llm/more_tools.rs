@@ -122,7 +122,7 @@ fn growth_in(tree: &Tree, input: &Value, base: Option<&Path>, now: SystemTime) -
     let gap = |e: &crate::history::Entry| if e.taken > want { e.taken.duration_since(want) } else { want.duration_since(e.taken) }.unwrap_or_default();
     let e = entries.iter().min_by_key(|e| gap(e)).expect("not empty");
     let old = crate::history::load(e).map_err(|err| format!("History's scan of {} couldn't be read: {err}", e.root.display()))?;
-    let o = crate::find_path(&old, &target).ok_or_else(|| format!("{} wasn't in History's scan of {} then.", target.display(), e.root.display()))?;
+    let o = crate::history::find_path(&old, &target).ok_or_else(|| format!("{} wasn't in History's scan of {} then.", target.display(), e.root.display()))?;
     let (now_size, was) = (tree.nodes[n].size, old.nodes[o].size);
     let mut s = format!(
         "{}: {} now; {} in History's scan of {} {} ({}).\n",
@@ -134,13 +134,12 @@ fn growth_in(tree: &Tree, input: &Value, base: Option<&Path>, now: SystemTime) -
         crate::growth::signed(now_size as i64 - was as i64)
     );
     // its folders by name, then the files directly in it as one line
-    let lower = |x: &str| x.to_lowercase();
     let mut old_dirs: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut old_files = 0u64;
     for &k in &old.nodes[o].children {
         let kn = &old.nodes[k];
         if kn.is_dir {
-            old_dirs.insert(lower(&kn.name), kn.size);
+            old_dirs.insert(kn.name.clone(), kn.size);
         } else {
             old_files += kn.size;
         }
@@ -153,7 +152,7 @@ fn growth_in(tree: &Tree, input: &Value, base: Option<&Path>, now: SystemTime) -
             new_files += kn.size;
             continue;
         }
-        match old_dirs.remove(&lower(&kn.name)) {
+        match old_dirs.remove(&kn.name) {
             Some(b) => rows.push((kn.size as i64 - b as i64, format!("{} (now {}, was {})", kn.name, format_size(kn.size), format_size(b)))),
             None => rows.push((kn.size as i64, format!("{} (new, {})", kn.name, format_size(kn.size)))),
         }

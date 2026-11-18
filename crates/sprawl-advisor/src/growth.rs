@@ -177,7 +177,7 @@ pub fn growth(cur: &Tree, base: &Path, facts: &Facts, free: Option<u64>, scan_ti
         .cloned();
     for e in &chosen {
         let Ok(old) = history::load(e) else { continue };
-        let Some(n) = crate::find_path(&old, &root) else { continue };
+        let Some(n) = history::find_path(&old, &root) else { continue };
         g.points.push((e.taken, old.nodes[n].size));
         if base_entry.as_ref().is_some_and(|b| b.taken == e.taken) {
             baseline = Some((e.clone(), old));
