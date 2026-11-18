@@ -96,11 +96,13 @@ fn scrub_query_for(q: &str, private: &[String]) -> Result<String, String> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut quote = None;
-    for c in q.chars() {
+    let mut chars = q.chars().peekable();
+    while let Some(c) = chars.next() {
         if let Some(end) = quote {
-            if c == end { quote = None; } else { token.push(c); }
-        } else if c == '"' || c == '\u{201c}' || c == '\u{201d}' || (c == '\'' && token.is_empty()) {
-            quote = Some(if c == '\u{201c}' { '\u{201d}' } else { c });
+            if c == end && chars.peek().is_none_or(|next| !next.is_alphanumeric()) { quote = None; } else { token.push(c); }
+        } else if c == '"' || c == '\u{201c}' || c == '\u{201d}'
+            || matches!(c, '\'' | '\u{2018}' | '\u{2019}') && token.chars().next_back().is_none_or(|previous| !previous.is_alphanumeric()) {
+            quote = Some(match c { '\u{201c}' => '\u{201d}', '\u{2018}' => '\u{2019}', _ => c });
         } else if c.is_whitespace() {
             if !token.is_empty() { tokens.push(std::mem::take(&mut token)); }
         } else { token.push(c); }
@@ -861,6 +863,13 @@ mod tests {
         }
         assert!(scrub_query_for(r#""C:\Users\Private Name\AppData\Local\DXCache""#, &p).is_err());
         assert!(scrub_query_for(r#"what is "C:\Users\Private Name\DXCache"#, &p).is_err());
+        for q in [r"what is path='C:\Work\Project Secret Name\DXCache'",
+            "what is path=\u{2018}C:\\Work\\Project Secret Name\\DXCache\u{2019}",
+            "what is (\u{2019}C:\\Work\\Project Secret Name\\DXCache\u{2019})",
+            r"what is path='C:\Work\User's Secret Name\DXCache'"] {
+            assert_eq!(scrub_query_for(q, &p).unwrap(), "what is DXCache", "{q}");
+        }
+        assert_eq!(scrub_query_for("what isn't Bob\u{2019}s cache", &p).unwrap(), "what isn't Bob\u{2019}s cache");
     }
 
     /// What the web said changes nothing about a finding: same risk, same checks, never ticked.
