@@ -7,7 +7,7 @@ in-app updater shows.
 
 ### New
 - **The AI sits beside your Findings**, as on the Cleaners tab: the list on the left, the AI on the right, each scrolling on its own. What it found is listed there with a tick each, and "Tick the safe ones it found". The separate Ask section is gone. "Hide the AI" folds the column away.
-- **AI apps can scan for themselves** through Sprawl's tools (MCP): `scan_path` scans a folder in the background with your own rights (never as administrator), `scan_status` and `list_scans` follow it. When Sprawl is open and not running as administrator, it does the scan. Network drives are refused. With History on, these scans are saved like your own.
+- **AI apps can scan for themselves** through Sprawl's tools (MCP): `scan_path` scans a folder in the background with your own rights, not Sprawl's administrator rights; `scan_status` and `list_scans` follow it. When Sprawl is open and not running as administrator, it does the scan. Network drives are refused. With History on, these scans are saved like your own.
 - **Two more tools for AI apps**: `search`, with the Search tab's language, and `growth`, which compares a folder with what History saved some days ago. Findings now come with their rule and how sure it is.
 - **Sprawl looks for an update every time it starts**, and once a day while it stays open.
 
