@@ -616,7 +616,8 @@ impl State {
         self.advisor.dupes_status = None;
         self.advisor.dupes_note = None;
         self.advisor.memory_ready();
-        crate::bridge::publish_findings(String::new());
+        // still looking: the MCP's report says so rather than "nothing"
+        crate::bridge::publish_findings(String::new(), None);
         let Some(t) = self.tree.clone() else {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
             return self.advisor_changed();
@@ -831,7 +832,7 @@ impl State {
     fn advisor_changed(&mut self) {
         self.map.drawn_once = false;
         if let Some(r) = self.advice() {
-            crate::bridge::publish_findings(format!("{}{}{}", findings_text(r), sprawl_advisor::mcp::CLEANERS_MARK, self.cleaners_text(r)));
+            crate::bridge::publish_findings(format!("{}{}{}", findings_text(r), sprawl_advisor::mcp::CLEANERS_MARK, self.cleaners_text(r)), Some(&r.findings));
         }
         if self.view == View::Advisor {
             self.render_advisor();
@@ -2366,6 +2367,8 @@ impl State {
             }
             let memory = self.advisor.memory.clone();
             let notes = self.advice().and_then(|r| r.growth.as_ref()).zip(self.tree.as_ref()).map(|(g, t)| g.text(t)).unwrap_or_default();
+            // what the rules found, so the chat's report doesn't say "nothing" (None: still looking)
+            let found = self.advice().map(|r| r.findings.clone());
             let (qtx, qrx) = channel::<String>();
             let (etx, erx) = channel::<ChatMsg>();
             let web_ok = self.advisor.chat.web_ok.clone();
@@ -2392,7 +2395,7 @@ impl State {
                 let mut events = |e: ChatEvent| {
                     let _ = etx.send(ChatMsg::Event(e));
                 };
-                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, &memory, &notes, qrx, &mut events, &consent, stop.clone(), partial.clone())));
+                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, found.as_deref(), &memory, &notes, qrx, &mut events, &consent, stop.clone(), partial.clone())));
                 if ended.is_err() {
                     let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
                 }

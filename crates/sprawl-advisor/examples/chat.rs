@@ -31,7 +31,7 @@ fn main() {
         }
         let _ = t;
     });
-    chat(&tree, &cfg, &Memory::default(), "", rx, &mut |e| match e {
+    chat(&tree, &cfg, None, &Memory::default(), "", rx, &mut |e| match e {
         ChatEvent::Reply(r) => println!("reply after {:.1} s, {} streamed pieces:\n{r}", start.elapsed().as_secs_f64(), pieces.get()),
         ChatEvent::Failed(e) => println!("failed: {e}"),
         ChatEvent::Progress(p) => println!("  .. {p}"),

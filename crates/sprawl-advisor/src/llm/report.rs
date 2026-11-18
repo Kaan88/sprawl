@@ -50,7 +50,9 @@ pub(crate) fn types_below(tree: &Tree, n: usize, limit: usize) -> Vec<(String, u
     v
 }
 
-pub fn build(tree: &Tree, facts: &Facts, found: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>) -> String {
+/// `found` is what the rules found: `None` when they didn't run for this report (said so, never
+/// a bare "nothing"), `Some(&[])` when they ran and nothing matched.
+pub fn build(tree: &Tree, facts: &Facts, found: Option<&[Finding]>, hidden: Option<&HiddenSpace>, goal: Option<u64>) -> String {
     let root = &tree.nodes[ROOT];
     let mut s = String::new();
     let _ = writeln!(s, "# Scan of {}", tree.path_of(ROOT).display());
@@ -92,9 +94,17 @@ pub fn build(tree: &Tree, facts: &Facts, found: &[Finding], hidden: Option<&Hidd
     }
 
     s.push_str("\n## Already found by Sprawl's rules (don't report these again; you may comment on them)\n");
-    if found.is_empty() {
-        s.push_str("(nothing)\n");
-    }
+    let found: &[Finding] = match found {
+        None => {
+            s.push_str("(Sprawl's rules haven't run for this scan yet, so nothing is listed here: this is not a clean bill.)\n");
+            &[]
+        }
+        Some([]) => {
+            s.push_str("(the rules ran and none matched)\n");
+            &[]
+        }
+        Some(f) => f,
+    };
     for f in found.iter().take(60) {
         let _ = writeln!(s, "- {} ({:?}, {:?}): {} {}", f.title, f.risk, f.remedy, f.path.display(), format_size(f.bytes));
     }
@@ -133,7 +143,9 @@ mod tests {
         std::fs::write(dir.join("small.txt"), "x").unwrap();
         let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
         let facts = Facts::from_apps(Vec::new());
-        let r = build(&tree, &facts, &[], None, Some(5 << 30));
+        let r = build(&tree, &facts, Some(&[]), None, Some(5 << 30));
+        assert!(r.contains("none matched"));
+        assert!(build(&tree, &facts, None, None, None).contains("haven't run"));
         assert!(r.contains("# Scan of"));
         assert!(r.contains("The user needs to free 5.0 GB"));
         assert!(r.contains(".bin: "));

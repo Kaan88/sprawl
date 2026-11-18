@@ -62,7 +62,8 @@ pub enum ChatEvent {
 /// `stop` ends the question being answered (it is cleared again for the next one).
 #[allow(clippy::too_many_arguments)]
 /// `partial` gets each answer's text so far, while it is written.
-pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool, stop: Stop, partial: Rc<dyn Fn(&str)>) {
+/// `found` is the Advisor's findings when it has them (`None`: the report says the rules haven't run).
+pub fn chat(tree: &Tree, cfg: &AiConfig, found: Option<&[Finding]>, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool, stop: Stop, partial: Rc<dyn Fn(&str)>) {
     let Ok(first) = questions.recv() else { return };
     if cfg.provider == Provider::Off {
         events(ChatEvent::Failed("AI is off. Choose a provider with Set up AI.".into()));
@@ -72,7 +73,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
     events(ChatEvent::Progress("Reading the scan...".into()));
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, &[], None, None) + notes + &memory.context();
+    let report = super::report::build(tree, &facts, found, None, None) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, &[], memory);
     tools.consent = Some(consent);
     // the web search exists only while the user's switch is on
@@ -675,7 +676,7 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     progress("Gathering what Windows knows about your apps".into());
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, already, hidden, goal) + notes + &memory.context();
+    let report = super::report::build(tree, &facts, Some(already), hidden, goal) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory);
     tools.allowed = Some(specs().iter().map(|t| t.name).collect());
     let mut run = AiRun { model: model.clone(), ..AiRun::default() };

@@ -15,6 +15,8 @@ struct Shared {
     /// What was published last, to republish only when it changes.
     published: usize,
     findings: String,
+    /// The Advisor's findings as a list, for the report's "found by the rules" (None: not yet).
+    found: Option<Arc<Vec<sprawl_advisor::finding::Finding>>>,
     memory: Memory,
     filters: Vec<String>,
 }
@@ -30,9 +32,9 @@ pub(crate) fn start() {
         // app facts are gathered once per scan, on first use
         let mut facts: Option<(usize, Facts)> = None;
         let _ = sprawl_advisor::pipe::serve(|line| {
-            let (tree, findings, memory) = {
+            let (tree, findings, found, memory) = {
                 let s = shared().lock().unwrap_or_else(|e| e.into_inner());
-                (s.tree.upgrade(), s.findings.clone(), s.memory.clone())
+                (s.tree.upgrade(), s.findings.clone(), s.found.clone(), s.memory.clone())
             };
             let key = tree.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize);
             if facts.as_ref().is_none_or(|(k, _)| *k != key) {
@@ -45,7 +47,7 @@ pub(crate) fn start() {
             let f = &facts.as_ref().expect("just set").1;
             let mut wanted = None;
             // a panic answers an error and leaves the pipe working
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), f, &memory, &findings, &mut |x| wanted = Some(x))))
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut |x| wanted = Some(x))))
                 .unwrap_or_else(|_| r#"{"ok":false,"text":"Sprawl hit an internal error answering that."}"#.to_string());
             if let Some(x) = wanted {
                 shared().lock().unwrap_or_else(|e| e.into_inner()).filters.push(x);
@@ -65,8 +67,11 @@ pub(crate) fn publish_tree(t: Option<&Arc<Tree>>) {
     }
 }
 
-pub(crate) fn publish_findings(text: String) {
-    shared().lock().unwrap_or_else(|e| e.into_inner()).findings = text;
+/// The Advisor's findings as text and as a list (`None`: a new analysis has started).
+pub(crate) fn publish_findings(text: String, found: Option<&[sprawl_advisor::finding::Finding]>) {
+    let mut s = shared().lock().unwrap_or_else(|e| e.into_inner());
+    s.findings = text;
+    s.found = found.map(|f| Arc::new(f.to_vec()));
 }
 
 pub(crate) fn publish_memory(m: &Memory) {

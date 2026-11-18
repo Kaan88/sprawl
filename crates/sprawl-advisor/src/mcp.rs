@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use sprawl_core::Tree;
 
 use crate::facts::Facts;
+use crate::finding::Finding;
 use crate::llm::tools::{chat_specs, specs, Tools};
 use crate::llm::ToolSpec;
 use crate::memory::Memory;
@@ -97,6 +98,33 @@ pub struct Local<'a> {
     /// Where the out file is: a web lookup's answer comes back beside it.
     out_path: Option<PathBuf>,
     lookups: u64,
+    /// The rules' findings for this tree, run in this process on first need.
+    found: Option<Vec<Finding>>,
+}
+
+/// Sprawl's rules (built-in and the user's checked local packs) over `tree`, through the
+/// safety checks: what the app's Advisor would list, for a tree the app isn't showing.
+pub fn rules_for(tree: &Tree, facts: &Facts) -> Vec<Finding> {
+    let mut packs = vec![crate::rules::RulePack::builtin()];
+    packs.extend(crate::memory::local_packs());
+    crate::advise_all(tree, &packs, facts).0
+}
+
+/// The rules' findings as the `findings` tool lists them.
+fn findings_list(found: &[Finding]) -> String {
+    if found.is_empty() {
+        return "Sprawl's rules ran over this scan and none matched.".into();
+    }
+    let mut s = String::new();
+    for f in found {
+        s += &format!("- [{:?}] {} ({}): {}
+", f.risk, f.title, sprawl_core::format_size(f.bytes), f.path.display());
+        for e in &f.evidence {
+            s += &format!("    {e}
+");
+        }
+    }
+    s
 }
 
 /// Where the app answers web lookup `n` of the chat whose out file is `out`.
@@ -107,12 +135,13 @@ pub fn lookup_answer(out: &Path, n: u64) -> PathBuf {
 impl<'a> Local<'a> {
     pub fn new(tree: &'a Tree, facts: &'a Facts, memory: &Memory, model: &str, out: Option<std::fs::File>) -> Local<'a> {
         let mode = if out.is_some() { Mode::Driven } else { Mode::Look };
-        Local { tree, facts, tools: Tools::new(tree, facts, model, &[], memory), mode, out, out_path: None, lookups: 0 }
+        Local { tree, facts, tools: Tools::new(tree, facts, model, &[], memory), mode, out, out_path: None, lookups: 0, found: None }
     }
 
     pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
         if name == "scan_report" {
-            return Ok(crate::llm::report::build(self.tree, self.facts, &[], None, None));
+            let found = self.found.get_or_insert_with(|| rules_for(self.tree, self.facts));
+            return Ok(crate::llm::report::build(self.tree, self.facts, Some(found), None, None));
         }
         let allowed = local_specs(self.mode);
         if !allowed.iter().any(|t| t.name == name) {
@@ -216,12 +245,84 @@ fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
-/// The newest full snapshot History has (any folder), as a tree.
-fn newest_snapshot() -> Option<Tree> {
+/// History's newest full snapshot (any folder), or the newest of any kind.
+fn newest_entry() -> Option<crate::history::Entry> {
     let base = crate::history::base_dir()?;
-    let list = crate::history::list(&base);
-    let e = list.iter().rev().find(|e| e.full).or(list.last())?;
-    crate::history::load(e).ok()
+    let mut list = crate::history::list(&base);
+    let i = list.iter().rposition(|e| e.full).or(list.len().checked_sub(1))?;
+    Some(list.swap_remove(i))
+}
+
+/// "3 hours ago"
+fn age(t: std::time::SystemTime) -> String {
+    let s = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    match s {
+        0..=89 => "just now".into(),
+        90..=5399 => format!("{} minutes ago", (s + 30) / 60),
+        5400..=129_599 => format!("{} hours ago", (s + 1800) / 3600),
+        _ => format!("{} days ago", (s + 43_200) / 86_400),
+    }
+}
+
+/// A saved scan the server answers from while the app isn't running.
+struct Snapshot {
+    entry: crate::history::Entry,
+    tree: Tree,
+    facts: Facts,
+    found: Option<Vec<Finding>>,
+}
+
+impl Snapshot {
+    /// History's newest scan, reusing `old` if it is still the newest.
+    fn newest(old: Option<Snapshot>) -> Option<Snapshot> {
+        let e = newest_entry()?;
+        if let Some(o) = old.filter(|o| o.entry.file == e.file && o.entry.taken == e.taken) {
+            return Some(o);
+        }
+        let tree = crate::history::load(&e).ok()?;
+        let mut facts = Facts::gather();
+        facts.attach_usage(&tree);
+        Some(Snapshot { entry: e, tree, facts, found: None })
+    }
+
+    /// One call answered from the snapshot, with a first line saying where the answer is from.
+    fn call(&mut self, name: &str, input: &Value, memory: &Memory) -> Result<String, String> {
+        let note = format!(
+            "(Sprawl isn't running, so this is from History's saved scan of {}, taken {}. Scans done since aren't in it.)
+
+",
+            self.entry.root.display(),
+            age(self.entry.taken)
+        );
+        let answer = match name {
+            "scan_report" | "findings" => {
+                let found = self.found.get_or_insert_with(|| rules_for(&self.tree, &self.facts));
+                Ok(if name == "findings" { findings_list(found) } else { crate::llm::report::build(&self.tree, &self.facts, Some(found), None, None) })
+            }
+            "cleaners" | "set_filter" => Err("That needs Sprawl open: start Sprawl and ask again.".to_string()),
+            _ if bridge_specs().iter().any(|t| t.name == name) => Tools::new(&self.tree, &self.facts, "claude-code", &[], memory).call(name, input),
+            _ => Err(format!("there is no tool called {name}")),
+        };
+        match answer {
+            Ok(t) => Ok(note + &t),
+            Err(e) => Err(note + &e),
+        }
+    }
+}
+
+/// Ask the running app, connecting afresh for every call: an app started (or restarted) after
+/// this server is found, and the one pipe isn't held between calls. `None`: the app isn't there.
+fn ask_app(name: &str, input: &Value) -> Option<Result<String, String>> {
+    let req = json!({"tool": name, "input": input}).to_string();
+    // a connection that drops mid-answer (the app closing) is tried once more
+    for _ in 0..2 {
+        let mut client = crate::pipe::Client::connect()?;
+        if let Some(a) = client.ask(&req).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+            let text = a["text"].as_str().unwrap_or("").to_string();
+            return Some(if a["ok"].as_bool() == Some(true) { Ok(text) } else { Err(text) });
+        }
+    }
+    Some(Err("Sprawl closed the connection while answering: ask again.".into()))
 }
 
 /// Entry point for `sprawl --mcp [--tree <file> --out <file> --model <name>]`.
@@ -229,28 +330,28 @@ pub fn main(args: &[String]) {
     let dbg = std::env::var_os("SPRAWL_MCP_DEBUG").is_some();
     let step = |s: &str| if dbg { eprintln!("mcp: {s}") };
     step("start");
-    let tree_file = arg(args, "--tree").map(PathBuf::from);
-    if tree_file.is_none() {
-        step("connecting to the app");
-        if let Some(mut client) = crate::pipe::Client::connect() {
-            // through the running app
-            let specs = bridge_specs();
-            serve(specs, &mut |name, input| {
-                let req = json!({"tool": name, "input": input}).to_string();
-                let a: Value = client.ask(&req).ok().and_then(|s| serde_json::from_str(&s).ok()).ok_or("Sprawl closed the connection")?;
-                let text = a["text"].as_str().unwrap_or("").to_string();
-                if a["ok"].as_bool() == Some(true) { Ok(text) } else { Err(text) }
-            });
-            return;
-        }
-    }
-    let tree = match &tree_file {
-        Some(f) => std::fs::File::open(f).ok().and_then(|f| crate::snapshot::read(&mut std::io::BufReader::new(f)).ok()).map(|(t, _)| t),
-        None => newest_snapshot(),
+    let Some(tree_file) = arg(args, "--tree").map(PathBuf::from) else {
+        // the user's own Claude Code: the running app when there is one, checked on every call,
+        // else History's newest scan, said so in every answer
+        step("serving through the app or History");
+        let memory = Memory::load_readonly();
+        let mut snap: Option<Snapshot> = None;
+        serve(bridge_specs(), &mut |name, input| {
+            if let Some(a) = ask_app(name, input) {
+                return a;
+            }
+            snap = Snapshot::newest(snap.take());
+            match snap.as_mut() {
+                Some(s) => s.call(name, input, &memory),
+                None => Err("Sprawl isn't running and has no saved scan yet: open Sprawl and scan a drive.".into()),
+            }
+        });
+        return;
     };
+    let tree = std::fs::File::open(&tree_file).ok().and_then(|f| crate::snapshot::read(&mut std::io::BufReader::new(f)).ok()).map(|(t, _)| t);
     step("snapshot loaded");
     let Some(tree) = tree else {
-        serve(Vec::new(), &mut |_, _| Err("Sprawl isn't running and has no saved scan yet: open Sprawl and scan a drive.".into()));
+        serve(Vec::new(), &mut |_, _| Err("Sprawl couldn't read the scan it was given.".into()));
         return;
     };
     let mut facts = Facts::gather();
@@ -272,8 +373,9 @@ pub fn main(args: &[String]) {
 }
 
 /// The app's side of the pipe: answer one request line against `tree`. `filter` receives a
-/// filter the model wants shown; `findings` is the Advisor's list as text.
-pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Memory, findings: &str, filter: &mut dyn FnMut(String)) -> String {
+/// filter the model wants shown; `findings` is the Advisor's list as text, and `found` the same
+/// as a list (`None` while the Advisor is still looking).
+pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, filter: &mut dyn FnMut(String)) -> String {
     let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
     let Ok(req) = serde_json::from_str::<Value>(line) else { return reply(false, "bad request".into()) };
     let Some(tree) = tree else { return reply(false, "No scan is open in Sprawl yet.".into()) };
@@ -282,13 +384,17 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Me
     match name {
         "findings" => {
             let f = findings.split(CLEANERS_MARK).next().unwrap_or("");
-            reply(true, if f.trim().is_empty() { "The Advisor hasn't found anything (or is still looking).".into() } else { f.to_string() })
+            let empty = match found {
+                None => "The Advisor is still looking at this scan: ask again in a moment.",
+                Some(_) => "Sprawl's rules ran over this scan and none matched.",
+            };
+            reply(true, if f.trim().is_empty() { empty.into() } else { f.to_string() })
         }
         "cleaners" => {
             let c = findings.split_once(CLEANERS_MARK).map_or("", |(_, c)| c);
             reply(true, if c.trim().is_empty() { "The Advisor hasn't listed cleaners yet (or is still looking).".into() } else { c.to_string() })
         }
-        "scan_report" => reply(true, crate::llm::report::build(tree, facts, &[], None, None)),
+        "scan_report" => reply(true, crate::llm::report::build(tree, facts, found, None, None)),
         _ if bridge_specs().iter().any(|t| t.name == name) => {
             let mut tools = Tools::new(tree, facts, "claude-code", &[], memory);
             match tools.call(name, input) {
@@ -359,11 +465,38 @@ mod tests {
         let facts = Facts::from_apps(Vec::new());
         let mut shown = None;
         let root = tree.path_of(sprawl_core::ROOT).display().to_string();
-        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), &facts, &Memory::default(), "", &mut |f| shown = Some(f));
+        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |f| shown = Some(f));
         assert!(a.contains("\"ok\":true") && a.contains("lib.rs"), "{a}");
-        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), &facts, &Memory::default(), "", &mut |f| shown = Some(f));
+        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |f| shown = Some(f));
         assert!(f.contains("\"ok\":true") && shown.as_deref() == Some("*.rs"));
-        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", &mut |_| {});
+        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |_| {});
         assert!(n.contains("no tool"), "reporting isn't offered over the bridge");
+        // the report says whether the rules ran, never a bare "(nothing)"
+        let ask = |found: Option<&[Finding]>| answer_bridge(&json!({"tool": "scan_report", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", found, &mut |_| {});
+        assert!(ask(None).contains("haven't run"));
+        assert!(ask(Some(&[])).contains("none matched"));
+        let one = Finding {
+            path: tree.path_of(sprawl_core::ROOT),
+            owner: None,
+            bytes: 1,
+            risk: crate::finding::Risk::Green,
+            remedy: crate::finding::Remedy::Delete,
+            command: None,
+            title: "a test finding".into(),
+            evidence: vec![],
+            confidence: 1.0,
+            source: crate::finding::Source::Rule("t".into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: true,
+            action: None,
+            admin: false,
+            carved: Vec::new(),
+            gain: None,
+        };
+        assert!(ask(Some(std::slice::from_ref(&one))).contains("a test finding"));
+        let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |_| {});
+        assert!(fl.contains("still looking"), "{fl}");
     }
 }

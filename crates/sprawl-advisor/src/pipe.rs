@@ -117,7 +117,19 @@ impl Client {
             use std::os::windows::fs::OpenOptionsExt;
             o.security_qos_flags(ffi::SECURITY_IDENTIFICATION);
         }
-        let f = o.open(name()).ok()?;
+        // the app serves one client at a time: while it answers another, the pipe is busy
+        // (ERROR_PIPE_BUSY) for a moment, which isn't the same as the app being gone
+        let mut tries = 0;
+        let f = loop {
+            match o.open(name()) {
+                Ok(f) => break f,
+                Err(e) if e.raw_os_error() == Some(231) && tries < 40 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(_) => return None,
+            }
+        };
         #[cfg(windows)]
         if !server_is_us(&f) {
             return None;
