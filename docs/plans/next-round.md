@@ -1,9 +1,28 @@
 # Next round (after 0.3.1)
 
 Written 2026-11-18 from the user's list. It ties together `future-features.md` (F1-F6),
-`advisor-next.md` (A1-A6), the new requests (R7-R11) and the MCP report. Nothing here is built yet.
-The work goes in phases, and each phase is a release. Code that runs commands, deletes, links,
-compresses or scans for an agent gets a Fable review before release, as usual.
+`advisor-next.md` (A1-A6), the new requests (R7-R11) and the MCP report. The Progress section
+below records what has since been built and released; the phase descriptions retain the design.
+Independent review is recorded in `.claude/fable-review-queue.md`; GPT Astra will read that
+document when the remaining roadmap is finished, as requested on 2026-11-18.
+
+## Remaining work at Codex takeover (2026-11-18)
+
+- **A2 recognition:** installers of installed programs (MSI first, then separately verified
+  support for EXE installers); launcher leftovers next. Other kinds in `advisor-next.md`
+  need evidence and an honest remedy before they can become actionable findings.
+- **A4 goal planning:** ranked options with their costs, and guided moves through supported
+  launcher/Windows workflows; show destination capacity, never invent a move command.
+- **A5 prevention:** useful lines after cleanup about keeping the same space from growing back.
+- **A6 learning:** use Keep/Not now/cleanup history to improve advice, then user-approved AI
+  recognisers through the existing proposed-cleaner validation and safety checks.
+- **Deferred/smaller:** A1 launcher readers await real data; decimal units, scan exclusions,
+  narrow windows, and F1's compressed search keyword/tree mark remain recorded work. Recent
+  items/jump lists/Firefox privacy parts and accessibility stay deferred by prior decisions.
+
+Sol (Codex) maintains implementation and review notes from `e86c346`. Simple tasks are to be
+delegated to Luna and checked by Sol when that model is available through the agent tools.
+The MSI part of A2 step 2 is now implemented; see the latest Progress entry for its limits.
 
 ## Phase 0: bugs first (0.3.2)
 
@@ -228,3 +247,5 @@ to be discussed with the user before building.
 - 2026-11-18: **A1 step 2** (4edbb6a): last-access times, only where this PC plainly keeps them (NtfsDisableLastAccessUpdate 0 or 0x80000000; this PC: on) and on NTFS, read from folder listings within 200,000 entries: opened within the year hides an old-and-big row, opened after its last change titles it "last opened", none since says "nothing changed or was opened since". Checked by tests and the real readers on a small folder. Next: step 3 (other launchers' last-played).
 - 2026-11-18: **A1 step 3, checked and left for now**: Epic keeps no last-played time on the PC (its manifests have none; play time is in its cloud), and its games already get Prefetch dates by their executables. Ubisoft keeps no play log; its savegames folder would date play, but this PC has one Ubisoft game, under Program Files (never an old-and-big row), and no saves to check a reader against. GOG Galaxy, EA and Battle.net aren't installed here, so their files can't be checked. Build when a PC with them is at hand.
 - 2026-11-18: **A2 step 1** (bcdadfa): a .zip of 50 MB or more whose every file is in the folder beside it (x.zip and x\, or x.zip holding x/... extracted where it lies), the same size, is an orange Remove of the archive only. Read from the zip's own index, ZIP64 too; nothing unpacked. Checked: tests (hand-made zips, broken ones, the safety check) and in the app on a zip made and extracted by Windows' own Compress-Archive/Expand-Archive. Next: A2 step 2 (installers of installed programs).
+
+- 2026-11-18: **Codex/Sol takeover; A2 step 2, MSI slice** (a47bac3): MSI packages of at least 10 MB anywhere in the scan can be orange installer findings when their own ProductCode is reported installed by Windows Installer. Protected/app-owned paths, links/cloud placeholders, another account's paths, cached packages and registered source directories are excluded by this recogniser. Nothing is installed or auto-ticked. Reads at most 500 packages, shows at most 50; missing/oversized/failed metadata gives no row. Verified: real MSI-format fixture unchanged after reading, unknown product refused, finding/safety fixtures, read-only native API checks on 32 installed products; release suite 223 passed / 5 ignored, app `cargo check -p sprawl` passed. A test initially depended on USERPROFILE mutated by older tests; its home is now explicit and the full parallel suite passed. No app UI or real cleanup check performed. Not released or pushed; Astra review pending in `.claude/fable-review-queue.md`. **A2 step 2 remains partial: EXE installers need their own verified recognition; launcher leftovers follow.**
