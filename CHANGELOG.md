@@ -3,6 +3,20 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.5.0 — 2026-11-18
+
+### New
+- **Compress programs and games in place.** The "Compress" tip can be ticked: Sprawl runs Windows' own compact.exe on the folder (XPRESS, the way Windows compresses itself), nothing is deleted and the program runs as before. Show > Compressed lists what you compressed, with Uncompress.
+- **Shrink WSL and Docker disks.** Their disk files grow but never shrink. Tick one and Sprawl shuts WSL down (checking Docker Desktop is closed first), then compacts the file with Windows' diskpart, as administrator. Nothing inside is deleted; how much comes back is known only afterwards.
+- **Older versions side by side**, each removed by its own tool, never by deleting its folder: Rust toolchains (rustup), Node.js versions (nvm for Windows, fnm), Android SDK build tools, platforms, NDKs and emulator images (sdkmanager). Older Python and .NET versions open Installed apps. Never the newest, the one in use, one a project in the scan asks for, or an image an emulator uses.
+- **Notices when a drive is nearly full or a folder grows fast** (Settings > General, off by default). A small scheduled task checks every 4 hours and shows a Windows notice; a click opens Sprawl there. Growth compares your own scans; an optional daily light scan of your user folder keeps it current.
+- **Tool commands show what they did**: the review shows the command, and the log keeps its output.
+- Driver and installer leftovers in C:\NVIDIA, C:\AMD and C:\Autodesk are offered.
+
+### Fixed
+- A review where everything ticked is held back said "Clean up ?"; it now says nothing can run now.
+- Installed apps whose entry names no folder (Python, .NET) were missing from what Sprawl knows about your apps.
+
 ## 0.4.1 — 2026-11-18
 
 ### New
