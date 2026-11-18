@@ -435,6 +435,9 @@ const EXAMPLES: [&str; 4] = ["What is the biggest thing here?", "Show me videos 
 /// Under every AI answer: it isn't checked the way findings are.
 pub(crate) const UNCHECKED_LINE: &str = r##"<TextBlock Text="AI answers aren't checked the way Sprawl's findings are. Look before you rely on one." TextWrapping="Wrap" FontSize="11" Foreground="#FF7E8799" FontStyle="Italic"/>"##;
 
+/// How many ready questions the AI box shows at most (AdvEx0.., AdvClAi0..).
+const CHIPS: usize = 6;
+
 const CL_EXAMPLES: [&str; 3] = ["Suggest what to clean", "Which of these come back by themselves?", "Is anything here risky to clean?"];
 
 /// What a risk means, in the words the user reads.
@@ -1256,9 +1259,9 @@ impl State {
                 self.adv_say("Copied. Run it once in a terminal, then ask Claude Code about your disk while Sprawl is open.");
                 return;
             }
-            "AdvClAi0" | "AdvClAi1" | "AdvClAi2" => {
+            "AdvClAi0" | "AdvClAi1" | "AdvClAi2" | "AdvClAi3" | "AdvClAi4" | "AdvClAi5" => {
                 let i = name[7..].parse::<usize>().unwrap_or(0);
-                return self.chat_ask(CL_EXAMPLES.get(i).copied().unwrap_or_default().to_string());
+                return self.chat_ask(self.chat_examples().get(i).cloned().unwrap_or_default());
             }
             "AdvClSugTick" => {
                 self.suggest_tick();
@@ -1275,9 +1278,9 @@ impl State {
                 self.settings.set_bool("clAiOpen", open);
                 self.settings.save();
             }
-            "AdvEx0" | "AdvEx1" | "AdvEx2" | "AdvEx3" => {
+            "AdvEx0" | "AdvEx1" | "AdvEx2" | "AdvEx3" | "AdvEx4" | "AdvEx5" => {
                 let i = name[5..].parse::<usize>().unwrap_or(0);
-                return self.chat_ask(EXAMPLES.get(i).copied().unwrap_or_default().to_string());
+                return self.chat_ask(self.chat_examples().get(i).cloned().unwrap_or_default());
             }
             "AdvChatClear" => {
                 self.chat_reset();
@@ -1736,7 +1739,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
-            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
         ] {
@@ -2613,6 +2616,25 @@ impl State {
         self.advisor_changed();
     }
 
+    /// What is ticked in Findings now, for the AI (R10): it can say whether the choices are
+    /// safe, item by item. It can only advise; unticking is the user's.
+    fn ticked_text(&self) -> Option<String> {
+        let picked = self.ticked_findings();
+        if picked.is_empty() {
+            return None;
+        }
+        let mut t = String::from("# What the user has ticked for Clean up now\n");
+        for (_, f) in picked.iter().take(60) {
+            let how = if f.forced_from.is_some() { "; ticked by the user although Sprawl doesn't tick it, goes to the Recycle Bin" } else { "" };
+            t += &format!("- [{:?}] {}: {} ({} bytes): {}{how}\n", f.risk, f.title, sprawl_core::format_size(f.bytes), f.bytes, f.path.display());
+        }
+        if picked.len() > 60 {
+            t += &format!("...and {} more\n", picked.len() - 60);
+        }
+        t += "If the user asks whether these are safe, answer for each one. You can only advise: unticking is the user's.";
+        Some(t)
+    }
+
     /// Type a question and send it (screenshot runs).
     pub(crate) fn advisor_chat_dev(&mut self, q: &str) {
         if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
@@ -2714,7 +2736,10 @@ impl State {
                  call suggest_ticks with the part ids you recommend (safe and amber parts only), and say why in the answer.",
                 self.cleaners_text(r)
             ),
-            None => q.clone(),
+            None => match self.ticked_text() {
+                Some(t) => format!("{q}\n\n{t}"),
+                None => q.clone(),
+            },
         };
         if let Some(tx) = &self.advisor.chat.tx {
             if tx.send(sent).is_ok() {
@@ -2817,6 +2842,41 @@ impl State {
     }
 
     /// The AI's answers are not findings: said under each one.
+    /// The ready questions (R12): what is on screen first (what is ticked, the row that is
+    /// open, what grew, folders left behind), then the usual ones. A click on chip `i` asks the
+    /// `i`th of this list, worked out again then from the same state.
+    pub(crate) fn chat_examples(&self) -> Vec<String> {
+        let cleaning = self.advisor.section == Section::Cleaners;
+        let mut v: Vec<String> = Vec::new();
+        let r = self.advice();
+        // R10: what is ticked goes with every question from Findings (chat_ask), and from the
+        // Cleaners tab as part of its list
+        if !self.ticked_findings().is_empty() {
+            v.push("Are my choices safe?".into());
+        }
+        if let Some(r) = r {
+            if !cleaning {
+                if let Some(f) = self.advisor.open.and_then(|i| r.findings.get(i)) {
+                    let t: String = f.title.chars().take(48).collect();
+                    v.push(format!("Is it safe to remove \"{t}\"?"));
+                    v.push(format!("What uses \"{t}\", and what happens without it?"));
+                }
+                if r.growth.is_some() {
+                    v.push("What grew lately, and why?".into());
+                }
+                if r.findings.iter().any(|f| f.leftover()) {
+                    v.push("Which left-behind folders can go?".into());
+                }
+            }
+        }
+        let base: &[&str] = if cleaning { &CL_EXAMPLES } else { &EXAMPLES };
+        v.extend(base.iter().map(|q| q.to_string()));
+        let mut seen = std::collections::HashSet::new();
+        v.retain(|q| seen.insert(q.clone()));
+        v.truncate(CHIPS);
+        v
+    }
+
     pub(crate) fn chat_card(&self) -> String {
         let c = &self.advisor.chat;
         let cleaning = self.advisor.section == Section::Cleaners;
@@ -2843,18 +2903,24 @@ impl State {
                 x += UNCHECKED_LINE;
             }
         }
-        if c.log.is_empty() && c.status.is_none() && c.live.is_none() {
-            // ready-made questions: one click asks
+        if c.status.is_none() && c.live.is_none() {
+            // ready-made questions: one click asks. Before the first question all of them;
+            // after an answer, up to three not asked yet, to go on from there (R12).
             // one under the other: a row of them is cut off in a narrow column
-            x += r##"<StackPanel Spacing="4">"##;
-            let (prefix, examples): (&str, &[&str]) = if cleaning { ("AdvClAi", &CL_EXAMPLES) } else { ("AdvEx", &EXAMPLES) };
-            for (i, q) in examples.iter().enumerate() {
-                x += &format!(
-                    r##"<Button x:Name="{prefix}{i}" HorizontalAlignment="Left" HorizontalContentAlignment="Left" Padding="10,4" CornerRadius="12" Background="#142F7BF6"><TextBlock Text="{}" FontSize="12" TextWrapping="Wrap"/></Button>"##,
-                    ui::esc(q)
-                );
+            let prefix = if cleaning { "AdvClAi" } else { "AdvEx" };
+            let asked: std::collections::HashSet<&str> = c.log.iter().filter(|(user, _)| *user).map(|(_, q)| q.as_str()).collect();
+            let more = if c.log.is_empty() { CHIPS } else { 3 };
+            let chips: Vec<(usize, String)> = self.chat_examples().into_iter().enumerate().filter(|(_, q)| !asked.contains(q.as_str())).take(more).collect();
+            if !chips.is_empty() {
+                x += r##"<StackPanel Spacing="4" Margin="0,4,0,0">"##;
+                for (i, q) in chips {
+                    x += &format!(
+                        r##"<Button x:Name="{prefix}{i}" HorizontalAlignment="Left" HorizontalContentAlignment="Left" Padding="10,4" CornerRadius="12" Background="#142F7BF6"><TextBlock Text="{}" FontSize="12" TextWrapping="Wrap"/></Button>"##,
+                        ui::esc(&q)
+                    );
+                }
+                x += "</StackPanel>";
             }
-            x += "</StackPanel>";
         }
         if let Some((q, _)) = &c.consent {
             x += &format!(
