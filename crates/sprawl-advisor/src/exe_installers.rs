@@ -48,7 +48,7 @@ fn find_with(tree: &Tree, facts: &Facts, min: u64, home: Option<&Path>, mut read
     while let Some(n) = stack.pop() {
         let node = &tree.nodes[n];
         if node.is_reparse_point() || node.attributes & crate::dupes::NOT_LOCAL != 0
-            || n != ROOT && node.name.contains(['\\', '/', ':']) { continue; }
+            || !crate::scan_name_ok(tree, n) { continue; }
         if node.is_dir { stack.extend_from_slice(&node.children); continue; }
         if n == ROOT || node.size < min || !node.name.to_ascii_lowercase().ends_with(".exe") { continue; }
         let path = tree.path_of(n);
@@ -173,6 +173,11 @@ mod tests {
         assert!(!exported.contains("renamed.exe"), "guesses must not be scripted");
         assert!(version(&path).is_none(), "a fake PE has no version resources");
         assert_eq!(std::fs::read(&path).unwrap(), b"not executed");
+        std::fs::create_dir_all(dir.join("second")).unwrap();
+        let multiple = sprawl_core::scan_many(&[path.clone(), dir.join("second")], &sprawl_core::Progress::new()).unwrap();
+        let multi_found = find_with(&multiple, &facts(), 1, Some(&dir), |_| Some(metadata()));
+        assert_eq!(multi_found.len(), 1, "absolute first-tier EXE names remain eligible");
+        assert_eq!(multi_found[0].path, path);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -33,9 +33,9 @@ fn find_with(tree: &Tree, facts: &Facts, min: u64, home: Option<&Path>, mut read
     let mut read_count = 0;
     while let Some(n) = stack.pop() {
         let node = &tree.nodes[n];
-        // Unlike the scan root's name, any descendant's name must be one plain component.
+        // Synthetic first-tier names are the absolute paths selected for this scan.
         if node.is_reparse_point() || node.attributes & crate::dupes::NOT_LOCAL != 0
-            || n != ROOT && node.name.contains(['\\', '/', ':']) {
+            || !crate::scan_name_ok(tree, n) {
             continue;
         }
         if node.is_dir {
@@ -86,23 +86,29 @@ fn find_with(tree: &Tree, facts: &Facts, min: u64, home: Option<&Path>, mut read
     out
 }
 
-/// Compare spelling and, for existing local paths, Windows' resolved names as well (8.3
-/// names and junctions may name the same source). Never resolve a registered network path.
+/// Compare only paths whose complete existing ancestor chain is pinned locally. An
+/// uncertain or redirected repair source keeps the installer out of cleanup advice.
 fn repair_source(path: &Path, app: &Installed) -> bool {
-    let local = |p: &Path| {
-        let s = p.to_string_lossy();
-        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
-        let b = s.as_bytes();
-        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
-    };
-    let Ok(real) = std::fs::canonicalize(path) else { return true };
+    let Ok(real) = sprawl_core::local::scope(path) else { return true };
     std::iter::once(&app.cached).chain(app.sources.iter()).any(|source| {
         if within(path, source) { return true; }
-        if !local(source) { return false; }
-        match std::fs::canonicalize(source) {
-            Ok(s) => within(&real, &s),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => true, // cannot check: leave it alone
+        let Ok(source) = sprawl_core::local::lexical(source) else { return true };
+        match sprawl_core::local::scope(&source) {
+            Ok(held) => within(&real.path, &held.path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // A missing source cannot contain the current file, but establish that
+                // the failed lookup didn't pass through a linked or remote ancestor.
+                let mut parent = source.parent();
+                while let Some(p) = parent {
+                    match sprawl_core::local::directory(p) {
+                        Ok(_held) => return false,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => parent = p.parent(),
+                        Err(_) => return true,
+                    }
+                }
+                true
+            }
+            Err(_) => true,
         }
     })
 }
@@ -276,6 +282,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uncertain_repair_sources_never_resolve_remote_or_linked_paths() {
+        let dir = std::env::temp_dir().join(format!("sprawl-repair-sources-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sources")).unwrap();
+        let package = dir.join("download.msi");
+        std::fs::write(&package, b"not executed").unwrap();
+        let mut app = Installed { name: String::new(), code: String::new(), cached: dir.join("sources/cache.msi"), sources: vec![dir.join("sources/missing/deeper")] };
+        assert!(!repair_source(&package, &app), "missing plain local sources can be ruled out");
+        app.sources = vec![PathBuf::from(r"\\unreachable.invalid\share\repair")];
+        assert!(repair_source(&package, &app), "network sources remain uncertain without any filesystem lookup");
+        let link = dir.join("linked");
+        let linked = std::process::Command::new(crate::clean::system_dir().unwrap().join("cmd.exe"))
+            .args(["/C", "mklink", "/J"]).arg(&link).arg(dir.join("sources")).output().unwrap().status.success();
+        if linked {
+            app.sources = vec![link.join("missing")];
+            assert!(repair_source(&package, &app), "even a missing child of a junction is uncertain");
+            std::fs::remove_dir(&link).unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn installed_packages_anywhere_but_not_repair_sources() {
         let dir = std::env::temp_dir().join(format!("sprawl-installers-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("offline")).unwrap();
@@ -313,6 +340,12 @@ mod tests {
         })).is_empty(), "missing repair-source data must not produce a delete");
         // No cleanup action was run; every fixture remains.
         assert!(dir.join("offline/renamed.MSI").exists());
+        let multiple = sprawl_core::scan_many(&[dir.join("offline/renamed.MSI"), dir.join("app")], &sprawl_core::Progress::new()).unwrap();
+        let multi_found = find_with(&multiple, &facts, 10, Some(&dir), |_| Some(Installed {
+            name: "Example".into(), code: String::new(), cached: dir.join("offline/cached.msi"), sources: vec![dir.join("repair")],
+        }));
+        assert_eq!(multi_found.len(), 1, "absolute first-tier installer files remain eligible");
+        assert_eq!(multi_found[0].path, f.path);
         let eligible = crate::find_path(&tree, &f.path).unwrap();
         tree.nodes[eligible].attributes |= crate::dupes::NOT_LOCAL;
         find_with(&tree, &facts, 10, Some(&dir), |p| {

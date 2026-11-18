@@ -87,6 +87,19 @@ pub(crate) fn segments(path: &str) -> Vec<String> {
     path.split(['\\', '/']).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()
 }
 
+/// Only a live multiple-root scan's direct children may carry absolute names.
+/// Ordinary descendants must remain plain components, even below a synthetic root.
+pub(crate) fn scan_name_ok(tree: &Tree, n: usize) -> bool {
+    let node = &tree.nodes[n];
+    if n == ROOT { return true; }
+    if !node.name.is_empty() && !matches!(node.name.as_str(), "." | "..")
+        && !node.name.contains(['\\', '/', ':']) { return true; }
+    tree.method != sprawl_core::ScanMethod::Csv && tree.root_path == Path::new(MULTIPLE)
+        && node.parent == Some(ROOT) && tree.nodes[ROOT].children.contains(&n)
+        && Path::new(&node.name).is_absolute()
+        && sprawl_core::local::lexical(Path::new(&node.name)).is_ok()
+}
+
 /// The node at an absolute `path`, if the tree has it.
 pub fn find_path(tree: &Tree, path: &Path) -> Option<usize> {
     let want = segments(&path.to_string_lossy());

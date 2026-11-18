@@ -48,7 +48,7 @@ pub fn find(tree: &Tree, facts: &Facts, min: u64) -> Vec<Finding> {
     while let Some(n) = stack.pop() {
         let node = &tree.nodes[n];
         if !node.is_dir || node.is_reparse_point() || node.attributes & crate::dupes::NOT_LOCAL != 0 { continue; }
-        if n != ROOT && node.name.contains(['\\', '/', ':']) { continue; }
+        if !crate::scan_name_ok(tree, n) { continue; }
         stack.extend_from_slice(&node.children);
         let root = tree.path_of(n);
         if !root.file_name().is_some_and(|s| s.eq_ignore_ascii_case("common")) { continue; }
@@ -109,6 +109,10 @@ mod tests {
         assert!(found[0].heuristic() && found[0].leftover());
         assert_eq!(found[0].remedy, Remedy::Info);
         assert!(found[0].action.is_none() && found[0].command.is_none());
+        let multiple = sprawl_core::scan_many(&[root.join("common"), root.join("common/Installed")], &sprawl_core::Progress::new()).unwrap();
+        let multi_found = find(&multiple, &facts, 1);
+        assert_eq!(multi_found.len(), 1, "absolute first-tier Steam common roots remain eligible");
+        assert_eq!(multi_found[0].path, found[0].path);
         std::fs::write(root.join("appmanifest_456.acf"), "unreadable as a manifest").unwrap();
         assert!(find(&tree, &facts, 1).is_empty(), "a broken manifest is uncertainty, not an uninstall");
         std::fs::remove_file(root.join("appmanifest_456.acf")).unwrap();
