@@ -158,12 +158,17 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").map(PathBuf::from)
 }
 
-/// Everything F2 finds in `tree` (empty when the toolchains' folders aren't in it).
-pub fn find(tree: &Tree, projects: &[crate::projects::Project]) -> Vec<Finding> {
+/// Everything F2 finds in `tree` (empty when the toolchains' folders aren't in it). `apps`
+/// are the installed apps, for the versions only their uninstaller removes (.NET, Python).
+pub fn find(tree: &Tree, projects: &[crate::projects::Project], apps: &[crate::facts::App]) -> Vec<Finding> {
     let pins = pins(tree, projects);
     let mut out = rust(tree, &pins);
     out.extend(node(tree, &pins));
     out.extend(android(tree, &pins));
+    // handed to Installed apps (their own uninstallers), never removed by Sprawl
+    let h = handoff_pins(tree, projects);
+    out.extend(python(tree, apps, &h));
+    out.extend(dotnet(tree, apps, &h));
     out
 }
 
@@ -428,6 +433,211 @@ fn node_from(tree: &Tree, root: usize, active: Option<&Path>, pins: &Pins, tool:
     out
 }
 
+/// Installed apps whose uninstall entry names no folder but which F2 hands off: the app list
+/// keeps these (and only these) without a folder.
+pub const FOLDERLESS: [&str; 5] = ["Python 3.", "Microsoft .NET SDK ", "Microsoft .NET Runtime - ", "Microsoft Windows Desktop Runtime - ", "Microsoft ASP.NET Core "];
+
+/// The version in an installed app's name: `Python 3.12.7 (64-bit)` -> [3, 12, 7].
+fn version_in(name: &str) -> Option<Vec<u64>> {
+    name.split_whitespace().find_map(|w| numbers(w.trim_matches(['(', ')'])).filter(|v| v.len() >= 2))
+}
+
+fn handoff(path: PathBuf, bytes: u64, app: &crate::facts::App, title: String, mut evidence: Vec<String>) -> Finding {
+    evidence.push(format!("To remove it: {}", app.how_to_remove));
+    Finding {
+        path,
+        owner: Some(app.name.clone()),
+        bytes,
+        risk: Risk::Amber,
+        remedy: Remedy::Uninstall,
+        command: None,
+        title,
+        evidence,
+        confidence: 0.8,
+        source: Source::Rule("versions.handoff".into()),
+        allow_protected: false,
+        trusted: true,
+        builtin: true,
+        on_path: false,
+        action: None,
+        admin: false,
+        carved: Vec::new(),
+        gain: None,
+        forced_from: None,
+    }
+}
+
+/// What projects in the scan ask of Python and .NET: `.python-version`, the base Python of each
+/// virtual environment (`pyvenv.cfg`'s `home`), and `global.json`'s SDK version.
+#[derive(Default)]
+pub struct HandoffPins {
+    pub python: Vec<String>,
+    pub venv_homes: Vec<PathBuf>,
+    pub dotnet_sdk: Vec<String>,
+}
+
+pub fn handoff_pins(tree: &Tree, projects: &[crate::projects::Project]) -> HandoffPins {
+    let mut p = HandoffPins::default();
+    let read = |n: usize, name: &str| -> Option<String> {
+        child(tree, n, name)?;
+        let t = std::fs::read_to_string(tree.path_of(n).join(name)).ok()?;
+        Some(t.chars().take(4000).collect())
+    };
+    for pr in projects {
+        if let Some(t) = read(pr.node, ".python-version") {
+            p.python.extend(t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string));
+        }
+        if let Some(t) = read(pr.node, "global.json") {
+            // "sdk": { "version": "8.0.100" }: the first "version" after "sdk"
+            if let Some(i) = t.find("\"sdk\"") {
+                let rest = &t[i..];
+                if let Some(j) = rest.find("\"version\"") {
+                    let v: String = rest[j + 9..].chars().skip_while(|c| *c != '"').skip(1).take_while(|c| *c != '"').collect();
+                    if !v.is_empty() {
+                        p.dotnet_sdk.push(v);
+                    }
+                }
+            }
+        }
+        // a virtual environment in the project or one level down (.venv, venv, env...)
+        for n in std::iter::once(pr.node).chain(dirs(tree, pr.node)) {
+            if let Some(t) = read(n, "pyvenv.cfg") {
+                for l in t.lines() {
+                    if let Some((k, v)) = l.split_once('=') {
+                        if k.trim() == "home" {
+                            p.venv_homes.push(PathBuf::from(v.trim()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    p
+}
+
+/// Older Pythons from python.org's installer (`Python 3.12.7 (64-bit)`), handed to Installed
+/// apps: not the newest, not one a `.python-version` or a virtual environment in the scan uses.
+fn python(tree: &Tree, apps: &[crate::facts::App], pins: &HandoffPins) -> Vec<Finding> {
+    python_from(tree, apps, pins, &python_homes())
+}
+
+/// Where each python.org Python is installed, as it registers itself (PEP 514):
+/// `Software\Python\PythonCore\3.12\InstallPath`, for this account and for all users. The tag
+/// is `3.12`, or `3.12-32` for a 32-bit one.
+fn python_homes() -> Vec<(String, PathBuf)> {
+    use crate::reg::{Key, View, HKCU, HKLM};
+    let mut out = Vec::new();
+    for (root, view) in [(HKCU, View::Native), (HKLM, View::Native), (HKLM, View::Bit32)] {
+        let Some(core) = Key::open(root, r"Software\Python\PythonCore", view) else { continue };
+        for tag in core.subkeys() {
+            if let Some(dir) = core.sub(&tag).and_then(|k| k.sub("InstallPath")).and_then(|k| k.string("")) {
+                out.push((tag, PathBuf::from(dir.trim_end_matches('\\'))));
+            }
+        }
+    }
+    out
+}
+
+fn python_from(tree: &Tree, apps: &[crate::facts::App], pins: &HandoffPins, homes: &[(String, PathBuf)]) -> Vec<Finding> {
+    let pythons: Vec<(&crate::facts::App, Vec<u64>, usize)> = apps
+        .iter()
+        .filter(|a| a.kind == crate::facts::AppKind::Installed && a.name.starts_with("Python 3.") && (a.name.ends_with("(64-bit)") || a.name.ends_with("(32-bit)")))
+        .filter_map(|a| {
+            let v = version_in(&a.name)?;
+            // its uninstall entry names no folder: its registration does
+            let tag = format!("{}.{}{}", v[0], v[1], if a.name.ends_with("(32-bit)") { "-32" } else { "" });
+            let dir = a.locations.first().cloned().or_else(|| homes.iter().find(|(t, _)| *t == tag).map(|(_, d)| d.clone()))?;
+            let n = crate::find_path(tree, &dir)?;
+            Some((a, v, n))
+        })
+        .collect();
+    let newest = pythons.iter().map(|p| p.1[..2].to_vec()).max();
+    let mut out = Vec::new();
+    for (app, v, n) in &pythons {
+        let minor = v[..2].to_vec();
+        if Some(&minor) == newest.as_ref() {
+            continue;
+        }
+        // "3.12" or "3.12.7" pins this minor
+        let pinned = pins.python.iter().filter_map(|p| numbers(p)).any(|want| want.len() >= 2 && want[..2] == minor[..]);
+        let folder = tree.path_of(*n);
+        let venv = pins.venv_homes.iter().any(|h| crate::finding::within(h, &folder));
+        if pinned || venv {
+            continue;
+        }
+        let ver = minor.iter().map(u64::to_string).collect::<Vec<_>>().join(".");
+        out.push(handoff(
+            folder,
+            tree.nodes[*n].size,
+            app,
+            format!("Older Python {ver}"),
+            vec![
+                format!("A newer Python is installed beside it. No .python-version and no virtual environment in this scan uses {ver}."),
+                format!("Scripts started with 'py -{ver}', and virtual environments outside this scan made with it, stop working without it."),
+            ],
+        ));
+    }
+    out
+}
+
+/// Older .NET pieces, handed to Installed apps. A runtime only when a newer patch of the same
+/// major.minor is installed (apps move to the newest patch by themselves); another major is
+/// never offered (an app made for .NET 6 doesn't run on 8). An SDK when a newer SDK is
+/// installed and no `global.json` in the scan asks for it (a newer SDK builds older projects).
+fn dotnet(tree: &Tree, apps: &[crate::facts::App], pins: &HandoffPins) -> Vec<Finding> {
+    let Some(pf) = std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("dotnet")) else { return Vec::new() };
+    dotnet_from(tree, apps, pins, &pf)
+}
+
+fn dotnet_from(tree: &Tree, apps: &[crate::facts::App], pins: &HandoffPins, root: &Path) -> Vec<Finding> {
+    // (product folder under dotnet, app name start)
+    const PRODUCTS: [(&str, &str); 4] = [
+        ("sdk", "Microsoft .NET SDK "),
+        (r"shared\Microsoft.NETCore.App", "Microsoft .NET Runtime - "),
+        (r"shared\Microsoft.WindowsDesktop.App", "Microsoft Windows Desktop Runtime - "),
+        (r"shared\Microsoft.AspNetCore.App", "Microsoft ASP.NET Core "),
+    ];
+    let mut out = Vec::new();
+    for (folder, prefix) in PRODUCTS {
+        let sdk = folder == "sdk";
+        // (app, version, folder node)
+        let have: Vec<(&crate::facts::App, Vec<u64>, usize)> = apps
+            .iter()
+            .filter(|a| a.kind == crate::facts::AppKind::Installed && a.name.starts_with(prefix) && a.name.contains("(x64)"))
+            .filter_map(|a| {
+                let v = version_in(&a.name[prefix.len()..])?;
+                let ver = v.iter().map(u64::to_string).collect::<Vec<_>>().join(".");
+                let n = crate::find_path(tree, &root.join(folder).join(&ver))?;
+                Some((a, v, n))
+            })
+            .collect();
+        for (app, v, n) in &have {
+            let ver = v.iter().map(u64::to_string).collect::<Vec<_>>().join(".");
+            let newer = if sdk {
+                have.iter().any(|o| o.1 > *v)
+            } else {
+                have.iter().any(|o| o.1.len() >= 2 && v.len() >= 2 && o.1[..2] == v[..2] && o.1 > *v)
+            };
+            if !newer || (sdk && pins.dotnet_sdk.iter().any(|p| *p == ver)) {
+                continue;
+            }
+            let what = if sdk { ".NET SDK".to_string() } else { prefix.trim_end_matches([' ', '-']).trim_start_matches("Microsoft ").to_string() };
+            out.push(handoff(
+                tree.path_of(*n),
+                tree.nodes[*n].size,
+                app,
+                format!("Older {what} {ver}"),
+                vec![if sdk {
+                    "A newer .NET SDK is installed; it builds projects made for older .NET too. No global.json in this scan asks for this one.".into()
+                } else {
+                    format!("A newer {}.{} patch is installed; apps made for {}.{} use the newest patch by themselves.", v[0], v[1], v[0], v[1])
+                }],
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use sprawl_core::ROOT;
@@ -549,6 +759,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    fn app(name: &str, loc: Option<PathBuf>) -> crate::facts::App {
+        crate::facts::App {
+            name: name.into(),
+            publisher: None,
+            kind: crate::facts::AppKind::Installed,
+            locations: loc.into_iter().collect(),
+            last_used: None,
+            how_to_remove: "Settings > Apps > Installed apps".into(),
+        }
+    }
+
+    #[test]
+    fn python_keeps_the_newest_pins_and_venv_bases() {
+        let (base, tree) = tree_with("py", &["Python311", "Python312", "Python313", "Python310"]);
+        let apps = vec![
+            app("Python 3.13.1 (64-bit)", Some(base.join("Python313"))),
+            // no folder in its entry, as python.org's installer leaves it: found by its registration
+            app("Python 3.12.7 (64-bit)", None),
+            app("Python 3.11.9 (64-bit)", Some(base.join("Python311"))),
+            app("Python 3.10.11 (64-bit)", Some(base.join("Python310"))),
+            app("Python Launcher", None),
+        ];
+        let pins = HandoffPins { python: vec!["3.11".into()], venv_homes: vec![base.join("Python310")], dotnet_sdk: vec![] };
+        let f = python_from(&tree, &apps, &pins, &[("3.12".into(), base.join("Python312")), ("3.12-32".into(), base.join("nope"))]);
+        // 3.13 newest, 3.11 pinned, 3.10 the base of a venv: only 3.12
+        assert_eq!(f.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), vec!["Older Python 3.12"]);
+        assert_eq!(f[0].remedy, Remedy::Uninstall);
+        assert_eq!(f[0].owner.as_deref(), Some("Python 3.12.7 (64-bit)"));
+        assert!(f[0].action.is_none() && crate::clean::action(&f[0]).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn dotnet_offers_older_patches_and_sdks_never_another_major() {
+        let (base, tree) = tree_with(
+            "dotnet",
+            &[
+                r"sdk\8.0.100",
+                r"sdk\10.0.404",
+                r"shared\Microsoft.NETCore.App\6.0.36",
+                r"shared\Microsoft.NETCore.App\8.0.10",
+                r"shared\Microsoft.NETCore.App\8.0.34",
+            ],
+        );
+        let apps = vec![
+            app("Microsoft .NET SDK 8.0.100 (x64)", None),
+            app("Microsoft .NET SDK 10.0.404 (x64)", None),
+            app("Microsoft .NET Runtime - 6.0.36 (x64)", None),
+            app("Microsoft .NET Runtime - 8.0.10 (x64)", None),
+            app("Microsoft .NET Runtime - 8.0.34 (x64)", None),
+        ];
+        let f = dotnet_from(&tree, &apps, &HandoffPins::default(), &base);
+        let mut t: Vec<&str> = f.iter().map(|f| f.title.as_str()).collect();
+        t.sort();
+        // 6.0.36 is the only 6.0: kept, whatever is newer
+        assert_eq!(t, vec!["Older .NET Runtime 8.0.10", "Older .NET SDK 8.0.100"]);
+        // a global.json that asks for the older SDK keeps it
+        let pinned = HandoffPins { dotnet_sdk: vec!["8.0.100".into()], ..Default::default() };
+        assert_eq!(dotnet_from(&tree, &apps, &pinned, &base).len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn odd_names_are_never_put_in_a_command() {
         assert!(plain("1.99.1-x86_64-pc-windows-msvc"));
@@ -558,3 +830,4 @@ mod tests {
         assert_eq!(numbers("stable"), None);
     }
 }
+

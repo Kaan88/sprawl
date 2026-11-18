@@ -153,7 +153,8 @@ impl Facts {
             apps.extend(sources::gog());
             let stores: Vec<Vec<String>> = apps.iter().flat_map(|a| a.locations.iter().map(|l| segments(&l.to_string_lossy()))).collect();
             apps.extend(sources::store_packages());
-            apps.extend(sources::uninstall_keys().into_iter().filter(|a| !a.locations.iter().all(|l| stores.contains(&segments(&l.to_string_lossy())))));
+            // (an entry with no folder isn't a store's: `all` of nothing would be true)
+            apps.extend(sources::uninstall_keys().into_iter().filter(|a| a.locations.is_empty() || !a.locations.iter().all(|l| stores.contains(&segments(&l.to_string_lossy())))));
             apps.extend(sources::wsl());
         }
         Facts::from_apps(apps)
@@ -470,7 +471,22 @@ mod sources {
                     let per_user_app = segs.len() >= 7 && segs[3] == "appdata" && segs[4] == "local" && segs[5] == "programs";
                     (segs.len() >= 3 && segs[1] != "windows" && segs[1] != "programdata" && (segs[1] != "users" || per_user_app)).then_some(dir)
                 });
-                let Some(loc) = loc else { continue };
+                let Some(loc) = loc else {
+                    // F2: python.org's Python and .NET's pieces name no folder in their entry;
+                    // kept without one, so an older version can be handed to Installed apps
+                    // (crate::versions finds their folders itself)
+                    if crate::versions::FOLDERLESS.iter().any(|p| name.starts_with(p)) && !out.iter().any(|a| a.name == name) {
+                        out.push(App {
+                            how_to_remove: format!("Settings > Apps > Installed apps > {name} > Uninstall"),
+                            name,
+                            publisher: e.string("Publisher"),
+                            kind: AppKind::Installed,
+                            locations: Vec::new(),
+                            last_used: None,
+                        });
+                    }
+                    continue;
+                };
                 if out.iter().any(|a| a.name == name && a.locations.first() == Some(&loc)) {
                     continue;
                 }

@@ -148,7 +148,7 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         .into_iter()
         .chain(projects::build_outputs(tree, &projects, facts, tuning::get(&tuning::PROJECT_IDLE_DAYS), 100 << 20))
         .chain(anomaly::find(tree))
-        .chain(versions::find(tree, &projects))
+        .chain(versions::find(tree, &projects, &facts.apps))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));

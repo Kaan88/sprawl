@@ -3569,7 +3569,7 @@ impl State {
                 "Compress"
             } else if sprawl_advisor::remedies::shrinks(f) {
                 "Shrink"
-            } else if matches!(&f.source, Source::Rule(id) if id.starts_with("versions.")) {
+            } else if f.remedy == Remedy::Command && matches!(&f.source, Source::Rule(id) if id.starts_with("versions.")) {
                 "Remove version"
             } else {
                 remedy_label(f.remedy)
