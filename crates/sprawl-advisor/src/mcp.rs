@@ -36,7 +36,7 @@ pub enum Mode {
 
 /// The chat tools whose effect is the app's (a filter, ticks, memory): recorded for the app,
 /// which replays them through its own checks.
-pub const CHAT_EFFECTS: &[&str] = &["set_filter", "suggest_ticks", "remember", "propose_cleaner"];
+pub const CHAT_EFFECTS: &[&str] = &["set_filter", "suggest_ticks", "remember", "propose_rule", "propose_cleaner"];
 
 /// Tools offered from a snapshot (no app).
 fn local_specs(mode: Mode) -> Vec<ToolSpec> {
@@ -447,6 +447,8 @@ mod tests {
         assert!(d.contains(&"report_finding") && d.contains(&"finish") && !d.contains(&"web_lookup") && !d.contains(&"set_filter"));
         // the chat: its tools, the web search only when switched on, never a finding
         let c: Vec<&str> = local_specs(Mode::Chat { web: false }).iter().map(|t| t.name).collect();
+        assert!(c.contains(&"propose_rule") && CHAT_EFFECTS.contains(&"propose_rule"));
+        assert!(!names.contains(&"propose_rule"), "external read-only mode never writes proposals");
         assert!(c.contains(&"suggest_ticks") && c.contains(&"set_filter") && c.contains(&"largest") && !c.contains(&"web_lookup") && !c.contains(&"report_finding"), "{c:?}");
         let w: Vec<&str> = local_specs(Mode::Chat { web: true }).iter().map(|t| t.name).collect();
         assert!(w.contains(&"web_lookup"));

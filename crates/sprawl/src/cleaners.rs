@@ -245,7 +245,8 @@ impl State {
                     return None;
                 }
                 let tree = Arc::new(sprawl_core::scan_many(&roots, &p2).ok()?);
-                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on))?;
+                let measured_at = began.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on, measured_at))?;
                 Some(Own { tree, report, began, roots: roots.len() })
             })();
             let _ = tx.send(own);
@@ -270,6 +271,9 @@ impl State {
         self.advisor.cl.own_reading = None;
         if got.is_none() {
             self.adv_say("The cleaners' folders couldn't be read. Press Check again.");
+        }
+        if let Some(o) = &got {
+            if self.advisor.memory.learning.mark_refills(&o.report.refill_observations) { self.save_memory(); }
         }
         self.advisor.cl.own = got.or(self.advisor.cl.own.take());
         if self.own_active() {
@@ -633,7 +637,7 @@ impl State {
             }
             "AdvClA" => {
                 let Some(c) = rows.get(i) else { return };
-                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).map(|k| key(&r.findings[k].path))).collect();
+                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).filter(|&k| self.advisor.cleaners_tab_on() || !r.quiet.contains(&key(&r.findings[k].path))).map(|k| key(&r.findings[k].path))).collect();
                 // partly ticked: the first press unticks the app, as a box that shows a mark
                 let any = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&k| self.advisor.cleanup.ticked.contains(&key(&r.findings[k].path)));
                 let all = !keys.is_empty() && keys.iter().all(|k| self.advisor.cleanup.ticked.contains(k));
@@ -837,7 +841,7 @@ impl State {
         r.findings
             .iter()
             .enumerate()
-            .filter(|(i, f)| crate::cleanup::counts_as_space(f) && matches!(&f.source, Source::Rule(id) if usual.contains(id)) && untickable(f, r.counted[*i]).is_none())
+            .filter(|(i, f)| !r.quiet.contains(&key(&f.path)) && crate::cleanup::counts_as_space(f) && matches!(&f.source, Source::Rule(id) if usual.contains(id)) && untickable(f, r.counted[*i]).is_none())
             .map(|(_, f)| key(&f.path))
             .filter(|k| !self.advisor.cleanup.ticked.contains(k))
             .collect()
@@ -871,7 +875,7 @@ impl State {
             let declined = self.advisor.memory.declined_parts.iter().any(|d| d.eq_ignore_ascii_case(k)) || k.to_lowercase().starts_with("privacy.");
             match rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).find(|(_, p)| p.key.eq_ignore_ascii_case(k)) {
                 // safe and amber space only: never a privacy part, nor one the user turned down
-                Some((c, p)) if !declined && p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() && self.part_true(r, p).0 > 0 => ok.push((c, p)),
+                Some((c, p)) if !declined && p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() && !p.findings.iter().any(|&i| r.quiet.contains(&key(&r.findings[i].path))) && self.part_true(r, p).0 > 0 => ok.push((c, p)),
                 _ => left += 1,
             }
         }
@@ -1663,6 +1667,7 @@ impl State {
             .filter(|c| c.presence == Presence::InScan)
             .flat_map(|c| c.parts.iter().flat_map(|p| p.findings.iter().copied()))
             .filter(|&i| r.findings[i].group() == Group::Clean && !r.findings[i].in_active_project())
+            .filter(|&i| !r.quiet.contains(&key(&r.findings[i].path)))
             // what can go now, as the headline counts it; what needs administrator stays a row
             .filter(|&i| untickable(&r.findings[i], r.counted[i]).is_none() && crate::cleanup::held_in_app(&r.findings[i]).is_none())
             .collect()
@@ -1696,7 +1701,7 @@ impl State {
         x += r##"<StackPanel Spacing="2" Margin="10,0,0,0">"##;
         for &(ci, b) in apps.iter().take(GROUP_APPS) {
             let c = &rows[ci];
-            let takes: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).collect();
+            let takes: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).filter(|i| mine.contains(i)).collect();
             let some = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&i| ticked(i));
             let state = if takes.is_empty() {
                 None

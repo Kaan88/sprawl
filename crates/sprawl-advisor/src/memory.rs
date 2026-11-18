@@ -93,6 +93,8 @@ pub struct CleanerProposal {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
     #[serde(default)]
+    pub learning: crate::learning::Learning,
+    #[serde(default)]
     pub prefs: Vec<Pref>,
     #[serde(default)]
     pub decisions: Vec<Decision>,
@@ -498,6 +500,7 @@ impl Memory {
         }
         p.title = clean_text(&p.title);
         p.why = clean_text(&p.why);
+        if p.remedy == Remedy::Delete { p.risk = p.risk.max(Risk::Orange); }
         check_proposal(&p)?;
         if self.proposals.iter().any(|q| q.id == p.id) || local_ids().contains(&p.id) {
             return Err(format!("there is already a rule {}", p.id));
@@ -611,7 +614,7 @@ impl Memory {
         }
         let done: Vec<&Decision> = self.decisions.iter().filter(|d| d.verdict == Verdict::Done).collect();
         if !done.is_empty() {
-            s.push_str("\n## The user cleaned these up before (they are fine with this kind of suggestion)\n");
+            s.push_str("\n## Previously cleaned (past choices, not proof of safety or future consent)\n");
             for d in done.iter().rev().take(30) {
                 s.push_str(&format!("- {} ({})\n", d.title, d.path.display()));
             }
@@ -621,6 +624,13 @@ impl Memory {
             for l in self.labels.iter().rev().take(80) {
                 s.push_str(&format!("- {}: {}\n", l.pattern, l.label));
             }
+        }
+        if !self.learning.managed_libraries.is_empty() {
+            s.push_str("\n## Game libraries the user manages themselves (do not recommend changes here)\n");
+            for p in self.learning.managed_libraries.iter().take(100) { s.push_str(&format!("- {}\n", p.display())); }
+        }
+        for r in self.learning.cleaned.iter().filter(|r| r.refilled).take(40) {
+            s.push_str(&format!("\nDo not recommend cleaning {} again: {} refilled quickly after cleanup.\n", r.path.display(), r.rule));
         }
         s
     }
@@ -808,6 +818,7 @@ mod tests {
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\*"], Remedy::Delete)).is_err(), "a delete ends in a name");
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\cache"], Remedy::Delete)).is_ok());
         assert_eq!(m.proposals[0].id, "local.MyCache");
+        assert_eq!(m.proposals[0].risk, Risk::Orange, "AI delete recognisers never become safe automatic choices");
         assert!(m.propose(p(vec![r"%LOCALAPPDATA%\Tool\cache"], Remedy::Delete)).is_err(), "not twice");
         // an approved rule is a pack that loads, untrusted, with no command
         let mut pack = RulePack::empty("Your rules");

@@ -24,7 +24,7 @@ use crate::{find_path, segments};
 /// manifests and suggesting ticks. No findings here, and no web search: that is [`web_spec`],
 /// offered only when the user switched it on.
 pub fn chat_specs() -> Vec<ToolSpec> {
-    let keep = ["list_children", "largest", "by_type", "owner_of", "remember", "propose_cleaner"];
+    let keep = ["list_children", "largest", "by_type", "owner_of", "remember", "propose_rule", "propose_cleaner"];
     let mut v: Vec<ToolSpec> = specs().into_iter().filter(|t| keep.contains(&t.name)).collect();
     let path = json!({"type": "string", "description": "Absolute Windows path"});
     v.push(ToolSpec {
@@ -661,6 +661,9 @@ impl<'a> Tools<'a> {
         if remedy == Remedy::Delete {
             f.set_action(crate::finding::Action::Remove, false);
         }
+        if let Some(why) = self.memory.learning.quiet_reason(&f) {
+            return Err(format!("Not recommended: {why}. The user can inspect it manually or forget learning."));
+        }
         match safety::check(&f, self.tree, &self.never) {
             Ok(ok) => {
                 let note = if ok.risk != f.risk { format!(" Risk raised to {:?}: a model's deletes are checked by the user.", ok.risk) } else { String::new() };
@@ -770,6 +773,11 @@ mod tests {
         assert!(t.call("report_finding", &claim(size)).is_ok());
         let f = &t.accepted[0];
         assert_eq!(f.risk, Risk::Orange);
+        let mut quiet_memory = Memory::default();
+        quiet_memory.learning.cleaned.push(crate::learning::Cleaned { path: cache.clone(), rule: "dev.npm-cache".into(), when: 0, freed: 2 << 20, remaining: 0, refilled: true });
+        let mut quiet_tools = Tools::new(&tree, &facts, "test-model", &[], &quiet_memory);
+        let quiet_error = quiet_tools.call("report_finding", &claim(size)).unwrap_err();
+        assert!(quiet_error.contains("Not recommended:"), "a model cannot bypass a learned quiet path: {quiet_error}");
         assert!(f.command.as_deref().unwrap().starts_with(crate::rules::RM_FN));
         assert!(matches!(f.source, Source::Model(_)));
         // not twice, and not something inside it

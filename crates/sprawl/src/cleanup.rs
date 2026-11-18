@@ -67,6 +67,7 @@ pub(crate) struct Item {
     pub command: Option<String>,
     /// Advice shown only if this item actually removed something.
     pub prevention: Option<&'static str>,
+    pub learn: bool,
 }
 
 pub(crate) enum ItemState {
@@ -319,7 +320,7 @@ impl State {
     /// guess by shape), inside the user's own profile, 1 MB or more.
     fn safe_ticks(&self) -> HashSet<String> {
         let Some(r) = self.advice() else { return HashSet::new() };
-        r.findings.iter().zip(&r.counted).filter(|(f, c)| safe_tick(f, **c)).map(|(f, _)| key(&f.path)).collect()
+        r.findings.iter().zip(&r.counted).filter(|(f, c)| safe_tick(f, **c) && !r.quiet.contains(&key(&f.path))).map(|(f, _)| key(&f.path)).collect()
     }
 
     /// The ticked findings of the report on screen, in list order (index, finding).
@@ -455,7 +456,8 @@ impl State {
     /// Tick enough for `need` bytes: the plan's choice (green first, then amber).
     pub(crate) fn cleanup_select_enough(&mut self, need: u64) -> Option<u64> {
         let r = self.advice()?;
-        let plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
+        let allowed: Vec<bool> = r.findings.iter().zip(&r.counted).map(|(f, &c)| c && !r.quiet.contains(&key(&f.path))).collect();
+        let plan = sprawl_advisor::plan::plan(&r.findings, &allowed, need);
         let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| !sprawl_advisor::remedies::compresses(&r.findings[i]) && !sprawl_advisor::remedies::shrinks(&r.findings[i]) && counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
         self.advisor.cleanup.ticked = ticked;
@@ -543,6 +545,9 @@ impl State {
                 recycle,
                 privacy: f.privacy(),
                 prevention: sprawl_advisor::prevention::for_finding(&f),
+                learn: !f.privacy() && !f.heuristic()
+                    && matches!(f.source, Source::Rule(_)) && !f.links()
+                    && !sprawl_advisor::remedies::compresses(&f) && !sprawl_advisor::remedies::shrinks(&f),
                 command: match clean::action(&f) {
                     Some((Action::Tool { command }, _)) => Some(command),
                     _ => None,
@@ -736,6 +741,17 @@ impl State {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
         let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new(), prevention: Vec::new() };
+        let learned_at = sprawl_advisor::learning::now();
+        for it in &run.items {
+            if let (true, Some(rule), ItemState::Done(o)) = (it.learn, &it.rule, &it.state) {
+                if !o.stopped && o.problems.is_empty() && o.more_problems == 0 && o.freed > 0 {
+                    let remaining = run.rescans.iter().find(|(p, _)| p == &it.path).and_then(|(_, t)| match t {
+                        None => Some(0), Some(t) if t.errors == 0 => Some(t.nodes[sprawl_core::ROOT].size), _ => None,
+                    });
+                    self.advisor.memory.learning.success(&it.path, rule, o.freed, remaining, learned_at);
+                }
+            }
+        }
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
                 // a privacy set: counted on its own, never in what was freed; one that went is

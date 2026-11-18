@@ -72,7 +72,7 @@ impl Kind {
 }
 
 /// What marks a folder as a project of some kind (lower-case names).
-fn kind_of(name: &str) -> Option<Kind> {
+pub(crate) fn kind_of(name: &str) -> Option<Kind> {
     Some(match name {
         "cargo.toml" => Kind::Rust,
         "package.json" => Kind::Node,

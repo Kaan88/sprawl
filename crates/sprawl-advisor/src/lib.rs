@@ -25,6 +25,7 @@ pub mod export;
 pub mod exe_installers;
 pub mod facts;
 pub mod kinds;
+pub mod learning;
 pub mod finding;
 pub mod growth;
 pub mod game_leftovers;

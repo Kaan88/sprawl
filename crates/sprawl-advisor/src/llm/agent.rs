@@ -51,7 +51,7 @@ pub enum ChatEvent {
     Reply(String),
     /// Show this filter on the map (empty clears it).
     Filter(String),
-    Remember { prefs: Vec<Pref>, labels: Vec<Label>, cleaners: Vec<CleanerProposal> },
+    Remember { prefs: Vec<Pref>, labels: Vec<Label>, rules: Vec<Proposal>, cleaners: Vec<CleanerProposal> },
     /// Cleaner parts to offer ticking (ids), why, and a reason per part where given.
     Suggest { parts: Vec<String>, why: String, reasons: Vec<(String, String)> },
     Failed(String),
@@ -235,8 +235,8 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, found: Option<&[Finding]>, memory: &Mem
                 reply.push_str(&format!("\n\n({d})"));
             }
         }
-        if !tools.prefs.is_empty() || !tools.labels.is_empty() || !cleaners.is_empty() {
-            events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels), cleaners });
+        if !tools.prefs.is_empty() || !tools.labels.is_empty() || !tools.proposals.is_empty() || !cleaners.is_empty() {
+            events(ChatEvent::Remember { prefs: std::mem::take(&mut tools.prefs), labels: std::mem::take(&mut tools.labels), rules: std::mem::take(&mut tools.proposals), cleaners });
         }
         if let Some((parts, why)) = tools.suggest.take() {
             events(ChatEvent::Suggest { parts, why, reasons: std::mem::take(&mut tools.suggest_reasons) });
