@@ -137,6 +137,10 @@ fn still_open(path: &std::path::Path, app: &str, exes: &[String]) -> Option<Stri
         None => return Some(format!("{}: left alone, Windows couldn't say whether {app} is open", path.display())),
     }
     let files = sprawl_advisor::inuse::files_on_disk(path, sprawl_advisor::inuse::MAX_FILES);
+    if !files.complete {
+        return Some(format!("{}: left alone, not every file could be checked for use (unreadable, linked or too many files)", path.display()));
+    }
+    let files = files.files;
     if files.is_empty() {
         return None;
     }

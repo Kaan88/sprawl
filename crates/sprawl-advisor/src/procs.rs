@@ -25,7 +25,7 @@ pub fn any_running(names: &[String], now: Option<&HashSet<String>>) -> Option<bo
 #[cfg(windows)]
 mod win {
     use super::*;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
@@ -59,9 +59,10 @@ mod win {
             }
             ok = unsafe { Process32NextW(snap, &mut e) } != 0;
         }
+        let complete = unsafe { GetLastError() } == ERROR_NO_MORE_FILES;
         // SAFETY: the handle from above.
         unsafe { CloseHandle(snap) };
-        any.then_some(out)
+        (any && complete).then_some(out)
     }
 }
 

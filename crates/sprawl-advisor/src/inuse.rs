@@ -28,23 +28,30 @@ pub fn files_under(tree: &Tree, n: usize, cap: usize) -> Vec<PathBuf> {
 
 /// Files below `path` on disk now, at most `cap` (links not followed): for the check just before
 /// a part is cleaned, when the scan may be old.
-pub fn files_on_disk(path: &Path, cap: usize) -> Vec<PathBuf> {
+pub struct DiskFiles { pub files: Vec<PathBuf>, pub complete: bool }
+
+pub fn files_on_disk(path: &Path, cap: usize) -> DiskFiles {
+    use std::os::windows::fs::MetadataExt;
     let mut out = Vec::new();
+    let mut complete = true;
     let mut stack = vec![path.to_path_buf()];
     while let Some(p) = stack.pop() {
-        let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+        let Ok(m) = std::fs::symlink_metadata(&p) else { complete = false; continue };
+        if m.file_attributes() & sprawl_core::attr::REPARSE_POINT != 0 { complete = false; continue; }
         if m.is_dir() {
-            if let Ok(rd) = std::fs::read_dir(&p) {
-                stack.extend(rd.flatten().map(|e| e.path()));
+            match std::fs::read_dir(&p) {
+                Ok(rd) => for entry in rd { match entry { Ok(e) => stack.push(e.path()), Err(_) => complete = false } },
+                Err(_) => complete = false,
             }
-        } else if !m.file_type().is_symlink() {
-            out.push(p);
+        } else {
             if out.len() >= cap {
+                complete = false;
                 break;
             }
+            out.push(p);
         }
     }
-    out
+    DiskFiles { files: out, complete }
 }
 
 /// Names of the programs that have any of `files` open (empty when none), or `None` when
@@ -82,6 +89,27 @@ pub fn check_files(mut files: Vec<PathBuf>) -> Option<Checked> {
     let all_files = files.len() <= MAX_FILES;
     files.truncate(MAX_FILES);
     in_use(&files).map(|names| Checked { names, all_files })
+}
+
+#[cfg(test)]
+mod disk_tests {
+    use super::*;
+    #[test]
+    fn incomplete_walk_never_means_no_open_files() {
+        let root = std::env::temp_dir().join(format!("sprawl-inuse-complete-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["one", "two"] { std::fs::write(root.join(name), b"fixture").unwrap(); }
+        assert!(!files_on_disk(&root, 1).complete);
+        let all = files_on_disk(&root, 2);
+        assert!(all.complete && all.files.len() == 2);
+        assert!(!files_on_disk(&root.join("missing"), MAX_FILES).complete);
+        let junction = root.join("redirect");
+        if std::os::windows::fs::symlink_dir(&root, &junction).is_ok() {
+            assert!(!files_on_disk(&root, MAX_FILES).complete);
+            std::fs::remove_dir(junction).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(windows)]

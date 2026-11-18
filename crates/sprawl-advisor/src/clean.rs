@@ -358,6 +358,10 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
 /// in one profile, the part's first file among them, none twice) and every side file of theirs
 /// (`-journal`, `-wal`, `-shm`) there is now, whether or not the scan saw it.
 pub(crate) fn set_members(part: &crate::privacy::PrivacyPart, files: &[PathBuf], places: &crate::privacy::Places) -> Result<Vec<PathBuf>, String> {
+    set_members_with_exclusions(part, files, places, &crate::exclusions::configured())
+}
+
+fn set_members_with_exclusions(part: &crate::privacy::PrivacyPart, files: &[PathBuf], places: &crate::privacy::Places, excluded: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     if files.is_empty() {
         return Err("no files named".into());
     }
@@ -392,6 +396,9 @@ pub(crate) fn set_members(part: &crate::privacy::PrivacyPart, files: &[PathBuf],
                 Err(e) => return Err(format!("{}: {e}", side.display())),
             }
         }
+    }
+    if let Some(p) = out.iter().find(|p| crate::exclusions::intersects(p, excluded)) {
+        return Err(format!("{} is excluded in Settings > Scanning; nothing in this privacy set can be removed", p.display()));
     }
     Ok(out)
 }
@@ -1510,6 +1517,23 @@ mod tests {
     use super::*;
     use crate::rules::ps_quote;
     use crate::{Remedy, Risk, Source};
+
+    #[test]
+    fn excluded_live_privacy_journal_holds_the_whole_set() {
+        let base = std::env::temp_dir().join(format!("sprawl-set-excluded-{}", std::process::id()));
+        let places = crate::privacy::Places { local: base.join("Local"), roaming: base.join("Roaming") };
+        let profile = places.local.join(r"Google\Chrome\User Data\Default\Network");
+        std::fs::create_dir_all(&profile).unwrap();
+        let db = profile.join("Cookies");
+        let journal = profile.join("Cookies-journal");
+        std::fs::write(&db, b"database").unwrap();
+        std::fs::write(&journal, b"journal").unwrap();
+        let part = crate::privacy::part("privacy.chrome/cookies").unwrap();
+        assert_eq!(set_members_with_exclusions(part, &[db.clone()], &places, &[]).unwrap().len(), 2);
+        assert!(set_members_with_exclusions(part, &[db.clone()], &places, &[journal.clone()]).unwrap_err().contains("excluded"));
+        assert!(db.exists() && journal.exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     fn f(path: &str, cmd: String) -> Finding {
         Finding {
