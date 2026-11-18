@@ -78,6 +78,11 @@ server's own process, and the server uses the folder walk, never the MFT.
 - **R7, "Look first" rows can be ticked too.** Keep "Look first" as the label and the advice, but
   add the tick box. A ticked "Look first" row goes to the review in its own group with "you haven't
   looked at these", and goes to the Recycle Bin, not a permanent delete.
+- **R7c, findings that aren't safe can still be ticked, on the second try** (the user,
+  2026-11-18; not in yet: today only Delete and Command remedies below Red can be ticked). The
+  first click on a "Look first" or other untickable row says why it isn't ticked; a second click
+  ticks it. It then goes to the review in its own group and to the Recycle Bin. Red (Windows
+  itself, what breaks apps) stays untickable unless the user decides otherwise.
 - **R7, run "Command" remedies from the app.** Run the shown PowerShell or the owner's tool from
   the review, the same way the Cleaners' tool commands run:
   - an allow-list of known commands only;

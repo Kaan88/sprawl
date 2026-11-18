@@ -209,6 +209,8 @@ pub(crate) struct Advisor {
     pub(crate) running: bool,
     /// Why there is no report (no scan, a CSV, a filter).
     pub(crate) note: Option<&'static str>,
+    /// "Check again" reading the findings' paths again before the rules run (B6).
+    recheck: Option<Receiver<Vec<(PathBuf, Option<Tree>)>>>,
     open: Option<usize>,
     /// (finding, programs that have its files open); `None` inside while checking.
     in_use: Option<(usize, InUse)>,
@@ -598,6 +600,7 @@ impl State {
         self.advisor.report = None;
         self.advisor.rx = None;
         self.advisor.tx = None;
+        self.advisor.recheck = None;
         self.advisor.running = false;
         self.advisor.open = None;
         self.advisor.in_use = None;
@@ -659,6 +662,70 @@ impl State {
         self.advisor_changed();
     }
 
+    /// "Check again": what the findings point at is read again first, since things go without
+    /// Sprawl's own delete (a command run from the review, the Recycle Bin emptied, a program's
+    /// own clean-up, Explorer). Then the rules run over the tree as it is now. Before, they ran
+    /// over the same tree and found the same things.
+    pub(crate) fn advisor_recheck(&mut self) {
+        if self.advisor.recheck.is_some() {
+            return;
+        }
+        let (Some(t), Some(r)) = (self.tree.as_ref(), self.advisor.report.as_ref()) else { return self.advisor_start() };
+        if self.full_tree.is_some() || self.advisor.cleanup.running.is_some() {
+            return self.advisor_start();
+        }
+        let root = t.path_of(sprawl_core::ROOT);
+        // a file is read through its folder (it may have shrunk, not gone), unless that is
+        // the scan's root; the root itself is never read again here
+        let mut paths: Vec<PathBuf> = r
+            .findings
+            .iter()
+            .map(|f| f.path.clone())
+            .filter(|p| p.starts_with(&root) && p != &root)
+            .map(|p| if std::fs::metadata(&p).is_ok_and(|m| m.is_file()) { crate::shellmenu::rescan_target(&p, &root) } else { p })
+            .collect();
+        // outermost first, and nothing inside a path already read
+        paths.sort_by_key(|p| p.components().count());
+        let mut outer: Vec<PathBuf> = Vec::new();
+        for p in paths {
+            if !outer.iter().any(|o| p.starts_with(o)) {
+                outer.push(p);
+            }
+        }
+        crate::state::timing(&format!("Check again reads {} paths: {:?}", outer.len(), outer.iter().take(5).collect::<Vec<_>>()), std::time::Instant::now());
+        if outer.is_empty() {
+            return self.advisor_start();
+        }
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let now: Vec<(PathBuf, Option<Tree>)> = outer.into_iter().filter_map(|p| crate::shellmenu::read_now(&p).map(|t| (p, t))).collect();
+            let _ = tx.send(now);
+        });
+        self.advisor.recheck = Some(rx);
+        self.advisor.report = None;
+        self.advisor.running = true;
+        self.advisor.note = Some("Reading what the findings point at again, to see what is gone...");
+        self.advisor_changed();
+    }
+
+    /// Each frame: the paths "Check again" read go into the tree, and the rules run.
+    fn recheck_poll(&mut self) {
+        let Some(rx) = &self.advisor.recheck else { return };
+        let now = match rx.try_recv() {
+            Ok(v) => v,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(_) => Vec::new(),
+        };
+        self.advisor.recheck = None;
+        crate::state::timing(&format!("Check again read: {:?}", now.iter().map(|(p, t)| (p, t.is_some())).collect::<Vec<_>>()), std::time::Instant::now());
+        let gen = self.tree_gen;
+        // the tree, the tables and the map follow, and the rules run (when something changed)
+        self.apply_rescans(now);
+        if self.tree_gen == gen {
+            self.advisor_start();
+        }
+    }
+
     /// After the tree on screen changed without a new scan (a filter on or off).
     pub(crate) fn advisor_refresh(&mut self) {
         self.advisor_start();
@@ -670,6 +737,7 @@ impl State {
         // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         crate::bridge::publish_scanning(self.job.is_some());
+        self.recheck_poll();
         self.chat_poll();
         self.community_poll();
         self.own_poll();
@@ -863,7 +931,7 @@ impl State {
             "AdvRefresh" if self.own_active() => {
                 self.own_start();
             }
-            "AdvRefresh" => return self.advisor_start(),
+            "AdvRefresh" => return self.advisor_recheck(),
             "AdvHeld" => self.advisor.show_held = !self.advisor.show_held,
             "AdvActive" => self.advisor.show_active = !self.advisor.show_active,
             "AdvTips" => self.advisor.hide_tips = !self.advisor.hide_tips,
