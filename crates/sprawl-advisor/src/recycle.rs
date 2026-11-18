@@ -14,12 +14,22 @@ use std::path::{Path, PathBuf};
 /// The Recycle Bin of one volume, for this user.
 #[derive(Clone, Debug)]
 pub struct Bin {
+    pinned: std::sync::Arc<sprawl_core::local::Directory>,
     /// `X:\$Recycle.Bin\<user SID>`.
     pub dir: PathBuf,
     /// The drive, as the user knows it (`C:`).
     pub drive: String,
     /// How much more this clean-up may send to it, in bytes: what the bin holds at most.
     pub room: u64,
+}
+
+impl Bin {
+    #[cfg(test)]
+    pub(crate) fn new(dir: PathBuf, drive: String, room: u64) -> Result<Self, String> {
+        let pinned = sprawl_core::local::directory(&dir).map_err(|e| format!("Recycle Bin path isn't a stable plain local folder: {e}"))?;
+        Ok(Self { dir: pinned.path.clone(), drive, room, pinned: std::sync::Arc::new(pinned) })
+    }
+    pub(crate) fn path(&self) -> &Path { &self.pinned.path }
 }
 
 /// This process's account, as `S-1-5-21-...` (also when elevated: the same account).
@@ -41,6 +51,7 @@ pub fn bin_for(path: &Path) -> Result<Bin, String> {
     }
     let sid = win::user_sid().ok_or("Windows couldn't say which account this is")?;
     let dir = PathBuf::from(format!(r"{root}$Recycle.Bin\{sid}"));
+    let pinned = sprawl_core::local::directory(&dir).map_err(|e| format!("the Recycle Bin or an ancestor isn't a stable local folder: {e}"))?;
     match std::fs::symlink_metadata(&dir) {
         Ok(m) if m.is_dir() && !is_link(&m) => {}
         _ => return Err(format!("the Recycle Bin on {drive} isn't set up for you yet (delete any file there with Explorer once, then try again)")),
@@ -55,26 +66,34 @@ pub fn bin_for(path: &Path) -> Result<Bin, String> {
         None => win::total_bytes(&root).ok_or(format!("the size of {drive} couldn't be read"))? / 20,
     };
     // what is in it already counts: Windows doesn't hold to the limit for what Sprawl puts there
-    let room = cap.saturating_sub(held(&dir));
-    Ok(Bin { dir, drive, room })
+    let room = cap.saturating_sub(held(&dir)?);
+    Ok(Bin { dir: pinned.path.clone(), drive, room, pinned: std::sync::Arc::new(pinned) })
 }
 
 /// What the bin folder `dir` holds now, by its `$I` records' sizes (each item's size as it was
 /// deleted, also for a whole folder). A record that can't be read counts its item's own size.
-pub(crate) fn held(dir: &Path) -> u64 {
-    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+pub(crate) fn held(dir: &Path) -> Result<u64, String> {
+    let pinned = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
+    let dir = &pinned.path;
+    let rd = std::fs::read_dir(dir).map_err(|e| format!("Recycle Bin capacity is unknown: {e}"))?;
     let mut total = 0u64;
-    for e in rd.flatten() {
+    for e in rd {
+        let e = e.map_err(|e| format!("Recycle Bin capacity is unknown: {e}"))?;
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(rest) = name.strip_prefix("$I") else { continue };
         // a record whose item is gone (Restore leaves these behind, Windows' own too) holds nothing
-        if std::fs::symlink_metadata(dir.join(format!("$R{rest}"))).is_err() {
-            continue;
+        match std::fs::symlink_metadata(dir.join(format!("$R{rest}"))) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Recycle Bin capacity is unknown: {e}")),
+            Ok(_) => {},
         }
-        let from_record = std::fs::read(e.path()).ok().filter(|r| r.len() >= 16).map(|r| u64::from_le_bytes(r[8..16].try_into().unwrap()));
-        total = total.saturating_add(from_record.unwrap_or_else(|| std::fs::symlink_metadata(dir.join(format!("$R{rest}"))).map_or(0, |m| m.len())));
+        let mut f = sprawl_core::local::file(&e.path(), u64::MAX).map_err(|e| format!("Recycle Bin capacity is unknown: {e}"))?;
+        let mut header = [0u8; 16];
+        std::io::Read::read_exact(&mut f.file, &mut header).map_err(|e| format!("Recycle Bin capacity is unknown: {e}"))?;
+        if !matches!(u64::from_le_bytes(header[..8].try_into().unwrap()), 1 | 2) { return Err("Recycle Bin capacity is unknown: invalid record version".into()); }
+        total = total.saturating_add(u64::from_le_bytes(header[8..16].try_into().unwrap()));
     }
-    total
+    Ok(total)
 }
 
 fn is_link(m: &std::fs::Metadata) -> bool {
@@ -206,13 +225,15 @@ mod tests {
         std::fs::write(dir.join("$RAAAAAA.txt"), vec![0u8; 700]).unwrap();
         std::fs::write(dir.join("$IBBBBBB"), record(Path::new(r"C:\folder"), 5000, 0)).unwrap();
         std::fs::create_dir_all(dir.join("$RBBBBBB")).unwrap();
-        // a short record: its item's own size
+        // An unreadable/short record makes the capacity unknown rather than undercounting it.
         std::fs::write(dir.join("$ICCCCCC.bin"), b"x").unwrap();
         std::fs::write(dir.join("$RCCCCCC.bin"), vec![0u8; 30]).unwrap();
         std::fs::write(dir.join("desktop.ini"), b"[x]").unwrap();
         // an orphan record (its item restored or gone) counts nothing
         std::fs::write(dir.join("$IDDDDDD.iso"), record(Path::new(r"C:\big.iso"), 1 << 40, 0)).unwrap();
-        assert_eq!(held(&dir), 700 + 5000 + 30);
+        assert!(held(&dir).is_err());
+        std::fs::write(dir.join("$ICCCCCC.bin"), record(Path::new(r"C:\c.bin"), 30, 0)).unwrap();
+        assert_eq!(held(&dir).unwrap(), 700 + 5000 + 30);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

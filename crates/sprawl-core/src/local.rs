@@ -48,6 +48,7 @@ fn same(a: &Path, b: &Path) -> bool {
     key(a) == key(b)
 }
 
+#[derive(Debug)]
 pub struct Directory {
     pub path: PathBuf,
     _handles: Vec<File>,
