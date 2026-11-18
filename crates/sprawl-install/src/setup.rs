@@ -27,6 +27,55 @@ pub fn per_user_only() -> Result<(), String> {
     }
 }
 
+pub const LEGACY_ALERT_TASK: &str = "Sprawl low-space check";
+
+pub fn alert_task_name() -> Result<String, String> {
+    sprawl_core::identity::account_sid().map(|sid| format!("{LEGACY_ALERT_TASK} {sid}")).map_err(|e| e.to_string())
+}
+
+pub fn system_dir() -> Result<PathBuf, String> {
+    #[link(name = "kernel32")]
+    extern "system" { fn GetSystemDirectoryW(buf: *mut u16, len: u32) -> u32; }
+    let mut buf = [0u16; 32768];
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() { return Err("Windows' system directory is unknown".into()); }
+    String::from_utf16(&buf[..n]).map(PathBuf::from).map_err(|e| e.to_string())
+}
+
+fn legacy_task_owned(xml: &str, sid: &str) -> bool {
+    let Some((_, rest)) = xml.split_once("<UserId>") else { return false; };
+    let Some((owner, rest)) = rest.split_once("</UserId>") else { return false; };
+    owner.trim() == sid && !rest.contains("<UserId>")
+}
+
+/// Delete the former shared task name only after Task Scheduler identifies its principal
+/// as this process's exact SID. Unknown or other-account tasks are always left alone.
+pub fn migrate_alert_task() {
+    use std::os::windows::process::CommandExt;
+    if per_user_only().is_err() { return; }
+    let (Ok(sid), Ok(sys)) = (sprawl_core::identity::account_sid(), system_dir()) else { return; };
+    let Ok(out) = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
+        .args(["/Query", "/TN", LEGACY_ALERT_TASK, "/XML"]).creation_flags(0x0800_0000).output() else { return; };
+    if !out.status.success() || out.stdout.len() > 1 << 20 { return; }
+    let xml = if out.stdout.starts_with(&[0xff, 0xfe]) {
+        String::from_utf16(&out.stdout[2..].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()
+    } else { String::from_utf8(out.stdout).ok() };
+    if !xml.is_some_and(|xml| legacy_task_owned(&xml, &sid)) { return; }
+    let _ = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
+        .args(["/Delete", "/TN", LEGACY_ALERT_TASK, "/F"]).creation_flags(0x0800_0000)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+}
+
+pub fn remove_alert_task() {
+    use std::os::windows::process::CommandExt;
+    if per_user_only().is_err() { return; }
+    let (Ok(task), Ok(sys)) = (alert_task_name(), system_dir()) else { return; };
+    let _ = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
+        .args(["/Delete", "/TN", &task, "/F"]).creation_flags(0x0800_0000)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    migrate_alert_task();
+}
+
 /// `%LOCALAPPDATA%\Programs\Sprawl`.
 pub fn install_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Programs").join("Sprawl"))
@@ -315,17 +364,7 @@ pub fn uninstall(quiet: bool) {
         let _ = std::fs::remove_file(l);
     }
     // the low-space check's scheduled task, if the setting made one
-    {
-        use std::os::windows::process::CommandExt;
-        let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
-        let _ = std::process::Command::new(sys.join("schtasks.exe"))
-            .current_dir(&sys)
-            .args(["/Delete", "/TN", "Sprawl low-space check", "/F"])
-            .creation_flags(0x0800_0000)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    remove_alert_task();
     // only Sprawl's own files; the folder itself goes only if that leaves it empty
     remove_old(&dir);
     clean_stage(&dir);
@@ -355,6 +394,18 @@ mod update_tests {
         let dir = std::env::temp_dir().join(format!("sprawl-update-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(dir.join(STAGE)).unwrap();
         dir
+    }
+
+    #[test]
+    fn legacy_task_migration_requires_the_exact_principal() {
+        let sid = "S-1-5-21-100-200-300-1001";
+        assert!(legacy_task_owned(&format!("<Task><Principal><UserId>{sid}</UserId></Principal></Task>"), sid));
+        assert!(!legacy_task_owned("<UserId>S-1-5-21-100-200-300-1002</UserId>", sid));
+        assert!(!legacy_task_owned("<UserId>COMPUTER\\sameusername</UserId>", sid));
+        assert!(!legacy_task_owned(&format!("<Author>{sid}</Author>"), sid));
+        assert!(!legacy_task_owned(&format!("<UserId>{sid}</UserId><UserId>other</UserId>"), sid));
+        let actual = sprawl_core::identity::account_sid().unwrap();
+        assert_eq!(alert_task_name().unwrap(), format!("{LEGACY_ALERT_TASK} {actual}"));
     }
 
     #[test]

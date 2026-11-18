@@ -24,6 +24,7 @@ pub mod mft;
 pub mod progress;
 pub mod local;
 pub mod query;
+pub mod identity;
 pub mod search;
 pub mod walk;
 

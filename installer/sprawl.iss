@@ -59,19 +59,66 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\Sprawl"; Flags: dontcreatekey 
 [InstallDelete]
 Type: files; Name: "{app}\sprawl.exe.old"
 Type: files; Name: "{app}\Microsoft.WindowsAppRuntime.Bootstrap.dll.old"
-Type: files; Name: "{app}\.sprawl-update\sprawl.exe"
-Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"
-Type: dirifempty; Name: "{app}\.sprawl-update"
+Type: files; Name: "{app}\.sprawl-update\sprawl.exe"; Check: CanCleanStage
+Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"; Check: CanCleanStage
+Type: dirifempty; Name: "{app}\.sprawl-update"; Check: CanCleanStage
 
 [UninstallDelete]
 Type: files; Name: "{app}\sprawl.exe.old"
 Type: files; Name: "{app}\Microsoft.WindowsAppRuntime.Bootstrap.dll.old"
-Type: files; Name: "{app}\.sprawl-update\sprawl.exe"
-Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"
-Type: dirifempty; Name: "{app}\.sprawl-update"
+Type: files; Name: "{app}\.sprawl-update\sprawl.exe"; Check: CanCleanStage
+Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"; Check: CanCleanStage
+Type: dirifempty; Name: "{app}\.sprawl-update"; Check: CanCleanStage
 
 [Run]
 Filename: "{app}\sprawl.exe"; Description: "Start Sprawl"; Flags: nowait postinstall skipifsilent
 
 [Messages]
 WelcomeLabel2=This installs Sprawl {#AppVersion}, a disk space analyser, for you only. No administrator rights are needed.%n%nSprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the first time Sprawl starts.%n%nYour settings and scan history are kept.
+
+[Code]
+function GetFileAttributesW(Name: String): Cardinal;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function CanCleanStage: Boolean;
+var Attr: Cardinal;
+begin
+  Attr := GetFileAttributesW(ExpandConstant('{app}\.sprawl-update'));
+  Result := (Attr <> $FFFFFFFF) and ((Attr and $10) <> 0) and
+    ((Attr and ($400 or $1000 or $40000 or $400000)) = 0);
+end;
+
+function CurrentAccountSid: String;
+var Output: TExecOutput; Code, I, J: Integer; Line, Sid: String;
+begin
+  Result := '';
+  if not ExecAndCaptureOutput(ExpandConstant('{sys}\whoami.exe'), '/user /fo csv /nh', '', SW_HIDE, ewWaitUntilTerminated, Code, Output) then exit;
+  if (Code <> 0) or Output.Error or (GetArrayLength(Output.StdOut) <> 1) then exit;
+  Line := Trim(Output.StdOut[0]);
+  J := Length(Line);
+  while (J > 0) and (Line[J] <> ',') do J := J - 1;
+  if J = 0 then exit;
+  Sid := Trim(Copy(Line, J + 1, Length(Line)));
+  if Length(Sid) < 6 then exit;
+  if (Sid[1] <> '"') or (Sid[Length(Sid)] <> '"') then exit;
+  Sid := Copy(Sid, 2, Length(Sid) - 2);
+  if Copy(Sid, 1, 4) <> 'S-1-' then exit;
+  for I := 5 to Length(Sid) do if not (((Sid[I] >= '0') and (Sid[I] <= '9')) or (Sid[I] = '-')) then exit;
+  Result := Sid;
+end;
+
+procedure CurUninstallStepChanged(Step: TUninstallStep);
+var Sid, Xml: String; Code, I: Integer; Output: TExecOutput;
+begin
+  if Step <> usUninstall then exit;
+  Sid := CurrentAccountSid;
+  if Sid = '' then exit;
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "Sprawl low-space check ' + Sid + '" /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  { The old shared name is removed only when its principal is this exact account. }
+  if not ExecAndCaptureOutput(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "Sprawl low-space check" /XML', '', SW_HIDE, ewWaitUntilTerminated, Code, Output) then exit;
+  if (Code <> 0) or Output.Error then exit;
+  Xml := '';
+  for I := 0 to GetArrayLength(Output.StdOut) - 1 do Xml := Xml + Trim(Output.StdOut[I]);
+  if Pos('<UserId>' + Sid + '</UserId>', Xml) > 0 then
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "Sprawl low-space check" /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;

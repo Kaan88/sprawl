@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use crate::win32::{wide, HWND};
 
 /// The name of the scheduled task, as Task Scheduler shows it.
-pub const TASK: &str = "Sprawl low-space check";
+fn task_name() -> Option<String> { sprawl_install::setup::alert_task_name().ok() }
 /// Hours between two checks.
 const EVERY_HOURS: u32 = 4;
 /// A drive warned about is not warned about again for this long, unless it recovers first.
@@ -207,10 +207,11 @@ fn task_command(exe: &std::path::Path) -> String {
 
 /// The arguments for schtasks: create (or replace) the task, or delete it.
 pub fn schtasks_args(on: bool, exe: &std::path::Path) -> Vec<String> {
+    let Some(task) = task_name() else { return Vec::new(); };
     if on {
-        ["/Create", "/TN", TASK, "/TR", &task_command(exe), "/SC", "HOURLY", "/MO", &EVERY_HOURS.to_string(), "/F"].iter().map(|s| s.to_string()).collect()
+        ["/Create", "/TN", &task, "/TR", &task_command(exe), "/SC", "HOURLY", "/MO", &EVERY_HOURS.to_string(), "/RL", "LIMITED", "/F"].iter().map(|s| s.to_string()).collect()
     } else {
-        ["/Delete", "/TN", TASK, "/F"].iter().map(|s| s.to_string()).collect()
+        ["/Delete", "/TN", &task, "/F"].iter().map(|s| s.to_string()).collect()
     }
 }
 
@@ -220,13 +221,18 @@ pub fn schedule(on: bool) -> bool {
     if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
         return true;
     }
+    if sprawl_install::setup::per_user_only().is_err() { return false; }
     let Ok(exe) = std::env::current_exe() else { return false };
-    let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
+    let Ok(sys) = sprawl_install::setup::system_dir() else { return false; };
     let mut c = std::process::Command::new(sys.join("schtasks.exe"));
     c.current_dir(&sys).creation_flags(NO_WINDOW).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     // Rust quotes each argument the way schtasks reads its command line (the quotes in /TR too)
-    c.args(schtasks_args(on, &exe));
-    c.status().is_ok_and(|s| s.success())
+    let args = schtasks_args(on, &exe);
+    if args.is_empty() { return false; }
+    c.args(args);
+    let done = c.status().is_ok_and(|s| s.success());
+    if done { sprawl_install::setup::migrate_alert_task(); }
+    done
 }
 
 // ---- the notice: a tray icon with a balloon (Windows 10 and 11 show it as a notification) ----
@@ -421,9 +427,11 @@ mod tests {
     fn the_task_runs_this_exe_with_check() {
         let exe = std::path::Path::new(r"C:\Program Files\Sprawl\sprawl.exe");
         let a = schtasks_args(true, exe);
-        assert_eq!(a[..3], ["/Create", "/TN", TASK]);
+        let task = task_name().unwrap();
+        assert_eq!(a[..3], ["/Create", "/TN", &task]);
         assert_eq!(a[4], "\"C:\\Program Files\\Sprawl\\sprawl.exe\" --check");
         assert!(a.ends_with(&["/F".to_string()]));
-        assert_eq!(schtasks_args(false, exe), ["/Delete", "/TN", TASK, "/F"]);
+        assert!(a.windows(2).any(|pair| pair == ["/RL", "LIMITED"]));
+        assert_eq!(schtasks_args(false, exe), ["/Delete", "/TN", &task, "/F"]);
     }
 }
