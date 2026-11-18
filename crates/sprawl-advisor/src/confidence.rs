@@ -26,6 +26,7 @@ fn base(f: &Finding) -> (f32, &'static str) {
         crate::cleaners::SHAPE => (0.45, "found by its shape (a cache folder of an app Sprawl doesn't know)"),
         crate::leftovers::ID => (0.4, "no installed application by its name"),
         crate::chromium::ID => (0.75, "Chromium's own layout"),
+        crate::installers::ID => (0.8, "Windows Installer reports the package's product code installed"),
         "app.unused" => (f.confidence, "not started for a long time"),
         _ if id.starts_with("project.") => (0.7, "the marker files of the tool that makes it"),
         _ if id.starts_with("remedy.") || id.starts_with("anomaly.") || id.starts_with("growth.") || id.starts_with("stale.") => (f.confidence, "information"),

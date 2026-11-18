@@ -29,6 +29,7 @@ pub mod growth;
 pub mod hidden;
 pub mod history;
 pub mod inuse;
+pub mod installers;
 pub mod llm;
 pub mod mcp;
 pub mod mcp_scan;
@@ -155,6 +156,7 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         .chain(dupes::likely(tree, tuning::get(&tuning::DUPES_MIN_MB) << 20, 1 << 30))
         // A2: what things are, by their layout (an archive already extracted beside it)
         .chain(kinds::archives(tree, 50 << 20))
+        .chain(installers::find(tree, facts, 10 << 20))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));
