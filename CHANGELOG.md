@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 0.3.1 — 2026-11-18
 
 ### Changed
 - **The four "as administrator" switches are kept where only an administrator can change them** (the machine's registry, for your account). Before, they were in your settings file, which any program you run could edit to turn one on. They can now be changed only in Sprawl running as administrator; elsewhere they show greyed out. A switch you had turned on is off again until you turn it on from an elevated Sprawl.
@@ -15,7 +15,8 @@ in-app updater shows.
 - A folder name with letters such as ü or ö right after `%TEMP%` or `%APPDATA%` could stop the community download, or the check of a cleaner of your own, with a crash.
 - Community cleaners can no longer name your own folders (Documents, Pictures, Downloads...), a BleachBit "file" action removes files only (never a whole folder), and a cleaner of your own can't run as administrator.
 - Claude Code's chat: an answer to a web search from a stopped question no longer answers the next question's search.
-- Web searches leave out paths written as addresses (`file:///C:/...`) and your user name inside a word.
+- Web searches leave out paths written as addresses (`file:///C:/...`), and your user name or computer name inside a word.
+- Claude Code's working folder is refused if it has been replaced by a link to somewhere else.
 - The Windows menu checks the command chosen and gives add-ons more room for their command names.
 
 ## 0.3.0 — 2026-11-18
