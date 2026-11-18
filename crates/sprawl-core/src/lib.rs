@@ -42,6 +42,8 @@ pub mod attr {
     pub const SPARSE_FILE: u32 = 0x200;
     pub const REPARSE_POINT: u32 = 0x400;
     pub const COMPRESSED: u32 = 0x800;
+    /// Sprawl's scan-only marker for IO_REPARSE_TAG_WOF; not a Windows attribute.
+    pub const WOF: u32 = 0x8000_0000;
     pub const OFFLINE: u32 = 0x1000;
     pub const NOT_CONTENT_INDEXED: u32 = 0x2000;
     pub const ENCRYPTED: u32 = 0x4000;
@@ -87,6 +89,9 @@ impl Node {
     pub fn is_hidden(&self) -> bool {
         self.attributes & attr::HIDDEN != 0
     }
+
+    /// Filesystem compression evidence, including WOF (compact /exe), never inferred from size.
+    pub fn is_compressed(&self) -> bool { self.attributes & (attr::COMPRESSED | attr::WOF) != 0 }
 
     pub fn is_system(&self) -> bool {
         self.attributes & attr::SYSTEM != 0
@@ -181,7 +186,7 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 /// returns `ErrorKind::Interrupted`.
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
     let path = &canonical_root(path);
-    if is_elevated() {
+    if is_elevated() && !progress.has_exclusions() {
         match mft::scan(path, progress) {
             Ok(tree) => return Ok(tree),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
@@ -203,7 +208,7 @@ pub fn scan_many(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
     let abs: Vec<PathBuf> = paths.iter().map(|p| canonical_root(p)).collect();
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
-    if is_elevated() {
+    if is_elevated() && !progress.has_exclusions() {
         // Group by volume so each MFT is read once.
         let mut groups: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for (i, p) in abs.iter().enumerate() {

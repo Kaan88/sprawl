@@ -476,6 +476,7 @@ impl State {
 
     /// Put the saved options back (at start-up).
     pub(crate) fn apply_settings(&mut self) {
+        crate::format::DECIMAL.store(self.settings.bool("decimal") == Some(true), std::sync::atomic::Ordering::Relaxed);
         // Work offline, and the thresholds (each held at its floor and ceiling)
         sprawl_advisor::OFFLINE.store(self.settings.bool("offline") == Some(true), std::sync::atomic::Ordering::Relaxed);
         // the administrator switches, as their store says now
@@ -605,6 +606,9 @@ impl State {
 
     /// Why the selected item may not be deleted from here, if it may not.
     fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
+        if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {
+            return Some("This path contains or is inside a folder excluded in Settings > Scanning.".into());
+        }
         let t = self.tree.as_ref()?;
         if t.method == sprawl_core::ScanMethod::Csv {
             return Some("This view was loaded from a CSV file, so it may not match the disk. Scan the folder to delete from it.".into());

@@ -413,7 +413,7 @@ impl State {
             return;
         }
         m.failed.retain(|f| f.0 != root);
-        let progress = sprawl_core::Progress::new();
+        let progress = sprawl_advisor::exclusions::progress();
         let (tx, rx) = channel();
         let (p2, r2) = (progress.clone(), root.clone());
         std::thread::spawn(move || {

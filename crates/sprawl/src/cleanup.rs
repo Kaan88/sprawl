@@ -120,7 +120,7 @@ enum Msg {
 /// where the volume's MFT (when elevated) would read the whole drive, maybe not yet seeing
 /// what was just deleted.
 pub(crate) fn rescan(p: &std::path::Path) -> std::io::Result<Tree> {
-    sprawl_core::walk::walk(p, &sprawl_core::Progress::new())
+    sprawl_core::walk::walk(p, &sprawl_advisor::exclusions::progress())
 }
 
 pub(crate) fn key(p: &std::path::Path) -> String {
@@ -714,7 +714,7 @@ impl State {
                     if let Some(it) = run.items.get_mut(i) {
                         it.state = ItemState::Running(freed);
                         if let Some(p) = &self.advisor.foot {
-                            crate::state::text(p, &format!("AdvCS{i}"), &format!("Removing... {}", sprawl_core::format_size(freed)));
+                            crate::state::text(p, &format!("AdvCS{i}"), &format!("Removing... {}", crate::format::size(freed)));
                         }
                     }
                 }

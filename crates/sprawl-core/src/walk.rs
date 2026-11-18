@@ -76,6 +76,9 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
 
 /// [`walk`] with an explicit number of worker threads (for benchmarks).
 pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
+    if progress.excludes(&crate::canonical_root(path)) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "This folder is excluded in Settings > Scanning"));
+    }
     progress.set_method(ScanMethod::Walk);
     progress.set_phase("Scanning folders");
     let meta = std::fs::symlink_metadata(path)?;
@@ -247,9 +250,10 @@ fn list_dir(
         let len = find.cFileName.iter().position(|&c| c == 0).unwrap_or(find.cFileName.len());
         let wname = &find.cFileName[..len];
         let dot = wname == [b'.' as u16] || wname == [b'.' as u16, b'.' as u16];
-        if !dot {
+        let excluded = !dot && sh.progress.has_exclusions() && sh.progress.excludes(&Path::new(&display_path(&job.path)).join(String::from_utf16_lossy(wname)));
+        if !dot && !excluded {
             let name = String::from_utf16_lossy(wname);
-            let attrs = find.dwFileAttributes;
+            let attrs = find.dwFileAttributes | if find.dwFileAttributes & attr::REPARSE_POINT != 0 && find.dwReserved0 == 0x8000_0017 { attr::WOF } else { 0 };
             let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
             let modified = (u64::from(find.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(find.ftLastWriteTime.dwLowDateTime);
             let is_dir = attrs & attr::DIRECTORY != 0;
@@ -388,6 +392,26 @@ mod tests {
         assert_eq!(round_up(1, 4096), 4096);
         assert_eq!(round_up(0, 4096), 0);
         assert_eq!(round_up(8192, 4096), 8192);
+    }
+
+    #[test]
+    fn excluded_scopes_are_not_enumerated_or_counted() {
+        let dir = temp_dir("excluded");
+        fs::create_dir_all(dir.join("skip/deep")).unwrap();
+        fs::create_dir_all(dir.join("skip-other")).unwrap();
+        fs::write(dir.join("skip/deep/secret"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("skip-other/kept"), vec![0u8; 7]).unwrap();
+        let excluded = dir.join("skip");
+        let p = Progress::with_exclusions(&[excluded.clone()]);
+        let tree = crate::scan_auto(&dir, &p).unwrap();
+        assert_eq!(tree.method, ScanMethod::Walk);
+        assert_eq!(tree.nodes[ROOT].size, 7);
+        assert_eq!(tree.nodes[ROOT].files, 1);
+        assert!(!tree.nodes.iter().any(|n| n.name == "skip" || n.name == "secret"));
+        assert_eq!(walk(&excluded, &p).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        let many = crate::scan_many(&[dir.clone(), dir.join("skip-other")], &Progress::with_exclusions(&[excluded])).unwrap();
+        assert_eq!(many.nodes[ROOT].size, 14);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

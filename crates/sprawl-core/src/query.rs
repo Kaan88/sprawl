@@ -56,6 +56,7 @@ regex:^log\\d+\\.txt$\ta regular expression on the name (on the full path if it 
 case:README\tmatch upper and lower case exactly
 exact:desktop.ini\tthe whole name, not part of it (also wholename:)
 depth:<=2\tat most two levels below the scanned folder
+compressed:\tfilesystem compression (NTFS or WOF); compressed:no for others
 folder:  file:\tfolders only, files only (folder:cache)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,6 +98,7 @@ pub(crate) enum Pat {
     Date(i64, i64),
     /// Levels below the root (its children are 1), both ends included.
     Depth(u32, u32),
+    Compressed(bool),
 }
 
 /// What a pattern needs to look at.
@@ -118,7 +120,7 @@ impl Pat {
                 (true, false) => NEED_PATH,
                 (true, true) => NEED_CASE_PATH,
             },
-            Pat::Size(..) | Pat::Date(..) | Pat::Depth(..) => 0,
+            Pat::Size(..) | Pat::Date(..) | Pat::Depth(..) | Pat::Compressed(_) => 0,
         }
     }
 
@@ -150,6 +152,7 @@ impl Pat {
             Pat::Size(a, b) => (*a..=*b).contains(&it.size()),
             Pat::Date(a, b) => it.modified().is_some_and(|m| *a <= m && m < *b),
             Pat::Depth(a, b) => (*a..=*b).contains(&it.depth()),
+            Pat::Compressed(yes) => it.compressed() == *yes,
         }
     }
 }
@@ -181,6 +184,7 @@ pub(crate) trait Item {
     /// Seconds since 1970 (UTC).
     fn modified(&self) -> Option<i64>;
     fn depth(&self) -> u32;
+    fn compressed(&self) -> bool { false }
 }
 
 /// A word: any of its alternatives, or none of them with `!`.
@@ -572,6 +576,7 @@ pub enum WordKey {
     /// A bare `>1gb`, `<=10kb`.
     Compare,
     Depth,
+    Compressed,
     Regex,
     /// Only `folder:` or `file:`, nothing after it.
     None,
@@ -658,6 +663,7 @@ impl Query {
                 Key::Date => WordKey::Date,
                 Key::Size => WordKey::Size,
                 Key::Depth => WordKey::Depth,
+                Key::Compressed => WordKey::Compressed,
                 Key::Regex => WordKey::Regex,
             };
             w.case = p.case;
@@ -693,6 +699,7 @@ enum Key {
     Date,
     Size,
     Depth,
+    Compressed,
     Regex,
 }
 
@@ -731,6 +738,7 @@ fn prefix(mut t: &[Ch]) -> (Prefix, &[Ch]) {
             ("datemodified:", Key::Date),
             ("size:", Key::Size),
             ("depth:", Key::Depth),
+            ("compressed:", Key::Compressed),
             ("regex:", Key::Regex),
         ] {
             if let Some(r) = strip_kw(t, kw) {
@@ -863,11 +871,16 @@ impl Query {
 /// messages.
 fn build(p: Prefix, rest: &[Ch], whole: &[Ch], today: impl FnOnce() -> Option<Day>) -> Result<Option<Pat>, String> {
     let value = text(rest);
-    if value.trim().is_empty() {
+    if value.trim().is_empty() && p.key != Key::Compressed {
         return Ok(None);
     }
     let shown = text(whole);
     match p.key {
+        Key::Compressed => match value.to_ascii_lowercase().as_str() {
+            "" | "yes" | "true" | "1" => Ok(Some(Pat::Compressed(true))),
+            "no" | "false" | "0" => Ok(Some(Pat::Compressed(false))),
+            _ => Err(format!("{shown}: use compressed:, compressed:yes or compressed:no")),
+        },
         Key::Ext => {
             let v = value.trim();
             let v = v.strip_prefix('.').unwrap_or(v).to_lowercase();

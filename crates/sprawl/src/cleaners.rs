@@ -230,12 +230,13 @@ impl State {
         }
         // the user's decisions (what they keep) apply to this read too
         self.advisor.memory_ready();
-        let roots = self.cleaner_roots();
+        let mut roots = self.cleaner_roots();
         self.advisor.cl.own_count += 1;
         let gen = OWN_GEN + self.advisor.cl.own_count;
         let memory = self.advisor.memory.clone();
         let privacy_on = self.privacy_on();
-        let progress = Arc::new(sprawl_core::Progress::default());
+        let progress = sprawl_advisor::exclusions::progress();
+        roots.retain(|p| !progress.excludes(&sprawl_core::canonical_root(p)));
         let p2 = progress.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -678,7 +679,7 @@ impl State {
                     c.name,
                     p.title,
                     paths.join(", "),
-                    if counted { sprawl_core::format_size(bytes) } else { format!("up to {}", sprawl_core::format_size(bytes)) }
+                    if counted { crate::format::size(bytes) } else { format!("up to {}", crate::format::size(bytes)) }
                 );
                 // the answer shows in this part's details, which stay on it
                 let k = p.key.clone();
@@ -702,7 +703,7 @@ impl State {
                 let q = format!(
                     "Look inside {} ({}). Which program is it, and which of its folders come back by themselves (caches, logs, crash dumps)? If some do, propose a cleaner for them with propose_cleaner; leave out anything that is the user's own data, settings or sign-ins.",
                     path.display(),
-                    sprawl_core::format_size(bytes)
+                    crate::format::size(bytes)
                 );
                 self.ask_about(q);
             }
@@ -1043,7 +1044,7 @@ impl State {
                 continue;
             }
             let total: u64 = parts.iter().map(|p| self.part_true(r, p).0).sum();
-            s += &format!("## {} ({})\n", c.name, sprawl_core::format_size(total));
+            s += &format!("## {} ({})\n", c.name, crate::format::size(total));
             for p in parts {
                 let (bytes, counted) = self.part_true(r, p);
                 let ticked = p.findings.iter().any(|&i| self.advisor.cleanup.ticked.contains(&key(&r.findings[i].path)));
@@ -1057,12 +1058,12 @@ impl State {
                 s += &format!(
                     "- {}: {}{kind} [id: {}]{}",
                     p.title,
-                    if counted { format!("{} would go now (counted)", sprawl_core::format_size(bytes)) } else { format!("up to {} (an estimate; may be much less)", sprawl_core::format_size(bytes)) },
+                    if counted { format!("{} would go now (counted)", crate::format::size(bytes)) } else { format!("up to {} (an estimate; may be much less)", crate::format::size(bytes)) },
                     p.key,
                     if ticked { " (ticked)" } else { "" }
                 );
                 if let Some((b, when)) = self.advisor.memory.freed.get(&p.key) {
-                    s += &format!(", freed {} when cleaned {} days ago", sprawl_core::format_size(*b), now.saturating_sub(*when) / 86_400);
+                    s += &format!(", freed {} when cleaned {} days ago", crate::format::size(*b), now.saturating_sub(*when) / 86_400);
                 }
                 if !p.cost.is_empty() {
                     s += &format!(". If it goes: {}", p.cost);

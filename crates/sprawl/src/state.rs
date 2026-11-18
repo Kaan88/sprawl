@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use sprawl_core::{format_size, Progress, Tree, ROOT};
+use sprawl_core::{Progress, Tree, ROOT};
 use windows_core::{Interface, HSTRING};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
@@ -224,14 +224,15 @@ impl State {
 /// `v` bytes in `units`.
 pub(crate) fn size_with(units: Units, v: u64) -> String {
     {
-        let f = |d: f64, u: &str| format!("{:.1} {u}", v as f64 / d);
+        let (base, labels) = crate::format::unit_base();
+        let f = |power: i32| format!("{:.1} {}", v as f64 / base.powi(power), labels[power as usize]);
         match units {
-            Units::Dynamic => format_size(v),
+            Units::Dynamic => crate::format::size(v),
             Units::Bytes => thousands(v),
-            Units::KB => f(1024.0, "KB"),
-            Units::MB => f(1024.0 * 1024.0, "MB"),
-            Units::GB => f(1024.0 * 1024.0 * 1024.0, "GB"),
-            Units::TB => f(1024.0f64.powi(4), "TB"),
+            Units::KB => f(1),
+            Units::MB => f(2),
+            Units::GB => f(3),
+            Units::TB => f(4),
         }
     }
 }
@@ -268,7 +269,7 @@ impl State {
             Source::Folders(_) => (PathBuf::from(sprawl_core::MULTIPLE), false),
             Source::Csv(p) => (p.clone(), true),
         };
-        let progress = Progress::new();
+        let progress = sprawl_advisor::exclusions::progress();
         let result = Arc::new(Mutex::new(None));
         let (g2, r2) = (progress.clone(), result.clone());
         let sorts = self.sorts();

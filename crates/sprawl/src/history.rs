@@ -68,7 +68,7 @@ pub(crate) fn xaml() -> &'static str {
 
 /// "+1.2 GB" / "−300 MB"
 fn signed(v: i128) -> String {
-    let s = sprawl_core::format_size(v.unsigned_abs() as u64);
+    let s = crate::format::size(v.unsigned_abs() as u64);
     if v >= 0 {
         format!("+{s}")
     } else {
@@ -373,7 +373,7 @@ fn grew_most(t: &Tree, root: usize, now: &dyn Fn(usize) -> u64, base: &[u64]) ->
     let total = delta(root);
     if total <= 0 {
         let shrank: i128 = -total;
-        return if shrank > 0 { format!("Shrank overall by {}", sprawl_core::format_size(shrank as u64)) } else { "No change in size".into() };
+        return if shrank > 0 { format!("Shrank overall by {}", crate::format::size(shrank as u64)) } else { "No change in size".into() };
     }
     let mut n = root;
     loop {

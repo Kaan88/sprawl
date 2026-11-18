@@ -3,6 +3,18 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Recognise registered MSI packages, likely EXE installers and unregistered Steam library folders, with the evidence and limits shown.
+- Compare cleanup, compression and guided Steam move options for a space goal, including destination capacity and costs.
+- Show prevention advice after successful cleanup.
+- Learn local cleanup and skip choices; stop automatically recommending fast-refilling caches and Steam libraries you choose to manage yourself. Learning can be reset separately from Keep decisions.
+- Ask what a finding is and approve reusable AI recognisers for future scans.
+- Settings now offers decimal sizes and exact folders to skip. Skipped scopes also prevent cleanup of a containing folder.
+- Preserve folder-name space in narrow tree panes, and find filesystem-compressed items with `compressed:`. Tree labels distinguish filesystem compression from Sprawl's earlier compression records.
+
+These changes await the queued independent review; no release has been published.
+
 ## 0.5.0 — 2026-11-18
 
 ### New

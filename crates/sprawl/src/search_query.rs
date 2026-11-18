@@ -101,6 +101,7 @@ impl Chip {
             ],
             Chip::Where => vec![("Inside a folder...".into(), Pick::Folder), ("Path contains...".into(), Pick::Prompt("path:"))],
             Chip::More => vec![
+                ("Compressed files and folders".into(), t("compressed:")),
                 ("Whole name (exact:)".into(), Pick::Modifier("exact:")),
                 ("Match case (case:)".into(), Pick::Modifier("case:")),
                 ("Regular expression (regex:)".into(), Pick::Prompt("regex:")),
@@ -158,7 +159,7 @@ pub(crate) fn chips_of(w: &Word) -> Vec<Chip> {
         WordKey::Ext => v.push(Chip::Type),
         WordKey::Size | WordKey::Compare => v.push(Chip::Size),
         WordKey::Date => v.push(Chip::Modified),
-        WordKey::Depth | WordKey::Regex => v.push(Chip::More),
+        WordKey::Depth | WordKey::Regex | WordKey::Compressed => v.push(Chip::More),
         WordKey::Text => {
             if w.path {
                 v.push(Chip::Where);
@@ -212,6 +213,7 @@ pub(crate) fn lit(text: &str) -> [Option<String>; 6] {
         match w.key {
             WordKey::Depth => add(format!("depth {}", w.value)),
             WordKey::Regex => add("regex".into()),
+            WordKey::Compressed => add(if w.value.is_empty() { "compressed".into() } else { format!("compressed {}", w.value) }),
             _ => {
                 if w.exact {
                     add("whole name".into());
@@ -323,7 +325,7 @@ pub(crate) fn append(text: &str, term: &str) -> (String, usize) {
 /// sort go (a depth replaces a depth; a regex a regex).
 pub(crate) fn put(text: &str, chip: Chip, term: &str) -> (String, usize) {
     let base = if chip == Chip::More {
-        let key = if term.starts_with("depth:") { WordKey::Depth } else { WordKey::Regex };
+        let key = if term.starts_with("depth:") { WordKey::Depth } else if term.starts_with("compressed:") { WordKey::Compressed } else { WordKey::Regex };
         let words = Query::words(text);
         let edits: Vec<Edit> = words
             .iter()
@@ -361,7 +363,7 @@ pub(crate) struct Suggestions {
     pub(crate) items: Vec<(String, String)>,
 }
 
-const KEYWORDS: [&str; 10] = ["ext:", "dm:", "size:", "depth:", "regex:", "path:", "case:", "exact:", "folder:", "file:"];
+const KEYWORDS: [&str; 11] = ["ext:", "dm:", "size:", "depth:", "compressed:", "regex:", "path:", "case:", "exact:", "folder:", "file:"];
 const MODIFIERS: [&str; 7] = ["folder:", "file:", "case:", "exact:", "wholename:", "path:", "!"];
 const MAX_SUGGESTIONS: usize = 8;
 /// After `ext:` the seven families come first, then the scan's own types.

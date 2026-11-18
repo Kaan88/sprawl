@@ -36,6 +36,7 @@ const DIR: u8 = 1;
 const ABS: u8 = 2;
 /// The name is not ASCII: kept as it is in `odd`.
 const ODD: u8 = 4;
+const COMPRESSED: u8 = 8;
 /// No modified time.
 const NO_TIME: i64 = i64::MIN;
 
@@ -108,6 +109,7 @@ impl CompactIndex {
             let id = ix.parent.len() as u32;
             let node = &tree.nodes[old];
             let mut flags = if node.is_dir { DIR } else { 0 };
+            if node.is_compressed() { flags |= COMPRESSED; }
             let at = ix.blob.len();
             ix.starts.push(at as u32);
             let name = last_name(&node.name);
@@ -489,6 +491,7 @@ impl Item for CItem<'_> {
     fn is_dir(&self) -> bool {
         self.ix.flags[self.i] & DIR != 0
     }
+    fn compressed(&self) -> bool { self.ix.flags[self.i] & COMPRESSED != 0 }
     fn size(&self) -> u64 {
         self.ix.size[self.i]
     }
@@ -575,6 +578,24 @@ mod tests {
         let mut v: Vec<PathBuf> = c.search(q, &AtomicBool::new(false)).unwrap().into_iter().map(|i| c.path_of(i)).collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn compressed_queries_agree_and_do_not_guess_from_links_or_sizes() {
+        let mut t = sample();
+        let files: Vec<usize> = t.nodes.iter().enumerate().filter(|(_, n)| !n.is_dir).map(|(i, _)| i).take(3).collect();
+        t.nodes[files[0]].attributes = crate::attr::COMPRESSED;
+        t.nodes[files[1]].attributes = crate::attr::REPARSE_POINT | crate::attr::WOF;
+        t.nodes[files[2]].attributes = crate::attr::REPARSE_POINT;
+        t.nodes[files[2]].allocated = 0;
+        let c = CompactIndex::build(&t);
+        for query in ["compressed:", "compressed:yes", "compressed:no", "!compressed:", "file: compressed:", "compressed:true|ext:vdf"] {
+            let q = Query::parse(query);
+            assert!(q.errors().is_empty(), "{query}");
+            assert_eq!(compact_paths(&c, &q), tree_paths(&t, &q), "{query}");
+        }
+        assert_eq!(tree_paths(&t, &Query::parse("compressed:")).len(), 2);
+        assert!(!Query::parse("compressed:unknown").errors().is_empty());
     }
 
     #[test]

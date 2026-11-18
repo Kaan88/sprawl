@@ -22,6 +22,7 @@ pub mod config;
 pub mod confidence;
 pub mod dupes;
 pub mod export;
+pub mod exclusions;
 pub mod exe_installers;
 pub mod facts;
 pub mod kinds;

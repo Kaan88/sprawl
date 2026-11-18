@@ -122,6 +122,7 @@ impl Item for NodeItem<'_> {
     fn is_dir(&self) -> bool {
         self.tree.nodes[self.i].is_dir
     }
+    fn compressed(&self) -> bool { self.tree.nodes[self.i].is_compressed() }
     fn size(&self) -> u64 {
         self.tree.nodes[self.i].size
     }

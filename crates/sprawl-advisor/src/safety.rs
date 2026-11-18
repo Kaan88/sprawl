@@ -64,6 +64,7 @@ impl fmt::Display for Rejection {
 
 /// Paths that must never be deleted or moved.
 pub struct Never {
+    excluded: Vec<std::path::PathBuf>,
     patterns: Vec<(String, Pattern)>,
     user_data: Vec<Pattern>,
     /// A pattern kept an unexpanded `%VAR%`: fail closed.
@@ -380,7 +381,7 @@ impl Never {
             .iter()
             .filter(|p| !p.contains("(x86)") && !p.contains("W6432"))
             .any(|p| crate::rules::expand(p).contains('%'));
-        Never { patterns, user_data: USER_DATA.iter().map(|p| Pattern::new(p)).collect(), incomplete }
+        Never { excluded: crate::exclusions::configured(), patterns, user_data: USER_DATA.iter().map(|p| Pattern::new(p)).collect(), incomplete }
     }
 
     /// Every `%VAR%` entry could be worked out. When not, callers refuse destructive actions.
@@ -488,6 +489,15 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
 
 /// [`check`] with the cache carve-outs given (the tests' fixtures can't sit in `X:\Users\...`).
 pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[CacheCarveOut], home: Option<&std::path::Path>, places: Option<&crate::privacy::Places>) -> Result<Finding, Rejection> {
+    let member_excluded = match &f.action {
+        Some(crate::finding::Action::Set { files, .. }) => files.iter().any(|p| crate::exclusions::intersects(p, &never.excluded)),
+        Some(crate::finding::Action::Link { keep, copies }) => std::iter::once(keep).chain(copies).any(|p| crate::exclusions::intersects(p, &never.excluded)),
+        _ => false,
+    };
+    if (!matches!(f.remedy, Remedy::Info) || f.action.is_some() || f.command.is_some())
+        && (member_excluded || crate::exclusions::intersects(&f.path, &never.excluded)) {
+        return Err(Rejection::Never("a folder excluded in Settings > Scanning (or a folder containing it)".into()));
+    }
     if tree.method == sprawl_core::ScanMethod::Csv {
         return Err(Rejection::NotAScan);
     }
@@ -814,6 +824,14 @@ mod tests {
             forced_from: None,
         };
         assert!(f.other_account());
+        let mut excluded = Never::default_list();
+        excluded.excluded = vec![f.path.join("skipped")];
+        let empty = Tree { root_path: f.path.clone(), nodes: vec![], errors: 0, method: sprawl_core::ScanMethod::Walk };
+        assert!(matches!(check_in(&f, &empty, &excluded, &[], None, None), Err(Rejection::Never(_))), "an unscanned child forbids a parent cleanup");
+        let mut linked = f.clone();
+        linked.path = r"Z:\other".into();
+        linked.action = Some(crate::finding::Action::Link { keep: linked.path.clone(), copies: vec![f.path.join("skipped/copy")] });
+        assert!(matches!(check_in(&linked, &empty, &excluded, &[], None, None), Err(Rejection::Never(_))), "a link member cannot bypass exclusion");
         let mut out = f.clone();
         other_account_floor(&mut out, f.other_account());
         assert_eq!(out.risk, Risk::Amber);

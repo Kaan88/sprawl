@@ -855,7 +855,7 @@ impl State {
                                 self.advisor.dupes_note = Some(match (n, d.partial) {
                                     (0, false) => "No duplicate files of 50 MB or more.".to_string(),
                                     (0, true) => "Stopped before finding duplicates.".to_string(),
-                                    (_, p) => format!("{n} sets of duplicates: {} in copies beyond one of each{}.", sprawl_core::format_size(d.wasted), if p { " (stopped early: there may be more)" } else { "" }),
+                                    (_, p) => format!("{n} sets of duplicates: {} in copies beyond one of each{}.", crate::format::size(d.wasted), if p { " (stopped early: there may be more)" } else { "" }),
                                 });
                                 self.append_findings(d.findings);
                             }
@@ -2959,7 +2959,7 @@ impl State {
         let mut t = String::from("# What the user has ticked for Clean up now\n");
         for (_, f) in picked.iter().take(60) {
             let how = if f.forced_from.is_some() { "; ticked by the user although Sprawl doesn't tick it, goes to the Recycle Bin" } else { "" };
-            t += &format!("- [{:?}] {}: {} ({} bytes): {}{how}\n", f.risk, f.title, sprawl_core::format_size(f.bytes), f.bytes, f.path.display());
+            t += &format!("- [{:?}] {}: {} ({} bytes): {}{how}\n", f.risk, f.title, crate::format::size(f.bytes), f.bytes, f.path.display());
         }
         if picked.len() > 60 {
             t += &format!("...and {} more\n", picked.len() - 60);
@@ -2980,7 +2980,7 @@ impl State {
         for &i in ids.iter().take(80) {
             let f = &r.findings[i];
             let ticked = if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { " (ticked)" } else { "" };
-            t += &format!("- {} [{:?}]: {}: {} [id: finding/{i}]{ticked}\n", f.title, f.risk, sprawl_core::format_size(f.bytes), f.path.display());
+            t += &format!("- {} [{:?}]: {}: {} [id: finding/{i}]{ticked}\n", f.title, f.risk, crate::format::size(f.bytes), f.path.display());
         }
         t += "If the user wants to know what to clean, call suggest_ticks with the finding ids you recommend, and say why in the answer.";
         Some(t)

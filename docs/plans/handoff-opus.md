@@ -79,7 +79,7 @@ Everything in the wizard, plus what the final report's section 9 lists, plus the
 
 | Setting | Today | Default | Section |
 |---|---|---|---|
-| Units; binary (GiB, shown as GB) or decimal | Options menu; binary only | Best fit, binary | General |
+| Units; binary (GiB) or decimal (GB) | Options menu and Settings; decimal toggle | Best fit, binary | General |
 | Scan as soon as a drive is picked | Options menu | on | Scanning |
 | Watch for changes after a scan ("Live Change Pulses") | Options menu | on | Scanning |
 | Folders to skip when scanning | none | empty | Scanning |

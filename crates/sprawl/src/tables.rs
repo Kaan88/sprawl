@@ -49,6 +49,15 @@ pub(crate) const TREE: &[Col] = &[
     col("Files", 84.0, true, Key::Files),
     col("Owner", 150.0, false, Key::None),
 ];
+const TREE_NARROW: &[Col] = &[
+    col("Folder", -1.0, false, Key::Name),
+    col("% of Parent", 100.0, true, Key::Size),
+    col("Size", 92.0, true, Key::Size),
+    col("Allocated", 92.0, true, Key::Alloc),
+    col("Items", 0.0, true, Key::Items),
+    col("Files", 0.0, true, Key::Files),
+    col("Owner", 0.0, false, Key::None),
+];
 pub(crate) const FILES: &[Col] = &[
     col("File Name", -2.0, false, Key::Name),
     col("Size", 92.0, true, Key::Size),
@@ -84,6 +93,7 @@ pub(crate) enum Which {
 
 /// Sort order and what part of each table currently exists.
 pub(crate) struct Tables {
+    compact_tree: bool,
     /// (column, descending)
     pub(crate) tree_sort: (usize, bool),
     pub(crate) files_sort: (usize, bool),
@@ -101,6 +111,7 @@ pub(crate) struct Tables {
 impl Default for Tables {
     fn default() -> Self {
         Tables {
+            compact_tree: false,
             tree_sort: (2, true),
             files_sort: (1, true),
             ext_sort: (4, true),
@@ -191,6 +202,7 @@ pub(crate) fn col_defs(cols: &[Col]) -> String {
 fn header(cols: &[Col], sort: (usize, bool)) -> String {
     let mut s = format!(r##"<Grid {} Height="30" Background="#30000000">{}"##, ui::NS, col_defs(cols));
     for (i, c) in cols.iter().enumerate() {
+        if c.width == 0.0 { continue; }
         let align = if c.right { "Right" } else { "Left" };
         let arrow = if i == sort.0 { if sort.1 { "&#xE70D;" } else { "&#xE70E;" } } else { "" };
         let colour = if i == sort.0 { "#FFE6EBF5" } else { "#FFB9C2D6" };
@@ -266,7 +278,7 @@ impl State {
         } else if self.view == View::Search {
             (FILES_LIKE, self.search.sort)
         } else {
-            (TREE, self.tables.tree_sort)
+            (if self.tables.compact_tree { TREE_NARROW } else { TREE }, self.tables.tree_sort)
         }
     }
 
@@ -425,6 +437,15 @@ impl State {
             Which::Exts => ("ExtScroll", self.exts.len()),
         };
         let Ok(sv) = find::<ScrollViewer>(&self.root, scroll) else { return };
+        if which == Which::Main && !matches!(self.view, View::Files | View::Search) {
+            let width = sv.ViewportWidth().unwrap_or(0.0);
+            let compact = width > 0.0 && width < 900.0;
+            if compact != self.tables.compact_tree {
+                self.tables.compact_tree = compact;
+                self.refresh_rows();
+                return;
+            }
+        }
         let off = sv.VerticalOffset().unwrap_or(0.0);
         let vh = sv.ViewportHeight().unwrap_or(0.0);
         let vh = if vh > 0.0 { vh } else { 900.0 };
@@ -520,19 +541,20 @@ impl State {
         let files = if node.is_dir { thousands(node.files) } else { String::new() };
         let hidden = n != ROOT && (node.is_hidden() || node.is_system());
         let fg = if hidden { "#FF7D8494" } else { "#FFFFFFFF" };
+        let name = if node.is_compressed() { format!("{} · compressed", self.label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", self.label(n)) } else { self.label(n) };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="6" Margin="{indent},0,0,0"><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="#FF8E97AA"/><FontIcon Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></StackPanel>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
-            cols = col_defs(TREE),
+            r##"<Grid Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="#FF8E97AA"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            cols = col_defs(self.main_cols().0),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
-            name = ui::esc(&self.label(n)),
+            name = ui::esc(&name),
             bar = pct_bar(1, pct, "#FF3A7BD5", "#FF00D2FF"),
             c2 = cell(2, &self.size(node.size)),
             c3 = cell(3, &self.size(self.alloc[n])),
-            c4 = cell(4, &items),
-            c5 = cell(5, &files),
+            c4 = if self.tables.compact_tree { String::new() } else { cell(4, &items) },
+            c5 = if self.tables.compact_tree { String::new() } else { cell(5, &files) },
             // the app that owns it; dimmed where it just continues from the parent
-            c6 = match self.owner_of(n) {
+            c6 = match self.owner_of(n).filter(|_| !self.tables.compact_tree) {
                 // an uninstall mark where the app starts, when Sprawl knows where it is uninstalled
                 Some((name, inherited, can_uninstall)) => format!(
                     r##"<TextBlock Grid.Column="6" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,

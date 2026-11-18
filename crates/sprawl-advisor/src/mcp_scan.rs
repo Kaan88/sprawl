@@ -351,7 +351,7 @@ impl Index {
     fn start(&mut self, root: PathBuf) -> u64 {
         self.next += 1;
         let id = self.next;
-        let progress = Progress::new();
+        let progress = crate::exclusions::progress();
         let saving = Arc::new(AtomicBool::new(false));
         let (p, sv, r) = (progress.clone(), saving.clone(), root.clone());
         let taken = SystemTime::now();

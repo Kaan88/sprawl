@@ -150,7 +150,7 @@ fn growth_alerts(settings: &crate::settings::Settings, state: &mut BTreeMap<Stri
         if let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
             // low priority for CPU and disk while it reads
             unsafe { SetPriorityClass(-1, PROCESS_MODE_BACKGROUND_BEGIN) };
-            let progress = sprawl_core::Progress::new();
+            let progress = sprawl_advisor::exclusions::progress();
             if let Ok(tree) = sprawl_core::walk::walk_with(&profile, &progress, 2) {
                 let cap = (settings.num("snapshot_cap_mb").unwrap_or(1024.0) * 1024.0 * 1024.0) as u64;
                 let _ = history::prepare(&tree, std::time::SystemTime::now(), false).save(&base, cap);

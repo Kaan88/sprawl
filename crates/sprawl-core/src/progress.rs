@@ -9,6 +9,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
+fn exclusion_key(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    let s = if let Some(unc) = s.strip_prefix(r"\\?\unc\") { format!(r"\\{unc}") } else { s.strip_prefix(r"\\?\").unwrap_or(&s).to_string() };
+    s.trim_end_matches('\\').to_string()
+}
+
 /// How a tree was produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScanMethod {
@@ -66,6 +72,7 @@ struct Live {
 /// function running on a background thread, and poll [`Progress::snapshot`] from the UI.
 #[derive(Debug, Default)]
 pub struct Progress {
+    excluded: Vec<String>,
     files: AtomicU64,
     folders: AtomicU64,
     bytes: AtomicU64,
@@ -106,6 +113,19 @@ pub struct ProgressSnapshot {
 impl Progress {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Exact absolute folder scopes, omitted before enumeration. Immutable for this scan.
+    pub fn with_exclusions(paths: &[std::path::PathBuf]) -> Arc<Self> {
+        Arc::new(Self { excluded: paths.iter().map(|p| exclusion_key(&crate::canonical_root(p))).collect(), ..Self::default() })
+    }
+
+    pub fn has_exclusions(&self) -> bool { !self.excluded.is_empty() }
+
+    pub fn excludes(&self, path: &std::path::Path) -> bool {
+        if self.excluded.is_empty() { return false; }
+        let key = exclusion_key(path);
+        self.excluded.iter().any(|p| key == *p || key.strip_prefix(p).is_some_and(|s| s.starts_with('\\')))
     }
 
     /// A consistent-enough copy for drawing. Cheap: one short lock.

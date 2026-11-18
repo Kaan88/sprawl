@@ -106,9 +106,11 @@ pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 57] = [
+pub static PREFS: [Pref; 59] = [
     // General
-    p("units", Sec::General, "Sizes in", "How sizes are written. Sizes are binary: 1 GB is 1,024 MB.", Kind::Choice(&UNITS, 0)),
+    p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons, for example D:\\Games; C:\\Work\\Private. New app, Search, Cleaners and MCP scans omit them. Uses folder listing instead of MFT. Cleanup actions covering a skipped folder are refused. Existing History and CSV imports remain unchanged; rescan to replace old results.", Kind::Text("D:\\Games; C:\\Work\\Private")),
+    p("units", Sec::General, "Sizes in", "Best fit or a fixed unit. The base below determines GB versus GiB. Search sizes, goals and alert thresholds keep their stated binary meaning.", Kind::Choice(&UNITS, 0)),
+    p("decimal", Sec::General, "Use decimal sizes (GB)", "Off: binary sizes, 1 GiB = 1,024 MiB. On: decimal sizes, 1 GB = 1,000 MB. Changes size displays, not byte counts or search and cleanup thresholds.", Kind::Switch(false)),
     p(
         "startTab",
         Sec::General,
@@ -291,6 +293,8 @@ mod tests {
     fn defaults_are_the_documented_ones() {
         let documented: &[(&str, &str)] = &[
             ("units", "0"),
+            ("decimal", "0"),
+            ("scanExclude", ""),
             ("startTab", "0"),
             ("aiWebLookup", "0"),
             ("oUpdates", "1"),

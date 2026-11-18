@@ -251,6 +251,7 @@ impl State {
                 prefs::CAPS_MB.iter().position(|&c| c == cap).unwrap_or(1).to_string()
             }
             "uninstaller" => self.settings.get("uninstaller").unwrap_or("").to_string(),
+            "scanExclude" => self.settings.get("scanExclude").unwrap_or("").to_string(),
             "searchDrivesOn" => self.settings.get("searchDrivesOn").unwrap_or("").to_string(),
             // the administrator switches: in the store only an administrator can write
             k if crate::admin::is_switch(k) => b(crate::admin::store::get(k)),
@@ -300,6 +301,16 @@ impl State {
                 let _ = c.save();
             }
             "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
+            "decimal" => {
+                self.settings.set_bool("decimal", yes);
+                crate::format::DECIMAL.store(yes, std::sync::atomic::Ordering::Relaxed);
+                self.refresh_rows();
+                self.refresh_exts();
+                if let Some(t) = &self.tree { let root = t.root_path.clone(); self.update_header(&root); }
+                if self.view == crate::state::View::Advisor { self.render_advisor(); }
+                self.map.dirty = true;
+                self.map.views.stamp = 0;
+            }
             "startTab" => self.settings.set("startTab", idx(prefs::OPEN_ON.len())),
             "alertFreeGb" => self.settings.set("alertFreeGb", idx(prefs::ALERT_AT.len())),
             "alertGrowGb" => self.settings.set("alertGrowGb", idx(prefs::GROW_AT.len())),
@@ -313,6 +324,7 @@ impl State {
             }
             "snapshot_cap_mb" => self.settings.set("snapshot_cap_mb", prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),
             "uninstaller" => self.settings.set("uninstaller", v.trim().trim_matches('"')),
+            "scanExclude" => self.settings.set("scanExclude", v.trim()),
             "searchDrivesOn" => {
                 self.settings.set("searchDrivesOn", v);
                 self.settings.set("searchDrivesOff", "");
@@ -788,6 +800,11 @@ impl State {
     fn wizard_finish(&mut self) {
         self.prefs_harvest();
         let mut notes: Vec<String> = Vec::new();
+        if let Err(e) = sprawl_advisor::exclusions::parse(self.prefs.draft.get("scanExclude").map_or("", String::as_str)) {
+            self.prefs.note = Some(e);
+            self.wizard_show();
+            return;
+        }
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
         let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: web };
@@ -819,6 +836,7 @@ impl State {
             })
             .collect();
         // the administrator switches as they are before this save, to tell a real change
+        let exclusions_changed = changed.iter().any(|(p, _)| p.key == "scanExclude");
         let admin_before: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         for (p, v) in changed {
             // into their store; a write that fails is said in the message, never "saved"
@@ -840,6 +858,7 @@ impl State {
         }
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
+        if exclusions_changed { self.advisor_refresh(); }
         // the administrator switches take effect now, not at the next start
         let admin_after: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         let admin_changed = admin_before != admin_after;

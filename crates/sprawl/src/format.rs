@@ -2,6 +2,22 @@
 
 use std::path::PathBuf;
 
+pub(crate) static DECIMAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn unit_base() -> (f64, [&'static str; 5]) {
+    if DECIMAL.load(std::sync::atomic::Ordering::Relaxed) { (1000.0, ["bytes", "KB", "MB", "GB", "TB"]) }
+    else { (1024.0, ["bytes", "KiB", "MiB", "GiB", "TiB"]) }
+}
+
+pub(crate) fn size(v: u64) -> String {
+    let (base, labels) = unit_base();
+    if v < base as u64 { return format!("{v} bytes"); }
+    let mut amount = v as f64;
+    let mut unit = 0;
+    while amount >= base && unit < labels.len() - 1 { amount /= base; unit += 1; }
+    format!("{amount:.1} {}", labels[unit])
+}
+
 pub(crate) fn thousands(v: u64) -> String {
     let s = v.to_string();
     let mut out = String::new();

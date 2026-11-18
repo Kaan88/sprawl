@@ -305,7 +305,7 @@ pub fn parse_record(rec: &mut [u8], frn: u64) -> Option<Parsed> {
             AT_STANDARD_INFORMATION if !is_non_resident(a) => {
                 if let Some(v) = resident_value(a) {
                     p.modified = u64le(v, 0x08).unwrap_or(0);
-                    p.attrs = u32le(v, 0x20).unwrap_or(0);
+                    p.attrs = u32le(v, 0x20).unwrap_or(0) | (p.attrs & attr::WOF);
                     p.has_std = true;
                 }
             }
@@ -337,6 +337,9 @@ pub fn parse_record(rec: &mut [u8], frn: u64) -> Option<Parsed> {
                     }
                     p.data = Some((size, alloc));
                 }
+            }
+            0xC0 if !is_non_resident(a) => {
+                if resident_value(a).and_then(|v| u32le(v, 0)) == Some(0x8000_0017) { p.attrs |= attr::WOF; }
             }
             _ => {}
         }
@@ -416,9 +419,10 @@ impl Index {
             r.seq = p.seq;
             if p.has_std {
                 r.modified = p.modified;
-                r.attrs = p.attrs;
+                r.attrs = p.attrs | (r.attrs & attr::WOF);
             }
         }
+        r.attrs |= p.attrs & attr::WOF;
         if let Some(n) = p.name {
             let rank = n.rank * 2 + u8::from(p.base != 0);
             if rank < r.rank && n.parent < u64::from(NONE32) {
@@ -1219,6 +1223,22 @@ mod tests {
         assert!(decode_runlist(&[0x11, 0x01, 0xFF], 0).is_none());
         // Starting VCN carries through.
         assert_eq!(decode_runlist(&[0x11, 0x02, 0x10, 0x00], 100).unwrap()[0].vcn, 100);
+    }
+
+    #[test]
+    fn wof_tag_is_preserved_in_either_attribute_order() {
+        for first in [true, false] {
+            let mut b = RecBuilder::new(1024, 9, REC_IN_USE, 0);
+            if first { b.resident(0xC0, &0x8000_0017u32.to_le_bytes()); }
+            b.std_info(0, attr::REPARSE_POINT);
+            if !first { b.resident(0xC0, &0x8000_0017u32.to_le_bytes()); }
+            let p = parse_record(&mut b.finish(0xABCD), 42).unwrap();
+            assert_eq!(p.attrs & attr::WOF, attr::WOF);
+        }
+        let mut b = RecBuilder::new(1024, 9, REC_IN_USE, 0);
+        b.std_info(0, attr::REPARSE_POINT);
+        b.resident(0xC0, &0xA000_000Cu32.to_le_bytes()); // a symlink is not compression
+        assert_eq!(parse_record(&mut b.finish(0xABCD), 42).unwrap().attrs & attr::WOF, 0);
     }
 
     #[test]

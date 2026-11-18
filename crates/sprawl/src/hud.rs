@@ -197,7 +197,7 @@ impl State {
         set(&els.pct, format!("{:.0}%", fraction * 100.0));
         set(&els.files, thousands(live.files));
         set(&els.folders, thousands(live.folders));
-        set(&els.bytes, sprawl_core::format_size(live.bytes));
+        set(&els.bytes, crate::format::size(live.bytes));
         set(&els.rate, thousands(h.rates.back().copied().unwrap_or(0.0) as u64));
         set(&els.method, if live.phase.is_empty() { live.method.to_uppercase() } else { format!("{}  ·  {}", live.method.to_uppercase(), live.phase.to_uppercase()) });
 
@@ -304,7 +304,7 @@ impl State {
             let _ = fe.SetMargin(Thickness { Left: 0.0, Top: lane.y as f64, Right: 0.0, Bottom: 0.0 });
             let shown = if ext == "(none)" { "(none)".to_string() } else { format!(".{ext}") };
             let _ = name.SetText(&HSTRING::from(shown));
-            let _ = val.SetText(&HSTRING::from(sprawl_core::format_size(e.1)));
+            let _ = val.SetText(&HSTRING::from(crate::format::size(e.1)));
             let _ = bar.SetWidth(lane.width.max(2.0) as f64);
             if let Some(b) = brush(rank_colour(rank)) {
                 let _ = bar.SetBackground(&b);
