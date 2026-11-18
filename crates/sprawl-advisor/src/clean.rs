@@ -1339,13 +1339,27 @@ pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<P
 /// Why a built-in tool command won't run from this Sprawl: it is elevated and the command starts
 /// a program from a folder the user can change (see [`elevated_tool_ok`]). None when it runs.
 pub fn elevated_refusal(command: &str) -> Option<String> {
-    refusal_unless_allowed(elevated_risk(command), crate::ELEVATED_USER_TOOLS.load(std::sync::atomic::Ordering::Relaxed))
+    match checked_tool_elevation(sprawl_core::elevation()) {
+        Ok(elevated) => refusal_unless_allowed(elevated_risk_at(command, elevated), crate::ELEVATED_USER_TOOLS.load(Ordering::Relaxed)),
+        Err(error) => Some(error),
+    }
+}
+
+fn checked_tool_elevation(status: std::io::Result<bool>) -> Result<bool, String> {
+    status.map_err(|_| "Windows could not establish this process's elevation; no owner command will run.".into())
 }
 
 /// Why `command` would not be run as administrator (see [`elevated_tool_ok`]): None when Sprawl
 /// isn't elevated or the command's programs are in system folders.
 pub fn elevated_risk(command: &str) -> Option<String> {
-    if !sprawl_core::is_elevated() {
+    match checked_tool_elevation(sprawl_core::elevation()) {
+        Ok(elevated) => elevated_risk_at(command, elevated),
+        Err(error) => Some(error),
+    }
+}
+
+fn elevated_risk_at(command: &str, elevated: bool) -> Option<String> {
+    if !elevated {
         return None;
     }
     let Some(sys) = system_dir() else { return Some("Windows' system folder could not be established, so this elevated command cannot be checked.".into()); };
@@ -1388,8 +1402,11 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
     let Some(sys) = system_dir() else { return o.problem(Path::new(command), "Windows' System32 folder wasn't found") };
     let command = system_command(command, &sys);
     let command = command.as_str();
-    let elevated = sprawl_core::is_elevated();
-    if let Some(why) = elevated_refusal(command) {
+    let elevated = match checked_tool_elevation(sprawl_core::elevation()) {
+        Ok(elevated) => elevated,
+        Err(error) => return o.problem(Path::new(command), error),
+    };
+    if let Some(why) = refusal_unless_allowed(elevated_risk_at(command, elevated), crate::ELEVATED_USER_TOOLS.load(Ordering::Relaxed)) {
         return o.problem(Path::new(command), why);
     }
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
@@ -1796,6 +1813,9 @@ mod tests {
     /// A tool command from the user's folders, as administrator: held back unless allowed.
     #[test]
     fn a_risky_tool_runs_only_when_allowed() {
+        assert!(checked_tool_elevation(Err(std::io::Error::other("token unavailable"))).is_err(), "unknown status is rejected before the override is considered");
+        assert_eq!(checked_tool_elevation(Ok(false)).unwrap(), false);
+        assert_eq!(checked_tool_elevation(Ok(true)).unwrap(), true);
         let risk = Some(r"not run as administrator: npm is C:\Users\sam\npm.cmd".to_string());
         assert!(refusal_unless_allowed(risk.clone(), false).is_some_and(|w| w.contains("Settings > Scanning")));
         assert_eq!(refusal_unless_allowed(risk, true), None);

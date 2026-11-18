@@ -308,7 +308,7 @@ impl Index {
     pub fn scan_call(&mut self, name: &str, input: &Value) -> Result<String, String> {
         if !is_scan_tool(name) { return Err(format!("there is no tool called {name}")); }
         // an app running as administrator would scan with its rights: the server does it
-        if self.in_app && sprawl_core::is_elevated() {
+        if self.in_app && !sprawl_core::elevation().is_ok_and(|elevated| !elevated) {
             return Err(PASS_TO_SERVER.into());
         }
         self.poll();
