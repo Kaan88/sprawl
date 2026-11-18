@@ -21,7 +21,7 @@ fn child(tree: &Tree, n: usize, name: &str) -> Option<usize> {
 }
 
 fn dirs(tree: &Tree, n: usize) -> Vec<usize> {
-    tree.nodes[n].children.iter().copied().filter(|&c| tree.nodes[c].is_dir && !tree.nodes[c].is_reparse_point()).collect()
+    tree.nodes[n].children.iter().copied().filter(|&c| tree.nodes[c].is_dir && !tree.nodes[c].is_reparse_point() && tree.nodes[c].attributes & crate::dupes::NOT_LOCAL == 0).collect()
 }
 
 /// `1.99.1` / `v18.17.0` / `18` as numbers, for "newest"; None when it isn't a version.
@@ -39,6 +39,28 @@ pub struct Pins {
     /// Android SDK packages a Gradle file asks for, as sdkmanager names them
     /// (`platforms;android-34`, `build-tools;34.0.0`, `ndk;28.2.13676358`).
     pub android: Vec<(PathBuf, String)>,
+    pub rust_unknown: bool,
+    pub node_unknown: bool,
+    pub android_unknown: bool,
+}
+
+fn bounded_text(path: &Path, max: u64) -> Result<String, String> {
+    use std::io::Read;
+    if crate::exclusions::intersects(path, &crate::exclusions::configured()) { return Err("This file is excluded".into()); }
+    let mut held = sprawl_core::local::file(path, max).map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    held.file.read_to_string(&mut text).map_err(|e| e.to_string())?;
+    Ok(text)
+}
+
+fn link_target(path: &Path) -> Option<PathBuf> {
+    if crate::exclusions::intersects(path, &crate::exclusions::configured()) { return None; }
+    let path = sprawl_core::local::lexical(path).ok()?;
+    let _parent = sprawl_core::local::directory(path.parent()?).ok()?;
+    let target = std::fs::read_link(&path).ok()?;
+    let target = if target.is_absolute() { target } else { path.parent()?.join(target) };
+    if crate::exclusions::intersects(&target, &crate::exclusions::configured()) { return None; }
+    Some(sprawl_core::local::directory(&target).ok()?.path.clone())
 }
 
 /// The Android SDK packages one Gradle build file asks for: `compileSdk = 34` (or
@@ -86,42 +108,39 @@ pub fn gradle_wants(text: &str) -> Vec<String> {
 }
 
 /// Read the version files at the top of each project the engine found. They are a few bytes
-/// each; a file that can't be read pins nothing.
+/// each; an unreadable/invalid pin suppresses that toolchain's uninstall advice.
 pub fn pins(tree: &Tree, projects: &[crate::projects::Project]) -> Pins {
-    let mut p = Pins::default();
+    let mut p = Pins { rust_unknown: tree.errors != 0, node_unknown: tree.errors != 0, android_unknown: tree.errors != 0, ..Default::default() };
     for pr in projects {
         let dir = tree.path_of(pr.node);
         for (name, rust) in [("rust-toolchain.toml", true), ("rust-toolchain", true), (".nvmrc", false), (".node-version", false)] {
             if child(tree, pr.node, name).is_none() {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(dir.join(name)) else { continue };
-            let text: String = text.chars().take(2000).collect();
+            let Ok(text) = bounded_text(&dir.join(name), 16 << 10) else {
+                if rust { p.rust_unknown = true; } else { p.node_unknown = true; }
+                continue;
+            };
             let v = if name == "rust-toolchain.toml" {
-                // channel = "1.99.1"
-                text.lines().find_map(|l| {
-                    let (k, v) = l.split_once('=')?;
-                    (k.trim() == "channel").then(|| v.trim().trim_matches(['"', '\'']).to_string())
-                })
+                toml::from_str::<toml::Value>(&text).ok().and_then(|v| v.get("toolchain")?.get("channel")?.as_str().map(str::to_string))
             } else {
                 text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string)
             };
-            if let Some(v) = v.filter(|v| !v.is_empty()) {
+            if let Some(v) = v.filter(|v| plain(v) && (rust || numbers(v).is_some())) {
                 if rust { &mut p.rust } else { &mut p.node }.push((dir.clone(), v));
-            }
+            } else if rust { p.rust_unknown = true; } else { p.node_unknown = true; }
         }
         // Gradle: the project's own build files and its modules' (one level down), 40 at most
         let mut gradle: Vec<PathBuf> = Vec::new();
         for n in std::iter::once(pr.node).chain(dirs(tree, pr.node)) {
             for name in ["build.gradle", "build.gradle.kts"] {
-                if child(tree, n, name).is_some() && gradle.len() < 40 {
-                    gradle.push(tree.path_of(n).join(name));
+                if child(tree, n, name).is_some() {
+                    if gradle.len() < 40 { gradle.push(tree.path_of(n).join(name)); } else { p.android_unknown = true; }
                 }
             }
         }
         for g in gradle {
-            let Ok(text) = std::fs::read_to_string(&g) else { continue };
-            let text: String = text.chars().take(200_000).collect();
+            let Ok(text) = bounded_text(&g, 256 << 10) else { p.android_unknown = true; continue };
             p.android.extend(gradle_wants(&text).into_iter().map(|w| (dir.clone(), w)));
         }
     }
@@ -161,6 +180,7 @@ fn home() -> Option<PathBuf> {
 /// Everything F2 finds in `tree` (empty when the toolchains' folders aren't in it). `apps`
 /// are the installed apps, for the versions only their uninstaller removes (.NET, Python).
 pub fn find(tree: &Tree, projects: &[crate::projects::Project], apps: &[crate::facts::App]) -> Vec<Finding> {
+    if tree.method == sprawl_core::ScanMethod::Csv { return Vec::new(); }
     let pins = pins(tree, projects);
     let mut out = rust(tree, &pins);
     out.extend(node(tree, &pins));
@@ -191,7 +211,7 @@ fn avd_images() -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out = Vec::new();
     for e in rd.flatten().take(200) {
-        let Ok(text) = std::fs::read_to_string(e.path().join("config.ini")) else { continue };
+        let Ok(text) = bounded_text(&e.path().join("config.ini"), 64 << 10) else { continue };
         for l in text.lines() {
             if let Some((k, v)) = l.split_once('=') {
                 if k.trim().starts_with("image.sysdir") {
@@ -212,6 +232,7 @@ fn sdkmanager(sdk: &Path) -> Option<PathBuf> {
 /// Older Android SDK packages: build-tools, platforms, system images and NDKs. Never the newest
 /// of each, one a Gradle file in the scan asks for, or an image an emulator uses.
 fn android(tree: &Tree, pins: &Pins) -> Vec<Finding> {
+    if pins.android_unknown { return Vec::new(); }
     let Some(sdk) = android_sdk() else { return Vec::new() };
     let Some(root) = crate::find_path(tree, &sdk) else { return Vec::new() };
     let Some(tool) = sdkmanager(&sdk) else { return Vec::new() };
@@ -307,29 +328,26 @@ fn rust(tree: &Tree, pins: &Pins) -> Vec<Finding> {
     let rustup = std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| home().map(|h| h.join(".rustup")));
     let Some(rustup) = rustup else { return Vec::new() };
     let Some(tc) = crate::find_path(tree, &rustup.join("toolchains")) else { return Vec::new() };
-    let settings = std::fs::read_to_string(rustup.join("settings.toml")).unwrap_or_default();
-    rust_from(tree, tc, &settings, pins)
+    let Ok(settings) = bounded_text(&rustup.join("settings.toml"), 256 << 10) else { return Vec::new(); };
+    let mut found = rust_from(tree, tc, &settings, pins);
+    if let Some(active) = std::env::var_os("RUSTUP_TOOLCHAIN") {
+        let Some(active) = active.to_str().filter(|v| plain(v)) else { return Vec::new(); };
+        if !dirs(tree, tc).iter().any(|&n| tree.nodes[n].name == active || tree.nodes[n].name.starts_with(&format!("{active}-"))) { return Vec::new(); }
+        found.retain(|f| !f.path.file_name().is_some_and(|name| name.to_string_lossy() == active || name.to_string_lossy().starts_with(&format!("{active}-"))));
+    }
+    found
 }
 
 fn rust_from(tree: &Tree, tc: usize, settings: &str, pins: &Pins) -> Vec<Finding> {
-    // default_toolchain = "stable-x86_64-pc-windows-msvc"; [overrides] "C:\\x" = "1.99.1-..."
-    let mut kept: Vec<(String, String)> = Vec::new();
-    let mut in_overrides = false;
-    for l in settings.lines() {
-        let l = l.trim();
-        if l.starts_with('[') {
-            in_overrides = l == "[overrides]";
-            continue;
-        }
-        let Some((k, v)) = l.split_once('=') else { continue };
-        let v = v.trim().trim_matches('"').to_string();
-        if k.trim() == "default_toolchain" {
-            kept.push((v, "your default".into()));
-        } else if in_overrides {
-            kept.push((v, format!("set for {}", k.trim().trim_matches('"').replace("\\\\", "\\"))));
-        }
-    }
+    if pins.rust_unknown { return Vec::new(); }
+    #[derive(serde::Deserialize)]
+    struct Settings { default_toolchain: String, #[serde(default)] overrides: std::collections::BTreeMap<String, String> }
+    let Ok(settings) = toml::from_str::<Settings>(settings) else { return Vec::new(); };
+    let mut kept = vec![settings.default_toolchain];
+    kept.extend(settings.overrides.into_values());
+    if kept.iter().any(|v| !plain(v)) { return Vec::new(); }
     let names: Vec<(usize, String)> = dirs(tree, tc).into_iter().map(|n| (n, tree.nodes[n].name.clone())).collect();
+    if names.len() < 2 || !names.iter().any(|(_, name)| name == &kept[0] || name.starts_with(&format!("{}-", kept[0]))) { return Vec::new(); }
     let all: Vec<&str> = names.iter().map(|(_, s)| s.as_str()).collect();
     let mut out = Vec::new();
     for (n, name) in &names {
@@ -340,11 +358,25 @@ fn rust_from(tree: &Tree, tc: usize, settings: &str, pins: &Pins) -> Vec<Finding
             continue;
         }
         let matches = |want: &str| name == want || name.starts_with(&format!("{want}-"));
-        if kept.iter().any(|(k, _)| matches(k)) {
+        if kept.iter().any(|k| matches(k)) {
             continue;
         }
         if pins.rust.iter().any(|(_, v)| matches(v)) {
             continue;
+        }
+        // Keep the newest numbered toolchain for each target, and the newest dated
+        // toolchain of each channel/target, even when the default is a rolling channel.
+        if numbered {
+            let target = name.strip_prefix(channel).unwrap_or("");
+            let version = numbers(channel).unwrap();
+            if !names.iter().any(|(_, other)| {
+                let c = other.split('-').next().unwrap_or("");
+                other.strip_prefix(c) == Some(target) && numbers(c).is_some_and(|v| v > version)
+            }) { continue; }
+        } else if dated {
+            let target = name.get(channel.len() + 11..).unwrap_or("");
+            if !names.iter().any(|(_, other)| other.starts_with(&format!("{channel}-"))
+                && other.get(channel.len() + 11..) == Some(target) && other > name) { continue; }
         }
         let others: Vec<&str> = all.iter().copied().filter(|o| o != name).collect();
         out.push(finding(
@@ -373,21 +405,28 @@ fn node(tree: &Tree, pins: &Pins) -> Vec<Finding> {
     let nvm_home = std::env::var_os("NVM_HOME").map(PathBuf::from).or_else(|| appdata.as_ref().map(|a| a.join("nvm")));
     if let Some(root) = nvm_home.as_ref().and_then(|h| crate::find_path(tree, h)) {
         let link = std::env::var_os("NVM_SYMLINK").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join("nodejs"));
-        let active = std::fs::read_link(&link).ok();
+        let active = link_target(&link);
         out.extend(node_from(tree, root, active.as_deref(), pins, "nvm", "nvm for Windows"));
     }
     // fnm: the default is the alias link aliases\default
     let fnm_dir = std::env::var_os("FNM_DIR").map(PathBuf::from).or_else(|| appdata.as_ref().map(|a| a.join("fnm")));
     if let Some(dir) = fnm_dir {
         if let Some(root) = crate::find_path(tree, &dir.join("node-versions")) {
-            let active = std::fs::read_link(dir.join("aliases").join("default")).ok();
-            out.extend(node_from(tree, root, active.as_deref(), pins, "fnm", "fnm"));
+            let default = link_target(&dir.join("aliases").join("default"));
+            let active = std::env::var_os("FNM_MULTISHELL_PATH").and_then(|p| link_target(Path::new(&p)));
+            if let (Some(default), Some(active)) = (default, active) {
+                let Some(n) = dirs(tree, root).into_iter().find(|&n| crate::finding::within(&default, &tree.path_of(n))) else { return out; };
+                let mut scoped = Pins { node: pins.node.clone(), node_unknown: pins.node_unknown, ..Default::default() };
+                scoped.node.push((dir.clone(), tree.nodes[n].name.clone()));
+                out.extend(node_from(tree, root, Some(&active), &scoped, "fnm", "fnm"));
+            }
         }
     }
     out
 }
 
 fn node_from(tree: &Tree, root: usize, active: Option<&Path>, pins: &Pins, tool: &str, tool_name: &str) -> Vec<Finding> {
+    if pins.node_unknown || active.is_none() { return Vec::new(); }
     let versions: Vec<(usize, String, Vec<u64>)> = dirs(tree, root)
         .into_iter()
         .filter_map(|n| {
@@ -402,6 +441,7 @@ fn node_from(tree: &Tree, root: usize, active: Option<&Path>, pins: &Pins, tool:
     let newest = versions.iter().map(|v| &v.2).max().cloned().unwrap_or_default();
     // the active one: the link names its folder (or a folder inside it)
     let is_active = |n: usize| active.is_some_and(|a| crate::finding::within(a, &tree.path_of(n)));
+    if !versions.iter().any(|(n, _, _)| is_active(*n)) { return Vec::new(); }
     let pinned = |v: &[u64]| {
         pins.node.iter().any(|(_, p)| {
             let Some(want) = numbers(p) else { return false };
@@ -480,8 +520,7 @@ pub fn handoff_pins(tree: &Tree, projects: &[crate::projects::Project]) -> Hando
     let mut p = HandoffPins::default();
     let read = |n: usize, name: &str| -> Option<String> {
         child(tree, n, name)?;
-        let t = std::fs::read_to_string(tree.path_of(n).join(name)).ok()?;
-        Some(t.chars().take(4000).collect())
+        bounded_text(&tree.path_of(n).join(name), 64 << 10).ok()
     };
     for pr in projects {
         if let Some(t) = read(pr.node, ".python-version") {
@@ -660,9 +699,11 @@ mod tests {
         let (base, tree) = tree_with("rust", &[
             "stable-x86_64-pc-windows-msvc",
             "1.99.1-x86_64-pc-windows-msvc",
+            "1.100.0-x86_64-pc-windows-msvc",
             "1.80.0-x86_64-pc-windows-msvc",
             "1.70.0-x86_64-pc-windows-msvc",
             "nightly-2025-01-01-x86_64-pc-windows-msvc",
+            "nightly-2026-01-01-x86_64-pc-windows-msvc",
             "nightly-x86_64-pc-windows-msvc",
         ]);
         let settings = "default_toolchain = \"stable-x86_64-pc-windows-msvc\"\n[overrides]\n\"C:\\\\work\\\\old\" = \"1.80.0-x86_64-pc-windows-msvc\"\n";
@@ -676,6 +717,14 @@ mod tests {
         assert_eq!(one.risk, Risk::Amber);
         assert!(matches!(&one.action, Some(Action::Tool { command }) if command == "rustup toolchain uninstall '1.99.1-x86_64-pc-windows-msvc'"));
         assert!(crate::clean::action(one).is_some());
+        for unknown in ["", "not valid TOML = [", "default_toolchain = 'missing'", "default_toolchain = 42", "default_toolchain = 'stable-x86_64-pc-windows-msvc'\n[overrides]\nx = 42"] {
+            assert!(rust_from(&tree, ROOT, unknown, &pins).is_empty(), "unknown owner state: {unknown}");
+        }
+        let unknown_pins = Pins { rust_unknown: true, ..Default::default() };
+        assert!(rust_from(&tree, ROOT, settings, &unknown_pins).is_empty());
+        let (sole, only) = tree_with("rust-sole", &["1.70.0-x86_64-pc-windows-msvc"]);
+        assert!(rust_from(&only, ROOT, "default_toolchain = '1.70.0-x86_64-pc-windows-msvc'", &Pins::default()).is_empty());
+        std::fs::remove_dir_all(sole).unwrap();
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -689,6 +738,9 @@ mod tests {
         // v20 newest, v14 active, both v18 pinned by "18": only v16 is offered
         assert_eq!(names, vec!["v16.20.0".to_string()]);
         assert!(matches!(&f[0].action, Some(Action::Tool { command }) if command == "nvm uninstall '16.20.0'"));
+        assert!(node_from(&tree, ROOT, None, &pins, "nvm", "nvm").is_empty());
+        assert!(node_from(&tree, ROOT, Some(&base.join("unrecognised")), &pins, "nvm", "nvm").is_empty());
+        assert!(node_from(&tree, ROOT, Some(&active), &Pins { node_unknown: true, ..Default::default() }, "nvm", "nvm").is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -710,6 +762,12 @@ mod tests {
         let pins = pins(&tree, &projects);
         assert_eq!(pins.rust.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(), vec!["1.99.1"]);
         assert_eq!(pins.node.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(), vec!["v18"]);
+        std::fs::write(p.join(".nvmrc"), vec![b'1'; (16 << 10) + 1]).unwrap();
+        std::fs::write(p.join("rust-toolchain.toml"), "[toolchain]\nchannel = [\"wrong type\"]\n").unwrap();
+        let tree = sprawl_core::scan(&base, |_| {}).unwrap();
+        let unknown = super::pins(&tree, &projects);
+        assert!(unknown.rust_unknown && unknown.node_unknown, "invalid and oversized pins suppress uninstall advice");
+        assert!(bounded_text(Path::new(r"\\unreachable.invalid\share\pin"), 16 << 10).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 
