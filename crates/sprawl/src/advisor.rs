@@ -168,7 +168,6 @@ enum Section {
     #[default]
     Findings,
     Cleaners,
-    Ask,
     Growth,
     Memory,
 }
@@ -257,7 +256,7 @@ pub(crate) struct Advisor {
     section: Section,
     /// The Cleaners tab: the Advisor showing its Cleaners section alone.
     cleaners_tab: bool,
-    /// The AI settings being edited in the Ask section (provider, model, base URL).
+    /// The AI settings being edited in the AI column (provider, model, base URL).
     ai_edit: Option<AiConfig>,
     /// The provider's models, for the Model dropdown.
     models: crate::models::ModelFetch,
@@ -589,10 +588,20 @@ impl State {
     /// Analyse the tree in the background (after a scan, a delete, or on Refresh).
     /// Open Ask with question `q` sent.
     pub(crate) fn ask_about(&mut self, q: String) {
-        if self.advisor.section != Section::Cleaners {
-            self.advisor.section = Section::Ask;
-        }
+        self.show_ai();
         self.chat_ask(q);
+    }
+
+    /// The AI's column in view: on Findings (or the Cleaners tab), opened if it was folded.
+    /// There is no Ask section any more (R9b): the AI sits beside the list.
+    pub(crate) fn show_ai(&mut self) {
+        if self.advisor.section != Section::Cleaners {
+            self.advisor.section = Section::Findings;
+        }
+        if !self.cl_ai_open() {
+            self.settings.set_bool("clAiOpen", true);
+            self.settings.save();
+        }
     }
 
     pub(crate) fn advisor_start(&mut self) {
@@ -1000,6 +1009,24 @@ impl State {
                 self.advisor.section = Section::Findings;
                 self.advisor.only = Only::All;
             }
+            "AdvAiTickSafe" => {
+                // the AI's safe and amber finds that can be ticked; the user's own files stay one by one
+                let keys: Vec<String> = self
+                    .advice()
+                    .map(|r| {
+                        (0..r.findings.len())
+                            .filter(|&i| matches!(r.findings[i].source, Source::Model(_)) && r.in_findings_list(i) && r.findings[i].risk <= Risk::Amber && crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none())
+                            .map(|i| crate::cleanup::key(&r.findings[i].path))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let c = &mut self.advisor.cleanup;
+                c.ticked.extend(keys);
+                c.single = None;
+                c.own_ok = false;
+                c.auto = false;
+                self.advisor.cl.user_ticked = true;
+            }
             "AdvRun" => {
                 // the review, for this finding alone, where the review is drawn
                 self.advisor.section = Section::Findings;
@@ -1042,7 +1069,7 @@ impl State {
             }
             "AdvCleanMore" => {
                 self.advisor.cleanup.done = None;
-                self.advisor.section = Section::Ask;
+                self.show_ai();
             }
             "AdvSelSafe" => {
                 self.cleanup_select_safe();
@@ -1132,7 +1159,6 @@ impl State {
                     self.cleanup_tick_many(keys);
                 }
             }
-            "AdvSecAsk" => self.advisor.section = Section::Ask,
             "AdvSecGrowth" | "AdvGrowOpen" => self.advisor.section = Section::Growth,
             "AdvGrowPaint" => return self.command("PaintGrowth"),
             "AdvGrowHist" => {
@@ -1274,7 +1300,7 @@ impl State {
                 self.save_memory();
             }
             "AdvAsk" => {
-                self.advisor.section = Section::Ask;
+                self.show_ai();
                 self.advisor_ask();
             }
             // the AI's choices right here, not the whole wizard
@@ -1457,7 +1483,7 @@ impl State {
         true
     }
 
-    /// After a tick button in the foot: the list where the ticks show, not Ask, Growth or
+    /// After a tick button in the foot: the list where the ticks show, not Growth or
     /// Remembered (the foot stays under every section; ticks only show in Findings).
     fn show_ticks(&mut self) {
         if !self.advisor.cleaners_tab && self.advisor.section != Section::Findings {
@@ -1513,10 +1539,12 @@ impl State {
             }
         }
         // the Cleaners tab: its own two columns, each scrolling, in place of the Advisor's list
-        let tab = self.advisor.cleaners_tab;
-        if tab {
+        let cleaners = self.advisor.cleaners_tab;
+        if cleaners {
             self.cleaner_ticks_sync();
         }
+        // Findings with a result to show have columns too (R9b)
+        let tab = cleaners || (self.advisor.section == Section::Findings && self.advice().is_some());
         for (name, on) in [("AdvScroll", !tab), ("ClHost", tab)] {
             if let Ok(e) = find::<UIElement>(&self.root, name) {
                 let _ = e.SetVisibility(if on { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
@@ -1526,15 +1554,21 @@ impl State {
         // the lists stay where they were scrolled to. The Cleaners tab's columns are inside the
         // panel that is replaced: their places are read from the old one
         type Sv = crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer;
-        const CL_SCROLLS: [&str; 3] = ["ClScroll", "ClSide", "ClAiScroll"];
+        const CL_SCROLLS: [&str; 5] = ["ClScroll", "ClSide", "ClAiScroll", "FnScroll", "FnAiScroll"];
         let scroll = if tab { None } else { find::<Sv>(&self.root, "AdvScroll").ok() };
         let offset = scroll.as_ref().and_then(|s| s.VerticalOffset().ok());
-        let was_tab = self.advisor.panel.as_ref().is_some_and(|p| find::<Sv>(p, "ClScroll").is_ok());
+        // a column the old panel didn't have (the other page) starts at the top
         let cl_offsets: Vec<Option<f64>> = CL_SCROLLS
             .iter()
-            .map(|n| if tab && was_tab { self.advisor.panel.as_ref().and_then(|p| find::<Sv>(p, n).ok()).and_then(|s| s.VerticalOffset().ok()) } else { None })
+            .map(|n| if tab { self.advisor.panel.as_ref().and_then(|p| find::<Sv>(p, n).ok()).and_then(|s| s.VerticalOffset().ok()) } else { None })
             .collect();
-        let xaml = if tab { self.cleaners_tab_xaml() } else { self.advisor_xaml() };
+        let xaml = if cleaners {
+            self.cleaners_tab_xaml()
+        } else if tab {
+            self.findings_cols_xaml()
+        } else {
+            self.advisor_xaml()
+        };
         let Ok(el) = load::<UIElement>(&xaml) else {
             eprintln!("advisor panel failed to load");
             return;
@@ -1621,6 +1655,20 @@ impl State {
             }
         }
         for i in 0..count {
+            // the same tick, in the AI's column
+            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvAiT{i}")) {
+                if let Ok(t) = b.Click(move |_, _| {
+                    with(|s| {
+                        s.cleanup_toggle(i);
+                        s.advisor.focus_after = Some(format!("AdvAiT{i}"));
+                        s.render_advisor();
+                    });
+                }) {
+                    keep(t);
+                }
+            }
+        }
+        for i in 0..count {
             if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvT{i}")) {
                 if let Ok(t) = b.Click(move |_, _| {
                     with(|s| {
@@ -1672,10 +1720,10 @@ impl State {
             }
         }
         for name in [
-            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecAsk", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
+            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
+            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
         ] {
             for r in roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
@@ -1703,6 +1751,21 @@ impl State {
             x += "</StackPanel>";
             return x;
         };
+        x += &self.advisor_head(r);
+        match self.advisor.section {
+            Section::Growth => x += &self.growth_card(r),
+            Section::Memory => x += &self.memory_cards(r),
+            Section::Findings => x += &self.findings_section(r),
+            // the Cleaners tab draws itself (cleaners_tab_xaml)
+            Section::Cleaners => {}
+        }
+        x += "</StackPanel>";
+        x
+    }
+
+    /// The Advisor's header: what can be cleaned, the bar by risk, and the section buttons.
+    fn advisor_head(&self, r: &Report) -> String {
+        let mut x = String::new();
         // what the run would free: counted now where it was, the scan's size ("up to") otherwise
         let sum = |pred: &dyn Fn(&Finding) -> bool| -> u64 { r.findings.iter().zip(&r.counted).filter(|(f, c)| **c && pred(f)).map(|(f, _)| self.review_size(f).0).sum() };
         let up_to = |pred: &dyn Fn(&Finding) -> bool| r.findings.iter().zip(&r.counted).any(|(f, c)| *c && pred(f) && self.review_size(f).1);
@@ -1757,11 +1820,6 @@ impl State {
         // the group of active projects' build outputs has its count on its own header
         let shown = (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project()).count();
         let cleaners = self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count();
-        let ai_tag = match &self.advisor.ai {
-            Ai::Running(_) => " •".to_string(),
-            Ai::Done { found, .. } if *found > 0 => format!(" ({found})"),
-            _ => String::new(),
-        };
         let m = &self.advisor.memory;
         let tab = |name: &str, label: String, me: Section| {
             format!(r##"<Button x:Name="{name}" Content="{}" {} Padding="12,4"/>"##, ui::esc(&label), crate::look::pick(crate::look::Pick::Chip, self.advisor.section == me))
@@ -1770,25 +1828,85 @@ impl State {
         let _ = cleaners;
         if !self.advisor.cleaners_tab {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}{}</StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}</StackPanel>"##,
                 tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
-                tab("AdvSecAsk", format!("Ask{ai_tag}"), Section::Ask),
                 tab("AdvSecGrowth", "Growth".into(), Section::Growth),
                 tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + m.cleaner_proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
             );
         }
-        match self.advisor.section {
-            Section::Ask => {
-                x += &self.ai_card(r);
-                x += &self.chat_card();
-            }
-            Section::Growth => x += &self.growth_card(r),
-            Section::Memory => x += &self.memory_cards(r),
-            Section::Findings => x += &self.findings_section(r),
-            // the Cleaners tab draws itself (cleaners_tab_xaml)
-            Section::Cleaners => {}
-        }
+        x
+    }
+
+    /// Findings with a result to show: the list and the AI side by side, each scrolling on its
+    /// own, as on the Cleaners tab (R9b): the AI's answers never push the list away, and what it
+    /// found is ticked right where it says so.
+    fn findings_cols_xaml(&self) -> String {
+        let Some(r) = self.advice() else { return self.advisor_xaml() };
+        let mut x = format!(r##"<Grid {} Padding="18,14,18,8" RowSpacing="10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><StackPanel Spacing="10">"##, ui::NS);
+        x += &self.advisor_head(r);
         x += "</StackPanel>";
+        let ai = self.cl_ai_open();
+        x += &format!(
+            r##"<Grid Grid.Row="1" ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="420"/><ColumnDefinition Width="{}"/></Grid.ColumnDefinitions>"##,
+            if ai { "400" } else { "Auto" }
+        );
+        x += r##"<ScrollViewer x:Name="FnScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="10">"##;
+        x += &self.findings_section(r);
+        x += "</StackPanel></ScrollViewer>";
+        if ai {
+            x += r##"<Grid Grid.Column="1" RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Button x:Name="AdvClAiFold" HorizontalAlignment="Right" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" Content="Hide the AI" ToolTipService.ToolTip="Fold the AI's column away"/><ScrollViewer x:Name="FnAiScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
+            x += &self.ai_card(r);
+            x += &self.ai_found_card(r);
+            x += &self.chat_card();
+            x += "</StackPanel></ScrollViewer></Grid>";
+        } else {
+            x += r##"<Button x:Name="AdvClAiFold" Grid.Column="1" VerticalAlignment="Top" Padding="8,4" FontSize="12" CornerRadius="5" Content="AI" ToolTipService.ToolTip="Show the AI's column"/>"##;
+        }
+        x += "</Grid></Grid>";
+        x
+    }
+
+    /// What the AI found, each with its tick (the same tick as in the list), and one button for
+    /// the safe and amber ones. Its findings went through the same checks as the rules'.
+    fn ai_found_card(&self, r: &Report) -> String {
+        let mine: Vec<usize> = (0..r.findings.len()).filter(|&i| matches!(r.findings[i].source, Source::Model(_)) && r.in_findings_list(i)).collect();
+        if mine.is_empty() {
+            return String::new();
+        }
+        let running = self.advisor.cleanup.running.is_some();
+        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="What the AI found ({})" FontSize="13" FontWeight="SemiBold"/>"##, mine.len());
+        let mut safe = 0;
+        for &i in &mine {
+            let f = &r.findings[i];
+            let tick = match crate::cleanup::untickable(f, r.counted[i]) {
+                None => {
+                    if f.risk <= Risk::Amber {
+                        safe += 1;
+                    }
+                    format!(
+                        r##"<CheckBox x:Name="AdvAiT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Clean up {}"/>"##,
+                        if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { "True" } else { "False" },
+                        if running { "False" } else { "True" },
+                        ui::esc(&f.title)
+                    )
+                }
+                Some(why) => format!(
+                    r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Top" Margin="0,3,0,0" ToolTipService.ToolTip="Can't be ticked{0}"/>"##,
+                    if why.is_empty() { String::new() } else { format!(": {}", ui::esc(why)) }
+                ),
+            };
+            x += &format!(
+                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="#FF8E97AA"/></TextBlock><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></StackPanel></Grid>"##,
+                ui::esc(&f.title),
+                self.size(f.bytes),
+                risk_label(f.risk),
+                ui::esc(&f.path.display().to_string())
+            );
+        }
+        if safe > 0 {
+            x += &format!(r##"<Button x:Name="AdvAiTickSafe" Content="Tick the safe ones it found ({safe})" Padding="10,3" FontSize="12" CornerRadius="5" IsEnabled="{}" ToolTipService.ToolTip="The ones marked safe or worth a look; your own files are ticked one by one"/>"##, if running { "False" } else { "True" });
+        }
+        x += "</StackPanel></Border>";
         x
     }
 
@@ -2995,7 +3113,7 @@ impl State {
                 );
                 // its findings are in the one list, marked AI: ticked and cleaned there
                 if *found > 0 {
-                    x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="They are in your Findings list, marked AI. Tick one, then Clean up." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAiShow" Content="Show them" Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/></StackPanel>"##;
+                    x += r##"<TextBlock Text="Tick them below or in the list (marked AI), then Clean up." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##;
                 }
                 if !summary.is_empty() {
                     x += r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF">"##;
