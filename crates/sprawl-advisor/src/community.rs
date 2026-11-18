@@ -135,14 +135,10 @@ fn load_in(d: &Path, taken: &mut HashSet<String>) -> Vec<RulePack> {
     out
 }
 
-/// A short fingerprint of a definition's text: an approval holds only while it is the same.
+/// Bind approval to this exact definition. Legacy short fingerprints intentionally expire.
 pub fn fingerprint(text: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in text.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
 }
 
 // ------------------------------------------------------------------ fetching
@@ -815,6 +811,12 @@ pub fn convert_cleanerml(file: &str, text: &str) -> (Option<Cleaner>, Vec<LeftOu
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approvals_use_sha256_and_expire_legacy_short_hashes() {
+        assert_eq!(super::fingerprint("abc"), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_ne!(super::fingerprint("abc"), super::fingerprint("abcd"));
+        assert_ne!(super::fingerprint("abc"), "e71fa2190541574b");
+    }
     use super::*;
 
     fn env() {

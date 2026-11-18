@@ -226,6 +226,41 @@ fn check_cleaner(c: &crate::cleaners::Cleaner) -> Result<(), String> {
     check_pack_text(&text, &mut taken).map(|_| ())
 }
 
+fn local_text(path: &Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    let mut held = match sprawl_core::local::file(path, (1 << 20) - 1) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
+    };
+    let mut text = String::new();
+    held.file.read_to_string(&mut text).map_err(|e| e.to_string())?;
+    Ok(Some(text))
+}
+
+/// Validate the complete candidate against built-ins and every other local pack before
+/// publishing anything. Failed approval leaves both the old file and proposal untouched.
+fn validate_local_save(path: &Path, text: &str) -> Result<(), String> {
+    if text.len() >= 1 << 20 { return Err("The combined local pack exceeds 1 MB".into()); }
+    let builtin = RulePack::builtin();
+    let mut taken: std::collections::HashSet<String> = builtin.all_rules().map(|r| r.id.to_lowercase()).collect();
+    taken.extend(builtin.cleaners.iter().map(|c| format!("cleaner:{}", c.id.to_lowercase())));
+    check_pack_text(text, &mut taken)?;
+    let parent = path.parent().ok_or("The rule pack has no folder")?;
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries {
+        let p = entry.map_err(|e| e.to_string())?.path();
+        if p == path || !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml")) { continue; }
+        let text = local_text(&p)?.ok_or("A local pack disappeared during validation")?;
+        check_pack_text(&text, &mut taken).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    Ok(())
+}
+
 /// Remove cleaner `id` (and the rules it groups) from the user's local.toml.
 pub fn forget_cleaner(id: &str) -> Result<(), String> {
     let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
@@ -549,10 +584,14 @@ impl Memory {
     /// Move cleaner proposal `i` into the local rule pack (local.toml); the whole rules folder
     /// must load with it, or the file is put back as it was.
     pub fn approve_cleaner(&mut self, i: usize) -> Result<(), String> {
+        let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
+        self.approve_cleaner_at(i, &path)
+    }
+
+    fn approve_cleaner_at(&mut self, i: usize, path: &Path) -> Result<(), String> {
         let p = self.cleaner_proposals.get(i).cloned().ok_or("no such proposal")?;
         check_cleaner(&p.cleaner)?;
-        let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
-        let old = std::fs::read_to_string(&path).ok();
+        let old = local_text(path)?;
         let mut pack = match &old {
             Some(t) => RulePack::parse(t).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?,
             None => RulePack::empty("Your rules"),
@@ -560,28 +599,25 @@ impl Memory {
         pack.cleaners.retain(|c| c.id != p.cleaner.id);
         pack.cleaners.push(p.cleaner);
         let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
-        RulePack::parse(&text)?;
-        write_atomic(&path, &text).map_err(|e| e.to_string())?;
-        if let Some((_, e)) = load_packs().1.into_iter().find(|(f, _)| f == &path) {
-            match old {
-                Some(t) => write_atomic(&path, &t).map_err(|e| e.to_string())?,
-                None => std::fs::remove_file(&path).map_err(|e| e.to_string())?,
-            }
-            return Err(e);
-        }
+        validate_local_save(path, &text)?;
+        write_atomic(path, &text).map_err(|e| e.to_string())?;
         self.cleaner_proposals.remove(i);
         Ok(())
     }
 
     /// Move proposal `i` into the local rule pack.
     pub fn approve(&mut self, i: usize) -> Result<(), String> {
+        let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
+        self.approve_at(i, &path)
+    }
+
+    fn approve_at(&mut self, i: usize, path: &Path) -> Result<(), String> {
         let p = self.proposals.get(i).cloned().ok_or("no such proposal")?;
         check_proposal(&p)?;
-        let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
-        let mut pack = match std::fs::read_to_string(&path) {
+        let mut pack = match local_text(path)? {
             // a file that doesn't load is the user's to fix, not to overwrite
-            Ok(t) => RulePack::parse(&t).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?,
-            Err(_) => RulePack::empty("Your rules"),
+            Some(t) => RulePack::parse(&t).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?,
+            None => RulePack::empty("Your rules"),
         };
         pack.rules.retain(|r| r.id != p.id);
         let mut r = Rule::new(&p.id, &p.title, p.paths, p.risk, p.remedy, &p.why);
@@ -590,8 +626,8 @@ impl Memory {
         pack.rules.push(r);
         let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
         // what is written must load again
-        RulePack::parse(&text)?;
-        write_atomic(&path, &text).map_err(|e| e.to_string())?;
+        validate_local_save(path, &text)?;
+        write_atomic(path, &text).map_err(|e| e.to_string())?;
         self.proposals.remove(i);
         Ok(())
     }
@@ -830,6 +866,38 @@ mod tests {
 
     fn pack_with(rule: &str) -> String {
         format!("[pack]\nname = 'mine'\n[[rule]]\nid = 'local.x'\ntitle = 'X'\nwhy = 'w'\nrisk = 'green'\n{rule}\n")
+    }
+
+    #[test]
+    fn failed_approval_preserves_rules_and_proposal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("sprawl-approval-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local.toml");
+        let old = pack_with("remedy = 'info'\npaths = ['C:\\SprawlFixtures\\Product\\cache']");
+        std::fs::write(&path, &old).unwrap();
+        let mut m = Memory::default();
+        m.proposals.push(Proposal { id: "local.new".into(), title: "New".into(), paths: vec![r"C:\SprawlFixtures\Other\cache".into()],
+            risk: Risk::Orange, remedy: Remedy::Info, why: "Evidence".into(), min_bytes: None });
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        assert!(m.approve_at(0, &path).is_err(), "an unreadable file is never treated as empty");
+        drop(locked);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        let invalid = pack_with("remedy = 'delete'\npaths = ['C:\\*']");
+        std::fs::write(&path, &invalid).unwrap();
+        assert!(m.approve_at(0, &path).is_err(), "the entire combined pack must pass local safety checks");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        std::fs::write(&path, &old).unwrap();
+        let sibling = dir.join("sibling.toml");
+        std::fs::write(&sibling, old.replace("local.x", "local.new")).unwrap();
+        assert!(m.approve_at(0, &path).is_err(), "conflicting ids are found before publication");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        assert_eq!(m.proposals.len(), 1);
+        std::fs::remove_file(sibling).unwrap();
+        m.approve_at(0, &path).unwrap();
+        assert!(m.proposals.is_empty());
+        assert_eq!(RulePack::parse(&std::fs::read_to_string(&path).unwrap()).unwrap().rules.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

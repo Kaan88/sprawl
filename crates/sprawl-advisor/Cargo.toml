@@ -10,5 +10,6 @@ sprawl-core = { path = "../sprawl-core" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"
+sha2 = "0.10"
 zstd = { version = "0.13", features = ["zstdmt"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_System_Threading"] }
