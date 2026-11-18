@@ -4,16 +4,16 @@ use std::path::{Path, PathBuf};
 pub fn parse(text: &str) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     for value in text.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        let p = PathBuf::from(value.trim_matches('"'));
-        if !p.is_absolute() || value.contains(['*', '?', '%', '\r', '\n']) || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        let value = value.trim_matches('"').replace('/', "\\");
+        let b = value.as_bytes();
+        let p = PathBuf::from(&value);
+        if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\'
+            || value.contains(['*', '?', '%', '\r', '\n', '\0', '"']) || value[2..].contains(':')
+            || value[3..].split('\\').any(|part| matches!(part, "." | "..") || part.ends_with('.') || part.ends_with(' ')) {
             return Err("Folders to skip must be full absolute paths separated by semicolons, without wildcards, variables or ..".into());
         }
-        let p = sprawl_core::local::lexical(&p).map_err(|e| e.to_string())?;
-        let p = match sprawl_core::local::scope(&p) {
-            Ok(pinned) => pinned.path.clone(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => p,
-            Err(e) => return Err(format!("The skipped scope isn't a plain local path: {e}")),
-        };
+        // An exclusion remains policy even when its drive disappears or its folder changes.
+        // Never inspect availability or follow aliases just to remember what must be skipped.
         if !paths.contains(&p) { paths.push(p); }
         if paths.len() > 100 { return Err("Use at most 100 folders to skip.".into()); }
     }
@@ -21,9 +21,24 @@ pub fn parse(text: &str) -> Result<Vec<PathBuf>, String> {
 }
 
 pub fn configured() -> Vec<PathBuf> {
-    let text = std::env::var_os("APPDATA").and_then(|a| std::fs::read_to_string(PathBuf::from(a).join("Sprawl/settings.ini")).ok()).unwrap_or_default();
-    text.lines().filter_map(|l| l.split_once('=')).find(|(k, _)| k.trim() == "scanExclude")
-        .and_then(|(_, v)| parse(v).ok()).unwrap_or_default()
+    let Some(base) = std::env::var_os("APPDATA") else { return refuse_all(); };
+    configured_at(&PathBuf::from(base).join("Sprawl/settings.ini"))
+}
+
+fn refuse_all() -> Vec<PathBuf> { (b'A'..=b'Z').map(|drive| PathBuf::from(format!("{}:\\", drive as char))).collect() }
+
+fn configured_at(path: &Path) -> Vec<PathBuf> {
+    use std::io::Read;
+    let mut file = match sprawl_core::local::file(path, 1 << 20) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return refuse_all(),
+    };
+    let mut text = String::new();
+    if file.file.read_to_string(&mut text).is_err() { return refuse_all(); }
+    let value = text.trim_start_matches('\u{feff}').lines().rev().filter_map(|l| l.split_once('='))
+        .find(|(key, _)| key.trim() == "scanExclude").map_or("", |(_, value)| value);
+    parse(value).unwrap_or_else(|_| refuse_all())
 }
 
 pub fn progress() -> std::sync::Arc<sprawl_core::Progress> { sprawl_core::Progress::with_exclusions(&configured()) }
@@ -43,5 +58,28 @@ mod tests {
         assert!(intersects(Path::new(r"C:\Data"), &paths));
         assert!(!intersects(Path::new(r"C:\Data\skip-other"), &paths));
         for bad in [r"relative", r"C:\Data\*", r"C:\Data\..\Other", r"%USERPROFILE%\Games"] { assert!(parse(bad).is_err()); }
+    }
+
+    #[test]
+    fn unavailable_exclusion_never_disables_other_scopes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("sprawl-exclusion-policy-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("skip")).unwrap();
+        std::fs::write(dir.join("skip/private"), b"secret").unwrap();
+        std::fs::write(dir.join("public"), b"ok").unwrap();
+        let settings = dir.join("settings.ini");
+        std::fs::write(&settings, format!("scanExclude={};Z:\\unavailable\\scope", dir.join("skip").display())).unwrap();
+        let excluded = configured_at(&settings);
+        assert_eq!(excluded.len(), 2);
+        assert!(intersects(&dir.join("skip/private"), &excluded));
+        assert!(intersects(&dir, &excluded), "cleanup/export of a containing folder is still blocked");
+        let tree = sprawl_core::walk::walk(&dir, &sprawl_core::Progress::with_exclusions(&excluded)).unwrap();
+        assert!(!tree.nodes.iter().any(|n| n.name == "skip" || n.name == "private"));
+        std::fs::write(&settings, "scanExclude=not a valid absolute scope").unwrap();
+        assert!(intersects(&dir.join("public"), &configured_at(&settings)), "invalid policy refuses instead of silently disabling protection");
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&settings).unwrap();
+        assert!(intersects(&dir, &configured_at(&settings)), "unreadable policy also refuses");
+        drop(locked);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
