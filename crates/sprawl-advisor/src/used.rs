@@ -68,40 +68,54 @@ pub fn ntfs(_: char) -> bool {
 
 /// The newest last-access time of the files at or below `path` (folders don't count: listing
 /// one, as a scan does, moves its time; links aren't followed), from the folder listings alone,
-/// so nothing is opened and no time is moved by reading it. At most `budget` entries are read,
+/// so no file contents are read. Local metadata handles pin the ancestor directories.
+/// At most `budget` entries are read,
 /// counted down; the flag says whether everything was read.
 pub fn accessed_in(path: &std::path::Path, budget: &mut usize) -> (Option<SystemTime>, bool) {
+    accessed_in_with(path, budget, &crate::exclusions::configured())
+}
+
+fn accessed_in_with(path: &std::path::Path, budget: &mut usize, excluded: &[PathBuf]) -> (Option<SystemTime>, bool) {
     const REPARSE: u32 = 0x400;
     use std::os::windows::fs::MetadataExt;
-    let Ok(top) = std::fs::symlink_metadata(path) else { return (None, false) };
-    if top.file_attributes() & REPARSE != 0 {
-        return (None, true);
-    }
+    if *budget == 0 || excluded.iter().any(|p| crate::finding::within(path, p)) { return (None, false); }
+    let Ok(held) = sprawl_core::local::scope(path) else { return (None, false) };
+    let Ok(top) = held.metadata() else { return (None, false) };
     if top.is_file() {
-        *budget = budget.saturating_sub(1);
-        return (top.accessed().ok(), true);
+        *budget -= 1;
+        let time = top.accessed().ok();
+        return (time, time.is_some());
     }
     let mut best: Option<SystemTime> = None;
+    let mut complete = true;
     let mut stack = vec![path.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
+        if excluded.iter().any(|p| crate::finding::within(&d, p)) { complete = false; continue; }
+        let Ok(_held) = sprawl_core::local::directory(&d) else { complete = false; continue };
+        let Ok(rd) = std::fs::read_dir(&d) else { complete = false; continue };
+        for entry in rd {
             if *budget == 0 {
                 return (best, false);
             }
             *budget -= 1;
-            let Ok(m) = e.metadata() else { continue };
-            if m.file_attributes() & REPARSE != 0 {
+            let Ok(e) = entry else { complete = false; continue };
+            let p = e.path();
+            if excluded.iter().any(|x| crate::finding::within(&p, x)) { complete = false; continue; }
+            let Ok(m) = std::fs::symlink_metadata(&p) else { complete = false; continue };
+            if m.file_attributes() & (REPARSE | crate::dupes::NOT_LOCAL) != 0 {
+                complete = false;
                 continue;
             }
             if m.is_dir() {
-                stack.push(e.path());
+                stack.push(p);
             } else if let Ok(t) = m.accessed() {
                 best = best.max(Some(t));
+            } else {
+                complete = false;
             }
         }
     }
-    (best, true)
+    (best, complete)
 }
 
 fn u16_at(b: &[u8], i: usize) -> Option<usize> {
@@ -170,6 +184,21 @@ pub(crate) fn lnk_target(b: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_evidence_marks_exclusions_and_budget_as_incomplete() {
+        let dir = std::env::temp_dir().join(format!("sprawl-access-evidence-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("skipped")).unwrap();
+        std::fs::write(dir.join("visible.txt"), b"visible").unwrap();
+        std::fs::write(dir.join("skipped/secret.txt"), b"excluded").unwrap();
+        assert!(accessed_in_with(&dir, &mut 100, &[]).1);
+        assert!(!accessed_in_with(&dir, &mut 100, &[dir.join("skipped")]).1);
+        assert_eq!(accessed_in_with(&dir.join("skipped"), &mut 100, &[dir.join("skipped")]), (None, false));
+        assert_eq!(accessed_in_with(&dir.join("visible.txt"), &mut 0, &[]), (None, false));
+        assert!(!accessed_in_with(&dir, &mut 1, &[]).1);
+        assert_eq!(accessed_in_with(&dir.join("missing"), &mut 100, &[]), (None, false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// A link with only a LinkInfo: an ANSI base path and suffix, and the Unicode ones when given.
     fn link(base: &str, suffix: &str, unicode: Option<(&str, &str)>) -> Vec<u8> {

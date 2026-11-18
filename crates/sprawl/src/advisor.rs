@@ -510,6 +510,38 @@ fn remedy_label(r: Remedy) -> &'static str {
     }
 }
 
+fn recheck_target(tree: &Tree, path: &std::path::Path) -> Option<PathBuf> {
+    let n = sprawl_advisor::find_path(tree, path)?;
+    if n == sprawl_core::ROOT { return None; }
+    let mut branch = n;
+    while let Some(parent) = tree.nodes[branch].parent.filter(|&p| p != sprawl_core::ROOT) { branch = parent; }
+    let root = if tree.root_path == std::path::Path::new(sprawl_core::MULTIPLE) { tree.path_of(branch) } else { tree.root_path.clone() };
+    Some(if tree.nodes[n].is_dir { path.to_path_buf() } else { crate::shellmenu::rescan_target(path, &root) })
+}
+
+#[cfg(test)]
+mod recheck_tests {
+    use super::*;
+    use std::path::Path;
+    use sprawl_core::{Node, ScanMethod};
+
+    #[test]
+    fn selected_roots_keep_their_own_refresh_boundary() {
+        let tree = Tree { root_path: sprawl_core::MULTIPLE.into(), errors: 0, method: ScanMethod::Walk, nodes: vec![
+            Node { name: sprawl_core::MULTIPLE.into(), is_dir: true, children: vec![1, 2], ..Default::default() },
+            Node { name: r"C:\A".into(), is_dir: true, parent: Some(0), children: vec![3], ..Default::default() },
+            Node { name: r"D:\B".into(), is_dir: true, parent: Some(0), children: vec![4], ..Default::default() },
+            Node { name: "a.bin".into(), parent: Some(1), ..Default::default() },
+            Node { name: "Cache".into(), is_dir: true, parent: Some(2), ..Default::default() },
+        ] };
+        assert_eq!(recheck_target(&tree, Path::new(r"C:\A\a.bin")), Some(r"C:\A\a.bin".into()));
+        assert_eq!(recheck_target(&tree, Path::new(r"D:\B\Cache")), Some(r"D:\B\Cache".into()));
+        assert_eq!(recheck_target(&tree, Path::new(r"C:\A")), Some(r"C:\A".into()));
+        assert_eq!(recheck_target(&tree, Path::new(r"C:\Outside")), None);
+        assert_eq!(recheck_target(&tree.subtree(1), Path::new(r"C:\A")), None);
+    }
+}
+
 /// Everything the advisor works out for one tree. Runs off the UI thread.
 pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: bool, measured_at: u64) -> (Report, Facts) {
     let mut facts = Facts::gather();
@@ -716,22 +748,19 @@ impl State {
     /// own clean-up, Explorer). Then the rules run over the tree as it is now. Before, they ran
     /// over the same tree and found the same things.
     pub(crate) fn advisor_recheck(&mut self) {
-        if self.advisor.recheck.is_some() {
+        if self.advisor.recheck.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
             return;
         }
         let (Some(t), Some(r)) = (self.tree.as_ref(), self.advisor.report.as_ref()) else { return self.advisor_start() };
         if self.full_tree.is_some() || self.advisor.cleanup.running.is_some() {
             return self.advisor_start();
         }
-        let root = t.path_of(sprawl_core::ROOT);
         // a file is read through its folder (it may have shrunk, not gone), unless that is
         // the scan's root; the root itself is never read again here
         let mut paths: Vec<PathBuf> = r
             .findings
             .iter()
-            .map(|f| f.path.clone())
-            .filter(|p| p.starts_with(&root) && p != &root)
-            .map(|p| if std::fs::metadata(&p).is_ok_and(|m| m.is_file()) { crate::shellmenu::rescan_target(&p, &root) } else { p })
+            .filter_map(|f| recheck_target(t, &f.path))
             .collect();
         // outermost first, and nothing inside a path already read
         paths.sort_by_key(|p| p.components().count());
