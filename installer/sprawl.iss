@@ -57,12 +57,18 @@ Root: HKCU; Subkey: "Software\Classes\Directory\shell\Sprawl"; Flags: dontcreate
 Root: HKCU; Subkey: "Software\Classes\Drive\shell\Sprawl"; Flags: dontcreatekey uninsdeletekey
 
 [InstallDelete]
-Type: files; Name: "{app}\*.old"
-Type: filesandordirs; Name: "{app}\.sprawl-update"
+Type: files; Name: "{app}\sprawl.exe.old"
+Type: files; Name: "{app}\Microsoft.WindowsAppRuntime.Bootstrap.dll.old"
+Type: files; Name: "{app}\.sprawl-update\sprawl.exe"
+Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"
+Type: dirifempty; Name: "{app}\.sprawl-update"
 
 [UninstallDelete]
-Type: files; Name: "{app}\*.old"
-Type: filesandordirs; Name: "{app}\.sprawl-update"
+Type: files; Name: "{app}\sprawl.exe.old"
+Type: files; Name: "{app}\Microsoft.WindowsAppRuntime.Bootstrap.dll.old"
+Type: files; Name: "{app}\.sprawl-update\sprawl.exe"
+Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"
+Type: dirifempty; Name: "{app}\.sprawl-update"
 
 [Run]
 Filename: "{app}\sprawl.exe"; Description: "Start Sprawl"; Flags: nowait postinstall skipifsilent
