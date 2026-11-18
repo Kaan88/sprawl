@@ -768,6 +768,9 @@ impl State {
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
         let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: web };
+        // a chat under way was started with the old AI settings (provider, model, web lookup):
+        // the next question starts a new one, so a change takes effect at once, without a restart
+        let ai_changed = AiConfig::load() != ai;
         if ai.save().is_err() {
             notes.push("couldn't save the AI settings".into());
         }
@@ -805,6 +808,15 @@ impl State {
         }
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
+        // the administrator switches take effect now, not at the next start
+        let admin_changed = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().any(|l| self.prefs.orig.get(l.key) != self.prefs.draft.get(l.key));
+        self.admin_flags();
+        if ai_changed || admin_changed {
+            self.chat_reset();
+            if self.view == crate::state::View::Advisor {
+                self.render_advisor();
+            }
+        }
         shown(self, "Wizard", false);
         let msg = if notes.is_empty() { "Settings saved. Change them any time under Options > Settings (Ctrl+Shift+S).".to_string() } else { format!("Settings saved; {}.", notes.join("; ")) };
         text(&self.root, "FootLeft", &msg);

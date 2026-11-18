@@ -1645,7 +1645,20 @@ impl State {
         };
         x += "</Border></Grid>";
         if r.findings.is_empty() {
-            x += r##"<TextBlock Text="Nothing to suggest: no known caches, leftovers or idle build outputs worth the trouble." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            // an empty list must not read as "broken": say what was looked for, where such things
+            // usually are, and what does fill this scan
+            x += r##"<TextBlock Text="Nothing to clean here. Sprawl looks for caches, leftovers of removed applications, idle build outputs and applications you no longer use. Those live mostly on the drive Windows is on." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            if let Some(t) = self.tree.as_ref() {
+                let mut kids: Vec<usize> = t.nodes[sprawl_core::ROOT].children.clone();
+                kids.sort_by(|&a, &b| t.nodes[b].size.cmp(&t.nodes[a].size));
+                let top: Vec<String> = kids.iter().take(5).filter(|&&k| t.nodes[k].size > 0).map(|&k| format!("{} ({})", t.nodes[k].name, self.size(t.nodes[k].size))).collect();
+                if !top.is_empty() {
+                    x += &format!(
+                        r##"<TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6"><Run Text="What fills this scan: " FontWeight="SemiBold"/><Run Text="{}"/></TextBlock><TextBlock Text="Tree View and the map show where it is; Find duplicate files looks for copies; the AI under Ask can say what a folder is." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+                        ui::esc(&format!("{}.", top.join(", ")))
+                    );
+                }
+            }
         }
         // the AI's findings are in the same lists, marked. Three groups: what Sprawl can clean
         // (with the active projects' build outputs apart), what the user can do, what is worth
