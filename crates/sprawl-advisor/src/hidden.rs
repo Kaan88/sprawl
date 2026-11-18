@@ -198,7 +198,7 @@ fn disk_space(root: &Path) -> Option<(u64, u64)> {
 
 /// `\\?\Volume{guid}\` of a drive root.
 #[cfg(windows)]
-fn volume_guid(root: &Path) -> Option<String> {
+pub(crate) fn volume_guid(root: &Path) -> Option<String> {
     let w = wide_dir(root);
     let mut buf = [0u16; 64];
     let ok = unsafe { GetVolumeNameForVolumeMountPointW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } != 0;
@@ -212,6 +212,6 @@ fn disk_space(_: &Path) -> Option<(u64, u64)> {
 }
 
 #[cfg(not(windows))]
-fn volume_guid(_: &Path) -> Option<String> {
+pub(crate) fn volume_guid(_: &Path) -> Option<String> {
     None
 }

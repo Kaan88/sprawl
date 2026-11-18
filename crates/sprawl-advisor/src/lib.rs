@@ -28,6 +28,7 @@ pub mod kinds;
 pub mod finding;
 pub mod growth;
 pub mod game_leftovers;
+pub mod goal;
 pub mod hidden;
 pub mod history;
 pub mod inuse;

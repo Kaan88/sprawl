@@ -49,6 +49,7 @@ pub(crate) struct Report {
     pub(crate) uninstall: Vec<Option<sprawl_advisor::facts::Uninstall>>,
     /// What each app's hand-off to the user's own uninstaller says.
     pub(crate) handoff: Vec<Vec<String>>,
+    pub(crate) games: Vec<sprawl_advisor::goal::Game>,
     /// Risk code of every node inside a finding: 0 none, 1 green, 2 amber, 3 orange.
     pub(crate) lens: Arc<Vec<u8>>,
     /// Rule files of the user's own that didn't pass the checks, and why.
@@ -235,6 +236,8 @@ pub(crate) struct Advisor {
     pub(crate) focus_after: Option<String>,
     /// What is in the "I need __ GB" box, kept across redraws.
     goal_text: String,
+    pub(crate) goal_options: bool,
+    goal_compared_text: String,
     ai: Ai,
     exported: Option<Exported>,
     show_rejected: bool,
@@ -576,6 +579,7 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
         apps: facts.apps.iter().map(|a| a.name.clone()).collect(),
         uninstall: facts.apps.iter().map(|a| a.uninstall()).collect(),
         handoff: facts.apps.iter().map(|a| a.handoff_args()).collect(),
+        games: sprawl_advisor::goal::games(tree, &facts),
         lens: Arc::new(lens),
         refused,
         catalogue,
@@ -1104,6 +1108,48 @@ impl State {
                 self.advisor.cleanup.privacy_ok = false;
                 self.advisor.cleanup.single = None;
                 self.advisor.cleanup.own_ok = false;
+            }
+            "AdvGoalOptions" => {
+                self.read_goal();
+                if self.advisor.goal_text.trim().is_empty() { self.advisor_set_goal(GOAL_EXAMPLE); }
+                if self.goal_bytes().is_none() {
+                    self.adv_say("Type how many GB you need, like 20.");
+                    return;
+                }
+                self.advisor.goal_options = true;
+                self.advisor.goal_compared_text = self.advisor.goal_text.clone();
+                self.advisor.section = Section::Findings;
+            }
+            "AdvGoalHide" => self.advisor.goal_options = false,
+            "AdvGoalGreen" | "AdvGoalCleanup" | "AdvGoalCompress" | "AdvGoalMove" => {
+                self.read_goal();
+                if self.advisor.goal_text != self.advisor.goal_compared_text {
+                    self.adv_say("The goal changed. Compare options again before choosing one.");
+                    return;
+                }
+                use sprawl_advisor::goal::Kind;
+                let kind = match name { "AdvGoalGreen" => Kind::Green, "AdvGoalCleanup" => Kind::Cleanup, "AdvGoalCompress" => Kind::Compression, _ => Kind::Moves };
+                let Some(option) = self.advice().and_then(|r| self.goal_plans(r).into_iter().find(|o| o.kind == kind)) else { return };
+                let keys = self.advice().map(|r| option.findings.iter().filter_map(|&i| {
+                    let f = r.findings.get(i)?;
+                    (crate::cleanup::untickable(f, r.counted.get(i).copied().unwrap_or(false)).is_none()
+                        && crate::cleanup::held_in_app(f).is_none()).then(|| crate::cleanup::key(&f.path))
+                }).collect()).unwrap_or_default();
+                let c = &mut self.advisor.cleanup;
+                c.ticked = keys;
+                c.ai_ticked.clear();
+                c.privacy_ticked.clear();
+                c.privacy_ok = false;
+                c.own_ok = false;
+                c.single = None;
+                c.auto = false;
+                c.review = false;
+                self.show_ticks();
+                self.adv_say(if option.moves.is_empty() {
+                    "This option is ticked. Check the items, then open Clean up for the usual review. Nothing has run."
+                } else {
+                    "The cleanup part is ticked. Move the listed games separately in Steam > Settings > Storage; check free space there before moving. Nothing has run."
+                });
             }
             "AdvSelGoal" => {
                 self.read_goal();
@@ -1803,7 +1849,7 @@ impl State {
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide", "AdvOnlyComp",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
+            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain", "AdvGoalOptions", "AdvGoalHide", "AdvGoalGreen", "AdvGoalCleanup", "AdvGoalCompress", "AdvGoalMove",
         ] {
             for r in roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
@@ -2072,6 +2118,7 @@ impl State {
     /// The findings list with its sort and filter, duplicates, hidden space and what was held back.
     fn findings_section(&self, r: &Report) -> String {
         let mut x = String::new();
+        if self.advisor.goal_options { x += &self.goal_options_xaml(r); }
         let chip = |name: &str, label: &str, on: bool| {
             format!(r##"<Button x:Name="{name}" Content="{label}" {} Padding="8,2" CornerRadius="10"/>"##, crate::look::pick(crate::look::Pick::Chip, on))
         };
@@ -2251,6 +2298,71 @@ impl State {
                 }
             }
         }
+        x
+    }
+
+    fn goal_plans(&self, r: &Report) -> Vec<sprawl_advisor::goal::OptionPlan> {
+        let Some(need) = self.goal_bytes() else { return Vec::new() };
+        let Some(tree) = self.active_tree() else { return Vec::new() };
+        let path = tree.path_of(sprawl_core::ROOT);
+        let text = path.to_string_lossy();
+        let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+        let volume = text.chars().next().filter(|c| c.is_ascii_alphabetic() && text.get(1..2) == Some(":"));
+        let mut findings = r.findings.clone();
+        for f in &mut findings {
+            if f.gain.is_none() { f.bytes = self.review_size(f).0; }
+        }
+        let kept = self.advisor.memory.kept_paths();
+        let games: Vec<_> = r.games.iter().filter(|g| !sprawl_advisor::finding::other_account(&g.path, std::env::var_os("USERPROFILE").as_deref().map(std::path::Path::new))
+            && self.advisor.memory.hides(&g.path).is_none()
+            && !kept.iter().any(|k| sprawl_advisor::finding::within(k, &g.path) || sprawl_advisor::finding::within(&g.path, k))).cloned().collect();
+        // Respect the same current gates as a tick in the list, before suggesting an option.
+        let counted: Vec<bool> = findings.iter().enumerate().map(|(i, f)| r.counted.get(i).copied().unwrap_or(false)
+            && crate::cleanup::untickable(f, true).is_none() && crate::cleanup::held_in_app(f).is_none()).collect();
+        let drives = volume.map(|v| sprawl_advisor::goal::destinations(v, &sprawl_advisor::hidden::fixed_drives())).unwrap_or_default();
+        sprawl_advisor::goal::options(&findings, &counted, &games, &drives, volume, need)
+    }
+
+    fn goal_options_xaml(&self, r: &Report) -> String {
+        let Some(need) = self.goal_bytes() else { return String::new() };
+        if self.advisor.goal_text != self.advisor.goal_compared_text {
+            return r##"<TextBlock Text="The goal changed. Compare options again to refresh the plan." TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342"/>"##.into();
+        }
+        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#142F7BF6" BorderBrush="#442F7BF6" BorderThickness="1"><StackPanel Spacing="8"><Grid><TextBlock Text="Options to free {}" FontWeight="SemiBold" FontSize="14"/><Button x:Name="AdvGoalHide" Content="Hide" HorizontalAlignment="Right" Padding="8,1" FontSize="12"/></Grid><TextBlock Text="Lowest cost first. These are alternatives: do not add their totals together. Nothing runs until you choose items and confirm the review." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##, self.size(need));
+        for option in self.goal_plans(r).iter() {
+            let remaining = need.saturating_sub(option.bytes);
+            let outcome = if remaining == 0 { if option.estimated { "could cover the goal (estimate)" } else { "covers the goal" }.to_string() } else { format!("{} still needed", self.size(remaining)) };
+            x += &format!(r##"<StackPanel Spacing="4" Margin="0,4,0,0"><TextBlock Text="{}: {}{} ({})" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+                ui::esc(option.title), if option.estimated { "up to " } else { "" }, self.size(option.bytes), ui::esc(&outcome), ui::esc(option.cost));
+            for &k in option.findings.iter().take(6) {
+                if let Some(f) = r.findings.get(k) {
+                    let (bytes, estimated) = self.review_size(f);
+                    x += &format!(r##"<TextBlock Text="{}: {}{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(&f.title), if estimated { "up to " } else { "" }, self.size(bytes));
+                }
+            }
+            if option.findings.len() > 6 {
+                x += &format!(r##"<TextBlock Text="And {} more; the review lists every item." FontSize="12" Foreground="#FF8E97AA"/>"##, option.findings.len() - 6);
+            }
+            for m in &option.moves {
+                x += &format!(r##"<TextBlock Text="{} → {}: · {} on the source disk; destination needs {}. Planned free space: {} before, {} after this move." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" Margin="10,0,0,0"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##,
+                    ui::esc(&m.game.name), m.destination, self.size(m.game.bytes), self.size(m.game.destination_need), self.size(m.free_before), self.size(m.free_after), ui::esc(&m.game.path.display().to_string()));
+            }
+            if !option.moves.is_empty() {
+                x += r##"<TextBlock Text="Steam > Settings > Storage: add a library on the destination drive, select the named games, then Move. Recheck free space in Steam first; other programs may have used it. Steam performs the move; Sprawl never moves game files itself." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##;
+            }
+            if !option.findings.is_empty() {
+                use sprawl_advisor::goal::Kind;
+                let name = match option.kind { Kind::Green => "AdvGoalGreen", Kind::Cleanup => "AdvGoalCleanup", Kind::Compression => "AdvGoalCompress", Kind::Moves => "AdvGoalMove" };
+                x += &format!(r##"<Button x:Name="{name}" Content="{}" Padding="10,3" FontSize="12" HorizontalAlignment="Left"/>"##,
+                    if option.moves.is_empty() { "Tick this option for review" } else { "Tick its cleanup part for review" });
+            }
+            x += "</StackPanel>";
+        }
+        for f in r.findings.iter().filter(|f| matches!(&f.source, Source::Rule(id) if id == "remedy.move-known-folder")).take(4) {
+            x += &format!(r##"<TextBlock Text="{}: {}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+                ui::esc(&f.title), ui::esc(&f.evidence.join(" ")));
+        }
+        x += r##"<TextBlock Text="Game moves are offered only for registered Steam installs with enough room on another fixed drive. Other launchers and folders need their owner's supported workflow. Estimates and disk space can change; check the final review and the destination." FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Border>"##;
         x
     }
 

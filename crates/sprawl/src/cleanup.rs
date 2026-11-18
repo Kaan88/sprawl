@@ -968,6 +968,9 @@ impl State {
         if admin_waiting {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
         }
+        if !self.advisor.cleaners_tab_on() {
+            x += r##"<Button x:Name="AdvGoalOptions" Content="Compare options for this goal" Padding="10,3" FontSize="12" CornerRadius="5" HorizontalAlignment="Left"/>"##;
+        }
         x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="12" BorderThickness="0" Background="Transparent" Foreground="#FF8E97AA" Content="Save as a script instead..."/>"##;
         x += "</StackPanel></Border>";
         x
@@ -1224,7 +1227,8 @@ impl State {
         if c.running.is_none() {
             if c.review {
                 x += &self.cleanup_review_xaml();
-            } else if self.advice().is_some_and(|r| !r.privacy.is_empty() || r.findings.iter().zip(&r.counted).any(|(f, k)| !matches!(untickable(f, *k), Some("")))) {
+            } else if self.advice().is_some_and(|r| !r.privacy.is_empty() || r.findings.iter().zip(&r.counted).any(|(f, k)| !matches!(untickable(f, *k), Some("")))
+                || !self.advisor.cleaners_tab_on() && (!r.games.is_empty() || self.advisor.goal_options || r.findings.iter().any(|f| f.remedy == Remedy::Move))) {
                 x += &self.cleanup_bar_xaml(crate::advisor::GOAL_EXAMPLE);
             }
         }

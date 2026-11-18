@@ -31,7 +31,10 @@ pub fn plan(findings: &[Finding], counted: &[bool], need: u64) -> Plan {
         // of a project the user is working on
         .filter(|&i| !findings[i].heuristic() && !findings[i].other_account() && !findings[i].in_active_project())
         // nor a privacy part: it frees almost nothing, and only the user ticks one
-        .filter(|&i| !findings[i].privacy())
+        .filter(|&i| !findings[i].privacy() && !matches!(findings[i].source, crate::Source::Model(_)))
+        // Compression has an estimated gain, and a shrink an unknown one; neither belongs
+        // in an automatic delete/rebuild plan measured as the whole folder's bytes.
+        .filter(|&i| !crate::remedies::compresses(&findings[i]) && !crate::remedies::shrinks(&findings[i]))
         .collect();
     cand.sort_by(|&a, &b| findings[a].risk.cmp(&findings[b].risk).then(findings[b].bytes.cmp(&findings[a].bytes)));
     let mut picked = Vec::new();
