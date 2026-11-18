@@ -1,63 +1,86 @@
-# Sprawl
+<p align="center">
+  <img src="assets/sprawl-256.png" width="128" height="128" alt="Sprawl logo">
+</p>
 
-A disk space analyser for Windows in **Rust + WinUI 3** (Windows App SDK 1.8). It started as a
-[WizTree](https://diskanalyzer.com/)-style analyser (tree, file list, file types, treemap) and
-adds, in one window:
+<h1 align="center">Sprawl</h1>
 
-- **Advisor**: what can go and why, each finding with its risk, and a clean-up that you review first.
-- **Cleaners**: per-application parts (caches, logs, crash dumps), BleachBit-style, with an
-  opt-in Privacy group for browser cookies and history.
-- **Search**: file names in the scan and on your other drives, with a small query language.
-- **Optional AI**: off by default. It explains folders and suggests what to tick; it never deletes.
+<p align="center">
+  See what fills your disk, then clear it safely.<br>
+  A disk space analyser, cleaner and file search for Windows, in Rust and WinUI 3.
+</p>
 
-![Sprawl](docs/screenshots/sprawl.png)
+<p align="center">
+  <a href="https://github.com/Kaan88/sprawl/releases/latest">Download</a> ·
+  <a href="CHANGELOG.md">What's new</a> ·
+  <a href="#building">Build it</a>
+</p>
+
+![Sprawl: the tree, the file types and the treemap of a scan](docs/screenshots/sprawl.png)
+
+## What it does
+
+**Explore.** Scan a drive or a folder and see where the space went: a sortable tree, the biggest
+files, a table of file types, and a treemap you can zoom into (with City and Galaxy views).
+As administrator Sprawl reads the NTFS file table directly, which takes seconds for a whole
+drive; otherwise it walks the folders on every core.
+
+**Advisor.** What can go, and why. Each finding has a risk, what it costs to get back, and
+the evidence behind it: caches, build outputs of idle projects, folders left behind by removed
+applications, old installers. On a drive of games or media it lists the big things nothing has
+changed in for a year, as information. Nothing is ticked for you, and you review before anything
+is removed.
+
+![The Advisor](docs/screenshots/advisor.png)
+
+**Cleaners.** Each application with the parts it keeps that can go (caches, logs, crash dumps),
+in the manner of BleachBit. The tab reads only the folders the cleaners look at, so it works
+without a scan. Preview lists exactly what would go. Privacy cleaners (browser cookies and
+history, per profile) are off until you switch them on, and are never mixed with space cleaning.
+
+![The Cleaners tab](docs/screenshots/cleaners.png)
+
+**Search.** File names in the scan and, when you switch them on, your other drives. Filters
+under the box write the query for you; the query language covers extensions, sizes, dates,
+paths and regular expressions (`ext:iso size:>1gb dm:lastmonth`). Saved and recent searches.
+
+![Search](docs/screenshots/search.png)
+
+**Optional AI.** Off by default. With Claude, Claude Code or an OpenAI-compatible server
+(a local model works), it names folders the rules don't know and suggests what to tick. It
+never deletes, never ticks, and what it adds is checked against the scan like any other finding.
+
+## How it keeps a clean-up safe
+
+- A never-list protects Windows, program installations, profiles, mail stores, password
+  managers, messengers and browser profiles. Sprawl won't delete them or a folder that holds them.
+- Every item is checked when it is found and again just before it goes. Anything created or
+  changed since the scan, and anything you chose to keep, is left alone.
+- Links are removed as links: what they point to is not touched.
+- Your own files go to the Recycle Bin (a setting, on by default). Caches are deleted, since in
+  the bin they would free nothing.
+- A part whose application must be closed is held back while it is open, and the result says
+  which program to close.
+- Sprawl is not an uninstaller: it hands an application to Windows' Installed apps, to Steam, or
+  to a program you choose ([how](docs/uninstaller-handoff.md)).
+- Nothing leaves your PC unless you turn it on: the AI, community cleaner definitions and the
+  daily update check each have a switch, and "Work offline" stops them all.
 
 ## Install
 
-Download `Sprawl-Setup-<version>.exe` from the [latest release](https://github.com/Kaan88/sprawl/releases/latest)
-and run it (an Inno Setup installer). It installs for you only, in `%LOCALAPPDATA%\Programs\Sprawl`, with a Start menu
-entry and an entry in Settings > Apps for uninstalling. No administrator rights are needed.
-Sprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the
-first time Sprawl starts.
+Download `Sprawl-Setup-<version>.exe` from the
+[latest release](https://github.com/Kaan88/sprawl/releases/latest) and run it. It installs for
+you only, in `%LOCALAPPDATA%\Programs\Sprawl`, with a Start menu entry and an entry in
+Settings > Apps for uninstalling. No administrator rights are needed. Sprawl needs the Windows
+App Runtime 1.8; if it's missing, Windows offers to install it the first time Sprawl starts.
 
 Sprawl looks for a new version once a day and asks before updating (Help > Check for Updates;
-the switch below it turns the daily check off). Updates are signed: a copy only accepts a release
-whose file list carries Sprawl's Ed25519 signature and whose files match it. What changed in
-each version is in [CHANGELOG.md](CHANGELOG.md).
-
-## Layout
-
-```
-crates/
-  sprawl-core/   UI-free logic: scanning, folder totals, file-type stats, squarified treemap layout (+ tests)
-  sprawl-advisor/ the Advisor: rules, history, clean-up, AI providers, the MCP server
-  sprawl-install/ update plumbing (signed release manifest, swapping files in) and the Apps entry
-  sprawl-release/ builds, signs and publishes a release
-  sprawl/        the WinUI 3 app (XAML loaded at run time, treemap painted into a WriteableBitmap)
-    src/main.rs      start-up: arguments, window, event wiring
-    src/app.rs       Windows App Runtime bootstrap, the composed XAML Application, COM interop helpers
-    src/state.rs     window state + shared helpers; scanning and the header card
-    src/tables.rs    tree view, file view and file-type table
-    src/treemap.rs   treemap rendering and mouse handling (pixels come from paint.rs)
-    src/commands.rs  menu/button commands
-    src/ui.rs        XAML markup for the window and table rows
-    src/format.rs, paint.rs, win32.rs   formatting, treemap painting + PNG, plain Win32 calls
-    src/bindings.rs  generated WinUI projection - do not edit by hand
-  bindgen/         regenerates bindings.rs from the SDK .winmd files (types.txt lists what is projected)
-tools/
-  setup.ps1        downloads the Windows App SDK NuGet packages into sdk/
-  fetch-pkg.ps1    downloads + unzips one NuGet package (used by setup.ps1)
-  probe.ps1        read-only check of the build environment (runtime, Windows Kits, VS tools)
-installer/
-  sprawl.iss       the Inno Setup 7 script for Sprawl-Setup-<version>.exe
-docs/
-  screenshots/             Sprawl screenshots
-```
+Settings > Network turns the daily check off). Updates are signed: a copy only accepts a release
+whose file list carries Sprawl's Ed25519 signature and whose files match it.
 
 ## Building
 
 Requirements: Rust (MSVC toolchain), Visual Studio Build Tools, and the
-[Windows App Runtime 1.8](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads) installed.
+[Windows App Runtime 1.8](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads).
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\setup.ps1   # once: fetch SDK packages into sdk\
@@ -71,15 +94,43 @@ Tests:
 cargo test --release -p sprawl-core -p sprawl-advisor -p sprawl-install -p sprawl
 ```
 
-The app's tests (`-p sprawl`) cover the parts of the UI that decide something (what is ticked,
-summed, saved or refused), not the drawing. None of them deletes anything outside a temporary
-folder, calls an AI provider or downloads anything.
+The tests delete nothing outside a temporary folder, call no AI provider and download nothing.
 
-`sprawl --screenshot out.png [folder]` scans (default `C:\Program Files`), saves a picture of the
-window and exits - handy for checking the look without clicking around.
+`sprawl --screenshot out.png [folder]` scans, saves a picture of the window and exits: handy for
+checking the look without clicking around. The screenshots above were made this way.
 
 To use a WinUI type or member that isn't projected yet, add it to `crates/bindgen/types.txt` and
 run `cargo run -p sprawl-bindgen` (needs the Windows SDK 10.0.26100 metadata).
+
+## Layout
+
+```
+crates/
+  sprawl-core/      no UI: scanning (MFT and folder walk), the tree, file-type stats, the treemap
+                    layout, the filter, the search index and query language (query.rs, compact.rs)
+  sprawl-advisor/   no UI: what can go and how it goes
+    rules.rs, rules/builtin.toml   the built-in rules and cleaners
+    cleaners.rs, chromium.rs, leftovers.rs, projects.rs, stale.rs, facts.rs   what is found, and what it belongs to
+    safety.rs       the never-list and the checks every finding passes
+    clean.rs, recycle.rs, privacy.rs   the clean-up itself: delete, Recycle Bin, privacy file sets
+    memory.rs, community.rs        your choices, your own and downloaded cleaner definitions
+    history.rs, growth.rs, snapshot.rs   scan history
+    llm/, mcp.rs    the optional AI: providers, its tools, the MCP server for Claude Code
+  sprawl/           the WinUI 3 app (XAML built at run time, the map drawn with Direct3D)
+    main.rs, state.rs, commands.rs, ui.rs   start-up, window state, commands, the window's markup
+    tables.rs, treemap.rs, views/           the tree, file and type tables; the map and its views
+    advisor.rs, cleaners.rs, cleanup.rs     the Advisor and Cleaners tabs, the review and the run
+    search.rs, search_box.rs, search_more.rs   the Search tab, its chips, other drives
+    prefs.rs, wizard.rs, settings.rs        every setting described once; Settings and the wizard
+    look.rs, admin.rs, shellmenu.rs, update.rs   shared styles, administrator switches, the Windows menu, updates
+    bindings.rs     generated WinUI projection: do not edit by hand
+  sprawl-install/   signed release manifest, swapping an update in, the Apps entry
+  sprawl-release/   builds, signs and publishes a release
+  bindgen/          regenerates bindings.rs from the SDK metadata
+tools/              setup.ps1 (fetch the SDK packages), probe.ps1 (check the build environment)
+installer/          the Inno Setup script
+docs/               plans, audits, the uninstaller hand-off, screenshots
+```
 
 ## Releasing
 
@@ -101,34 +152,15 @@ any more (they would need a new installer), so keep a copy somewhere safe.
 To try an update on a build that is already current, start it with
 `SPRAWL_PRETEND_VERSION=0.0.1`; it then sees the latest release as new.
 
-## Status
+## Not built, and what is planned
 
-Working:
+Not built on purpose: an uninstaller, registry cleaning, secure wiping, scheduled cleaning.
 
-- Scanning: a drive or folder (several at once, or a CSV), from the NTFS MFT when run as
-  administrator and by a multi-threaded folder walk otherwise.
-- Analysis: tree view and file view with sortable columns and multi-select, the file-type table,
-  the filter, and the treemap with City, Galaxy and more views, names and free space drawn on it.
-- Row actions: Explorer, command prompt, copy path, Windows' own right-click menu, and delete to
-  the Recycle Bin or permanently. Exports: CSV and PNG.
-- Settings and the window are remembered.
-- Advisor: findings from built-in rules with risk levels: caches, build outputs of idle
-  projects, folders left behind by removed applications, old installers, and (as information)
-  big data nothing has changed in for a year. It can clean up after a
-  review, and it leaves anything new since the scan and anything you chose to keep. Your own
-  files go to the Recycle Bin (a setting); caches are deleted. It can also save a script.
-- Cleaners: per-app parts, read on their own without a full scan. Community cleaners
-  (winapp2.ini, BleachBit) are off until you turn them on.
-- Privacy cleaners: off by default (Settings > Cleaning). Cookies and history of Chrome, Edge,
-  Brave and Firefox, by profile, each ticked on its own, never in a space total. The files are
-  deleted, not overwritten.
-- Search: the scan's names, and other drives when you switch them on; filters, saved searches.
-- Optional AI: off by default. It names folders and suggests what to tick, but never deletes.
-  Work offline (Settings > Network) stops every request.
-- Run as administrator: some things that would run other programs with your rights (the Windows
-  menu, your uninstaller, Claude Code, clean-up tools from your folders) are off unless you
-  allow each in Settings > Scanning.
-- Scan history and growth, and signed updates.
+Planned: [future features](docs/plans/future-features.md) (compressing program folders, older
+versions side by side, shrinking virtual disks, duplicates resolved by linking, a headless
+report, a low-space alert) and [where the Advisor could go next](docs/plans/advisor-next.md).
+The audit behind version 0.3.0 is in [docs/plans](docs/plans).
 
-Not built: an uninstaller (Sprawl hands an app to Windows' Installed apps, Steam or a program you
-choose), registry cleaning and secure wiping. Plans and audits are in `docs/plans`.
+## Licence
+
+MIT.
