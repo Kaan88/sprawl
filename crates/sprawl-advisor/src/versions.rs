@@ -36,6 +36,53 @@ fn numbers(v: &str) -> Option<Vec<u64>> {
 pub struct Pins {
     pub rust: Vec<(PathBuf, String)>,
     pub node: Vec<(PathBuf, String)>,
+    /// Android SDK packages a Gradle file asks for, as sdkmanager names them
+    /// (`platforms;android-34`, `build-tools;34.0.0`, `ndk;28.2.13676358`).
+    pub android: Vec<(PathBuf, String)>,
+}
+
+/// The Android SDK packages one Gradle build file asks for: `compileSdk = 34` (or
+/// `compileSdkVersion 34`, `compileSdk { version = release(36) }`), `buildToolsVersion "34.0.0"`,
+/// `ndkVersion "28.2.13676358"`. Values set elsewhere (version catalogs) aren't seen.
+pub fn gradle_wants(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let quoted = |rest: &str| -> Option<String> {
+        let s = rest.find(['"', '\''])?;
+        let rest = &rest[s + 1..];
+        let e = rest.find(['"', '\''])?;
+        Some(rest[..e].to_string())
+    };
+    let mut in_compile_block = false;
+    for l in text.lines().map(str::trim) {
+        if l.starts_with("//") {
+            continue;
+        }
+        let compile = l.strip_prefix("compileSdkVersion").or_else(|| l.strip_prefix("compileSdk")).filter(|r| !r.starts_with(|c: char| c.is_ascii_alphabetic()));
+        let level = |rest: &str| rest.split(|c: char| !c.is_ascii_digit()).find(|d| !d.is_empty()).map(str::to_string);
+        if let Some(rest) = compile {
+            match level(rest) {
+                Some(n) => out.push(format!("platforms;android-{n}")),
+                // the block form: the level is on a later line
+                None => in_compile_block = rest.contains('{'),
+            }
+        } else if in_compile_block {
+            if let Some(n) = level(l) {
+                out.push(format!("platforms;android-{n}"));
+                in_compile_block = false;
+            } else if l.contains('}') {
+                in_compile_block = false;
+            }
+        } else if let Some(rest) = l.strip_prefix("buildToolsVersion") {
+            if let Some(v) = quoted(rest) {
+                out.push(format!("build-tools;{v}"));
+            }
+        } else if let Some(rest) = l.strip_prefix("ndkVersion") {
+            if let Some(v) = quoted(rest) {
+                out.push(format!("ndk;{v}"));
+            }
+        }
+    }
+    out
 }
 
 /// Read the version files at the top of each project the engine found. They are a few bytes
@@ -62,6 +109,20 @@ pub fn pins(tree: &Tree, projects: &[crate::projects::Project]) -> Pins {
             if let Some(v) = v.filter(|v| !v.is_empty()) {
                 if rust { &mut p.rust } else { &mut p.node }.push((dir.clone(), v));
             }
+        }
+        // Gradle: the project's own build files and its modules' (one level down), 40 at most
+        let mut gradle: Vec<PathBuf> = Vec::new();
+        for n in std::iter::once(pr.node).chain(dirs(tree, pr.node)) {
+            for name in ["build.gradle", "build.gradle.kts"] {
+                if child(tree, n, name).is_some() && gradle.len() < 40 {
+                    gradle.push(tree.path_of(n).join(name));
+                }
+            }
+        }
+        for g in gradle {
+            let Ok(text) = std::fs::read_to_string(&g) else { continue };
+            let text: String = text.chars().take(200_000).collect();
+            p.android.extend(gradle_wants(&text).into_iter().map(|w| (dir.clone(), w)));
         }
     }
     p
@@ -102,6 +163,135 @@ pub fn find(tree: &Tree, projects: &[crate::projects::Project]) -> Vec<Finding> 
     let pins = pins(tree, projects);
     let mut out = rust(tree, &pins);
     out.extend(node(tree, &pins));
+    out.extend(android(tree, &pins));
+    out
+}
+
+/// The Android SDK's folder: ANDROID_HOME, ANDROID_SDK_ROOT, or Android Studio's default.
+fn android_sdk() -> Option<PathBuf> {
+    ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
+        .iter()
+        .find_map(|v| std::env::var_os(v).map(PathBuf::from))
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("Android").join("Sdk")))
+}
+
+/// The system images the emulators use: each AVD's config.ini names its image
+/// (`image.sysdir.1=system-images\android-33\google_apis\x86_64\`), as an sdkmanager package.
+fn avd_images() -> Vec<String> {
+    let dir = std::env::var_os("ANDROID_AVD_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("ANDROID_USER_HOME").map(|h| PathBuf::from(h).join("avd")))
+        .or_else(|| home().map(|h| h.join(".android").join("avd")));
+    let Some(dir) = dir else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten().take(200) {
+        let Ok(text) = std::fs::read_to_string(e.path().join("config.ini")) else { continue };
+        for l in text.lines() {
+            if let Some((k, v)) = l.split_once('=') {
+                if k.trim().starts_with("image.sysdir") {
+                    let parts: Vec<&str> = v.trim().split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+                    out.push(parts.join(";"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// sdkmanager's own script, from the newest command-line tools.
+fn sdkmanager(sdk: &Path) -> Option<PathBuf> {
+    [sdk.join(r"cmdline-tools\latest\bin\sdkmanager.bat"), sdk.join(r"tools\bin\sdkmanager.bat")].into_iter().find(|p| p.is_file())
+}
+
+/// Older Android SDK packages: build-tools, platforms, system images and NDKs. Never the newest
+/// of each, one a Gradle file in the scan asks for, or an image an emulator uses.
+fn android(tree: &Tree, pins: &Pins) -> Vec<Finding> {
+    let Some(sdk) = android_sdk() else { return Vec::new() };
+    let Some(root) = crate::find_path(tree, &sdk) else { return Vec::new() };
+    let Some(tool) = sdkmanager(&sdk) else { return Vec::new() };
+    let mut kept: Vec<String> = pins.android.iter().map(|(_, w)| w.to_lowercase()).collect();
+    kept.extend(avd_images().into_iter().map(|w| w.to_lowercase()));
+    android_from(tree, root, &tool, &kept)
+}
+
+fn android_from(tree: &Tree, root: usize, tool: &Path, kept: &[String]) -> Vec<Finding> {
+    // (package, node, version numbers for "newest", family)
+    let mut pkgs: Vec<(String, usize, Vec<u64>, &str)> = Vec::new();
+    let level = |name: &str| name.strip_prefix("android-").and_then(numbers);
+    if let Some(bt) = child(tree, root, "build-tools") {
+        for n in dirs(tree, bt) {
+            let name = &tree.nodes[n].name;
+            if let Some(v) = numbers(name) {
+                pkgs.push((format!("build-tools;{name}"), n, v, "build-tools"));
+            }
+        }
+    }
+    if let Some(pl) = child(tree, root, "platforms") {
+        for n in dirs(tree, pl) {
+            let name = &tree.nodes[n].name;
+            if let Some(v) = level(name) {
+                pkgs.push((format!("platforms;{name}"), n, v, "platforms"));
+            }
+        }
+    }
+    if let Some(nd) = child(tree, root, "ndk") {
+        for n in dirs(tree, nd) {
+            let name = &tree.nodes[n].name;
+            if let Some(v) = numbers(name) {
+                pkgs.push((format!("ndk;{name}"), n, v, "ndk"));
+            }
+        }
+    }
+    // system-images\android-33\google_apis\x86_64: one package per ABI folder
+    if let Some(si) = child(tree, root, "system-images") {
+        for api in dirs(tree, si) {
+            let Some(v) = level(&tree.nodes[api].name) else { continue };
+            for tag in dirs(tree, api) {
+                for abi in dirs(tree, tag) {
+                    let pkg = format!("system-images;{};{};{}", tree.nodes[api].name, tree.nodes[tag].name, tree.nodes[abi].name);
+                    pkgs.push((pkg, abi, v.clone(), "system-images"));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (pkg, n, v, family) in &pkgs {
+        let newest = pkgs.iter().filter(|p| p.3 == *family).map(|p| &p.2).max();
+        if Some(v) == newest || kept.iter().any(|k| *k == pkg.to_lowercase()) || !pkg.split(';').all(plain) {
+            continue;
+        }
+        let what = match *family {
+            "build-tools" => "Android build tools",
+            "platforms" => "Android platform",
+            "ndk" => "Android NDK",
+            _ => "Android emulator image",
+        };
+        let ver = pkg.split(';').skip(1).collect::<Vec<_>>().join(" ");
+        let newer: Vec<String> = pkgs.iter().filter(|p| p.3 == *family && p.2 > *v).map(|p| p.0.split(';').skip(1).collect::<Vec<_>>().join(" ")).collect();
+        out.push(finding(
+            tree,
+            *n,
+            "android",
+            "Android SDK",
+            format!("{what} {ver}"),
+            vec![
+                format!(
+                    "An older {} beside {}. {}",
+                    what.trim_start_matches("Android ").to_lowercase(),
+                    newer.join(", "),
+                    if *family == "system-images" { "No emulator (AVD) of yours uses it." } else { "No Gradle file in this scan asks for it." }
+                ),
+                format!("Tick it and Clean up, and Sprawl runs the SDK's own 'sdkmanager --uninstall \"{pkg}\"' ({}).", format_size(tree.nodes[*n].size)),
+                if *family == "system-images" {
+                    "An emulator made later with this image needs it downloaded again (Android Studio > SDK Manager).".into()
+                } else {
+                    "A project outside this scan that needs it gets it again from Android Studio or Gradle on its next build.".into()
+                },
+            ],
+            format!("& {} --uninstall {}", ps_quote(&tool.display().to_string()), ps_quote(pkg)),
+        ));
+    }
     out
 }
 
@@ -266,7 +456,7 @@ mod tests {
             "nightly-x86_64-pc-windows-msvc",
         ]);
         let settings = "default_toolchain = \"stable-x86_64-pc-windows-msvc\"\n[overrides]\n\"C:\\\\work\\\\old\" = \"1.80.0-x86_64-pc-windows-msvc\"\n";
-        let pins = Pins { rust: vec![(PathBuf::from(r"C:\p"), "1.70.0".into())], node: vec![] };
+        let pins = Pins { rust: vec![(PathBuf::from(r"C:\p"), "1.70.0".into())], ..Default::default() };
         let f = rust_from(&tree, ROOT, settings, &pins);
         let names: Vec<String> = f.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names.len(), 2, "{names:?}");
@@ -283,7 +473,7 @@ mod tests {
     fn node_keeps_the_newest_the_active_and_pins() {
         let (base, tree) = tree_with("node", &["v16.20.0", "v18.17.0", "v18.19.1", "v20.11.0", "v14.0.0", "not-a-version"]);
         let active = base.join("v14.0.0");
-        let pins = Pins { rust: vec![], node: vec![(PathBuf::from(r"C:\p"), "18".into())] };
+        let pins = Pins { node: vec![(PathBuf::from(r"C:\p"), "18".into())], ..Default::default() };
         let f = node_from(&tree, ROOT, Some(&active), &pins, "nvm", "nvm for Windows");
         let names: Vec<String> = f.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
         // v20 newest, v14 active, both v18 pinned by "18": only v16 is offered
@@ -310,6 +500,52 @@ mod tests {
         let pins = pins(&tree, &projects);
         assert_eq!(pins.rust.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(), vec!["1.99.1"]);
         assert_eq!(pins.node.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>(), vec!["v18"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn gradle_files_name_their_sdk_packages() {
+        let groovy = "android {\n    compileSdkVersion 33\n    buildToolsVersion \"33.0.2\"\n    ndkVersion '25.1.8937393'\n    // compileSdk 99\n}";
+        assert_eq!(gradle_wants(groovy), vec!["platforms;android-33", "build-tools;33.0.2", "ndk;25.1.8937393"]);
+        let kts = "android {\n    compileSdk = 35\n}";
+        assert_eq!(gradle_wants(kts), vec!["platforms;android-35"]);
+        let block = "android {\n    compileSdk {\n        version = release(36)\n    }\n}";
+        assert_eq!(gradle_wants(block), vec!["platforms;android-36"]);
+        // compileSdkPreview and friends aren't compileSdk
+        assert!(gradle_wants("compileSdkPreview = \"Baklava\"").is_empty());
+    }
+
+    #[test]
+    fn android_keeps_the_newest_what_gradle_wants_and_emulator_images() {
+        let (base, tree) = tree_with(
+            "android",
+            &[
+                r"build-tools\34.0.0",
+                r"build-tools\35.0.0",
+                r"build-tools\36.0.0",
+                r"platforms\android-34",
+                r"platforms\android-36",
+                r"platforms\android-36.1",
+                r"system-images\android-33\google_apis\x86_64",
+                r"system-images\android-35\google_apis_playstore\x86_64",
+                r"system-images\android-31\default\x86_64",
+                r"ndk\28.2.13676358",
+            ],
+        );
+        let tool = Path::new(r"C:\Users\sam\AppData\Local\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat");
+        let kept = vec!["build-tools;35.0.0".to_string(), "system-images;android-31;default;x86_64".to_string()];
+        let f = android_from(&tree, ROOT, tool, &kept);
+        let mut titles: Vec<String> = f.iter().map(|f| f.title.clone()).collect();
+        titles.sort();
+        // newest kept (36.0.0, android-36.1, android-35 image, the only NDK); 35.0.0 and the
+        // android-31 image kept as asked for
+        assert_eq!(titles, vec!["Android build tools 34.0.0", "Android emulator image android-33 google_apis x86_64", "Android platform android-34", "Android platform android-36"]);
+        let bt = f.iter().find(|f| f.title.ends_with("34.0.0")).unwrap();
+        assert!(matches!(&bt.action, Some(Action::Tool { command }) if command == r"& 'C:\Users\sam\AppData\Local\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat' --uninstall 'build-tools;34.0.0'"));
+        // a user's own script is never run as administrator
+        let Some(Action::Tool { command }) = &bt.action else { panic!() };
+        let sys = PathBuf::from(r"C:\Windows\System32");
+        assert!(crate::clean::elevated_tool_ok(command, &|p| Some(PathBuf::from(p.trim_matches('\''))), std::slice::from_ref(&sys)).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 

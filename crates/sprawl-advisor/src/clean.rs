@@ -1206,9 +1206,12 @@ pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<P
     let words: Vec<&str> = body.split_whitespace().collect();
     let mut programs = Vec::new();
     if let Some(&first) = words.first() {
-        if first.eq_ignore_ascii_case("Start-Process") {
-            if let Some(&p) = words.get(1) {
-                programs.push(p);
+        // `Start-Process x` and `& 'C:\path\x.bat'`: the program is the next word (a quoted path
+        // with a space in it is cut there, isn't found, and is refused)
+        if first.eq_ignore_ascii_case("Start-Process") || first == "&" {
+            match words.get(1) {
+                Some(&p) => programs.push(p),
+                None => return Err("not run as administrator: no program named".into()),
             }
         } else {
             programs.push(first);
