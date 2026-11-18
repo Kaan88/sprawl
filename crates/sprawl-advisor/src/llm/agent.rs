@@ -268,7 +268,13 @@ fn run_dir() -> Result<std::path::PathBuf, String> {
         return Err(format!("{} is a link, not a folder: remove it, then ask again", runs.display()));
     }
     let dir = runs.join(format!("{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&runs).map_err(|e| e.to_string())?;
+    // the run's own folder made new, not taken over if something put a link there first
+    match std::fs::create_dir(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && plain(&dir) => {}
+        Err(e) => return Err(e.to_string()),
+    }
     Ok(dir)
 }
 

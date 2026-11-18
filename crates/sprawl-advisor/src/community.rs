@@ -110,13 +110,17 @@ fn load_in(d: &Path, taken: &mut HashSet<String>) -> Vec<RulePack> {
             // one by one, as a fetch checks them, so one refused part doesn't take every other
             // community cleaner with it. Only cleaners are kept, each passing the checks whole.
             Err(_) => {
-                let Ok(all) = RulePack::parse(text.trim_start_matches('\u{feff}')) else { continue };
+                // read without the parse's own checks: a newer refusal there would lose the pack
+                let Ok(all) = toml::from_str::<RulePack>(text.trim_start_matches('\u{feff}')) else { continue };
                 let mut pack = RulePack::empty(&all.pack.name);
                 for c in all.cleaners {
                     let mut one = RulePack::empty(&all.pack.name);
                     one.cleaners.push(c.clone());
-                    let ok = toml::to_string(&one).map_err(|e| e.to_string()).and_then(|t| crate::memory::check_import_text(&t, prefix, &never, taken));
+                    // its ids are taken only when it passes
+                    let mut t = taken.clone();
+                    let ok = toml::to_string(&one).map_err(|e| e.to_string()).and_then(|x| crate::memory::check_import_text(&x, prefix, &never, &mut t));
                     if ok.is_ok() {
+                        *taken = t;
                         pack.cleaners.push(c);
                     }
                 }
@@ -761,7 +765,8 @@ pub fn convert_cleanerml(file: &str, text: &str) -> (Option<Cleaner>, Vec<LeftOu
                 let tag = format!("$${n}$$");
                 // many-valued variables multiply: a hostile file could fill the memory, so the
                 // count is checked before the paths are made
-                if paths.iter().filter(|p| p.contains(&tag)).count().saturating_mul(vals.len()) > 64 {
+                let tagged = paths.iter().filter(|p| p.contains(&tag)).count();
+                if (paths.len() - tagged).saturating_add(tagged.saturating_mul(vals.len())) > 64 {
                     too_many = true;
                     break;
                 }
@@ -968,6 +973,7 @@ mod tests {
             good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Pictures\2024"),
             good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\D?cuments\Work\x"),
             good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Doc*\A\B"),
+            good.replace(r"%LOCALAPPDATA%\A\Cache", r"C:\Users\**\Work\x"),
             // a part that runs as administrator
             good.replace("why = 'w'", "why = 'w'\nadmin = true"),
         ] {

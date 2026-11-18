@@ -642,7 +642,9 @@ pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never,
         let wild_under_profile = |x: &str| {
             let e = crate::rules::expand(x);
             let segs: Vec<&str> = e.split('\\').filter(|s| !s.is_empty()).collect();
-            segs.len() > 3 && segs[1].eq_ignore_ascii_case("users") && segs[3].contains(['*', '?'])
+            let under = segs.len() > 3 && segs[1].eq_ignore_ascii_case("users") && segs[3].contains(['*', '?']);
+            // and `**` before the last folder, which can stand for `<name>\Documents`
+            under || segs.iter().rev().skip(1).any(|s| s.contains("**"))
         };
         if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| wild_under_profile(x)) {
             return Err(format!("{}: {x} has a wildcard where your own folders are", c.id));
