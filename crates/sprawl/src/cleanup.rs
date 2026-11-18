@@ -65,6 +65,8 @@ pub(crate) struct Item {
     pub privacy: bool,
     /// The tool command it runs, written into the clean-up log with its output (R7).
     pub command: Option<String>,
+    /// Advice shown only if this item actually removed something.
+    pub prevention: Option<&'static str>,
 }
 
 pub(crate) enum ItemState {
@@ -84,6 +86,7 @@ pub(crate) struct Running {
     held: Vec<String>,
 }
 
+#[derive(Default)]
 pub(crate) struct Done {
     pub freed: u64,
     /// Items that freed something.
@@ -101,6 +104,7 @@ pub(crate) struct Done {
     pub problems: Vec<String>,
     pub stopped: bool,
     pub output: Vec<String>,
+    pub prevention: Vec<&'static str>,
 }
 
 enum Msg {
@@ -538,6 +542,7 @@ impl State {
                 },
                 recycle,
                 privacy: f.privacy(),
+                prevention: sprawl_advisor::prevention::for_finding(&f),
                 command: match clean::action(&f) {
                     Some((Action::Tool { command }, _)) => Some(command),
                     _ => None,
@@ -730,7 +735,7 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new(), prevention: Vec::new() };
         for it in &run.items {
             if let ItemState::Done(o) = &it.state {
                 // a privacy set: counted on its own, never in what was freed; one that went is
@@ -766,6 +771,11 @@ impl State {
                     done.problems.push(format!("{}: and {} more", it.title, o.more_problems + o.problems.len().saturating_sub(3) as u64));
                 }
                 done.output.extend(o.output.iter().cloned());
+                if o.freed > 0 || o.recycled > 0 {
+                    if let Some(tip) = it.prevention {
+                        if !done.prevention.contains(&tip) { done.prevention.push(tip); }
+                    }
+                }
                 // remembered as done when most of it went, never over the user's own Keep
                 let kept = self.advisor.memory.hides(&it.path).is_some_and(|d| d.verdict == sprawl_advisor::memory::Verdict::Keep);
                 if o.freed + o.recycled >= it.bytes / 2 && !kept {
@@ -912,6 +922,12 @@ impl State {
                     r##"<Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
                     d.output.iter().map(|l| ui::esc(l)).collect::<Vec<_>>().join("&#10;")
                 );
+            }
+            if !d.prevention.is_empty() {
+                x += r##"<TextBlock Text="Keep it from coming back" FontSize="13" FontWeight="SemiBold" Margin="0,6,0,0"/>"##;
+                for tip in d.prevention.iter().take(5) {
+                    x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(tip));
+                }
             }
             x += "</StackPanel></Border>";
         }

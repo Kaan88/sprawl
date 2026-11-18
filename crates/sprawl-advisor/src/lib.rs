@@ -38,6 +38,7 @@ pub mod mcp_scan;
 pub mod memory;
 pub mod pipe;
 pub mod plan;
+pub mod prevention;
 pub mod privacy;
 pub mod procs;
 pub mod projects;

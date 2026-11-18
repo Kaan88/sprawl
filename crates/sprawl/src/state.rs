@@ -712,6 +712,16 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: render a synthetic successful result; never run a cleanup.
+                    "preventiondemo" => {
+                        self.advisor.cleanup.done = Some(crate::cleanup::Done {
+                            freed: 128 << 20, items: 2,
+                            prevention: ["dev.npm-cache", "win.user-temp"].iter()
+                                .filter_map(|id| sprawl_advisor::prevention::for_rule(id)).collect(),
+                            ..Default::default()
+                        });
+                        self.render_advisor();
+                    }
                     // dev: Enter in the search box, or a key in the main table (key=40 is Down)
                     "boxenter" => self.search_box_down(),
                     // dev: a double-click on row k of the main table
