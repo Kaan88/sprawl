@@ -76,13 +76,16 @@ pub fn shrink_command(path: &Path, docker: bool) -> String {
     } else {
         ""
     };
+    // WSL's command begins with wsl.exe, which the elevated check finds in System32; Docker's
+    // begins with its check, so wsl.exe is named by its full path there, and diskpart always is
+    let wsl = if docker { r#"& "$env:SystemRoot\System32\wsl.exe""# } else { "wsl.exe" };
     format!(
-        "{SHRINK}{docker_check}wsl.exe --shutdown\n\
+        "{SHRINK}{docker_check}{wsl} --shutdown\n\
          Start-Sleep -Seconds 3\n\
          if (Get-Process vmmem, vmmemWSL -ErrorAction SilentlyContinue) {{ throw 'WSL is still running after wsl --shutdown: nothing was changed.' }}\n\
          $p = {q}\n\
          $a = (Get-Item -LiteralPath $p).Length\n\
-         \"select vdisk file=`\"$p`\"`nattach vdisk readonly`ncompact vdisk`ndetach vdisk`nexit\" | diskpart.exe\n\
+         \"select vdisk file=`\"$p`\"`nattach vdisk readonly`ncompact vdisk`ndetach vdisk`nexit\" | & \"$env:SystemRoot\\System32\\diskpart.exe\"\n\
          $b = (Get-Item -LiteralPath $p).Length\n\
          \"Before: $a bytes. After: $b bytes.\"\n\
          if ($b -ge $a) {{ throw 'The disk file is no smaller. diskpart says why in the lines above (in use, or nothing to give back).' }}"
@@ -561,7 +564,8 @@ mod shrink_tests {
         let mut d = disk_finding(&disk, tree.nodes[n].size, "vm.docker-disk");
         shrinkable(&mut d);
         let Some(Action::Tool { command: dc }) = &d.action else { panic!() };
-        assert!(dc.find("Docker Desktop").unwrap() < dc.find("wsl.exe --shutdown").unwrap());
+        assert!(dc.find("Docker Desktop").unwrap() < dc.find(r#"\System32\wsl.exe" --shutdown"#).unwrap());
+        assert!(dc.contains(r#"| & "$env:SystemRoot\System32\diskpart.exe""#) && command.contains(r#"\System32\diskpart.exe""#));
 
         // a local pack's rule with the same id, a model's finding, another rule: unchanged
         for mut other in [
@@ -591,7 +595,7 @@ mod shrink_tests {
             assert_eq!(lines.next().map(str::trim), Some("0"), "{cmd}\n{text}");
             // the only variables are the script's own: the path's `$x` is inside quotes
             let vars = lines.next().unwrap_or("").trim().to_string();
-            assert!(vars.split(',').all(|v| ["p", "a", "b"].contains(&v)), "{vars}");
+            assert!(vars.split(',').all(|v| ["p", "a", "b", "env:SystemRoot"].contains(&v)), "{vars}");
         }
     }
 }
