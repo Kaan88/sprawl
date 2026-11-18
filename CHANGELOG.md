@@ -3,6 +3,19 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.4.1 — 2026-11-18
+
+### New
+- **Rows Sprawl doesn't tick can be ticked on a second click**: a tip, or a folder left behind that holds your files. The first click says why Sprawl doesn't tick it; the second ticks the whole folder, which then always goes to the Recycle Bin, and the review asks you to confirm. Sprawl's safety checks still apply. Windows, programs, OneDrive, your profile's own folders and anything risky get no box.
+- **The AI can suggest findings to tick.** Its suggestion shows beside the list with a tick for each and "Tick all it suggested"; rows it ticked stay purple until you change them. Only safe and amber findings, checked again before they are ticked.
+- **The AI sees what you ticked**: "Are my choices safe?" gets an answer for each item.
+- **The AI box suggests questions from what is on screen**: what you ticked, the row you opened, what grew, folders left behind. More suggestions stay under each answer.
+
+### Fixed
+- The logo, name and version are back at the top right, and the About page has the logo.
+- **Keyboard shortcuts** (Help) showed a broken character between each key and its action. The box is redone: grouped, in two columns, with each key shown as a key.
+- A review no longer says "gone for good" for files that go to the Recycle Bin.
+
 ## 0.4.0 — 2026-11-18
 
 ### New
