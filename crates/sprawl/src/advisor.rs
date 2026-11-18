@@ -2491,8 +2491,10 @@ impl State {
             _ => "AI",
         };
         let mut x = format!(
-            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold"/>"##,
-            if cleaning { "Ask the AI about cleaning" } else { "Ask your disk" }
+            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF" HorizontalAlignment="Stretch"><StackPanel Spacing="6"><Grid><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>{}</Grid>"##,
+            if cleaning { "Ask the AI about cleaning" } else { "Ask your disk" },
+            // only once there is something to start over from
+            if c.log.is_empty() && c.live.is_none() { "" } else { r##"<Button x:Name="AdvChatClear" HorizontalAlignment="Right" Content="New chat" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>"## }
         );
         for (user, text) in c.log.iter().rev().take(12).rev() {
             if *user {
@@ -2508,10 +2510,14 @@ impl State {
         }
         if c.log.is_empty() {
             // ready-made questions: one click asks
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
+            // one under the other: a row of them is cut off in a narrow column
+            x += r##"<StackPanel Spacing="4">"##;
             let (prefix, examples): (&str, &[&str]) = if cleaning { ("AdvClAi", &CL_EXAMPLES) } else { ("AdvEx", &EXAMPLES) };
             for (i, q) in examples.iter().enumerate() {
-                x += &format!(r##"<Button x:Name="{prefix}{i}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="12" Background="#142F7BF6"/>"##, ui::esc(q));
+                x += &format!(
+                    r##"<Button x:Name="{prefix}{i}" HorizontalAlignment="Left" HorizontalContentAlignment="Left" Padding="10,4" CornerRadius="12" Background="#142F7BF6"><TextBlock Text="{}" FontSize="12" TextWrapping="Wrap"/></Button>"##,
+                    ui::esc(q)
+                );
             }
             x += "</StackPanel>";
         }
@@ -2525,17 +2531,24 @@ impl State {
             x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, t.split('\n').map(ui::esc).collect::<Vec<_>>().join("&#10;"));
         }
         if let Some(s) = &c.status {
-            // which provider is working, and Stop
+            // which provider is working (Stop is below, where Ask was: it never moves with the text)
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ProgressRing IsActive="True" Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel><Button x:Name="AdvChatStop" Grid.Column="2" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4" VerticalAlignment="Top"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><ProgressRing IsActive="True" Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel></Grid>"##,
                 ui::esc(&format!("Asking {who}")),
                 ui::esc(s)
             );
         }
+        // the box on a row of its own, as wide as the card; under it Ask, or Stop while an answer
+        // is being written, always at the left edge
         x += &format!(
-            r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="AdvChatText" TextWrapping="Wrap" AcceptsReturn="False" PlaceholderText="{}"/><Button x:Name="AdvChatSend" Grid.Column="1" Content="Ask" Padding="12,3" FontSize="12" CornerRadius="5" VerticalAlignment="Top"/><Button x:Name="AdvChatClear" Grid.Column="2" Content="New chat" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" VerticalAlignment="Top"/></Grid>"##,
-            if cleaning { "Ask about cleaning, then press Enter" } else { "Ask about this scan, then press Enter" }
+            r##"<TextBox x:Name="AdvChatText" HorizontalAlignment="Stretch" TextWrapping="Wrap" AcceptsReturn="False" PlaceholderText="{}"/>"##,
+            if cleaning { "Ask about cleaning" } else { "Ask about this scan" }
         );
+        x += if c.status.is_some() {
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatStop" Content="Stop" MinWidth="64" Padding="12,3" FontSize="12" CornerRadius="5"/><TextBlock Text="Enter asks the next question" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
+        } else {
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatSend" Content="Ask" MinWidth="64" Padding="12,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or press Enter" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
+        };
         x += "</StackPanel></Border>";
         x
     }
@@ -2752,7 +2765,7 @@ impl State {
             Ai::Idle => {}
             Ai::Running(s) => {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><Button x:Name="AdvStop" Content="Stop" MinWidth="56" Padding="8,1" FontSize="12" CornerRadius="4"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/></StackPanel>"##,
                     ui::esc(s)
                 )
             }

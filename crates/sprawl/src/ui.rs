@@ -381,7 +381,7 @@ pub fn page(drives: &[String]) -> String {
     let tree_hint = crate::welcome::tree_hint();
     // Explorer's own menu (as administrator only when allowed in Settings > Scanning: crate::admin)
     let shell = |name: &str| {
-        let tip = if sprawl_core::is_elevated() { "Explorer's own right-click menu (or Shift+right-click). As administrator, only when allowed in Settings > Scanning." } else { "Explorer's own right-click menu (or Shift+right-click). What it does is not checked by Sprawl." };
+        let tip = if sprawl_core::is_elevated() { "Explorer's own right-click menu (or Shift+right-click). As administrator it is off unless you allow it in Settings > Scanning." } else { "Explorer's own right-click menu (or Shift+right-click). What it does is not checked by Sprawl." };
         format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu..." ToolTipService.ToolTip="{tip}"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##)
     };
     let (shell_item, shell_more) = (shell("cShell"), shell("sxShell"));

@@ -438,8 +438,17 @@ impl State {
         let v = self.prefs.draft.get(p.key).cloned().unwrap_or_default();
         let name = format!("Pf_{}", p.key);
         let row = |inner: String| format!(r##"<StackPanel x:Name="PfRow_{}" Spacing="0" Margin="0,4,0,0">{inner}</StackPanel>"##, p.key);
+        // the four administrator switches share one warning, in a box above the first
+        let admin_note = if p.key == crate::admin::SHELL_MENU.key {
+            format!(
+                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="6" Background="#1AF5B342" BorderBrush="#55F5B342" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap"/></StackPanel></Border>"##,
+                ui::esc(crate::admin::WARNING)
+            )
+        } else {
+            String::new()
+        };
         match &p.kind {
-            Kind::Switch(_) => row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="13"/>{}"##, ui::esc(p.label), on(&v), help(&p.help_line()))),
+            Kind::Switch(_) => format!("{admin_note}{}", row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="13"/>{}"##, ui::esc(p.label), on(&v), if p.help_line().is_empty() { String::new() } else { help(&p.help_line()) }))),
             Kind::Number(_, unit) => row(format!(
                 r##"{}<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" Width="130" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel>{}"##,
                 label(p.label),

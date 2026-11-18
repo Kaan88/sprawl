@@ -83,7 +83,8 @@ impl State {
                 .map(|(i, (label, _))| format!(r##"<MenuFlyoutItem x:Name="Ck{k}_{i}" Text="{}"/>"##, ui::esc(label)))
                 .collect();
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal"><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><Button x:Name="Chip{k}" {off} Padding="10,2" CornerRadius="4,0,0,4" ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis"/></Button><Button x:Name="ChipMenu{k}" {off} Padding="6,2" CornerRadius="0,4,4,0" ToolTipService.ToolTip="Choose"><FontIcon Glyph="&#xE70D;" FontSize="10"/></Button></StackPanel>"##,
+                // one control per chip: the words and its arrow in one button, so the two can't differ in size
+                r##"<Button x:Name="Chip{k}" {off} Padding="10,3" MinHeight="26" CornerRadius="4" ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" FontSize="12" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="9" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
                 t = ui::esc(chip.title()),
                 off = crate::look::pick(crate::look::Pick::Chip, false),
             );
@@ -159,6 +160,10 @@ impl State {
                 None => chip.title().to_string(),
             };
             text(fe, &format!("ChipText{k}"), &label);
+            // lit, the chip ends in its cross; the arrow is for a chip that opens its options
+            if let Ok(a) = find::<UIElement>(fe, &format!("ChipArrow{k}")) {
+                let _ = a.SetVisibility(if lit[k].is_some() { Visibility::Collapsed } else { Visibility::Visible });
+            }
             for name in [format!("Chip{k}"), format!("ChipMenu{k}")] {
                 crate::look::paint(fe, &name, crate::look::Pick::Chip, lit[k].is_some());
             }
