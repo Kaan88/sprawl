@@ -170,7 +170,13 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
     }
     if a.shot.is_some() {
         crate::settings::READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
-        win32::show_behind(hwnd);
+        // dev: SPRAWL_FRONT=1 shows the window in front, to click through a change by hand
+        // (screenshot mode doesn't elevate, so it can be driven where a normal start can't)
+        if std::env::var_os("SPRAWL_FRONT").is_some() {
+            window.Activate()?;
+        } else {
+            win32::show_behind(hwnd);
+        }
     } else {
         window.Activate()?;
     }

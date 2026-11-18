@@ -140,11 +140,10 @@ Kept up as the work goes. Each line: the item, the commit, what was done, what i
   on every answer. `cleaners` and `set_filter` need the app open. Tried by hand with no app
   serving: scan_report lists the rules' findings. Not yet tried by hand: the app started after
   the MCP (needs an installed build, since the pipe only answers the same program file).
-- **B3** (cdfb66c): done, not yet tried by hand. Measured with the new `SPRAWL_TIMING=1`
+- **B3** (cdfb66c): done, tried by hand. Measured with the new `SPRAWL_TIMING=1`
   (`%TEMP%\sprawl-timing.log`): each open rebuilt the whole panel (~25 ms) plus a 35-65 ms
   frame. Rows now sit in `AdvRow{i}` Borders; open, close and the in-use answer swap only
   those rows (`advisor_rows`, 2-5 ms), anything else falls back to the full render. The jump
   to the top was focus falling to the first control when the clicked button was destroyed: the
-  clicked row's button now takes focus back. To try by hand: scroll the Findings list down,
-  open a row, check the list stays put. (Screenshot mode hides its window, and a normal launch
-  asks for elevation here, so this wasn't clicked through.)
+  clicked row's button now takes focus back. Tried by hand (2026-11-18, `SPRAWL_FRONT=1` screenshot mode on a C:\ scan): rows
+  lower in the list open and close in place, 2-3 ms each, and the list stays put.
