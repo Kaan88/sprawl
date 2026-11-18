@@ -5,6 +5,10 @@ in-app updater shows.
 
 ## Unreleased
 
+### Changed
+- **The four "as administrator" switches are kept where only an administrator can change them** (the machine's registry, for your account). Before, they were in your settings file, which any program you run could edit to turn one on. They can now be changed only in Sprawl running as administrator; elsewhere they show greyed out. A switch you had turned on is off again until you turn it on from an elevated Sprawl.
+- After "Tick the safe ones" or "Tick enough", the Advisor shows its Findings, where the ticks are, and each application in its Cleaners group says how many of its parts are ticked.
+
 ### Fixed
 - The Advisor tab could show its header and nothing under it after a visit to the Cleaners tab.
 - Community cleaners were downloaded when Sprawl opened on the Advisor or Cleaners tab even with the setting off.

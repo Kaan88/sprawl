@@ -978,7 +978,10 @@ impl State {
                 self.advisor.cleanup.done = None;
                 self.advisor.section = Section::Ask;
             }
-            "AdvSelSafe" => self.cleanup_select_safe(),
+            "AdvSelSafe" => {
+                self.cleanup_select_safe();
+                self.show_ticks();
+            }
             "AdvSelNone" => {
                 self.advisor.cleanup.ticked.clear();
                 self.advisor.cleanup.privacy_ticked.clear();
@@ -996,6 +999,7 @@ impl State {
                     return;
                 };
                 if let Some(got) = self.cleanup_select_enough(need) {
+                    self.show_ticks();
                     // what costs something to get back is named, so it isn't ticked unnoticed
                     let amber: Vec<String> = self.ticked_findings().iter().filter(|(_, f)| f.risk == Risk::Amber).map(|(_, f)| f.title.clone()).collect();
                     let named = match amber.len() {
@@ -1318,6 +1322,14 @@ impl State {
             }
         }
         self.advisor_changed();
+    }
+
+    /// After a tick button in the foot: the list where the ticks show, not Ask, Growth or
+    /// Remembered (the foot stays under every section; ticks only show in Findings).
+    fn show_ticks(&mut self) {
+        if !self.advisor.cleaners_tab && self.advisor.section != Section::Findings {
+            self.advisor.section = Section::Findings;
+        }
     }
 
     pub(crate) fn cleaners_tab(&self) -> bool {

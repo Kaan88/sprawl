@@ -251,6 +251,8 @@ impl State {
             }
             "uninstaller" => self.settings.get("uninstaller").unwrap_or("").to_string(),
             "searchDrivesOn" => self.settings.get("searchDrivesOn").unwrap_or("").to_string(),
+            // the administrator switches: in the store only an administrator can write
+            k if crate::admin::is_switch(k) => b(crate::admin::store::get(k)),
             k => match &p.kind {
                 Kind::Number(knob, _) => sprawl_advisor::tuning::get(knob).to_string(),
                 Kind::Switch(d) => b(self.settings.bool(k).unwrap_or(*d)),
@@ -314,6 +316,12 @@ impl State {
             "offline" => {
                 self.settings.set_bool("offline", yes);
                 sprawl_advisor::OFFLINE.store(yes, std::sync::atomic::Ordering::Relaxed);
+            }
+            // not elevated, the switches are greyed out and nothing is written (store::set refuses)
+            k if crate::admin::is_switch(k) => {
+                if let Err(e) = crate::admin::store::set(k, yes) {
+                    self.prefs.note = Some(format!("{}: {e}", p.label));
+                }
             }
             k => match &p.kind {
                 Kind::Number(knob, _) => {
@@ -441,14 +449,21 @@ impl State {
         // the four administrator switches share one warning, in a box above the first
         let admin_note = if p.key == crate::admin::SHELL_MENU.key {
             format!(
-                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="6" Background="#1AF5B342" BorderBrush="#55F5B342" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap"/></StackPanel></Border>"##,
-                ui::esc(crate::admin::WARNING)
+                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="6" Background="#1AF5B342" BorderBrush="#55F5B342" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap"/>{}</StackPanel></Border>"##,
+                ui::esc(crate::admin::WARNING),
+                if sprawl_core::is_elevated() {
+                    ""
+                } else {
+                    r##"<TextBlock Text="They can be changed only in Sprawl running as administrator, so that no other program can turn them on for you." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##
+                }
             )
         } else {
             String::new()
         };
+        // greyed out unless elevated: the store they are kept in takes no other writer
+        let enabled = if crate::admin::is_switch(p.key) && !sprawl_core::is_elevated() { r#" IsEnabled="False""# } else { "" };
         match &p.kind {
-            Kind::Switch(_) => format!("{admin_note}{}", row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="13"/>{}"##, ui::esc(p.label), on(&v), if p.help_line().is_empty() { String::new() } else { help(&p.help_line()) }))),
+            Kind::Switch(_) => format!("{admin_note}{}", row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="13"{enabled}/>{}"##, ui::esc(p.label), on(&v), if p.help_line().is_empty() { String::new() } else { help(&p.help_line()) }))),
             Kind::Number(_, unit) => row(format!(
                 r##"{}<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" Width="130" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel>{}"##,
                 label(p.label),

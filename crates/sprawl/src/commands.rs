@@ -482,7 +482,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
     pub(crate) fn apply_settings(&mut self) {
         // Work offline, and the thresholds (each held at its floor and ceiling)
         sprawl_advisor::OFFLINE.store(self.settings.bool("offline") == Some(true), std::sync::atomic::Ordering::Relaxed);
-        // a setting switched off takes back this session's yes
+        // the administrator switches, as their store says now
         self.admin_flags();
         // privacy cleaners switched on or off: the report and the tab's own read again
         let privacy = self.privacy_on();

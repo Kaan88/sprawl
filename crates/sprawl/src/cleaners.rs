@@ -1719,11 +1719,20 @@ impl State {
                     None => String::new(),
                 },
                 ui::esc(&c.name),
-                ui::esc(&format!("{n} {}", if n == 1 { "part" } else { "parts" })),
+                ui::esc(&match c.parts.iter().filter(|p| p.findings.iter().any(|&i| ticked(i))).count() {
+                    0 => format!("{n} {}", if n == 1 { "part" } else { "parts" }),
+                    // how many a tick button took, as the Cleaners tab says it
+                    k => format!("{n} {} · {k} ticked", if n == 1 { "part" } else { "parts" }),
+                }),
                 self.size(b)
             );
         }
         let more = apps.len().saturating_sub(GROUP_APPS);
+        // ticks in the applications not listed here would be out of sight
+        let hidden: usize = apps.iter().skip(GROUP_APPS).map(|&(ci, _)| rows[ci].parts.iter().filter(|p| p.findings.iter().any(|&i| ticked(i))).count()).sum();
+        if hidden > 0 {
+            x += &format!(r##"<TextBlock Text="{hidden} more ticked in applications not listed here: see them in Cleaners." FontSize="12" Foreground="#FF8E97AA" Margin="34,2,0,0" TextWrapping="Wrap"/>"##);
+        }
         x += &format!(
             r##"<Button x:Name="AdvClAll" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="34,4,0,0"/></StackPanel>"##,
             if more > 0 { format!("See all in Cleaners ({more} more)") } else { "See all in Cleaners".to_string() }

@@ -22,6 +22,11 @@ pub struct Bin {
     pub room: u64,
 }
 
+/// This process's account, as `S-1-5-21-...` (also when elevated: the same account).
+pub fn account_sid() -> Option<String> {
+    win::user_sid()
+}
+
 /// The Recycle Bin for `path`'s volume, or why there is none Sprawl can use.
 pub fn bin_for(path: &Path) -> Result<Bin, String> {
     let s = path.to_string_lossy();

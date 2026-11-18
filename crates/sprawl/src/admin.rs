@@ -56,10 +56,65 @@ pub(crate) fn refused(l: &Lock) -> String {
     format!("Not as administrator. You can allow it in Settings > Scanning ({}).", l.what)
 }
 
+/// Where the four switches are kept: not in settings.ini, which any program of this account can
+/// write (it could turn one on and have the next elevated Sprawl start its `claude` or `npm` as
+/// administrator), but under HKLM, where only an administrator can write. One key per account,
+/// by its SID; a value of 1 is on, anything else (or nothing) off.
+pub(crate) mod store {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_DWORD, REG_OPTION_NON_VOLATILE, RRF_RT_REG_DWORD, RRF_SUBKEY_WOW6464KEY,
+    };
+
+    fn path() -> Option<String> {
+        let sid = sprawl_advisor::recycle::account_sid()?;
+        // a SID is S-1-5-21-digits: anything else is not put into a key path
+        sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-').then(|| format!(r"SOFTWARE\Sprawl\AdminSwitches\{sid}"))
+    }
+
+    /// Whether switch `name` is on for this account.
+    pub(crate) fn get(name: &str) -> bool {
+        let Some(p) = path() else { return false };
+        let mut v = 0u32;
+        let mut n = 4u32;
+        let r = unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, &HSTRING::from(p), &HSTRING::from(name), RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, None, Some((&mut v as *mut u32).cast()), Some(&mut n))
+        };
+        r == ERROR_SUCCESS && v == 1
+    }
+
+    /// Turn switch `name` on or off for this account: only an elevated Sprawl can.
+    pub(crate) fn set(name: &str, on: bool) -> Result<(), String> {
+        if !sprawl_core::is_elevated() {
+            return Err("only Sprawl running as administrator can change this".into());
+        }
+        let p = path().ok_or("Windows couldn't say which account this is")?;
+        let mut key = HKEY::default();
+        let r = unsafe { RegCreateKeyExW(HKEY_LOCAL_MACHINE, &HSTRING::from(p), None, PCWSTR::null(), REG_OPTION_NON_VOLATILE, KEY_SET_VALUE | KEY_WOW64_64KEY, None, &mut key, None) };
+        if r != ERROR_SUCCESS {
+            return Err(format!("couldn't open the setting ({})", r.0));
+        }
+        let v: u32 = on.into();
+        let r = unsafe { RegSetValueExW(key, &HSTRING::from(name), None, REG_DWORD, Some(&v.to_le_bytes())) };
+        let _ = unsafe { RegCloseKey(key) };
+        if r == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!("couldn't save the setting ({})", r.0))
+        }
+    }
+}
+
+/// One of the four switches' keys.
+pub(crate) fn is_switch(key: &str) -> bool {
+    [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS].iter().any(|l| l.key == key)
+}
+
 impl crate::state::State {
-    /// Whether the setting of `l` is on.
+    /// Whether the switch of `l` is on (in the store only an administrator can write).
     pub(crate) fn admin_on(&self, l: &Lock) -> bool {
-        self.settings.bool(l.key) == Some(true)
+        store::get(l.key)
     }
 
     /// Whether `l` may go ahead now.
