@@ -25,6 +25,8 @@ pub(crate) struct Pending {
     /// The "Yes" button in the warning colour (deleting for good).
     danger: bool,
     then: Option<Then>,
+    /// A body laid out in XAML instead of `text` (the keyboard shortcuts), shown wider.
+    rich: Option<String>,
 }
 
 /// The questions waiting: the first is on screen, the rest follow in turn.
@@ -49,12 +51,17 @@ impl Dialogs {
 impl State {
     /// Ask a yes-or-no question; `then` runs only on "Yes". "No" is the default.
     pub(crate) fn ask(&mut self, title: &str, text: &str, yes: &str, danger: bool, then: impl FnOnce(&mut State) + 'static) {
-        self.dialog_push(Pending { title: title.into(), text: text.into(), yes: Some(yes.into()), danger, then: Some(Box::new(then)) });
+        self.dialog_push(Pending { title: title.into(), text: text.into(), yes: Some(yes.into()), danger, then: Some(Box::new(then)), rich: None });
     }
 
     /// A message with an OK button.
     pub(crate) fn tell(&mut self, title: &str, text: &str) {
-        self.dialog_push(Pending { title: title.into(), text: text.into(), yes: None, danger: false, then: None });
+        self.dialog_push(Pending { title: title.into(), text: text.into(), yes: None, danger: false, then: None, rich: None });
+    }
+
+    /// A message laid out in XAML (`body`: elements, the namespaces are on the card).
+    pub(crate) fn tell_rich(&mut self, title: &str, body: String) {
+        self.dialog_push(Pending { title: title.into(), text: String::new(), yes: None, danger: false, then: None, rich: Some(body) });
     }
 
     fn dialog_push(&mut self, p: Pending) {
@@ -71,7 +78,11 @@ impl State {
             let _ = host.SetChild(None::<&UIElement>);
             return;
         };
-        let body: String = p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="13" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect();
+        let body: String = match &p.rich {
+            Some(x) => x.clone(),
+            None => p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="13" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect(),
+        };
+        let (max_w, max_h) = if p.rich.is_some() { (940, 720) } else { (560, 420) };
         let buttons = match &p.yes {
             Some(yes) => format!(
                 r##"<Button x:Name="DlgYes" Content="{}" Padding="16,5" CornerRadius="5" Background="{}" Foreground="White"/><Button x:Name="DlgNo" Content="No" Padding="16,5" CornerRadius="5"/>"##,
@@ -81,9 +92,9 @@ impl State {
             None => r##"<Button x:Name="DlgNo" Content="OK" Padding="16,5" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/>"##.to_string(),
         };
         let xaml = format!(
-            r##"<Grid {ns} Background="#B8080A10"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="560" Margin="24" Padding="22,18" CornerRadius="10" Background="#FF1C1F2A" BorderBrush="{edge}" BorderThickness="1">
+            r##"<Grid {ns} Background="#B8080A10"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="10" Background="#FF1C1F2A" BorderBrush="{edge}" BorderThickness="1">
 <StackPanel Spacing="14"><TextBlock Text="{title}" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap"/>
-<ScrollViewer MaxHeight="420" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
+<ScrollViewer MaxHeight="{max_h}" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">{buttons}</StackPanel></StackPanel></Border></Grid>"##,
             ns = ui::NS,
             edge = if p.danger { "#88C4314B" } else { "#552F7BF6" },

@@ -177,6 +177,87 @@ fn note_shortcut(text: &str, key: &str, mods: &str) {
     SHORTCUTS.with(|s| s.borrow_mut().push((combo, text)));
 }
 
+/// Sprawl's logo as in `assets/sprawl-256.png` (the skyline with lit windows over its
+/// reflection, on the orange-to-purple tile), drawn in XAML so it is sharp at `px` pixels.
+pub(crate) fn logo(px: u32) -> String {
+    // (left, top, right) of each building on a 256 tile; they all stand on y = 188
+    const B: [(u32, u32, u32); 5] = [(33, 128, 70), (70, 93, 106), (106, 112, 145), (145, 82, 180), (180, 138, 221)];
+    // lit windows (x, y, colour)
+    const W: [(u32, u32, &str); 16] = [
+        (42, 142, "#FFFF6F61"), (56, 160, "#FFFF6F61"), (42, 170, "#FFF04E7A"),
+        (80, 104, "#FFFF7A45"), (92, 122, "#FFF04E7A"), (80, 140, "#FFFF6F61"), (92, 160, "#FFE5528F"),
+        (116, 124, "#FFFF6F61"), (130, 148, "#FFF04E7A"), (116, 166, "#FFFF7A45"),
+        (155, 94, "#FFF04E7A"), (166, 116, "#FFFF6F61"), (155, 136, "#FFE5528F"), (166, 158, "#FFFF6F61"),
+        (190, 150, "#FFB04CC8"), (204, 150, "#FFE5528F"),
+    ];
+    let mut x = format!(
+        r##"<Viewbox Width="{px}" Height="{px}"><Canvas Width="256" Height="256"><Rectangle Width="256" Height="256" RadiusX="56" RadiusY="56"><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#FFFFA23F" Offset="0"/><GradientStop Color="#FFFF5A5F" Offset="0.5"/><GradientStop Color="#FF9B4FE0" Offset="1"/></LinearGradientBrush></Rectangle.Fill></Rectangle>"##
+    );
+    for (l, t, r) in B {
+        // the reflection: a short, faint copy under the street
+        x += &format!(r##"<Rectangle Canvas.Left="{l}" Canvas.Top="192" Width="{}" Height="{}" RadiusX="3" RadiusY="3" Fill="#FFFFFFFF" Opacity="0.16"/>"##, r - l - 1, ((188 - t) / 2).min(44));
+        x += &format!(r##"<Rectangle Canvas.Left="{l}" Canvas.Top="{t}" Width="{}" Height="{}" RadiusX="4" RadiusY="4" Fill="White"/>"##, r - l - 1, 188 - t);
+    }
+    for (wx, wy, c) in W {
+        x += &format!(r##"<Rectangle Canvas.Left="{wx}" Canvas.Top="{wy}" Width="9" Height="9" RadiusX="1" RadiusY="1" Fill="{c}"/>"##);
+    }
+    x += "</Canvas></Viewbox>";
+    x
+}
+
+/// The keyboard shortcuts as the Help menu shows them: groups in two columns, each row with
+/// its keys as key caps and what they do.
+pub(crate) fn shortcuts_xaml() -> String {
+    // keys: "Ctrl+Shift+F" as three caps; a mouse gesture as plain words in one cap
+    let caps = |k: &str| -> String {
+        let parts: Vec<&str> = if k.contains(' ') { vec![k] } else { k.split('+').collect() };
+        parts
+            .iter()
+            .map(|p| {
+                let p = match *p {
+                    "Escape" => "Esc",
+                    "Delete" => "Del",
+                    "PageUp" => "Page Up",
+                    "PageDown" => "Page Down",
+                    x => x,
+                };
+                format!(r##"<Border Padding="6,0,6,1" MinWidth="22" CornerRadius="4" Background="#1FFFFFFF" BorderBrush="#30FFFFFF" BorderThickness="1,1,1,2"><TextBlock Text="{}" FontSize="11" FontWeight="SemiBold" Foreground="#FFE4E8F2" HorizontalAlignment="Center"/></Border>"##, esc(p))
+            })
+            .collect()
+    };
+    let group = |title: &str, rows: &[(String, String)]| -> String {
+        let mut x = format!(r##"<StackPanel Spacing="3" Margin="0,0,0,12"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FF8FB4FF" Margin="0,0,0,2"/>"##, esc(title));
+        for (k, what) in rows {
+            x += &format!(
+                r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">{}</StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12.5" Foreground="#FFD5DBE8" VerticalAlignment="Center" TextWrapping="Wrap"/></Grid>"##,
+                caps(k),
+                esc(what)
+            );
+        }
+        x + "</StackPanel>"
+    };
+    let r = |k: &str, w: &str| (k.to_string(), w.to_string());
+    let tabs = [r("Ctrl+1", "Tree View"), r("Ctrl+2", "File View"), r("Ctrl+3", "Advisor"), r("Ctrl+5", "Cleaners"), r("Ctrl+F", "Search")];
+    let tables = [
+        r("Up+Down", "Move through the rows"),
+        r("PageUp+PageDown", "A page at a time"),
+        r("Home+End", "First or last row"),
+        r("Ctrl+click", "Pick several"),
+        r("Shift+click", "Pick a range"),
+        r("type a name", "Jump to it"),
+    ];
+    let map = [r("click", "Select"), r("double-click", "Go into a folder"), r("wheel", "Zoom in and out"), r("right-drag", "Pan")];
+    // the menus' own, without the tabs listed above
+    let menu: Vec<(String, String)> = shortcuts().into_iter().filter(|(k, _)| !tabs.iter().any(|(t, _)| t == k)).collect();
+    let half = menu.len().div_ceil(2);
+    let mut left = group("Tabs", &tabs);
+    left += &group("Commands", &menu[..half]);
+    let mut right = group("Commands, continued", &menu[half..]);
+    right += &group("Lists and tables", &tables);
+    right += &group("Treemap", &map);
+    format!(r##"<Grid ColumnSpacing="36" Margin="0,4,8,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel>{left}</StackPanel><StackPanel Grid.Column="1">{right}</StackPanel></Grid>"##)
+}
+
 /// Every menu shortcut, as (keys, what it does), in menu order.
 pub(crate) fn shortcuts() -> Vec<(String, String)> {
     SHORTCUTS.with(|s| s.borrow().clone())
@@ -389,6 +470,7 @@ pub fn page(drives: &[String]) -> String {
     let wizard = crate::wizard::xaml();
     let hist = crate::history::xaml();
     let version = env!("CARGO_PKG_VERSION");
+    let (logo_small, logo_big) = (logo(46), logo(96));
     let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
     let tweaks = format!(r##"
     <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="10" Padding="16,10,4,10" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
@@ -458,6 +540,7 @@ pub fn page(drives: &[String]) -> String {
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="380"/>
       <ColumnDefinition Width="*"/>
+      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <Border {CARD} Padding="12,10">
       <StackPanel Spacing="8">
@@ -497,6 +580,15 @@ pub fn page(drives: &[String]) -> String {
         </Grid>
         <TextBlock x:Name="ScanInfo" {num} Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
+    </Border>
+    <Border x:Name="BrandCard" Grid.Column="2" {CARD} Padding="16,10,22,10">
+      <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
+        {logo_small}
+        <StackPanel VerticalAlignment="Center" Spacing="2">
+          <TextBlock FontSize="18" FontWeight="SemiBold"><Run Text="Sprawl"/><Run Text=" {version}" Foreground="#FF8E97AA" FontWeight="Normal" FontSize="14"/></TextBlock>
+          <TextBlock Text="Disk space analyser" FontSize="12" Foreground="#FF8E97AA"/>
+        </StackPanel>
+      </StackPanel>
     </Border>
   </Grid>
 
@@ -579,8 +671,13 @@ pub fn page(drives: &[String]) -> String {
         <Grid x:Name="AdvisorPanel" Grid.RowSpan="4" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer x:Name="AdvScroll" HorizontalScrollBarVisibility="Disabled"><Border x:Name="AdvHost"/></ScrollViewer><Border x:Name="ClHost" Visibility="Collapsed"/><Border x:Name="AdvFoot" Grid.Row="1"/></Grid>
         <ScrollViewer x:Name="AboutPanel" Grid.RowSpan="4" Visibility="Collapsed" Padding="24">
           <StackPanel Spacing="10" MaxWidth="640" HorizontalAlignment="Left">
-            <TextBlock Text="Sprawl" FontSize="26" FontWeight="SemiBold"/>
-            <TextBlock Text="Version {version}" FontSize="12" Foreground="#FF8E97AA"/>
+            <StackPanel Orientation="Horizontal" Spacing="18" Margin="0,0,0,6">
+              {logo_big}
+              <StackPanel VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="Sprawl" FontSize="30" FontWeight="SemiBold"/>
+                <TextBlock Text="Version {version} · Disk space analyser" FontSize="13" Foreground="#FF8E97AA"/>
+              </StackPanel>
+            </StackPanel>
             <TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6" Text="Scans a drive or folder and shows which folders, files and file types use the most space, and helps win it back."/>
             <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Tree View and File View: the scan as a sortable tree and a list of the biggest files, beside a table of file types and a lit 3D treemap. Advisor: what in the scan can go, how safe that is, and what has grown. Cleaners: the caches and leftovers of the applications on this PC, ticked by you and cleaned by Sprawl. Search: names in this scan, on other drives and in saved scans."/>
             <TextBlock TextWrapping="Wrap" Foreground="#FF8E97AA" Text="Treemap: hover to lift tiles, click to find a file in the tree, double-click or scroll up to zoom into a folder, scroll down to zoom out, right-drag to pan. Click a file type to light up its files."/>

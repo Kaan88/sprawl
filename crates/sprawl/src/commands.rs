@@ -148,11 +148,8 @@ impl State {
             "mUpdate" => self.update_check(true),
             "UpdateNow" | "UpdateLater" | "UpdateSkip" => self.update_command(name),
             "mShortcuts" => {
-                let mut s = String::from("Tabs: Ctrl+1 Tree View, Ctrl+2 File View, Ctrl+3 Advisor, Ctrl+5 Cleaners, Ctrl+F Search\nTables: arrow keys, Page Up/Down, Home/End; type a name to jump to it; Ctrl+click and Shift+click pick several\nMap: click selects, double-click goes in, wheel zooms, right-drag pans\n\n");
-                for (k, what) in crate::ui::shortcuts() {
-                    s += &format!("{k}\t{what}\n");
-                }
-                self.tell("Keyboard shortcuts", &s);
+                let body = crate::ui::shortcuts_xaml();
+                self.tell_rich("Keyboard shortcuts", body);
             }
             "ModeHist" | "mHistory" => self.hist_toggle(),
             "mTweaks" => {

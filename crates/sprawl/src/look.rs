@@ -455,6 +455,11 @@ impl State {
     pub(crate) fn fit_width(&mut self, w: f64) {
         use crate::bindings::Microsoft::UI::Xaml::Controls::ColumnDefinition;
         use crate::bindings::Microsoft::UI::Xaml::{GridLength, GridUnitType};
+        // a narrow window folds the header: the name and logo card goes first
+        if let Ok(c) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "BrandCard") {
+            use crate::bindings::Microsoft::UI::Xaml::Visibility;
+            let _ = c.SetVisibility(if w < 1250.0 { Visibility::Collapsed } else { Visibility::Visible });
+        }
         if let Ok(c) = find::<ColumnDefinition>(&self.root, "TreeCol") {
             let _ = c.SetWidth(GridLength { Value: tree_share(w), GridUnitType: GridUnitType::Star });
         }
