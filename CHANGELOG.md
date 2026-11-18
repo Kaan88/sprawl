@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 0.3.0 — 2026-11-18
 
 ### New
 - **Cleaners tab.** BleachBit-style: each application with its parts (caches, logs, crash dumps), what cleaning costs and whether the application is open. It reads only the folders the cleaners look at, so it works without a full scan. Your usual ticks can come back next time (a setting). Community cleaners from winapp2.ini and BleachBit can be turned on; they are off until you do.
@@ -18,14 +18,17 @@ in-app updater shows.
 
 ### Changed
 - The Advisor finds more, and says how sure it is: folders left behind by removed applications (shown only when they may hold your work), programs built on Chromium, build outputs graded by how idle the project is, and growth taken from your scan history. Tips are ranked by what they gain, apart from deletes.
+- **On a drive of games, media or backups** the Advisor now lists the biggest folders and files nothing has changed in for a year, as information: Sprawl doesn't remove them, you decide. Before, such a drive showed "nothing to clean".
 - The thresholds the Advisor uses (how old, how idle, how big) are settings, each with a floor it can't go below.
-- **Run as administrator:** the Windows menu, handing an app to your uninstaller, Claude Code and clean-up tools from your own folders stay off, as before, but each can now be allowed in Settings > Scanning. Sprawl asks once per session.
+- **Run as administrator:** the Windows menu, handing an app to your uninstaller, Claude Code and clean-up tools from your own folders stay off, as before, but each can now be allowed in Settings > Scanning, under one warning. A switch that is on is your answer: nothing asks again.
 - A clean-up never touches a network path, anything new since the scan, or anything you chose to keep; the review holds back what won't run on this PC and says why. A saved script says what it doesn't protect.
 - Nothing is read, fetched, chosen or ticked for a new user until they say so.
 - Numbers keep their width while they count; tabs, chips and map buttons show pointer-over, pressed and keyboard focus the same way. The map folds away on the Advisor and Cleaners tabs, and on Search in a short window it takes less room.
 - Times are shown in local time everywhere. Typing in the filter is quicker, and the tree's work no longer holds up the window.
 
 ### Fixed
+- The AI on the Cleaners tab answers with nothing scanned (it uses what the tab read), and a part that can't be counted no longer holds the question for ever.
+- A change to the AI or administrator settings takes effect when you press Save, not at the next start.
 - A problem in the Advisor's analysis ends that check instead of the tab.
 - Very long tables no longer stop drawing part-way.
 - The result card no longer says files were "deleted for good" when nothing was removed.

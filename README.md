@@ -113,7 +113,8 @@ Working:
   the Recycle Bin or permanently. Exports: CSV and PNG.
 - Settings and the window are remembered.
 - Advisor: findings from built-in rules with risk levels: caches, build outputs of idle
-  projects, folders left behind by removed applications, old installers. It can clean up after a
+  projects, folders left behind by removed applications, old installers, and (as information)
+  big data nothing has changed in for a year. It can clean up after a
   review, and it leaves anything new since the scan and anything you chose to keep. Your own
   files go to the Recycle Bin (a setting); caches are deleted. It can also save a script.
 - Cleaners: per-app parts, read on their own without a full scan. Community cleaners
