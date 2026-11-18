@@ -39,6 +39,71 @@ pub fn opened_in(items: &[(String, SystemTime)], path_lc: &str) -> Option<System
     items.iter().filter(|(p, _)| p == path_lc.trim_end_matches('\\') || p.starts_with(&inside)).map(|&(_, t)| t).max()
 }
 
+/// Whether NTFS keeps last-access times on this machine: only when the setting says so plainly
+/// (0, or 0x80000000 "user managed, on"). "System managed" (on only for a small system drive)
+/// and off count as not kept.
+pub fn access_times_kept() -> bool {
+    crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Control\FileSystem", crate::reg::View::Native)
+        .and_then(|k| k.dword("NtfsDisableLastAccessUpdate"))
+        .is_some_and(|v| v == 0 || v == 0x8000_0000)
+}
+
+/// The volume `X:\` is NTFS (FAT keeps only a date, other file systems their own rules).
+#[cfg(windows)]
+pub fn ntfs(drive: char) -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetVolumeInformationW(root: *const u16, name: *mut u16, name_len: u32, serial: *mut u32, max: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
+    }
+    let root: Vec<u16> = format!("{drive}:\\").encode_utf16().chain([0]).collect();
+    let mut fs = [0u16; 32];
+    let ok = unsafe { GetVolumeInformationW(root.as_ptr(), std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), fs.as_mut_ptr(), fs.len() as u32) } != 0;
+    ok && String::from_utf16_lossy(&fs[..fs.iter().position(|&c| c == 0).unwrap_or(0)]) == "NTFS"
+}
+
+#[cfg(not(windows))]
+pub fn ntfs(_: char) -> bool {
+    false
+}
+
+/// The newest last-access time of the files at or below `path` (folders don't count: listing
+/// one, as a scan does, moves its time; links aren't followed), from the folder listings alone,
+/// so nothing is opened and no time is moved by reading it. At most `budget` entries are read,
+/// counted down; the flag says whether everything was read.
+pub fn accessed_in(path: &std::path::Path, budget: &mut usize) -> (Option<SystemTime>, bool) {
+    const REPARSE: u32 = 0x400;
+    use std::os::windows::fs::MetadataExt;
+    let Ok(top) = std::fs::symlink_metadata(path) else { return (None, false) };
+    if top.file_attributes() & REPARSE != 0 {
+        return (None, true);
+    }
+    if top.is_file() {
+        *budget = budget.saturating_sub(1);
+        return (top.accessed().ok(), true);
+    }
+    let mut best: Option<SystemTime> = None;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            if *budget == 0 {
+                return (best, false);
+            }
+            *budget -= 1;
+            let Ok(m) = e.metadata() else { continue };
+            if m.file_attributes() & REPARSE != 0 {
+                continue;
+            }
+            if m.is_dir() {
+                stack.push(e.path());
+            } else if let Ok(t) = m.accessed() {
+                best = best.max(Some(t));
+            }
+        }
+    }
+    (best, true)
+}
+
 fn u16_at(b: &[u8], i: usize) -> Option<usize> {
     b.get(i..i + 2).map(|x| u16::from_le_bytes([x[0], x[1]]) as usize)
 }
@@ -168,6 +233,19 @@ mod tests {
         assert_eq!(opened_in(&items, r"d:\films\old"), Some(t(5)));
         assert_eq!(opened_in(&items, r"d:\films\a.mkv"), Some(t(10)));
         assert_eq!(opened_in(&items, r"d:\music"), None);
+    }
+
+    /// The real readers on a small folder of this repository (run by hand).
+    #[test]
+    #[ignore]
+    fn this_pcs_access_times() {
+        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let mut budget = 10_000;
+        let (t, complete) = accessed_in(&docs, &mut budget);
+        eprintln!("kept {} ntfs C {} docs newest access {:?} complete {complete}, {} entries read", access_times_kept(), ntfs('C'), t.map(crate::facts::month_year), 10_000 - budget);
+        assert!(t.is_some() && complete);
+        let mut small = 2;
+        assert!(!accessed_in(&docs, &mut small).1, "a budget cut is said");
     }
 
     /// This account's own Recent items parse (run by hand: it reads the real folder).

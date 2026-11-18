@@ -63,10 +63,29 @@ fn newest(tree: &Tree) -> Vec<Option<SystemTime>> {
 /// what another finding already covers (`seen`, lower-case paths, either way round), links,
 /// and anything without a date.
 pub fn find(tree: &Tree, facts: &Facts, seen: &HashSet<String>) -> Vec<Finding> {
-    find_at(tree, facts, seen, SystemTime::now())
+    // last-access times, only where this machine keeps them, on NTFS drives, within a budget
+    let kept = crate::used::access_times_kept();
+    let mut ntfs: std::collections::HashMap<char, bool> = Default::default();
+    let mut budget = ACCESS_BUDGET;
+    let mut access = |p: &std::path::Path| -> Option<(SystemTime, bool)> {
+        let drive = p.to_string_lossy().chars().next()?.to_ascii_uppercase();
+        if !kept || !drive.is_ascii_alphabetic() || !*ntfs.entry(drive).or_insert_with(|| crate::used::ntfs(drive)) {
+            return None;
+        }
+        let (t, complete) = crate::used::accessed_in(p, &mut budget);
+        t.map(|t| (t, complete))
+    };
+    find_at(tree, facts, seen, SystemTime::now(), &mut access)
 }
 
-pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: SystemTime) -> Vec<Finding> {
+/// The most folder entries read for last-access times in one look.
+const ACCESS_BUDGET: usize = 200_000;
+/// Where the last-access times come from, as the rows say.
+const ACCESS: &str = "the files' last-access times, which this PC keeps";
+
+/// `access`: the newest last-access time of the files in a path, and whether all of them were
+/// read; None where these times aren't kept.
+pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: SystemTime, access: &mut dyn FnMut(&std::path::Path) -> Option<(SystemTime, bool)>) -> Vec<Finding> {
     let never = crate::safety::Never::default_list();
     let since = now.checked_sub(Duration::from_secs(IDLE_DAYS * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH);
     let newest = newest(tree);
@@ -93,29 +112,46 @@ pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: S
         }
         // evidence of use (A1): the owning app's last start or play, and Explorer's Recent items
         let app = facts.owner_of(&path);
-        let used = [
+        let mut used = [
             app.and_then(|a| a.last_used).map(|(t, from)| (t, if from == crate::facts::UsedFrom::Steam { "played" } else { "used" }, from.label())),
             crate::used::opened_in(&facts.opened, &lc).map(|t| (t, "opened", "Explorer's Recent items")),
         ]
         .into_iter()
         .flatten()
         .max_by_key(|u| u.0);
-        let idle = newest[n].is_some_and(|t| t < since) && used.is_none_or(|u| u.0 < since);
+        let changed = newest[n].unwrap_or(SystemTime::UNIX_EPOCH);
+        let mut idle = newest[n].is_some_and(|t| t < since) && used.is_none_or(|u| u.0 < since);
+        // and the files' last-access times: opened lately, or not opened since they changed
+        let mut not_opened = false;
+        if idle {
+            if let Some((t, complete)) = access(&path) {
+                if t >= since {
+                    idle = false;
+                } else if complete && t > changed + Duration::from_secs(86_400) {
+                    if used.is_none_or(|u| t > u.0) {
+                        used = Some((t, "opened", ACCESS));
+                    }
+                } else if complete {
+                    not_opened = true;
+                }
+            }
+        }
         if !idle {
-            // something in it changed lately: its parts may still be old
+            // something in it changed or was used lately: its parts may still be old
             if node.is_dir && depth < DEPTH {
                 stack.extend(node.children.iter().map(|&c| (c, depth + 1)));
             }
             continue;
         }
-        let changed = newest[n].unwrap_or(SystemTime::UNIX_EPOCH);
         let owner = app.map(|a| a.name.clone());
         let mut evidence = match used {
+            Some((t, how, from)) if from == ACCESS => vec![format!("Last {how} {} ({from})", month_year(t)), format!("Nothing in it changed since {}", month_year(changed))],
             Some((t, how, from)) => vec![
                 format!("Last {how} {} ({from})", month_year(t)),
                 format!("Nothing in it changed since {}", month_year(changed)),
                 format!("{from} shows use, not disuse: it may have been used another way since"),
             ],
+            None if not_opened => vec![format!("Nothing in it changed or was opened since {} ({ACCESS})", month_year(changed))],
             None => vec![
                 format!("Nothing in it changed since {}", month_year(changed)),
                 "That is when it last changed, not when it was last opened: Windows doesn't keep that reliably, and a game or film you still use may not have changed in years".to_string(),
@@ -205,7 +241,7 @@ mod tests {
         let now = SystemTime::now();
         let t = tree(now);
         let facts = Facts::from_apps(Vec::new());
-        let found = find_at(&t, &facts, &HashSet::new(), now);
+        let found = find_at(&t, &facts, &HashSet::new(), now, &mut |_| None);
         let names: Vec<String> = found.iter().map(|f| f.path.display().to_string()).collect();
         // Games as a whole changed three days ago (a save in NewGame), so its old part is named;
         // NewGame is not; the small folder and the undated file are not; the old image is
@@ -219,9 +255,9 @@ mod tests {
         }
         // what another finding covers isn't said twice, whichever is inside the other
         let seen: HashSet<String> = [r"d:\games\oldgame\data.pak".to_string()].into();
-        assert_eq!(find_at(&t, &facts, &seen, now).len(), 1);
+        assert_eq!(find_at(&t, &facts, &seen, now, &mut |_| None).len(), 1);
         let seen: HashSet<String> = [r"d:\games".to_string()].into();
-        assert_eq!(find_at(&t, &facts, &seen, now).len(), 1);
+        assert_eq!(find_at(&t, &facts, &seen, now, &mut |_| None).len(), 1);
     }
 
     /// A1: something opened inside lately keeps a folder off the list (its old parts may still
@@ -233,18 +269,44 @@ mod tests {
         let ago = |d: u64| now - Duration::from_secs(d * 86_400);
         let mut facts = Facts::from_apps(Vec::new());
         facts.opened = vec![(r"d:\games\oldgame\data.pak".into(), ago(20)), (r"d:\backup-2019.iso".into(), ago(500))];
-        let found = find_at(&t, &facts, &HashSet::new(), now);
+        let found = find_at(&t, &facts, &HashSet::new(), now, &mut |_| None);
         let names: Vec<&str> = found.iter().map(|f| f.title.as_str()).collect();
         assert_eq!(names, [format!("backup-2019.iso: last opened {}", month_year(ago(500)))], "{names:?}");
         assert!(found[0].evidence[0].contains("Explorer's Recent items"));
         // an installed game last played long ago, by Steam
         let mut app = crate::facts::App { name: "Old Game".into(), publisher: None, kind: crate::facts::AppKind::Steam, locations: vec![r"D:\Games\OldGame".into()], last_used: Some((ago(400), crate::facts::UsedFrom::Steam)), how_to_remove: String::new() };
         let facts = Facts::from_apps(vec![app.clone()]);
-        let found = find_at(&t, &facts, &HashSet::new(), now);
+        let found = find_at(&t, &facts, &HashSet::new(), now, &mut |_| None);
         assert!(found.iter().any(|f| f.title == format!("OldGame: last played {}", month_year(ago(400)))), "{:?}", found.iter().map(|f| &f.title).collect::<Vec<_>>());
         // played last week: not listed
         app.last_used = Some((ago(7), crate::facts::UsedFrom::Steam));
-        let found = find_at(&t, &Facts::from_apps(vec![app]), &HashSet::new(), now);
+        let found = find_at(&t, &Facts::from_apps(vec![app]), &HashSet::new(), now, &mut |_| None);
         assert!(!found.iter().any(|f| f.path.ends_with("OldGame")));
+    }
+
+    /// A1 step 2: last-access times hide what was opened lately, name what was opened after it
+    /// last changed, and say so when nothing was opened since; a partial read proves nothing old.
+    #[test]
+    fn last_access_times_where_kept() {
+        let now = SystemTime::now();
+        let t = tree(now);
+        let ago = |d: u64| now - Duration::from_secs(d * 86_400);
+        let facts = Facts::from_apps(Vec::new());
+        let run = |answer: &dyn Fn(&str) -> Option<(SystemTime, bool)>| {
+            let found = find_at(&t, &facts, &HashSet::new(), now, &mut |p| answer(&p.to_string_lossy()));
+            found.into_iter().map(|f| (f.title, f.evidence[0].clone())).collect::<Vec<_>>()
+        };
+        // the game opened last month: gone; the image opened long after it was written
+        let found = run(&|p| if p.contains("OldGame") { Some((ago(30), true)) } else { Some((ago(600), true)) });
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, format!("backup-2019.iso: last opened {}", month_year(ago(600))));
+        assert!(found[0].1.contains("last-access"));
+        // read as written, never opened since
+        let found = run(&|p| if p.ends_with("OldGame") { Some((ago(800), true)) } else { Some((ago(2500), true)) });
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|(_, e)| e.contains("changed or was opened since")), "{found:?}");
+        // not all read: an old time says nothing
+        let found = run(&|_| Some((ago(2500), false)));
+        assert!(found.iter().all(|(_, e)| e.starts_with("Nothing in it changed since")), "{found:?}");
     }
 }
