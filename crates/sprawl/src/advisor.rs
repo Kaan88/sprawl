@@ -461,6 +461,8 @@ pub(crate) fn risk_words(r: Risk) -> &'static str {
 pub(crate) fn risk_words_for(f: &Finding) -> &'static str {
     if sprawl_advisor::remedies::compresses(f) {
         "Compressed in place, nothing deleted"
+    } else if sprawl_advisor::remedies::shrinks(f) {
+        "Shrunk in place, nothing inside deleted"
     } else if gone_for_good(f) {
         "Cannot be undone"
     } else {
@@ -3525,6 +3527,7 @@ impl State {
         let kind = match f.remedy {
             _ if f.forced_from.is_some() => "You ticked it: to the Recycle Bin",
             _ if sprawl_advisor::remedies::compresses(f) => "Compressed in place: nothing is deleted",
+            _ if sprawl_advisor::remedies::shrinks(f) => "Shrunk in place: WSL is shut down first",
             _ if yours => "Holds your files: look before removing",
             Remedy::Info | Remedy::Move => "Tip",
             Remedy::Uninstall => "Your call",
@@ -3564,12 +3567,16 @@ impl State {
                 "To the bin"
             } else if sprawl_advisor::remedies::compresses(f) {
                 "Compress"
+            } else if sprawl_advisor::remedies::shrinks(f) {
+                "Shrink"
             } else {
                 remedy_label(f.remedy)
             }),
             num = crate::look::NUM,
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = match f.gain {
+                // a shrink's win is known only after it ran
+                Some(_) if sprawl_advisor::remedies::shrinks(f) => "unknown".to_string(),
                 Some(g) => format!("about {}", self.size(g)),
                 None if f.estimate() => format!("up to {}", self.size(f.bytes)),
                 None => self.size(f.bytes),

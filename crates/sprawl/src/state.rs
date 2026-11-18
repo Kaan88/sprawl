@@ -801,6 +801,13 @@ impl State {
                             self.render_advisor();
                         }
                     }
+                    // dev: tick finding N as its box does (tick=0)
+                    t if t.starts_with("tick=") => {
+                        if let Ok(i) = t[5..].parse() {
+                            self.cleanup_toggle(i);
+                            self.render_advisor();
+                        }
+                    }
                     // dev: a privacy part's tick, AdvPvT0
                     a if a.starts_with("AdvPvT") => {
                         self.privacy_toggle(a[6..].parse().unwrap_or(0));

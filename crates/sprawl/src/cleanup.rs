@@ -251,7 +251,7 @@ pub(crate) fn counts_as_space(f: &Finding) -> bool {
 
 /// What "Tick the safe ones" may tick.
 pub(crate) fn safe_tick(f: &Finding, counted: bool) -> bool {
-    counts_as_space(f) && untickable(f, counted).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && !sprawl_advisor::remedies::compresses(f) && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20
+    counts_as_space(f) && untickable(f, counted).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && !sprawl_advisor::remedies::compresses(f) && !sprawl_advisor::remedies::shrinks(f) && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20
 }
 
 /// It needs administrator rights and this Sprawl doesn't have them: it can be ticked (for a
@@ -451,7 +451,7 @@ impl State {
     pub(crate) fn cleanup_select_enough(&mut self, need: u64) -> Option<u64> {
         let r = self.advice()?;
         let plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
-        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| !sprawl_advisor::remedies::compresses(&r.findings[i]) && counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
+        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| !sprawl_advisor::remedies::compresses(&r.findings[i]) && !sprawl_advisor::remedies::shrinks(&r.findings[i]) && counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
         self.advisor.cleanup.ticked = ticked;
         self.advisor.cleanup.auto = false;
@@ -577,7 +577,7 @@ impl State {
                     let vol = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase();
                     bins.entry(vol).or_insert_with(|| sprawl_advisor::recycle::bin_for(&path))
                 });
-                let disk_before = sprawl_advisor::remedies::is_compress(&action).then(|| sprawl_advisor::remedies::on_disk(&path)).flatten();
+                let disk_before = sprawl_advisor::remedies::in_place(&action).then(|| sprawl_advisor::remedies::on_disk(&path)).flatten();
                 let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
                         last = Instant::now();
@@ -590,7 +590,7 @@ impl State {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
                     Err(_) => None,
                 };
-                // a compress keeps every file: what it freed is what the folder lost on disk
+                // a compress or a shrink keeps every file: what it freed is what the path lost on disk
                 if let Some(b) = disk_before {
                     out.freed = b.saturating_sub(sprawl_advisor::remedies::on_disk(&path).unwrap_or(b));
                 } else if matches!(action, Action::Tool { .. }) {
@@ -971,11 +971,27 @@ impl State {
             r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="{}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
             {
                 // the privacy items: by number, never in the space
+                // a shrink's win is known only after it ran (F3)
+                let unknown = picked.iter().any(|(_, f)| sprawl_advisor::remedies::shrinks(f));
                 let space = match picked.len() {
                     0 => String::new(),
-                    n => format!("{}, {}", if n == 1 { "1 item".to_string() } else { format!("{n} items") }, if up_to { format!("up to {}", self.size(bytes)) } else { format!("about {}", self.size(bytes)) }),
+                    n => format!(
+                        "{}, {}",
+                        if n == 1 { "1 item".to_string() } else { format!("{n} items") },
+                        if unknown && bytes == 0 {
+                            "the space known only after".to_string()
+                        } else if unknown {
+                            format!("{} and more", self.size(bytes))
+                        } else if up_to {
+                            format!("up to {}", self.size(bytes))
+                        } else {
+                            format!("about {}", self.size(bytes))
+                        }
+                    ),
                 };
                 match (space.is_empty(), privacy.len()) {
+                    // everything ticked is held back
+                    (true, 0) => "Nothing ticked can run now".to_string(),
                     (_, 0) => format!("Clean up {space}?"),
                     (true, n) => format!("Clean up {}?", privacy_count(n)),
                     (false, n) => format!("Clean up {space}, and {}?", privacy_count(n)),

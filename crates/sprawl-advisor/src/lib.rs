@@ -135,6 +135,8 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     let never = safety::Never::default_list();
     let mut found = rules::run(tree, packs);
     for f in &mut found {
+        // F3: WSL's and Docker's disk files become a shrink Sprawl runs when ticked
+        remedies::shrinkable(f);
         if f.owner.is_none() {
             f.owner = facts.owner_of(&f.path).map(|a| a.name.clone());
         }

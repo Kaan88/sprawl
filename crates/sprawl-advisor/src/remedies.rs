@@ -41,6 +41,88 @@ pub fn is_compress(a: &Action) -> bool {
     matches!(a, Action::Tool { command } if command.starts_with(COMPRESS))
 }
 
+/// F3: the rules whose disk file Sprawl can shrink: WSL's distributions and Docker Desktop's
+/// disk. Other virtual disks (Hyper-V, VirtualBox, VMware) stay information only.
+pub const SHRINK_RULES: [&str; 2] = ["vm.wsl-disk", "vm.docker-disk"];
+
+/// How every shrink command Sprawl writes begins: a line that names it, so the run is told apart
+/// (measured by what the file lost on disk, never recorded as compressed).
+pub const SHRINK: &str = "# Sprawl: shrink a virtual disk file (nothing inside it is deleted)\n";
+
+/// The command is one of Sprawl's own shrink commands.
+pub fn is_shrink(a: &Action) -> bool {
+    matches!(a, Action::Tool { command } if command.starts_with(SHRINK))
+}
+
+/// The finding shrinks its disk file in place.
+pub fn shrinks(f: &Finding) -> bool {
+    f.action.as_ref().is_some_and(is_shrink)
+}
+
+/// The action changes how its files are stored, not what they hold: a compress or a shrink.
+/// Its win is what the path lost on disk.
+pub fn in_place(a: &Action) -> bool {
+    is_compress(a) || is_shrink(a)
+}
+
+/// The PowerShell that shrinks the disk file at `path`: Docker Desktop must be closed (for its
+/// disk), every WSL distribution is shut down and checked to be gone, then Windows' diskpart
+/// attaches the file read-only, compacts it and detaches it. diskpart is on every edition (the
+/// Hyper-V `Optimize-VHD` isn't on Home). Nothing is started again afterwards.
+pub fn shrink_command(path: &Path, docker: bool) -> String {
+    let q = ps_quote(&path.display().to_string());
+    let docker_check = if docker {
+        "if (Get-Process 'Docker Desktop', 'com.docker.backend' -ErrorAction SilentlyContinue) { throw 'Docker Desktop is running: quit it first (its icon by the clock > Quit Docker Desktop).' }\n"
+    } else {
+        ""
+    };
+    format!(
+        "{SHRINK}{docker_check}wsl.exe --shutdown\n\
+         Start-Sleep -Seconds 3\n\
+         if (Get-Process vmmem, vmmemWSL -ErrorAction SilentlyContinue) {{ throw 'WSL is still running after wsl --shutdown: nothing was changed.' }}\n\
+         $p = {q}\n\
+         $a = (Get-Item -LiteralPath $p).Length\n\
+         \"select vdisk file=`\"$p`\"`nattach vdisk readonly`ncompact vdisk`ndetach vdisk`nexit\" | diskpart.exe\n\
+         $b = (Get-Item -LiteralPath $p).Length\n\
+         \"Before: $a bytes. After: $b bytes.\"\n\
+         if ($b -ge $a) {{ throw 'The disk file is no smaller. diskpart says why in the lines above (in use, or nothing to give back).' }}"
+    )
+}
+
+/// Turn the WSL and Docker disk tips (built-in rules only) into a shrink Sprawl runs when
+/// ticked. How much it gives back is unknown until tried, so its gain is 0 and it is never
+/// ticked by Sprawl.
+pub fn shrinkable(f: &mut Finding) {
+    let id = match &f.source {
+        Source::Rule(id) if SHRINK_RULES.contains(&id.as_str()) => id.clone(),
+        _ => return,
+    };
+    if !(f.builtin && f.trusted) || f.remedy != Remedy::Info {
+        return;
+    }
+    let docker = id == "vm.docker-disk";
+    f.remedy = Remedy::Command;
+    f.risk = Risk::Amber;
+    f.gain = Some(0);
+    f.evidence = vec![
+        if docker {
+            "Docker's images, containers and volumes. The file grows but never shrinks by itself. To make room inside it first, run 'docker system prune' (add '-a --volumes' to remove more).".into()
+        } else {
+            "The disk of a Linux distribution. It grows but never shrinks by itself: delete files inside Linux first, then shrink it here.".into()
+        },
+        format!(
+            "Tick it and Clean up, and Sprawl {}shuts down WSL (everything running in Linux stops), then compacts the file with Windows' diskpart, as administrator. Nothing inside it is deleted, and nothing is started again.",
+            if docker { "checks that Docker Desktop is closed, " } else { "" }
+        ),
+        "How much it gives back is known only after: the space files you deleted inside used to take.".into(),
+        "Never delete the file itself: that deletes the whole distribution.".into(),
+    ];
+    // Sprawl's own command from the built-in rules; it changes the file's size, never what it
+    // holds, so the never-list (disk images are on it) doesn't veto it, as for DISM
+    f.allow_protected = true;
+    f.set_action(Action::Tool { command: shrink_command(&f.path.clone(), docker) }, true);
+}
+
 /// The finding compresses its folder in place (nothing is deleted).
 pub fn compresses(f: &Finding) -> bool {
     f.action.as_ref().is_some_and(is_compress)
@@ -416,5 +498,100 @@ mod compress_tests {
         assert!(back >= before / 10 * 9, "before {before}, back {back}");
         assert_eq!(compress_alg(&format!("{COMPRESS}xpress16k 'x'")), Some("xpress16k"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use std::path::PathBuf;
+    use super::*;
+
+    fn disk_finding(path: &Path, bytes: u64, id: &str) -> Finding {
+        Finding {
+            path: path.to_path_buf(),
+            owner: Some("WSL".into()),
+            bytes,
+            risk: Risk::Orange,
+            remedy: Remedy::Info,
+            command: None,
+            title: "WSL Linux disk".into(),
+            evidence: vec![],
+            confidence: 0.9,
+            source: Source::Rule(id.into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: false,
+            action: None,
+            admin: false,
+            carved: Vec::new(),
+            gain: None,
+            forced_from: None,
+        }
+    }
+
+    /// The WSL and Docker disk tips become Sprawl's shrink, which the safety checks let through
+    /// although disk images are on the never-list; from anywhere else they stay tips.
+    #[test]
+    fn a_disk_tip_becomes_a_shrink_only_from_the_built_in_rules() {
+        let dir = std::env::temp_dir().join(format!("sprawl-shrink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let disk = dir.join("ext4.vhdx");
+        std::fs::write(&disk, vec![1u8; 3 << 20]).unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let n = crate::find_path(&tree, &disk).unwrap();
+        let never = crate::safety::Never::default_list();
+
+        let mut f = disk_finding(&disk, tree.nodes[n].size, "vm.wsl-disk");
+        // as a tip, a delete of it is refused by the never-list
+        let del = Finding { remedy: Remedy::Delete, ..f.clone() };
+        assert!(crate::safety::check(&del, &tree, &never).is_err());
+        shrinkable(&mut f);
+        assert!(shrinks(&f) && f.admin && f.allow_protected && f.remedy == Remedy::Command && f.gain == Some(0));
+        assert!(crate::safety::check(&f, &tree, &never).is_ok(), "{:?}", crate::safety::check(&f, &tree, &never));
+        let (a, admin) = crate::clean::action(&f).unwrap();
+        assert!(admin && is_shrink(&a) && in_place(&a) && !is_compress(&a));
+        let Action::Tool { command } = &a else { panic!() };
+        assert!(command.contains("wsl.exe --shutdown") && command.contains("compact vdisk") && !command.contains("Docker Desktop"));
+        // runs as administrator: its first program is Windows' own
+        let sys = PathBuf::from(std::env::var("SystemRoot").unwrap()).join("System32");
+        assert!(crate::clean::elevated_tool_ok(command, &|p| Some(sys.join(p)), std::slice::from_ref(&sys)).is_ok());
+
+        let mut d = disk_finding(&disk, tree.nodes[n].size, "vm.docker-disk");
+        shrinkable(&mut d);
+        let Some(Action::Tool { command: dc }) = &d.action else { panic!() };
+        assert!(dc.find("Docker Desktop").unwrap() < dc.find("wsl.exe --shutdown").unwrap());
+
+        // a local pack's rule with the same id, a model's finding, another rule: unchanged
+        for mut other in [
+            Finding { builtin: false, ..disk_finding(&disk, 1, "vm.wsl-disk") },
+            Finding { source: Source::Model("m".into()), ..disk_finding(&disk, 1, "vm.wsl-disk") },
+            disk_finding(&disk, 1, "vm.hyperv-disk"),
+        ] {
+            shrinkable(&mut other);
+            assert!(other.action.is_none() && other.remedy == Remedy::Info);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The command is valid PowerShell for any path, and a quote or `$` in it stays text.
+    #[test]
+    fn the_shrink_command_parses_for_odd_paths() {
+        let ps = PathBuf::from(std::env::var("SystemRoot").unwrap()).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        for p in [r"C:\Users\a\AppData\Local\wsl\{1}\ext4.vhdx", r"C:\Users\o'brien\$x\ext4.vhdx"] {
+            let cmd = shrink_command(Path::new(p), true);
+            let out = std::process::Command::new(&ps)
+                .args(["-NoProfile", "-NonInteractive", "-Command", "$e=$null; $t=$null; $a=[Management.Automation.Language.Parser]::ParseInput($env:SPRAWL_T,[ref]$t,[ref]$e); $e.Count; ($t | Where-Object { $_.Kind -eq 'Variable' } | ForEach-Object { $_.Name }) -join ','"])
+                .env("SPRAWL_T", &cmd)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut lines = text.lines();
+            assert_eq!(lines.next().map(str::trim), Some("0"), "{cmd}\n{text}");
+            // the only variables are the script's own: the path's `$x` is inside quotes
+            let vars = lines.next().unwrap_or("").trim().to_string();
+            assert!(vars.split(',').all(|v| ["p", "a", "b"].contains(&v)), "{vars}");
+        }
     }
 }
