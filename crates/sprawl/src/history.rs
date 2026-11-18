@@ -28,7 +28,15 @@ pub(crate) struct Hist {
     next: Instant,
     /// `State::tree_gen` it was opened for.
     gen: u64,
+    /// Snapshots being read and laid over the tree on a worker: (index, sizes) as each is done.
+    /// Reading one is seconds on a big drive, which froze the window on every slider step.
+    job: Option<std::sync::mpsc::Receiver<(usize, Vec<u64>)>>,
+    /// The position on screen (`pos` may be ahead of it while its snapshot is read).
+    shown: Option<usize>,
 }
+
+/// How many snapshots' sizes are kept (each is 8 bytes a node: about 25 MB for a full C:).
+const KEEP: usize = 6;
 
 pub(crate) fn xaml() -> &'static str {
     r##"
@@ -151,7 +159,7 @@ impl State {
             return;
         }
         let n = entries.len();
-        self.hist = Some(Hist { entries, pos: n, cache: HashMap::new(), display: None, base: None, playing: false, next: Instant::now(), gen: self.tree_gen });
+        self.hist = Some(Hist { entries, pos: n, cache: HashMap::new(), display: None, base: None, playing: false, next: Instant::now(), gen: self.tree_gen, job: None, shown: None });
         if let Ok(s) = find::<RangeBase>(&self.root, "HistSlider") {
             let _ = s.SetMaximum(n as f64);
             let _ = s.SetValue(n as f64);
@@ -171,45 +179,121 @@ impl State {
         }
     }
 
-    /// Sizes of every current node at entry `i` (or now), cached.
-    fn hist_weights(&mut self, i: usize) -> Option<Rc<Vec<u64>>> {
-        let t = self.tree.as_ref()?;
-        let h = self.hist.as_mut()?;
-        if i >= h.entries.len() {
-            return None;
+    /// The snapshots position `pos` needs (its own, and the one before for the colours), and
+    /// while playing the next one too, so the step after is ready when it is due.
+    fn hist_needs(h: &Hist, pos: usize) -> Vec<usize> {
+        let n = h.entries.len();
+        let mut v = Vec::new();
+        if pos < n {
+            v.push(pos);
         }
-        if let Some(w) = h.cache.get(&i) {
-            return Some(w.clone());
+        if pos > 0 && pos - 1 < n {
+            v.push(pos - 1);
         }
-        let old = match history::load(&h.entries[i]) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("history: {e}");
-                return Some(Rc::new(vec![0; t.nodes.len()]));
-            }
-        };
-        let w = Rc::new(history::project(t, &old));
-        if h.cache.len() >= 6 {
-            // keep the neighbours of where we are
-            let far = *h.cache.keys().max_by_key(|&&k| k.abs_diff(i)).unwrap();
-            h.cache.remove(&far);
+        if h.playing && pos + 1 < n {
+            v.push(pos + 1);
         }
-        h.cache.insert(i, w.clone());
-        Some(w)
+        v
     }
 
+    /// Start reading what `pos` needs and the cache lacks, unless a read is running (its end
+    /// starts the next for wherever the slider is by then: a drag reads only where it stops).
+    fn hist_fetch(&mut self) {
+        let Some(t) = self.tree.clone() else { return };
+        let Some(h) = self.hist.as_mut() else { return };
+        if h.job.is_some() {
+            return;
+        }
+        let want: Vec<(usize, Entry)> = Self::hist_needs(h, h.pos).into_iter().filter(|i| !h.cache.contains_key(i)).map(|i| (i, h.entries[i].clone())).collect();
+        if want.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (i, e) in want {
+                let w = match history::load(&e) {
+                    Ok(old) => history::project(&t, &old),
+                    Err(err) => {
+                        eprintln!("history: {err}");
+                        vec![0; t.nodes.len()]
+                    }
+                };
+                if tx.send((i, w)).is_err() {
+                    return;
+                }
+            }
+        });
+        h.job = Some(rx);
+    }
+
+    /// Each frame: snapshots read on the worker go into the cache, and the position wanted is
+    /// shown as soon as what it needs is there.
+    fn hist_poll(&mut self) {
+        let Some(h) = self.hist.as_mut() else { return };
+        if let Some(rx) = &h.job {
+            loop {
+                match rx.try_recv() {
+                    Ok((i, w)) => {
+                        h.cache.insert(i, Rc::new(w));
+                        // keep the neighbours of where we are (what it needs is within one step)
+                        let pos = h.pos;
+                        while h.cache.len() > KEEP {
+                            let Some(&far) = h.cache.keys().max_by_key(|&&k| k.abs_diff(pos)) else { break };
+                            h.cache.remove(&far);
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        h.job = None;
+                        break;
+                    }
+                }
+            }
+        }
+        let pos = h.pos;
+        if h.shown != Some(pos) && Self::hist_needs(h, pos).iter().take(2).all(|i| h.cache.contains_key(i)) {
+            self.hist_show(pos);
+        }
+        self.hist_fetch();
+    }
+
+    /// Go to position `pos` (0..=entries, the last is now). Shown at once when its snapshots
+    /// are read already; otherwise the map stays on the last one shown until they are.
     pub(crate) fn hist_seek(&mut self, pos: usize) {
-        let Some(h) = &self.hist else { return };
+        let Some(h) = &mut self.hist else { return };
         if self.tree.is_none() || self.tree_gen != h.gen {
             self.hist_close();
             return;
         }
         let n = h.entries.len();
         let pos = pos.min(n);
-        let display = self.hist_weights(pos);
-        let base = if pos > 0 { self.hist_weights(pos - 1) } else { None };
-        let h = self.hist.as_mut().unwrap();
         h.pos = pos;
+        let ready = Self::hist_needs(h, pos).iter().take(2).all(|i| h.cache.contains_key(i));
+        if ready {
+            self.hist_show(pos);
+        } else {
+            let when = format!("{} ({})", ago(h.entries[pos.min(n - 1)].taken), local_time(h.entries[pos.min(n - 1)].taken));
+            text(&self.root, "HistWhen", &when);
+            text(&self.root, "HistInfo", "Reading that scan from History...");
+            if let Ok(s) = find::<RangeBase>(&self.root, "HistSlider") {
+                if s.Value().map(|v| v.round() as usize) != Ok(pos) {
+                    let _ = s.SetValue(pos as f64);
+                }
+            }
+        }
+        self.hist_fetch();
+    }
+
+    /// Show position `pos`, whose snapshots are in the cache.
+    fn hist_show(&mut self, pos: usize) {
+        let Some(h) = &mut self.hist else { return };
+        let n = h.entries.len();
+        let display = if pos < n { h.cache.get(&pos).cloned() } else { None };
+        let base = if pos > 0 { h.cache.get(&(pos - 1)).cloned() } else { None };
+        h.shown = Some(pos);
+        crate::state::timing(&format!("History shows {pos} of {n}"), std::time::Instant::now());
+        // the next step of a time-lapse counts from when this one is on screen
+        h.next = Instant::now() + STEP;
         h.display = display.clone();
         h.base = base.clone();
         let when = if pos == n { "Now".to_string() } else { format!("{} ({})", ago(h.entries[pos].taken), local_time(h.entries[pos].taken)) };
@@ -250,16 +334,19 @@ impl State {
         }
     }
 
+    /// Go to `pos` from code (Play). Not through the slider's ValueChanged: from inside a
+    /// handler or a frame that never arrives (the state is borrowed already), which is why Play
+    /// moved one step and stopped.
     fn hist_set_slider(&mut self, pos: usize) {
-        if let Ok(s) = find::<RangeBase>(&self.root, "HistSlider") {
-            let _ = s.SetValue(pos as f64); // ValueChanged seeks
-        }
+        self.hist_seek(pos);
     }
 
-    /// Called each frame: advance the time-lapse.
+    /// Called each frame: snapshots read meanwhile, and the time-lapse's next step once the
+    /// one before has been on screen for a while.
     pub(crate) fn hist_tick(&mut self) {
+        self.hist_poll();
         let Some(h) = &mut self.hist else { return };
-        if !h.playing || Instant::now() < h.next {
+        if !h.playing || h.shown != Some(h.pos) || Instant::now() < h.next {
             return;
         }
         h.next = Instant::now() + STEP;

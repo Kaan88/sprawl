@@ -1135,7 +1135,18 @@ impl State {
             "AdvSecAsk" => self.advisor.section = Section::Ask,
             "AdvSecGrowth" | "AdvGrowOpen" => self.advisor.section = Section::Growth,
             "AdvGrowPaint" => return self.command("PaintGrowth"),
-            "AdvGrowHist" => return self.command("ModeHist"),
+            "AdvGrowHist" => {
+                // the History panel lies on the map, which the Advisor covers: show the map,
+                // open the panel and play from the oldest scan
+                self.command("TabTree");
+                if self.hist.is_none() {
+                    self.hist_toggle();
+                }
+                if self.hist.as_ref().is_some_and(|h| !h.playing) {
+                    self.hist_play();
+                }
+                return;
+            }
             "AdvGrowTide" => return self.command("ViewTideline"),
             "AdvSecMemory" => self.advisor.section = Section::Memory,
             "AdvSortSize" => self.advisor.sort = Sort::Size,
