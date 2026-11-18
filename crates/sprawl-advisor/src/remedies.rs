@@ -70,22 +70,23 @@ pub fn in_place(a: &Action) -> bool {
 /// attaches the file read-only, compacts it and detaches it. diskpart is on every edition (the
 /// Hyper-V `Optimize-VHD` isn't on Home). Nothing is started again afterwards.
 pub fn shrink_command(path: &Path, docker: bool) -> String {
+    let Some(sys) = crate::clean::system_dir() else { return format!("{SHRINK}throw 'The Windows system directory could not be verified.'"); };
+    if path.to_string_lossy().contains(['"', '\r', '\n', '\0']) { return format!("{SHRINK}throw 'The virtual disk path cannot be passed safely to diskpart.'"); }
     let q = ps_quote(&path.display().to_string());
     let docker_check = if docker {
         "if (Get-Process 'Docker Desktop', 'com.docker.backend' -ErrorAction SilentlyContinue) { throw 'Docker Desktop is running: quit it first (its icon by the clock > Quit Docker Desktop).' }\n"
     } else {
         ""
     };
-    // WSL's command begins with wsl.exe, which the elevated check finds in System32; Docker's
-    // begins with its check, so wsl.exe is named by its full path there, and diskpart always is
-    let wsl = if docker { r#"& "$env:SystemRoot\System32\wsl.exe""# } else { "wsl.exe" };
+    let wsl = format!("& {}", ps_quote(&sys.join("wsl.exe").display().to_string()));
+    let diskpart = ps_quote(&sys.join("diskpart.exe").display().to_string());
     format!(
         "{SHRINK}{docker_check}{wsl} --shutdown\n\
          Start-Sleep -Seconds 3\n\
          if (Get-Process vmmem, vmmemWSL -ErrorAction SilentlyContinue) {{ throw 'WSL is still running after wsl --shutdown: nothing was changed.' }}\n\
          $p = {q}\n\
          $a = (Get-Item -LiteralPath $p).Length\n\
-         \"select vdisk file=`\"$p`\"`nattach vdisk readonly`ncompact vdisk`ndetach vdisk`nexit\" | & \"$env:SystemRoot\\System32\\diskpart.exe\"\n\
+         \"select vdisk file=`\"$p`\"`nattach vdisk readonly`ncompact vdisk`ndetach vdisk`nexit\" | & {diskpart}\n\
          $b = (Get-Item -LiteralPath $p).Length\n\
          \"Before: $a bytes. After: $b bytes.\"\n\
          if ($b -ge $a) {{ throw 'The disk file is no smaller. diskpart says why in the lines above (in use, or nothing to give back).' }}"
@@ -556,16 +557,19 @@ mod shrink_tests {
         let (a, admin) = crate::clean::action(&f).unwrap();
         assert!(admin && is_shrink(&a) && in_place(&a) && !is_compress(&a));
         let Action::Tool { command } = &a else { panic!() };
-        assert!(command.contains("wsl.exe --shutdown") && command.contains("compact vdisk") && !command.contains("Docker Desktop"));
+        assert!(command.contains("wsl.exe' --shutdown") && command.contains("compact vdisk") && !command.contains("Docker Desktop"));
         // runs as administrator: its first program is Windows' own
-        let sys = PathBuf::from(std::env::var("SystemRoot").unwrap()).join("System32");
+        let sys = crate::clean::system_dir().unwrap();
         assert!(crate::clean::elevated_tool_ok(command, &|p| Some(sys.join(p)), std::slice::from_ref(&sys)).is_ok());
 
         let mut d = disk_finding(&disk, tree.nodes[n].size, "vm.docker-disk");
         shrinkable(&mut d);
         let Some(Action::Tool { command: dc }) = &d.action else { panic!() };
-        assert!(dc.find("Docker Desktop").unwrap() < dc.find(r#"\System32\wsl.exe" --shutdown"#).unwrap());
-        assert!(dc.contains(r#"| & "$env:SystemRoot\System32\diskpart.exe""#) && command.contains(r#"\System32\diskpart.exe""#));
+        assert!(dc.find("Docker Desktop").unwrap() < dc.find("wsl.exe").unwrap());
+        let diskpart = ps_quote(&sys.join("diskpart.exe").display().to_string());
+        assert!(dc.contains(&format!("| & {diskpart}")) && command.contains(&diskpart));
+        assert!(!dc.contains("$env:SystemRoot") && !command.contains("$env:SystemRoot"));
+        assert!(crate::clean::elevated_tool_ok(&format!("{command}\n& 'C:\\fake\\evil.exe'"), &|p| Some(PathBuf::from(p)), std::slice::from_ref(&sys)).is_err(), "a marker alone never approves later statements");
 
         // a local pack's rule with the same id, a model's finding, another rule: unchanged
         for mut other in [
