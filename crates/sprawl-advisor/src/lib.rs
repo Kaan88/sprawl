@@ -43,6 +43,7 @@ pub mod safety;
 pub mod snapshot;
 pub mod stale;
 pub mod tuning;
+pub mod used;
 pub mod versions;
 pub mod recycle;
 

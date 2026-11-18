@@ -138,6 +138,9 @@ pub struct Facts {
     /// Prefetch could be read and is current, so a program missing from `runs` hasn't been
     /// started lately (without it only Explorer starts are known).
     pub runs_complete: bool,
+    /// Explorer's Recent items: (lower-case path, when last opened), filled in by
+    /// [`Facts::attach_usage`] (A1).
+    pub opened: Vec<(String, SystemTime)>,
 }
 
 impl Facts {
@@ -174,7 +177,7 @@ impl Facts {
         }
         // longest first; for equal locations the first source wins (Steam over its Uninstall key)
         index.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        Facts { apps, index, runs: HashMap::new(), runs_complete: false }
+        Facts { apps, index, runs: HashMap::new(), runs_complete: false, opened: Vec::new() }
     }
 
     /// The app whose folder holds `path`, if any (the most specific one).
@@ -206,6 +209,7 @@ impl Facts {
     /// Fill in `last_used` from program starts (Prefetch, UserAssist), matched by the names of
     /// the programs found in each app's folder.
     pub fn attach_usage(&mut self, tree: &Tree) {
+        self.opened = crate::used::recent_items();
         let (runs, prefetch) = program_runs();
         self.runs_complete = prefetch;
         if runs.is_empty() {

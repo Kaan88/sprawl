@@ -91,7 +91,16 @@ pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: S
         if seen.iter().any(|x| x == &lc || x.starts_with(&format!("{lc}\\")) || lc.starts_with(&format!("{x}\\"))) {
             continue;
         }
-        let idle = newest[n].is_some_and(|t| t < since);
+        // evidence of use (A1): the owning app's last start or play, and Explorer's Recent items
+        let app = facts.owner_of(&path);
+        let used = [
+            app.and_then(|a| a.last_used).map(|(t, from)| (t, if from == crate::facts::UsedFrom::Steam { "played" } else { "used" }, from.label())),
+            crate::used::opened_in(&facts.opened, &lc).map(|t| (t, "opened", "Explorer's Recent items")),
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|u| u.0);
+        let idle = newest[n].is_some_and(|t| t < since) && used.is_none_or(|u| u.0 < since);
         if !idle {
             // something in it changed lately: its parts may still be old
             if node.is_dir && depth < DEPTH {
@@ -100,11 +109,18 @@ pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: S
             continue;
         }
         let changed = newest[n].unwrap_or(SystemTime::UNIX_EPOCH);
-        let owner = facts.owner_of(&path).map(|a| a.name.clone());
-        let mut evidence = vec![
-            format!("Nothing in it changed since {}", month_year(changed)),
-            "That is when it last changed, not when it was last opened: Windows doesn't keep that reliably, and a game or film you still use may not have changed in years".to_string(),
-        ];
+        let owner = app.map(|a| a.name.clone());
+        let mut evidence = match used {
+            Some((t, how, from)) => vec![
+                format!("Last {how} {} ({from})", month_year(t)),
+                format!("Nothing in it changed since {}", month_year(changed)),
+                format!("{from} shows use, not disuse: it may have been used another way since"),
+            ],
+            None => vec![
+                format!("Nothing in it changed since {}", month_year(changed)),
+                "That is when it last changed, not when it was last opened: Windows doesn't keep that reliably, and a game or film you still use may not have changed in years".to_string(),
+            ],
+        };
         if let Some(o) = &owner {
             evidence.push(format!("It belongs to {o}, which is installed"));
         }
@@ -119,9 +135,13 @@ pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: S
             risk: Risk::Orange,
             remedy: Remedy::Info,
             command: None,
-            title: format!("{}: not changed since {}", node.name, month_year(changed)),
+            title: match used {
+                Some((t, how, _)) => format!("{}: last {how} {}", node.name, month_year(t)),
+                None => format!("{}: not changed since {}", node.name, month_year(changed)),
+            },
             evidence,
-            confidence: 0.5,
+            // a date of use is better evidence than one of change
+            confidence: if used.is_some() { 0.6 } else { 0.5 },
             source: Source::Rule(ID.into()),
             allow_protected: false,
             trusted: true,
@@ -202,5 +222,29 @@ mod tests {
         assert_eq!(find_at(&t, &facts, &seen, now).len(), 1);
         let seen: HashSet<String> = [r"d:\games".to_string()].into();
         assert_eq!(find_at(&t, &facts, &seen, now).len(), 1);
+    }
+
+    /// A1: something opened inside lately keeps a folder off the list (its old parts may still
+    /// be named); use that is old too is named with its source.
+    #[test]
+    fn evidence_of_use_drops_or_names_a_row() {
+        let now = SystemTime::now();
+        let t = tree(now);
+        let ago = |d: u64| now - Duration::from_secs(d * 86_400);
+        let mut facts = Facts::from_apps(Vec::new());
+        facts.opened = vec![(r"d:\games\oldgame\data.pak".into(), ago(20)), (r"d:\backup-2019.iso".into(), ago(500))];
+        let found = find_at(&t, &facts, &HashSet::new(), now);
+        let names: Vec<&str> = found.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(names, [format!("backup-2019.iso: last opened {}", month_year(ago(500)))], "{names:?}");
+        assert!(found[0].evidence[0].contains("Explorer's Recent items"));
+        // an installed game last played long ago, by Steam
+        let mut app = crate::facts::App { name: "Old Game".into(), publisher: None, kind: crate::facts::AppKind::Steam, locations: vec![r"D:\Games\OldGame".into()], last_used: Some((ago(400), crate::facts::UsedFrom::Steam)), how_to_remove: String::new() };
+        let facts = Facts::from_apps(vec![app.clone()]);
+        let found = find_at(&t, &facts, &HashSet::new(), now);
+        assert!(found.iter().any(|f| f.title == format!("OldGame: last played {}", month_year(ago(400)))), "{:?}", found.iter().map(|f| &f.title).collect::<Vec<_>>());
+        // played last week: not listed
+        app.last_used = Some((ago(7), crate::facts::UsedFrom::Steam));
+        let found = find_at(&t, &Facts::from_apps(vec![app]), &HashSet::new(), now);
+        assert!(!found.iter().any(|f| f.path.ends_with("OldGame")));
     }
 }
