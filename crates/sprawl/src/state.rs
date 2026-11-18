@@ -762,6 +762,18 @@ impl State {
                     "suggestdemo" => self.suggest_demo(),
                     // dev: click the map a third of the way across
                     "mapclick" => self.map_click(w * 0.3, h * 0.5),
+                    // dev: write where the Cleaners tab's list is scrolled to into the timing log
+                    "cllog" => {
+                        if let Some(sv) = self.advisor.panel.as_ref().and_then(|p| find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(p, "ClScroll").ok()) {
+                            crate::state::timing(&format!("ClScroll is at {:.0}", sv.VerticalOffset().unwrap_or(-1.0)), std::time::Instant::now());
+                        }
+                    }
+                    // dev: scroll the Cleaners tab's list down to y
+                    y if y.starts_with("clscroll=") => {
+                        if let Some(sv) = self.advisor.panel.as_ref().and_then(|p| find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(p, "ClScroll").ok()) {
+                            let _ = sv.ChangeViewWithOptionalAnimation(None, y[9..].parse().ok(), None, true);
+                        }
+                    }
                     // dev: a Cleaners button, AdvClO0 (open), AdvClT2 (tick), AdvClS2 (files)
                     a if a.starts_with("AdvCl") && a.ends_with(|c: char| c.is_ascii_digit()) && !a.starts_with("AdvClean") => {
                         let cut = a.trim_end_matches(|c: char| c.is_ascii_digit()).len();

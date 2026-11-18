@@ -1151,7 +1151,7 @@ impl State {
         x += r##"<ScrollViewer x:Name="ClScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="4">"##;
         x += &self.cleaners_tab_list(r, &rows);
         x += "</StackPanel></ScrollViewer>";
-        x += r##"<ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
+        x += r##"<ScrollViewer x:Name="ClSide" Grid.Column="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
         x += &self.cleaners_tab_side(r, &rows);
         x += "</StackPanel></ScrollViewer>";
         if ai {
