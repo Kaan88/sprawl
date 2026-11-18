@@ -533,13 +533,20 @@ pub fn presence(tree: &sprawl_core::Tree, def: &CleanerDef, found: bool) -> Pres
     if !pats.is_empty() && !crate::rules::matching_nodes(tree, &pats).is_empty() {
         return Presence::InScan;
     }
+    // Imported and proposed text can describe scan evidence, never initiate filesystem
+    // probes merely to decide whether to display a cleaner.
+    if !def.builtin { return Presence::Absent; }
+    let excluded = crate::exclusions::configured();
+    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
     for p in &def.present {
         let e = crate::rules::expand(p);
         if e.contains(['*', '?', '%']) {
             continue;
         }
         let path = std::path::Path::new(&e);
-        if path.is_dir() {
+        if crate::exclusions::intersects(path, &excluded) || crate::finding::other_account(path, home.as_deref()) { continue; }
+        if let Ok(held) = sprawl_core::local::directory(path) {
+            let path = &held.path;
             if let Some(std::path::Component::Prefix(pre)) = path.components().next() {
                 return Presence::Elsewhere(std::path::PathBuf::from(format!("{}\\", pre.as_os_str().to_string_lossy())));
             }
@@ -864,6 +871,14 @@ mod tests {
             parts: vec![],
             text: String::new(),
         };
+        let mut imported = def.clone();
+        imported.builtin = false;
+        imported.present = vec![dir.join("Known").display().to_string()];
+        assert_eq!(presence(&tree, &imported, false), Presence::InScan, "untrusted presence can use existing scan evidence");
+        let elsewhere = sprawl_core::scan(&dir.join("Tiny"), |_| {}).unwrap();
+        assert_eq!(presence(&elsewhere, &imported, false), Presence::Absent, "untrusted presence never probes a real but unscanned directory");
+        imported.present = vec![r"\\unreachable.invalid\share\app".into()];
+        assert_eq!(presence(&elsewhere, &imported, false), Presence::Absent);
         let got = unclaimed_in(&tree, &[def], 1 << 20, &[dir.display().to_string()]);
         assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].0.ends_with("Unknown"));
