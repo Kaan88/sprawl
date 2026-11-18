@@ -89,6 +89,13 @@ pub(crate) struct State {
     /// Shared so the advisor can read it on another thread; changed through `Arc::make_mut`.
     pub(crate) tree: Option<Arc<Tree>>,
     pub(crate) alloc: Vec<u64>,
+    /// Name and folder places for the tree on screen (File View sorts by them).
+    pub(crate) ranks: std::sync::Arc<crate::tables::Ranks>,
+    /// The places being made on a worker, for the tree set as number `.0`.
+    pub(crate) ranks_job: Option<(u64, std::sync::mpsc::Receiver<crate::tables::Ranks>)>,
+    /// Counts trees put on screen (set_tree), not their edits: places made for one tree are
+    /// never kept for another.
+    pub(crate) tree_set: u64,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) selected: Option<usize>,
     /// More rows picked with Ctrl or Shift, besides `selected` (Delete takes them all).
@@ -455,10 +462,13 @@ impl State {
     /// Show a tree prepared on a worker ([`crate::tables::prepare`]).
     pub(crate) fn set_tree(&mut self, p: crate::tables::Prepared, path: &std::path::Path) {
         self.hist_close();
-        let crate::tables::Prepared { tree, alloc, files, exts, colours, sorts } = p;
+        let crate::tables::Prepared { tree, alloc, ranks, files, exts, colours, sorts } = p;
         self.alloc = alloc;
+        self.ranks = ranks;
         self.tree = Some(tree);
         self.tree_gen += 1;
+        self.tree_set += 1;
+        self.ranks_start();
         self.expanded = HashSet::from([ROOT]);
         self.selected = Some(ROOT);
         self.marked.clear();
@@ -601,6 +611,7 @@ impl State {
         if self.full_tree.is_none() {
             self.full_parts = Some(crate::tables::Parts {
                 alloc: std::mem::take(&mut self.alloc),
+                ranks: std::mem::take(&mut self.ranks),
                 files: std::mem::take(&mut self.files),
                 exts: std::mem::take(&mut self.exts),
                 colours: std::mem::take(&mut self.colours),
@@ -636,7 +647,7 @@ impl State {
                 let mut tree = tree;
                 let sorts = self.sorts();
                 let alloc: Vec<u64> = tree.nodes.iter().map(|n| n.allocated).collect();
-                let mut p = crate::tables::Parts { alloc, files: Vec::new(), exts: Vec::new(), colours: HashMap::new(), sorts };
+                let mut p = crate::tables::Parts { alloc, ranks: Default::default(), files: Vec::new(), exts: Vec::new(), colours: HashMap::new(), sorts };
                 p.redo(Arc::make_mut(&mut tree));
                 p.colours = p.exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
                 self.full_tree = Some(tree);
@@ -649,12 +660,12 @@ impl State {
 
     fn unfilter_with(&mut self, parts: crate::tables::Parts) {
         let Some(tree) = self.full_tree.take() else { return };
-        let crate::tables::Parts { alloc, files, exts, colours, sorts } = parts;
+        let crate::tables::Parts { alloc, ranks, files, exts, colours, sorts } = parts;
         self.filter.clear();
         let path = tree.root_path.clone();
         self.map.scene.clear();
         self.child_stack.clear();
-        self.set_tree(crate::tables::Prepared { tree, alloc, files, exts, colours, sorts }, &path);
+        self.set_tree(crate::tables::Prepared { tree, alloc, ranks, files, exts, colours, sorts }, &path);
         self.advisor_refresh();
     }
 

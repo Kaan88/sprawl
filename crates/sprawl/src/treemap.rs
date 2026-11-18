@@ -225,6 +225,7 @@ impl State {
 
         self.poll();
         self.dialog_frame();
+        self.ranks_poll(false);
         self.busy_poll();
         self.welcome_frame();
         self.hud_frame(dt);

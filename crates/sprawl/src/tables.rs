@@ -277,9 +277,53 @@ impl State {
         sort_children(t, &self.alloc, sort);
     }
 
+    /// Make the name and folder places for the tree on screen on a worker, unless the ones
+    /// held fit it already (a filter cleared: the full tree's are kept with it).
+    pub(crate) fn ranks_start(&mut self) {
+        self.ranks_job = None;
+        let Some(t) = self.tree.clone() else { return };
+        if self.ranks.fits(&t) {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(Ranks::of(&t));
+        });
+        self.ranks_job = Some((self.tree_set, rx));
+    }
+
+    /// Each frame: places made on the worker are kept if they are for the tree still shown.
+    /// With `wait`, a File View click waits for them (no longer than making them here).
+    pub(crate) fn ranks_poll(&mut self, wait: bool) {
+        let Some((set, rx)) = &self.ranks_job else { return };
+        let got = if wait { rx.recv().ok() } else {
+            match rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(_) => None,
+            }
+        };
+        let same = *set == self.tree_set;
+        self.ranks_job = None;
+        if let (Some(r), true, Some(t)) = (got, same, self.tree.as_ref()) {
+            if r.fits(t) {
+                self.ranks = std::sync::Arc::new(r);
+            }
+        }
+    }
+
     pub(crate) fn sort_files(&mut self) {
+        self.ranks_poll(true);
         let Some(t) = &self.tree else { return };
-        sort_file_list(t, &self.alloc, self.tables.files_sort, &mut self.files);
+        // a rescan added nodes since: made again here, once, not the slow sort every click
+        if !self.ranks.fits(t) {
+            let t0 = std::time::Instant::now();
+            self.ranks = std::sync::Arc::new(Ranks::of(t));
+            crate::state::timing("name and folder places made again", t0);
+        }
+        let t0 = std::time::Instant::now();
+        sort_file_list(t, &self.alloc, &self.ranks, self.tables.files_sort, &mut self.files);
+        crate::state::timing(&format!("File View sort ({} files)", self.files.len()), t0);
     }
 
     pub(crate) fn sort_exts(&mut self) {
@@ -943,6 +987,39 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    /// File View's header clicks timed on History's newest full scan (B5, next-round.md): each
+    /// column, both ways, as `header_clicked` sorts them. Ignored (needs a saved scan, and a
+    /// release build to mean anything):
+    ///
+    ///     cargo test --release -p sprawl bench_files_sort -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_files_sort() {
+        let base = sprawl_advisor::history::base_dir().expect("history folder");
+        let list = sprawl_advisor::history::list(&base);
+        let e = list.iter().rev().find(|e| e.full).expect("a full scan in History");
+        let t0 = std::time::Instant::now();
+        let tree = sprawl_advisor::history::load(e).expect("load");
+        println!("loaded {} nodes in {:.0} ms", tree.nodes.len(), t0.elapsed().as_secs_f64() * 1000.0);
+        let p = prepare(tree, Sorts { tree: (2, true), files: (1, true), exts: (4, true) });
+        let t1 = std::time::Instant::now();
+        let ranks = std::sync::Arc::new(Ranks::of(&p.tree));
+        println!("name and folder places made in {:.0} ms (on a worker after the tree shows, once per tree)", t1.elapsed().as_secs_f64() * 1000.0);
+        let p = Prepared { ranks, ..p };
+        println!("{} files", p.files.len());
+        for (c, col) in FILES.iter().enumerate() {
+            for desc in [true, false] {
+                let mut v = p.files.clone();
+                let t = std::time::Instant::now();
+                sort_file_list(&p.tree, &p.alloc, &p.ranks, (c, desc), &mut v);
+                let took = t.elapsed().as_secs_f64() * 1000.0;
+                // in the order the old comparison gives (one comparison per row)
+                assert!(in_old_order(&p.tree, &p.alloc, c, desc, &v), "{} desc={desc}", col.title);
+                println!("sort by {:<10} {}: {took:>8.0} ms", col.title, if desc { "desc" } else { "asc " });
+            }
+        }
+    }
+
     /// Names compare as their lowercase forms do, non-ASCII ones too: the scan's sort, other
     /// drives' sort and the seam between them agree.
     #[test]
@@ -981,6 +1058,64 @@ mod tests {
         let mut t = Tree { root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
+    }
+
+    /// `v` is in the order the old comparison (`cmp_nodes`, then the name) gives: every row
+    /// compares not after the next one.
+    pub(super) fn in_old_order(t: &Tree, alloc: &[u64], c: usize, desc: bool, v: &[usize]) -> bool {
+        let key = FILES[c].key;
+        let cmp = |a: usize, b: usize| {
+            let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
+            if desc { o.reverse() } else { o }
+        };
+        v.windows(2).all(|w| cmp(w[0], w[1]) != Ordering::Greater)
+    }
+
+    #[test]
+    fn file_view_sorts_by_ranks_as_it_compared() {
+        // ties on purpose: names that differ only in case, equal sizes, the same folder name
+        // in two places, a file name that is also a folder name
+        let mut nodes = vec![Node { name: r"C:\T".into(), is_dir: true, ..Default::default() }];
+        let mut add = |name: &str, dir: bool, parent: usize, size: u64, secs: u64| {
+            let i = nodes.len();
+            let modified = Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+            nodes.push(Node { name: name.into(), is_dir: dir, size, allocated: size.div_ceil(4096) * 4096, files: u64::from(!dir), parent: Some(parent), modified, ..Default::default() });
+            nodes[parent].children.push(i);
+            i
+        };
+        let a = add("a", true, 0, 0, 0);
+        let big_a = add("A b", true, 0, 0, 0);
+        let sub = add("x", true, a, 0, 0);
+        let sub2 = add("X", true, big_a, 0, 0);
+        let names = ["k.dll", "K.dll", "x", "Äpfel.txt", "apfel.txt", "z", "b.log", "B.LOG", "é.txt", "e.txt"];
+        let mut k = 0;
+        for (j, p) in [0, a, big_a, sub, sub2].into_iter().enumerate() {
+            for n in names {
+                k += 1;
+                add(n, false, p, (k % 4) * 1000 + j as u64, k % 3);
+            }
+        }
+        let mut t = Tree { root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
+        t.compute_totals();
+        let alloc: Vec<u64> = t.nodes.iter().map(|n| n.allocated).collect();
+        let ranks = Ranks::of(&t);
+        assert!(ranks.fits(&t));
+        let files: Vec<usize> = (0..t.nodes.len()).filter(|&i| !t.nodes[i].is_dir).collect();
+        for c in 0..FILES.len() {
+            for desc in [false, true] {
+                let mut fast = files.clone();
+                sort_file_list(&t, &alloc, &ranks, (c, desc), &mut fast);
+                assert!(in_old_order(&t, &alloc, c, desc, &fast), "{} desc={desc}", FILES[c].title);
+                let mut slow = files.clone();
+                sort_file_list(&t, &alloc, &Ranks::default(), (c, desc), &mut slow);
+                assert!(in_old_order(&t, &alloc, c, desc, &slow));
+                let mut fs = fast.clone();
+                fs.sort_unstable();
+                assert_eq!(fs, files, "every file once");
+            }
+        }
+        // a tree with nodes the places weren't made for: not trusted
+        assert!(!Ranks::default().fits(&t));
     }
 
     #[test]
@@ -1107,6 +1242,7 @@ pub(crate) struct Sorts {
 pub(crate) struct Prepared {
     pub(crate) tree: std::sync::Arc<Tree>,
     pub(crate) alloc: Vec<u64>,
+    pub(crate) ranks: std::sync::Arc<Ranks>,
     pub(crate) files: Vec<usize>,
     pub(crate) exts: Vec<crate::state::ExtRow>,
     /// Each extension's colour, by size (before the table's own sort).
@@ -1117,18 +1253,22 @@ pub(crate) struct Prepared {
 pub(crate) fn prepare(mut tree: Tree, sorts: Sorts) -> Prepared {
     let alloc: Vec<u64> = tree.nodes.iter().map(|n| n.allocated).collect();
     sort_children(&mut tree, &alloc, sorts.tree);
+    // the name and folder places are made after the tree is on screen (State::ranks_start):
+    // here they would hold a finished scan back by seconds
+    let ranks = std::sync::Arc::new(Ranks::default());
     let mut files = sprawl_core::largest_files(&tree, usize::MAX);
-    sort_file_list(&tree, &alloc, sorts.files, &mut files);
+    sort_file_list(&tree, &alloc, &ranks, sorts.files, &mut files);
     let mut exts = ext_rows(&tree, &alloc);
     let colours = exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
     sort_ext_rows(&mut exts, sorts.exts);
-    Prepared { tree: std::sync::Arc::new(tree), alloc, files, exts, colours, sorts }
+    Prepared { tree: std::sync::Arc::new(tree), alloc, ranks, files, exts, colours, sorts }
 }
 
 /// What the window worked out for the full tree while a filter shows part of it: kept, so
 /// clearing the filter shows the full tree again at once, without a copy or a worker.
 pub(crate) struct Parts {
     pub(crate) alloc: Vec<u64>,
+    pub(crate) ranks: std::sync::Arc<Ranks>,
     pub(crate) files: Vec<usize>,
     pub(crate) exts: Vec<crate::state::ExtRow>,
     pub(crate) colours: std::collections::HashMap<String, usize>,
@@ -1140,8 +1280,10 @@ impl Parts {
     /// worked out again, as the window does for the tree on screen.
     pub(crate) fn redo(&mut self, t: &mut Tree) {
         sort_children(t, &self.alloc, self.sorts.tree);
+        // places that no longer fit (the rescan added nodes) sort the slow way here, and are
+        // made again when this tree is shown
         self.files = sprawl_core::largest_files(t, usize::MAX);
-        sort_file_list(t, &self.alloc, self.sorts.files, &mut self.files);
+        sort_file_list(t, &self.alloc, &self.ranks, self.sorts.files, &mut self.files);
         self.exts = ext_rows(t, &self.alloc);
         sort_ext_rows(&mut self.exts, self.sorts.exts);
     }
@@ -1270,8 +1412,77 @@ pub(crate) fn sort_children(t: &mut Tree, alloc: &[u64], (c, desc): (usize, bool
     }
 }
 
-pub(crate) fn sort_file_list(t: &Tree, alloc: &[u64], (c, desc): (usize, bool), files: &mut [usize]) {
+/// Every node's place in name order and every folder's place in path order, both as the
+/// tables compare them (`cmp_names`, the folder's full path lowercased). Worked out once per
+/// tree, on the worker that prepares it, so a File View header click sorts numbers: a few
+/// hundred ms for millions of files, where comparing names and building paths took seconds
+/// (and a minute and a half by folder on a full C: drive).
+#[derive(Default)]
+pub(crate) struct Ranks {
+    names: Vec<u32>,
+    folders: Vec<u32>,
+}
+
+impl Ranks {
+    pub(crate) fn of(t: &Tree) -> Ranks {
+        // the two are independent: the folders' on a second thread
+        std::thread::scope(|s| {
+            let folders = s.spawn(|| sprawl_core::search::folder_ranks(t));
+            let names = Self::names(t);
+            Ranks { names, folders: folders.join().unwrap_or_default() }
+        })
+    }
+
+    fn names(t: &Tree) -> Vec<u32> {
+        let mut idx: Vec<u32> = (0..t.nodes.len() as u32).collect();
+        idx.sort_unstable_by(|&a, &b| cmp_names(&t.nodes[a as usize].name, &t.nodes[b as usize].name));
+        let mut names = vec![0u32; t.nodes.len()];
+        // names that compare equal (differ only in case) share a place
+        let mut place = 0u32;
+        for (i, &n) in idx.iter().enumerate() {
+            if i > 0 && cmp_names(&t.nodes[idx[i - 1] as usize].name, &t.nodes[n as usize].name) != Ordering::Equal {
+                place = i as u32;
+            }
+            names[n as usize] = place;
+        }
+        names
+    }
+
+    /// Made for this tree (a rescan that added nodes leaves them short: they are made again).
+    pub(crate) fn fits(&self, t: &Tree) -> bool {
+        self.names.len() == t.nodes.len() && self.folders.len() == t.nodes.len()
+    }
+}
+
+/// Sort `files` by `key(n)`, then name, then node number, from a key made once per row.
+fn sort_keyed<K: Ord + Copy>(files: &mut [usize], desc: bool, names: &[u32], key: impl Fn(usize) -> K) {
+    let mut v: Vec<(K, u32, u32)> = files.iter().map(|&n| (key(n), names[n], n as u32)).collect();
+    if desc {
+        v.sort_unstable_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)).then(a.2.cmp(&b.2)));
+    } else {
+        v.sort_unstable();
+    }
+    for (slot, (_, _, n)) in files.iter_mut().zip(v) {
+        *slot = n as usize;
+    }
+}
+
+/// File View's sort. With `ranks` made for `t` every column sorts numbers; without (they
+/// don't fit) it compares as before, which is right but slow on millions of files.
+pub(crate) fn sort_file_list(t: &Tree, alloc: &[u64], ranks: &Ranks, (c, desc): (usize, bool), files: &mut [usize]) {
     let key = FILES[c].key;
+    if ranks.fits(t) {
+        let names = &ranks.names;
+        match key {
+            Key::Name => return sort_keyed(files, desc, names, |_| ()),
+            Key::Size => return sort_keyed(files, desc, names, |n| t.nodes[n].size),
+            Key::Alloc => return sort_keyed(files, desc, names, |n| alloc.get(n).copied()),
+            Key::Modified => return sort_keyed(files, desc, names, |n| t.nodes[n].modified),
+            // a file's folder by its place; in the same folder, by name (as comparing paths did)
+            Key::Folder => return sort_keyed(files, desc, names, |n| t.nodes[n].parent.map_or(0, |p| u64::from(ranks.folders[p]) + 1)),
+            _ => {}
+        }
+    }
     files.sort_by(|&a, &b| {
         let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
         if desc { o.reverse() } else { o }
