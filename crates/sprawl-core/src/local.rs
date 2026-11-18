@@ -60,6 +60,14 @@ pub struct Directory {
 }
 
 impl Directory {
+    pub fn file_links(&self) -> io::Result<u32> {
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let file = self._handles.last().ok_or_else(|| io::Error::other("No pinned file"))?;
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+        Ok(info.nNumberOfLinks)
+    }
+
     pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
         self._handles.last().ok_or_else(|| io::Error::other("No pinned path"))?.metadata()
     }

@@ -232,6 +232,7 @@ pub fn on_disk(path: &Path) -> Option<u64> {
     if crate::exclusions::intersects(&root.path, &excluded) { return None; }
     let top = root.metadata().ok()?;
     if !top.is_dir() {
+        if root.file_links().ok()? != 1 { return None; }
         return size(&root.path);
     }
     let (mut total, mut visited) = (0u64, 0usize);
@@ -249,6 +250,7 @@ pub fn on_disk(path: &Path) -> Option<u64> {
             if m.is_dir() {
                 stack.push(pinned.path.clone());
             } else {
+                if pinned.file_links().ok()? != 1 { return None; }
                 total = total.checked_add(size(&pinned.path)?)?;
             }
         }
@@ -564,6 +566,11 @@ mod compress_tests {
         let path = dir.join("sub/data.bin");
         std::fs::write(&path, vec![1u8; 100_000]).unwrap();
         assert!(on_disk(&dir).unwrap() > 0);
+        let alias = dir.join("alias.bin");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert_eq!(on_disk(&dir), None, "aliases cannot be counted as independent physical allocation");
+        assert_eq!(on_disk(&path), None, "an alias outside the measured leaf also makes allocation unknown");
+        std::fs::remove_file(alias).unwrap();
         let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
         assert!(on_disk(&dir).unwrap() > 0, "metadata-only sizing needs no content read");
         drop(locked);
