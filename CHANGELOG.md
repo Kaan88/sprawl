@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.0 — 2026-11-19
 
 - Recognise registered MSI packages, likely EXE installers and unregistered Steam library folders, with the evidence and limits shown.
 - Compare cleanup, compression and guided Steam move options for a space goal, including destination capacity and costs.
@@ -22,7 +22,7 @@ in-app updater shows.
 - Keep a complete previous launch bundle for interrupted updates. Update and restart closes other Sprawl processes from the same account and installation, including lingering MCP servers.
 - Detect WOF compression hidden by Windows directory listings, and reconcile MFT top-folder progress after out-of-order parser results.
 
-These changes await the queued independent review; no release has been published.
+The complete review dossier and corrections passed independent Astra review before release.
 
 ## 0.5.0 — 2026-11-18
 
