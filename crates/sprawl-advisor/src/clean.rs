@@ -1348,7 +1348,7 @@ pub fn elevated_risk(command: &str) -> Option<String> {
     if !sprawl_core::is_elevated() {
         return None;
     }
-    let sys = system_dir()?;
+    let Some(sys) = system_dir() else { return Some("Windows' system folder could not be established, so this elevated command cannot be checked.".into()); };
     let command = system_command(command, &sys);
     elevated_tool_ok(&command, &|name| {
         if Path::new(name).is_absolute() { return Some(PathBuf::from(name)); }
