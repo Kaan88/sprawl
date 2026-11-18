@@ -676,6 +676,7 @@ impl State {
     pub(crate) fn advisor_poll(&mut self) {
         // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
+        crate::bridge::publish_scanning(self.job.is_some());
         self.chat_poll();
         self.community_poll();
         self.own_poll();

@@ -19,6 +19,8 @@ struct Shared {
     found: Option<Arc<Vec<sprawl_advisor::finding::Finding>>>,
     memory: Memory,
     filters: Vec<String>,
+    /// The app's own scan is running (a server's scan waits for it).
+    scanning: bool,
 }
 
 fn shared() -> &'static Mutex<Shared> {
@@ -31,11 +33,15 @@ pub(crate) fn start() {
     std::thread::spawn(|| {
         // app facts are gathered once per scan, on first use
         let mut facts: Option<(usize, Facts)> = None;
+        // scans servers ask for, kept on this thread, saved to History as the app's own are
+        let mut index = sprawl_advisor::mcp_scan::Index::for_app(false);
         let _ = sprawl_advisor::pipe::serve(|line| {
-            let (tree, findings, found, memory) = {
+            let (tree, findings, found, memory, scanning) = {
                 let s = shared().lock().unwrap_or_else(|e| e.into_inner());
-                (s.tree.upgrade(), s.findings.clone(), s.found.clone(), s.memory.clone())
+                (s.tree.upgrade(), s.findings.clone(), s.found.clone(), s.memory.clone(), s.scanning)
             };
+            // a screenshot run writes nothing; its flag is set after this thread starts
+            index.set_app_state(scanning, !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed));
             let key = tree.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize);
             if facts.as_ref().is_none_or(|(k, _)| *k != key) {
                 let mut f = Facts::gather();
@@ -47,7 +53,7 @@ pub(crate) fn start() {
             let f = &facts.as_ref().expect("just set").1;
             let mut wanted = None;
             // a panic answers an error and leaves the pipe working
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut |x| wanted = Some(x))))
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, &mut |x| wanted = Some(x))))
                 .unwrap_or_else(|_| r#"{"ok":false,"text":"Sprawl hit an internal error answering that."}"#.to_string());
             if let Some(x) = wanted {
                 shared().lock().unwrap_or_else(|e| e.into_inner()).filters.push(x);
@@ -65,6 +71,11 @@ pub(crate) fn publish_tree(t: Option<&Arc<Tree>>) {
         s.published = key;
         s.tree = t.map(Arc::downgrade).unwrap_or_default();
     }
+}
+
+/// Called every frame: whether the app's own scan is running.
+pub(crate) fn publish_scanning(on: bool) {
+    shared().lock().unwrap_or_else(|e| e.into_inner()).scanning = on;
 }
 
 /// The Advisor's findings as text and as a list (`None`: a new analysis has started).

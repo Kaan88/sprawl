@@ -154,11 +154,13 @@ pub struct Held {
     tree: Tree,
     facts: Option<Facts>,
     found: Option<Vec<Finding>>,
+    /// Scanned by the running app (in the background), not by the server's own process.
+    in_app: bool,
 }
 
 impl Held {
-    fn new(tree: Tree, taken: SystemTime, file: Option<PathBuf>) -> Held {
-        Held { root: tree.root_path.clone(), taken, file, tree, facts: None, found: None }
+    fn new(tree: Tree, taken: SystemTime, file: Option<PathBuf>, in_app: bool) -> Held {
+        Held { root: tree.root_path.clone(), taken, file, tree, facts: None, found: None, in_app }
     }
 
     fn facts(&mut self) -> &Facts {
@@ -174,6 +176,7 @@ impl Held {
     fn note(&self, app_running: bool) -> String {
         let when = age(self.taken);
         let mut s = match (&self.file, app_running) {
+            (None, _) if self.in_app => format!("(From the scan of {} Sprawl made in the background for this server, {when}; it isn't the one on Sprawl's screen.", self.root.display()),
             (None, _) => format!("(From the scan of {} made through this server, {when}.", self.root.display()),
             (Some(_), false) => format!("(Sprawl isn't running, so this is from History's saved scan of {}, taken {when}. Scans done since aren't in it.", self.root.display()),
             (Some(_), true) => format!("(This isn't in the scan open in Sprawl, so it is from History's saved scan of {}, taken {when}.", self.root.display()),
@@ -235,11 +238,28 @@ pub struct Index {
     /// Scans made here (newest last), then at most one tree loaded from History.
     held: Vec<Held>,
     next: u64,
-    /// Tests: History is neither read nor written.
+    /// Tests and screenshot runs: History is neither read nor written.
     no_history: bool,
+    /// Kept by the running app for every server that asks it (its scans use the app's rights,
+    /// the MFT when it runs as administrator, and stay off the user's screen).
+    in_app: bool,
+    /// The app's own scan is running: a second one waits for it.
+    busy: bool,
 }
 
 impl Index {
+    /// The app's index: `history` false in a screenshot run, which writes nothing.
+    pub fn for_app(history: bool) -> Index {
+        Index { no_history: !history, in_app: true, ..Default::default() }
+    }
+
+    /// Before each request the app says whether its own scan is running (`scan_path` waits
+    /// for it) and whether it may write History (not in a screenshot run).
+    pub fn set_app_state(&mut self, busy: bool, history: bool) {
+        self.busy = busy;
+        self.no_history = !history;
+    }
+
     fn base(&self) -> Option<PathBuf> {
         if self.no_history { None } else { crate::history::base_dir() }
     }
@@ -259,7 +279,7 @@ impl Index {
                     // a scan of the same root replaces the older one
                     self.held.retain(|h| !(h.file.is_none() && h.root == tree.root_path));
                     let at = self.held.iter().take_while(|h| h.file.is_none()).count();
-                    self.held.insert(at, Held::new(tree, j.taken, None));
+                    self.held.insert(at, Held::new(tree, j.taken, None, self.in_app));
                     let scans = self.held.iter().filter(|h| h.file.is_none()).count();
                     if scans > KEEP_SCANS {
                         self.held.remove(0);
@@ -294,6 +314,9 @@ impl Index {
                     }
                     return Err(format!("Scan {} of {} is still running; one scan at a time. Follow it with scan_status.", j.id, j.root.display()));
                 }
+                if self.busy {
+                    return Err("Sprawl is scanning on its screen right now; one scan at a time. Ask again when it has finished.".into());
+                }
                 if input["rescan"].as_bool() != Some(true) {
                     if let Some(h) = self.held.iter().rfind(|h| h.file.is_none() && covers(&h.root, &root)) {
                         return Ok(format!("{} is in the scan of {} made {}; the other tools answer from it. Pass rescan: true to scan again.", root.display(), h.root.display(), age(h.taken)));
@@ -325,6 +348,7 @@ impl Index {
         let (p, sv, r) = (progress.clone(), saving.clone(), root.clone());
         let taken = SystemTime::now();
         let base = self.base();
+        let quiet = self.no_history;
         let handle = std::thread::spawn(move || {
             let tree = sprawl_core::scan_auto(&r, &p).map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
             // into History as the app saves its own scans, when the user keeps History
@@ -338,6 +362,7 @@ impl Index {
                     }
                 }
                 (false, _) => "Not saved in History (History is off in Sprawl's settings).".to_string(),
+                (true, None) if quiet => "Not saved in History (this run of Sprawl writes nothing).".to_string(),
                 (true, None) => "Not saved in History (no place for it).".to_string(),
             };
             Ok((tree, history))
@@ -453,7 +478,7 @@ impl Index {
                 let tree = crate::history::load(&e).ok()?;
                 // one tree from History at a time
                 self.held.retain(|h| h.file.is_none());
-                self.held.push(Held::new(tree, e.taken, Some(e.file.clone())));
+                self.held.push(Held::new(tree, e.taken, Some(e.file.clone()), self.in_app));
                 Some(self.held.len() - 1)
             }
             (None, None) => None,
