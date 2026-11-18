@@ -330,6 +330,9 @@ pub(crate) struct Chat {
     web_ok: Arc<std::sync::atomic::AtomicBool>,
     /// The chat thread is still running (it clears this when it ends).
     alive: Arc<std::sync::atomic::AtomicBool>,
+    /// The chat was started on the Cleaners tab's own read (no scan covered the cleaners), not
+    /// on the scan: a question from the other one starts a new chat on the right tree.
+    own: bool,
 }
 
 enum ChatMsg {
@@ -2312,9 +2315,18 @@ impl State {
         if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
             let _ = t.SetText(&"".into());
         }
+        // a chat about the scan can't answer about the Cleaners tab's own read, nor the other way
+        if self.advisor.chat.tx.is_some() && self.advisor.chat.own != self.own_active() {
+            self.chat_reset();
+        }
         if self.advisor.chat.tx.is_none() {
-            // the whole scan, also while a filter is on
-            let Some(t) = self.full_tree.clone().or_else(|| self.tree.clone()) else { return };
+            // the whole scan (also while a filter is on), or what the Cleaners tab read itself
+            // when no scan covers the cleaners
+            let Some(t) = self.active_tree() else {
+                self.adv_say("Nothing is scanned yet: scan a drive or folder, or let Cleaners finish reading, then ask.");
+                return;
+            };
+            self.advisor.chat.own = self.own_active();
             let cfg = AiConfig::load();
             if cfg.provider == Provider::ClaudeCode {
                 if let Err(why) = self.admin_allows(&crate::admin::CLAUDE_CODE) {
