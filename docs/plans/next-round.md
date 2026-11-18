@@ -155,3 +155,15 @@ Kept up as the work goes. Each line: the item, the commit, what was done, what i
   folder: the card shows, the mouse and Esc (with the window in front) say no, nothing was
   deleted. Not tried by hand: Tab/Enter, Esc right after the window comes to the front (the
   refocus added last), "Yes" deleting for real, closing mid clean-up.
+- **B5** (e3a1e19): done. Not a single regression: File View never had the rank sort (68558d1
+  gave it to Search and the tree only). Timed with `cargo test --release -p sprawl
+  bench_files_sort -- --ignored --nocapture` on History's newest C:\ scan (3.1 M files):
+  name 4.5 s -> 0.1 s, allocated 3.6 s -> 0.2 s, modified 1.8 s -> 0.3 s, folder 97 s -> 0.2 s.
+  The name and folder places (`tables::Ranks`) are made on a worker once the tree shows
+  (2.5-4 s on C:\); a click before then waits for them. The bench checks every column's order
+  against the old comparison. Not tried by hand in the app (no header-click step in
+  screenshot mode); `SPRAWL_TIMING=1` logs "File View sort" for a hand check.
+
+Phase 0 is done (B1-B5). Next per the plan: the release of 0.3.2 waits for the user's word and
+the Fable reads queued in `.claude/fable-review-queue.md`; Phase 1 (the MCP as a real tool) is
+to be discussed with the user before building.
