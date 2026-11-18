@@ -43,6 +43,7 @@ pub mod safety;
 pub mod snapshot;
 pub mod stale;
 pub mod tuning;
+pub mod versions;
 pub mod recycle;
 
 /// "Work offline" (Settings > Network): while set, nothing leaves this PC. Every HTTP request
@@ -147,6 +148,7 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         .into_iter()
         .chain(projects::build_outputs(tree, &projects, facts, tuning::get(&tuning::PROJECT_IDLE_DAYS), 100 << 20))
         .chain(anomaly::find(tree))
+        .chain(versions::find(tree, &projects))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));
