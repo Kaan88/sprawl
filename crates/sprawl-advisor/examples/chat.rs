@@ -11,6 +11,7 @@ use sprawl_advisor::memory::Memory;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let scan_before = std::time::SystemTime::now();
     let tree = sprawl_core::scan(Path::new(&args[0]), |_| {}).expect("scan");
     let provider = match args.get(2).map(String::as_str).unwrap_or("claude-code") {
         "anthropic" => Provider::Anthropic,
@@ -31,7 +32,7 @@ fn main() {
         }
         let _ = t;
     });
-    chat(&tree, &cfg, None, &Memory::default(), "", rx, &mut |e| match e {
+    chat(&tree, scan_before, &cfg, None, &Memory::default(), "", rx, &mut |e| match e {
         ChatEvent::Reply(r) => println!("reply after {:.1} s, {} streamed pieces:\n{r}", start.elapsed().as_secs_f64(), pieces.get()),
         ChatEvent::Failed(e) => println!("failed: {e}"),
         ChatEvent::Progress(p) => println!("  .. {p}"),

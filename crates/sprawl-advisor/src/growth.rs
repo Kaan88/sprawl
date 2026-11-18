@@ -155,11 +155,13 @@ fn sample(entries: &[Entry], now: SystemTime) -> Vec<Entry> {
 }
 
 /// Growth of `cur` from the snapshots in `base` (History's folder). `free` is the drive's free
-/// space, for "full in". `None` when there is no earlier snapshot of this folder.
-pub fn growth(cur: &Tree, base: &Path, facts: &Facts, free: Option<u64>, now: SystemTime) -> Option<Growth> {
+/// space, for "full in". `now` is the captured scan time, never the question's wall-clock
+/// time. `None` when there is no earlier snapshot of this folder.
+pub fn growth(cur: &Tree, base: &Path, facts: &Facts, free: Option<u64>, scan_time: SystemTime) -> Option<Growth> {
+    let now = scan_time;
     let root = cur.path_of(ROOT);
     // older than this scan: History may already hold this one
-    let entries: Vec<Entry> = history::covering(base, &root).into_iter().filter(|e| now.duration_since(e.taken).is_ok_and(|d| d.as_secs() > 600)).collect();
+    let entries: Vec<Entry> = history::earlier(base, &root, now);
     if entries.is_empty() {
         return None;
     }

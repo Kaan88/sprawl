@@ -14,6 +14,7 @@ struct Shared {
     tree: Weak<Tree>,
     /// What was published last, to republish only when it changes.
     published: usize,
+    scan_before: Option<std::time::SystemTime>,
     findings: String,
     /// The Advisor's findings as a list, for the report's "found by the rules" (None: not yet).
     found: Option<Arc<Vec<sprawl_advisor::finding::Finding>>>,
@@ -36,9 +37,9 @@ pub(crate) fn start() {
         // scans servers ask for, kept on this thread, saved to History as the app's own are
         let mut index = sprawl_advisor::mcp_scan::Index::for_app(false);
         let _ = sprawl_advisor::pipe::serve(|line| {
-            let (tree, findings, found, memory, scanning) = {
+            let (tree, scan_before, findings, found, memory, scanning) = {
                 let s = shared().lock().unwrap_or_else(|e| e.into_inner());
-                (s.tree.upgrade(), s.findings.clone(), s.found.clone(), s.memory.clone(), s.scanning)
+                (s.tree.upgrade(), s.scan_before, s.findings.clone(), s.found.clone(), s.memory.clone(), s.scanning)
             };
             // a screenshot run writes nothing; its flag is set after this thread starts
             index.set_app_state(scanning, !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed));
@@ -53,7 +54,7 @@ pub(crate) fn start() {
             let f = &facts.as_ref().expect("just set").1;
             let mut wanted = None;
             // a panic answers an error and leaves the pipe working
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, &mut |x| wanted = Some(x))))
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), scan_before, f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, &mut |x| wanted = Some(x))))
                 .unwrap_or_else(|_| r#"{"ok":false,"text":"Sprawl hit an internal error answering that."}"#.to_string());
             if let Some(x) = wanted {
                 shared().lock().unwrap_or_else(|e| e.into_inner()).filters.push(x);
@@ -64,9 +65,10 @@ pub(crate) fn start() {
 }
 
 /// Called every frame with the tree on screen (cheap: only a change is stored).
-pub(crate) fn publish_tree(t: Option<&Arc<Tree>>) {
+pub(crate) fn publish_tree(t: Option<&Arc<Tree>>, scan_before: std::time::SystemTime) {
     let key = t.map_or(0, |t| Arc::as_ptr(t) as usize);
     let mut s = shared().lock().unwrap_or_else(|e| e.into_inner());
+    s.scan_before = t.map(|_| scan_before);
     if s.published != key {
         s.published = key;
         s.tree = t.map(Arc::downgrade).unwrap_or_default();

@@ -19,6 +19,7 @@ fn main() {
     };
     let cfg = AiConfig { provider, model: args.get(2).cloned().unwrap_or_default(), base_url: std::env::var("SPRAWL_BASE_URL").unwrap_or_default(), web_lookup: false };
     let goal = args.get(3).and_then(|g| g.parse::<f64>().ok()).map(|g| (g * (1u64 << 30) as f64) as u64);
+    let scan_before = std::time::SystemTime::now();
     let tree = sprawl_core::scan(path, |_| {}).expect("scan");
     let mut facts = Facts::gather();
     facts.attach_usage(&tree);
@@ -30,7 +31,7 @@ fn main() {
         sprawl_advisor::llm::set_mcp_exe(exe.into());
     }
     let memory = sprawl_advisor::memory::Memory::load();
-    match sprawl_advisor::llm::agent::run(&tree, &cfg, &rules, None, goal, &memory, "", Default::default(), &mut |s| println!("  .. {s}")) {
+    match sprawl_advisor::llm::agent::run(&tree, scan_before, &cfg, &rules, None, goal, &memory, "", Default::default(), &mut |s| println!("  .. {s}")) {
         Ok(run) => {
             println!("{} in {:.0} s, {} turns, tools: {}, {}", run.model, started.elapsed().as_secs_f64(), run.turns, run.with_tools, run.usage.text());
             println!("summary: {}", run.summary);

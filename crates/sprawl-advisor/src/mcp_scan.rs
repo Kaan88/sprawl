@@ -206,7 +206,7 @@ impl Held {
             }
             "cleaners" | "set_filter" if app_running => Err(format!("That works only for the scan open in Sprawl; {} isn't in it.", self.root.display())),
             "cleaners" | "set_filter" => Err("That needs Sprawl open: start Sprawl and ask again.".to_string()),
-            _ => Tools::new(&self.tree, facts, "claude-code", &[], memory).call(name, input),
+            _ => Tools::new(&self.tree, facts, "claude-code", &[], memory).at_scan(self.taken).call(name, input),
         };
         match answer {
             Ok(t) => Ok(note + &t),

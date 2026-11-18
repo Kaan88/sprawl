@@ -715,6 +715,7 @@ impl State {
         let scan_id = self.scan_id;
         let want_growth = self.advisor.growth_cache.as_ref().is_none_or(|(id, _)| *id != scan_id);
         let privacy_on = self.privacy_on();
+        let scan_before = self.scan_began;
         let measured_at = self.scan_began.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         std::thread::spawn(move || {
             // a fault in the rules ends this check, not the tab: it says so and offers Check again
@@ -729,7 +730,7 @@ impl State {
             // growth reads a few snapshots: after the report, so that shows first, and once a scan
             if want_growth {
                 let free = sprawl_advisor::hidden::free_space(&root).map(|(_, f)| f);
-                let growth = sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&t, &b, &facts, free, std::time::SystemTime::now()));
+                let growth = sprawl_advisor::history::base_dir().and_then(|b| sprawl_advisor::growth::growth(&t, &b, &facts, free, scan_before));
                 if tx.send(Msg::Growth(gen, scan_id, growth)).is_err() {
                     return;
                 }
@@ -813,7 +814,7 @@ impl State {
     /// A run in its PowerShell window writes what it freed into its report file when it ends.
     pub(crate) fn advisor_poll(&mut self) {
         // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
-        crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
+        crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()), self.scan_began);
         crate::bridge::publish_scanning(self.job.is_some());
         self.recheck_poll();
         self.uncompress_poll();
@@ -2526,6 +2527,7 @@ impl State {
         let gen = self.tree_gen;
         let memory = self.advisor.memory.clone();
         self.advisor.ai = Ai::Running("Starting".into());
+        let scan_before = self.scan_began;
         self.advisor.ai_started = Some(std::time::Instant::now());
         let stop = sprawl_advisor::llm::Stop::default();
         self.advisor.ai_stop = stop.clone();
@@ -2535,7 +2537,7 @@ impl State {
                 let _ = progress_tx.send(Msg::AiProgress(gen, line));
             };
             // a panic in there still ends the run
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, &cfg, &already, hidden.as_ref(), goal, &memory, &notes, stop, &mut progress)))
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::run(&t, scan_before, &cfg, &already, hidden.as_ref(), goal, &memory, &notes, stop, &mut progress)))
                 .unwrap_or_else(|_| Err("the analysis stopped with an internal error".into()));
             let _ = tx.send(Msg::AiDone(gen, result));
         });
@@ -3127,6 +3129,7 @@ impl State {
                 return;
             };
             self.advisor.chat.own = self.own_active();
+            let scan_before = self.active_began();
             let cfg = AiConfig::load();
             if cfg.provider == Provider::ClaudeCode {
                 if let Err(why) = self.admin_allows(&crate::admin::CLAUDE_CODE) {
@@ -3164,7 +3167,7 @@ impl State {
                 let mut events = |e: ChatEvent| {
                     let _ = etx.send(ChatMsg::Event(e));
                 };
-                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, &cfg, found.as_deref(), &memory, &notes, qrx, &mut events, &consent, stop.clone(), partial.clone())));
+                let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::llm::agent::chat(&t, scan_before, &cfg, found.as_deref(), &memory, &notes, qrx, &mut events, &consent, stop.clone(), partial.clone())));
                 if ended.is_err() {
                     let _ = etx.send(ChatMsg::Event(ChatEvent::Failed("the chat stopped with an internal error".into())));
                 }

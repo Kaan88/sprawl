@@ -326,6 +326,14 @@ pub fn covering(base: &Path, root: &Path) -> Vec<Entry> {
     v
 }
 
+/// Snapshot times have one-second precision. Exclude the scan's entire start second as
+/// well as all later entries, even when the question is asked hours after the scan.
+pub fn earlier(base: &Path, root: &Path, scan_before: SystemTime) -> Vec<Entry> {
+    let Ok(age) = scan_before.duration_since(UNIX_EPOCH) else { return Vec::new(); };
+    let Some(bound) = UNIX_EPOCH.checked_add(Duration::from_secs(age.as_secs())) else { return Vec::new(); };
+    covering(base, root).into_iter().filter(|entry| entry.taken < bound).collect()
+}
+
 /// Which files the policy removes, given every entry and the time now.
 pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf> {
     let mut kill: Vec<PathBuf> = Vec::new();
@@ -529,6 +537,19 @@ mod tests {
         sizes.sort_unstable();
         assert_eq!(sizes, (1..=8).collect::<Vec<_>>());
         assert_eq!(entries.iter().map(|e| e.file.clone()).collect::<std::collections::HashSet<_>>().len(), 8);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn comparisons_exclude_the_current_second_and_newer_scans() {
+        let (dir, base, tree) = fixture("time-bound");
+        let current = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 3600);
+        for taken in [current - Duration::from_secs(60), current, current + Duration::from_secs(60)] {
+            prepare(&tree, taken, false).save(&base, u64::MAX).unwrap();
+        }
+        let earlier = earlier(&base, &tree.root_path, current + Duration::from_millis(900));
+        assert_eq!(earlier.len(), 1);
+        assert_eq!(earlier[0].taken, current - Duration::from_secs(60));
         fs::remove_dir_all(dir).unwrap();
     }
 

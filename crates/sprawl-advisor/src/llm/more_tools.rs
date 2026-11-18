@@ -100,8 +100,8 @@ fn hits_contains(hits: &[usize], tree: &Tree, n: usize) -> bool {
     false
 }
 
-pub fn growth(tree: &Tree, input: &Value) -> Result<String, String> {
-    growth_in(tree, input, crate::history::base_dir().as_deref(), SystemTime::now())
+pub fn growth(tree: &Tree, input: &Value, scan_before: SystemTime) -> Result<String, String> {
+    growth_in(tree, input, crate::history::base_dir().as_deref(), scan_before)
 }
 
 fn growth_in(tree: &Tree, input: &Value, base: Option<&Path>, now: SystemTime) -> Result<String, String> {
@@ -113,12 +113,12 @@ fn growth_in(tree: &Tree, input: &Value, base: Option<&Path>, now: SystemTime) -
     let base = base.ok_or("Sprawl has no History folder here.")?;
     // older than this scan: History may already hold the scan itself
     let entries: Vec<crate::history::Entry> =
-        crate::history::covering(base, &target).into_iter().filter(|e| now.duration_since(e.taken).is_ok_and(|d| d.as_secs() > 600)).collect();
+        crate::history::earlier(base, &target, now);
     if entries.is_empty() {
         return Ok(format!("History has no earlier scan of {}: growth needs one. Sprawl keeps one after every scan while History is on.", target.display()));
     }
     let days = input["days"].as_u64().unwrap_or(7);
-    let want = now.checked_sub(Duration::from_secs(days * 86_400)).unwrap_or(now);
+    let want = now.checked_sub(Duration::from_secs(days.saturating_mul(86_400))).unwrap_or(SystemTime::UNIX_EPOCH);
     let gap = |e: &crate::history::Entry| if e.taken > want { e.taken.duration_since(want) } else { want.duration_since(e.taken) }.unwrap_or_default();
     let e = entries.iter().min_by_key(|e| gap(e)).expect("not empty");
     let old = crate::history::load(e).map_err(|err| format!("History's scan of {} couldn't be read: {err}", e.root.display()))?;
@@ -230,6 +230,15 @@ mod tests {
         assert!(r.contains("new (new"), "{r}");
         assert!(r.contains("goes (gone"), "{r}");
         assert!(r.contains("keeps (now"), "{r}");
+        let captured = SystemTime::UNIX_EPOCH + Duration::from_secs(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() - 3600);
+        crate::history::prepare(&cur, captured, true).save(&base, u64::MAX).unwrap();
+        crate::history::prepare(&cur, captured + Duration::from_secs(1800), true).save(&base, u64::MAX).unwrap();
+        let later_question = growth_in(&cur, &json!({"days": 0}), Some(&base), captured + Duration::from_millis(900)).unwrap();
+        assert!(later_question.contains("6 days ago"), "the old scan cannot compare with itself or a newer scan: {later_question}");
+        assert!(growth_in(&cur, &json!({"days": u64::MAX}), Some(&base), captured).is_ok());
+        let facts = crate::facts::Facts::default();
+        let mut unknown = super::super::tools::Tools::new(&cur, &facts, "fixture", &[], &crate::memory::Memory::default());
+        assert!(unknown.call("growth", &json!({})).unwrap_err().contains("capture time"));
         let none = growth_in(&cur, &json!({}), Some(&dir.join("empty")), SystemTime::now()).unwrap();
         assert!(none.contains("no earlier scan"), "{none}");
         let _ = std::fs::remove_dir_all(&dir);

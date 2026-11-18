@@ -325,9 +325,9 @@ pub fn main(args: &[String]) {
         });
         return;
     };
-    let tree = std::fs::File::open(&tree_file).ok().and_then(|f| crate::snapshot::read(&mut std::io::BufReader::new(f)).ok()).map(|(t, _)| t);
+    let tree = sprawl_core::local::file(&tree_file, crate::snapshot::MAX_FILE).ok().and_then(|mut f| crate::snapshot::read(&mut std::io::BufReader::new(&mut f.file)).ok());
     step("snapshot loaded");
-    let Some(tree) = tree else {
+    let Some((tree, meta)) = tree else {
         serve(Vec::new(), &mut |_, _| Err("Sprawl couldn't read the scan it was given.".into()));
         return;
     };
@@ -341,6 +341,7 @@ pub fn main(args: &[String]) {
     // read only: this process never renames or rewrites the user's memory
     let memory = Memory::load_readonly();
     let mut local = Local::new(&tree, &facts, &memory, &model, out);
+    local.tools.scan_before = Some(meta.taken);
     if local.out.is_some() && args.iter().any(|a| a == "--chat") {
         local.mode = Mode::Chat { web: args.iter().any(|a| a == "--web") };
         local.out_path = out_path;
@@ -353,7 +354,7 @@ pub fn main(args: &[String]) {
 /// filter the model wants shown; `findings` is the Advisor's list as text, and `found` the same
 /// as a list (`None` while the Advisor is still looking).
 #[allow(clippy::too_many_arguments)]
-pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, index: &mut crate::mcp_scan::Index, filter: &mut dyn FnMut(String)) -> String {
+pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::time::SystemTime>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, index: &mut crate::mcp_scan::Index, filter: &mut dyn FnMut(String)) -> String {
     let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
     let Ok(req) = serde_json::from_str::<Value>(line) else { return reply(false, "bad request".into()) };
     let name = req["tool"].as_str().unwrap_or("");
@@ -394,6 +395,7 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Me
         "scan_report" => reply(true, crate::llm::report::build(tree, facts, found, None, None)),
         _ if bridge_specs().iter().any(|t| t.name == name) => {
             let mut tools = Tools::new(tree, facts, "claude-code", &[], memory);
+            tools.scan_before = scan_before;
             match tools.call(name, input) {
                 Ok(t) => {
                     if let Some(f) = tools.filter.take() {
@@ -464,14 +466,14 @@ mod tests {
         let facts = Facts::from_apps(Vec::new());
         let mut shown = None;
         let root = tree.path_of(sprawl_core::ROOT).display().to_string();
-        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |f| shown = Some(f));
+        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |f| shown = Some(f));
         assert!(a.contains("\"ok\":true") && a.contains("lib.rs"), "{a}");
-        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |f| shown = Some(f));
+        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |f| shown = Some(f));
         assert!(f.contains("\"ok\":true") && shown.as_deref() == Some("*.rs"));
-        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
         assert!(n.contains("no tool"), "reporting isn't offered over the bridge");
         // the report says whether the rules ran, never a bare "(nothing)"
-        let ask = |found: Option<&[Finding]>| answer_bridge(&json!({"tool": "scan_report", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", found, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let ask = |found: Option<&[Finding]>| answer_bridge(&json!({"tool": "scan_report", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", found, &mut crate::mcp_scan::Index::default(), &mut |_| {});
         assert!(ask(None).contains("haven't run"));
         assert!(ask(Some(&[])).contains("none matched"));
         let one = Finding {
@@ -496,14 +498,14 @@ mod tests {
             forced_from: None,
         };
         assert!(ask(Some(std::slice::from_ref(&one))).contains("a test finding"));
-        let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
         assert!(fl.contains("still looking"), "{fl}");
         // a whole-scan tool about a path the app's tree doesn't hold goes back to the server
         for tool in ["scan_report", "findings", "cleaners"] {
-            let other = answer_bridge(&json!({"tool": tool, "input": {"path": r"Q:\elsewhere"}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+            let other = answer_bridge(&json!({"tool": tool, "input": {"path": r"Q:\elsewhere"}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
             assert!(other.contains("\"ok\":false") && other.contains(crate::mcp_scan::NOT_IN_SCAN), "{other}");
         }
-        let inside = answer_bridge(&json!({"tool": "scan_report", "input": {"path": root}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let inside = answer_bridge(&json!({"tool": "scan_report", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
         assert!(inside.contains("\"ok\":true"), "{inside}");
     }
 }

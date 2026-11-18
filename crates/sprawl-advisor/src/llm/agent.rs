@@ -11,6 +11,7 @@ use super::openai::OpenAi;
 use super::tools::{chat_specs_with, specs, Tools};
 use super::{clip, Chat, Metered, Stop, Usage, STOPPED};
 use std::cell::RefCell;
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use crate::config::{self, AiConfig, Detected, Provider};
@@ -63,7 +64,7 @@ pub enum ChatEvent {
 #[allow(clippy::too_many_arguments)]
 /// `partial` gets each answer's text so far, while it is written.
 /// `found` is the Advisor's findings when it has them (`None`: the report says the rules haven't run).
-pub fn chat(tree: &Tree, cfg: &AiConfig, found: Option<&[Finding]>, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool, stop: Stop, partial: Rc<dyn Fn(&str)>) {
+pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, found: Option<&[Finding]>, memory: &Memory, notes: &str, questions: std::sync::mpsc::Receiver<String>, events: &mut dyn FnMut(ChatEvent), consent: &dyn Fn(&str) -> bool, stop: Stop, partial: Rc<dyn Fn(&str)>) {
     let Ok(first) = questions.recv() else { return };
     if cfg.provider == Provider::Off {
         events(ChatEvent::Failed("AI is off. Choose a provider with Set up AI.".into()));
@@ -74,7 +75,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, found: Option<&[Finding]>, memory: &Mem
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
     let report = super::report::build(tree, &facts, found, None, None) + notes + &memory.context();
-    let mut tools = Tools::new(tree, &facts, &model, &[], memory);
+    let mut tools = Tools::new(tree, &facts, &model, &[], memory).at_scan(scan_before);
     tools.consent = Some(consent);
     // the web search exists only while the user's switch is on
     let web = cfg.web_lookup;
@@ -83,7 +84,7 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, found: Option<&[Finding]>, memory: &Mem
     // Claude Code gets the same tools through Sprawl's own MCP server, on a snapshot of this
     // scan; without one (no server program, the snapshot couldn't be written) it answers from
     // the report
-    let cc = if cfg.provider == Provider::ClaudeCode { super::mcp_exe().and_then(|exe| CcRun::new(tree, exe, &model, web).ok()) } else { None };
+    let cc = if cfg.provider == Provider::ClaudeCode { super::mcp_exe().and_then(|exe| CcRun::new(tree, scan_before, exe, &model, web).ok()) } else { None };
     let tools_ok = cfg.provider != Provider::ClaudeCode || cc.is_some();
     let opening = format!("{report}\n\n# The user asks\n{first}");
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
@@ -292,12 +293,13 @@ struct CcRun {
 }
 
 impl CcRun {
-    fn new(tree: &Tree, exe: &std::path::Path, model: &str, web: bool) -> Result<CcRun, String> {
+    fn new(tree: &Tree, scan_before: std::time::SystemTime, exe: &std::path::Path, model: &str, web: bool) -> Result<CcRun, String> {
         let dir = run_dir()?;
         let run = CcRun { out: dir.join("out.jsonl"), cfg: dir.join("mcp.json"), dir, seen: Default::default(), effects: Default::default() };
         let tree_file = run.dir.join("scan.dtsn");
         let mut w = std::io::BufWriter::new(std::fs::File::create(&tree_file).map_err(|e| e.to_string())?);
-        crate::snapshot::write(tree, std::time::SystemTime::now(), 1, &mut w).map_err(|e| e.to_string())?;
+        crate::snapshot::write(tree, scan_before, 1, &mut w).map_err(|e| e.to_string())?;
+        w.flush().and_then(|_| w.get_ref().sync_all()).map_err(|e| e.to_string())?;
         drop(w);
         std::fs::write(&run.out, "").map_err(|e| e.to_string())?;
         std::fs::write(&run.cfg, crate::mcp::chat_config(exe, &tree_file, &run.out, model, web)).map_err(|e| e.to_string())?;
@@ -414,8 +416,8 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode, stop: &Stop) -> 
 /// the same checks as any other model's: nothing it wrote is taken as it is.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
-    let mut run = run_driven_inner(tree, facts, model, report, already, memory, exe, stop, progress)?;
+fn run_driven(tree: &Tree, scan_before: std::time::SystemTime, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+    let mut run = run_driven_inner(tree, scan_before, facts, model, report, already, memory, exe, stop, progress)?;
     let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), ..AiConfig::default() };
     second_opinion(&cfg, model, &mut run, stop, progress);
     run_cleaner_check(&cfg, model, &mut run, stop, progress);
@@ -423,7 +425,7 @@ fn run_driven(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+fn run_driven_inner(tree: &Tree, scan_before: std::time::SystemTime, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
     let dir = run_dir()?;
     /// Removes the run's folder however the run ends, a panic included.
@@ -438,7 +440,8 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
         progress("Handing the scan to Claude Code...".into());
         let tree_file = dir.join("scan.dtsn");
         let mut w = std::io::BufWriter::new(std::fs::File::create(&tree_file).map_err(|e| e.to_string())?);
-        crate::snapshot::write(tree, std::time::SystemTime::now(), 1, &mut w).map_err(|e| e.to_string())?;
+        crate::snapshot::write(tree, scan_before, 1, &mut w).map_err(|e| e.to_string())?;
+        w.flush().and_then(|_| w.get_ref().sync_all()).map_err(|e| e.to_string())?;
         drop(w);
         let out_file = dir.join("out.jsonl");
         std::fs::write(&out_file, "").map_err(|e| e.to_string())?;
@@ -464,7 +467,7 @@ fn run_driven_inner(tree: &Tree, facts: &Facts, model: &str, report: &str, alrea
             progress(if last.is_empty() { format!("Claude Code ({model}) is reading the scan") } else { format!("Claude Code: {last}") });
         });
         // replay what it reported through this process's own checks
-        let mut tools = Tools::new(tree, facts, model, already, memory);
+        let mut tools = Tools::new(tree, facts, model, already, memory).at_scan(scan_before);
         let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
         let mut turns = 1;
         // the reports, not the progress lines, count toward the cap
@@ -665,7 +668,7 @@ pub(crate) fn json_in(text: &str) -> Option<Value> {
 /// `goal` is the space the user needs, if they said; `notes` is added to the report (growth);
 /// `stop` ends the run between steps, keeping what was found. `progress` gets status lines.
 #[allow(clippy::too_many_arguments)]
-pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>, memory: &Memory, notes: &str, stop: Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, already: &[Finding], hidden: Option<&HiddenSpace>, goal: Option<u64>, memory: &Memory, notes: &str, stop: Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     if cfg.provider == Provider::Off {
         return Err("AI is off. Choose a provider in Options > AI setup.".into());
     }
@@ -677,14 +680,14 @@ pub fn run(tree: &Tree, cfg: &AiConfig, already: &[Finding], hidden: Option<&Hid
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
     let report = super::report::build(tree, &facts, Some(already), hidden, goal) + notes + &memory.context();
-    let mut tools = Tools::new(tree, &facts, &model, already, memory);
+    let mut tools = Tools::new(tree, &facts, &model, already, memory).at_scan(scan_before);
     tools.allowed = Some(specs().iter().map(|t| t.name).collect());
     let mut run = AiRun { model: model.clone(), ..AiRun::default() };
 
     // Claude Code with Sprawl's own tools, when the app can serve them
     if cfg.provider == Provider::ClaudeCode {
         if let Some(exe) = super::mcp_exe() {
-            return run_driven(tree, &facts, &model, &report, already, memory, exe, &stop, progress);
+            return run_driven(tree, scan_before, &facts, &model, &report, already, memory, exe, &stop, progress);
         }
     }
     let usage = Rc::new(RefCell::new(Usage::default()));
@@ -824,7 +827,7 @@ mod tests {
     #[test]
     fn off_is_refused_without_sending_anything() {
         let tree = sprawl_core::scan(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
-        let err = run(&tree, &AiConfig::default(), &[], None, None, &Memory::default(), "", Stop::default(), &mut |_| {}).unwrap_err();
+        let err = run(&tree, std::time::SystemTime::now(), &AiConfig::default(), &[], None, None, &Memory::default(), "", Stop::default(), &mut |_| {}).unwrap_err();
         assert!(err.contains("AI is off"));
     }
 }

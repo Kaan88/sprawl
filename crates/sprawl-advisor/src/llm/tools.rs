@@ -282,6 +282,8 @@ pub struct Tools<'a> {
     pub looked_up: Vec<String>,
     /// The tools offered in this conversation; any other name is refused.
     pub allowed: Option<Vec<&'static str>>,
+    /// Captured scan time, required for comparisons with History. Never the chat's start.
+    pub scan_before: Option<std::time::SystemTime>,
 }
 
 fn path_arg(input: &Value) -> Result<PathBuf, String> {
@@ -321,6 +323,7 @@ impl<'a> Tools<'a> {
             search: web_search,
             looked_up: Vec::new(),
             allowed: None,
+            scan_before: None,
         };
         for f in already {
             // only what removes something closes the folders inside and around it; an
@@ -332,6 +335,11 @@ impl<'a> Tools<'a> {
             }
         }
         t
+    }
+
+    pub fn at_scan(mut self, scan_before: std::time::SystemTime) -> Self {
+        self.scan_before = Some(scan_before);
+        self
     }
 
     fn remember(&mut self, p: &std::path::Path) {
@@ -352,7 +360,7 @@ impl<'a> Tools<'a> {
         }
         match name {
             "search" => super::more_tools::search(self.tree, self.facts, input),
-            "growth" => super::more_tools::growth(self.tree, input),
+            "growth" => super::more_tools::growth(self.tree, input, self.scan_before.ok_or("This scan's capture time is unavailable; make a fresh scan before comparing History.")?),
             "list_children" => {
                 let (n, _) = self.node(input)?;
                 let node = &self.tree.nodes[n];
