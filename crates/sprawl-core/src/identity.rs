@@ -11,6 +11,19 @@ pub fn process_account_sid(process: std::os::windows::io::BorrowedHandle<'_>) ->
     unsafe { token_account_sid(process.as_raw_handle()) }
 }
 
+/// Native image-path code units from a held process. Compare these exactly: Windows folders
+/// can be case-sensitive, so folding a path is not proof of installation identity.
+pub fn process_image_path(process: std::os::windows::io::BorrowedHandle<'_>) -> io::Result<Vec<u16>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+    let mut path = vec![0u16; 32_768];
+    let mut length = path.len() as u32;
+    if unsafe { QueryFullProcessImageNameW(process.as_raw_handle(), 1, path.as_mut_ptr(), &mut length) } == 0 { return Err(io::Error::last_os_error()); }
+    if length == 0 || length as usize >= path.len() { return Err(io::Error::other("Incomplete process image path")); }
+    path.truncate(length as usize);
+    Ok(path)
+}
+
 unsafe fn token_account_sid(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<String> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};

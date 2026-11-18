@@ -21,7 +21,6 @@ mod ffi {
         pub fn GetNamedPipeServerProcessId(h: isize, pid: *mut u32) -> i32;
         pub fn GetNamedPipeClientProcessId(h: isize, pid: *mut u32) -> i32;
         pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        pub fn QueryFullProcessImageNameW(h: isize, flags: u32, name: *mut u16, size: *mut u32) -> i32;
     }
     #[repr(C)]
     pub struct SecurityAttributes { pub length: u32, pub descriptor: *mut c_void, pub inherit: i32 }
@@ -121,16 +120,11 @@ fn peer_is_us(pipe: isize, server: bool) -> bool {
     // Hold the same process while querying both token and image: no PID reuse between them.
     let peer = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(h as _) };
     let same_account = sprawl_core::identity::account_sid().ok().zip(sprawl_core::identity::process_account_sid(peer).ok()).is_some_and(|(ours, theirs)| ours == theirs);
-    let mut buf = [0u16; 1024];
-    let mut len = buf.len() as u32;
-    let ok = unsafe { ffi::QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) } != 0;
+    let theirs = sprawl_core::identity::process_image_path(peer);
+    let current = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(windows_sys::Win32::System::Threading::GetCurrentProcess()) };
+    let ours = sprawl_core::identity::process_image_path(current);
     unsafe { ffi::CloseHandle(h) };
-    if !ok || !same_account {
-        return false;
-    }
-    let theirs = String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())]);
-    let ours = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    !ours.is_empty() && theirs.eq_ignore_ascii_case(&ours)
+    same_account && ours.ok().zip(theirs.ok()).is_some_and(|(ours, theirs)| ours == theirs)
 }
 
 impl Client {

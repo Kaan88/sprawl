@@ -1,7 +1,6 @@
 //! Stop other instances of this exact installation before update publication. Never by name
 //! alone: hold a process handle, check its token account and full executable path, then stop
 //! and wait on that same handle. The updater's own PID is always excluded.
-use std::path::Path;
 
 #[repr(C)]
 struct Entry {
@@ -15,7 +14,7 @@ extern "system" {
     fn Process32FirstW(snapshot: isize, entry: *mut Entry) -> i32;
     fn Process32NextW(snapshot: isize, entry: *mut Entry) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-    fn QueryFullProcessImageNameW(process: isize, flags: u32, path: *mut u16, size: *mut u32) -> i32;
+    fn GetCurrentProcess() -> isize;
     fn TerminateProcess(process: isize, code: u32) -> i32;
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     fn CloseHandle(handle: isize) -> i32;
@@ -24,21 +23,18 @@ extern "system" {
 struct Handle(isize);
 impl Drop for Handle { fn drop(&mut self) { unsafe { CloseHandle(self.0); } } }
 
-fn path_key(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "\\").trim_start_matches(r"\\?\").to_lowercase()
+fn current_image() -> Result<Vec<u16>, String> {
+    let current = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(GetCurrentProcess() as _) };
+    sprawl_core::identity::process_image_path(current).map_err(|e| e.to_string())
 }
 
-fn matches(process: &Handle, expected: &Path, account: &str) -> bool {
+fn matches(process: &Handle, expected: &[u16], account: &str) -> bool {
     let borrowed = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(process.0 as _) };
     if sprawl_core::identity::process_account_sid(borrowed).ok().as_deref() != Some(account) { return false; }
-    let mut path = vec![0u16; 32_768];
-    let mut length = path.len() as u32;
-    if unsafe { QueryFullProcessImageNameW(process.0, 0, path.as_mut_ptr(), &mut length) } == 0 || length as usize >= path.len() { return false; }
-    let Ok(path) = String::from_utf16(&path[..length as usize]) else { return false };
-    path_key(Path::new(&path)) == path_key(expected)
+    sprawl_core::identity::process_image_path(borrowed).is_ok_and(|path| path == expected)
 }
 
-fn stop_candidates(expected: &Path, account: &str, current: u32, candidates: &[u32]) -> Result<usize, String> {
+fn stop_candidates(expected: &[u16], account: &str, current: u32, candidates: &[u32]) -> Result<usize, String> {
     let mut stopped = 0;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     for &pid in candidates {
@@ -73,6 +69,7 @@ pub fn stop_other_instances() -> Result<usize, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let _directory = sprawl_core::local::directory(exe.parent().ok_or("No installation folder")?).map_err(|e| e.to_string())?;
     let account = sprawl_core::identity::account_sid().map_err(|e| e.to_string())?;
+    let image = current_image()?;
     let snapshot = unsafe { CreateToolhelp32Snapshot(2, 0) };
     if snapshot == -1 { return Err("Windows could not list Sprawl processes; try Update again.".into()); }
     let snapshot = Handle(snapshot);
@@ -88,7 +85,7 @@ pub fn stop_other_instances() -> Result<usize, String> {
         more = unsafe { Process32NextW(snapshot.0, &mut entry) };
     }
     if std::io::Error::last_os_error().raw_os_error() != Some(18) { return Err("Windows could not finish listing processes; try Update again.".into()); }
-    stop_candidates(&exe, &account, std::process::id(), &candidates)
+    stop_candidates(&image, &account, std::process::id(), &candidates)
 }
 
 #[cfg(test)]
@@ -107,6 +104,7 @@ mod tests {
         use std::os::windows::process::CommandExt;
         let exe = std::env::current_exe().unwrap();
         let account = sprawl_core::identity::account_sid().unwrap();
+        let image = current_image().unwrap();
         let ready = std::env::temp_dir().join(format!("sprawl-update-peer-{}.ready", std::process::id()));
         let _ = std::fs::remove_file(&ready);
         let mut child = std::process::Command::new(&exe).args(["--exact", "processes::tests::disposable_update_peer", "--nocapture"])
@@ -116,10 +114,13 @@ mod tests {
             while !ready.exists() && start.elapsed().as_secs() < 5 { std::thread::sleep(std::time::Duration::from_millis(20)); }
             assert!(ready.exists(), "the disposable peer never started");
             let candidates = [child.id(), std::process::id()];
-            assert_eq!(stop_candidates(&exe.with_file_name("another-installation.exe"), &account, std::process::id(), &candidates).unwrap(), 0);
-            assert_eq!(stop_candidates(&exe, "S-1-5-999999", std::process::id(), &candidates).unwrap(), 0);
+            let mut other_case = image.clone();
+            let letter = other_case.iter_mut().find(|c| **c == b's' as u16 || **c == b'S' as u16).unwrap();
+            *letter ^= 0x20;
+            assert_eq!(stop_candidates(&other_case, &account, std::process::id(), &candidates).unwrap(), 0, "case-distinct native paths are not the same installation");
+            assert_eq!(stop_candidates(&image, "S-1-5-999999", std::process::id(), &candidates).unwrap(), 0);
             assert!(child.try_wait().unwrap().is_none());
-            assert_eq!(stop_candidates(&exe, &account, std::process::id(), &candidates).unwrap(), 1);
+            assert_eq!(stop_candidates(&image, &account, std::process::id(), &candidates).unwrap(), 1);
             assert!(child.try_wait().unwrap().is_some());
         };
         // Only the explicitly spawned fixture process can be terminated in this test.
