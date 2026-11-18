@@ -50,6 +50,7 @@ pub mod rules;
 pub mod safety;
 pub mod snapshot;
 pub mod stale;
+mod store;
 pub mod tuning;
 pub mod used;
 pub mod versions;

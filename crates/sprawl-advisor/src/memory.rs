@@ -174,12 +174,21 @@ pub fn rules_dir() -> Option<PathBuf> {
 
 /// Written next to the target and renamed over it, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
+    use std::io::Write;
+    let parent = crate::store::ensure_dir(path.parent().ok_or_else(|| std::io::Error::other("No local storage folder"))?)?;
+    let name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| std::io::Error::other("Invalid local storage name"))?;
+    crate::store::write_atomic(&parent.path, name, true, |file| file.write_all(text.as_bytes()))
+}
+
+/// Keep the rules folder pinned and serialize the whole read/validate/publish transaction
+/// against other Sprawl processes. The Windows sharing lock is released automatically.
+struct LocalEdit { _directory: sprawl_core::local::Directory, _lock: std::fs::File }
+impl LocalEdit {
+    fn acquire(path: &Path) -> Result<Self, String> {
+        let directory = crate::store::ensure_dir(path.parent().ok_or("No rules folder")?).map_err(|e| e.to_string())?;
+        let lock = crate::store::lock(&directory.path).map_err(|e| e.to_string())?;
+        Ok(Self { _directory: directory, _lock: lock })
     }
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
 }
 
 /// A path or pattern the model may name in a rule or a label: absolute (a drive or a
@@ -268,8 +277,9 @@ fn validate_local_save(path: &Path, text: &str) -> Result<(), String> {
 /// Remove cleaner `id` (and the rules it groups) from the user's local.toml.
 pub fn forget_cleaner(id: &str) -> Result<(), String> {
     let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
+    let _edit = LocalEdit::acquire(&path)?;
     let elsewhere = || format!("{id} isn't in local.toml: it comes from another file in {}; remove it there", path.parent().map(|p| p.display().to_string()).unwrap_or_default());
-    let text = std::fs::read_to_string(&path).map_err(|_| elsewhere())?;
+    let text = local_text(&path)?.ok_or_else(elsewhere)?;
     let mut pack = RulePack::parse(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{} doesn't load ({e}); fix or remove it first", path.display()))?;
     let grouped: Vec<String> = pack.cleaners.iter().filter(|c| c.id == id).flat_map(|c| c.rules.clone()).collect();
     let before = pack.cleaners.len();
@@ -279,7 +289,7 @@ pub fn forget_cleaner(id: &str) -> Result<(), String> {
     }
     pack.rules.retain(|r| !grouped.contains(&r.id));
     let text = toml::to_string(&pack).map_err(|e| e.to_string())?;
-    RulePack::parse(&text)?;
+    validate_local_save(&path, &text)?;
     write_atomic(&path, &text).map_err(|e| e.to_string())
 }
 
@@ -594,6 +604,7 @@ impl Memory {
 
     fn approve_cleaner_at(&mut self, i: usize, path: &Path) -> Result<(), String> {
         let p = self.cleaner_proposals.get(i).cloned().ok_or("no such proposal")?;
+        let _edit = LocalEdit::acquire(path)?;
         check_cleaner(&p.cleaner)?;
         let old = local_text(path)?;
         let mut pack = match &old {
@@ -617,6 +628,7 @@ impl Memory {
 
     fn approve_at(&mut self, i: usize, path: &Path) -> Result<(), String> {
         let p = self.proposals.get(i).cloned().ok_or("no such proposal")?;
+        let _edit = LocalEdit::acquire(path)?;
         check_proposal(&p)?;
         let mut pack = match local_text(path)? {
             // a file that doesn't load is the user's to fix, not to overwrite
@@ -885,6 +897,43 @@ mod tests {
 
     fn pack_with(rule: &str) -> String {
         format!("[pack]\nname = 'mine'\n[[rule]]\nid = 'local.x'\ntitle = 'X'\nwhy = 'w'\nrisk = 'green'\n{rule}\n")
+    }
+
+    #[test]
+    fn concurrent_approvals_merge_and_leave_preoccupied_temporary_names_untouched() {
+        let root = std::env::temp_dir().join(format!("sprawl-concurrent-approval-{}", std::process::id()));
+        let dir = root.join("new/rules");
+        let path = dir.join("local.toml");
+        // Normal folder creation is itself performed under pinned existing ancestors.
+        write_atomic(&root.join("sentinel"), "untouched").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let occupied = path.with_extension("toml.tmp");
+        std::fs::hard_link(root.join("sentinel"), &occupied).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2).map(|i| {
+            let (path, barrier) = (path.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let mut memory = Memory::default();
+                memory.proposals.push(Proposal { id: format!("local.concurrent{i}"), title: "Concurrent".into(), paths: vec![r"C:\SprawlFixtures\Product\cache".into()], risk: Risk::Orange, remedy: Remedy::Info, why: "Evidence".into(), min_bytes: None });
+                barrier.wait();
+                memory.approve_at(0, &path).unwrap();
+                assert!(memory.proposals.is_empty());
+            })
+        }).collect();
+        for worker in workers { worker.join().unwrap(); }
+        let pack = RulePack::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(pack.rules.len(), 2, "neither concurrent approval can silently replace the other");
+        assert_eq!(std::fs::read_to_string(&occupied).unwrap(), "untouched");
+        assert_eq!(std::fs::read_to_string(root.join("sentinel")).unwrap(), "untouched");
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let link = root.join("redirected");
+        use std::os::windows::process::CommandExt;
+        assert!(std::process::Command::new(crate::clean::system_dir().unwrap().join("cmd.exe")).args(["/C", "mklink", "/J"]).arg(&link).arg(&outside).creation_flags(0x0800_0000).output().unwrap().status.success());
+        assert!(write_atomic(&link.join("must-not-create/local.toml"), "refused").is_err());
+        assert!(!outside.join("must-not-create").exists());
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
