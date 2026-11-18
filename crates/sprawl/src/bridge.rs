@@ -71,6 +71,7 @@ pub(crate) fn start() {
         // scans servers ask for, kept on this thread, saved to History as the app's own are
         let mut index = sprawl_advisor::mcp_scan::Index::for_app(false);
         let _ = sprawl_advisor::pipe::serve(|line| {
+            sprawl_advisor::mcp::with_bridge_request(line, || {
             let (tree, revision, scan_before, findings, found, report_facts, memory, scanning) = {
                 let s = shared().lock().unwrap_or_else(|e| e.into_inner());
                 (s.tree.upgrade(), s.revision, s.scan_before, s.findings.clone(), s.found.clone(), s.facts.clone(), s.memory.clone(), s.scanning)
@@ -96,6 +97,7 @@ pub(crate) fn start() {
                 }
             }
             out
+            }).unwrap_or_else(|error| serde_json::json!({"ok": false, "text": error}).to_string())
         });
     });
 }

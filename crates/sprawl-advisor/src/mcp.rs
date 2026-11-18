@@ -357,11 +357,8 @@ pub fn main(args: &[String]) {
 #[allow(clippy::too_many_arguments)]
 pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::time::SystemTime>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, index: &mut crate::mcp_scan::Index, filter: &mut dyn FnMut(String)) -> String {
     let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
-    let Ok(req) = serde_json::from_str::<Value>(line) else { return reply(false, "bad request".into()) };
+    let req = match bridge_request(line) { Ok(req) => req, Err(error) => return reply(false, error) };
     let name = req["tool"].as_str().unwrap_or("");
-    if !user_specs().iter().any(|t| t.name == name) {
-        return reply(false, format!("there is no tool called {name}"));
-    }
     let input = &req["input"];
     let as_reply = |a: Result<String, String>| match a {
         Ok(t) => reply(true, t),
@@ -414,6 +411,20 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
     }
 }
 
+fn bridge_request(line: &str) -> Result<Value, String> {
+    let req: Value = serde_json::from_str(line).map_err(|_| "bad request")?;
+    let name = req["tool"].as_str().ok_or("bad request")?;
+    if !user_specs().iter().any(|tool| tool.name == name) { return Err(format!("there is no tool called {name}")); }
+    if !req["input"].is_object() { return Err("bad request".into()); }
+    Ok(req)
+}
+
+/// Gate the host's entire request preparation, including lazy facts and cache/index work.
+pub fn with_bridge_request<T>(line: &str, answer: impl FnOnce() -> T) -> Result<T, String> {
+    bridge_request(line)?;
+    Ok(answer())
+}
+
 /// The MCP config for a driven `claude -p` run: only this server, with the tree and an out file.
 pub fn driven_config(exe: &Path, tree_file: &Path, out_file: &Path, model: &str) -> String {
     json!({"mcpServers": {"sprawl": {"command": exe, "args": ["--mcp", "--tree", tree_file, "--out", out_file, "--model", model]}}}).to_string()
@@ -446,6 +457,9 @@ mod tests {
             assert!(result.contains("there is no tool called"));
         }
         assert_eq!(calls, 0);
+        for line in ["not JSON", r#"{"tool":"propose_rule","input":{}}"#, r#"{"tool":"scan_report","input":null}"#] {
+            assert!(with_bridge_request(line, || panic!("facts preparation reached before validation")).is_err());
+        }
     }
 
     #[test]
