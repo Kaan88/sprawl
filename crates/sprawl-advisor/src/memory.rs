@@ -130,6 +130,24 @@ pub struct Memory {
     /// changed definition needs turning on again).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub community_on: std::collections::BTreeMap<String, String>,
+    /// Folders Sprawl compressed (F1), newest last: shown under "Compressed", where each can be
+    /// uncompressed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressed: Vec<Compressed>,
+}
+
+/// One folder Sprawl compressed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Compressed {
+    pub path: String,
+    /// `xpress8k`, `xpress16k`...
+    pub alg: String,
+    /// Seconds since 1970.
+    pub when: u64,
+    /// What it freed on disk.
+    pub saved: u64,
+    /// The folder's size (the data, which compression doesn't change).
+    pub size: u64,
 }
 
 fn now() -> u64 {

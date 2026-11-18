@@ -189,6 +189,8 @@ enum Only {
     Runnable,
     /// Orange: the user's own files.
     Decide,
+    /// The folders Sprawl compressed (F1).
+    Compressed,
 }
 
 /// The in-use check of an opened finding.
@@ -272,6 +274,8 @@ pub(crate) struct Advisor {
     /// The AI's suggestion of findings to tick (R9): their paths (lower case) and why. Kept by
     /// path, so a new report keeps what still is in it; checked again when shown and ticked.
     pub(crate) fn_suggest: Option<(Vec<String>, String)>,
+    /// An uncompress running (F1): the record's index, its answer, what to show meanwhile.
+    pub(crate) uncompress: Option<(usize, Receiver<(bool, String)>, String)>,
 }
 
 impl Advisor {
@@ -755,6 +759,7 @@ impl State {
         crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()));
         crate::bridge::publish_scanning(self.job.is_some());
         self.recheck_poll();
+        self.uncompress_poll();
         self.chat_poll();
         self.community_poll();
         self.own_poll();
@@ -1195,6 +1200,7 @@ impl State {
             "AdvOnlyAll" => self.advisor.only = Only::All,
             "AdvOnlyRun" => self.advisor.only = Only::Runnable,
             "AdvOnlyDecide" => self.advisor.only = Only::Decide,
+            "AdvOnlyComp" => self.advisor.only = Only::Compressed,
             "AdvDupes" => self.advisor_dupes(),
             "AdvDupesStop" => self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed),
             "AdvUninstall" => {
@@ -1668,6 +1674,28 @@ impl State {
                 }
             }
         }
+        // F1: the compressed folders' buttons
+        for i in 0..self.advisor.memory.compressed.len() {
+            for (name, forget) in [(format!("AdvUnc{i}"), false), (format!("AdvUncF{i}"), true)] {
+                if let Ok(b) = find::<ButtonBase>(fe, &name) {
+                    if let Ok(t) = b.Click(move |_, _| {
+                        with(|s| {
+                            if forget {
+                                if i < s.advisor.memory.compressed.len() {
+                                    s.advisor.memory.compressed.remove(i);
+                                    s.save_memory();
+                                }
+                                s.render_advisor();
+                            } else {
+                                s.uncompress_ask(i);
+                            }
+                        });
+                    }) {
+                        keep(t);
+                    }
+                }
+            }
+        }
         for i in 0..count {
             // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
             if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvU{i}")) {
@@ -1768,7 +1796,7 @@ impl State {
             }
         }
         for name in [
-            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
+            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide", "AdvOnlyComp",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
@@ -1959,6 +1987,84 @@ impl State {
         x
     }
 
+    /// The folders Sprawl compressed (F1): when, how, what it saved, and Uncompress.
+    fn compressed_list(&self) -> String {
+        let list = &self.advisor.memory.compressed;
+        if list.is_empty() {
+            return r##"<TextBlock Text="Nothing compressed by Sprawl." Foreground="#FFB9C2D6"/>"##.into();
+        }
+        let busy = self.advisor.uncompress.is_some() || self.advisor.cleanup.running.is_some();
+        let mut x = String::from(r##"<TextBlock Text="Folders Sprawl compressed. An update writes new files uncompressed: when the folder is offered again in Findings, compress it again. Uncompress puts every file back as it was; it needs the space it saved free on the drive." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
+        for (i, c) in list.iter().enumerate().rev() {
+            let gone = std::fs::symlink_metadata(&c.path).is_err();
+            let when = sprawl_core::local_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.when));
+            let state = if gone { " · the folder is gone".to_string() } else { String::new() };
+            let button = if gone {
+                format!(r##"<Button x:Name="AdvUncF{i}" Content="Forget" Padding="10,3" FontSize="12" CornerRadius="5"/>"##)
+            } else {
+                format!(r##"<Button x:Name="AdvUnc{i}" Content="Uncompress" Padding="10,3" FontSize="12" CornerRadius="5" IsEnabled="{}"/>"##, if busy { "False" } else { "True" })
+            };
+            x += &format!(
+                r##"<Border Padding="10,7" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{} on {} · saved {} of {}{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center">{button}</StackPanel></Grid></Border>"##,
+                ui::esc(&c.path),
+                c.alg.to_uppercase(),
+                ui::esc(&when),
+                self.size(c.saved),
+                self.size(c.size),
+                state
+            );
+        }
+        if let Some((_, _, status)) = &self.advisor.uncompress {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##, ui::esc(status));
+        }
+        x
+    }
+
+    /// Uncompress the `i`th folder Sprawl compressed, after a question (it needs the space back).
+    pub(crate) fn uncompress_ask(&mut self, i: usize) {
+        let Some(c) = self.advisor.memory.compressed.get(i).cloned() else { return };
+        let path = std::path::PathBuf::from(&c.path);
+        let pf = |v: &str| std::env::var_os(v).is_some_and(|d| sprawl_advisor::finding::within(&path, std::path::Path::new(&d)));
+        if (pf("ProgramFiles") || pf("ProgramFiles(x86)")) && !sprawl_core::is_elevated() {
+            self.adv_say("That folder needs administrator rights: restart Sprawl as administrator, then Uncompress.");
+            return;
+        }
+        let text = format!("Every file in {} goes back to plain storage. That takes about {} more on the drive, and some minutes. Close the program first.", c.path, self.size(c.saved));
+        self.ask("Uncompress this folder?", &text, "Uncompress", false, move |s| s.uncompress_start(i, path));
+    }
+
+    fn uncompress_start(&mut self, i: usize, path: std::path::PathBuf) {
+        if self.advisor.uncompress.is_some() || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let a = sprawl_advisor::clean::Action::Tool { command: sprawl_advisor::remedies::uncompress_command(&path) };
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let o = sprawl_advisor::clean::run_with(&path, &a, &sprawl_advisor::clean::Spare::default(), None, &stop, &mut |_| {});
+            let text = o.problems.iter().map(|p| p.to_string()).chain(o.output.iter().cloned()).collect::<Vec<String>>().join(" ").trim().to_string();
+            let _ = tx.send((o.problems.is_empty() && !o.stopped, text));
+        });
+        self.advisor.uncompress = Some((i, rx, "Uncompressing... this takes a few minutes on a big folder.".into()));
+        self.render_advisor();
+    }
+
+    /// Each frame: an uncompress that ended takes its folder off the list.
+    fn uncompress_poll(&mut self) {
+        let Some((i, rx, _)) = &self.advisor.uncompress else { return };
+        let i = *i;
+        let Ok((ok, msg)) = rx.try_recv() else { return };
+        self.advisor.uncompress = None;
+        if !ok {
+            self.adv_say(&format!("Uncompress didn't finish: {msg}"));
+        } else if i < self.advisor.memory.compressed.len() {
+            self.advisor.memory.compressed.remove(i);
+            self.save_memory();
+            self.adv_say("Uncompressed: the files are stored as before.");
+        }
+        self.render_advisor();
+    }
+
     /// The findings list with its sort and filter, duplicates, hidden space and what was held back.
     fn findings_section(&self, r: &Report) -> String {
         let mut x = String::new();
@@ -1967,13 +2073,15 @@ impl State {
         };
         let (s, o) = (self.advisor.sort, self.advisor.only);
         x += &format!(
-            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}</StackPanel><Border Grid.Column="1" HorizontalAlignment="Right">"##,
+            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}<TextBlock Text="Show" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="14,0,4,0"/>{}{}{}{}</StackPanel><Border Grid.Column="1" HorizontalAlignment="Right">"##,
             chip("AdvSortSize", "Size", s == Sort::Size),
             chip("AdvSortRisk", "Risk", s == Sort::Risk),
             chip("AdvSortOwner", "Owner", s == Sort::Owner),
             chip("AdvOnlyAll", "All", o == Only::All),
             chip("AdvOnlyRun", "Can clean now", o == Only::Runnable),
             chip("AdvOnlyDecide", "My own files", o == Only::Decide),
+            // only once Sprawl has compressed something
+            if self.advisor.memory.compressed.is_empty() && o != Only::Compressed { String::new() } else { chip("AdvOnlyComp", &format!("Compressed ({})", self.advisor.memory.compressed.len()), o == Only::Compressed) },
         );
         x += &match &self.advisor.dupes_status {
             Some(s) => format!(
@@ -1986,6 +2094,10 @@ impl State {
             ),
         };
         x += "</Border></Grid>";
+        if o == Only::Compressed {
+            x += &self.compressed_list();
+            return x;
+        }
         if r.findings.is_empty() {
             // an empty list must not read as "broken": say what was looked for, where such things
             // usually are, and what does fill this scan
@@ -2015,6 +2127,7 @@ impl State {
                     Only::All => true,
                     Only::Runnable => crate::cleanup::untickable(&r.findings[i], r.counted[i]).is_none(),
                     Only::Decide => r.findings[i].risk == Risk::Orange,
+                    Only::Compressed => false,
                 })
                 .collect();
             let gain = |i: usize| std::cmp::Reverse(r.findings[i].expected_gain());

@@ -783,6 +783,18 @@ impl State {
         for (rule, b) in freed {
             self.advisor.memory.freed.insert(rule, (b, now));
         }
+        // the folders compressed, for "Compressed" and Uncompress (F1)
+        for it in &run.items {
+            let (Some(c), ItemState::Done(o)) = (&it.command, &it.state) else { continue };
+            let Some(alg) = sprawl_advisor::remedies::compress_alg(c) else { continue };
+            if o.freed == 0 {
+                continue;
+            }
+            let path = it.path.display().to_string();
+            let list = &mut self.advisor.memory.compressed;
+            list.retain(|r| !r.path.eq_ignore_ascii_case(&path));
+            list.push(sprawl_advisor::memory::Compressed { path, alg: alg.to_string(), when: now, saved: o.freed, size: it.bytes });
+        }
         self.save_memory();
         self.advisor.cleanup.done = Some(done);
         // what went no longer counts as ticked, nor is put back by the Cleaners tab on this report

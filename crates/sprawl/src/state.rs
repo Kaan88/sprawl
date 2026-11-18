@@ -779,6 +779,14 @@ impl State {
                         let cut = a.trim_end_matches(|c: char| c.is_ascii_digit()).len();
                         self.cleaner_command(&a[..cut], a[cut..].parse().unwrap_or(0));
                     }
+                    // dev: two compressed folders in the record (not saved), and the list shown (F1)
+                    "compdemo" => {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        let pf = std::env::var("ProgramFiles").unwrap_or_default();
+                        self.advisor.memory.compressed.push(sprawl_advisor::memory::Compressed { path: format!(r"{pf}\dotnet"), alg: "xpress8k".into(), when: now - 86_400 * 3, saved: 1_300_000_000, size: 2_900_000_000 });
+                        self.advisor.memory.compressed.push(sprawl_advisor::memory::Compressed { path: format!(r"{pf}\Gone Game"), alg: "xpress16k".into(), when: now - 86_400 * 40, saved: 4_200_000_000, size: 9_100_000_000 });
+                        self.advisor_command("AdvOnlyComp");
+                    }
                     // dev: an AI suggestion of the first three findings it may suggest (R9)
                     "fnsugdemo" => {
                         let keys: Vec<String> = self.advice().map(|r| self.suggestable(r).into_iter().take(3).map(|i| crate::cleanup::key(&r.findings[i].path)).collect()).unwrap_or_default();

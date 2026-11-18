@@ -26,6 +26,16 @@ const REPARSE: u32 = 0x400;
 /// tool's clean-up, which is measured by what the folder lost on disk, not in size.
 pub const COMPRESS: &str = "compact.exe /c /s /a /i /q /exe:";
 
+/// The algorithm a compress command of Sprawl's uses (`xpress16k`).
+pub fn compress_alg(command: &str) -> Option<&str> {
+    command.strip_prefix(COMPRESS)?.split(' ').next()
+}
+
+/// Sprawl's command that undoes a compress of `path` (all files back to plain storage).
+pub fn uncompress_command(path: &Path) -> String {
+    format!("compact.exe /u /s /a /i /q /exe {}", crate::rules::ps_quote(&format!("{}\\*", path.display())))
+}
+
 /// The command is one of Sprawl's own compress commands.
 pub fn is_compress(a: &Action) -> bool {
     matches!(a, Action::Tool { command } if command.starts_with(COMPRESS))
@@ -397,6 +407,14 @@ mod compress_tests {
         assert!(o.problems.is_empty(), "{:?} {:?}", o.problems, o.output);
         assert!(after < before / 2, "before {before}, after {after}, {:?}", o.output);
         assert_eq!(std::fs::read_to_string(dir.join("sub").join("b.json")).unwrap(), text);
+        // and Uncompress puts them back as they were
+        let u = Action::Tool { command: uncompress_command(&dir) };
+        assert!(!is_compress(&u));
+        let o = crate::clean::run_with(&dir, &u, &crate::clean::Spare::default(), None, &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
+        assert!(o.problems.is_empty(), "{:?} {:?}", o.problems, o.output);
+        let back = on_disk(&dir).unwrap();
+        assert!(back >= before / 10 * 9, "before {before}, back {back}");
+        assert_eq!(compress_alg(&format!("{COMPRESS}xpress16k 'x'")), Some("xpress16k"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
