@@ -202,26 +202,75 @@ fn android_sdk() -> Option<PathBuf> {
 
 /// The system images the emulators use: each AVD's config.ini names its image
 /// (`image.sysdir.1=system-images\android-33\google_apis\x86_64\`), as an sdkmanager package.
-fn avd_images() -> Vec<String> {
-    let dir = std::env::var_os("ANDROID_AVD_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("ANDROID_USER_HOME").map(|h| PathBuf::from(h).join("avd")))
-        .or_else(|| home().map(|h| h.join(".android").join("avd")));
-    let Some(dir) = dir else { return Vec::new() };
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+fn avd_images() -> Option<Vec<String>> {
+    let mut roots = Vec::new();
+    if let Some(path) = std::env::var_os("ANDROID_AVD_HOME") { roots.push(PathBuf::from(path)); }
+    for variable in ["ANDROID_EMULATOR_HOME", "ANDROID_USER_HOME"] {
+        if let Some(path) = std::env::var_os(variable) { roots.push(PathBuf::from(path).join("avd")); }
+    }
+    if let Some(path) = std::env::var_os("ANDROID_SDK_HOME") { roots.push(PathBuf::from(path).join(".android/avd")); }
+    if let Some(path) = home() { roots.push(path.join(".android/avd")); }
+    if roots.is_empty() { return None; }
+    roots.sort(); roots.dedup();
+    let mut budget = 200;
     let mut out = Vec::new();
-    for e in rd.flatten().take(200) {
-        let Ok(text) = bounded_text(&e.path().join("config.ini"), 64 << 10) else { continue };
-        for l in text.lines() {
-            if let Some((k, v)) = l.split_once('=') {
-                if k.trim().starts_with("image.sysdir") {
-                    let parts: Vec<&str> = v.trim().split(['\\', '/']).filter(|s| !s.is_empty()).collect();
-                    out.push(parts.join(";"));
-                }
-            }
+    for root in roots { out.extend(avd_images_in(&root, &mut budget)?); }
+    out.sort(); out.dedup();
+    Some(out)
+}
+
+fn ini_values(text: &str) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut values = std::collections::BTreeMap::new();
+    for line in text.trim_start_matches('\u{feff}').lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with(['#', ';'])) {
+        let (key, value) = line.split_once('=')?;
+        if key.trim().is_empty() || values.insert(key.trim().to_string(), value.trim().to_string()).is_some() { return None; }
+    }
+    Some(values)
+}
+
+fn avd_config_images(path: &Path) -> Option<Vec<String>> {
+    let values = ini_values(&bounded_text(&path.join("config.ini"), 64 << 10).ok()?)?;
+    let mut images = Vec::new();
+    for (_, value) in values.iter().filter(|(key, _)| key.starts_with("image.sysdir")) {
+        let parts: Vec<&str> = value.split(['\\', '/']).filter(|part| !part.is_empty()).collect();
+        let start = parts.iter().position(|part| part.eq_ignore_ascii_case("system-images"))?;
+        let package = &parts[start..];
+        if package.len() != 4 || !package.iter().all(|part| plain(part)) { return None; }
+        images.push(package.join(";"));
+    }
+    (!images.is_empty()).then_some(images)
+}
+
+fn avd_images_in(dir: &Path, budget: &mut usize) -> Option<Vec<String>> {
+    if crate::exclusions::intersects(dir, &crate::exclusions::configured()) { return None; }
+    let pinned = match sprawl_core::local::directory(dir) {
+        Ok(pinned) => pinned,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(_) => return None,
+    };
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&pinned.path).ok()? {
+        *budget = budget.checked_sub(1)?;
+        let entry = entry.ok()?;
+        let path = entry.path();
+        let leaf = sprawl_core::local::scope(&path).ok()?;
+        if leaf.metadata().ok()?.is_dir() {
+            if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("avd")) { out.extend(avd_config_images(&path)?); }
+        } else if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("ini")) {
+            let values = ini_values(&bounded_text(&path, 64 << 10).ok()?)?;
+            let target = if let Some(path) = values.get("path") { PathBuf::from(path) }
+                else if let Some(relative) = values.get("path.rel") {
+                    let relative = Path::new(relative);
+                    if relative.is_absolute() || relative.components().any(|part| matches!(part, std::path::Component::ParentDir)) { return None; }
+                    pinned.path.parent()?.join(relative)
+                } else { return None; };
+            if !target.is_absolute() { return None; }
+            // bounded_text pins the full target chain and refuses remote, redirected, cloud
+            // and excluded targets before it reads a relocated AVD's configuration.
+            out.extend(avd_config_images(&target)?);
         }
     }
-    out
+    Some(out)
 }
 
 /// sdkmanager's own script, from the newest command-line tools.
@@ -237,11 +286,12 @@ fn android(tree: &Tree, pins: &Pins) -> Vec<Finding> {
     let Some(root) = crate::find_path(tree, &sdk) else { return Vec::new() };
     let Some(tool) = sdkmanager(&sdk) else { return Vec::new() };
     let mut kept: Vec<String> = pins.android.iter().map(|(_, w)| w.to_lowercase()).collect();
-    kept.extend(avd_images().into_iter().map(|w| w.to_lowercase()));
-    android_from(tree, root, &tool, &kept)
+    let images = avd_images();
+    if let Some(images) = &images { kept.extend(images.iter().map(|w| w.to_lowercase())); }
+    android_from(tree, root, &tool, &kept, images.is_some())
 }
 
-fn android_from(tree: &Tree, root: usize, tool: &Path, kept: &[String]) -> Vec<Finding> {
+fn android_from(tree: &Tree, root: usize, tool: &Path, kept: &[String], images_known: bool) -> Vec<Finding> {
     // (package, node, version numbers for "newest", family)
     let mut pkgs: Vec<(String, usize, Vec<u64>, &str)> = Vec::new();
     let level = |name: &str| name.strip_prefix("android-").and_then(numbers);
@@ -283,6 +333,7 @@ fn android_from(tree: &Tree, root: usize, tool: &Path, kept: &[String]) -> Vec<F
     }
     let mut out = Vec::new();
     for (pkg, n, v, family) in &pkgs {
+        if *family == "system-images" && !images_known { continue; }
         let newest = pkgs.iter().filter(|p| p.3 == *family).map(|p| &p.2).max();
         if Some(v) == newest || kept.iter().any(|k| *k == pkg.to_lowercase()) || !pkg.split(';').all(plain) {
             continue;
@@ -784,6 +835,33 @@ mod tests {
     }
 
     #[test]
+    fn avd_references_are_complete_bounded_and_support_relocated_data() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let base = std::env::temp_dir().join(format!("sprawl-avd-completeness-{}", std::process::id()));
+        let root = base.join("avd");
+        let relocated = base.join("elsewhere/Pixel.avd");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&relocated).unwrap();
+        let config = relocated.join("config.ini");
+        let valid = "image.sysdir.1=system-images\\android-33\\google_apis\\x86_64\\\n";
+        std::fs::write(&config, valid).unwrap();
+        let pointer = root.join("Pixel.ini");
+        std::fs::write(&pointer, format!("path={}\n", relocated.display())).unwrap();
+        assert_eq!(avd_images_in(&root, &mut 200).unwrap(), vec!["system-images;android-33;google_apis;x86_64"]);
+        assert_eq!(avd_images_in(&base.join("absent"), &mut 200), Some(Vec::new()));
+        assert_eq!(avd_images_in(&root, &mut 0), None, "truncation is unknown, not no references");
+        std::fs::write(&config, "image.sysdir.1=not-an-image\n").unwrap();
+        assert_eq!(avd_images_in(&root, &mut 200), None);
+        std::fs::write(&config, valid).unwrap();
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&config).unwrap();
+        assert_eq!(avd_images_in(&root, &mut 200), None);
+        drop(locked);
+        std::fs::write(&pointer, "path=\\\\unreachable.invalid\\share\\AVD\n").unwrap();
+        assert_eq!(avd_images_in(&root, &mut 200), None, "remote references refuse before content access");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn android_keeps_the_newest_what_gradle_wants_and_emulator_images() {
         let (base, tree) = tree_with(
             "android",
@@ -802,7 +880,8 @@ mod tests {
         );
         let tool = Path::new(r"C:\Users\sam\AppData\Local\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat");
         let kept = vec!["build-tools;35.0.0".to_string(), "system-images;android-31;default;x86_64".to_string()];
-        let f = android_from(&tree, ROOT, tool, &kept);
+        let f = android_from(&tree, ROOT, tool, &kept, true);
+        assert!(android_from(&tree, ROOT, tool, &kept, false).iter().all(|f| !f.path.to_string_lossy().contains("system-images")));
         let mut titles: Vec<String> = f.iter().map(|f| f.title.clone()).collect();
         titles.sort();
         // newest kept (36.0.0, android-36.1, android-35 image, the only NDK); 35.0.0 and the
