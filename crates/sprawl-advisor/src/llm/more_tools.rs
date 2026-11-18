@@ -105,7 +105,10 @@ pub fn growth(tree: &Tree, input: &Value, scan_before: SystemTime) -> Result<Str
 }
 
 fn growth_in(tree: &Tree, input: &Value, base: Option<&Path>, now: SystemTime) -> Result<String, String> {
-    let n = node_or_root(tree, input)?;
+    let n = match crate::mcp_scan::path_of(input) {
+        Some(path) => crate::history::find_path(tree, &path).ok_or_else(|| format!("{} {}", path.display(), crate::mcp_scan::NOT_IN_SCAN))?,
+        None => ROOT,
+    };
     let target = tree.path_of(n);
     if !tree.nodes[n].is_dir {
         return Err(format!("{} is a file: growth compares folders.", target.display()));
@@ -205,6 +208,30 @@ mod tests {
         assert!(search(&t, &facts, &json!({"query": "size:>>"})).is_err());
         assert!(search(&t, &facts, &json!({"query": "zzz-none"})).unwrap().starts_with("Nothing"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn growth_selects_case_distinct_current_siblings_exactly() {
+        use sprawl_core::{Node, ScanMethod};
+        let dir = std::env::temp_dir().join(format!("sprawl-growth-case-{}", std::process::id()));
+        let root = dir.join("Synthetic");
+        let mut old = Tree { root_path: root.clone(), nodes: vec![
+            Node { name: root.display().to_string(), is_dir: true, children: vec![1, 2], ..Default::default() },
+            Node { name: "Data".into(), is_dir: true, parent: Some(0), children: vec![3], ..Default::default() },
+            Node { name: "data".into(), is_dir: true, parent: Some(0), children: vec![4], ..Default::default() },
+            Node { name: "file".into(), size: 10, files: 1, parent: Some(1), ..Default::default() },
+            Node { name: "file".into(), size: 100, files: 1, parent: Some(2), ..Default::default() },
+        ], errors: 0, method: ScanMethod::Walk };
+        old.compute_totals();
+        let now = SystemTime::now();
+        crate::history::prepare(&old, now - Duration::from_secs(86_400), true).save(&dir, u64::MAX).unwrap();
+        let mut current = old.clone();
+        current.nodes[3].size = 20;
+        current.nodes[4].size = 300;
+        current.compute_totals();
+        let answer = growth_in(&current, &json!({"path": root.join("data")}), Some(&dir), now).unwrap();
+        assert!(answer.contains(&format!("{} now; {} in History", format_size(300), format_size(100))), "{answer}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
