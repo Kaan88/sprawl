@@ -122,7 +122,7 @@ pub static PREFS: [Pref; 52] = [
     ),
     p("aiLog", Sec::Ai, "AI request log", "Every request to an AI provider and every web lookup, kept on this PC. Forget removes the names the AI gave folders and the rules and cleaners it proposed that you haven't approved.", Kind::Custom),
     // Network
-    p("oUpdates", Sec::Network, "Check for updates automatically", "Once a day Sprawl asks GitHub for a newer signed release. Nothing about this PC is sent.", Kind::Switch(true)),
+    p("oUpdates", Sec::Network, "Check for updates automatically", "When it starts, and once a day while it stays open, Sprawl asks GitHub for a newer signed release. Nothing about this PC is sent.", Kind::Switch(true)),
     p(
         "communityFetch",
         Sec::Network,

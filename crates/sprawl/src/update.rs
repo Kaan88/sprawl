@@ -1,6 +1,6 @@
-//! Updates: Sprawl looks for a newer release on GitHub (at most once a day, or from Help >
-//! Check for Updates), shows what changed, and on "Update and restart" downloads it, checks it
-//! and swaps it in. See `sprawl-install` for what is checked.
+//! Updates: Sprawl looks for a newer release on GitHub (when it starts and once a day while
+//! open, or from Help > Check for Updates), shows what changed, and on "Update and restart"
+//! downloads it, checks it and swaps it in. See `sprawl-install` for what is checked.
 //!
 //! What is sent: a plain GET to api.github.com and GitHub's download hosts, with Sprawl's name
 //! as the user agent. Nothing about the PC or its files.
@@ -53,7 +53,12 @@ pub(crate) struct Updater {
     started: bool,
     /// Downloading or swapping: the buttons do nothing meanwhile.
     applying: bool,
+    /// When a Sprawl left open looks again (a day after the last look).
+    next: Option<std::time::Instant>,
 }
+
+/// How often a Sprawl left open looks again.
+const AGAIN: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// The API answer, through the same redirect rules as a download (a renamed repository answers
 /// with a redirect).
@@ -166,7 +171,7 @@ impl State {
         });
     }
 
-    /// A check got an answer: the next daily check is a day from now, and failures start over.
+    /// A check got an answer: failures start over.
     fn update_checked(&mut self) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         self.settings.set("update_last", now);
@@ -174,7 +179,13 @@ impl State {
         self.settings.save();
     }
 
-    /// Each frame: the daily check once at start, and answers from the threads.
+    /// The automatic check may run: the switch is on, not offline, not a screenshot run.
+    fn update_auto(&self) -> bool {
+        let on = find::<ToggleMenuFlyoutItem>(&self.root, "oUpdates").and_then(|t| t.IsChecked()).unwrap_or(true);
+        on && !sprawl_advisor::offline() && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Each frame: the check at start and once a day while open, and answers from the threads.
     pub(crate) fn update_poll(&mut self) {
         if !self.update.started {
             self.update.started = true;
@@ -182,10 +193,16 @@ impl State {
                 remove_old(&dir);
                 clean_stage(&dir);
             }
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            let last = self.settings.num("update_last").unwrap_or(0.0) as u64;
-            let on = find::<ToggleMenuFlyoutItem>(&self.root, "oUpdates").and_then(|t| t.IsChecked()).unwrap_or(true);
-            if on && !sprawl_advisor::offline() && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) && now.saturating_sub(last) > 20 * 3600 {
+            // every start looks (a release since yesterday's look is offered at once)
+            self.update.next = Some(std::time::Instant::now() + AGAIN);
+            if self.update_auto() {
+                self.update_check(false);
+            }
+        }
+        // left open: a day later, unless a release is already offered or a check is running
+        if self.update.next.is_some_and(|t| std::time::Instant::now() >= t) && self.update.rx.is_none() && self.update.avail.is_none() {
+            self.update.next = Some(std::time::Instant::now() + AGAIN);
+            if self.update_auto() {
                 self.update_check(false);
             }
         }

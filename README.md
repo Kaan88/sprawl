@@ -73,8 +73,8 @@ you only, in `%LOCALAPPDATA%\Programs\Sprawl`, with a Start menu entry and an en
 Settings > Apps for uninstalling. No administrator rights are needed. Sprawl needs the Windows
 App Runtime 1.8; if it's missing, Windows offers to install it the first time Sprawl starts.
 
-Sprawl looks for a new version once a day and asks before updating (Help > Check for Updates;
-Settings > Network turns the daily check off). Updates are signed: a copy only accepts a release
+Sprawl looks for a new version when it starts (and once a day while open) and asks before updating (Help > Check for Updates;
+Settings > Network turns the automatic check off). Updates are signed: a copy only accepts a release
 whose file list carries Sprawl's Ed25519 signature and whose files match it.
 
 ## Building
