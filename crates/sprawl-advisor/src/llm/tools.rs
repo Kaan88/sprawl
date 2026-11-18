@@ -91,9 +91,25 @@ fn scrub_query_for(q: &str, private: &[String]) -> Result<String, String> {
         t.contains('\\') || t.contains('%') || drive || lower.starts_with("file:") || lower.contains("users/") || b.get(1) == Some(&b':') && b[0].is_ascii_alphabetic() || (t.contains('/') && !t.contains("://") && t.matches('/').count() >= 2)
     };
     let private: Vec<String> = private.iter().map(|p| p.trim().to_lowercase()).filter(|p| p.len() >= 2).collect();
+    // Keep quoted paths with spaces together, so their parent-name fragments cannot become
+    // unrelated search words. Unmatched quotes are refused rather than partially scrubbed.
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quote = None;
+    for c in q.chars() {
+        if let Some(end) = quote {
+            if c == end { quote = None; } else { token.push(c); }
+        } else if c == '"' || c == '\u{201c}' || c == '\u{201d}' || (c == '\'' && token.is_empty()) {
+            quote = Some(if c == '\u{201c}' { '\u{201d}' } else { c });
+        } else if c.is_whitespace() {
+            if !token.is_empty() { tokens.push(std::mem::take(&mut token)); }
+        } else { token.push(c); }
+    }
+    if quote.is_some() { return Err(refuse()); }
+    if !token.is_empty() { tokens.push(token); }
     let mut words = Vec::new();
     let mut plain = 0;
-    for tok in q.split_whitespace() {
+    for tok in &tokens {
         let w = if is_path(tok) {
             // the last name in it, like "DXCache"
             tok.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | ',' | ';'))
@@ -830,6 +846,13 @@ mod tests {
             assert!(!scrub_query_for(q, &p).unwrap_or_default().to_lowercase().contains("desktop-k1"), "{q}");
         }
         assert_eq!(scrub_query_for("what is kaanx cache", &p).unwrap(), "what is kaanx cache", "a longer word is not the name");
+        for q in [r#"what is "C:\Users\Private Name\AppData\Local\DXCache""#,
+            r"what is 'C:\Users\Private Name\AppData\Local\DXCache'",
+            "what is \u{201c}C:\\Users\\Private Name\\AppData\\Local\\DXCache\u{201d}"] {
+            assert_eq!(scrub_query_for(q, &p).unwrap(), "what is DXCache", "{q}");
+        }
+        assert!(scrub_query_for(r#""C:\Users\Private Name\AppData\Local\DXCache""#, &p).is_err());
+        assert!(scrub_query_for(r#"what is "C:\Users\Private Name\DXCache"#, &p).is_err());
     }
 
     /// What the web said changes nothing about a finding: same risk, same checks, never ticked.

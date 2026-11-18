@@ -14,6 +14,9 @@ pub struct Response {
 
 /// Split `http[s]://host[:port]/path` into (secure, host, port, path).
 pub(crate) fn split_url(url: &str) -> Result<(bool, String, u16, String), String> {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) || url.contains(['\\', '#']) {
+        return Err("the address contains whitespace, a backslash or a fragment".into());
+    }
     let (secure, rest) = if let Some(r) = url.strip_prefix("https://") {
         (true, r)
     } else if let Some(r) = url.strip_prefix("http://") {
@@ -21,18 +24,35 @@ pub(crate) fn split_url(url: &str) -> Result<(bool, String, u16, String), String
     } else {
         return Err(format!("not an http(s) address: {url}"));
     };
-    let (authority, path) = match rest.find('/') {
+    let (authority, suffix) = match rest.find(['/', '?']) {
         Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
+        None => (rest, ""),
     };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.contains(']') || h.ends_with(']') => (h, p.parse::<u16>().map_err(|_| format!("bad port in {url}"))?),
-        _ => (authority, if secure { 443 } else { 80 }),
+    let default = if secure { 443 } else { 80 };
+    let port = |s: &str| -> Result<u16, String> {
+        if s.is_empty() || !s.bytes().all(|c| c.is_ascii_digit()) { return Err("bad port".into()); }
+        s.parse::<u16>().ok().filter(|&p| p != 0).ok_or_else(|| "bad port".into())
     };
-    if host.is_empty() {
-        return Err(format!("no host in {url}"));
-    }
-    Ok((secure, host.trim_matches(['[', ']']).to_string(), port, path.to_string()))
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, rest) = bracketed.split_once(']').ok_or("unclosed IPv6 address")?;
+        host.parse::<std::net::Ipv6Addr>().map_err(|_| "invalid IPv6 address")?;
+        let port = if rest.is_empty() { default } else { port(rest.strip_prefix(':').ok_or("text after IPv6 host")?)? };
+        (host, port)
+    } else {
+        let (host, port) = match authority.split_once(':') {
+            Some((host, p)) => (host, port(p)?),
+            None => (authority, default),
+        };
+        let domain = host.strip_suffix('.').unwrap_or(host);
+        if domain.is_empty() || host.len() > 253 || !domain.split('.').all(|label| !label.is_empty() && label.len() <= 63
+            && !label.starts_with('-') && !label.ends_with('-') && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')) {
+            return Err("invalid host".into());
+        }
+        if domain.bytes().all(|c| c.is_ascii_digit() || c == b'.') && domain.parse::<std::net::Ipv4Addr>().is_err() { return Err("invalid IPv4 address".into()); }
+        (host, port)
+    };
+    let path = if suffix.starts_with('/') { suffix.to_string() } else { format!("/{suffix}") };
+    Ok((secure, host.to_string(), port, path))
 }
 
 #[cfg(windows)]
@@ -349,6 +369,15 @@ mod tests {
         assert_eq!(split_url("http://localhost:11434/v1/chat/completions").unwrap(), (false, "localhost".into(), 11434, "/v1/chat/completions".into()));
         assert_eq!(split_url("http://127.0.0.1:1234").unwrap().3, "/");
         assert!(split_url("ftp://x").is_err() && split_url("http://:80/").is_err());
+        assert_eq!(split_url("http://[::1]").unwrap(), (false, "::1".into(), 80, "/".into()));
+        assert_eq!(split_url("http://[::1]:11434/v1").unwrap().2, 11434);
+        assert_eq!(split_url("https://example.com?q=x").unwrap().3, "/?q=x");
+        for invalid in ["http://[::1", "http://::1/", "http://[::1]extra", "http://[127.0.0.1]/",
+            "http://user@host/", "http://host:0/", "http://host:/", "http://host:+80/", "http://host:65536/",
+            "http://host:80:90/", "http://host /", "http://host\r\n/", "http://host\\evil/",
+            "http://host%2Eevil/", "http://-host/", "http://host..example/", "http://127.1/", "http://host/#fragment"] {
+            assert!(split_url(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
