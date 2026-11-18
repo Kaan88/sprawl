@@ -221,7 +221,6 @@ pub fn schedule(on: bool) -> bool {
     if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
         return true;
     }
-    if sprawl_install::setup::per_user_only().is_err() { return false; }
     let Ok(exe) = std::env::current_exe() else { return false };
     let Ok(sys) = sprawl_install::setup::system_dir() else { return false; };
     let mut c = std::process::Command::new(sys.join("schtasks.exe"));
