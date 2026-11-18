@@ -207,16 +207,12 @@ mod tests {
     /// D:\ with an old game, a folder that is partly old, a small old folder, and an old big file.
     fn tree(now: SystemTime) -> Tree {
         const GB: u64 = 1 << 30;
-        let mut t = sprawl_core::scan(&std::env::temp_dir().join("sprawl-stale-none"), |_| {}).unwrap_or_else(|_| {
-            let dir = std::env::temp_dir().join(format!("sprawl-stale-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
-            let t = sprawl_core::scan(&dir, |_| {}).unwrap();
-            let _ = std::fs::remove_dir_all(&dir);
-            t
-        });
-        t.root_path = r"D:\".into();
-        t.nodes.truncate(1);
-        t.nodes[ROOT] = node(r"D:\", true, 0, Some(1), None, now);
+        let mut t = Tree {
+            root_path: r"D:\".into(),
+            nodes: vec![node(r"D:\", true, 0, Some(1), None, now)],
+            errors: 0,
+            method: sprawl_core::ScanMethod::Walk,
+        };
         let add = |t: &mut Tree, n: Node| -> usize {
             let i = t.nodes.len();
             let p = n.parent.unwrap();
