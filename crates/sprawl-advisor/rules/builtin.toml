@@ -204,6 +204,41 @@ remedy = "info"
 min_bytes = 2147483648
 why = "Docker's images, containers and volumes. Run 'docker system prune' (add '-a --volumes' to remove more), then shrink the file from Docker Desktop > Troubleshoot or its disk-size setting."
 
+# ------------------------------------------------------------------ driver and installer leftovers (F2)
+
+[[rule]]
+id = "setup.nvidia-extract"
+title = "NVIDIA driver setup files"
+owner = "NVIDIA"
+paths = ['%SystemDrive%\NVIDIA']
+risk = "amber"
+remedy = "delete"
+min_bytes = 104857600
+min_age_days = 30
+why = "NVIDIA's driver installer unpacks itself here and leaves the files behind. The installed driver doesn't use them; a newer driver comes from NVIDIA's site or the NVIDIA app."
+
+[[rule]]
+id = "setup.amd-extract"
+title = "AMD driver setup files"
+owner = "AMD"
+paths = ['%SystemDrive%\AMD']
+risk = "amber"
+remedy = "delete"
+min_bytes = 104857600
+min_age_days = 30
+why = "AMD's driver installer unpacks every package it downloads here and leaves them behind. The installed driver doesn't use them; AMD Software downloads a newer one when needed."
+
+[[rule]]
+id = "setup.autodesk-extract"
+title = "Autodesk setup files"
+owner = "Autodesk"
+paths = ['%SystemDrive%\Autodesk']
+risk = "amber"
+remedy = "delete"
+min_bytes = 524288000
+min_age_days = 30
+why = "Autodesk's installers unpack themselves here and leave the files behind; the installed products don't run from them. Repairing or changing an installed product may ask for them: it can be downloaded again from your Autodesk account."
+
 # ------------------------------------------------------------------ Windows
 
 [[rule]]
