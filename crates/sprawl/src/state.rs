@@ -188,6 +188,20 @@ pub(crate) fn text(root: &FrameworkElement, name: &str, value: &str) {
     }
 }
 
+/// dev: with `SPRAWL_TIMING` set, one line per call in `%TEMP%\sprawl-timing.log`: what took
+/// how long since `since`. Off (one env lookup, cached) otherwise.
+pub(crate) fn timing(what: &str, since: Instant) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("SPRAWL_TIMING").is_some()) {
+        return;
+    }
+    use std::io::Write;
+    let ms = since.elapsed().as_secs_f64() * 1000.0;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("sprawl-timing.log")) {
+        let _ = writeln!(f, "{what}: {ms:.1} ms");
+    }
+}
+
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
     XamlReader::Load(&HSTRING::from(xaml))?.cast()
 }

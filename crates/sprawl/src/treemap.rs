@@ -206,6 +206,20 @@ impl State {
     /// Called once per composition frame.
     pub(crate) fn frame(&mut self) {
         let now = Instant::now();
+        // dev (SPRAWL_TIMING): frames that took long, and long gaps between frames (layout,
+        // a handler on the UI thread)
+        struct Slow(Instant);
+        impl Drop for Slow {
+            fn drop(&mut self) {
+                if self.0.elapsed().as_millis() >= 16 {
+                    crate::state::timing("slow frame", self.0);
+                }
+            }
+        }
+        let _slow = Slow(now);
+        if (now - self.map.last).as_millis() >= 50 {
+            crate::state::timing("gap before frame", self.map.last);
+        }
         let dt = (now - self.map.last).as_secs_f32().min(0.05);
         self.map.last = now;
 

@@ -761,7 +761,10 @@ impl State {
                 Msg::InUse(gen, i, answer) => {
                     if gen == self.tree_gen && self.advisor.in_use.as_ref().is_some_and(|(j, _)| *j == i) {
                         self.advisor.in_use = Some((i, answer));
+                        // only the open row says what holds its files
+                        self.advisor_rows(&[i]);
                     }
+                    continue;
                 }
                 Msg::AiProgress(gen, line) => {
                     // only the status line changes, so typing in the panel isn't disturbed
@@ -1300,10 +1303,11 @@ impl State {
     }
 
     pub(crate) fn advisor_open(&mut self, i: usize) {
-        if self.advisor.open == Some(i) {
+        let was = self.advisor.open;
+        if was == Some(i) {
             self.advisor.open = None;
             self.advisor.in_use = None;
-            return self.advisor_changed();
+            return self.advisor_rows(&[i]);
         }
         self.advisor.open = Some(i);
         self.advisor.in_use = None;
@@ -1322,7 +1326,53 @@ impl State {
                 });
             }
         }
-        self.advisor_changed();
+        let rows: Vec<usize> = was.into_iter().chain(Some(i)).collect();
+        self.advisor_rows(&rows);
+    }
+
+    /// Only rows `rows` changed (one opened or closed, an in-use answer): each is loaded again
+    /// in its place, so the list keeps its scroll and the rest isn't rebuilt. Anything not
+    /// found that way (a row in a hidden group, the Cleaners tab) gets the whole panel again.
+    pub(crate) fn advisor_rows(&mut self, rows: &[usize]) {
+        let t0 = std::time::Instant::now();
+        // the map lights the selected finding
+        self.map.drawn_once = false;
+        if self.view != View::Advisor {
+            return;
+        }
+        let swapped = !self.advisor.cleaners_tab
+            && self.advisor.section == Section::Findings
+            && self.advisor.panel.is_some()
+            && rows.iter().all(|&i| self.advisor_row_swap(i));
+        // a focus asked for and not taken (the row wasn't swapped) is the full render's to take
+        if !swapped {
+            return self.render_advisor();
+        }
+        crate::state::timing(&format!("advisor_rows {rows:?} swapped"), t0);
+    }
+
+    fn advisor_row_swap(&mut self, i: usize) -> bool {
+        let (Some(p), Some(r)) = (self.advisor.panel.as_ref(), self.advice()) else { return false };
+        if i >= r.findings.len() {
+            return false;
+        }
+        let Ok(host) = find::<Border>(p, &format!("AdvRow{i}")) else { return false };
+        let Ok(el) = load::<UIElement>(&self.finding_row_inner(r, i, ui::NS)) else { return false };
+        let Ok(fe) = el.cast::<FrameworkElement>() else { return false };
+        if host.SetChild(&el).is_err() {
+            return false;
+        }
+        self.wire_advisor(&fe, std::slice::from_ref(&fe));
+        // the row's button was clicked, had the focus, and was replaced: the new one takes it,
+        // or focus falls to the list's first control and the list jumps to the top
+        let name = format!("AdvF{i}");
+        if self.advisor.focus_after.as_deref() == Some(name.as_str()) {
+            self.advisor.focus_after = None;
+            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&fe, &name) {
+                let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+            }
+        }
+        true
     }
 
     /// After a tick button in the foot: the list where the ticks show, not Ask, Growth or
@@ -1352,6 +1402,7 @@ impl State {
     }
 
     pub(crate) fn render_advisor(&mut self) {
+        let t0 = std::time::Instant::now();
         // a button that leads to another section (a question for the AI) leaves the Cleaners tab
         if self.advisor.cleaners_tab && self.advisor.section != Section::Cleaners {
             self.advisor.cleaners_tab = false;
@@ -1443,18 +1494,38 @@ impl State {
                 keep(t);
             }
         }
+        self.wire_advisor(&fe, &roots);
+        let scroll = if tab { find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&fe, "ClScroll").ok() } else { scroll };
+        if let (Some(sv), Some(y)) = (&scroll, offset) {
+            let _ = sv.ChangeView(None, Some(y), None);
+        }
+        // and the box just ticked keeps the focus, for the keyboard
+        if let Some(name) = self.advisor.focus_after.take() {
+            if let Some(c) = roots.iter().find_map(|r| find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(r, &name).ok()) {
+                let _ = c.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+            }
+        }
+        crate::state::timing("render_advisor (the whole panel)", t0);
+    }
+
+    /// Hook up the buttons in a freshly loaded Advisor panel (`fe`, with the foot in `roots`),
+    /// or in one row loaded alone (`fe` and `roots` that row).
+    fn wire_advisor(&self, fe: &FrameworkElement, roots: &[FrameworkElement]) {
         let count = self.advice().map_or(0, |r| r.findings.len());
         for i in 0..count {
-            if let Ok(b) = find::<ButtonBase>(&fe, &format!("AdvF{i}")) {
+            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvF{i}")) {
                 if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| s.advisor_open(i));
+                    with(|s| {
+                        s.advisor.focus_after = Some(format!("AdvF{i}"));
+                        s.advisor_open(i);
+                    });
                 }) {
                     keep(t);
                 }
             }
         }
         for i in 0..count {
-            if let Ok(b) = find::<ButtonBase>(&fe, &format!("AdvT{i}")) {
+            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvT{i}")) {
                 if let Ok(t) = b.Click(move |_, _| {
                     with(|s| {
                         s.cleanup_toggle(i);
@@ -1464,16 +1535,6 @@ impl State {
                 }) {
                     keep(t);
                 }
-            }
-        }
-        let scroll = if tab { find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&fe, "ClScroll").ok() } else { scroll };
-        if let (Some(sv), Some(y)) = (&scroll, offset) {
-            let _ = sv.ChangeView(None, Some(y), None);
-        }
-        // and the box just ticked keeps the focus, for the keyboard
-        if let Some(name) = self.advisor.focus_after.take() {
-            if let Some(c) = roots.iter().find_map(|r| find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(r, &name).ok()) {
-                let _ = c.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
             }
         }
         let cl = self.cleaner_counts();
@@ -1505,7 +1566,7 @@ impl State {
         ];
         for (kind, n) in counts {
             for i in 0..n {
-                if let Ok(b) = find::<ButtonBase>(&fe, &format!("{kind}{i}")) {
+                if let Ok(b) = find::<ButtonBase>(fe, &format!("{kind}{i}")) {
                     if let Ok(t) = b.Click(move |_, _| {
                         with(|s| s.advisor_indexed(kind, i));
                     }) {
@@ -1520,7 +1581,7 @@ impl State {
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
         ] {
-            for r in &roots {
+            for r in roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
                     if let Ok(t) = b.Click(move |_, _| {
                         with(|s| s.advisor_command(name));
@@ -2887,6 +2948,12 @@ impl State {
 
     /// One finding's row, with its details when open.
     fn finding_row(&self, r: &Report, i: usize) -> String {
+        // in a Border of its own, so opening or closing it swaps only this row (advisor_rows)
+        format!(r##"<Border x:Name="AdvRow{i}">{}</Border>"##, self.finding_row_inner(r, i, ""))
+    }
+
+    /// The row inside its Border; `ns` is the XAML namespaces when the row is loaded alone.
+    fn finding_row_inner(&self, r: &Report, i: usize, ns: &str) -> String {
         let f = &r.findings[i];
         let open = self.advisor.open == Some(i);
         let mut x = String::new();
@@ -2900,7 +2967,7 @@ impl State {
             Some("") => String::new(),
             Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(why)),
         };
-        x += &format!(r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
+        x += &format!(r##"<Grid {ns} ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
         // a tip removes nothing: it says so instead of a risk
         // left behind holding the user's work: shown, never removed by Sprawl
         let yours = f.leftover() && f.remedy == Remedy::Info;
