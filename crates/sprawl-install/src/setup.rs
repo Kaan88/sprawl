@@ -214,6 +214,18 @@ pub fn uninstall(quiet: bool) {
     if let Some(l) = shortcut_path() {
         let _ = std::fs::remove_file(l);
     }
+    // the low-space check's scheduled task, if the setting made one
+    {
+        use std::os::windows::process::CommandExt;
+        let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
+        let _ = std::process::Command::new(sys.join("schtasks.exe"))
+            .current_dir(&sys)
+            .args(["/Delete", "/TN", "Sprawl low-space check", "/F"])
+            .creation_flags(0x0800_0000)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
     // only Sprawl's own files; the folder itself goes only if that leaves it empty
     remove_old(&dir);
     clean_stage(&dir);

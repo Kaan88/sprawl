@@ -95,12 +95,15 @@ pub const CAPS: [&str; 4] = ["500 MB", "1 GB", "2 GB", "5 GB"];
 pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
 pub const AFTER_SCAN: [&str; 2] = ["Stay where I am", "Open the Advisor"];
 /// "Open Sprawl on": the tab used last, or one of the tabs (look::start_tab reads the index).
+/// "Warn me below": the free space a drive may fall to before the low-space notice.
+pub const ALERT_AT: [&str; 4] = ["5 GB", "10 GB", "20 GB", "50 GB"];
+pub const ALERT_GB: [u64; 4] = [5, 10, 20, 50];
 pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "Advisor", "Cleaners", "Search"];
 
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 52] = [
+pub static PREFS: [Pref; 54] = [
     // General
     p("units", Sec::General, "Sizes in", "How sizes are written. Sizes are binary: 1 GB is 1,024 MB.", Kind::Choice(&UNITS, 0)),
     p(
@@ -110,6 +113,14 @@ pub static PREFS: [Pref; 52] = [
         "The tab shown when Sprawl starts; nothing is scanned because of it. A folder opened from Explorer or the command line is scanned and shown in Tree View whatever this says.",
         Kind::Choice(&OPEN_ON, 0),
     ),
+    p(
+        "alertLow",
+        Sec::General,
+        "Tell me when a drive is nearly full",
+        "Every 4 hours a scheduled task of your account looks at how much space each drive has free, nothing more, and shows a Windows notice when one is below the limit: at most once a week per drive. A click opens Sprawl on it. Nothing is scanned or cleaned by it.",
+        Kind::Switch(false),
+    ),
+    p("alertFreeGb", Sec::General, "Nearly full means less free than", "", Kind::Choice(&ALERT_AT, 1)),
     p("dataFolder", Sec::General, "Your data", "Settings, what the Advisor remembers, scan history and logs: all on this PC, in your own folders.", Kind::Custom),
     // AI and privacy
     p("ai", Sec::Ai, "AI provider", "", Kind::Custom),

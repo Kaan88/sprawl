@@ -44,6 +44,7 @@ mod search_query;
 mod search_box;
 mod shellmenu;
 mod admin;
+mod alert;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -122,6 +123,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         if dialogs::restart_elevated(0, &args.join(" ")) {
             std::process::exit(0);
         }
+    }
+    // the low-space check's task names this exe: renew it, so an update or a moved copy keeps it right
+    if a.shot.is_none() && settings.bool("alertLow") == Some(true) {
+        std::thread::spawn(|| alert::schedule(true));
     }
     let drives = win32::drives();
     let labels: Vec<String> = drives.iter().map(|d| format!("[{}] {}", d.root.trim_end_matches('\\'), d.label)).collect();
@@ -519,6 +524,11 @@ fn main() {
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if args.first().map(String::as_str) == Some("--mcp") {
         sprawl_advisor::mcp::main(&args);
+        return;
+    }
+    // `sprawl --check`: the low-space check a scheduled task runs while the setting is on
+    if args.first().map(String::as_str) == Some("--check") {
+        alert::check();
         return;
     }
     // `sprawl --uninstall`: from Settings > Apps
