@@ -1367,6 +1367,15 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<IUIElement>(self)?;
+                    unsafe {
+                        (windows_core::Interface::vtable(this).UpdateLayout)(
+                            windows_core::Interface::as_raw(this),
+                        )
+                        .ok()
+                    }
+                }
                 pub fn Focus(&self, value: FocusState) -> windows_core::Result<bool> {
                     let this = &windows_core::Interface::cast::<IUIElement>(self)?;
                     unsafe {
@@ -2115,7 +2124,8 @@ pub mod Microsoft {
                 TransformToVisual: usize,
                 InvalidateMeasure: usize,
                 InvalidateArrange: usize,
-                UpdateLayout: usize,
+                pub UpdateLayout:
+                    unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
                 CancelDirectManipulations: usize,
                 StartDragAsync: usize,
                 StartBringIntoView: usize,
@@ -2969,6 +2979,14 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                    unsafe {
+                        (windows_core::Interface::vtable(self).UpdateLayout)(
+                            windows_core::Interface::as_raw(self),
+                        )
+                        .ok()
+                    }
+                }
                 pub fn Focus(&self, value: FocusState) -> windows_core::Result<bool> {
                     unsafe {
                         let mut result__ = core::mem::zeroed();
@@ -3795,6 +3813,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -4406,6 +4433,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -5129,6 +5165,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -5756,6 +5801,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -6366,6 +6420,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -6952,6 +7015,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -7649,6 +7721,15 @@ pub mod Microsoft {
                         *mut bool,
                     )
                         -> windows_core::HRESULT,
+                    pub ChangeViewWithOptionalAnimation:
+                        unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            *mut core::ffi::c_void,
+                            *mut core::ffi::c_void,
+                            *mut core::ffi::c_void,
+                            bool,
+                            *mut bool,
+                        ) -> windows_core::HRESULT,
                 }
                 windows_core::imp::define_interface!(
                     IScrollViewerViewChangedEventArgs,
@@ -8568,6 +8649,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -9165,6 +9255,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -9797,6 +9896,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -10534,6 +10642,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -11168,6 +11285,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -11750,6 +11876,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -12442,6 +12577,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -13170,6 +13314,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -13610,6 +13763,32 @@ pub mod Microsoft {
                             .map(|| result__)
                         }
                     }
+                    pub fn ChangeViewWithOptionalAnimation(
+                        &self,
+                        horizontaloffset: Option<f64>,
+                        verticaloffset: Option<f64>,
+                        zoomfactor: Option<f32>,
+                        disableanimation: bool,
+                    ) -> windows_core::Result<bool> {
+                        let horizontaloffset__ = horizontaloffset
+                            .map(<windows_reference::IReference<f64> as From<_>>::from);
+                        let verticaloffset__ = verticaloffset
+                            .map(<windows_reference::IReference<f64> as From<_>>::from);
+                        let zoomfactor__ =
+                            zoomfactor.map(<windows_reference::IReference<f32> as From<_>>::from);
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(self).ChangeViewWithOptionalAnimation)(
+                                windows_core::Interface::as_raw(self),
+                                windows_core::Param::param(horizontaloffset__.as_ref()).abi(),
+                                windows_core::Param::param(verticaloffset__.as_ref()).abi(),
+                                windows_core::Param::param(zoomfactor__.as_ref()).abi(),
+                                disableanimation,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn Opacity(&self) -> windows_core::Result<f64> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -13987,6 +14166,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -14811,6 +14999,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -15432,6 +15629,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -16145,6 +16351,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -16960,6 +17175,15 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
                         let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
                         unsafe {
@@ -17656,6 +17880,15 @@ pub mod Microsoft {
                                 token__,
                                 windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                             ))
+                        }
+                    }
+                    pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).UpdateLayout)(
+                                windows_core::Interface::as_raw(this),
+                            )
+                            .ok()
                         }
                     }
                     pub fn Focus(&self, value: super::FocusState) -> windows_core::Result<bool> {
@@ -18511,6 +18744,16 @@ pub mod Microsoft {
                                     token__,
                                     windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                                 ))
+                            }
+                        }
+                        pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                (windows_core::Interface::vtable(this).UpdateLayout)(
+                                    windows_core::Interface::as_raw(this),
+                                )
+                                .ok()
                             }
                         }
                         pub fn Focus(
@@ -19714,6 +19957,16 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                (windows_core::Interface::vtable(this).UpdateLayout)(
+                                    windows_core::Interface::as_raw(this),
+                                )
+                                .ok()
+                            }
+                        }
                         pub fn Focus(
                             &self,
                             value: super::super::FocusState,
@@ -20606,6 +20859,16 @@ pub mod Microsoft {
                                     token__,
                                     windows_core::Interface::vtable(this).RemovePreviewKeyDown,
                                 ))
+                            }
+                        }
+                        pub fn UpdateLayout(&self) -> windows_core::Result<()> {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                (windows_core::Interface::vtable(this).UpdateLayout)(
+                                    windows_core::Interface::as_raw(this),
+                                )
+                                .ok()
                             }
                         }
                         pub fn Focus(

@@ -1450,13 +1450,17 @@ impl State {
             }
         }
         let Ok(host) = find::<Border>(&self.root, if tab { "ClHost" } else { "AdvHost" }) else { return };
-        // the list stays where it was scrolled to
-        let scroll = if tab {
-            self.advisor.panel.as_ref().and_then(|p| find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(p, "ClScroll").ok())
-        } else {
-            find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "AdvScroll").ok()
-        };
+        // the lists stay where they were scrolled to. The Cleaners tab's columns are inside the
+        // panel that is replaced: their places are read from the old one
+        type Sv = crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer;
+        const CL_SCROLLS: [&str; 3] = ["ClScroll", "ClSide", "ClAiScroll"];
+        let scroll = if tab { None } else { find::<Sv>(&self.root, "AdvScroll").ok() };
         let offset = scroll.as_ref().and_then(|s| s.VerticalOffset().ok());
+        let was_tab = self.advisor.panel.as_ref().is_some_and(|p| find::<Sv>(p, "ClScroll").is_ok());
+        let cl_offsets: Vec<Option<f64>> = CL_SCROLLS
+            .iter()
+            .map(|n| if tab && was_tab { self.advisor.panel.as_ref().and_then(|p| find::<Sv>(p, n).ok()).and_then(|s| s.VerticalOffset().ok()) } else { None })
+            .collect();
         let xaml = if tab { self.cleaners_tab_xaml() } else { self.advisor_xaml() };
         let Ok(el) = load::<UIElement>(&xaml) else {
             eprintln!("advisor panel failed to load");
@@ -1504,9 +1508,19 @@ impl State {
             }
         }
         self.wire_advisor(&fe, &roots);
-        let scroll = if tab { find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&fe, "ClScroll").ok() } else { scroll };
         if let (Some(sv), Some(y)) = (&scroll, offset) {
-            let _ = sv.ChangeView(None, Some(y), None);
+            let _ = sv.ChangeViewWithOptionalAnimation(None, Some(y), None, true);
+        }
+        // a new panel has no height until it is laid out, and a place set before that is lost
+        // (the list jumped to the top on every click on the Cleaners tab): lay it out now, then
+        // put each column back at once, without the scroll animation
+        if cl_offsets.iter().any(|o| o.is_some_and(|y| y > 0.0)) {
+            let _ = fe.UpdateLayout();
+            for (n, y) in CL_SCROLLS.iter().zip(&cl_offsets) {
+                if let (Ok(sv), Some(y)) = (find::<Sv>(&fe, n), y) {
+                    let _ = sv.ChangeViewWithOptionalAnimation(None, Some(*y), None, true);
+                }
+            }
         }
         // and the box just ticked keeps the focus, for the keyboard
         if let Some(name) = self.advisor.focus_after.take() {

@@ -11,6 +11,7 @@ in-app updater shows.
 - Ticking or opening a row in the Advisor no longer rebuilds the whole list, so the list doesn't jump and the click is answered at once.
 
 ### Fixed
+- **The Cleaners tab jumped back to the top** each time a row was opened or ticked further down the list. It now stays where it was, and so does the column beside it.
 - Sprawl's tools for AI apps (MCP): the scan report lists the Advisor's findings again, and says when the rules haven't run yet. With Sprawl closed it answers from History's last saved scan and says how old that is. A tool call after Sprawl was restarted no longer fails.
 
 ## 0.3.1 — 2026-11-18
