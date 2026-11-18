@@ -861,127 +861,74 @@ fn unreadable(n: usize) -> String {
 /// F4: each copy replaced by a hard link to `keep`. Each must be a plain local file (not a link,
 /// not a never-list name, not one the user keeps, not created or changed since the scan, not
 /// read-only), the same size and volume as `keep` and not already one file with it. Both are
-/// then opened so that no one can write them (and `keep` can't be renamed or deleted), compared
-/// byte for byte through those handles, and with them still open a link to `keep` is made beside
-/// the copy and renamed over it. A copy that fails anything stays as it is, with the reason.
-/// Freed: the size of each copy replaced.
+/// then pinned against writes and renames and compared through their handles. The checked copy
+/// is renamed by handle to a no-replace backup, a link is created only at its vacant old name,
+/// then that same original handle is deleted. A failed publish restores by no-replace rename,
+/// or preserves the backup if another file occupies the old name. Nothing is overwritten.
+/// Freed: zero while another hard link still holds the original data.
 fn link(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-    const SHARE_READ: u32 = 1;
-    const SHARE_DELETE: u32 = 4;
-    const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const NO_RECALL: u32 = 0x0010_0000;
-    const READONLY: u32 = 1;
-    let since = spare.since.map(filetime);
-    let new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s || m.last_write_time() as i64 > s);
-    let hold = |p: &Path, share: u32| std::fs::OpenOptions::new().read(true).share_mode(share).custom_flags(OPEN_REPARSE_POINT | NO_RECALL).open(p);
-    let plain = |p: &Path| -> Result<std::fs::Metadata, &'static str> {
-        if odd_name(p) {
-            return Err("left alone: a name Windows would mistake");
-        }
-        if never().path_hit(p).is_some() {
-            return Err("left alone: on the never-touch list");
-        }
-        let m = std::fs::symlink_metadata(p).map_err(|_| "left alone: no longer there")?;
-        if attrs(&m) & (REPARSE | DIRECTORY) != 0 || !m.is_file() {
-            return Err("left alone: no longer a plain file");
-        }
-        if attrs(&m) & crate::dupes::NOT_LOCAL != 0 {
-            return Err("left alone: a cloud file");
-        }
-        Ok(m)
-    };
-    let km = match plain(keep) {
-        Ok(m) => m,
-        Err(why) => return o.problem(keep, why),
-    };
-    if new(&km) {
+    link_with(keep, copies, spare, stop, o, progress, &mut |_| {});
+}
+
+fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64), before_publish: &mut dyn FnMut(&Path)) {
+    use std::os::windows::fs::OpenOptionsExt;
+    let pin_parent = |p: &Path| sprawl_core::local::directory(p.parent().ok_or_else(|| std::io::Error::other("no parent"))?);
+    let _kp = match pin_parent(keep) { Ok(p) => p, Err(e) => return o.problem(keep, format!("left alone: {e}")) };
+    let mut kf = match sprawl_core::local::file(keep, u64::MAX) { Ok(f) => f, Err(e) => return o.problem(keep, e) };
+    let ki = match win::file_info(&kf.file) { Ok(i) => i, Err(e) => return o.problem(keep, e) };
+    if odd_name(keep) || never().path_hit(keep).is_some() || spare.is_new(&ki) {
         o.kept_new += 1;
-        return o.problem(keep, "left alone: the copy to keep changed since the scan");
+        return o.problem(keep, "left alone: protected or changed since the scan");
     }
     for c in copies {
-        if stop.load(Ordering::Relaxed) {
-            return;
-        }
-        let m = match plain(c) {
-            Ok(m) => m,
-            Err(why) => {
-                o.problem(c, why);
-                continue;
-            }
+        if stop.load(Ordering::Relaxed) { o.stopped = true; return; }
+        if spare.keeps(c) { o.kept_chosen += 1; continue; }
+        if odd_name(c) || never().path_hit(c).is_some() { o.problem(c, "left alone: protected or ambiguous name"); continue; }
+        let _cp = match pin_parent(c) { Ok(p) => p, Err(e) => { o.problem(c, e); continue; } };
+        // DELETE access is ours, but no other handle may write, rename or unlink this file.
+        let mut cf = match std::fs::OpenOptions::new().access_mode(0x8000_0000 | 0x0001_0000).share_mode(1)
+            .custom_flags(0x0020_0000 | 0x0010_0000).open(c) {
+            Ok(f) => f, Err(e) => { o.problem(c, format!("left alone: in use or unavailable ({e})")); continue; }
         };
-        if spare.keeps(c) {
-            o.kept_chosen += 1;
-            continue;
+        let ci = match win::file_info(&cf) { Ok(i) => i, Err(e) => { o.problem(c, e); continue; } };
+        if ci.attrs & (DIRECTORY | REPARSE | crate::dupes::NOT_LOCAL | 1) != 0
+            || !sprawl_core::local::final_path(&cf).is_ok_and(|p| same_path(&p, c)) {
+            o.problem(c, "left alone: not the expected plain local writable file"); continue;
         }
-        if new(&m) {
-            o.kept_new += 1;
-            continue;
-        }
-        if m.len() != km.len() {
-            o.problem(c, "left alone: no longer the same size");
-            continue;
-        }
-        if attrs(&m) & READONLY != 0 {
-            o.problem(c, "left alone: read-only");
-            continue;
-        }
-        // no one writes either from here on; the copy may still be replaced (by us)
-        let (mut kf, mut cf) = match (hold(keep, SHARE_READ), hold(c, SHARE_READ | SHARE_DELETE)) {
-            (Ok(k), Ok(c)) => (k, c),
-            _ => {
-                o.problem(c, "left alone: in use");
-                continue;
-            }
-        };
-        match (crate::dupes::file_id(&kf), crate::dupes::file_id(&cf)) {
-            // already one file
+        if spare.is_new(&ci) { o.kept_new += 1; continue; }
+        if ci.size != ki.size { o.problem(c, "left alone: no longer the same size"); continue; }
+        match (crate::dupes::file_id(&kf.file), crate::dupes::file_id(&cf)) {
             (Some(a), Some(b)) if a == b => continue,
-            (Some(a), Some(b)) if a.0 != b.0 => {
-                o.problem(c, "left alone: on another drive than the copy kept");
-                continue;
-            }
-            (Some(_), Some(_)) => {}
-            _ => {
-                o.problem(c, "left alone: Windows couldn't identify it");
-                continue;
-            }
+            (Some(a), Some(b)) if a.0 == b.0 => {},
+            _ => { o.problem(c, "left alone: file identity or volume could not be verified"); continue; }
         }
-        match crate::dupes::same_open(&mut kf, &mut cf, stop) {
-            Some(true) => {}
-            Some(false) => {
-                o.problem(c, "left alone: no longer the same bytes");
-                continue;
-            }
-            None if stop.load(Ordering::Relaxed) => return,
-            None => {
-                o.problem(c, "left alone: couldn't be read");
-                continue;
-            }
+        match crate::dupes::same_open(&mut kf.file, &mut cf, stop) {
+            Some(true) => {},
+            Some(false) => { o.problem(c, "left alone: no longer the same bytes"); continue; }
+            None => { o.problem(c, "left alone: comparison stopped or failed"); continue; }
         }
         let Some(name) = c.file_name() else { continue };
-        let tmp = c.with_file_name(format!("{}.sprawl-link", name.to_string_lossy()));
-        if std::fs::symlink_metadata(&tmp).is_ok() {
-            o.problem(c, format!("left alone: {} is in the way", tmp.display()));
+        let backup = c.with_file_name(format!("{}.sprawl-original", name.to_string_lossy()));
+        // Rename the checked handle, never a pathname replacement. Every subsequent operation
+        // also refuses an occupied name. Failure leaves the original recoverable, never removes
+        // a third party's file, and never unlinks a temporary name by pathname.
+        if let Err(e) = win::rename_file(&cf, &backup) { o.problem(c, format!("left alone: couldn't preserve the original ({e})")); continue; }
+        before_publish(c);
+        if let Err(e) = std::fs::hard_link(keep, c) {
+            let restored = win::rename_file(&cf, c).is_ok();
+            o.problem(c, if restored { format!("not linked; original restored ({e})") }
+                else { format!("not linked ({e}); original preserved at {} because its old name is occupied", backup.display()) });
             continue;
         }
-        if let Err(e) = std::fs::hard_link(keep, &tmp) {
-            o.problem(c, format!("not linked: {e}"));
-            continue;
+        if let Err(e) = win::delete_file(&cf) {
+            o.problem(c, format!("linked, but original copy remains at {} ({e}); no space credited", backup.display())); continue;
         }
-        // over the copy, still held open: no one wrote it since the comparison
-        if let Err(e) = std::fs::rename(&tmp, c) {
-            let _ = std::fs::remove_file(&tmp);
-            o.problem(c, format!("not linked: {e}"));
-            continue;
-        }
-        drop((kf, cf));
-        o.freed += m.len();
+        drop(cf);
+        if ci.links == 1 { o.freed += ci.size; }
         o.files += 1;
         progress(o.freed);
     }
 }
-
 fn never() -> &'static crate::safety::Never {
     static N: std::sync::OnceLock<crate::safety::Never> = std::sync::OnceLock::new();
     N.get_or_init(crate::safety::Never::default_list)
@@ -1180,6 +1127,11 @@ mod win {
             return Err(std::io::Error::last_os_error());
         }
         let h = Handle(h);
+        let info = info(&h)?;
+        Ok((h, info))
+    }
+
+    fn info(h: &Handle) -> std::io::Result<Info> {
         let mut b = ByHandle::default();
         if unsafe { GetFileInformationByHandle(h.0, &mut b) } == 0 {
             return Err(std::io::Error::last_os_error());
@@ -1196,8 +1148,18 @@ mod win {
             created = created.max(basic.created);
             newest = newest.max(basic.written).max(basic.changed);
         }
-        Ok((h, Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest }))
+        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest })
     }
+
+    // Borrow the File's handle only for the synchronous call; ownership remains with File.
+    fn borrowed(file: &std::fs::File) -> std::mem::ManuallyDrop<Handle> {
+        use std::os::windows::io::AsRawHandle;
+        std::mem::ManuallyDrop::new(Handle(file.as_raw_handle().cast()))
+    }
+
+    pub(super) fn file_info(file: &std::fs::File) -> std::io::Result<Info> { info(&borrowed(file)) }
+    pub(super) fn rename_file(file: &std::fs::File, to: &Path) -> std::io::Result<()> { rename(&borrowed(file), to) }
+    pub(super) fn delete_file(file: &std::fs::File) -> std::io::Result<()> { delete(&borrowed(file)) }
 
     /// Delete exactly the opened item (an empty folder, a file, a link), read-only or not.
     pub(super) fn delete(h: &Handle) -> std::io::Result<()> {
@@ -1517,6 +1479,39 @@ mod tests {
     use super::*;
     use crate::rules::ps_quote;
     use crate::{Remedy, Risk, Source};
+
+    #[test]
+    fn linking_preserves_a_concurrent_replacement_and_external_alias() {
+        let root = std::env::temp_dir().join(format!("sprawl-link-race-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let keep = root.join("keep.bin");
+        let copy = root.join("copy.bin");
+        let alias = root.join("external.bin");
+        std::fs::write(&keep, b"same bytes").unwrap();
+        std::fs::write(&copy, b"same bytes").unwrap();
+        let mut outcome = Outcome::default();
+        link_with(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut outcome, &mut |_| {},
+            &mut |vacant| std::fs::write(vacant, b"new unrelated data").unwrap());
+        assert_eq!(std::fs::read(&copy).unwrap(), b"new unrelated data");
+        let backup = root.join("copy.bin.sprawl-original");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"same bytes");
+        assert_eq!(outcome.freed, 0);
+        assert!(outcome.problems.iter().any(|p| p.contains("original preserved")));
+        // A pre-existing backup is never removed or overwritten either.
+        let mut outcome = Outcome::default();
+        std::fs::write(&copy, b"same bytes").unwrap();
+        link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut outcome, &mut |_| {});
+        assert_eq!(outcome.files, 0);
+        assert_eq!(std::fs::read(&backup).unwrap(), b"same bytes");
+        std::fs::remove_file(&backup).unwrap();
+        std::fs::hard_link(&copy, &alias).unwrap();
+        let mut outcome = Outcome::default();
+        link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut outcome, &mut |_| {});
+        assert_eq!((outcome.files, outcome.freed), (1, 0), "an external alias still owns the original data: {:?}", outcome.problems);
+        assert_eq!(std::fs::read(&alias).unwrap(), b"same bytes");
+        assert!(!backup.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn excluded_live_privacy_journal_holds_the_whole_set() {
