@@ -30,18 +30,6 @@ struct BITMAPINFOHEADER {
     biClrImportant: u32,
 }
 
-#[repr(C)]
-struct SHFILEOPSTRUCTW {
-    hwnd: HWND,
-    wFunc: u32,
-    pFrom: *const u16,
-    pTo: *const u16,
-    fFlags: u16,
-    fAnyOperationsAborted: i32,
-    hNameMappings: *mut c_void,
-    lpszProgressTitle: *const u16,
-}
-
 #[link(name = "user32")]
 extern "system" {
     fn LoadImageW(inst: isize, name: *const u16, kind: u32, cx: i32, cy: i32, flags: u32) -> isize;
@@ -80,11 +68,6 @@ extern "system" {
     fn GlobalAlloc(flags: u32, bytes: usize) -> isize;
     fn GlobalLock(mem: isize) -> *mut c_void;
     fn GlobalUnlock(mem: isize) -> i32;
-}
-
-#[link(name = "shell32")]
-extern "system" {
-    fn SHFileOperationW(op: *mut SHFILEOPSTRUCTW) -> i32;
 }
 
 #[link(name = "ole32")]
@@ -280,26 +263,6 @@ pub fn copy_text(owner: HWND, text: &str) -> bool {
         CloseClipboard();
         ok
     }
-}
-
-/// Send a file or folder to the Recycle Bin (`permanent` deletes it outright).
-pub fn delete_path(owner: HWND, path: &Path, permanent: bool) -> bool {
-    let mut from: Vec<u16> = path.display().to_string().encode_utf16().collect();
-    from.extend([0, 0]);
-    let mut op = SHFILEOPSTRUCTW {
-        hwnd: owner,
-        wFunc: 3,
-        pFrom: from.as_ptr(),
-        pTo: std::ptr::null(),
-        // FOF_NOCONFIRMATION (we asked already); recycling adds FOF_ALLOWUNDO and
-        // FOF_WANTNUKEWARNING, so anything too big for the Recycle Bin asks again instead of
-        // being deleted for good without a word.
-        fFlags: if permanent { 0x10 } else { 0x40 | 0x10 | 0x4000 },
-        fAnyOperationsAborted: 0,
-        hNameMappings: std::ptr::null_mut(),
-        lpszProgressTitle: std::ptr::null(),
-    };
-    unsafe { SHFileOperationW(&mut op) == 0 && op.fAnyOperationsAborted == 0 }
 }
 
 /// Show without taking focus and put it behind the other windows.

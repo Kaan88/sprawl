@@ -606,6 +606,10 @@ impl State {
 
     /// Why the selected item may not be deleted from here, if it may not.
     fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
+        if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.job.is_some()
+            || self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() {
+            return Some("Deletion waits until scanning and other file operations finish; screenshot runs cannot delete.".into());
+        }
         if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {
             return Some("This path contains or is inside a folder excluded in Settings > Scanning.".into());
         }
@@ -678,13 +682,13 @@ impl State {
         let node = &self.tree.as_ref().unwrap().nodes[n];
         let what = match (node.is_dir, permanent) {
             (true, true) => format!("Delete this folder permanently? It can't be brought back.\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
-            (true, false) => format!("Move this folder to the Recycle Bin?\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
+            (true, false) => format!("Move this folder's files to the Recycle Bin? Folders remain.\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
             (false, true) => format!("Delete this file permanently? It can't be brought back.\n\n{}", self.size(node.size)),
             (false, false) => format!("Move this file to the Recycle Bin?\n\n{}", self.size(node.size)),
         };
         let (title, yes) = if permanent { ("Delete permanently?", "Delete for good") } else { ("Move to the Recycle Bin?", "Move to the Recycle Bin") };
         let gen = self.tree_gen;
-        let text = format!("{what}\n\n{}", path.display());
+        let text = format!("{what}\n\n{}\n\nNew, kept and protected items are left alone; every file is checked just before it changes.", path.display());
         self.ask(title, &text, yes, permanent, move |s| s.delete_one(n, path, permanent, gen));
     }
 
@@ -733,27 +737,7 @@ impl State {
             self.tell("Not deleted", &why);
             return;
         }
-        self.own_deletes.push((path.to_string_lossy().trim_end_matches('\\').to_lowercase(), std::time::Instant::now()));
-        if !win32::delete_path(self.hwnd, &path, permanent) {
-            self.tell("Not deleted", "It couldn't be deleted (it may be in use or protected).");
-            return;
-        }
-        // The full tree behind a filter forgets it too, or clearing the filter brings it back.
-        self.forget_in_full(&[path.clone()]);
-        let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
-        let parent = t.nodes[n].parent;
-        detach(t, n, Some(&mut self.alloc));
-        self.tree_gen += 1;
-        // its pictures are of the tree before the delete
-        self.hist_close();
-        self.selected = parent;
-        self.files.retain(|&f| f != n && !self.tree.as_ref().unwrap().nodes[f].is_dir);
-        self.rebuild_exts();
-        self.refresh_rows();
-        self.refresh_exts();
-        self.render_map();
-        // what was found there may be gone, and the totals changed
-        self.advisor_start();
+        self.manual_delete_paths(vec![path], permanent);
     }
 
     /// Delete with several rows picked: every one is checked first, then one confirm for all.
@@ -798,46 +782,37 @@ impl State {
                 return;
             }
         }
-        let Some(t) = self.tree.clone() else { return };
-        let nodes: Vec<usize> = picked.iter().map(|(n, _)| *n).collect();
-        let mut failed = Vec::new();
-        let mut gone = Vec::new();
-        for &n in &nodes {
-            let path = t.path_of(n);
-            self.own_deletes.push((path.to_string_lossy().trim_end_matches('\\').to_lowercase(), std::time::Instant::now()));
-            if win32::delete_path(self.hwnd, &path, permanent) {
-                gone.push((n, path));
-            } else {
-                failed.push(path);
+        self.manual_delete_paths(picked.into_iter().map(|(_, p)| p).collect(), permanent);
+    }
+
+    /// Tree deletion uses the same handle-based walker as clean-up. It never asks the shell
+    /// to recursively remove a stale pathname, and it always rescans partial outcomes.
+    fn manual_delete_paths(&mut self, paths: Vec<PathBuf>, permanent: bool) {
+        use sprawl_advisor::clean::{self, Action, Spare};
+        let mut keep = self.advisor.memory.kept_paths();
+        keep.extend(sprawl_advisor::exclusions::configured());
+        let spare = Spare { since: Some(self.active_began()), keep };
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut results = Vec::new();
+        let mut notes = Vec::new();
+        for path in paths {
+            self.own_deletes.push((path.to_string_lossy().trim_end_matches(std::path::MAIN_SEPARATOR).to_lowercase(), std::time::Instant::now()));
+            let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
+            let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |_| {});
+            notes.extend(outcome.problems);
+            if outcome.kept_new + outcome.kept_chosen + outcome.kept_protected > 0 {
+                notes.push(format!("{}: kept {} new, {} chosen and {} protected items", path.display(), outcome.kept_new, outcome.kept_chosen, outcome.kept_protected));
             }
-        }
-        self.forget_in_full(&gone.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>());
-        for (n, _) in &gone {
-            let tm = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
-            detach(tm, *n, Some(&mut self.alloc));
-        }
-        if !gone.is_empty() {
-            self.tree_gen += 1;
-            self.hist_close();
-            let tr = self.tree.as_ref().unwrap();
-            self.selected = gone.first().and_then(|(n, _)| tr.nodes[*n].parent);
-            self.files.retain(|&f| !tr.nodes[f].is_dir);
+            if let Some(now) = crate::shellmenu::read_now(&path) { results.push((path, now)); }
+            else { notes.push(format!("{} could not be read again; scan again to refresh it", path.display())); }
         }
         self.marked.clear();
-        self.rebuild_exts();
-        self.refresh_rows();
-        self.refresh_exts();
-        self.render_map();
-        if !failed.is_empty() {
-            let list: String = failed.iter().take(8).map(|p| format!("{}\n", p.display())).collect();
-            self.tell("Some weren't deleted", &format!("{} of {} couldn't be deleted (in use or protected):\n\n{list}", failed.len(), nodes.len()));
-        }
-        if !gone.is_empty() {
-            self.advisor_start();
+        self.apply_rescans(results);
+        if !notes.is_empty() {
+            self.tell("Some items were left alone", &notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
         }
     }
 }
-
 /// Take node `n` out of the tree after it was deleted: its totals come off every parent and the
 /// whole branch is emptied so file-type totals forget it.
 fn detach(t: &mut sprawl_core::Tree, n: usize, mut alloc: Option<&mut Vec<u64>>) {
@@ -958,25 +933,6 @@ pub(crate) fn alive(t: &sprawl_core::Tree, mut n: usize) -> bool {
 }
 
 impl State {
-    /// Deleted paths leave the full tree behind a filter too, and its kept parts follow (as
-    /// the tables of the tree on screen do after a delete).
-    fn forget_in_full(&mut self, paths: &[PathBuf]) {
-        let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) else { return };
-        let mut parts = self.full_parts.as_mut();
-        let mut any = false;
-        for path in paths {
-            if let Some(k) = sprawl_advisor::find_path(full, path).filter(|&k| k != ROOT) {
-                detach(full, k, parts.as_mut().map(|p| &mut p.alloc));
-                any = true;
-            }
-        }
-        if let (true, Some(p)) = (any, parts) {
-            p.files.retain(|&f| !full.nodes[f].is_dir);
-            p.exts = crate::tables::ext_rows(full, &p.alloc);
-            crate::tables::sort_ext_rows(&mut p.exts, p.sorts.exts);
-        }
-    }
-
     /// After a clean-up: each path as it is now (a fresh scan of it, or None when it is gone) goes
     /// into the tree, and the tables, the map and the findings follow.
     pub(crate) fn apply_rescans(&mut self, now: Vec<(PathBuf, Option<sprawl_core::Tree>)>) {

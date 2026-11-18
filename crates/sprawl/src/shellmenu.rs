@@ -144,8 +144,8 @@ fn same(a: &Path, b: &Path) -> bool {
 
 /// What is at `p` now, for `apply_rescans`: Some(None) when it is gone, None when it can't be read.
 pub(crate) fn read_now(p: &Path) -> Option<Option<sprawl_core::Tree>> {
-    match std::fs::symlink_metadata(p) {
-        Ok(_) => crate::cleanup::rescan(p).ok().map(Some),
+    match sprawl_core::local::scope(p) {
+        Ok(_pinned) => crate::cleanup::rescan(p).ok().map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
         Err(_) => None,
     }
