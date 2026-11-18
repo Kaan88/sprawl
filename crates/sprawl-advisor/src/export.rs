@@ -44,7 +44,7 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     s.push_str("$items = @(\n");
     let mut by_hand = Vec::new();
     // privacy parts are cleaned only inside Sprawl, with the browser closed: not even listed
-    for f in findings.iter().filter(|f| !f.privacy()) {
+    for f in findings.iter().filter(|f| !f.privacy() && !f.heuristic()) {
         let Some(cmd) = &f.command else {
             by_hand.push(f);
             continue;

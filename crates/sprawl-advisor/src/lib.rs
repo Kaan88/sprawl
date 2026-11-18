@@ -22,10 +22,12 @@ pub mod config;
 pub mod confidence;
 pub mod dupes;
 pub mod export;
+pub mod exe_installers;
 pub mod facts;
 pub mod kinds;
 pub mod finding;
 pub mod growth;
+pub mod game_leftovers;
 pub mod hidden;
 pub mod history;
 pub mod inuse;
@@ -157,6 +159,8 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
         // A2: what things are, by their layout (an archive already extracted beside it)
         .chain(kinds::archives(tree, 50 << 20))
         .chain(installers::find(tree, facts, 10 << 20))
+        .chain(exe_installers::find(tree, facts, 10 << 20))
+        .chain(game_leftovers::find(tree, facts, 50 << 20))
         .chain(remedies::compact(tree))
         .chain(remedies::onedrive(tree))
         .chain(remedies::moves(tree, &hidden::fixed_drives()));

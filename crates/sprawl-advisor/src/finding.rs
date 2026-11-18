@@ -178,12 +178,12 @@ impl Finding {
     /// is gone left behind), not by a rule that names the program: a careful guess, never
     /// picked for the user nor written into a script.
     pub fn heuristic(&self) -> bool {
-        matches!(&self.source, Source::Rule(id) if id == crate::cleaners::SHAPE || id == crate::leftovers::ID)
+        matches!(&self.source, Source::Rule(id) if id == crate::cleaners::SHAPE || id == crate::leftovers::ID || id == crate::exe_installers::ID || id == crate::game_leftovers::ID)
     }
 
     /// Left behind by an application that is no longer installed.
     pub fn leftover(&self) -> bool {
-        matches!(&self.source, Source::Rule(id) if id == crate::leftovers::ID)
+        matches!(&self.source, Source::Rule(id) if id == crate::leftovers::ID || id == crate::game_leftovers::ID)
     }
 
     /// Its size is the whole folder's, while the clean-up takes only part of it (files a
