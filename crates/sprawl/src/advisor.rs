@@ -29,6 +29,7 @@ use crate::{ui, win32};
 
 
 pub(crate) struct Report {
+    pub(crate) facts: Arc<Facts>,
     /// `State::tree_gen` of the tree this was made from; stale once that changes.
     pub(crate) tree: u64,
     pub(crate) findings: Vec<Finding>,
@@ -327,8 +328,9 @@ impl Advisor {
 /// "Ask your disk": its own thread and channel, so it outlives filter changes; a new scan ends it.
 #[derive(Default)]
 pub(crate) struct Chat {
+    context: Option<ChatContext>,
     next_row: Option<String>,
-    row_questions: std::collections::VecDeque<Option<String>>,
+    row_questions: std::collections::VecDeque<(Option<String>, Option<String>)>,
     row_answers: std::collections::BTreeMap<String, String>,
     /// Questions to the chat thread.
     tx: Option<Sender<String>>,
@@ -350,9 +352,35 @@ pub(crate) struct Chat {
     web_ok: Arc<std::sync::atomic::AtomicBool>,
     /// The chat thread is still running (it clears this when it ends).
     alive: Arc<std::sync::atomic::AtomicBool>,
-    /// The chat was started on the Cleaners tab's own read (no scan covered the cleaners), not
-    /// on the scan: a question from the other one starts a new chat on the right tree.
+}
+
+struct ChatContext {
+    tree: std::sync::Weak<Tree>,
     own: bool,
+    findings: Option<Vec<Finding>>,
+    definitions: Vec<(String, String, bool)>,
+}
+
+impl ChatContext {
+    fn capture(tree: &Arc<Tree>, own: bool, report: Option<&Report>) -> Self {
+        Self::capture_data(tree, own, report.map(|r| r.findings.as_slice()), report.map_or(&[], |r| r.catalogue.as_slice()))
+    }
+
+    fn capture_data(tree: &Arc<Tree>, own: bool, findings: Option<&[Finding]>, definitions: &[sprawl_advisor::cleaners::CleanerDef]) -> Self {
+        Self { tree: Arc::downgrade(tree), own, findings: findings.map(|f| f.to_vec()),
+            definitions: definitions.iter().map(|d| (d.id.clone(), d.text.clone(), d.builtin)).collect() }
+    }
+
+    fn matches(&self, tree: Option<&Arc<Tree>>, own: bool, report: Option<&Report>) -> bool {
+        self.matches_data(tree, own, report.map(|r| r.findings.as_slice()), report.map_or(&[], |r| r.catalogue.as_slice()))
+    }
+
+    fn matches_data(&self, tree: Option<&Arc<Tree>>, own: bool, findings: Option<&[Finding]>, definitions: &[sprawl_advisor::cleaners::CleanerDef]) -> bool {
+        if self.own != own || !self.tree.upgrade().zip(tree).is_some_and(|(a, b)| Arc::ptr_eq(&a, b))
+            || self.findings.as_deref() != findings { return false; }
+        self.definitions.len() == definitions.len() && self.definitions.iter().zip(definitions)
+            .all(|((id, text, builtin), d)| id == &d.id && text == &d.text && *builtin == d.builtin)
+    }
 }
 
 enum ChatMsg {
@@ -543,7 +571,7 @@ mod recheck_tests {
 }
 
 /// Everything the advisor works out for one tree. Runs off the UI thread.
-pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: bool, measured_at: u64) -> (Report, Facts) {
+pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: bool, measured_at: u64) -> (Report, Arc<Facts>) {
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
     // the built-in rules, then the user's own (approved proposals): never trusted
@@ -614,7 +642,9 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
             stack.extend_from_slice(&tree.nodes[k].children);
         }
     }
+    let facts = Arc::new(facts);
     let r = Report {
+        facts: facts.clone(),
         tree: gen,
         nodes,
         counted,
@@ -693,7 +723,7 @@ impl State {
         self.advisor.dupes_note = None;
         self.advisor.memory_ready();
         // still looking: the MCP's report says so rather than "nothing"
-        crate::bridge::publish_findings(String::new(), None);
+        crate::bridge::clear_findings();
         let Some(t) = self.tree.clone() else {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
             return self.advisor_changed();
@@ -813,8 +843,13 @@ impl State {
     /// Called every frame: pick up finished work.
     /// A run in its PowerShell window writes what it freed into its report file when it ends.
     pub(crate) fn advisor_poll(&mut self) {
-        // Claude Code sees the whole scan, also while a filter is on (after a sort, the new one)
-        crate::bridge::publish_tree(self.full_tree.as_ref().or(self.tree.as_ref()), self.scan_began);
+        // The active report and its whole source tree move together, including Cleaners' own
+        // read. Map filters are accepted only when that same tree is displayed on the map.
+        let active = self.active_tree();
+        if crate::bridge::publish_tree(active.as_ref(), self.active_began(), self.full_tree.as_ref().or(self.tree.as_ref())) {
+            self.invalidate_chat_if_changed();
+            self.publish_bridge();
+        }
         crate::bridge::publish_scanning(self.job.is_some());
         self.recheck_poll();
         self.uncompress_poll();
@@ -828,7 +863,7 @@ impl State {
             self.read_ai_fields();
             self.render_advisor();
         }
-        for f in crate::bridge::take_filters() {
+        for f in crate::bridge::take_filters(self.full_tree.as_ref().or(self.tree.as_ref())) {
             if let Ok(t) = find::<TextBox>(&self.root, "FilterBox") {
                 let _ = t.SetText(&f.as_str().into());
             }
@@ -977,12 +1012,19 @@ impl State {
     }
 
     fn advisor_changed(&mut self) {
+        self.invalidate_chat_if_changed();
         self.map.drawn_once = false;
-        if let Some(r) = self.advice() {
-            crate::bridge::publish_findings(format!("{}{}{}", findings_text(r), sprawl_advisor::mcp::CLEANERS_MARK, self.cleaners_text(r)), Some(&r.findings));
-        }
+        self.publish_bridge();
         if self.view == View::Advisor {
             self.render_advisor();
+        }
+    }
+
+    fn publish_bridge(&self) {
+        if let (Some(tree), Some(report)) = (self.active_tree(), self.advice()) {
+            let source = if self.own_active() { "(From Cleaners' own read; this is not the scan displayed on the map.)\n\n" } else { "" };
+            crate::bridge::publish_findings(&tree, self.active_began(), self.full_tree.as_ref().or(self.tree.as_ref()), &report.facts,
+                format!("{source}{}{}{source}{}", findings_text(report), sprawl_advisor::mcp::CLEANERS_MARK, self.cleaners_text(report)), &report.findings);
         }
     }
 
@@ -2975,6 +3017,26 @@ impl State {
         self.advisor.chat.web_ok.store(false, std::sync::atomic::Ordering::Relaxed);
         // dropping the senders ends the thread; a pending consent answers no
         self.advisor.chat = Chat::default();
+        self.advisor.fn_suggest = None;
+        self.advisor.cl.suggest = None;
+        self.advisor.cl.sug_reasons.clear();
+        self.advisor.cl.part_q = None;
+        self.advisor.cl.part_answers.clear();
+    }
+
+    fn chat_context_matches(&self) -> bool {
+        let tree = self.active_tree();
+        self.advisor.chat.context.as_ref().is_some_and(|c| c.matches(tree.as_ref(), self.own_active(), self.advice()))
+    }
+
+    pub(crate) fn invalidate_chat_if_changed(&mut self) {
+        if self.advisor.chat.context.is_some() && !self.chat_context_matches() {
+            let pending = self.advisor.chat.status.is_some();
+            self.chat_reset();
+            if pending {
+                self.adv_say("The scan, findings or cleaner definitions changed. Ask again for the current results.");
+            }
+        }
     }
 
     /// A sample exchange with Markdown in the answer (screenshot runs).
@@ -3118,8 +3180,10 @@ impl State {
             let _ = t.SetText(&"".into());
         }
         // a chat about the scan can't answer about the Cleaners tab's own read, nor the other way
-        if self.advisor.chat.tx.is_some() && self.advisor.chat.own != self.own_active() {
+        if self.advisor.chat.tx.is_some() && !self.chat_context_matches() {
+            let part_q = self.advisor.cl.part_q.take();
             self.chat_reset();
+            self.advisor.cl.part_q = part_q;
         }
         if self.advisor.chat.tx.is_none() {
             // the whole scan (also while a filter is on), or what the Cleaners tab read itself
@@ -3128,7 +3192,6 @@ impl State {
                 self.adv_say("Nothing is scanned yet: scan a drive or folder, or let Cleaners finish reading, then ask.");
                 return;
             };
-            self.advisor.chat.own = self.own_active();
             let scan_before = self.active_began();
             let cfg = AiConfig::load();
             if cfg.provider == Provider::ClaudeCode {
@@ -3141,6 +3204,7 @@ impl State {
             let notes = self.advice().and_then(|r| r.growth.as_ref()).zip(self.tree.as_ref()).map(|(g, t)| g.text(t)).unwrap_or_default();
             // what the rules found, so the chat's report doesn't say "nothing" (None: still looking)
             let found = self.advice().map(|r| r.findings.clone());
+            self.advisor.chat.context = Some(ChatContext::capture(&t, self.own_active(), self.advice()));
             let (qtx, qrx) = channel::<String>();
             let (etx, erx) = channel::<ChatMsg>();
             let web_ok = self.advisor.chat.web_ok.clone();
@@ -3179,8 +3243,10 @@ impl State {
         // the thread ended (AI off, no key, an error): start a new one
         if self.advisor.chat.tx.is_some() && !self.advisor.chat.alive.load(std::sync::atomic::Ordering::Relaxed) {
             let log = std::mem::take(&mut self.advisor.chat.log);
+            let part_q = self.advisor.cl.part_q.take();
             self.chat_reset();
             self.advisor.chat.log = log;
+            self.advisor.cl.part_q = part_q;
             self.advisor.chat.next_row = row;
             return self.chat_ask(q);
         }
@@ -3210,7 +3276,7 @@ impl State {
         };
         if let Some(tx) = &self.advisor.chat.tx {
             if tx.send(sent).is_ok() {
-                self.advisor.chat.row_questions.push_back(row);
+                self.advisor.chat.row_questions.push_back((row, self.advisor.cl.part_q.take()));
                 self.advisor.chat.log.push((true, q));
                 self.advisor.chat.status = Some("Sending the question".into());
                 self.advisor.chat.asked = Some(std::time::Instant::now());
@@ -3224,6 +3290,11 @@ impl State {
         let Some(rx) = &self.advisor.chat.rx else { return };
         let mut msgs: Vec<ChatMsg> = rx.try_iter().collect();
         if msgs.is_empty() {
+            return;
+        }
+        if !self.chat_context_matches() {
+            self.chat_reset();
+            self.adv_say("The scan, findings or cleaner definitions changed while the answer was being prepared. Ask again for the current results.");
             return;
         }
         // a piece of the answer followed by another: only the newest counts
@@ -3252,13 +3323,14 @@ impl State {
                     }
                 }
                 ChatMsg::Event(ChatEvent::Reply(s)) => {
-                    if let Some(Some(path)) = self.advisor.chat.row_questions.pop_front() {
+                    let (row, part) = self.advisor.chat.row_questions.pop_front().unwrap_or_default();
+                    if let Some(path) = row {
                         if self.advisor.chat.row_answers.len() < 100 || self.advisor.chat.row_answers.contains_key(&path) {
                             self.advisor.chat.row_answers.insert(path, s.clone());
                         }
                     }
                     // a "?" about a part: the answer shows in its details too
-                    if let Some(k) = self.advisor.cl.part_q.take() {
+                    if let Some(k) = part {
                         self.advisor.cl.part_answers.insert(k, s.clone());
                     }
                     self.advisor.chat.live = None;
@@ -3268,7 +3340,6 @@ impl State {
                 }
                 ChatMsg::Event(ChatEvent::Failed(e)) => {
                     self.advisor.chat.row_questions.pop_front();
-                    self.advisor.cl.part_q = None;
                     self.advisor.chat.live = None;
                     self.advisor.chat.log.push((false, format!("(failed: {e})")));
                     self.advisor.chat.status = None;
@@ -4023,5 +4094,36 @@ mod memory_tests {
         assert!(a.memory_to_save().is_none());
         a.memory_loaded = true;
         assert!(a.memory_to_save().is_some());
+    }
+}
+
+#[cfg(test)]
+mod chat_context_tests {
+    use super::*;
+
+    #[test]
+    fn replies_cannot_reuse_indices_after_context_changes() {
+        let tree = Arc::new(Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { is_dir: true, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk });
+        let finding = |path: &str| serde_json::from_value::<Finding>(serde_json::json!({
+            "path": path, "bytes": 1, "risk": "green", "remedy": "info", "title": path,
+            "evidence": [], "confidence": 1.0, "source": {"kind": "rule", "id": "test.rule"}
+        })).unwrap();
+        let found = vec![finding(r"C:\Data\a"), finding(r"C:\Data\b")];
+        let definitions = vec![sprawl_advisor::cleaners::CleanerDef { id: "test.cleaner".into(), name: "Test".into(), group: "Other".into(),
+            present: Vec::new(), running: Vec::new(), builtin: true, pack: "Test".into(), parts: Vec::new(), text: "definition A".into() }];
+        let context = ChatContext::capture_data(&tree, false, Some(&found), &definitions);
+        assert!(context.matches_data(Some(&tree), false, Some(&found), &definitions));
+        let mut reordered = found.clone();
+        reordered.swap(0, 1);
+        assert!(!context.matches_data(Some(&tree), false, Some(&reordered), &definitions));
+        let mut raised = found.clone();
+        raised[0].risk = Risk::Orange;
+        assert!(!context.matches_data(Some(&tree), false, Some(&raised), &definitions));
+        let mut changed = definitions.clone();
+        changed[0].text = "definition B".into();
+        assert!(!context.matches_data(Some(&tree), false, Some(&found), &changed));
+        assert!(!context.matches_data(Some(&tree), true, Some(&found), &definitions));
+        assert!(!context.matches_data(Some(&Arc::new((*tree).clone())), false, Some(&found), &definitions));
+        assert!(!context.matches_data(Some(&tree), false, None, &definitions));
     }
 }

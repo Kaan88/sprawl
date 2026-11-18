@@ -288,6 +288,7 @@ impl State {
             if self.advisor.memory.learning.mark_refills(&o.report.refill_observations) { self.save_memory(); }
         }
         self.advisor.cl.own = got.or(self.advisor.cl.own.take());
+        self.invalidate_chat_if_changed();
         if self.own_active() {
             self.cleanup_defaults();
             self.cleanup_measure_report();
