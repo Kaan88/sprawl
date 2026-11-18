@@ -107,6 +107,20 @@ begin
   Result := Sid;
 end;
 
+function ExactTaskPrincipal(Xml, Sid: String): Boolean;
+var StartAt, EndAt: Integer; Rest, Owner: String;
+begin
+  Result := False;
+  StartAt := Pos('<UserId>', Xml);
+  if StartAt = 0 then exit;
+  Rest := Copy(Xml, StartAt + Length('<UserId>'), Length(Xml));
+  EndAt := Pos('</UserId>', Rest);
+  if EndAt = 0 then exit;
+  Owner := Trim(Copy(Rest, 1, EndAt - 1));
+  Rest := Copy(Rest, EndAt + Length('</UserId>'), Length(Rest));
+  Result := (Owner = Sid) and (Pos('<UserId>', Rest) = 0);
+end;
+
 procedure CurUninstallStepChanged(Step: TUninstallStep);
 var Sid, Xml: String; Code, I: Integer; Output: TExecOutput;
 begin
@@ -119,6 +133,6 @@ begin
   if (Code <> 0) or Output.Error then exit;
   Xml := '';
   for I := 0 to GetArrayLength(Output.StdOut) - 1 do Xml := Xml + Trim(Output.StdOut[I]);
-  if Pos('<UserId>' + Sid + '</UserId>', Xml) > 0 then
+  if ExactTaskPrincipal(Xml, Sid) then
     Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "Sprawl low-space check" /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
