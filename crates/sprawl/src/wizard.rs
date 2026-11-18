@@ -317,12 +317,8 @@ impl State {
                 self.settings.set_bool("offline", yes);
                 sprawl_advisor::OFFLINE.store(yes, std::sync::atomic::Ordering::Relaxed);
             }
-            // not elevated, the switches are greyed out and nothing is written (store::set refuses)
-            k if crate::admin::is_switch(k) => {
-                if let Err(e) = crate::admin::store::set(k, yes) {
-                    self.prefs.note = Some(format!("{}: {e}", p.label));
-                }
-            }
+            // written by the save itself (wizard_finish), which says when a write fails
+            k if crate::admin::is_switch(k) => {}
             k => match &p.kind {
                 Kind::Number(knob, _) => {
                     let n = v.trim().replace([',', '.', ' '], "").parse::<u64>().unwrap_or(knob.default);
@@ -605,7 +601,8 @@ impl State {
         match name {
             "PfB_reset" | "PfB_resetAll" => {
                 let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
-                for p in PREFS.iter().filter(|p| name == "PfB_resetAll" || p.sec == sec) {
+                // the administrator switches only change where they can be saved: elevated
+                for p in PREFS.iter().filter(|p| name == "PfB_resetAll" || p.sec == sec).filter(|p| !crate::admin::is_switch(p.key) || sprawl_core::is_elevated()) {
                     if let Some(d) = p.default_value() {
                         self.prefs.draft.insert(p.key, d);
                     }
@@ -810,7 +807,16 @@ impl State {
                 (self.prefs.orig.get(p.key) != Some(v)).then(|| (p, v.clone()))
             })
             .collect();
+        // the administrator switches as they are before this save, to tell a real change
+        let admin_before: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         for (p, v) in changed {
+            // into their store; a write that fails is said in the message, never "saved"
+            if crate::admin::is_switch(p.key) {
+                if let Err(e) = crate::admin::store::set(p.key, v == "1") {
+                    notes.push(format!("{} is unchanged ({e})", p.label.to_lowercase()));
+                }
+                continue;
+            }
             if let Kind::Number(knob, unit) = &p.kind {
                 let n = v.trim().replace([',', '.', ' '], "").parse::<u64>();
                 match n {
@@ -824,7 +830,8 @@ impl State {
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
         // the administrator switches take effect now, not at the next start
-        let admin_changed = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().any(|l| self.prefs.orig.get(l.key) != self.prefs.draft.get(l.key));
+        let admin_after: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
+        let admin_changed = admin_before != admin_after;
         self.admin_flags();
         if ai_changed || admin_changed {
             // an "Ask Claude" run under the old settings ends too, not only the chat

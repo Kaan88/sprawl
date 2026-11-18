@@ -86,6 +86,10 @@ pub fn due(s: &Status) -> bool {
 /// longer passes is left out). `taken`: the ids Sprawl's and the user's packs use.
 pub fn load(taken: &mut HashSet<String>) -> Vec<RulePack> {
     let Some(d) = dir() else { return Vec::new() };
+    load_in(&d, taken)
+}
+
+fn load_in(d: &Path, taken: &mut HashSet<String>) -> Vec<RulePack> {
     let never = crate::safety::Never::default_list();
     let mut out = Vec::new();
     for (file, prefix) in [("winapp2.toml", WINAPP2), ("bleachbit.toml", BLEACHBIT)] {
@@ -94,8 +98,34 @@ pub fn load(taken: &mut HashSet<String>) -> Vec<RulePack> {
         if !m.is_file() || m.len() > 16 << 20 {
             continue;
         }
-        if let Some(pack) = std::fs::read_to_string(&p).ok().and_then(|t| crate::memory::check_import_text(&t, prefix, &never, taken).ok()) {
-            out.push(pack);
+        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        // against a copy: a check that fails part-way has already taken the ids it passed
+        let mut t = taken.clone();
+        match crate::memory::check_import_text(&text, prefix, &never, &mut t) {
+            Ok(pack) => {
+                *taken = t;
+                out.push(pack);
+            }
+            // a file converted under older checks (a part a newer Sprawl refuses): its cleaners
+            // one by one, as a fetch checks them, so one refused part doesn't take every other
+            // community cleaner with it. Only cleaners are kept, each passing the checks whole.
+            Err(_) => {
+                let Ok(all) = RulePack::parse(text.trim_start_matches('\u{feff}')) else { continue };
+                let mut pack = RulePack::empty(&all.pack.name);
+                for c in all.cleaners {
+                    let mut one = RulePack::empty(&all.pack.name);
+                    one.cleaners.push(c.clone());
+                    let ok = toml::to_string(&one).map_err(|e| e.to_string()).and_then(|t| crate::memory::check_import_text(&t, prefix, &never, taken));
+                    if ok.is_ok() {
+                        pack.cleaners.push(c);
+                    }
+                }
+                if !pack.cleaners.is_empty() {
+                    if let Ok(p) = toml::to_string(&pack).map_err(|e| e.to_string()).and_then(|t| RulePack::parse(&t)) {
+                        out.push(RulePack { trusted: false, ..p });
+                    }
+                }
+            }
         }
     }
     out
@@ -726,15 +756,18 @@ pub fn convert_cleanerml(file: &str, text: &str) -> (Option<Cleaner>, Vec<LeftOu
             };
             // $$var$$ stands for each of its values
             let mut paths = vec![raw.to_string()];
+            let mut too_many = false;
             for (n, vals) in &vars {
                 let tag = format!("$${n}$$");
-                paths = paths.into_iter().flat_map(|p| if p.contains(&tag) { vals.iter().map(|v| p.replace(&tag, v)).collect() } else { vec![p] }).collect();
-                // many-valued variables multiply: a hostile file could fill the memory
-                if paths.len() > 64 {
+                // many-valued variables multiply: a hostile file could fill the memory, so the
+                // count is checked before the paths are made
+                if paths.iter().filter(|p| p.contains(&tag)).count().saturating_mul(vals.len()) > 64 {
+                    too_many = true;
                     break;
                 }
+                paths = paths.into_iter().flat_map(|p| if p.contains(&tag) { vals.iter().map(|v| p.replace(&tag, v)).collect() } else { vec![p] }).collect();
             }
-            if paths.len() > 64 {
+            if too_many {
                 left.push(LeftOut { entry: what.clone(), why: "more than 64 folders from one action".into() });
                 continue;
             }
@@ -899,6 +932,24 @@ mod tests {
         assert!(st.sources.iter().all(|s| s.error.is_empty()));
     }
 
+    /// A stored pack converted under older checks: a cleaner a newer Sprawl refuses is left out
+    /// alone, the others still load.
+    #[test]
+    fn a_stored_pack_loses_only_its_refused_cleaner() {
+        env();
+        let d = std::env::temp_dir().join(format!("sprawl-comm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let one = |id: &str, path: &str| format!("[[cleaner]]\nid = '{id}'\nname = 'A'\n[[cleaner.part]]\nid = 'k1'\ntitle = 'Cache'\nrisk = 'amber'\npaths = ['{path}']\nwhy = 'w'\n");
+        let text = format!("[pack]\nname = 'x'\n{}{}", one("winapp2.ok", r"%LOCALAPPDATA%\A\Cache"), one("winapp2.bad", r"%USERPROFILE%\Documents\Work"));
+        std::fs::write(d.join("winapp2.toml"), text).unwrap();
+        let packs = load_in(&d, &mut HashSet::new());
+        let ids: Vec<&str> = packs.iter().flat_map(|p| p.cleaners.iter().map(|c| c.id.as_str())).collect();
+        assert_eq!(ids, ["winapp2.ok"]);
+        assert!(packs.iter().all(|p| !p.trusted && p.rules.is_empty() && !p.part_rules.is_empty()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// A pack that claims another source's prefix, a green part, a privacy part or a plain rule
     /// is refused whole when loaded.
     #[test]
@@ -915,6 +966,8 @@ mod tests {
             // the user's own folders
             good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Documents\Work"),
             good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Pictures\2024"),
+            good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\D?cuments\Work\x"),
+            good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Doc*\A\B"),
             // a part that runs as administrator
             good.replace("why = 'w'", "why = 'w'\nadmin = true"),
         ] {

@@ -107,7 +107,15 @@ fn scrub_query_for(q: &str, private: &[String]) -> Result<String, String> {
         };
         // a private name anywhere in the word (`kaan's`, `x-kaan`), not only as the whole word
         let lw = w.to_lowercase();
-        if w.is_empty() || private.iter().any(|p| lw.trim_matches(|c: char| !c.is_alphanumeric()) == p.as_str() || lw.split(|c: char| !c.is_alphanumeric()).any(|r| r == p.as_str())) {
+        // and one with punctuation of its own (`desktop-abc123`, `john.doe`), found as a whole
+        let inside = |p: &str| {
+            lw.match_indices(p).any(|(i, _)| {
+                let before = lw[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+                let after = lw[i + p.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+                before && after
+            })
+        };
+        if w.is_empty() || private.iter().any(|p| lw.trim_matches(|c: char| !c.is_alphanumeric()) == p.as_str() || lw.split(|c: char| !c.is_alphanumeric()).any(|r| r == p.as_str()) || inside(p)) {
             continue;
         }
         // "users" next to a removed name says nothing
@@ -806,6 +814,10 @@ mod tests {
         for q in ["what is file:///C:/Users/kaan/Documents/x", "what is a://C:/Users/kaan/x", "what is Users/kaan", "what is kaan's cache"] {
             assert!(!scrub_query_for(q, &p).unwrap_or_default().to_lowercase().contains("kaan"), "{q}");
         }
+        for q in ["what is desktop-k1's cache", "what is x_desktop-k1 folder"] {
+            assert!(!scrub_query_for(q, &p).unwrap_or_default().to_lowercase().contains("desktop-k1"), "{q}");
+        }
+        assert_eq!(scrub_query_for("what is kaanx cache", &p).unwrap(), "what is kaanx cache", "a longer word is not the name");
     }
 
     /// What the web said changes nothing about a finding: same risk, same checks, never ticked.

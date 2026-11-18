@@ -263,6 +263,10 @@ fn run_dir() -> Result<std::path::PathBuf, String> {
             }
         }
     }
+    // nor written into through one: the scan's snapshot and the MCP config would land elsewhere
+    if std::fs::symlink_metadata(&runs).is_ok() && !plain(&runs) {
+        return Err(format!("{} is a link, not a folder: remove it, then ask again", runs.display()));
+    }
     let dir = runs.join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)

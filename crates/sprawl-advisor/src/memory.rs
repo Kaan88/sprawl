@@ -637,6 +637,16 @@ pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never,
         }
         // a downloaded definition cleans application data, never the user's own folders
         // (Documents, Pictures, Downloads...): left out, not left to the orange tick
+        // ...also not by a wildcard in the folder right under a profile (`D?cuments`, `Doc*`),
+        // which the samples above would read as some other name
+        let wild_under_profile = |x: &str| {
+            let e = crate::rules::expand(x);
+            let segs: Vec<&str> = e.split('\\').filter(|s| !s.is_empty()).collect();
+            segs.len() > 3 && segs[1].eq_ignore_ascii_case("users") && segs[3].contains(['*', '?'])
+        };
+        if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| wild_under_profile(x)) {
+            return Err(format!("{}: {x} has a wildcard where your own folders are", c.id));
+        }
         if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| sample_paths(x).iter().any(|s| never.is_user_data(s))) {
             return Err(format!("{}: {x} is in your own folders", c.id));
         }
