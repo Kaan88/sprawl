@@ -524,7 +524,8 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
         packs.extend(sprawl_advisor::community::load(&mut taken));
     }
     // privacy parts only with the setting on; off, nothing about them is read
-    let adv = sprawl_advisor::advise_report(tree, &packs, &facts, privacy_on);
+    let active_packs = sprawl_advisor::community::for_analysis(&packs, &memory.community_on);
+    let adv = sprawl_advisor::advise_report(tree, &active_packs, &facts, privacy_on);
     let (findings, held) = (adv.findings, adv.held);
     let (mut findings, kept) = memory.filter(findings);
     let refill_observations = memory.learning.refills(&findings, measured_at);

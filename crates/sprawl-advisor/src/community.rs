@@ -119,9 +119,9 @@ fn load_in(d: &Path, taken: &mut HashSet<String>) -> Vec<RulePack> {
                     // its ids are taken only when it passes
                     let mut t = taken.clone();
                     let ok = toml::to_string(&one).map_err(|e| e.to_string()).and_then(|x| crate::memory::check_import_text(&x, prefix, &never, &mut t));
-                    if ok.is_ok() {
+                    if let Ok(checked) = ok {
                         *taken = t;
-                        pack.cleaners.push(c);
+                        pack.cleaners.extend(checked.cleaners);
                     }
                 }
                 if !pack.cleaners.is_empty() {
@@ -139,6 +139,21 @@ fn load_in(d: &Path, taken: &mut HashSet<String>) -> Vec<RulePack> {
 pub fn fingerprint(text: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Remove disabled community rules before matching and path deduplication. Their full
+/// definitions remain in the UI catalogue so the user can review and enable them.
+pub fn for_analysis(packs: &[RulePack], approvals: &std::collections::BTreeMap<String, String>) -> Vec<RulePack> {
+    let catalogue = crate::cleaners::catalogue_with(packs, false);
+    let on: HashSet<&str> = catalogue.iter().filter(|d| is_community(&d.id)
+        && approvals.get(&d.id).is_some_and(|hash| *hash == fingerprint(&d.text))).map(|d| d.id.as_str()).collect();
+    let allowed = |id: &str| !is_community(id) || on.contains(id.split('/').next().unwrap_or(""));
+    packs.iter().cloned().map(|mut pack| {
+        pack.rules.retain(|r| allowed(&r.id));
+        pack.part_rules.retain(|r| allowed(&r.id));
+        pack.cleaners.retain(|c| allowed(&c.id));
+        pack
+    }).collect()
 }
 
 // ------------------------------------------------------------------ fetching
@@ -286,8 +301,8 @@ fn finish(pack_name: &str, prefix: &str, cleaners: Vec<Cleaner>, taken: &HashSet
         one.cleaners.push(c.clone());
         let checked = toml::to_string(&one).map_err(|e| e.to_string()).and_then(|t| crate::memory::check_import_text(&t, prefix, &never, &mut taken));
         match checked {
-            Ok(_) => pack.cleaners.push(c),
-            Err(e) => left.push(LeftOut { entry: c.name.clone(), why: e }),
+            Ok(checked) => pack.cleaners.extend(checked.cleaners),
+            Err(e) => left.push(LeftOut { entry: crate::facts::clean_text(&c.name), why: crate::facts::clean_text(&e) }),
         }
     }
     let n = pack.cleaners.len();
@@ -985,5 +1000,29 @@ mod tests {
         }
         // a local pack can't use a community prefix
         assert!(crate::memory::check_pack_text(good, &mut HashSet::new()).is_err());
+    }
+
+    #[test]
+    fn display_text_is_scrubbed_and_inactive_imports_cannot_match() {
+        let text = "[pack]\nname = 'Community'\n[[cleaner]]\nid = 'winapp2.test'\nname = 'A\u{202e} B'\n[[cleaner.part]]\nid = 'cache'\ntitle = 'Cache\u{2066}'\nrisk = 'amber'\npaths = ['C:\\SprawlFixture\\Product\\Cache']\nwhy = 'Evidence\u{202d}'\ncost = 'Rebuild\u{202c}'\n";
+        let pack = crate::memory::check_import_text(text, WINAPP2, &crate::safety::Never::default_list(), &mut HashSet::new()).unwrap();
+        assert_eq!(pack.cleaners[0].name, "A B");
+        let part = &pack.cleaners[0].parts[0];
+        assert_eq!((&*part.title, &*part.why, &*part.cost), ("Cache", "Evidence", "Rebuild"));
+        assert_eq!(pack.part_rules[0].title, "A B: Cache");
+        let tree = sprawl_core::Tree { root_path: r"C:\SprawlFixture\Product\Cache".into(),
+            nodes: vec![sprawl_core::Node { name: "Cache".into(), is_dir: true, size: 200 << 20, ..Default::default() }],
+            errors: 0, method: sprawl_core::ScanMethod::Walk };
+        let packs = vec![RulePack::builtin(), pack];
+        let inactive = for_analysis(&packs, &Default::default());
+        assert!(inactive[1].part_rules.is_empty());
+        assert_eq!(inactive[0].rules.len(), packs[0].rules.len());
+        assert!(!crate::rules::run(&tree, &inactive).iter().any(|f| matches!(&f.source, crate::Source::Rule(id) if is_community(id))));
+        let def = crate::cleaners::catalogue_with(&packs, false).into_iter().find(|c| c.id == "winapp2.test").unwrap();
+        let approvals = std::collections::BTreeMap::from([(def.id.clone(), fingerprint(&def.text))]);
+        let active = for_analysis(&packs, &approvals);
+        assert!(crate::rules::run(&tree, &active).iter().any(|f| matches!(&f.source, crate::Source::Rule(id) if id == "winapp2.test/cache")));
+        let legacy = std::collections::BTreeMap::from([(def.id, "e71fa2190541574b".into())]);
+        assert!(for_analysis(&packs, &legacy)[1].part_rules.is_empty());
     }
 }

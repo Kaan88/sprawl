@@ -690,8 +690,19 @@ pub fn check_pack_text(text: &str, taken: &mut std::collections::HashSet<String>
 /// A community pack (converted by [`crate::community`]): checked as a local pack, and every id
 /// carries `prefix`, it has cleaners only, and every part is at least amber.
 pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
+    let mut raw: RulePack = toml::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
+    raw.pack.name = clean_text(&raw.pack.name);
+    for c in &mut raw.cleaners {
+        c.name = clean_text(&c.name);
+        for p in &mut c.parts {
+            p.title = clean_text(&p.title);
+            p.why = clean_text(&p.why);
+            p.cost = clean_text(&p.cost);
+        }
+    }
+    let text = toml::to_string(&raw).map_err(|e| e.to_string())?;
     let mut candidate = taken.clone();
-    let pack = check_pack_with(text, &mut candidate, never)?;
+    let pack = check_pack_with(&text, &mut candidate, never)?;
     if !pack.rules.is_empty() {
         return Err("a community pack has cleaners only".into());
     }
