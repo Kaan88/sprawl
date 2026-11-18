@@ -269,6 +269,9 @@ pub(crate) struct Advisor {
     pub(crate) cleanup: crate::cleanup::Cleanup,
     /// What the Cleaners section has open.
     pub(crate) cl: crate::cleaners::ClState,
+    /// The AI's suggestion of findings to tick (R9): their paths (lower case) and why. Kept by
+    /// path, so a new report keeps what still is in it; checked again when shown and ticked.
+    pub(crate) fn_suggest: Option<(Vec<String>, String)>,
 }
 
 impl Advisor {
@@ -1012,6 +1015,12 @@ impl State {
                 self.advisor.section = Section::Findings;
                 self.advisor.only = Only::All;
             }
+            "AdvFnSugTick" => {
+                let ids = self.advice().map(|r| self.fn_suggested(r).0).unwrap_or_default();
+                self.fn_suggest_tick(&ids);
+                self.advisor.fn_suggest = None;
+            }
+            "AdvFnSugNo" => self.advisor.fn_suggest = None,
             "AdvAiTickSafe" => {
                 // the AI's safe and amber finds that can be ticked; the user's own files stay one by one
                 let keys: Vec<String> = self
@@ -1673,6 +1682,25 @@ impl State {
             }
         }
         for i in 0..count {
+            // a finding the AI suggested: ticked from its card, in the AI's colour (R9)
+            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvSgT{i}")) {
+                if let Ok(t) = b.Click(move |_, _| {
+                    with(|s| {
+                        let on = s.advice().and_then(|r| r.findings.get(i)).is_some_and(|f| s.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)));
+                        if on {
+                            s.cleanup_toggle(i);
+                        } else {
+                            s.fn_suggest_tick(&[i]);
+                        }
+                        s.advisor.focus_after = Some(format!("AdvSgT{i}"));
+                        s.render_advisor();
+                    });
+                }) {
+                    keep(t);
+                }
+            }
+        }
+        for i in 0..count {
             // the same tick, in the AI's column
             if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvAiT{i}")) {
                 if let Ok(t) = b.Click(move |_, _| {
@@ -1741,7 +1769,7 @@ impl State {
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide",
             "AdvKeep", "AdvLater", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
+            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain",
         ] {
             for r in roots {
                 if let Ok(b) = find::<ButtonBase>(r, name) {
@@ -1874,6 +1902,7 @@ impl State {
         if ai {
             x += r##"<Grid Grid.Column="1" RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Button x:Name="AdvClAiFold" HorizontalAlignment="Right" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" Content="Hide the AI" ToolTipService.ToolTip="Fold the AI's column away"/><ScrollViewer x:Name="FnAiScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
             x += &self.ai_card(r);
+            x += &self.fn_suggest_card(r);
             x += &self.ai_found_card(r);
             x += &self.chat_card();
             x += "</StackPanel></ScrollViewer></Grid>";
@@ -2635,6 +2664,93 @@ impl State {
         Some(t)
     }
 
+    /// The findings the AI may suggest (R9): what the user could tick now that is safe or amber,
+    /// with ids for `suggest_ticks`.
+    fn tickable_text(&self) -> Option<String> {
+        let r = self.advice()?;
+        let ids = self.suggestable(r);
+        if ids.is_empty() {
+            return None;
+        }
+        let mut t = String::from("# Findings the user can tick (safe and amber only)\n");
+        for &i in ids.iter().take(80) {
+            let f = &r.findings[i];
+            let ticked = if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { " (ticked)" } else { "" };
+            t += &format!("- {} [{:?}]: {}: {} [id: finding/{i}]{ticked}\n", f.title, f.risk, sprawl_core::format_size(f.bytes), f.path.display());
+        }
+        t += "If the user wants to know what to clean, call suggest_ticks with the finding ids you recommend, and say why in the answer.";
+        Some(t)
+    }
+
+    /// Findings an AI suggestion may tick: what the user could tick, safe or amber, space.
+    pub(crate) fn suggestable(&self, r: &Report) -> Vec<usize> {
+        (0..r.findings.len())
+            .filter(|&i| {
+                let f = &r.findings[i];
+                f.risk <= Risk::Amber && f.forced_from.is_none() && crate::cleanup::counts_as_space(f) && crate::cleanup::untickable(f, r.counted[i]).is_none() && crate::cleanup::held_in_app(f).is_none() && r.in_findings_list(i)
+            })
+            .collect()
+    }
+
+    /// The AI's suggestion as it stands: the findings it named that may still be ticked, by
+    /// index, and how many it named that can't.
+    fn fn_suggested(&self, r: &Report) -> (Vec<usize>, usize) {
+        let Some((keys, _)) = &self.advisor.fn_suggest else { return (Vec::new(), 0) };
+        let ok_ids = self.suggestable(r);
+        let ok: Vec<usize> = ok_ids.iter().copied().filter(|&i| keys.contains(&crate::cleanup::key(&r.findings[i].path))).collect();
+        (ok.clone(), keys.len().saturating_sub(ok.len()))
+    }
+
+    /// The AI's suggestion on the Findings page (R9): each with its tick, and one button for all.
+    fn fn_suggest_card(&self, r: &Report) -> String {
+        let Some((_, why)) = &self.advisor.fn_suggest else { return String::new() };
+        let (ok, left) = self.fn_suggested(r);
+        let running = self.advisor.cleanup.running.is_some();
+        let bytes: u64 = ok.iter().map(|&i| r.findings[i].bytes).sum();
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#1AA97BF6" BorderBrush="#55A97BF6" BorderThickness="1"><StackPanel Spacing="6">"##);
+        x += &format!(r##"<TextBlock Text="The AI suggests ticking {} ({})" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>"##, ok.len(), self.size(bytes));
+        if !why.is_empty() {
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(why));
+        }
+        for &i in &ok {
+            let f = &r.findings[i];
+            x += &format!(
+                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvSgT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Tick {}"/><TextBlock Grid.Column="1" TextWrapping="Wrap" FontSize="12"><Run Text="{}"/><Run Text="   {} · {}" Foreground="#FF8E97AA"/></TextBlock></Grid>"##,
+                if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { "True" } else { "False" },
+                if running { "False" } else { "True" },
+                ui::esc(&f.title),
+                ui::esc(&f.title),
+                self.size(f.bytes),
+                risk_label(f.risk)
+            );
+        }
+        if left > 0 {
+            x += &format!(r##"<TextBlock Text="{left} more it named can't be ticked here (not found, not safe enough, or already gone); they are left out." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
+        }
+        x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
+        if !ok.is_empty() {
+            x += &format!(r##"<Button x:Name="AdvFnSugTick" Content="Tick all it suggested" Padding="12,3" FontSize="12" CornerRadius="5" IsEnabled="{}" ToolTipService.ToolTip="Adds these ticks. You still see the review before anything is deleted."/>"##, if running { "False" } else { "True" });
+        }
+        x += r##"<Button x:Name="AdvFnSugNo" Content="Dismiss" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##;
+        x
+    }
+
+    /// Tick findings `ids` from the AI's suggestion: marked as the AI's until touched.
+    fn fn_suggest_tick(&mut self, ids: &[usize]) {
+        let Some(r) = self.advice() else { return };
+        let ok = self.fn_suggested(r).0;
+        let keys: Vec<String> = ids.iter().filter(|i| ok.contains(i)).map(|&i| crate::cleanup::key(&r.findings[i].path)).collect();
+        let c = &mut self.advisor.cleanup;
+        for k in keys {
+            c.ticked.insert(k.clone());
+            c.ai_ticked.insert(k);
+        }
+        c.single = None;
+        c.own_ok = false;
+        c.auto = false;
+        self.advisor.cl.user_ticked = true;
+    }
+
     /// Type a question and send it (screenshot runs).
     pub(crate) fn advisor_chat_dev(&mut self, q: &str) {
         if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
@@ -2736,10 +2852,16 @@ impl State {
                  call suggest_ticks with the part ids you recommend (safe and amber parts only), and say why in the answer.",
                 self.cleaners_text(r)
             ),
-            None => match self.ticked_text() {
-                Some(t) => format!("{q}\n\n{t}"),
-                None => q.clone(),
-            },
+            None => {
+                let mut s = q.clone();
+                if let Some(t) = self.ticked_text() {
+                    s += &format!("\n\n{t}");
+                }
+                if let Some(t) = self.tickable_text() {
+                    s += &format!("\n\n{t}");
+                }
+                s
+            }
         };
         if let Some(tx) = &self.advisor.chat.tx {
             if tx.send(sent).is_ok() {
@@ -2807,6 +2929,18 @@ impl State {
                     }
                 }
                 ChatMsg::Event(ChatEvent::Suggest { parts, why, reasons }) => {
+                    let (finds, parts): (Vec<String>, Vec<String>) = parts.into_iter().partition(|p| p.to_lowercase().starts_with("finding/"));
+                    if !finds.is_empty() {
+                        let keys: Vec<String> = self
+                            .advice()
+                            .map(|r| finds.iter().filter_map(|p| p[8..].trim().parse::<usize>().ok()).filter_map(|i| r.findings.get(i)).map(|f| crate::cleanup::key(&f.path)).collect())
+                            .unwrap_or_default();
+                        self.advisor.fn_suggest = (!keys.is_empty()).then(|| (keys, why.clone()));
+                        if parts.is_empty() {
+                            redraw = true;
+                            continue;
+                        }
+                    }
                     let declined = &self.advisor.memory.declined_parts;
                     let parts: Vec<String> = parts.into_iter().filter(|p| !declined.iter().any(|d| d.eq_ignore_ascii_case(p))).collect();
                     self.advisor.cl.sug_reasons = reasons.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
@@ -3297,7 +3431,14 @@ impl State {
 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}{remedy}</StackPanel>
 <TextBlock Grid.Column="3" Text="{size}" {num} FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button>"##,
-            bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
+            bg = if open {
+                "#FF262C3D"
+            } else if self.advisor.cleanup.ai_ticked.contains(&crate::cleanup::key(&f.path)) && self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) {
+                // ticked on the AI's suggestion, not touched since (R9)
+                "#26A97BF6"
+            } else {
+                "#0CFFFFFF"
+            },
             dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),

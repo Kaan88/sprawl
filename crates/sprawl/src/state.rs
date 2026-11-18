@@ -779,6 +779,12 @@ impl State {
                         let cut = a.trim_end_matches(|c: char| c.is_ascii_digit()).len();
                         self.cleaner_command(&a[..cut], a[cut..].parse().unwrap_or(0));
                     }
+                    // dev: an AI suggestion of the first three findings it may suggest (R9)
+                    "fnsugdemo" => {
+                        let keys: Vec<String> = self.advice().map(|r| self.suggestable(r).into_iter().take(3).map(|i| crate::cleanup::key(&r.findings[i].path)).collect()).unwrap_or_default();
+                        self.advisor.fn_suggest = Some((keys, "These are caches the apps make again.".into()));
+                        self.render_advisor();
+                    }
                     // dev: click the first row that ticks on a second click (R7c)
                     "secondtry" => {
                         let first = self.advice().and_then(|r| (0..r.findings.len()).find(|&i| crate::cleanup::second_try(&r.findings[i], r.counted[i]) || r.findings[i].forced_from.is_some()));

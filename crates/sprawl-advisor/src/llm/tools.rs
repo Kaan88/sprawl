@@ -39,11 +39,12 @@ pub fn chat_specs() -> Vec<ToolSpec> {
     });
     v.push(ToolSpec {
         name: "suggest_ticks",
-        description: "Suggest cleaner parts for the user to tick, when they ask what to clean (the cleaners and their part ids are in \
-            the question). Sprawl shows the suggestion with a Tick button; the user still reviews and presses Clean up, nothing is \
-            deleted by this. Only parts listed as safe or amber; say why in one or two sentences. One call per answer.",
+        description: "Suggest cleaner parts, or findings, for the user to tick, when they ask what to clean (the cleaners and their \
+            part ids, or the findings and their ids like finding/12, are in the question). Sprawl shows the suggestion with a Tick \
+            button; the user still reviews and presses Clean up, nothing is deleted by this. Only items listed as safe or amber; say \
+            why in one or two sentences. One call per answer.",
         schema: json!({"type": "object", "properties": {
-            "parts": {"type": "array", "items": {"type": "string"}, "description": "Part ids exactly as listed, like [id: chat.discord/cache]"},
+            "parts": {"type": "array", "items": {"type": "string"}, "description": "Ids exactly as listed, like [id: chat.discord/cache] or [id: finding/12]"},
             "why": {"type": "string"},
             "reasons": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional: one short reason per part id"}
         }, "required": ["parts", "why"]}),

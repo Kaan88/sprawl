@@ -47,6 +47,9 @@ pub(crate) struct Cleanup {
     /// A row Sprawl doesn't tick that was clicked once (R7c), by lower-case path: the row says
     /// why it isn't ticked, and a second click ticks it.
     pub armed: Option<String>,
+    /// Ticked from the AI's suggestion (R9), by lower-case path: shown in the AI's purple
+    /// until the user touches the row.
+    pub ai_ticked: HashSet<String>,
 }
 
 pub(crate) struct Item {
@@ -352,6 +355,8 @@ impl State {
     pub(crate) fn cleanup_toggle(&mut self, i: usize) {
         let Some(f) = self.advice().and_then(|r| r.findings.get(i)).map(|f| key(&f.path)) else { return };
         let c = &mut self.advisor.cleanup;
+        // the user's own now
+        c.ai_ticked.remove(&f);
         if !c.ticked.remove(&f) {
             c.ticked.insert(f);
         }
