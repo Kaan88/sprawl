@@ -2508,7 +2508,7 @@ impl State {
                 x += UNCHECKED_LINE;
             }
         }
-        if c.log.is_empty() {
+        if c.log.is_empty() && c.status.is_none() && c.live.is_none() {
             // ready-made questions: one click asks
             // one under the other: a row of them is cut off in a narrow column
             x += r##"<StackPanel Spacing="4">"##;

@@ -42,6 +42,9 @@ pub(crate) struct ClState {
     /// What each part would free, being counted before a question goes to the AI (so it gets
     /// true numbers), and the question waiting for it.
     pub(crate) ai_count: Option<(std::sync::mpsc::Receiver<Vec<(String, u64)>>, String)>,
+    /// What that count was already asked to count: a part that can't be counted (its folder
+    /// can't be read) is tried once, not before every question for ever.
+    pub(crate) ai_tried: std::collections::HashSet<String>,
     /// The part a "?" asked about: its answer goes to the details pane too.
     pub(crate) part_q: Option<String>,
     /// The AI's answers about parts, by part key.
@@ -964,7 +967,7 @@ impl State {
             .flat_map(|c| c.parts.iter())
             .filter(|p| p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber))
             .flat_map(|p| p.findings.iter().copied())
-            .filter(|&i| r.counted[i] && r.findings[i].estimate() && !self.advisor.cleanup.measured.contains_key(&key(&r.findings[i].path)))
+            .filter(|&i| r.counted[i] && r.findings[i].estimate() && !self.advisor.cleanup.measured.contains_key(&key(&r.findings[i].path)) && !self.advisor.cl.ai_tried.contains(&key(&r.findings[i].path)))
             .filter_map(|i| sprawl_advisor::clean::action(&r.findings[i]).map(|a| (key(&r.findings[i].path), r.findings[i].path.clone(), a.0)))
             .collect()
     }
@@ -981,6 +984,8 @@ impl State {
             return false;
         }
         let spare = sprawl_advisor::clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        // tried once: what can't be counted keeps the scan's figure, and the question still goes
+        self.advisor.cl.ai_tried.extend(work.iter().map(|w| w.0.clone()));
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let out: Vec<(String, u64)> = work.into_iter().filter_map(|(k, path, a)| sprawl_advisor::clean::preview(&path, &a, &spare, 0).map(|p| (k, p.bytes))).collect();
