@@ -98,12 +98,15 @@ pub const AFTER_SCAN: [&str; 2] = ["Stay where I am", "Open the Advisor"];
 /// "Warn me below": the free space a drive may fall to before the low-space notice.
 pub const ALERT_AT: [&str; 4] = ["5 GB", "10 GB", "20 GB", "50 GB"];
 pub const ALERT_GB: [u64; 4] = [5, 10, 20, 50];
+/// "Grew by more than": how much a folder may grow in about a week before the growth notice.
+pub const GROW_AT: [&str; 4] = ["2 GB", "5 GB", "10 GB", "20 GB"];
+pub const GROW_GB: [u64; 4] = [2, 5, 10, 20];
 pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "Advisor", "Cleaners", "Search"];
 
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 54] = [
+pub static PREFS: [Pref; 57] = [
     // General
     p("units", Sec::General, "Sizes in", "How sizes are written. Sizes are binary: 1 GB is 1,024 MB.", Kind::Choice(&UNITS, 0)),
     p(
@@ -121,6 +124,21 @@ pub static PREFS: [Pref; 54] = [
         Kind::Switch(false),
     ),
     p("alertFreeGb", Sec::General, "Nearly full means less free than", "", Kind::Choice(&ALERT_AT, 1)),
+    p(
+        "alertGrowth",
+        Sec::General,
+        "Tell me when a folder grows fast",
+        "The same check compares your scans in History (keep scan history must be on) and shows a notice when a folder grew by more than the amount below in about a week: once per scan, at most once a week per folder.",
+        Kind::Switch(false),
+    ),
+    p("alertGrowGb", Sec::General, "Fast means it grew by more than", "", Kind::Choice(&GROW_AT, 1)),
+    p(
+        "alertDailyScan",
+        Sec::General,
+        "Also read my user folder once a day for it",
+        "Off: only the scans you make count. On: once a day the check also reads your user folder, folder sizes only, with your own rights and at low priority, and keeps it in History.",
+        Kind::Switch(false),
+    ),
     p("dataFolder", Sec::General, "Your data", "Settings, what the Advisor remembers, scan history and logs: all on this PC, in your own folders.", Kind::Custom),
     // AI and privacy
     p("ai", Sec::Ai, "AI provider", "", Kind::Custom),
@@ -310,7 +328,15 @@ mod tests {
             ("snapshot_cap_mb", "1"),
             ("tuneKeepFull", "3"),
             ("uninstaller", ""),
+            // the alerts: all off; 10 GB free, 5 GB of growth
+            ("alertLow", "0"),
+            ("alertFreeGb", "1"),
+            ("alertGrowth", "0"),
+            ("alertGrowGb", "1"),
+            ("alertDailyScan", "0"),
         ];
+        assert_eq!(ALERT_AT.len(), ALERT_GB.len());
+        assert_eq!(GROW_AT.len(), GROW_GB.len());
         for (k, d) in documented {
             assert_eq!(get(k).unwrap_or_else(|| panic!("{k}")).default_value().as_deref(), Some(*d), "{k}");
         }

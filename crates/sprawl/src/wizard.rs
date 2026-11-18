@@ -244,7 +244,7 @@ impl State {
             "animate" => b(self.map.scene.animate),
             "aiWebLookup" => b(AiConfig::load().web_lookup),
             "afterScan" => self.settings.num("afterScan").unwrap_or(0.0).clamp(0.0, 1.0).to_string(),
-            "alertFreeGb" => self.settings.num("alertFreeGb").unwrap_or(1.0).clamp(0.0, 3.0).to_string(),
+            "alertFreeGb" | "alertGrowGb" => self.settings.num(p.key).unwrap_or(1.0).clamp(0.0, 3.0).to_string(),
             "startTab" => crate::look::start_choice(self.settings.num("startTab")).to_string(),
             "snapshot_cap_mb" => {
                 let cap = self.settings.num("snapshot_cap_mb").unwrap_or(1024.0) as u32;
@@ -302,10 +302,13 @@ impl State {
             "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
             "startTab" => self.settings.set("startTab", idx(prefs::OPEN_ON.len())),
             "alertFreeGb" => self.settings.set("alertFreeGb", idx(prefs::ALERT_AT.len())),
-            "alertLow" => {
-                self.settings.set_bool("alertLow", yes);
-                if !crate::alert::schedule(yes) && yes {
-                    self.settings.set_bool("alertLow", false);
+            "alertGrowGb" => self.settings.set("alertGrowGb", idx(prefs::GROW_AT.len())),
+            "alertLow" | "alertGrowth" => {
+                self.settings.set_bool(p.key, yes);
+                // one task serves both; it goes when both are off
+                let want = self.settings.bool("alertLow") == Some(true) || self.settings.bool("alertGrowth") == Some(true);
+                if !crate::alert::schedule(want) && yes {
+                    self.settings.set_bool(p.key, false);
                 }
             }
             "snapshot_cap_mb" => self.settings.set("snapshot_cap_mb", prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),

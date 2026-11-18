@@ -125,7 +125,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
     }
     // the low-space check's task names this exe: renew it, so an update or a moved copy keeps it right
-    if a.shot.is_none() && settings.bool("alertLow") == Some(true) {
+    if a.shot.is_none() && (settings.bool("alertLow") == Some(true) || settings.bool("alertGrowth") == Some(true)) {
         std::thread::spawn(|| alert::schedule(true));
     }
     let drives = win32::drives();

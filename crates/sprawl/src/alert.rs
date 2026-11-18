@@ -19,6 +19,10 @@ const EVERY_HOURS: u32 = 4;
 const QUIET_SECS: u64 = 7 * 24 * 3600;
 const GB: u64 = 1 << 30;
 const NO_WINDOW: u32 = 0x0800_0000;
+/// The daily light scan runs when the last one is this old (a little under a day, as the
+/// check runs every 4 hours).
+const DAILY_SECS: u64 = 20 * 3600;
+const PROCESS_MODE_BACKGROUND_BEGIN: u32 = 0x0010_0000;
 
 fn state_path() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Sprawl").join("alerts.ini"))
@@ -30,7 +34,7 @@ fn now() -> u64 {
 
 fn load_state() -> BTreeMap<String, u64> {
     let text = state_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
-    text.lines().filter_map(|l| l.split_once('=')).filter_map(|(k, v)| Some((k.trim().to_string(), v.trim().parse().ok()?))).collect()
+    text.lines().filter_map(|l| l.rsplit_once('=')).filter_map(|(k, v)| Some((k.trim().to_string(), v.trim().parse().ok()?))).collect()
 }
 
 fn save_state(s: &BTreeMap<String, u64>) {
@@ -65,39 +69,126 @@ pub fn limit(settings: &crate::settings::Settings) -> u64 {
 /// `sprawl --check`: the check the scheduled task runs.
 pub fn check() {
     let settings = crate::settings::Settings::load();
-    // dev: SPRAWL_ALERT_TEST=1 shows the notice for every drive, keeps no state, needs no setting
-    let test = std::env::var_os("SPRAWL_ALERT_TEST").is_some();
-    // switched off while a task was left behind: say nothing
-    if !test && !settings.bool("alertLow").unwrap_or(false) {
+    // dev: SPRAWL_ALERT_TEST=1 shows the notice for every drive and every folder that grew, keeps
+    // no state, scans nothing, needs no setting
+    // (SPRAWL_ALERT_TEST=grow: the growth part only)
+    let test_as = std::env::var("SPRAWL_ALERT_TEST").ok();
+    let test = test_as.is_some();
+    let low_on = test_as.as_deref().is_some_and(|v| v != "grow") || settings.bool("alertLow") == Some(true);
+    let grow_on = test || settings.bool("alertGrowth") == Some(true);
+    // both switched off while a task was left behind: say nothing
+    if !low_on && !grow_on {
         return;
     }
-    let drives: Vec<(String, u64, u64)> = crate::win32::drives()
-        .into_iter()
-        .filter(|d| d.kind == 3)
-        .filter_map(|d| crate::win32::disk_space(std::path::Path::new(&d.root)).map(|(total, free)| (d.root, total, free)))
-        .collect();
-    let free: Vec<(String, u64)> = drives.iter().map(|(r, _, f)| (r.clone(), *f)).collect();
-    let (warn, state) = due(&free, if test { u64::MAX } else { limit(&settings) }, if test { BTreeMap::new() } else { load_state() }, now());
+    let mut state = if test { BTreeMap::new() } else { load_state() };
+    let now = now();
+    let mut lines: Vec<String> = Vec::new();
+    let mut title = String::new();
+    let mut open = String::new();
+    if low_on {
+        let drives: Vec<(String, u64, u64)> = crate::win32::drives()
+            .into_iter()
+            .filter(|d| d.kind == 3)
+            .filter_map(|d| crate::win32::disk_space(std::path::Path::new(&d.root)).map(|(total, free)| (d.root, total, free)))
+            .collect();
+        let free: Vec<(String, u64)> = drives.iter().map(|(r, _, f)| (r.clone(), *f)).collect();
+        let (warn, st) = due(&free, if test { u64::MAX } else { limit(&settings) }, state, now);
+        state = st;
+        if !warn.is_empty() {
+            lines.extend(
+                warn.iter()
+                    .filter_map(|r| drives.iter().find(|d| &d.0 == r))
+                    .map(|(r, total, f)| format!("{} has {} free of {}.", r.trim_end_matches('\\'), gb(*f), gb(*total))),
+            );
+            title = if warn.len() == 1 { format!("Drive {} is nearly full", warn[0].trim_end_matches('\\')) } else { "Drives are nearly full".to_string() };
+            // the fullest drive is the one a click opens
+            open = warn.iter().min_by_key(|r| free.iter().find(|d| &d.0 == *r).map_or(0, |d| d.1)).cloned().unwrap_or_default();
+        }
+    }
+    if grow_on {
+        let grew = growth_alerts(&settings, &mut state, now, test);
+        if !grew.is_empty() {
+            lines.extend(grew.iter().map(|(_, folder, delta, days)| format!("{} grew {} in {} days.", folder.display(), gb(*delta), days)));
+            if title.is_empty() {
+                title = if grew.len() == 1 { "A folder grew fast".to_string() } else { "Folders grew fast".to_string() };
+                open = grew[0].0.display().to_string();
+            }
+        }
+    }
     if !test {
         save_state(&state);
     }
-    if warn.is_empty() {
+    if lines.is_empty() {
         return;
     }
-    let lines: Vec<String> = warn
-        .iter()
-        .filter_map(|r| drives.iter().find(|d| &d.0 == r))
-        .map(|(r, total, f)| format!("{} has {} free of {}.", r.trim_end_matches('\\'), gb(*f), gb(*total)))
-        .collect();
-    let title = if warn.len() == 1 { format!("Drive {} is nearly full", warn[0].trim_end_matches('\\')) } else { "Drives are nearly full".to_string() };
+    lines.truncate(4);
     let body = format!("{}\nClick to see what takes the space.", lines.join("\n"));
-    // the fullest drive is the one a click opens
-    let open = warn.iter().min_by_key(|r| free.iter().find(|d| &d.0 == *r).map_or(0, |d| d.1)).cloned().unwrap_or_default();
+    // dev: with SPRAWL_ALERT_TEST, SPRAWL_ALERT_DRY prints the notice instead of showing it
+    if test && std::env::var_os("SPRAWL_ALERT_DRY").is_some() {
+        println!("{title}\n{body}\nopens: {open}");
+        return;
+    }
     if notify(&title, &body) {
         if let Ok(exe) = std::env::current_exe() {
             let _ = std::process::Command::new(exe).arg(&open).spawn();
         }
     }
+}
+
+/// The growth part: (the scanned root to open, the folder that grew, by how much, over how many
+/// days). From History's snapshots of the user's own scans, plus, when the user allowed it, a
+/// daily folders-only scan of their user folder made here. Each scan is looked at once; a folder
+/// is named at most once a week.
+fn growth_alerts(settings: &crate::settings::Settings, state: &mut BTreeMap<String, u64>, now: u64, test: bool) -> Vec<(PathBuf, PathBuf, u64, u64)> {
+    use sprawl_advisor::history;
+    let Some(base) = history::base_dir() else { return Vec::new() };
+    let i = settings.num("alertGrowGb").unwrap_or(1.0) as usize;
+    let limit = if test { 0 } else { crate::prefs::GROW_GB[i.min(crate::prefs::GROW_GB.len() - 1)] * GB };
+    // the daily light scan: only with History on, as it is saved there
+    if !test && settings.bool("alertDailyScan") == Some(true) && settings.bool("snapshots") == Some(true) && now.saturating_sub(state.get("scan").copied().unwrap_or(0)) >= DAILY_SECS {
+        state.insert("scan".into(), now);
+        if let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
+            // low priority for CPU and disk while it reads
+            unsafe { SetPriorityClass(-1, PROCESS_MODE_BACKGROUND_BEGIN) };
+            let progress = sprawl_core::Progress::new();
+            if let Ok(tree) = sprawl_core::walk::walk_with(&profile, &progress, 2) {
+                let cap = (settings.num("snapshot_cap_mb").unwrap_or(1024.0) * 1024.0 * 1024.0) as u64;
+                let _ = history::prepare(&tree, std::time::SystemTime::now(), false).save(&base, cap);
+            }
+        }
+    }
+    let entries = history::list(&base);
+    let mut out = Vec::new();
+    for (root, when, _) in history::last_scans(&base) {
+        let t = secs(when);
+        // a scan looked at already, or too old to be news
+        let seen = format!("seen|{}", root.display());
+        if !test && (state.get(&seen) == Some(&t) || now.saturating_sub(t) > 2 * 86_400) {
+            continue;
+        }
+        state.insert(seen, t);
+        let Some(e) = entries.iter().filter(|e| e.root == root && secs(e.taken) == t).max_by_key(|e| e.full) else { continue };
+        let Ok(cur) = history::load(e) else { continue };
+        let facts = sprawl_advisor::facts::Facts::default();
+        let Some(g) = sprawl_advisor::growth::growth(&cur, &base, &facts, None, e.taken) else { continue };
+        let Some(since) = g.since else { continue };
+        let days = e.taken.duration_since(since).map(|d| d.as_secs().div_ceil(86_400)).unwrap_or(1).max(1);
+        for gr in g.grew.iter().filter(|gr| gr.delta > 0 && gr.delta as u64 >= limit) {
+            let folder = cur.path_of(gr.node);
+            let key = format!("grew|{}", folder.display());
+            if !test && state.get(&key).is_some_and(|&w| now.saturating_sub(w) < QUIET_SECS) {
+                continue;
+            }
+            state.insert(key, now);
+            out.push((root.clone(), folder, gr.delta as u64, days));
+        }
+    }
+    out.sort_by_key(|g| std::cmp::Reverse(g.2));
+    out
+}
+
+fn secs(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn gb(b: u64) -> String {
@@ -202,6 +293,7 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> isize;
+    fn SetPriorityClass(process: isize, class: u32) -> i32;
 }
 
 #[link(name = "shell32")]
