@@ -91,6 +91,11 @@ impl State {
     }
 
     pub(crate) fn command(&mut self, name: &str) {
+        // a question is open: menu items and shortcuts behind it don't act (the window close
+        // still reaches ask_close, which asks only once)
+        if self.dialogs.open() {
+            return;
+        }
         let has_tree = self.tree.is_some();
         match name {
             // while scanning the button is Stop
@@ -147,7 +152,7 @@ impl State {
                 for (k, what) in crate::ui::shortcuts() {
                     s += &format!("{k}\t{what}\n");
                 }
-                win32::info(self.hwnd, &s, "Keyboard shortcuts");
+                self.tell("Keyboard shortcuts", &s);
             }
             "ModeHist" | "mHistory" => self.hist_toggle(),
             "mTweaks" => {
@@ -318,16 +323,10 @@ impl State {
                 self.save_text("Sprawl file types", &s);
             }
             "mExit" => {
-                if self.advisor.cleanup.running.is_some() && !win32::confirm(self.hwnd, "A clean-up is still running. Close Sprawl anyway?
-
-What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
-                    return;
+                if self.advisor.cleanup.running.is_some() {
+                    return self.ask_close();
                 }
-                if let Some(p) = win32::window_place(self.hwnd) {
-                    self.settings.set("window", p);
-                    self.settings.save();
-                }
-                std::process::exit(0);
+                self.exit_now();
             }
             "uDyn" | "uB" | "uKB" | "uMB" | "uGB" | "uTB" => {
                 self.units = match name {
@@ -672,7 +671,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         let Some(n) = self.selected.filter(|&n| n != ROOT) else { return };
         let Some(path) = self.selected_path() else { return };
         if let Some(why) = self.delete_refusal(n, &path) {
-            win32::info(self.hwnd, &why, "Sprawl");
+            self.tell("Not deleted", &why);
             return;
         }
         let node = &self.tree.as_ref().unwrap().nodes[n];
@@ -682,12 +681,60 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
             (false, true) => format!("Delete this file permanently? It can't be brought back.\n\n{}", self.size(node.size)),
             (false, false) => format!("Move this file to the Recycle Bin?\n\n{}", self.size(node.size)),
         };
-        if !win32::confirm(self.hwnd, &format!("{what}\n\n{}", path.display()), "Sprawl") {
+        let (title, yes) = if permanent { ("Delete permanently?", "Delete for good") } else { ("Move to the Recycle Bin?", "Move to the Recycle Bin") };
+        let gen = self.tree_gen;
+        let text = format!("{what}\n\n{}", path.display());
+        self.ask(title, &text, yes, permanent, move |s| s.delete_one(n, path, permanent, gen));
+    }
+
+    /// The window's place and size, for next time.
+    pub(crate) fn save_window_place(&mut self) {
+        if let Some(p) = win32::window_place(self.hwnd) {
+            self.settings.set("window", p);
+            self.settings.save();
+        }
+    }
+
+    pub(crate) fn exit_now(&mut self) {
+        self.save_window_place();
+        std::process::exit(0);
+    }
+
+    /// Closing while a clean-up runs asks first (what is gone stays gone; the rest is left as it
+    /// was). Asked once: a second close while the question is open doesn't ask again.
+    pub(crate) fn ask_close(&mut self) {
+        if self.dialogs.open() {
+            return;
+        }
+        self.ask(
+            "Close Sprawl?",
+            "A clean-up is still running.\n\nWhat is already deleted stays deleted; the rest is left as it was.",
+            "Close anyway",
+            false,
+            |s| s.exit_now(),
+        );
+    }
+
+    /// The scan the question was about is still the one on screen, with `n` still at `path`.
+    /// Anything else (a rescan, a filter, another delete while the question was open) and
+    /// nothing is deleted.
+    fn still_same(&self, gen: u64, n: usize, path: &std::path::Path) -> bool {
+        self.tree_gen == gen && self.tree.as_ref().is_some_and(|t| n < t.nodes.len() && n != ROOT && t.path_of(n) == path)
+    }
+
+    /// "Yes" to deleting `n`: checked again, then deleted.
+    fn delete_one(&mut self, n: usize, path: std::path::PathBuf, permanent: bool, gen: u64) {
+        if !self.still_same(gen, n, &path) {
+            self.tell("Not deleted", &format!("The scan changed while the question was open, so nothing was deleted.\n\n{}", path.display()));
+            return;
+        }
+        if let Some(why) = self.delete_refusal(n, &path) {
+            self.tell("Not deleted", &why);
             return;
         }
         self.own_deletes.push((path.to_string_lossy().trim_end_matches('\\').to_lowercase(), std::time::Instant::now()));
         if !win32::delete_path(self.hwnd, &path, permanent) {
-            win32::info(self.hwnd, "It couldn't be deleted (it may be in use or protected).", "Sprawl");
+            self.tell("Not deleted", "It couldn't be deleted (it may be in use or protected).");
             return;
         }
         // The full tree behind a filter forgets it too, or clearing the filter brings it back.
@@ -718,7 +765,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         for &n in &nodes {
             let path = t.path_of(n);
             if let Some(why) = self.delete_refusal(n, &path) {
-                win32::info(self.hwnd, &format!("{why}\n\n{}\n\nNothing was deleted.", path.display()), "Sprawl");
+                self.tell("Not deleted", &format!("{why}\n\n{}\n\nNothing was deleted.", path.display()));
                 return;
             }
         }
@@ -730,9 +777,28 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         } else {
             format!("Move these {} items to the Recycle Bin?\n\n{}", nodes.len(), self.size(total))
         };
-        if !win32::confirm(self.hwnd, &format!("{what}\n\n{list}{more}"), "Sprawl") {
-            return;
+        let (title, yes) = if permanent { ("Delete permanently?", "Delete for good") } else { ("Move to the Recycle Bin?", "Move to the Recycle Bin") };
+        let gen = self.tree_gen;
+        let picked: Vec<(usize, std::path::PathBuf)> = nodes.iter().map(|&n| (n, t.path_of(n))).collect();
+        let text = format!("{what}\n\n{list}{more}");
+        self.ask(title, &text, yes, permanent, move |s| s.delete_many_now(picked, permanent, gen));
+    }
+
+    /// "Yes" to deleting several: every one checked again (the same scan, each still where it
+    /// was, each still allowed) before any goes, then deleted.
+    fn delete_many_now(&mut self, picked: Vec<(usize, std::path::PathBuf)>, permanent: bool, gen: u64) {
+        for (n, path) in &picked {
+            if !self.still_same(gen, *n, path) {
+                self.tell("Not deleted", "The scan changed while the question was open, so nothing was deleted.");
+                return;
+            }
+            if let Some(why) = self.delete_refusal(*n, path) {
+                self.tell("Not deleted", &format!("{why}\n\n{}\n\nNothing was deleted.", path.display()));
+                return;
+            }
         }
+        let Some(t) = self.tree.clone() else { return };
+        let nodes: Vec<usize> = picked.iter().map(|(n, _)| *n).collect();
         let mut failed = Vec::new();
         let mut gone = Vec::new();
         for &n in &nodes {
@@ -763,7 +829,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl") {
         self.render_map();
         if !failed.is_empty() {
             let list: String = failed.iter().take(8).map(|p| format!("{}\n", p.display())).collect();
-            win32::info(self.hwnd, &format!("{} of {} couldn't be deleted (in use or protected):\n\n{list}", failed.len(), nodes.len()), "Sprawl");
+            self.tell("Some weren't deleted", &format!("{} of {} couldn't be deleted (in use or protected):\n\n{list}", failed.len(), nodes.len()));
         }
         if !gone.is_empty() {
             self.advisor_start();

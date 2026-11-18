@@ -639,6 +639,7 @@ pub fn page(drives: &[String]) -> String {
       <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="SetupYes" Content="Set up" Padding="12,3" FontSize="12" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="SetupNo" Content="Not now" Padding="12,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel>
   </Border>
   {wizard}
+  <Border x:Name="DlgHost" Grid.RowSpan="8" Canvas.ZIndex="100" Visibility="Collapsed"/>
 </Grid>"##
     )
 }

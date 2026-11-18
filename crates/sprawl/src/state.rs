@@ -80,6 +80,8 @@ impl Job {
 pub(crate) const ROW_H: f64 = 24.0;
 
 pub(crate) struct State {
+    /// Sprawl's own question boxes waiting (the first is on screen).
+    pub(crate) dialogs: crate::ask::Dialogs,
     pub(crate) window: Window,
     pub(crate) hwnd: isize,
     pub(crate) root: FrameworkElement,

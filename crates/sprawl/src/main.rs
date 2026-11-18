@@ -10,6 +10,7 @@
 #[allow(dead_code, unused_imports, non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 mod bindings;
 mod advisor;
+mod ask;
 mod bridge;
 mod app;
 mod cleanup;
@@ -143,23 +144,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     win32::set_app_icon(hwnd);
 
     // closing mid clean-up asks first (what is gone stays gone; the rest is left as it was)
+    // (Sprawl's own box doesn't block: the close is called off, and "Close anyway" exits)
     win32::on_close(hwnd, || {
-        let ok = match with(|s| (s.advisor.cleanup.running.is_some(), s.hwnd)) {
-            Some((true, h)) => win32::confirm(h, "A clean-up is still running. Close Sprawl anyway?
-
-What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
-            _ => true,
-        };
-        if ok {
-            // the window's place and size, for next time
-            with(|s| {
-                if let Some(p) = win32::window_place(s.hwnd) {
-                    s.settings.set("window", p);
-                    s.settings.save();
-                }
-            });
+        if with(|s| s.advisor.cleanup.running.is_some()) == Some(true) {
+            with(|s| s.ask_close());
+            return false;
         }
-        ok
+        with(|s| s.save_window_place());
+        true
     });
     // the window where it was left, or most of the screen (screenshots keep their fixed size)
     if a.shot.is_none() {
@@ -375,6 +367,14 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
             let _ = e.SetHandled(true);
         }
     })?);
+    // a question open in Sprawl's own box has the keyboard (ask.rs dialog_key)
+    keep(root.cast::<UIElement>()?.PreviewKeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.dialog_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
     // Filter box and the Colours and Tweaks panel.
     keep(find::<TextBox>(&root, "FilterBox")?.TextChanged(|s, _| {
         let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
@@ -478,6 +478,7 @@ What is already deleted stays deleted; the rest is left as it was.", "Sprawl"),
         scan_secs: 0.0,
         shot,
         shot_ticks: 0,
+        dialogs: Default::default(),
         welcome: None,
         welcome_drives: Vec::new(),
         welcome_recent: Vec::new(),

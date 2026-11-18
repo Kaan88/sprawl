@@ -1091,21 +1091,30 @@ impl State {
                     // the setting is the user's file: an administrator Sprawl starts what it names only
                     // when the user allowed that (Settings > Scanning)
                     if let Err(why) = self.admin_allows(&crate::admin::HAND_OFF) {
-                        win32::info(self.hwnd, &format!("{why}\n\nOr open your uninstaller yourself."), "Sprawl");
+                        self.tell("Not handed over", &format!("{why}\n\nOr open your uninstaller yourself."));
                         return;
                     }
-                    if !win32::confirm(self.hwnd, &format!("Hand {owner} to this program?\n{}", exe.display()), "Uninstall") {
-                        return;
-                    }
-                    let args = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.handoff.get(k).cloned())).unwrap_or_default();
-                    if args.is_empty() {
-                        return;
-                    }
-                    let msg = match std::process::Command::new(&exe).args(&args).spawn() {
-                        Ok(_) => format!("{owner} is handed to {}.", exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
-                        Err(e) => format!("Your uninstaller didn't start: {e}"),
-                    };
-                    self.adv_say(&msg);
+                    let text = format!("Hand {owner} to this program?\n\n{}", exe.display());
+                    self.ask("Uninstall", &text, "Hand it over", false, move |s| {
+                        // asked again at "Yes": the setting, the switch and the app's details may
+                        // have changed while the question was open
+                        if s.uninstaller().as_ref() != Some(&exe) {
+                            return;
+                        }
+                        if let Err(why) = s.admin_allows(&crate::admin::HAND_OFF) {
+                            s.tell("Not handed over", &format!("{why}\n\nOr open your uninstaller yourself."));
+                            return;
+                        }
+                        let args = s.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.handoff.get(k).cloned())).unwrap_or_default();
+                        if args.is_empty() {
+                            return;
+                        }
+                        let msg = match std::process::Command::new(&exe).args(&args).spawn() {
+                            Ok(_) => format!("{owner} is handed to {}.", exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
+                            Err(e) => format!("Your uninstaller didn't start: {e}"),
+                        };
+                        s.adv_say(&msg);
+                    });
                     return;
                 }
                 let Some(how) = self.advice().and_then(|r| r.apps.iter().position(|a| *a == owner).and_then(|k| r.uninstall.get(k).cloned().flatten())) else { return };

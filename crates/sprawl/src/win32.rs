@@ -49,11 +49,11 @@ extern "system" {
     fn SendMessageW(h: HWND, msg: u32, w: usize, l: isize) -> isize;
     fn SetWindowPos(h: HWND, after: HWND, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
     fn ShowWindow(h: HWND, cmd: i32) -> i32;
+    fn GetForegroundWindow() -> HWND;
     fn PrintWindow(h: HWND, hdc: isize, flags: u32) -> i32;
     fn GetWindowRect(h: HWND, r: *mut RECT) -> i32;
     fn GetDC(h: HWND) -> isize;
     fn ReleaseDC(h: HWND, dc: isize) -> i32;
-    fn MessageBoxW(h: HWND, text: *const u16, caption: *const u16, kind: u32) -> i32;
     fn OpenClipboard(h: HWND) -> i32;
     fn EmptyClipboard() -> i32;
     fn SetClipboardData(format: u32, mem: isize) -> isize;
@@ -256,17 +256,9 @@ pub fn on_close(h: HWND, may_close: fn() -> bool) {
     }
 }
 
-pub fn confirm(owner: HWND, text: &str, caption: &str) -> bool {
-    let (t, c) = (wide(text), wide(caption));
-    // MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2: Enter or a stray click means No
-    unsafe { MessageBoxW(owner, t.as_ptr(), c.as_ptr(), 0x4 | 0x30 | 0x100) == 6 }
-}
-
-pub fn info(owner: HWND, text: &str, caption: &str) {
-    let (t, c) = (wide(text), wide(caption));
-    unsafe {
-        MessageBoxW(owner, t.as_ptr(), c.as_ptr(), 0x40);
-    }
+/// `h` is the window the keyboard goes to.
+pub fn is_foreground(h: HWND) -> bool {
+    unsafe { GetForegroundWindow() == h }
 }
 
 pub fn copy_text(owner: HWND, text: &str) -> bool {

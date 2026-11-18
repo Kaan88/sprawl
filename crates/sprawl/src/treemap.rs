@@ -224,6 +224,7 @@ impl State {
         self.map.last = now;
 
         self.poll();
+        self.dialog_frame();
         self.busy_poll();
         self.welcome_frame();
         self.hud_frame(dt);
