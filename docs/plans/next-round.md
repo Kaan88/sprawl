@@ -170,3 +170,4 @@ to be discussed with the user before building.
 
 - 2026-11-18: **0.3.2 released** (cd43053) with Phase 0. Fable reads still queued, B4 first.
 - 2026-11-18: **Phase 1 step 1** (5cf92d2): `mcp_scan.rs`: scan_path / scan_status / list_scans in the MCP process, History save per the app's setting, query tools pick the freshest tree holding the path (own scan, app, History). Tried over stdio with the release exe. Next: route scan_path to the running app (scan on screen, background tree), then search, growth, structured findings/cleaners.
+- 2026-11-18: **Cleaners tab scroll fix** (2f9c8b7 on main; baf3923 = v0.3.2's tag): the tab jumped to the top on every open or tick (the user's original B3 report was about this tab, not the Advisor list). The 0.3.2 release was amended at the user's word: same version, files replaced, tag moved. Copies that updated to the first 0.3.2 don't get it through the updater; 0.3.3 will carry it to them.
