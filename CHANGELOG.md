@@ -3,6 +3,16 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 0.3.2 — 2026-11-18
+
+### Changed
+- **Sprawl asks its questions in its own boxes**, in the window, in place of Windows' message boxes. Esc or No is the default; Yes needs a click, or the keyboard moved onto it first. If the scan changes while a delete question is open, nothing is deleted and Sprawl says why.
+- **File View sorts in a fraction of a second** on millions of files. By folder it took up to a minute and a half on a full C: drive.
+- Ticking or opening a row in the Advisor no longer rebuilds the whole list, so the list doesn't jump and the click is answered at once.
+
+### Fixed
+- Sprawl's tools for AI apps (MCP): the scan report lists the Advisor's findings again, and says when the rules haven't run yet. With Sprawl closed it answers from History's last saved scan and says how old that is. A tool call after Sprawl was restarted no longer fails.
+
 ## 0.3.1 — 2026-11-18
 
 ### Changed
