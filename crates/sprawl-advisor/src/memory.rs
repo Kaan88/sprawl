@@ -678,17 +678,20 @@ fn local_ids() -> Vec<String> {
 
 /// A pack from disk, checked as [`load_packs`] does: the whole file or nothing.
 pub fn check_pack_text(text: &str, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
-    let pack = check_pack_with(text, taken, &crate::safety::Never::default_list())?;
+    let mut candidate = taken.clone();
+    let pack = check_pack_with(text, &mut candidate, &crate::safety::Never::default_list())?;
     if let Some(id) = pack.all_rules().map(|r| &r.id).chain(pack.cleaners.iter().map(|c| &c.id)).find(|id| crate::community::is_community(id)) {
         return Err(format!("{id}: that prefix is for community cleaners"));
     }
+    *taken = candidate;
     Ok(pack)
 }
 
 /// A community pack (converted by [`crate::community`]): checked as a local pack, and every id
 /// carries `prefix`, it has cleaners only, and every part is at least amber.
 pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
-    let pack = check_pack_with(text, taken, never)?;
+    let mut candidate = taken.clone();
+    let pack = check_pack_with(text, &mut candidate, never)?;
     if !pack.rules.is_empty() {
         return Err("a community pack has cleaners only".into());
     }
@@ -717,6 +720,7 @@ pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never,
             return Err(format!("{}: {x} is in your own folders", c.id));
         }
     }
+    *taken = candidate;
     Ok(pack)
 }
 
@@ -898,6 +902,24 @@ mod tests {
         assert!(m.proposals.is_empty());
         assert_eq!(RulePack::parse(&std::fs::read_to_string(&path).unwrap()).unwrap().rules.len(), 2);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejected_packs_do_not_reserve_ids() {
+        let mut pack = RulePack::empty("IDs");
+        for id in ["local.first", "local.conflict"] {
+            pack.rules.push(Rule::new(id, "Info", vec![r"C:\SprawlFixtures\Product\cache".into()], Risk::Orange, Remedy::Info, "Evidence"));
+        }
+        let mut taken = std::collections::HashSet::from(["local.conflict".to_string()]);
+        let original = taken.clone();
+        assert!(check_pack_text(&toml::to_string(&pack).unwrap(), &mut taken).is_err());
+        assert_eq!(taken, original);
+        pack.rules.pop();
+        assert!(check_pack_text(&toml::to_string(&pack).unwrap(), &mut taken).is_ok());
+        let reserved = toml::to_string(&pack).unwrap().replace("local.first", "WINAPP2.private");
+        let before = taken.clone();
+        assert!(check_pack_text(&reserved, &mut taken).is_err());
+        assert_eq!(taken, before);
     }
 
     #[test]

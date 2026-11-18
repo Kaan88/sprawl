@@ -32,7 +32,7 @@ const MAX_FILES: usize = 200;
 
 /// Whether a cleaner or rule id comes from a community file.
 pub fn is_community(id: &str) -> bool {
-    id.starts_with(WINAPP2) || id.starts_with(BLEACHBIT)
+    [WINAPP2, BLEACHBIT].iter().any(|prefix| id.get(..prefix.len()).is_some_and(|s| s.eq_ignore_ascii_case(prefix)))
 }
 
 /// An entry, or a part of one, that wasn't taken over, and why.
@@ -816,6 +816,8 @@ mod tests {
         assert_eq!(super::fingerprint("abc"), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert_ne!(super::fingerprint("abc"), super::fingerprint("abcd"));
         assert_ne!(super::fingerprint("abc"), "e71fa2190541574b");
+        assert!(super::is_community("WINAPP2.changed/part"));
+        assert!(super::is_community("BleachBit.changed"));
     }
     use super::*;
 
