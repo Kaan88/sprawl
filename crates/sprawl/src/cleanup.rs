@@ -197,6 +197,12 @@ fn complete_size(scan: Option<&Option<Tree>>) -> Option<u64> {
 
 fn succeeded(out: &Outcome) -> bool { !out.stopped && out.problems.is_empty() && out.more_problems == 0 }
 
+fn review_changed(before: &Finding, now: &Finding) -> bool {
+    before.path != now.path || before.risk != now.risk || before.remedy != now.remedy
+        || before.action != now.action || before.admin != now.admin || before.command != now.command
+        || before.carved != now.carved || before.builtin != now.builtin || before.trusted != now.trusted
+}
+
 fn credit_tool(out: &mut Outcome, before: Option<u64>, after: Option<u64>) {
     out.freed = 0;
     if !succeeded(out) { return; }
@@ -636,6 +642,10 @@ impl State {
             }
             // the same checks as when it was found, against this scan
             let f = match sprawl_advisor::safety::check(&f, &t, &never) {
+                Ok(current) if review_changed(&f, &current) => {
+                    held.push(format!("{}: its risk or cleanup scope changed. Check again and review the updated item before cleaning it.", f.title));
+                    continue;
+                }
                 Ok(f) => f,
                 Err(why) => {
                     held.push(format!("{}: not cleaned, {why}", f.title));
@@ -1750,6 +1760,8 @@ mod selection_context_tests {
         c.ticked.insert(key(&finding.path));
         let mut raised = finding.clone();
         raised.risk = Risk::Orange;
+        assert!(review_changed(&finding, &raised), "live revalidation cannot silently raise the consent requirement");
+        assert!(!review_changed(&finding, &finding));
         c.bind(Some(context(&b, raised, definitions)));
         assert!(c.ticked.is_empty(), "raised risk cannot inherit the old tick");
         c.own_ok = true;
