@@ -31,9 +31,87 @@ pub fn compress_alg(command: &str) -> Option<&str> {
     command.strip_prefix(COMPRESS)?.split(' ').next()
 }
 
-/// Sprawl's command that undoes a compress of `path` (all files back to plain storage).
+/// One exact uncompress argument. Validation/pinning belongs to the batch caller; no recursion.
 pub fn uncompress_command(path: &Path) -> String {
-    format!("compact.exe /u /s /a /i /q /exe {}", crate::rules::ps_quote(&format!("{}\\*", path.display())))
+    format!("compact.exe /u /a /i /q /exe {}", crate::rules::ps_quote(&path.display().to_string()))
+}
+
+/// Undo a recorded compression only in a current supported application/game scope.
+pub fn uncompress(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::path::PathBuf]) -> Result<(), String> {
+    let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    let path = &root.path;
+    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+    if crate::finding::other_account(path, home.as_deref()) || crate::exclusions::intersects(path, excluded)
+        || keep.iter().any(|p| crate::finding::within(path, p) || crate::finding::within(p, path)) {
+        return Err("This scope is excluded, kept or belongs to another account.".into());
+    }
+    let pf = crate::reg::Key::open(crate::reg::HKLM, r"SOFTWARE\Microsoft\Windows\CurrentVersion", crate::reg::View::Native);
+    let program = path.parent().is_some_and(|parent| ["ProgramFilesDir", "ProgramFilesDir (x86)"].iter()
+        .filter_map(|name| pf.as_ref().and_then(|k| k.string(name)))
+        .any(|p| crate::finding::within(parent, Path::new(&p)) && crate::finding::within(Path::new(&p), parent)));
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let game = path.parent().and_then(Path::file_name).is_some_and(|p| p.eq_ignore_ascii_case("common"))
+        && crate::facts::Facts::gather().apps.iter().any(|a| a.kind == crate::facts::AppKind::Steam
+            && a.locations.iter().any(|p| crate::finding::within(path, p) && crate::finding::within(p, path)));
+    if (!program && !game) || matches!(name.as_str(), "windowsapps" | "common files" | "steam" | "") {
+        return Err("This record is no longer a supported Program Files product or registered Steam game. It was left alone.".into());
+    }
+    uncompress_scope(path, keep, excluded)
+}
+
+fn uncompress_scope(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::path::PathBuf]) -> Result<(), String> {
+    let _root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    let tree = sprawl_core::walk::walk(path, &sprawl_core::Progress::new()).map_err(|e| e.to_string())?;
+    if tree.errors != 0 { return Err("The folder could not be read completely; nothing was uncompressed.".into()); }
+    let never = crate::safety::Never::default_list();
+    if !never.complete() || !never.hits_inside(&tree, ROOT).is_empty() { return Err("This scope contains protected items or could not be checked.".into()); }
+    let mut work = Vec::new();
+    for (n, node) in tree.nodes.iter().enumerate() {
+        let p = tree.path_of(n);
+        if crate::exclusions::intersects(&p, excluded) || keep.iter().any(|k| crate::finding::within(&p, k) || crate::finding::within(k, &p))
+            || node.attributes & crate::dupes::NOT_LOCAL != 0 || node.is_reparse_point() && node.attributes & sprawl_core::attr::WOF == 0 {
+            return Err("A kept, excluded, cloud or linked item is inside this scope; nothing was uncompressed.".into());
+        }
+        // WOF files can appear as ordinary Archive files through the filter. Every plain
+        // file in this explicitly approved scope is therefore an exact uncompress target.
+        if !node.is_dir || node.is_compressed() { work.push((p, node.is_dir)); }
+    }
+    // Files first, then directory compression defaults; no recursive switch or wildcard is
+    // passed to compact. Every exact argument stays pinned for the native operation.
+    work.sort_by_key(|(p, dir)| (*dir, std::cmp::Reverse(p.components().count())));
+    let mut offset = 0;
+    while offset < work.len() {
+        let dir = work[offset].1;
+        let mut end = offset;
+        let mut chars = 0;
+        while end < work.len() && work[end].1 == dir && end - offset < 64 {
+            let next = work[end].0.as_os_str().len() + 8;
+            if next > 4000 { return Err("A path is too long to uncompress safely in a command batch.".into()); }
+            if chars + next > 4000 { break; }
+            chars += next; end += 1;
+        }
+        let pins: Vec<_> = work[offset..end].iter().map(|(p, expected_dir)| {
+            if never.path_hit(p).is_some() { return Err("A protected item appeared; it was left alone.".to_string()); }
+            let pinned = sprawl_core::local::storage(p).map_err(|e| e.to_string())?;
+            if pinned.metadata().map_err(|e| e.to_string())?.is_dir() != *expected_dir { return Err("A file became a folder or the reverse; it was left alone.".into()); }
+            Ok(pinned)
+        }).collect::<Result<_, _>>()?;
+        let args = work[offset..end].iter().map(|(p, _)| ps_quote(&p.display().to_string())).collect::<Vec<_>>().join(" ");
+        let command = format!("compact.exe /u /a /i /q {}{args}", if dir { "" } else { "/exe " });
+        let result = crate::clean::run(path, &Action::Tool { command }, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
+        drop(pins);
+        if result.stopped || !result.problems.is_empty() || result.more_problems != 0 { return Err(result.problems.join("; ")); }
+        offset = end;
+    }
+    let measured = sprawl_core::walk::walk(path, &sprawl_core::Progress::new()).map_err(|e| e.to_string())?;
+    if measured.errors != 0 || measured.nodes.iter().any(|n| n.is_compressed()) { return Err("Some files remain compressed or could not be checked; the record was kept.".into()); }
+    for (n, node) in measured.nodes.iter().enumerate().filter(|(_, node)| !node.is_dir) {
+        let pinned = sprawl_core::local::storage(&measured.path_of(n)).map_err(|e| e.to_string())?;
+        if node.is_compressed() || pinned.externally_backed().map_err(|e| e.to_string())? {
+            return Err("Some WOF-backed files remain compressed; the record was kept.".into());
+        }
+    }
+    Ok(())
 }
 
 /// The command is one of Sprawl's own compress commands.
@@ -494,10 +572,10 @@ mod compress_tests {
         assert!(after < before / 2, "before {before}, after {after}, {:?}", o.output);
         assert_eq!(std::fs::read_to_string(dir.join("sub").join("b.json")).unwrap(), text);
         // and Uncompress puts them back as they were
-        let u = Action::Tool { command: uncompress_command(&dir) };
-        assert!(!is_compress(&u));
-        let o = crate::clean::run_with(&dir, &u, &crate::clean::Spare::default(), None, &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
-        assert!(o.problems.is_empty(), "{:?} {:?}", o.problems, o.output);
+        assert!(uncompress_scope(&dir, &[dir.join("sub/b.json")], &[]).is_err(), "kept descendants block the whole operation");
+        assert!(uncompress_scope(&dir, &[], &[dir.join("sub/b.json")]).is_err(), "excluded descendants block the whole operation");
+        assert!(uncompress(&dir, &[], &[]).is_err(), "an arbitrary remembered temp path is never an eligible application scope");
+        uncompress_scope(&dir, &[], &[]).expect("exact pinned file batches uncompress the disposable fixture");
         let back = on_disk(&dir).unwrap();
         assert!(back >= before / 10 * 9, "before {before}, back {back}");
         assert_eq!(compress_alg(&format!("{COMPRESS}xpress16k 'x'")), Some("xpress16k"));

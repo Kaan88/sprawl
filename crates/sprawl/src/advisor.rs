@@ -283,8 +283,8 @@ pub(crate) struct Advisor {
     /// The AI's suggestion of findings to tick (R9): their paths (lower case) and why. Kept by
     /// path, so a new report keeps what still is in it; checked again when shown and ticked.
     pub(crate) fn_suggest: Option<(Vec<String>, String)>,
-    /// An uncompress running (F1): the record's index, its answer, what to show meanwhile.
-    pub(crate) uncompress: Option<(usize, Receiver<(bool, String)>, String)>,
+    /// An uncompress running (F1): the exact record, its answer, what to show meanwhile.
+    pub(crate) uncompress: Option<(sprawl_advisor::memory::Compressed, Receiver<(bool, String)>, String)>,
 }
 
 impl Advisor {
@@ -2127,6 +2127,7 @@ impl State {
 
     /// Uncompress the `i`th folder Sprawl compressed, after a question (it needs the space back).
     pub(crate) fn uncompress_ask(&mut self, i: usize) {
+        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() { return; }
         let Some(c) = self.advisor.memory.compressed.get(i).cloned() else { return };
         let path = std::path::PathBuf::from(&c.path);
         let pf = |v: &str| std::env::var_os(v).is_some_and(|d| sprawl_advisor::finding::within(&path, std::path::Path::new(&d)));
@@ -2135,35 +2136,40 @@ impl State {
             return;
         }
         let text = format!("Every file in {} goes back to plain storage. That takes about {} more on the drive, and some minutes. Close the program first.", c.path, self.size(c.saved));
-        self.ask("Uncompress this folder?", &text, "Uncompress", false, move |s| s.uncompress_start(i, path));
+        self.ask("Uncompress this folder?", &text, "Uncompress", false, move |s| s.uncompress_start(c));
     }
 
-    fn uncompress_start(&mut self, i: usize, path: std::path::PathBuf) {
-        if self.advisor.uncompress.is_some() || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+    fn uncompress_start(&mut self, record: sprawl_advisor::memory::Compressed) {
+        if self.advisor.uncompress.is_some() || self.advisor.cleanup.running.is_some() || self.job.is_some()
+            || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        let a = sprawl_advisor::clean::Action::Tool { command: sprawl_advisor::remedies::uncompress_command(&path) };
+        if !self.advisor.memory.compressed.contains(&record) || !matches!(record.alg.as_str(), "xpress8k" | "xpress16k") {
+            self.adv_say("The compression record changed or is not recognised; nothing was run.");
+            return;
+        }
+        let path = std::path::PathBuf::from(&record.path);
+        let keep = self.advisor.memory.kept_paths();
+        let excluded = sprawl_advisor::exclusions::configured();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let stop = std::sync::atomic::AtomicBool::new(false);
-            let o = sprawl_advisor::clean::run_with(&path, &a, &sprawl_advisor::clean::Spare::default(), None, &stop, &mut |_| {});
-            let text = o.problems.iter().map(|p| p.to_string()).chain(o.output.iter().cloned()).collect::<Vec<String>>().join(" ").trim().to_string();
-            let _ = tx.send((o.problems.is_empty() && !o.stopped, text));
+            let result = sprawl_advisor::remedies::uncompress(&path, &keep, &excluded);
+            let _ = tx.send((result.is_ok(), result.err().unwrap_or_default()));
         });
-        self.advisor.uncompress = Some((i, rx, "Uncompressing... this takes a few minutes on a big folder.".into()));
+        self.advisor.uncompress = Some((record, rx, "Checking and uncompressing exact files... this takes a few minutes on a big folder.".into()));
         self.render_advisor();
     }
 
     /// Each frame: an uncompress that ended takes its folder off the list.
     fn uncompress_poll(&mut self) {
-        let Some((i, rx, _)) = &self.advisor.uncompress else { return };
-        let i = *i;
+        let Some((record, rx, _)) = &self.advisor.uncompress else { return };
+        let record = record.clone();
         let Ok((ok, msg)) = rx.try_recv() else { return };
         self.advisor.uncompress = None;
         if !ok {
             self.adv_say(&format!("Uncompress didn't finish: {msg}"));
-        } else if i < self.advisor.memory.compressed.len() {
-            self.advisor.memory.compressed.remove(i);
+        } else {
+            self.advisor.memory.compressed.retain(|current| current != &record);
             self.save_memory();
             self.adv_say("Uncompressed: the files are stored as before.");
         }

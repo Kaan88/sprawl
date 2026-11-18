@@ -471,7 +471,7 @@ impl State {
 
     /// Start cleaning what is ticked: each item is checked again first.
     pub(crate) fn cleanup_start(&mut self) {
-        if self.advisor.cleanup.running.is_some() {
+        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
             return;
         }
         // checked against the whole scan, not a filtered view of it

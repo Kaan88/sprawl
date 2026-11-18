@@ -4,9 +4,14 @@ use std::io;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetFinalPathNameByHandleW};
+use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetFinalPathNameByHandleW, GetFileInformationByHandleEx};
 
 const FLAGS: u32 = 0x0200_0000 | 0x0020_0000 | 0x0010_0000; // backup, open reparse, no recall
+
+#[link(name = "wofutil")]
+extern "system" {
+    fn WofIsExternalFile(path: *const u16, external: *mut i32, provider: *mut u32, info: *mut core::ffi::c_void, len: *mut u32) -> i32;
+}
 
 pub fn lexical(path: &Path) -> io::Result<PathBuf> {
     let raw = path.to_str().ok_or_else(|| io::Error::other("The path isn't valid Unicode"))?;
@@ -17,7 +22,7 @@ pub fn lexical(path: &Path) -> io::Result<PathBuf> {
         }
         rest
     } else { raw };
-    if raw.starts_with(['\\', '/']) || raw.contains('\0') { return Err(io::Error::other("Network and device paths aren't permitted here")); }
+    if raw.starts_with(['\\', '/']) || raw.contains(['\0', '\r', '\n', '*', '?']) { return Err(io::Error::other("Network, device and wildcard paths aren't permitted here")); }
     let path = std::path::absolute(Path::new(raw))?;
     let s = path.to_str().ok_or_else(|| io::Error::other("The path isn't valid Unicode"))?;
     let b = s.as_bytes();
@@ -54,15 +59,34 @@ pub struct Directory {
     _handles: Vec<File>,
 }
 
+impl Directory {
+    pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
+        self._handles.last().ok_or_else(|| io::Error::other("No pinned path"))?.metadata()
+    }
+    /// WOF intentionally hides its reparse attribute from ordinary directory listings.
+    /// Query only while this exact local path and all its ancestors remain pinned.
+    pub fn externally_backed(&self) -> io::Result<bool> {
+        use std::os::windows::ffi::OsStrExt;
+        let name: Vec<u16> = self.path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let (mut external, mut provider) = (0i32, 0u32);
+        let hr = unsafe { WofIsExternalFile(name.as_ptr(), &mut external, &mut provider, std::ptr::null_mut(), std::ptr::null_mut()) };
+        if hr < 0 { return Err(io::Error::other(format!("WOF backing could not be checked: {hr:08X}"))); }
+        Ok(external != 0)
+    }
+}
+
 /// Open every ancestor as itself without delete sharing, from the local drive downward.
 pub fn directory(path: &Path) -> io::Result<Directory> {
-    pin(path, true)
+    pin(path, true, false)
 }
 
 /// A scan root may itself be a file; its ancestor chain must still be plain local folders.
-pub fn scope(path: &Path) -> io::Result<Directory> { pin(path, false) }
+pub fn scope(path: &Path) -> io::Result<Directory> { pin(path, false, false) }
 
-fn pin(path: &Path, require_directory: bool) -> io::Result<Directory> {
+/// Pin a storage-operation leaf. WOF files are data; other reparse leaves stay refused.
+pub fn storage(path: &Path) -> io::Result<Directory> { pin(path, false, true) }
+
+fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Directory> {
     let path = lexical(path)?;
     let mut ancestors: Vec<PathBuf> = path.ancestors().map(Path::to_path_buf).collect();
     ancestors.reverse();
@@ -70,7 +94,13 @@ fn pin(path: &Path, require_directory: bool) -> io::Result<Directory> {
     for p in ancestors {
         let h = std::fs::OpenOptions::new().access_mode(0x80).share_mode(1 | 2).custom_flags(FLAGS).open(&p)?;
         let m = h.metadata()?;
-        if (!m.is_dir() && (p != path || require_directory)) || m.file_attributes() & crate::attr::REPARSE_POINT != 0 {
+        let mut is_wof = false;
+        if allow_wof && p == path && !m.is_dir() && m.file_attributes() & crate::attr::REPARSE_POINT != 0 {
+            let mut tag = [0u32; 2];
+            is_wof = unsafe { GetFileInformationByHandleEx(h.as_raw_handle().cast(), 9, tag.as_mut_ptr().cast(), 8) } != 0 && tag[1] == 0x8000_0017;
+        }
+        if (!m.is_dir() && (p != path || require_directory)) || m.file_attributes() & crate::attr::REPARSE_POINT != 0 && !is_wof
+            || m.file_attributes() & (0x1000 | 0x0004_0000 | 0x0040_0000) != 0 {
             return Err(io::Error::other("A scanned folder or ancestor is a junction or reparse point"));
         }
         let expected = crate::canonical_root(&p);
