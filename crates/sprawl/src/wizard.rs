@@ -678,7 +678,7 @@ impl State {
                 if let Some(base) = sprawl_advisor::history::base_dir() {
                     for e in sprawl_advisor::history::list(&base) {
                         // only History's own files, in its own folder
-                        if e.file.starts_with(&base) && std::fs::remove_file(&e.file).is_ok() {
+                        if sprawl_advisor::history::remove_entry(&e).is_ok() {
                             n += 1;
                         }
                     }

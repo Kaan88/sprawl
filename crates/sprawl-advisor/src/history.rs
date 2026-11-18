@@ -10,10 +10,13 @@
 
 use std::fs;
 use std::io;
+use std::io::{Read, Write};
+use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sprawl_core::{Tree, ROOT};
+use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, GetFileInformationByHandleEx, FileIdInfo, BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO};
 
 use crate::snapshot::{self, FILES_HERE};
 
@@ -24,8 +27,29 @@ pub fn base_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("Sprawl").join("snapshots"))
 }
 
-/// A folder name for a root path: `C:\` -> `C`, `C:\Program Files` -> `C~Program Files`.
+/// Collision-resistant identity of the root spelling, without probing that root on disk.
 pub fn key(root: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let identity = root_id(root).unwrap_or_else(|| root.to_string_lossy().into_owned());
+    format!("v2-{:x}", Sha256::digest(identity.as_bytes()))
+}
+
+fn root_id(root: &Path) -> Option<String> {
+    let s = root.to_str()?.replace('/', "\\");
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") { format!(r"\\{rest}") }
+        else if let Some(rest) = s.strip_prefix(r"\\?\") { rest.to_string() } else { s };
+    if s.len() > 128 << 10 || s.chars().any(char::is_control) { return None; }
+    let b = s.as_bytes();
+    let parts = if let Some(rest) = s.strip_prefix(r"\\") {
+        if rest.split('\\').filter(|p| !p.is_empty()).count() < 2 { return None; }
+        rest
+    } else if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' { &s[3..] }
+    else { return None; };
+    if parts.split('\\').any(|p| matches!(p, "." | "..") || p.contains([':', '*', '?', '"', '<', '>', '|'])) { return None; }
+    Some(s.trim_end_matches('\\').to_lowercase())
+}
+
+fn legacy_key(root: &Path) -> String {
     let s = root.to_string_lossy();
     let s = s.trim_end_matches(['\\', '/']);
     let k: String = s
@@ -46,6 +70,130 @@ pub struct Entry {
     pub file: PathBuf,
     pub full: bool,
     pub bytes: u64,
+    base: PathBuf,
+    identity: Identity,
+    modified: Option<SystemTime>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Identity { Full(u64, [u8; 16]), Legacy(u32, u64) }
+
+fn bad() -> io::Error { io::Error::other("History's path, identity or metadata changed") }
+
+fn ensure_dir(path: &Path) -> io::Result<sprawl_core::local::Directory> {
+    let mut path = sprawl_core::local::lexical(path)?;
+    let mut missing = Vec::new();
+    let mut held = loop {
+        match sprawl_core::local::directory(&path) {
+            Ok(held) => break held,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                missing.push(path.file_name().ok_or_else(bad)?.to_os_string());
+                path = path.parent().ok_or_else(bad)?.to_path_buf();
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    for name in missing.into_iter().rev() {
+        let next = held.path.join(name);
+        match fs::create_dir(&next) { Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}, Err(e) => return Err(e) }
+        held = sprawl_core::local::directory(&next)?;
+    }
+    Ok(held)
+}
+
+fn text(path: &Path, max: u64) -> io::Result<String> {
+    let mut file = sprawl_core::local::file(path, max)?;
+    let mut text = String::new();
+    file.file.read_to_string(&mut text)?;
+    Ok(text)
+}
+
+fn bucket(path: &Path) -> io::Result<(sprawl_core::local::Directory, PathBuf)> {
+    let held = sprawl_core::local::directory(path)?;
+    let root = PathBuf::from(text(&held.path.join("root.txt"), 128 << 10)?);
+    root_id(&root).ok_or_else(bad)?;
+    let name = held.path.file_name().ok_or_else(bad)?.to_string_lossy();
+    if name != key(&root) && name != legacy_key(&root) { return Err(bad()); }
+    Ok((held, root))
+}
+
+fn nonce() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{:x}-{:x}-{:x}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
+}
+
+fn stamp(name: &str) -> Option<(SystemTime, bool)> {
+    let (stem, full) = if let Some(s) = name.strip_suffix(".full.dtsn") { (s, true) } else { (name.strip_suffix(".fo.dtsn")?, false) };
+    let (t, unique) = stem.split_once('.').map_or((stem, None), |(t, n)| (t, Some(n)));
+    if unique.is_some_and(|n| n.is_empty() || n.len() > 128 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) { return None; }
+    Some((UNIX_EPOCH.checked_add(Duration::from_secs(t.parse().ok()?))?, full))
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetFileInformationByHandle(file: *mut core::ffi::c_void, class: i32, info: *const core::ffi::c_void, size: u32) -> i32;
+}
+
+fn file_id(file: &fs::File) -> io::Result<Identity> {
+    let mut full: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandleEx(file.as_raw_handle().cast(), FileIdInfo, (&mut full as *mut FILE_ID_INFO).cast(), std::mem::size_of::<FILE_ID_INFO>() as u32) } != 0 {
+        return Ok(Identity::Full(full.VolumeSerialNumber, full.FileId.Identifier));
+    }
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok(Identity::Legacy(info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)))
+}
+
+fn rename(file: &fs::File, to: &Path, replace: bool) -> io::Result<()> {
+    let name: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{}", to.display())).encode_wide().collect();
+    let head = 8 + std::mem::size_of::<usize>() + 4;
+    let size = head + name.len() * 2 + 2;
+    let mut buffer = vec![0u64; size.div_ceil(8)];
+    let bytes = unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast::<u8>(), buffer.len() * 8) };
+    bytes[0] = u8::from(replace);
+    bytes[8 + std::mem::size_of::<usize>()..head].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
+    for (i, c) in name.iter().enumerate() { bytes[head + i * 2..head + i * 2 + 2].copy_from_slice(&c.to_le_bytes()); }
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle().cast(), 3, buffer.as_ptr().cast(), size as u32) } != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+fn delete(file: &fs::File) -> io::Result<()> {
+    let flags = 3u32;
+    if unsafe { SetFileInformationByHandle(file.as_raw_handle().cast(), 21, (&flags as *const u32).cast(), 4) } != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+fn write_atomic(dir: &Path, name: &str, replace: bool, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<()> {
+    let tmp = dir.join(format!("{}.tmp", nonce()));
+    let mut file = fs::OpenOptions::new().read(true).write(true).access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000)
+        .share_mode(1 | 4).create_new(true).custom_flags(0x0020_0000 | 0x0010_0000).open(&tmp)?;
+    let result = write(&mut file).and_then(|_| file.sync_all()).and_then(|_| {
+        for _ in 0..20 {
+            match rename(&file, &dir.join(name), replace) {
+                Ok(()) => return Ok(()),
+                Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(5)),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::Error::new(io::ErrorKind::WouldBlock, "History metadata is being read"))
+    });
+    if result.is_err() { let _ = delete(&file); }
+    result
+}
+
+fn lock(dir: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::MetadataExt;
+    for _ in 0..40 {
+        match fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).share_mode(0)
+            .custom_flags(0x0020_0000 | 0x0010_0000).open(dir.join(".save.lock")) {
+            Ok(file) => {
+                let m = file.metadata()?;
+                if !m.is_file() || m.len() != 0 || m.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 { return Err(bad()); }
+                return Ok(file);
+            }
+            Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::WouldBlock, "History metadata is busy"))
 }
 
 fn secs(t: SystemTime) -> u64 {
@@ -72,24 +220,46 @@ pub fn prepare(tree: &Tree, taken: SystemTime, full: bool) -> Pending {
 impl Pending {
     /// Write into `base` and apply the retention policy with a total cap.
     pub fn save(self, base: &Path, cap_bytes: u64) -> io::Result<()> {
-        let dir = base.join(key(&self.root));
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join("root.txt"), self.root.to_string_lossy().as_bytes())?;
-        let t = secs(self.taken);
-        // "<when> <bytes>" of the last scan
-        let _ = fs::write(dir.join("last.txt"), format!("{t} {}", self.size));
-        let write = |name: String, body: &[u8]| -> io::Result<()> {
-            let tmp = dir.join(format!("{name}.tmp"));
-            let mut f = io::BufWriter::new(fs::File::create(&tmp)?);
-            snapshot::write_body(body, 9, &mut f)?;
-            drop(f);
-            fs::rename(&tmp, dir.join(name))
-        };
-        write(format!("{t}.fo.dtsn"), &self.folders)?;
-        if let Some(full) = &self.full {
-            write(format!("{t}.full.dtsn"), full)?;
+        let identity = root_id(&self.root).ok_or_else(bad)?;
+        let base = ensure_dir(base)?;
+        let held = ensure_dir(&base.path.join(key(&self.root)))?;
+        let dir = &held.path;
+        {
+            let _lock = lock(dir)?;
+            match text(&dir.join("root.txt"), 128 << 10) {
+                Ok(stored) if root_id(Path::new(&stored)).as_ref() == Some(&identity) => {},
+                Ok(_) => return Err(bad()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(dir, "root.txt", false, |f| f.write_all(self.root.to_string_lossy().as_bytes()))?,
+                Err(e) => return Err(e),
+            }
         }
-        prune(base, cap_bytes, SystemTime::now())
+        let t = secs(self.taken);
+        let unique = nonce();
+        let write = |name: &str, body: &[u8]| -> io::Result<()> {
+            write_atomic(dir, name, false, |file| {
+                let mut buffered = io::BufWriter::new(file);
+                snapshot::write_body(body, 9, &mut buffered)?;
+                buffered.flush()?;
+                if buffered.get_ref().metadata()?.len() > snapshot::MAX_FILE { return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds the supported file size")); }
+                Ok(())
+            })
+        };
+        write(&format!("{t}.{unique}.fo.dtsn"), &self.folders)?;
+        if let Some(full) = &self.full {
+            write(&format!("{t}.{unique}.full.dtsn"), full)?;
+        }
+        {
+            let _lock = lock(dir)?;
+            let previous = match text(&dir.join("last.txt"), 1024) {
+                Ok(last) => last.split_whitespace().next().and_then(|t| t.parse::<u64>().ok()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e),
+            };
+            if previous.is_none_or(|previous| t >= previous) {
+                write_atomic(dir, "last.txt", true, |file| write!(file, "{t} {}", self.size))?;
+            }
+        }
+        prune(&base.path, cap_bytes, SystemTime::now())
     }
 }
 
@@ -97,13 +267,15 @@ impl Pending {
 /// saved before the size was kept are left out.
 pub fn last_scans(base: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
     let mut out = Vec::new();
-    let Ok(dirs) = fs::read_dir(base) else { return out };
+    let Ok(base) = sprawl_core::local::directory(base) else { return out; };
+    let Ok(dirs) = fs::read_dir(&base.path) else { return out };
     for d in dirs.flatten() {
-        let (Ok(root), Ok(last)) = (fs::read_to_string(d.path().join("root.txt")), fs::read_to_string(d.path().join("last.txt"))) else { continue };
+        let Ok((held, root)) = bucket(&d.path()) else { continue; };
+        let Ok(last) = text(&held.path.join("last.txt"), 1024) else { continue; };
         let mut it = last.split_whitespace().map(|v| v.parse::<u64>());
         let (Some(Ok(t)), Some(Ok(size))) = (it.next(), it.next()) else { continue };
         let Some(when) = UNIX_EPOCH.checked_add(Duration::from_secs(t)) else { continue };
-        out.push((PathBuf::from(root.trim()), when, size));
+        out.push((root, when, size));
     }
     out.sort_by(|a, b| b.1.cmp(&a.1));
     out
@@ -112,28 +284,23 @@ pub fn last_scans(base: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
 /// Every snapshot under `base`, oldest first.
 pub fn list(base: &Path) -> Vec<Entry> {
     let mut out = Vec::new();
-    let Ok(dirs) = fs::read_dir(base) else { return out };
+    let Ok(base) = sprawl_core::local::directory(base) else { return out; };
+    let Ok(dirs) = fs::read_dir(&base.path) else { return out };
     for d in dirs.flatten() {
-        let Ok(root) = fs::read_to_string(d.path().join("root.txt")) else { continue };
-        let Ok(files) = fs::read_dir(d.path()) else { continue };
+        let Ok((held, root)) = bucket(&d.path()) else { continue; };
+        let Ok(files) = fs::read_dir(&held.path) else { continue };
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            let (stem, full) = if let Some(s) = name.strip_suffix(".full.dtsn") {
-                (s, true)
-            } else if let Some(s) = name.strip_suffix(".fo.dtsn") {
-                (s, false)
-            } else {
-                continue;
-            };
-            let Ok(t) = stem.parse::<u64>() else { continue };
-            // a file named with an absurd time is skipped, not a panic
-            let Some(taken) = UNIX_EPOCH.checked_add(Duration::from_secs(t)) else { continue };
+            let Some((taken, full)) = stamp(&name) else { continue; };
+            let Ok(file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
+            let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
             out.push(Entry {
-                root: PathBuf::from(root.trim()),
+                root: root.clone(),
                 taken,
                 file: f.path(),
                 full,
-                bytes: f.metadata().map(|m| m.len()).unwrap_or(0),
+                bytes: meta.len(),
+                base: base.path.clone(), identity, modified: meta.modified().ok(),
             });
         }
     }
@@ -218,15 +385,48 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
 }
 
 pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
-    for f in doomed(&list(base), cap_bytes, now) {
-        let _ = fs::remove_file(f);
+    let entries = list(base);
+    let doomed = doomed(&entries, cap_bytes, now);
+    for entry in entries.iter().filter(|entry| doomed.contains(&entry.file)) {
+        let _ = remove_entry(entry);
     }
     Ok(())
 }
 
 pub fn load(e: &Entry) -> io::Result<Tree> {
-    let mut f = io::BufReader::new(fs::File::open(&e.file)?);
-    Ok(snapshot::read(&mut f)?.0)
+    let (_bucket, path) = entry_path(e)?;
+    let mut held = sprawl_core::local::file(&path, snapshot::MAX_FILE)?;
+    check_entry(e, &held.file)?;
+    let (tree, meta) = snapshot::read(&mut io::BufReader::new(&mut held.file))?;
+    if root_id(&meta.root_path) != root_id(&e.root) || meta.taken != e.taken { return Err(bad()); }
+    Ok(tree)
+}
+
+fn entry_path(e: &Entry) -> io::Result<(sprawl_core::local::Directory, PathBuf)> {
+    let base = sprawl_core::local::directory(&e.base)?;
+    let path = sprawl_core::local::lexical(&e.file)?;
+    let parent = path.parent().ok_or_else(bad)?;
+    if parent.parent() != Some(base.path.as_path()) { return Err(bad()); }
+    let (held, root) = bucket(parent)?;
+    if root_id(&root) != root_id(&e.root) || path.file_name().and_then(|n| n.to_str()).and_then(stamp) != Some((e.taken, e.full)) { return Err(bad()); }
+    Ok((held, path))
+}
+
+fn check_entry(e: &Entry, file: &fs::File) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0
+        || meta.len() != e.bytes || meta.modified().ok() != e.modified || file_id(file)? != e.identity { return Err(bad()); }
+    Ok(())
+}
+
+/// Delete only this listed History file, after revalidating its pinned bucket and identity.
+pub fn remove_entry(e: &Entry) -> io::Result<()> {
+    let (_bucket, path) = entry_path(e)?;
+    let file = fs::OpenOptions::new().access_mode(0x0001_0080).share_mode(1 | 2 | 4)
+        .custom_flags(0x0020_0000 | 0x0010_0000).open(path)?;
+    check_entry(e, &file)?;
+    delete(&file)
 }
 
 /// The size every node of `cur` had in `old` (0 where it didn't exist), consistent so folders
@@ -297,16 +497,145 @@ pub fn project(cur: &Tree, old: &Tree) -> Vec<u64> {
 mod tests {
     use super::*;
 
+    fn fixture(tag: &str) -> (PathBuf, PathBuf, Tree) {
+        let dir = std::env::temp_dir().join(format!("sprawl-history-{}-{tag}", std::process::id()));
+        let data = dir.join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("a.bin"), b"data").unwrap();
+        let tree = sprawl_core::scan(&data, |_| {}).unwrap();
+        (dir.clone(), dir.join("history"), tree)
+    }
+
+    #[test]
+    fn concurrent_same_second_saves_keep_every_snapshot() {
+        let (dir, base, tree) = fixture("concurrent");
+        let taken = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 60);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut jobs = Vec::new();
+        for size in 1..=8 {
+            let mut tree = tree.clone();
+            let file = tree.nodes[ROOT].children[0];
+            tree.nodes[file].size = size;
+            tree.compute_totals();
+            let pending = prepare(&tree, taken, false);
+            let (barrier, base) = (barrier.clone(), base.clone());
+            jobs.push(std::thread::spawn(move || { barrier.wait(); pending.save(&base, u64::MAX).unwrap(); }));
+        }
+        for job in jobs { job.join().unwrap(); }
+        let entries = list(&base);
+        assert_eq!(entries.len(), 8);
+        let mut sizes: Vec<_> = entries.iter().map(|e| { assert_eq!(e.taken, taken); load(e).unwrap().nodes[ROOT].size }).collect();
+        sizes.sort_unstable();
+        assert_eq!(sizes, (1..=8).collect::<Vec<_>>());
+        assert_eq!(entries.iter().map(|e| e.file.clone()).collect::<std::collections::HashSet<_>>().len(), 8);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn replaced_files_and_wrong_roots_are_refused() {
+        let (dir, base, tree) = fixture("identity");
+        let taken = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 60);
+        prepare(&tree, taken, false).save(&base, u64::MAX).unwrap();
+        let entry = list(&base).pop().unwrap();
+        let preserved = entry.file.with_extension("keep");
+        fs::rename(&entry.file, &preserved).unwrap();
+        fs::copy(&preserved, &entry.file).unwrap();
+        fs::File::options().write(true).open(&entry.file).unwrap().set_modified(entry.modified.unwrap()).unwrap();
+        assert!(load(&entry).is_err() && remove_entry(&entry).is_err(), "identity matters even when bytes, size and time match");
+        let current = list(&base).pop().unwrap();
+        assert!(load(&current).is_ok());
+        let root_file = current.file.parent().unwrap().join("root.txt");
+        fs::write(&root_file, dir.join("another-root").display().to_string()).unwrap();
+        assert!(list(&base).is_empty());
+        assert!(load(&current).is_err() && remove_entry(&current).is_err());
+        assert!(current.file.exists());
+        fs::write(&root_file, tree.root_path.display().to_string()).unwrap();
+        remove_entry(&current).unwrap();
+        assert!(preserved.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_buckets_load_only_their_recorded_root() {
+        let (dir, base, tree) = fixture("legacy");
+        let bucket = base.join(legacy_key(&tree.root_path));
+        fs::create_dir_all(&bucket).unwrap();
+        fs::write(bucket.join("root.txt"), tree.root_path.display().to_string()).unwrap();
+        let taken = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 60);
+        let path = bucket.join(format!("{}.full.dtsn", secs(taken)));
+        snapshot::write(&tree, taken, 3, &mut fs::File::create(&path).unwrap()).unwrap();
+        assert!(load(&list(&base).pop().unwrap()).is_ok());
+        let mut wrong = tree.clone();
+        wrong.root_path = dir.join("another-root");
+        snapshot::write(&wrong, taken, 3, &mut fs::File::create(&path).unwrap()).unwrap();
+        assert!(load(&list(&base).pop().unwrap()).is_err(), "root.txt cannot relabel a different snapshot");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn redirected_buckets_and_base_never_escape_history() {
+        let (dir, base, tree) = fixture("junction");
+        let taken = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 60);
+        prepare(&tree, taken, false).save(&base, u64::MAX).unwrap();
+        let entry = list(&base).pop().unwrap();
+        let original = entry.file.parent().unwrap();
+        let outside = dir.join("outside-bucket");
+        fs::rename(original, &outside).unwrap();
+        let junction = |at: &Path, to: &Path| std::process::Command::new(crate::clean::system_dir().unwrap().join("cmd.exe"))
+            .args(["/C", "mklink", "/J"]).arg(at).arg(to).output().unwrap().status.success();
+        assert!(junction(original, &outside));
+        assert!(list(&base).is_empty() && last_scans(&base).is_empty());
+        assert!(load(&entry).is_err() && remove_entry(&entry).is_err());
+        assert!(prepare(&tree, taken, false).save(&base, u64::MAX).is_err());
+        prune(&base, 0, SystemTime::now()).unwrap();
+        assert!(outside.join(entry.file.file_name().unwrap()).exists());
+        fs::remove_dir(original).unwrap();
+        let moved = dir.join("outside-base");
+        fs::rename(&base, &moved).unwrap();
+        assert!(junction(&base, &moved));
+        assert!(list(&base).is_empty());
+        assert!(prepare(&tree, taken, false).save(&base.join("must-not-create"), u64::MAX).is_err());
+        assert!(!moved.join("must-not-create").exists());
+        fs::remove_dir(&base).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_writes_only_remove_their_own_temporary_handle() {
+        let (dir, base, _) = fixture("write-failure");
+        let held = ensure_dir(&base).unwrap();
+        fs::write(base.join("existing"), b"keep").unwrap();
+        assert!(write_atomic(&base, "existing", false, |file| file.write_all(b"replacement")).is_err());
+        assert_eq!(fs::read(base.join("existing")).unwrap(), b"keep");
+        let moved = base.join("moved.tmp");
+        let mut occupied = None;
+        let result = write_atomic(&base, "never-published", false, |file| {
+            file.write_all(b"partial output")?;
+            let tmp = fs::read_dir(&base)?.filter_map(Result::ok).map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "tmp")).unwrap();
+            fs::rename(&tmp, &moved)?;
+            fs::write(&tmp, b"unrelated arrival")?;
+            occupied = Some(tmp);
+            Err(io::Error::other("simulated write failure"))
+        });
+        assert!(result.is_err());
+        assert!(!moved.exists() && !base.join("never-published").exists());
+        assert_eq!(fs::read(occupied.unwrap()).unwrap(), b"unrelated arrival");
+        drop(held);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn e(root: &str, days_ago: u64, full: bool, bytes: u64, now: SystemTime) -> Entry {
         let t = now - Duration::from_secs(days_ago * DAY);
-        Entry { root: root.into(), taken: t, file: PathBuf::from(format!("{root}-{days_ago}-{full}")), full, bytes }
+        Entry { root: root.into(), taken: t, file: PathBuf::from(format!("{root}-{days_ago}-{full}")), full, bytes, base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
     }
 
     #[test]
     fn keys() {
-        assert_eq!(key(Path::new(r"C:\")), "C");
-        assert_eq!(key(Path::new(r"C:\Program Files")), "C~Program Files");
-        assert_eq!(key(Path::new(r"\\server\share")), "~~server~share");
+        assert_eq!(legacy_key(Path::new(r"C:\")), "C");
+        assert_eq!(legacy_key(Path::new(r"C:\Program Files")), "C~Program Files");
+        assert_ne!(key(Path::new(r"C:\a~b")), key(Path::new(r"C:\a\b")));
+        assert_eq!(key(Path::new(r"C:\Program Files\")), key(Path::new(r"c:/program files")));
+        assert_eq!(key(Path::new(r"\\?\C:\Program Files")), key(Path::new(r"C:\Program Files")));
     }
 
     #[test]
