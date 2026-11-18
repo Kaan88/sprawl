@@ -129,6 +129,11 @@ fn build() {
     let mut files = Vec::new();
     for name in FILES {
         let bytes = std::fs::read(release.join(name)).unwrap_or_else(|e| fail(format!("{name}: {e}")));
+        // built without sdk\ (tools\setup.ps1), the program has no Windows App Runtime start-up
+        // and doesn't open at all: the amended 0.3.2 went out like that once
+        if name.ends_with(".exe") && !bytes.windows(22).any(|w| w == b"MddBootstrapInitialize") {
+            fail(format!("{name} was built without the Windows App SDK (no sdk\\ folder?): it would not start. Run tools\\setup.ps1, then `cargo clean --target-dir target/dist` and build again."));
+        }
         files.push(FileEntry { name: name.to_string(), sha256: sha256_hex(&bytes), size: bytes.len() as u64 });
         std::fs::write(out.join(name), &bytes).unwrap_or_else(|e| fail(e));
     }
