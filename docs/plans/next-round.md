@@ -124,3 +124,19 @@ tree (the app's screen or the newest snapshot), and says "isn't in the scan" for
 ## Order
 
 The user says the order doesn't matter. Phase 0 still comes first, since those are bugs.
+
+## Progress
+
+Kept up as the work goes. Each line: the item, the commit, what was done, what is left.
+
+- **B1** (8e6021f): done. `report::build` takes `Option<&[Finding]>` and says "none matched" or
+  "haven't run". The app shares the Advisor's findings as a list over the pipe
+  (`bridge::publish_findings`, `None` while a new analysis runs). Snapshot mode runs the rules
+  in-process (`mcp::rules_for`: built-in plus checked local packs, through `advise_all`). The
+  in-app chat's report gets the Advisor's findings too.
+- **B2** (8e6021f): done. The MCP connects to the app for every call (`mcp::ask_app`), waits up
+  to 2 s on a busy pipe (`pipe::Client::connect`), and falls back to History's newest scan
+  (`Snapshot`), reloaded when a newer one appears, with "Sprawl isn't running ... taken N ago"
+  on every answer. `cleaners` and `set_filter` need the app open. Tried by hand with no app
+  serving: scan_report lists the rules' findings. Not yet tried by hand: the app started after
+  the MCP (needs an installed build, since the pipe only answers the same program file).
