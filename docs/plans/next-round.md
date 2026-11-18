@@ -167,3 +167,6 @@ Kept up as the work goes. Each line: the item, the commit, what was done, what i
 Phase 0 is done (B1-B5). Next per the plan: the release of 0.3.2 waits for the user's word and
 the Fable reads queued in `.claude/fable-review-queue.md`; Phase 1 (the MCP as a real tool) is
 to be discussed with the user before building.
+
+- 2026-11-18: **0.3.2 released** (cd43053) with Phase 0. Fable reads still queued, B4 first.
+- 2026-11-18: **Phase 1 step 1** (5cf92d2): `mcp_scan.rs`: scan_path / scan_status / list_scans in the MCP process, History save per the app's setting, query tools pick the freshest tree holding the path (own scan, app, History). Tried over stdio with the release exe. Next: route scan_path to the running app (scan on screen, background tree), then search, growth, structured findings/cleaners.
