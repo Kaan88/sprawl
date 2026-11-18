@@ -397,19 +397,12 @@ fn inside_another(all: &[Finding], f: &Finding) -> bool {
     })
 }
 
-/// The Advisor's findings as text, for Claude Code.
+/// The Advisor's findings as text, for Claude Code (the same rows the server lists).
 fn findings_text(r: &Report) -> String {
-    let mut s = String::new();
-    for f in &r.findings {
-        s += &format!("- [{:?}] {} ({}): {}\n", f.risk, f.title, sprawl_core::format_size(f.bytes), f.path.display());
-        for e in &f.evidence {
-            s += &format!("    {e}\n");
-        }
-        if f.command.is_some() {
-            s += "    (Sprawl can clean it up itself: the user ticks it in the Advisor's Findings and presses Clean up.)\n";
-        }
+    if r.findings.is_empty() {
+        return String::new();
     }
-    s
+    sprawl_advisor::mcp::findings_list(&r.findings)
 }
 
 /// "2 hours ago"

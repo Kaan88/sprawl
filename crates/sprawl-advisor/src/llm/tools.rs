@@ -334,6 +334,8 @@ impl<'a> Tools<'a> {
             return Err(format!("there is no tool called {name} here"));
         }
         match name {
+            "search" => super::more_tools::search(self.tree, self.facts, input),
+            "growth" => super::more_tools::growth(self.tree, input),
             "list_children" => {
                 let (n, _) = self.node(input)?;
                 let node = &self.tree.nodes[n];

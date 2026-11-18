@@ -91,6 +91,7 @@ pub fn bridge_specs() -> Vec<ToolSpec> {
         schema: which_scan(),
     });
     v.extend(chat_specs().into_iter().filter(|t| t.name == "set_filter"));
+    v.extend(crate::llm::more_tools::specs());
     v
 }
 
@@ -124,21 +125,35 @@ pub fn rules_for(tree: &Tree, facts: &Facts) -> Vec<Finding> {
     crate::advise_all(tree, &packs, facts).0
 }
 
-/// The rules' findings as the `findings` tool lists them.
-pub(crate) fn findings_list(found: &[Finding]) -> String {
+/// The rules' findings as the `findings` tool lists them: one row each with its risk, the
+/// rule (or model) that found it, what Sprawl would do, the confidence, the exact bytes and the
+/// path, then its evidence. The app publishes its Advisor's list in the same form.
+pub fn findings_list(found: &[Finding]) -> String {
+    use std::fmt::Write;
     if found.is_empty() {
         return "Sprawl's rules ran over this scan and none matched.".into();
     }
-    let mut s = String::new();
+    let mut s = String::from("Each: [risk | found by | what Sprawl would do | confidence] title: size (bytes): path\n");
     for f in found {
-        s += &format!("- [{:?}] {} ({}): {}
-", f.risk, f.title, sprawl_core::format_size(f.bytes), f.path.display());
+        let by = match &f.source {
+            crate::finding::Source::Rule(id) => format!("rule {id}"),
+            crate::finding::Source::Model(m) => format!("model {m}"),
+        };
+        let does = match f.remedy {
+            crate::finding::Remedy::Delete if f.command.is_some() => "deletes it (Clean up)",
+            crate::finding::Remedy::Delete => "delete",
+            crate::finding::Remedy::Command if f.command.is_some() => "runs the owner's clean-up (Clean up)",
+            crate::finding::Remedy::Command => "the owner's clean-up",
+            crate::finding::Remedy::Uninstall => "uninstall its app",
+            crate::finding::Remedy::Move => "move it to another drive",
+            crate::finding::Remedy::Info => "nothing: information",
+        };
+        let _ = writeln!(s, "- [{:?} | {by} | {does} | {:.2}] {}: {} ({} bytes): {}", f.risk, f.confidence, f.title, sprawl_core::format_size(f.bytes), f.bytes, f.path.display());
         for e in &f.evidence {
-            s += &format!("    {e}
-");
+            let _ = writeln!(s, "    {e}");
         }
     }
-    s
+    s + "Nothing here deletes: the user ticks findings in Sprawl's Advisor and presses Clean up; Sprawl removes them itself.\n"
 }
 
 /// Where the app answers web lookup `n` of the chat whose out file is `out`.
