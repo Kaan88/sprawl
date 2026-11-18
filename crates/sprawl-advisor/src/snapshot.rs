@@ -22,6 +22,9 @@ use sprawl_core::{Node, ScanMethod, Tree};
 
 const MAGIC: &[u8; 4] = b"DTSN";
 const VERSION: u32 = 1;
+pub const MAX_FILE: u64 = 512 << 20;
+const MAX_BODY: usize = 512 << 20;
+const MAX_HEAP: usize = 1024 << 20;
 /// Seconds from 1601-01-01 to 1970-01-01.
 const EPOCH_1601: i64 = 11_644_473_600;
 
@@ -148,6 +151,7 @@ pub fn write(tree: &Tree, taken: SystemTime, level: i32, w: &mut impl Write) -> 
 /// Compress and write a body made by [`encode`] (so encoding can happen on one thread and the
 /// slower compression on another).
 pub fn write_body(body: &[u8], level: i32, w: &mut impl Write) -> io::Result<()> {
+    if body.len() > MAX_BODY { return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds the supported body size")); }
     w.write_all(MAGIC)?;
     w.write_all(&VERSION.to_le_bytes())?;
     let mut z = zstd::stream::Encoder::new(w, level)?;
@@ -173,7 +177,7 @@ impl Cursor<'_> {
         loop {
             let b = *self.b.get(self.at).ok_or_else(Self::bad)?;
             self.at += 1;
-            if shift > 63 {
+            if shift > 63 || shift == 63 && b & 0xfe != 0 {
                 return Err(Self::bad());
             }
             v |= u64::from(b & 0x7f) << shift;
@@ -193,12 +197,17 @@ impl Cursor<'_> {
 
     fn string(&mut self) -> io::Result<String> {
         let n = self.get()? as usize;
-        Ok(String::from_utf8_lossy(self.bytes(n)?).into_owned())
+        if n > 128 << 10 { return Err(Self::bad()); }
+        String::from_utf8(self.bytes(n)?.to_vec()).map_err(|_| Self::bad())
     }
 }
 
 /// Read a snapshot back into a tree (with folder totals) and its metadata.
 pub fn read(r: &mut impl Read) -> io::Result<(Tree, Meta)> {
+    read_limited(r, MAX_BODY)
+}
+
+fn read_limited(r: &mut impl Read, body_limit: usize) -> io::Result<(Tree, Meta)> {
     let mut head = [0u8; 8];
     r.read_exact(&mut head)?;
     if &head[..4] != MAGIC {
@@ -209,42 +218,65 @@ pub fn read(r: &mut impl Read) -> io::Result<(Tree, Meta)> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, format!("snapshot version {version} isn't supported")));
     }
     let mut body = Vec::new();
-    zstd::stream::Decoder::new(r)?.read_to_end(&mut body)?;
+    let mut decoder = zstd::stream::Decoder::new(r.take(MAX_FILE + 1))?;
+    decoder.window_log_max(27)?;
+    decoder.take(body_limit as u64 + 1).read_to_end(&mut body)?;
+    if body.len() > body_limit { return Err(Cursor::bad()); }
     decode(&body)
 }
 
 pub fn decode(body: &[u8]) -> io::Result<(Tree, Meta)> {
+    if body.len() > MAX_BODY { return Err(Cursor::bad()); }
     let mut c = Cursor { b: body, at: 0 };
     let count = c.get()? as usize;
     // every node takes at least five bytes in the columns
-    if count == 0 || count > body.len() {
+    let per_node = std::mem::size_of::<Node>() + 3 * std::mem::size_of::<usize>();
+    if count == 0 || count > body.len() / 4 || count > MAX_HEAP / per_node {
         return Err(Cursor::bad());
     }
     let root_path = PathBuf::from(c.string()?);
     let method = match c.bytes(1)?[0] {
         1 => ScanMethod::Mft,
         2 => ScanMethod::Csv,
-        _ => ScanMethod::Walk,
+        0 => ScanMethod::Walk,
+        _ => return Err(Cursor::bad()),
     };
-    let taken = from_secs(c.get()? as i64).unwrap_or(UNIX_EPOCH);
+    let taken = from_secs(i64::try_from(c.get()?).map_err(|_| Cursor::bad())?).ok_or_else(Cursor::bad)?;
     let errors = c.get()?;
     let n_names = c.get()? as usize;
-    if n_names > body.len() {
+    if n_names == 0 || n_names > count {
         return Err(Cursor::bad());
     }
-    let mut names = Vec::with_capacity(n_names);
+    let mut budget = MAX_HEAP - count * per_node;
+    budget = budget.checked_sub(n_names.checked_mul(std::mem::size_of::<String>()).ok_or_else(Cursor::bad)?).ok_or_else(Cursor::bad)?;
+    let mut names = Vec::new();
+    names.try_reserve_exact(n_names).map_err(|_| Cursor::bad())?;
     for _ in 0..n_names {
-        names.push(c.string()?);
+        let name = c.string()?;
+        budget = budget.checked_sub(name.len()).ok_or_else(Cursor::bad)?;
+        names.push(name);
     }
-    let mut nodes: Vec<Node> = Vec::with_capacity(count);
+    // Validate all IDs and the full name-cloning cost before allocating a node column.
+    // Repeating one long table entry must not grow the heap up to the limit before refusal.
+    let ids_at = c.at;
+    for i in 0..count {
+        let id = c.get()? as usize;
+        let name = names.get(id).ok_or_else(Cursor::bad)?;
+        if i != 0 && root_path != std::path::Path::new(sprawl_core::MULTIPLE) && name.len() > 1024 { return Err(Cursor::bad()); }
+        budget = budget.checked_sub(name.len()).ok_or_else(Cursor::bad)?;
+    }
+    c.at = ids_at;
+    let mut nodes: Vec<Node> = Vec::new();
+    nodes.try_reserve_exact(count).map_err(|_| Cursor::bad())?;
     for _ in 0..count {
         let id = c.get()? as usize;
-        let name = names.get(id).ok_or_else(Cursor::bad)?.clone();
-        nodes.push(Node { name, ..Default::default() });
+        let name = &names[id];
+        nodes.push(Node { name: name.clone(), ..Default::default() });
     }
     for i in 0..count {
         let d = c.get()? as usize;
         if i == 0 {
+            if d != 0 { return Err(Cursor::bad()); }
             continue;
         }
         if d == 0 || d > i {
@@ -255,24 +287,33 @@ pub fn decode(body: &[u8]) -> io::Result<(Tree, Meta)> {
     }
     for n in nodes.iter_mut() {
         let f = c.get()?;
+        if f >> 1 > u32::MAX as u64 { return Err(Cursor::bad()); }
         n.is_dir = f & 1 == 1;
         n.attributes = (f >> 1) as u32;
         n.files = u64::from(!n.is_dir);
     }
+    for (i, node) in nodes.iter().enumerate() {
+        if !node.is_dir && !node.children.is_empty() { return Err(Cursor::bad()); }
+        let synthetic = root_path == std::path::Path::new(sprawl_core::MULTIPLE) && node.parent == Some(0) && std::path::Path::new(&node.name).is_absolute();
+        if i != 0 && !synthetic && (node.name.is_empty() || matches!(node.name.as_str(), "." | "..") || node.name.contains(['\\', '/', ':', '\0'])) { return Err(Cursor::bad()); }
+    }
     let leaves: Vec<usize> = (0..count).filter(|&i| leaf(&nodes[i])).collect();
     for &i in &leaves {
         nodes[i].size = c.get()?;
+        if nodes[i].size > i64::MAX as u64 { return Err(Cursor::bad()); }
     }
     for &i in &leaves {
-        nodes[i].allocated = (nodes[i].size as i64 + unzig(c.get()?)).max(0) as u64;
+        nodes[i].allocated = (nodes[i].size as i64).checked_add(unzig(c.get()?)).filter(|&a| a >= 0).ok_or_else(Cursor::bad)? as u64;
     }
     let mut prev = 0i64;
     for n in nodes.iter_mut() {
-        prev += unzig(c.get()?);
+        prev = prev.checked_add(unzig(c.get()?)).ok_or_else(Cursor::bad)?;
         n.modified = from_secs(prev);
     }
+    if c.at != body.len() { return Err(Cursor::bad()); }
     let mut tree = Tree { root_path: root_path.clone(), nodes, errors, method };
     tree.compute_totals();
+    if tree.nodes[0].size > i64::MAX as u64 || tree.nodes[0].allocated > i64::MAX as u64 { return Err(Cursor::bad()); }
     Ok((tree, Meta { root_path, method, taken, nodes: count }))
 }
 
@@ -380,5 +421,46 @@ mod tests {
         let mut bad = body.clone();
         bad[0] = 0xff; // absurd node count
         assert!(decode(&bad).is_err());
+        let mut extra = body.clone();
+        extra.push(0);
+        assert!(decode(&extra).is_err(), "columns must consume the body exactly");
+        let mut overflow = vec![0x80; 9];
+        overflow.push(2);
+        assert!(Cursor { b: &overflow, at: 0 }.get().is_err(), "a varint cannot overflow 64 bits");
+    }
+
+    #[test]
+    fn amplification_and_arithmetic_are_rejected_before_node_allocation() {
+        let mut body = Vec::new();
+        put(&mut body, 10_000);
+        put(&mut body, 8);
+        body.extend_from_slice(b"Multiple");
+        body.push(0);
+        put(&mut body, EPOCH_1601 as u64);
+        put(&mut body, 0);
+        put(&mut body, 1);
+        let long = format!("C:\\{}", "a".repeat((128 << 10) - 3));
+        put(&mut body, long.len() as u64);
+        body.extend_from_slice(long.as_bytes());
+        body.extend(std::iter::repeat_n(0, 10_000));
+        assert!(decode(&body).is_err(), "a small name table cannot demand over a GiB of repeated name clones");
+
+        let mut body = Vec::new();
+        put(&mut body, 1);
+        put(&mut body, 4);
+        body.extend_from_slice(b"C:\\x");
+        body.push(0);
+        for v in [EPOCH_1601 as u64, 0, 1, 1] { put(&mut body, v); }
+        body.push(b'x');
+        for v in [0, 0, 0, i64::MAX as u64, zig(1), 0] { put(&mut body, v); }
+        assert!(decode(&body).is_err(), "allocated-size arithmetic cannot overflow");
+    }
+
+    #[test]
+    fn compressed_body_cannot_expand_past_its_budget() {
+        let mut bytes = Vec::new();
+        write_body(&vec![0; 8192], 3, &mut bytes).unwrap();
+        assert!(bytes.len() < 1024);
+        assert!(read_limited(&mut bytes.as_slice(), 1024).is_err());
     }
 }
