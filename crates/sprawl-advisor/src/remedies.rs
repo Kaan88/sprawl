@@ -1,13 +1,12 @@
 //! Remedies that free space without deleting anything: compressing installed programs
-//! (`compact /exe:lzx`), letting OneDrive keep files online only, and moving big things to a
-//! drive with room. All information findings: what it would save and exactly how, for the user
-//! to do. Sprawl runs none of it.
+//! (`compact /exe:...`, which Sprawl runs when ticked: F1), letting OneDrive keep files online
+//! only, and moving big things to a drive with room (tips, for the user to do).
 
 use std::path::Path;
 
 use sprawl_core::{format_size, Tree, ROOT};
 
-use crate::finding::{Finding, Remedy, Risk, Source};
+use crate::finding::{Action, Finding, Remedy, Risk, Source};
 use crate::rules::ps_quote;
 use crate::segments;
 
@@ -19,6 +18,69 @@ const RECALL_ON_OPEN: u32 = 0x0004_0000;
 const OFFLINE: u32 = 0x1000;
 /// "Always keep on this device".
 const PINNED: u32 = 0x0008_0000;
+/// A file `compact /exe` compressed is stored behind a reparse point (WOF), not with the old
+/// compressed attribute.
+const REPARSE: u32 = 0x400;
+
+/// How every compress command Sprawl writes begins (F1): what tells a compress run from a
+/// tool's clean-up, which is measured by what the folder lost on disk, not in size.
+pub const COMPRESS: &str = "compact.exe /c /s /a /i /q /exe:";
+
+/// The command is one of Sprawl's own compress commands.
+pub fn is_compress(a: &Action) -> bool {
+    matches!(a, Action::Tool { command } if command.starts_with(COMPRESS))
+}
+
+/// The finding compresses its folder in place (nothing is deleted).
+pub fn compresses(f: &Finding) -> bool {
+    f.action.as_ref().is_some_and(is_compress)
+}
+
+/// What everything under `path` takes on disk, compressed files at their compressed size;
+/// links are not followed. None when `path` can't be read.
+pub fn on_disk(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCompressedFileSizeW(name: *const u16, high: *mut u32) -> u32;
+    }
+    let size = |p: &Path, len: u64| -> u64 {
+        let w: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut high = 0u32;
+        // SAFETY: a NUL-terminated wide path and a valid out pointer
+        let low = unsafe { GetCompressedFileSizeW(w.as_ptr(), &mut high) };
+        if low == u32::MAX && high == 0 {
+            len
+        } else {
+            (high as u64) << 32 | low as u64
+        }
+    };
+    let top = std::fs::symlink_metadata(path).ok()?;
+    if !top.is_dir() {
+        return Some(size(path, top.len()));
+    }
+    let mut total = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            if m.file_type().is_symlink() {
+                continue;
+            }
+            if m.is_dir() {
+                use std::os::windows::fs::MetadataExt;
+                // a junction is a link too
+                if m.file_attributes() & REPARSE == 0 {
+                    stack.push(e.path());
+                }
+            } else {
+                total += size(&e.path(), m.len());
+            }
+        }
+    }
+    Some(total)
+}
 
 fn info(tree: &Tree, n: usize, id: &str, title: String, evidence: Vec<String>, bytes: u64, risk: Risk, remedy: Remedy) -> Finding {
     Finding {
@@ -95,35 +157,46 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
                 if !x.is_reparse_point() {
                     s2.extend_from_slice(&x.children);
                 }
-            } else if x.attributes & COMPRESSED == 0 && x.size >= 4096 {
+            } else if x.attributes & (COMPRESSED | REPARSE) == 0 && x.size >= 4096 {
                 saving += x.size as f64 * lzx_ratio(&x.extension());
             }
         }
-        let saving = saving as u64;
+        let path = tree.path_of(n);
+        let game = segs.iter().any(|s| s == "steamapps");
+        // the plan's defaults (future-features.md F1): games read big files and gain from the
+        // bigger chunks; programs in daily use start faster with the smaller ones. Both save a
+        // little less than LZX, which the ratios are for.
+        let (alg, share) = if game { ("xpress16k", 0.85) } else { ("xpress8k", 0.75) };
+        let saving = (saving * share) as u64;
         if saving < GB {
             continue;
         }
-        let path = tree.path_of(n);
-        let game = segs.iter().any(|s| s == "steamapps");
         out.push(info(
             tree,
             n,
             "compact",
             format!("Compress {}", tree.nodes[n].name),
             vec![
-                format!("Windows can store these program files compressed: about {} of {} saved, the program runs as before.", format_size(saving), format_size(node.size)),
-                // single-quoted: a folder name can't run anything in the admin shell it is pasted into
-                format!("In an administrator PowerShell: compact /c /s /i /exe:lzx {}", ps_quote(&format!("{}\\*", path.display()))),
-                if game { "An update or 'verify files' in Steam writes some files back uncompressed; run it again after big updates.".into() } else { "An update writes changed files back uncompressed; run it again after big updates.".into() },
-                "Undo with: compact /u /s /exe /i on the same folder.".into(),
+                format!("Windows can store these program files compressed ({}): about {} of {} saved, the program runs as before. Nothing is deleted.", alg.to_uppercase(), format_size(saving), format_size(node.size)),
+                "Tick it and Clean up, and Sprawl runs Windows' own compact.exe on it. That takes minutes on a big folder; files in use are skipped. Close the program first.".into(),
+                if game { "An update or 'verify files' in Steam writes some files back uncompressed; compress it again after big updates. A few games with anti-cheat check their files: if one complains, uncompress it.".into() } else { "An update writes changed files back uncompressed; compress it again after big updates.".into() },
+                format!("Undo with: compact /u /s /a /i /exe {}", ps_quote(&format!("{}\\*", path.display()))),
             ],
             // the folder's own size (what the safety checks compare); the saving is its gain
             node.size,
             Risk::Green,
-            Remedy::Info,
+            Remedy::Command,
         ));
         if let Some(f) = out.last_mut() {
             f.gain = Some(saving);
+            // Sprawl's own command, from the built-in rules: compact.exe on the folder's files.
+            // It deletes nothing, so the never-list (Program Files is on it) doesn't veto it, as
+            // for DISM; it acts on the files inside, never on the folder or through a link.
+            f.allow_protected = true;
+            let pf = |v: &str| std::env::var_os(v).is_some_and(|d| crate::finding::within(&path, Path::new(&d)));
+            let admin = pf("ProgramFiles") || pf("ProgramFiles(x86)");
+            // single-quoted: a folder name can't run anything
+            f.set_action(Action::Tool { command: format!("{COMPRESS}{alg} {}", ps_quote(&format!("{}\\*", path.display()))) }, admin);
         }
     }
     out.sort_by(|a, b| b.expected_gain().cmp(&a.expected_gain()));
@@ -299,5 +372,31 @@ mod tests {
         let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
         // this scan's folder isn't on a drive that is nearly full: nothing
         assert!(moves(&tree, &[('C', 100 * GB, GB), ('D', 500 * GB, 400 * GB)]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod compress_tests {
+    use super::*;
+
+    /// Sprawl's own compress command, run as a clean-up runs it, makes the folder smaller on
+    /// disk and keeps every file as it was.
+    #[test]
+    fn compress_runs_and_keeps_the_files() {
+        let dir = std::env::temp_dir().join(format!("sprawl-compress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let text: String = (0..60_000).map(|i| format!("line {i} of a very compressible text file\n")).collect();
+        std::fs::write(dir.join("a.txt"), &text).unwrap();
+        std::fs::write(dir.join("sub").join("b.json"), &text).unwrap();
+        let before = on_disk(&dir).unwrap();
+        let a = Action::Tool { command: format!("{COMPRESS}xpress8k {}", crate::rules::ps_quote(&format!("{}\\*", dir.display()))) };
+        assert!(is_compress(&a));
+        let o = crate::clean::run_with(&dir, &a, &crate::clean::Spare::default(), None, &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
+        let after = on_disk(&dir).unwrap();
+        assert!(o.problems.is_empty(), "{:?} {:?}", o.problems, o.output);
+        assert!(after < before / 2, "before {before}, after {after}, {:?}", o.output);
+        assert_eq!(std::fs::read_to_string(dir.join("sub").join("b.json")).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -455,7 +455,9 @@ pub(crate) fn risk_words(r: Risk) -> &'static str {
 
 /// The risk words for one finding: what can't come back says so, whatever its colour.
 pub(crate) fn risk_words_for(f: &Finding) -> &'static str {
-    if gone_for_good(f) {
+    if sprawl_advisor::remedies::compresses(f) {
+        "Compressed in place, nothing deleted"
+    } else if gone_for_good(f) {
         "Cannot be undone"
     } else {
         risk_words(f.risk)
@@ -3409,6 +3411,7 @@ impl State {
         let yours = f.leftover() && f.remedy == Remedy::Info;
         let kind = match f.remedy {
             _ if f.forced_from.is_some() => "You ticked it: to the Recycle Bin",
+            _ if sprawl_advisor::remedies::compresses(f) => "Compressed in place: nothing is deleted",
             _ if yours => "Holds your files: look before removing",
             Remedy::Info | Remedy::Move => "Tip",
             Remedy::Uninstall => "Your call",
@@ -3442,7 +3445,15 @@ impl State {
             dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
-            remedy = crate::look::label(if yours { "Look first" } else if f.forced_from.is_some() { "To the bin" } else { remedy_label(f.remedy) }),
+            remedy = crate::look::label(if yours {
+                "Look first"
+            } else if f.forced_from.is_some() {
+                "To the bin"
+            } else if sprawl_advisor::remedies::compresses(f) {
+                "Compress"
+            } else {
+                remedy_label(f.remedy)
+            }),
             num = crate::look::NUM,
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = match f.gain {

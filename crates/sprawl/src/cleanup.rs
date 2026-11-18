@@ -151,8 +151,9 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
     if !counted {
         return Some("Inside another item");
     }
-    // a tool's own clean-up acts on the account running it: only the user's own folders
-    if matches!(action, Action::Tool { .. }) {
+    // a tool's own clean-up acts on the account running it: only the user's own folders (a
+    // compress acts on the files named, for every account alike)
+    if matches!(action, Action::Tool { .. }) && !sprawl_advisor::remedies::is_compress(&action) {
         let mine = std::env::var_os("USERPROFILE").is_some_and(|home| PathBuf::from(key(&f.path)).starts_with(PathBuf::from(home.to_string_lossy().to_lowercase())));
         if !mine {
             return Some("Another account's");
@@ -250,7 +251,7 @@ pub(crate) fn counts_as_space(f: &Finding) -> bool {
 
 /// What "Tick the safe ones" may tick.
 pub(crate) fn safe_tick(f: &Finding, counted: bool) -> bool {
-    counts_as_space(f) && untickable(f, counted).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20
+    counts_as_space(f) && untickable(f, counted).is_none() && held_in_app(f).is_none() && f.risk == Risk::Green && !sprawl_advisor::remedies::compresses(f) && f.builtin && !f.heuristic() && !f.other_account() && !matches!(f.source, Source::Model(_)) && f.bytes >= 1 << 20
 }
 
 /// It needs administrator rights and this Sprawl doesn't have them: it can be ticked (for a
@@ -450,7 +451,7 @@ impl State {
     pub(crate) fn cleanup_select_enough(&mut self, need: u64) -> Option<u64> {
         let r = self.advice()?;
         let plan = sprawl_advisor::plan::plan(&r.findings, &r.counted, need);
-        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
+        let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| !sprawl_advisor::remedies::compresses(&r.findings[i]) && counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
         self.advisor.cleanup.ticked = ticked;
         self.advisor.cleanup.auto = false;
@@ -576,6 +577,7 @@ impl State {
                     let vol = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase();
                     bins.entry(vol).or_insert_with(|| sprawl_advisor::recycle::bin_for(&path))
                 });
+                let disk_before = sprawl_advisor::remedies::is_compress(&action).then(|| sprawl_advisor::remedies::on_disk(&path)).flatten();
                 let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
                         last = Instant::now();
@@ -588,8 +590,11 @@ impl State {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
                     Err(_) => None,
                 };
-                // a tool removes things itself: what it freed is what the folder lost
-                if matches!(action, Action::Tool { .. }) {
+                // a compress keeps every file: what it freed is what the folder lost on disk
+                if let Some(b) = disk_before {
+                    out.freed = b.saturating_sub(sprawl_advisor::remedies::on_disk(&path).unwrap_or(b));
+                } else if matches!(action, Action::Tool { .. }) {
+                    // a tool removes things itself: what it freed is what the folder lost
                     if let Some(now) = &now {
                         out.freed = before.saturating_sub(now.as_ref().map_or(0, |t| t.nodes[sprawl_core::ROOT].size));
                     }
@@ -654,7 +659,10 @@ impl State {
     pub(crate) fn review_size(&self, f: &Finding) -> (u64, bool) {
         match self.advisor.cleanup.measured.get(&key(&f.path)) {
             Some(&b) => (b, false),
-            None => (f.bytes, f.estimate()),
+            None => match f.gain {
+                Some(g) => (g, true),
+                None => (f.bytes, f.estimate()),
+            },
         }
     }
 
