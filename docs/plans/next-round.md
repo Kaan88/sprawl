@@ -17,6 +17,15 @@ compresses or scans for an agent gets a Fable review before release, as usual.
 
 R11 (an issue in the Cleaners tab) is dropped, by the user's word.
 
+## Phase 0b: bugs the user found after 0.3.2 (before Phase 2)
+
+| # | What | What's known |
+|---|------|--------------|
+| B6 | **"Check again" doesn't see what was removed** | The user tried it several times: after a delete, or after a command ran (emptying the Recycle Bin), the same findings come back. Suspects: "Check again" reruns the rules over the same tree, and the tree isn't rescanned where the clean-up or command happened. Look at what "Check again" does, then rescan (or re-measure) the paths behind each finding before the rules run, the way a clean-up already updates the tree for what Sprawl itself deleted. |
+| B7 | **History: "Play it in History" seems to do nothing** | The button should switch to the History view, and then play. Today it starts something the user can't see. |
+| B8 | **History: Play moves one step and stops** | It should step through the snapshots to the end (or until paused). |
+| B9 | **History: scrubbing the timeline freezes the app for almost a second each time** | Each seek likely loads (decompresses) a full snapshot and projects it on the UI thread. Load on a worker, keep the snapshots already loaded, show the nearest one loaded while the next comes. |
+
 ## Phase 1: the MCP as a real tool (0.4.0), to discuss before building
 
 The user asked for this design to be discussed first. Today the MCP is query-only, works on one
@@ -58,6 +67,12 @@ tree (the app's screen or the newest snapshot), and says "isn't in the scan" for
     and the admin switches in HKLM, and never asks for elevation itself.
   - In snapshot mode, the rules run in-process, so findings are real everywhere.
 
+**Done (2026-11-18), as far as the user is concerned**: steps 1-3 below in Progress. Left out on
+purpose: `cleaners` as rows (its text already carries id, risk and counted bytes) and a
+`scan_report` that leads with the scans available. Also decided then: a scan an AI asks for runs
+with the user's normal rights only. The app, if it runs as administrator, hands the scan to the
+server's own process, and the server uses the folder walk, never the MFT.
+
 ## Phase 2: the Advisor and the AI working with you (0.4.x)
 
 - **R7, "Look first" rows can be ticked too.** Keep "Look first" as the label and the advice, but
@@ -75,6 +90,13 @@ tree (the app's screen or the newest snapshot), and says "isn't in the scan" for
   "Tick all it suggested". Each goes through the same checks as `suggest_ticks`, which means safe
   and amber only and replayed against the scan. AI-ticked rows have their own colour (the purple
   of the existing "AI" badge) until the user touches them.
+- **R9b, the AI on the Findings page, like the Cleaners tab** (the user, 2026-11-18). The AI's
+  recommendations can be ticked in place, as Cleaners' parts are now. The AI moves into a column
+  on the right of the Findings page, as on the Cleaners tab, and the separate Ask tab goes. One
+  design for both pages.
+- **R12, smarter and more suggestions in the AI box.** More of the ready questions (chips), chosen
+  from what is on screen: the selected finding or part, what is ticked, what grew, an app that
+  is open. (R10's "Are my choices safe?" is one of them.)
 - **R10, "Are my choices safe?"** A chip in the Ask box.
   - The AI gets a tool that lists what is ticked now (Findings and Cleaners, with risk, size,
     paths and "ticked by you / by the AI").
@@ -123,7 +145,7 @@ tree (the app's screen or the newest snapshot), and says "isn't in the scan" for
 
 ## Order
 
-The user says the order doesn't matter. Phase 0 still comes first, since those are bugs.
+The user says the order doesn't matter. Phase 0 still comes first, since those are bugs, and Phase 0b (B6-B9) comes before Phase 2 for the same reason.
 
 ## Progress
 

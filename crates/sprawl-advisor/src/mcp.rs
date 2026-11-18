@@ -307,7 +307,7 @@ pub fn main(args: &[String]) {
             if crate::mcp_scan::is_scan_tool(name) {
                 // the running app scans (its rights, its History); without it, this process
                 match ask_app(name, input) {
-                    Some(Err(e)) if e.starts_with("there is no tool called") => {}
+                    Some(Err(e)) if e.starts_with("there is no tool called") || e == crate::mcp_scan::PASS_TO_SERVER => {}
                     Some(a) => return a,
                     None => {}
                 }

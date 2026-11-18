@@ -1,8 +1,9 @@
 //! The MCP's own scans and the trees it answers from (next round, Phase 1).
 //!
-//! `scan_path` scans a folder or drive in this process, with the same engine as the app: the MFT
-//! when this process is already elevated, otherwise the folder walk. It never asks for
-//! elevation. `scan_status` follows the scan; `list_scans` lists every tree the other tools can
+//! `scan_path` scans a folder or drive with the folder walk and the user's own rights, never the
+//! MFT and never elevated (the user's decision, 2026-11-18: an AI's scan sees no more than the
+//! user could list). The running app makes it when it isn't elevated; an elevated app hands it
+//! back to the server's own process ([`PASS_TO_SERVER`]). `scan_status` follows the scan; `list_scans` lists every tree the other tools can
 //! answer from (this session's scans and History's saved ones). A finished scan goes into
 //! History when the app's setting keeps History, so the user sees it there.
 //!
@@ -31,6 +32,9 @@ const STALE_SECS: u64 = 86_400;
 
 /// The answer the tools give (here and in the app) for a path outside the tree they have.
 pub const NOT_IN_SCAN: &str = "isn't in the scan";
+/// The elevated app's answer to a scan tool: the server scans in its own process instead.
+pub const PASS_TO_SERVER: &str = "Sprawl runs as administrator, so the server scans with your own rights instead.";
+
 /// The app's answer when it has no tree open.
 pub const NO_SCAN_OPEN: &str = "No scan is open in Sprawl yet.";
 
@@ -298,6 +302,10 @@ impl Index {
 
     /// Answer `scan_path`, `scan_status` or `list_scans`.
     pub fn scan_call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+        // an app running as administrator would scan with its rights: the server does it
+        if self.in_app && sprawl_core::is_elevated() {
+            return Err(PASS_TO_SERVER.into());
+        }
         self.poll();
         let wait = input["wait_seconds"].as_u64().unwrap_or(0).min(MAX_WAIT);
         match name {
@@ -350,7 +358,8 @@ impl Index {
         let base = self.base();
         let quiet = self.no_history;
         let handle = std::thread::spawn(move || {
-            let tree = sprawl_core::scan_auto(&r, &p).map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
+            // the folder walk, never the MFT: only what the user's own rights can list
+            let tree = sprawl_core::walk::walk(&r, &p).map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
             // into History as the app saves its own scans, when the user keeps History
             let (on, cap) = history_settings();
             let history = match (on, base) {
