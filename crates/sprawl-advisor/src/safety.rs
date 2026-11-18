@@ -67,6 +67,7 @@ pub struct Never {
     excluded: Vec<std::path::PathBuf>,
     patterns: Vec<(String, Pattern)>,
     user_data: Vec<Pattern>,
+    user_roots: Vec<String>,
     /// A pattern kept an unexpanded `%VAR%`: fail closed.
     incomplete: bool,
 }
@@ -374,14 +375,29 @@ fn drive_forms(path: &str) -> Option<Vec<String>> {
 
 impl Never {
     pub fn default_list() -> Never {
-        let patterns: Vec<(String, Pattern)> = NEVER.iter().map(|p| (p.to_string(), Pattern::new(p))).collect();
+        Self::from_locations(std::env::var("USERPROFILE").ok().as_deref(), personal_places())
+    }
+
+    fn from_locations(home: Option<&str>, places: Result<Vec<String>, ()>) -> Never {
+        let projected = |list: &[&str]| -> Vec<String> {
+            let mut paths: Vec<String> = list.iter().map(|p| p.to_string()).collect();
+            if let Some(home) = home {
+                paths.extend(list.iter().filter_map(|p| p.strip_prefix(r"?:\Users\*\")).map(|tail| format!(r"{}\{tail}", home.trim_end_matches('\\'))));
+            }
+            paths
+        };
+        let patterns: Vec<(String, Pattern)> = projected(NEVER).into_iter().map(|p| { let pattern = Pattern::new(&p); (p, pattern) }).collect();
         // %VAR% entries that couldn't be expanded protect nothing: fail closed. (The x86 and
         // W6432 Program Files variables may legitimately be missing.)
-        let incomplete = NEVER
+        let incomplete = places.is_err() || NEVER
             .iter()
             .filter(|p| !p.contains("(x86)") && !p.contains("W6432"))
             .any(|p| crate::rules::expand(p).contains('%'));
-        Never { excluded: crate::exclusions::configured(), patterns, user_data: USER_DATA.iter().map(|p| Pattern::new(p)).collect(), incomplete }
+        let mut user_paths = projected(USER_DATA);
+        user_paths.extend(places.unwrap_or_default().into_iter().map(|p| format!(r"{}\**", p.trim_end_matches('\\'))));
+        let user_roots = user_paths.iter().map(|p| crate::rules::expand(p).trim_end_matches(r"\**").to_string())
+            .filter(|p| !p.contains(['*', '?', '%']) && drive_forms(p).is_some()).collect();
+        Never { excluded: crate::exclusions::configured(), patterns, user_data: user_paths.iter().map(|p| Pattern::new(p)).collect(), user_roots, incomplete }
     }
 
     /// Every `%VAR%` entry could be worked out. When not, callers refuse destructive actions.
@@ -462,8 +478,61 @@ impl Never {
 
     pub fn is_user_data(&self, path: &str) -> bool {
         let forms = drive_forms(path).unwrap_or_default();
-        self.user_data.iter().any(|pat| forms.iter().any(|p| pat.matches(p)))
+        self.user_data.iter().any(|pat| forms.iter().any(|p| pat.matches(p) || pat.is_above(p)))
     }
+
+    /// A wildcard cannot hide a personal folder by sampling a different concrete name.
+    pub(crate) fn may_touch_user_data(&self, pattern: &str) -> bool {
+        if !self.complete() { return true; }
+        let pattern = Pattern::new(pattern);
+        self.user_roots.iter().any(|root| {
+            let mut state = pattern.start();
+            for part in segments(root) {
+                if pattern.accepts(&state) { return true; }
+                state = pattern.step(&state, &part);
+                if state.is_empty() { return false; }
+            }
+            !state.is_empty()
+        })
+    }
+}
+
+/// Read current redirected paths without creating or verifying any folder (including UNC).
+/// IDs and flags: https://learn.microsoft.com/windows/win32/shell/knownfolderid
+fn personal_places() -> Result<Vec<String>, ()> {
+    #[repr(C)]
+    struct Guid { a: u32, b: u16, c: u16, d: [u8; 8] }
+    #[link(name = "shell32")]
+    extern "system" { fn SHGetKnownFolderPath(id: *const Guid, flags: u32, token: *mut core::ffi::c_void, path: *mut *mut u16) -> i32; }
+    #[link(name = "ole32")]
+    extern "system" { fn CoTaskMemFree(path: *mut core::ffi::c_void); }
+    let ids: [u128; 9] = [
+        0xFDD39AD0_238F_46AF_ADB4_6C85480369C7, // Documents
+        0xB4BFCC3A_DB2C_424C_B029_7FE99A87C641, // Desktop
+        0x33E28130_4E1E_4676_835A_98395C3BC3BB, // Pictures
+        0x18989B1D_99B5_455B_841C_AB7C74E4DDFC, // Videos
+        0x4BD8D571_6D19_48D3_BE97_422220080E43, // Music
+        0x374DE290_123F_4565_9164_39C4925E467B, // Downloads
+        0x4C5C32FF_BB9D_43B0_B5B4_2D72E54EAAA4, // Saved Games
+        0x1777F761_68AD_4D8A_87BD_30B759FA33DD, // Favorites
+        0x56784854_C6CB_462B_8169_88E350ACB882, // Contacts
+    ];
+    let mut paths = Vec::new();
+    for id in ids {
+        let guid = Guid { a: (id >> 96) as u32, b: (id >> 80) as u16, c: (id >> 64) as u16, d: (id as u64).to_be_bytes() };
+        let mut path = std::ptr::null_mut();
+        let result = unsafe { SHGetKnownFolderPath(&guid, 0x4000, std::ptr::null_mut(), &mut path) };
+        let text = if result >= 0 && !path.is_null() {
+            let mut len = 0;
+            unsafe { while len < 32_768 && *path.add(len) != 0 { len += 1; } }
+            if len == 0 || len == 32_768 { None } else { unsafe { String::from_utf16(std::slice::from_raw_parts(path, len)).ok() } }
+        } else { None };
+        if !path.is_null() { unsafe { CoTaskMemFree(path.cast()); } }
+        let text = text.ok_or(())?;
+        if text.contains(['%', '*', '?']) || drive_forms(&text).is_none() { return Err(()); }
+        paths.push(text);
+    }
+    Ok(paths)
 }
 
 /// `names` (an item's name, then the folders above it) ends in `tail` (segments, the item last).
@@ -896,6 +965,26 @@ mod tests {
         assert!(n.hit(r"C:\Users\sam\AppData\Local\npm-cache").is_none());
         assert!(n.is_user_data(r"C:\Users\sam\Documents\big.iso"));
         assert!(!n.is_user_data(r"C:\Users\sam\AppData\Local\Temp"));
+    }
+
+    #[test]
+    fn relocated_profile_and_redirected_personal_folders_keep_their_protection() {
+        let never = Never::from_locations(Some(r"D:\Corp\Profiles\sam"), Ok(vec![r"E:\Personal\My work".into(), r"F:\Images".into()]));
+        assert!(never.complete());
+        for tail in [r".aws\credentials", r".azure\tokens", r".kube\config", r".docker\config.json", r"AppData\Roaming\Bitwarden\data.json"] {
+            assert!(never.hit(&format!(r"D:\Corp\Profiles\sam\{tail}")).is_some(), "{tail}");
+        }
+        for path in [r"D:\Corp\Profiles\sam\Saved Games\slot", r"D:\Corp\Profiles\sam\Contacts\person", r"D:\Corp\Profiles\sam\source\project", r"E:\Personal\My work\notes", r"F:\Images\photo.jpg"] {
+            assert!(never.is_user_data(path), "{path}");
+        }
+        for pattern in [r"D:\Corp\Profiles\sam\S*\old", r"E:\Personal\M? work\cache", r"F:\Ima*\cache", r"E:\Personal\My work\old"] {
+            assert!(never.may_touch_user_data(pattern), "{pattern}");
+            let text = format!("[[cleaner]]\nid = 'comm.test'\nname = 'Test'\ngroup = 'Other'\n[[cleaner.part]]\nid = 'cache'\ntitle = 'Cache'\nrisk = 'amber'\npaths = ['{pattern}']\nwhy = 'cache'\n");
+            assert!(crate::memory::check_import_text(&text, "comm.", &never, &mut Default::default()).is_err(), "{pattern}");
+        }
+        assert!(!never.is_user_data(r"D:\Corp\Profiles\sam\AppData\Local\Temp"));
+        assert!(!never.may_touch_user_data(r"D:\Corp\Profiles\sam\AppData\Local\Example\cache"));
+        assert!(!Never::from_locations(Some(r"D:\Corp\Profiles\sam"), Err(())).complete());
     }
 
     #[test]

@@ -731,7 +731,7 @@ pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never,
         if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| wild_under_profile(x)) {
             return Err(format!("{}: {x} has a wildcard where your own folders are", c.id));
         }
-        if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| sample_paths(x).iter().any(|s| never.is_user_data(s))) {
+        if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| never.may_touch_user_data(x) || sample_paths(x).iter().any(|s| never.is_user_data(s))) {
             return Err(format!("{}: {x} is in your own folders", c.id));
         }
     }
