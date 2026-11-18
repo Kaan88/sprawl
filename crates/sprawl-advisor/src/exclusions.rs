@@ -6,7 +6,6 @@ pub fn parse(text: &str) -> Result<Vec<PathBuf>, String> {
     for value in text.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         let value = value.trim_matches('"').replace('/', "\\");
         let b = value.as_bytes();
-        let p = PathBuf::from(&value);
         if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\'
             || value.contains(['*', '?', '%', '\r', '\n', '\0', '"']) || value[2..].contains(':')
             || value[3..].split('\\').any(|part| matches!(part, "." | "..") || part.ends_with('.') || part.ends_with(' ')) {
@@ -14,6 +13,7 @@ pub fn parse(text: &str) -> Result<Vec<PathBuf>, String> {
         }
         // An exclusion remains policy even when its drive disappears or its folder changes.
         // Never inspect availability or follow aliases just to remember what must be skipped.
+        let p: PathBuf = Path::new(&value).components().collect();
         if !paths.contains(&p) { paths.push(p); }
         if paths.len() > 100 { return Err("Use at most 100 folders to skip.".into()); }
     }
@@ -38,7 +38,30 @@ fn configured_at(path: &Path) -> Vec<PathBuf> {
     if file.file.read_to_string(&mut text).is_err() { return refuse_all(); }
     let value = text.trim_start_matches('\u{feff}').lines().rev().filter_map(|l| l.split_once('='))
         .find(|(key, _)| key.trim() == "scanExclude").map_or("", |(_, value)| value);
-    parse(value).unwrap_or_else(|_| refuse_all())
+    parse(value).map(with_aliases).unwrap_or_else(|_| refuse_all())
+}
+
+fn with_aliases(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for path in paths {
+        if !out.contains(&path) { out.push(path.clone()); }
+        let alias = match sprawl_core::local::scope(&path) {
+            Ok(held) => Some(held.path.clone()),
+            Err(_) if path.to_string_lossy().contains('~') => {
+                // A disconnected/unreadable 8.3 alias cannot be resolved. Preserve it and
+                // hold at the first unambiguous containing folder instead of missing it.
+                let mut parent = PathBuf::new();
+                for part in path.components() {
+                    if part.as_os_str().to_string_lossy().contains('~') { break; }
+                    parent.push(part.as_os_str());
+                }
+                Some(parent)
+            }
+            Err(_) => None,
+        };
+        if let Some(alias) = alias { if !out.contains(&alias) { out.push(alias); } }
+    }
+    out
 }
 
 pub fn progress() -> std::sync::Arc<sprawl_core::Progress> { sprawl_core::Progress::with_exclusions(&configured()) }
@@ -57,6 +80,7 @@ mod tests {
         assert!(intersects(Path::new(r"C:\DATA\skip\child"), &paths));
         assert!(intersects(Path::new(r"C:\Data"), &paths));
         assert!(!intersects(Path::new(r"C:\Data\skip-other"), &paths));
+        assert_eq!(parse(r"C:\\Data\\skip").unwrap(), vec![PathBuf::from(r"C:\Data\skip")]);
         for bad in [r"relative", r"C:\Data\*", r"C:\Data\..\Other", r"%USERPROFILE%\Games"] { assert!(parse(bad).is_err()); }
     }
 
@@ -80,6 +104,8 @@ mod tests {
         let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&settings).unwrap();
         assert!(intersects(&dir, &configured_at(&settings)), "unreadable policy also refuses");
         drop(locked);
+        std::fs::write(&settings, "scanExclude=Z:\\UNAVAI~1\\scope").unwrap();
+        assert!(intersects(Path::new(r"Z:\Some long directory\scope"), &configured_at(&settings)), "an unresolved short alias must conservatively hold its unambiguous ancestor");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
