@@ -334,6 +334,7 @@ pub(crate) fn find_in(tree: &Tree, facts: &Facts, roots: &[PathBuf], seen: &Hash
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             };
             if work.is_none() {
                 f.set_action(Action::Remove, false);

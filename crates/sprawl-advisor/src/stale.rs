@@ -131,6 +131,7 @@ pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: S
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         });
     }
     out.sort_by(|a, b| b.bytes.cmp(&a.bytes));

@@ -832,6 +832,7 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         });
     }
     out

@@ -82,6 +82,7 @@ pub fn find(tree: &Tree) -> Vec<Finding> {
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             });
         }
     }

@@ -584,6 +584,7 @@ fn finding(tree: &Tree, n: usize, rule: &Rule, pack: &RulePack) -> Finding {
         admin: false,
         carved: Vec::new(),
         gain: None,
+        forced_from: None,
     };
     if let Some(a) = action {
         let admin = rule.admin || matches!(&a, Action::Tool { command } if crate::export::needs_admin(command));
@@ -629,6 +630,7 @@ mod tests {
                     admin: false,
                     carved: Vec::new(),
                     gain: None,
+                    forced_from: None,
                 };
                 let admin = rule.admin || matches!(&a, Action::Tool { command } if crate::export::needs_admin(command));
                 f.set_action(a.clone(), admin);

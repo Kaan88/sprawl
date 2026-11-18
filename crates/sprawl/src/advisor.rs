@@ -1655,6 +1655,21 @@ impl State {
             }
         }
         for i in 0..count {
+            // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
+            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvU{i}")) {
+                if let Ok(t) = b.Click(move |_, _| {
+                    with(|s| {
+                        s.second_try_click(i);
+                        let ticked = s.advice().and_then(|r| r.findings.get(i)).is_some_and(|f| f.forced_from.is_some());
+                        s.advisor.focus_after = Some(if ticked { format!("AdvT{i}") } else { format!("AdvU{i}") });
+                        s.render_advisor();
+                    });
+                }) {
+                    keep(t);
+                }
+            }
+        }
+        for i in 0..count {
             // the same tick, in the AI's column
             if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvAiT{i}")) {
                 if let Ok(t) = b.Click(move |_, _| {
@@ -3178,14 +3193,22 @@ impl State {
                 if self.advisor.cleanup.running.is_some() { "False" } else { "True" },
                 ui::esc(&f.title)
             ),
+            // R7c: not ticked for the user, but theirs to tick on a second click
+            Some(_) if crate::cleanup::second_try(f, r.counted[i]) => format!(
+                r##"<CheckBox x:Name="AdvU{i}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="False" Opacity="0.6" IsEnabled="{}" ToolTipService.ToolTip="Not ticked for you. Click twice to tick it anyway" AutomationProperties.Name="Tick {} anyway (click twice)"/>"##,
+                if self.advisor.cleanup.running.is_some() { "False" } else { "True" },
+                ui::esc(&f.title)
+            ),
             Some("") => String::new(),
             Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(why)),
         };
+        let armed = self.advisor.cleanup.armed.as_deref() == Some(crate::cleanup::key(&f.path).as_str()) && crate::cleanup::second_try(f, r.counted[i]);
         x += &format!(r##"<Grid {ns} ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
         // a tip removes nothing: it says so instead of a risk
         // left behind holding the user's work: shown, never removed by Sprawl
         let yours = f.leftover() && f.remedy == Remedy::Info;
         let kind = match f.remedy {
+            _ if f.forced_from.is_some() => "You ticked it: to the Recycle Bin",
             _ if yours => "Holds your files: look before removing",
             Remedy::Info | Remedy::Move => "Tip",
             Remedy::Uninstall => "Your call",
@@ -3212,7 +3235,7 @@ impl State {
             dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
-            remedy = crate::look::label(if yours { "Look first" } else { remedy_label(f.remedy) }),
+            remedy = crate::look::label(if yours { "Look first" } else if f.forced_from.is_some() { "To the bin" } else { remedy_label(f.remedy) }),
             num = crate::look::NUM,
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
             size = match f.gain {
@@ -3222,6 +3245,21 @@ impl State {
             },
             op = if r.counted[i] { "1" } else { "0.55" },
         );
+        if armed {
+            let why = if yours {
+                "it holds your own files"
+            } else if f.remedy == Remedy::Move {
+                "it is a tip to move it, not something to delete"
+            } else {
+                "it is a tip, not something Sprawl cleans"
+            };
+            x += &format!(
+                r##"<TextBlock Margin="10,2,0,4" TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342" Text="Sprawl doesn't tick this: {}. Click the box again to tick it anyway: all of {} ({}) goes to the Recycle Bin, and you confirm it in the review."/>"##,
+                why,
+                ui::esc(&f.path.display().to_string()),
+                self.size(f.bytes)
+            );
+        }
         if open {
             x += &self.finding_detail(r, i);
         }
@@ -3344,6 +3382,7 @@ mod script_tests {
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             };
             f.set_action(sprawl_advisor::clean::Action::Clear { days: 0 }, false);
             f

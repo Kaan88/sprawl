@@ -93,6 +93,11 @@ pub struct Finding {
     /// compare with the tree.
     #[serde(skip)]
     pub gain: Option<u64>,
+    /// The remedy it had before the user ticked it on a second click (R7c): it is then a
+    /// delete of the whole path that always goes to the Recycle Bin. Set only by the app, at
+    /// the user's click, after the deletion checks passed; never by a rule or a model.
+    #[serde(skip)]
+    pub forced_from: Option<Remedy>,
 }
 
 /// Where a finding is listed.
@@ -189,7 +194,8 @@ impl Finding {
 
     /// Where it is listed: what Sprawl removes, what the user can do, what is worth knowing.
     pub fn group(&self) -> Group {
-        match self.remedy {
+        // ticked on a second click: listed where it was
+        match self.forced_from.unwrap_or(self.remedy) {
             // left behind: deletable, or shown only when it holds the user's work
             _ if self.leftover() => Group::Leftover,
             Remedy::Delete | Remedy::Command => Group::Clean,

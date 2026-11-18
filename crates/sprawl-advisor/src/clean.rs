@@ -1388,6 +1388,7 @@ mod tests {
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         }
     }
 

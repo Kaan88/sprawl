@@ -436,6 +436,7 @@ pub fn build_outputs(tree: &Tree, projects: &[Project], facts: &crate::facts::Fa
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             };
             // removes links inside without following them
             f.set_action(crate::finding::Action::Remove, false);

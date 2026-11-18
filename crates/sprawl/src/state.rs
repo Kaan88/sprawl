@@ -779,6 +779,14 @@ impl State {
                         let cut = a.trim_end_matches(|c: char| c.is_ascii_digit()).len();
                         self.cleaner_command(&a[..cut], a[cut..].parse().unwrap_or(0));
                     }
+                    // dev: click the first row that ticks on a second click (R7c)
+                    "secondtry" => {
+                        let first = self.advice().and_then(|r| (0..r.findings.len()).find(|&i| crate::cleanup::second_try(&r.findings[i], r.counted[i]) || r.findings[i].forced_from.is_some()));
+                        if let Some(i) = first {
+                            self.second_try_click(i);
+                            self.render_advisor();
+                        }
+                    }
                     // dev: a privacy part's tick, AdvPvT0
                     a if a.starts_with("AdvPvT") => {
                         self.privacy_toggle(a[6..].parse().unwrap_or(0));

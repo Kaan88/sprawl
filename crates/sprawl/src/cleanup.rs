@@ -2,7 +2,7 @@
 //! showing each item's progress. The tree, the map and the findings update in place afterwards.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
@@ -44,6 +44,9 @@ pub(crate) struct Cleanup {
     pub privacy_ticked: HashSet<String>,
     /// "I understand what each of these removes" is ticked.
     pub privacy_ok: bool,
+    /// A row Sprawl doesn't tick that was clicked once (R7c), by lower-case path: the row says
+    /// why it isn't ticked, and a second click ticks it.
+    pub armed: Option<String>,
 }
 
 pub(crate) struct Item {
@@ -153,6 +156,58 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
     None
 }
 
+/// R7c: whether a finding Sprawl doesn't tick may be ticked on a second click: a tip or a
+/// folder left behind holding the user's files, made a delete of the whole path to the Recycle
+/// Bin. Never Red, a model's finding, a privacy part, another account's, a whole folder of the
+/// profile (Downloads, Documents...) or above it, Windows or programs, OneDrive (deleting there
+/// deletes in the cloud too), or a tip whose win isn't the folder's size (compress, free up).
+pub(crate) fn second_try(f: &Finding, counted: bool) -> bool {
+    if f.forced_from.is_some() || untickable(f, counted).is_none() || !counted {
+        return false;
+    }
+    if f.risk == Risk::Red || !matches!(f.remedy, Remedy::Info | Remedy::Move) || f.action.is_some() || f.command.is_some() || f.gain.is_some() {
+        return false;
+    }
+    if matches!(f.source, Source::Model(_)) || !f.builtin || f.privacy() || f.other_account() {
+        return false;
+    }
+    if second_try_place_refused(&PathBuf::from(key(&f.path))) {
+        return false;
+    }
+    // what the deletion checks would refuse anyway gets no box (they run again at the click,
+    // with links and the scan's root, and at Clean up)
+    static NEVER: std::sync::OnceLock<sprawl_advisor::safety::Never> = std::sync::OnceLock::new();
+    let never = NEVER.get_or_init(sprawl_advisor::safety::Never::default_list);
+    never.hit(&f.path.to_string_lossy()).is_none()
+}
+
+/// The places [`second_try`] never makes a delete of, by lower-case path.
+fn second_try_place_refused(p: &Path) -> bool {
+    let low = |v: &str| std::env::var_os(v).map(|x| PathBuf::from(x.to_string_lossy().to_lowercase()));
+    // a drive's root, or a file or folder right in it (pagefile.sys, Windows, Users...)
+    // (`c:` `\` and a name are three components)
+    if p.components().count() <= 3 {
+        return true;
+    }
+    for v in ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+        if low(v).is_some_and(|d| p.starts_with(&d)) {
+            return true;
+        }
+    }
+    if let Some(home) = low("USERPROFILE") {
+        // the profile, what holds it, and its own folders whole (Downloads, AppData...)
+        if home.starts_with(p) || p.parent().is_some_and(|q| q == home) {
+            return true;
+        }
+        for sub in ["appdata\\local", "appdata\\roaming", "appdata\\locallow"] {
+            if p == home.join(sub) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// "3 hours" when the scan began an hour or more before `now`; None for a fresh one.
 pub(crate) fn scan_age_words(began: std::time::SystemTime, now: std::time::SystemTime) -> Option<String> {
     scan_age_words_after(began, now, sprawl_advisor::tuning::get(&sprawl_advisor::tuning::OLD_SCAN_MINUTES))
@@ -175,6 +230,10 @@ pub(crate) fn scan_age_words_after(began: std::time::SystemTime, now: std::time:
 /// amber) are deleted: recycling them would free nothing. A program's own clean-up command
 /// decides for itself.
 pub(crate) fn goes_to_bin(f: &Finding, on: bool) -> bool {
+    // ticked on a second click: always, whatever the setting (R7c)
+    if f.forced_from.is_some() {
+        return true;
+    }
     on && f.risk >= Risk::Orange && !f.privacy() && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
 }
 
@@ -300,6 +359,55 @@ impl State {
         c.single = None;
         c.own_ok = false;
         c.auto = false;
+    }
+
+    /// R7c: a row Sprawl doesn't tick, clicked. The first click says why it isn't ticked; the
+    /// second makes it a delete of the whole path to the Recycle Bin and ticks it, once the
+    /// deletion checks pass for it as such (the never-list, links, the scan's root). It is
+    /// checked again at Clean up like every other, and the review asks for the "my own files"
+    /// box. A new report (Check again, a filter) has it as it was.
+    pub(crate) fn second_try_click(&mut self, i: usize) {
+        if self.own_active() || self.advisor.cleanup.running.is_some() {
+            return;
+        }
+        let Some(r) = self.advisor.report.as_ref().filter(|r| r.tree == self.tree_gen) else { return };
+        let Some(f) = r.findings.get(i) else { return };
+        if !second_try(f, r.counted[i]) {
+            return;
+        }
+        let k = key(&f.path);
+        if self.advisor.cleanup.armed.as_deref() != Some(k.as_str()) {
+            self.advisor.cleanup.armed = Some(k);
+            return;
+        }
+        self.advisor.cleanup.armed = None;
+        let mut g = f.clone();
+        g.forced_from = Some(g.remedy);
+        g.remedy = Remedy::Delete;
+        g.risk = g.risk.max(Risk::Orange);
+        g.on_path = true;
+        // Sprawl writes this command itself (the same Remove a left-behind folder gets)
+        g.trusted = true;
+        g.set_action(Action::Remove, false);
+        g.evidence.push("You ticked this yourself: all of it goes to the Recycle Bin".into());
+        let Some(t) = self.active_tree() else { return };
+        let never = sprawl_advisor::safety::Never::default_list();
+        match sprawl_advisor::safety::check(&g, &t, &never) {
+            Ok(g) => {
+                if let Some(r) = self.advisor.report.as_mut() {
+                    r.findings[i] = g;
+                }
+                let c = &mut self.advisor.cleanup;
+                c.ticked.insert(k);
+                c.single = None;
+                c.own_ok = false;
+                c.auto = false;
+            }
+            Err(why) => {
+                let title = f.title.clone();
+                self.adv_say(&format!("{title} can't be ticked: {why}"));
+            }
+        }
     }
 
     /// Tick all of `keys` (a cleaner's part), or untick them when they are all ticked already.
@@ -887,7 +995,11 @@ impl State {
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
                     Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
-                    _ if goes_to_bin(f, bin_on) => format!("{what} · to the Recycle Bin · {}", f.path.display()),
+                    // not "gone for good": the bin can give it back
+                    _ if goes_to_bin(f, bin_on) => {
+                        let what = if f.forced_from.is_some() { "You ticked it yourself" } else if f.risk == Risk::Orange { "Your own files" } else { what };
+                        format!("{what} · to the Recycle Bin · {}", f.path.display())
+                    }
                     _ => format!("{what} · {}", f.path.display()),
                 }),
                 match self.review_size(f) {
@@ -1185,6 +1297,7 @@ mod admin_tests {
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         };
         f.set_action(Action::Set { part: "privacy.chrome/cookies".into(), files: vec![path] }, false);
         f
@@ -1271,6 +1384,7 @@ mod admin_tests {
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             };
             f.set_action(action, false);
             f
@@ -1305,6 +1419,7 @@ mod admin_tests {
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         };
         f.set_action(Action::Clear { days: 7 }, true);
         // tickable either way; the in-app run holds it back only when not elevated
@@ -1338,6 +1453,7 @@ mod admin_tests {
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         };
         assert!(untickable(&f, true).is_some());
         f.remedy = Remedy::Delete;
@@ -1362,5 +1478,22 @@ mod age_tests {
         // the user's own warning time
         assert_eq!(super::scan_age_words_after(t, after(20), 15).as_deref(), Some("20 minutes"));
         assert_eq!(super::scan_age_words_after(t, after(20), 30), None);
+    }
+}
+
+#[cfg(test)]
+mod second_try_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_click_never_deletes_these_whole() {
+        let home = PathBuf::from(std::env::var("USERPROFILE").unwrap().to_lowercase());
+        let win = PathBuf::from(std::env::var("SystemRoot").unwrap().to_lowercase());
+        for p in [PathBuf::from(r"c:\pagefile.sys"), PathBuf::from(r"c:\games"), win.join(r"temp"), home.clone(), home.parent().unwrap().to_path_buf(), home.join(r"downloads"), home.join(r"appdata"), home.join(r"appdata\local")] {
+            assert!(second_try_place_refused(&p), "{}", p.display());
+        }
+        for p in [home.join(r"downloads\old installers"), home.join(r"appdata\local\sandfall"), PathBuf::from(r"d:\games\old")] {
+            assert!(!second_try_place_refused(&p), "{}", p.display());
+        }
     }
 }

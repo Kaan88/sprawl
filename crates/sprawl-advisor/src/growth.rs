@@ -110,6 +110,7 @@ fn findings_over(g: &Growth, tree: &Tree, now: SystemTime, min: i64) -> Vec<crat
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             }
         })
         .collect()

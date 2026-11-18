@@ -743,6 +743,7 @@ mod tests {
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         };
         assert!(f.other_account());
         let mut out = f.clone();
@@ -946,6 +947,7 @@ mod tests {
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             };
             if let Some(a) = action {
                 f.set_action(a, false);

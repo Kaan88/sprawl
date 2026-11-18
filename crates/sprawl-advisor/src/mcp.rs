@@ -491,6 +491,7 @@ mod tests {
             admin: false,
             carved: Vec::new(),
             gain: None,
+            forced_from: None,
         };
         assert!(ask(Some(std::slice::from_ref(&one))).contains("a test finding"));
         let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});

@@ -184,6 +184,7 @@ pub fn find(tree: &Tree, facts: &crate::facts::Facts, seen: &HashSet<String>, mi
                 admin: false,
                 carved: Vec::new(),
                 gain: None,
+                forced_from: None,
             };
             f.set_action(Action::Clear { days: 0 }, false);
             out.push(f);

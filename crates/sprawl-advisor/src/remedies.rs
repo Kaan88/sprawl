@@ -40,6 +40,7 @@ fn info(tree: &Tree, n: usize, id: &str, title: String, evidence: Vec<String>, b
         admin: false,
         carved: Vec::new(),
         gain: None,
+        forced_from: None,
     }
 }
 
