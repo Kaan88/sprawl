@@ -463,6 +463,8 @@ pub(crate) fn risk_words_for(f: &Finding) -> &'static str {
         "Compressed in place, nothing deleted"
     } else if sprawl_advisor::remedies::shrinks(f) {
         "Shrunk in place, nothing inside deleted"
+    } else if f.links() {
+        "Linked: every path stays, a change to one changes all"
     } else if gone_for_good(f) {
         "Cannot be undone"
     } else {
@@ -3529,6 +3531,7 @@ impl State {
             _ if f.forced_from.is_some() => "You ticked it: to the Recycle Bin",
             _ if sprawl_advisor::remedies::compresses(f) => "Compressed in place: nothing is deleted",
             _ if sprawl_advisor::remedies::shrinks(f) => "Shrunk in place: WSL is shut down first",
+            _ if f.links() => "Copies made links: every path stays",
             _ if yours => "Holds your files: look before removing",
             Remedy::Info | Remedy::Move => "Tip",
             Remedy::Uninstall => "Your call",
@@ -3570,6 +3573,8 @@ impl State {
                 "Compress"
             } else if sprawl_advisor::remedies::shrinks(f) {
                 "Shrink"
+            } else if f.links() {
+                "Link copies"
             } else if f.remedy == Remedy::Command && matches!(&f.source, Source::Rule(id) if id.starts_with("versions.")) {
                 "Remove version"
             } else {

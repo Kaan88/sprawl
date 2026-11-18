@@ -38,6 +38,8 @@ pub enum Rejection {
     NeverListIncomplete,
     /// A privacy part's set that isn't exactly one of Sprawl's own (see [`crate::privacy`]).
     Privacy(String),
+    /// Copies to link that aren't exactly a group the duplicate search found (F4).
+    Link(String),
 }
 
 impl fmt::Display for Rejection {
@@ -55,6 +57,7 @@ impl fmt::Display for Rejection {
             Rejection::RedWithAction => write!(f, "it is marked never-touch but carries an action"),
             Rejection::NeverListIncomplete => write!(f, "the protected Windows folders couldn't be worked out"),
             Rejection::Privacy(why) => write!(f, "{why}"),
+            Rejection::Link(why) => write!(f, "{why}"),
         }
     }
 }
@@ -492,6 +495,10 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
     if let Some(crate::finding::Action::Set { part, files }) = &f.action {
         return check_set(f, tree, never, part, files, places, home);
     }
+    // F4: copies made links to one of them, checked as that group of files
+    if let Some(crate::finding::Action::Link { keep, copies }) = &f.action {
+        return check_link(f, tree, never, keep, copies, home);
+    }
     if f.privacy() {
         return Err(Rejection::Privacy("a privacy part is only ever a set of its own files".into()));
     }
@@ -622,6 +629,67 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
 /// part's own in one profile of this account, as the scan has them with their side files, no
 /// link on the way, and on the never-list only by the browser's whole folder or by the names the
 /// part waives. Its size is the set's.
+/// F4: a group of copies to link: made by the duplicate search, every file in the scan and on
+/// the disk, plain files of one size reached through no junction or link, none on the never-list
+/// or in another account's profile, each named once; the claimed size is the copies'.
+fn check_link(f: &Finding, tree: &Tree, never: &Never, keep: &std::path::Path, copies: &[std::path::PathBuf], home: Option<&std::path::Path>) -> Result<Finding, Rejection> {
+    let refuse = |why: String| Err(Rejection::Link(why));
+    let from_model = matches!(f.source, crate::finding::Source::Model(_));
+    let own = matches!(&f.source, crate::finding::Source::Rule(id) if id == "remedy.duplicates");
+    if from_model || !own || !f.builtin || !f.trusted || f.allow_protected || f.remedy != Remedy::Command || f.command.is_some() || f.admin || f.risk == Risk::Red {
+        return refuse("not copies Sprawl's duplicate search found".into());
+    }
+    if never.incomplete {
+        return Err(Rejection::NeverListIncomplete);
+    }
+    let low = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
+    if copies.first().is_none_or(|first| low(first) != low(&f.path)) {
+        return refuse("its path is not the first copy".into());
+    }
+    let mut nodes: Vec<usize> = Vec::new();
+    for file in std::iter::once(keep).chain(copies.iter().map(|c| c.as_path())) {
+        let n = find_path(tree, file).ok_or(Rejection::NotInTree)?;
+        if nodes.contains(&n) {
+            return refuse(format!("{} is named twice", file.display()));
+        }
+        if std::fs::symlink_metadata(file).is_err() {
+            return Err(Rejection::Missing);
+        }
+        if n == sprawl_core::ROOT {
+            return Err(Rejection::ScanRoot);
+        }
+        if tree.nodes[n].is_dir {
+            return refuse(format!("{} is a folder", file.display()));
+        }
+        if nodes.first().is_some_and(|&k| tree.nodes[k].size != tree.nodes[n].size) {
+            return refuse(format!("{} is not the same size", file.display()));
+        }
+        let mut i = Some(n);
+        while let Some(k) = i {
+            if tree.nodes[k].is_reparse_point() {
+                return Err(Rejection::ThroughLink(tree.path_of(k).display().to_string()));
+            }
+            i = tree.nodes[k].parent;
+        }
+        if let Some(h) = never.hit(&low(file)) {
+            return Err(Rejection::Never(format!("{} ({h})", file.display())));
+        }
+        if crate::finding::other_account(file, home) {
+            return refuse(format!("{} is in another account's profile", file.display()));
+        }
+        nodes.push(n);
+    }
+    let actual = tree.nodes[nodes[0]].size * copies.len() as u64;
+    if !close_enough(f.bytes, actual) {
+        return Err(Rejection::SizeMismatch { claimed: f.bytes, actual });
+    }
+    let mut out = f.clone();
+    out.bytes = actual;
+    out.risk = out.risk.max(Risk::Orange);
+    out.carved = Vec::new();
+    Ok(out)
+}
+
 fn check_set(f: &Finding, tree: &Tree, never: &Never, part_id: &str, files: &[std::path::PathBuf], places: Option<&crate::privacy::Places>, home: Option<&std::path::Path>) -> Result<Finding, Rejection> {
     let refuse = |why: String| Err(Rejection::Privacy(why));
     let from_model = matches!(f.source, crate::finding::Source::Model(_));

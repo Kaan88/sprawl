@@ -16,7 +16,7 @@ use crate::finding::{Finding, Remedy, Risk, Source};
 
 /// (volume serial, file index): the same for every hard link of one file.
 #[cfg(windows)]
-fn file_id(f: &File) -> Option<(u32, u64)> {
+pub(crate) fn file_id(f: &File) -> Option<(u32, u64)> {
     use std::os::windows::io::AsRawHandle;
     #[repr(C)]
     #[derive(Default)]
@@ -42,7 +42,7 @@ fn file_id(f: &File) -> Option<(u32, u64)> {
 }
 
 #[cfg(not(windows))]
-fn file_id(_: &File) -> Option<(u32, u64)> {
+pub(crate) fn file_id(_: &File) -> Option<(u32, u64)> {
     None
 }
 
@@ -76,19 +76,30 @@ fn fill(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
 /// The same bytes all the way through. Counts what it read into `read`.
 fn same(a: &PathBuf, b: &PathBuf, read: &mut u64, cancel: &AtomicBool) -> bool {
     let (Ok(mut x), Ok(mut y)) = (open(a), open(b)) else { return false };
+    compare(&mut x, &mut y, read, cancel) == Some(true)
+}
+
+/// Two open files compared from their start: None when one couldn't be read or `cancel` was set.
+pub(crate) fn same_open(x: &mut File, y: &mut File, cancel: &AtomicBool) -> Option<bool> {
+    x.seek(SeekFrom::Start(0)).ok()?;
+    y.seek(SeekFrom::Start(0)).ok()?;
+    compare(x, y, &mut 0, cancel)
+}
+
+fn compare(x: &mut File, y: &mut File, read: &mut u64, cancel: &AtomicBool) -> Option<bool> {
     let mut bx = vec![0u8; 1 << 20];
     let mut by = vec![0u8; 1 << 20];
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return false;
+            return None;
         }
-        let (Ok(nx), Ok(ny)) = (fill(&mut x, &mut bx), fill(&mut y, &mut by)) else { return false };
+        let (Ok(nx), Ok(ny)) = (fill(x, &mut bx), fill(y, &mut by)) else { return None };
         *read += (nx + ny) as u64;
         if nx != ny || bx[..nx] != by[..ny] {
-            return false;
+            return Some(false);
         }
         if nx == 0 {
-            return true;
+            return Some(true);
         }
     }
 }
@@ -104,7 +115,7 @@ pub struct Dupes {
 /// Look for duplicate files of at least `min_size` bytes, reading at most `budget` bytes in
 /// full comparisons. `progress` gets a line now and then.
 /// Cloud placeholders and offline files: reading them would download them.
-const NOT_LOCAL: u32 = 0x1000 | 0x0004_0000 | 0x0040_0000;
+pub(crate) const NOT_LOCAL: u32 = 0x1000 | 0x0004_0000 | 0x0040_0000;
 
 /// Open without recalling a cloud file's data.
 fn open(p: &std::path::Path) -> std::io::Result<File> {
@@ -196,11 +207,21 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                 if may_go == 0 {
                     continue;
                 }
+                // F4: with no protected copy, all on one drive and none synced by OneDrive (it
+                // doesn't follow hard links), the copies can become links to the plainest-named
+                let linkable = kept.is_empty() && one_drive_letter(free.iter().map(|(_, p)| p.as_path())) && !free.iter().any(|(_, p)| synced(p));
+                let mut free = free;
+                if linkable {
+                    let k = (0..free.len()).min_by_key(|&i| (tree.nodes[free[i].0].name.len(), free[i].1.as_os_str().len())).unwrap_or(0);
+                    let keeper = free.remove(k);
+                    free.push(keeper);
+                }
                 // the finding points at a copy that may go
                 let cl: Vec<(usize, PathBuf)> = free.into_iter().chain(kept).collect();
                 let extra = size * may_go as u64;
                 out.wasted += extra;
-                let name = tree.nodes[cl[0].0].name.clone();
+                // named by the plainest of them: "album.flac", not "album (1).flac"
+                let name = cl.iter().map(|(n, _)| tree.nodes[*n].name.as_str()).min_by_key(|n| (n.len(), *n)).unwrap_or_default().to_string();
                 let mut evidence = vec![format!("{} identical copies, {} each: byte for byte the same.", cl.len(), format_size(size))];
                 for (_, p) in cl.iter().take(8) {
                     evidence.push(p.display().to_string());
@@ -212,12 +233,21 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                 if let Some(k) = keep_note {
                     evidence.push(k);
                 }
-                evidence.push(if protected_kept {
-                    "Delete only the copies outside protected places, or replace them with hard links to a kept one (New-Item -ItemType HardLink): then a change to one changes all.".into()
+                let keep_path = cl.last().map(|(_, p)| p.clone()).unwrap_or_default();
+                if linkable {
+                    evidence.push(format!(
+                        "Link: keeps {} and makes the other {} hard links to it. Every path stays and opens the same file; the space of one is used. Then a change to one changes all, and each takes the kept one's dates. Each is compared again just before.",
+                        keep_path.display(),
+                        if cl.len() == 2 { "copy".to_string() } else { format!("{} copies", cl.len() - 1) }
+                    ));
                 } else {
-                    "Keep one and delete the others, or, where a copy must stay in its place, replace it with a hard link to the one you keep (New-Item -ItemType HardLink): then a change to one changes all.".to_string()
-                });
-                out.findings.push(Finding {
+                    evidence.push(if protected_kept {
+                        "Delete only the copies outside protected places, or replace them with hard links to a kept one (New-Item -ItemType HardLink): then a change to one changes all.".into()
+                    } else {
+                        "Keep one and delete the others, or, where a copy must stay in its place, replace it with a hard link to the one you keep (New-Item -ItemType HardLink): then a change to one changes all.".to_string()
+                    });
+                }
+                let mut f = Finding {
                     path: cl[0].1.clone(),
                     owner: None,
                     bytes: extra,
@@ -238,13 +268,39 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                     carved: Vec::new(),
                     gain: None,
                     forced_from: None,
-                });
+                };
+                if linkable {
+                    f.remedy = Remedy::Command;
+                    let copies: Vec<PathBuf> = cl[..cl.len() - 1].iter().map(|(_, p)| p.clone()).collect();
+                    f.set_action(crate::finding::Action::Link { keep: keep_path, copies }, false);
+                }
+                out.findings.push(f);
             }
         }
     }
     out.findings.sort_by_key(|f| std::cmp::Reverse(f.bytes));
     out.findings.truncate(50);
     out
+}
+
+/// All on one drive letter (`C:`): hard links can't cross volumes (checked again when linking).
+fn one_drive_letter<'a>(mut paths: impl Iterator<Item = &'a std::path::Path>) -> bool {
+    let letter = |p: &std::path::Path| {
+        let s = p.to_string_lossy().to_lowercase();
+        let b = s.as_bytes();
+        (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\').then(|| b[0])
+    };
+    let Some(first) = paths.next().and_then(letter) else { return false };
+    paths.all(|p| letter(p) == Some(first))
+}
+
+/// Inside a OneDrive folder: it syncs each path as its own file and doesn't keep links.
+fn synced(p: &std::path::Path) -> bool {
+    let low = p.to_string_lossy().to_lowercase();
+    ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"].iter().any(|v| std::env::var_os(v).is_some_and(|d| {
+        let d = d.to_string_lossy().to_lowercase();
+        !d.is_empty() && low.starts_with(&format!("{}\\", d.trim_end_matches('\\')))
+    }))
 }
 
 // ---------------------------------------------------------------- from the scan alone (A3)
@@ -442,6 +498,67 @@ mod tests {
         assert_eq!(d.findings.len(), 1, "{:?}", d.findings.iter().map(|f| &f.evidence).collect::<Vec<_>>());
         assert!(d.findings[0].title.starts_with("2 copies"), "{}", d.findings[0].title);
         assert_eq!(d.wasted, 300_000);
+        // F4: one drive, nothing protected: a link to the plainest name
+        let f = &d.findings[0];
+        assert_eq!(f.remedy, Remedy::Command);
+        assert!(f.command.is_none(), "never in a script");
+        assert_eq!(f.action, Some(crate::finding::Action::Link { keep: dir.join("a").join("movie.bin"), copies: vec![dir.join("b").join("movie copy.bin")] }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn id_of(p: &std::path::Path) -> (u32, u64) {
+        file_id(&File::open(p).unwrap()).unwrap()
+    }
+
+    /// F4 from start to end: found, checked, run. A copy changed after the search stays; one
+    /// that is the same becomes the kept file under its own name.
+    #[test]
+    fn copies_become_links_and_changed_ones_stay() {
+        use crate::clean::{self, Action, Spare};
+        let dir = std::env::temp_dir().join(format!("sprawl-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["a", "b", "c"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i % 249) as u8).collect();
+        std::fs::write(dir.join("a").join("song.flac"), &data).unwrap();
+        std::fs::write(dir.join("b").join("song (1).flac"), &data).unwrap();
+        std::fs::write(dir.join("c").join("song - Copy.flac"), &data).unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let d = find(&tree, 1000, 1 << 30, &AtomicBool::new(false), &mut |_| {});
+        assert_eq!(d.findings.len(), 1);
+        let never = crate::safety::Never::default_list();
+        let f = crate::safety::check_in(&d.findings[0], &tree, &never, &[], Some(&dir), None).expect("passes the checks");
+        assert_eq!(f.bytes, 400_000);
+        let (action, admin) = clean::action(&f).expect("Sprawl runs it");
+        assert!(!admin);
+        let Action::Link { keep, copies } = &action else { panic!("{action:?}") };
+        assert_eq!(keep, &dir.join("a").join("song.flac"));
+        // a forged one is refused, by the checks and by the gate
+        let mut forged = f.clone();
+        forged.source = Source::Rule("local.mine".into());
+        assert!(crate::safety::check_in(&forged, &tree, &never, &[], Some(&dir), None).is_err());
+        assert!(clean::action(&forged).is_none());
+        // one copy changes after the search
+        let mut other = data.clone();
+        other[100_000] ^= 1;
+        std::fs::write(&copies[1], &other).unwrap();
+        let o = clean::run(&f.path, &action, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((o.freed, o.files), (200_000, 1), "{:?}", o.problems);
+        assert!(o.problems.iter().any(|p| p.contains("no longer the same bytes")), "{:?}", o.problems);
+        assert_eq!(id_of(keep), id_of(&copies[0]), "now one file");
+        assert_ne!(id_of(keep), id_of(&copies[1]));
+        assert_eq!(std::fs::read(&copies[0]).unwrap(), data);
+        assert!(!copies[0].with_file_name("song (1).flac.sprawl-link").exists());
+        // run again: already one file, nothing more
+        let o = clean::run(&f.path, &action, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
+        assert_eq!(o.freed, 0);
+        // a copy the user keeps, or new since the scan, stays
+        std::fs::write(&copies[1], &data).unwrap();
+        let o = clean::run(&f.path, &action, &Spare { since: None, keep: vec![copies[1].clone()] }, &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((o.freed, o.kept_chosen), (0, 1));
+        let o = clean::run(&f.path, &action, &Spare { since: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(5)), keep: vec![] }, &AtomicBool::new(false), &mut |_| {});
+        assert_eq!(o.freed, 0, "{:?}", o.problems);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -240,7 +240,8 @@ pub(crate) fn goes_to_bin(f: &Finding, on: bool) -> bool {
     if f.forced_from.is_some() {
         return true;
     }
-    on && f.risk >= Risk::Orange && !f.privacy() && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
+    // a link (F4) deletes nothing: the kept copy holds the bytes
+    on && f.risk >= Risk::Orange && !f.privacy() && !f.links() && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
 }
 
 /// Whether `f` may be in a sum of space, a tick Sprawl makes, the usual set or a suggestion:
@@ -998,15 +999,23 @@ impl State {
                 }
             },
             {
+                // copies made links (F4) delete nothing: the kept copy holds the bytes
+                let links = picked.iter().filter(|(_, f)| f.links()).count();
+                let gone = picked.len() - links;
                 let binned = picked.iter().filter(|(_, f)| goes_to_bin(f, bin_on)).count();
-                if picked.is_empty() {
+                let line = if gone == 0 {
                     String::new()
                 } else if binned == 0 {
                     "Deleted for good, not sent to the Recycle Bin.".to_string()
-                } else if binned == picked.len() {
+                } else if binned == gone {
                     "Sent to the Recycle Bin: Explorer can put them back. Their space is freed when the bin is emptied. What can't go to the bin (too big for it, or a drive without one) is left as it is.".to_string()
                 } else {
                     "Your own files (marked below) go to the Recycle Bin, and their space is freed when the bin is emptied; the rest is deleted for good.".to_string()
+                };
+                match (links, line.is_empty()) {
+                    (0, _) => line,
+                    (_, true) => "Nothing is deleted: each copy becomes a link to the one kept, so every path still opens the same file. Then a change to one changes all.".to_string(),
+                    (_, false) => format!("{line} Copies made links lose nothing: the kept one holds the bytes."),
                 }
             },
             {
@@ -1044,6 +1053,7 @@ impl State {
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
                     Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
+                    Some((Action::Link { keep, copies }, _)) => format!("{} to {}, compared again first", if copies.len() == 1 { "1 copy made a link".to_string() } else { format!("{} copies made links", copies.len()) }, keep.display()),
                     // not "gone for good": the bin can give it back
                     _ if goes_to_bin(f, bin_on) => {
                         let what = if f.forced_from.is_some() { "You ticked it yourself" } else if f.risk == Risk::Orange { "Your own files" } else { what };
@@ -1128,11 +1138,20 @@ impl State {
         }
         if own {
             // all of the user's own go to the bin: they can be brought back from there
-            let all_binned = picked.iter().filter(|(_, f)| f.risk >= Risk::Orange).all(|(_, f)| goes_to_bin(f, bin_on));
+            // copies made links lose nothing, but behave as one file from then on (F4)
+            let mine = || picked.iter().filter(|(_, f)| f.risk >= Risk::Orange);
+            let all_links = mine().all(|(_, f)| f.links());
+            let all_binned = mine().all(|(_, f)| goes_to_bin(f, bin_on) || f.links());
             x += &format!(
                 r##"<CheckBox x:Name="AdvOwnOk" IsChecked="{}" Content="{}" FontSize="13"/>"##,
                 if self.advisor.cleanup.own_ok { "True" } else { "False" },
-                if all_binned { "These are my own files and I want them gone (to the Recycle Bin)" } else { "These are my own files, I want them gone, and I know they can't be brought back" }
+                if all_links {
+                    "These are my own files: make the copies links (then a change to one changes all)"
+                } else if all_binned {
+                    "These are my own files and I want them gone (to the Recycle Bin)"
+                } else {
+                    "These are my own files, I want them gone, and I know they can't be brought back"
+                }
             );
         }
         x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if (picked.is_empty() && privacy.is_empty()) || (own && !self.advisor.cleanup.own_ok) || (!privacy.is_empty() && !self.advisor.cleanup.privacy_ok) { "False" } else { "True" });

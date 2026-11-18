@@ -42,6 +42,13 @@ pub fn action(f: &Finding) -> Option<(Action, bool)> {
             return None;
         }
     }
+    // F4: only as the duplicate search made it, its path the first copy
+    if let Action::Link { keep, copies } = &a {
+        let own = matches!(&f.source, crate::finding::Source::Rule(id) if id == "remedy.duplicates");
+        if !(own && f.trusted && f.builtin && f.command.is_none() && !f.admin && copies.first().is_some_and(|c| same_path(c, &f.path)) && !copies.iter().any(|c| same_path(c, keep))) {
+            return None;
+        }
+    }
     Some((a, f.admin))
 }
 
@@ -56,6 +63,8 @@ pub fn script(path: &Path, action: &Action, admin: bool) -> String {
         Action::Tool { command } => command.clone(),
         // never run from a script: the browser must be closed, checked by Sprawl
         Action::Set { .. } => "# Not in a script: privacy parts are cleaned only inside Sprawl, with the browser closed.".to_string(),
+        // never run from a script: each copy is compared again just before
+        Action::Link { .. } => "# Not in a script: copies are linked only inside Sprawl, after comparing them again.".to_string(),
     };
     if admin && !crate::export::needs_admin(&s) {
         format!("{s}   # as administrator")
@@ -231,6 +240,13 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
             (Some(_), None) => o.problem(path, "left alone: this account's AppData folders couldn't be worked out"),
             _ => o.problem(path, "left alone: not a privacy part Sprawl knows"),
         },
+        Action::Link { keep, copies } => {
+            if copies.first().is_some_and(|c| same_path(c, path)) {
+                link(keep, copies, spare, stop, &mut o, progress)
+            } else {
+                o.problem(path, "left alone: not the copies Sprawl found")
+            }
+        }
         _ => tree(path, action, spare, bin.as_deref_mut(), stop, &mut o, progress),
     }
     if stop.load(Ordering::Relaxed) {
@@ -274,7 +290,7 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
     }
     let cut = match action {
         Action::Clear { days } if *days > 0 => Some(SystemTime::now().checked_sub(Duration::from_secs(*days as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH)),
-        Action::Tool { .. } => return None,
+        Action::Tool { .. } | Action::Link { .. } => return None,
         _ => None,
     };
     let pattern = match action {
@@ -833,6 +849,130 @@ fn list(p: &Path) -> std::io::Result<(Vec<PathBuf>, usize)> {
 /// Said on a folder some of whose entries couldn't be read: they, and the folder, stay.
 fn unreadable(n: usize) -> String {
     format!("{n} item{} in it couldn't be read; left as {}", if n == 1 { "" } else { "s" }, if n == 1 { "it is" } else { "they are" })
+}
+
+/// F4: each copy replaced by a hard link to `keep`. Each must be a plain local file (not a link,
+/// not a never-list name, not one the user keeps, not created or changed since the scan, not
+/// read-only), the same size and volume as `keep` and not already one file with it. Both are
+/// then opened so that no one can write them (and `keep` can't be renamed or deleted), compared
+/// byte for byte through those handles, and with them still open a link to `keep` is made beside
+/// the copy and renamed over it. A copy that fails anything stays as it is, with the reason.
+/// Freed: the size of each copy replaced.
+fn link(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    const SHARE_READ: u32 = 1;
+    const SHARE_DELETE: u32 = 4;
+    const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const NO_RECALL: u32 = 0x0010_0000;
+    const READONLY: u32 = 1;
+    let since = spare.since.map(filetime);
+    let new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s || m.last_write_time() as i64 > s);
+    let hold = |p: &Path, share: u32| std::fs::OpenOptions::new().read(true).share_mode(share).custom_flags(OPEN_REPARSE_POINT | NO_RECALL).open(p);
+    let plain = |p: &Path| -> Result<std::fs::Metadata, &'static str> {
+        if odd_name(p) {
+            return Err("left alone: a name Windows would mistake");
+        }
+        if never().path_hit(p).is_some() {
+            return Err("left alone: on the never-touch list");
+        }
+        let m = std::fs::symlink_metadata(p).map_err(|_| "left alone: no longer there")?;
+        if attrs(&m) & (REPARSE | DIRECTORY) != 0 || !m.is_file() {
+            return Err("left alone: no longer a plain file");
+        }
+        if attrs(&m) & crate::dupes::NOT_LOCAL != 0 {
+            return Err("left alone: a cloud file");
+        }
+        Ok(m)
+    };
+    let km = match plain(keep) {
+        Ok(m) => m,
+        Err(why) => return o.problem(keep, why),
+    };
+    if new(&km) {
+        o.kept_new += 1;
+        return o.problem(keep, "left alone: the copy to keep changed since the scan");
+    }
+    for c in copies {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let m = match plain(c) {
+            Ok(m) => m,
+            Err(why) => {
+                o.problem(c, why);
+                continue;
+            }
+        };
+        if spare.keeps(c) {
+            o.kept_chosen += 1;
+            continue;
+        }
+        if new(&m) {
+            o.kept_new += 1;
+            continue;
+        }
+        if m.len() != km.len() {
+            o.problem(c, "left alone: no longer the same size");
+            continue;
+        }
+        if attrs(&m) & READONLY != 0 {
+            o.problem(c, "left alone: read-only");
+            continue;
+        }
+        // no one writes either from here on; the copy may still be replaced (by us)
+        let (mut kf, mut cf) = match (hold(keep, SHARE_READ), hold(c, SHARE_READ | SHARE_DELETE)) {
+            (Ok(k), Ok(c)) => (k, c),
+            _ => {
+                o.problem(c, "left alone: in use");
+                continue;
+            }
+        };
+        match (crate::dupes::file_id(&kf), crate::dupes::file_id(&cf)) {
+            // already one file
+            (Some(a), Some(b)) if a == b => continue,
+            (Some(a), Some(b)) if a.0 != b.0 => {
+                o.problem(c, "left alone: on another drive than the copy kept");
+                continue;
+            }
+            (Some(_), Some(_)) => {}
+            _ => {
+                o.problem(c, "left alone: Windows couldn't identify it");
+                continue;
+            }
+        }
+        match crate::dupes::same_open(&mut kf, &mut cf, stop) {
+            Some(true) => {}
+            Some(false) => {
+                o.problem(c, "left alone: no longer the same bytes");
+                continue;
+            }
+            None if stop.load(Ordering::Relaxed) => return,
+            None => {
+                o.problem(c, "left alone: couldn't be read");
+                continue;
+            }
+        }
+        let Some(name) = c.file_name() else { continue };
+        let tmp = c.with_file_name(format!("{}.sprawl-link", name.to_string_lossy()));
+        if std::fs::symlink_metadata(&tmp).is_ok() {
+            o.problem(c, format!("left alone: {} is in the way", tmp.display()));
+            continue;
+        }
+        if let Err(e) = std::fs::hard_link(keep, &tmp) {
+            o.problem(c, format!("not linked: {e}"));
+            continue;
+        }
+        // over the copy, still held open: no one wrote it since the comparison
+        if let Err(e) = std::fs::rename(&tmp, c) {
+            let _ = std::fs::remove_file(&tmp);
+            o.problem(c, format!("not linked: {e}"));
+            continue;
+        }
+        drop((kf, cf));
+        o.freed += m.len();
+        o.files += 1;
+        progress(o.freed);
+    }
 }
 
 fn never() -> &'static crate::safety::Never {

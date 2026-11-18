@@ -166,6 +166,11 @@ pub enum Action {
     /// database side files (`-journal`, `-wal`, `-shm`), deleted all together or not at all, only
     /// while the browser is closed. Made only by [`crate::privacy`]; never written to a script.
     Set { part: String, files: Vec<PathBuf> },
+    /// F4: each of `copies` replaced by a hard link to `keep`, after comparing it with `keep`
+    /// byte for byte again; every path stays, the space of one copy is used. Made only by
+    /// [`crate::dupes::find`] for copies on one volume, none in a protected place; never written
+    /// to a script. The finding's path is `copies[0]`.
+    Link { keep: PathBuf, copies: Vec<PathBuf> },
 }
 
 impl Finding {
@@ -237,10 +242,15 @@ impl Finding {
         matches!(self.action, Some(Action::Set { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id))
     }
 
+    /// F4: copies made hard links to one of them: nothing is deleted or recycled.
+    pub fn links(&self) -> bool {
+        matches!(self.action, Some(Action::Link { .. }))
+    }
+
     /// Give the finding its action, and the command text "Save as script" writes for it (none
     /// for a privacy part's set: those run only inside Sprawl).
     pub fn set_action(&mut self, action: Action, admin: bool) {
-        self.command = (!matches!(action, Action::Set { .. })).then(|| crate::clean::script(&self.path, &action, admin));
+        self.command = (!matches!(action, Action::Set { .. } | Action::Link { .. })).then(|| crate::clean::script(&self.path, &action, admin));
         self.admin = admin;
         self.action = Some(action);
     }
