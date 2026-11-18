@@ -218,6 +218,7 @@ pub fn schtasks_args(on: bool, exe: &std::path::Path) -> Vec<String> {
 /// Create or remove the scheduled task, for this account only (no administrator). Never for a
 /// screenshot run. True when schtasks did it.
 pub fn schedule(on: bool) -> bool {
+    if sprawl_install::recovery::running_copy() { return false; }
     if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
         return true;
     }

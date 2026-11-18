@@ -121,6 +121,7 @@ fn stage(a: &Avail, dir: &std::path::Path, progress: &dyn Fn(String)) -> Result<
     sprawl_install::setup::per_user_only()?;
     let root = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
     let dir = &root.path;
+    if sprawl_install::recovery::running_copy() { return Err("This is the retained recovery copy. Use Sprawl Setup to restore the main installation.".into()); }
     let st = dir.join(STAGE);
     clean_stage(dir);
     let cant = || format!("Sprawl's folder ({}) can't be written to, so it can't update itself here. Get the new version from github.com/{REPO}/releases.", dir.display());
@@ -206,6 +207,7 @@ impl State {
             self.update.started = true;
             if !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) && self.shot.is_none() && sprawl_install::setup::per_user_only().is_ok() {
             if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) {
+                sprawl_install::recovery::cleanup(&dir);
                 remove_old(&dir);
                 clean_stage(&dir);
             }
@@ -336,7 +338,7 @@ impl State {
         let Some(exe) = std::env::current_exe().ok() else { return };
         let Some(dir) = exe.parent().map(PathBuf::from) else { return };
         // The installer hashes open sources and publishes those exact handles.
-        if let Err(e) = swap_in(&dir, staged) {
+        if let Err(e) = swap_in(&dir, version, staged) {
             return fail(self, format!("The update didn't work: {e}"));
         }
         let _launch = match sprawl_install::setup::verified_launch(&dir, staged) {

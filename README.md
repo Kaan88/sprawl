@@ -76,6 +76,11 @@ App Runtime 1.8; if it's missing, Windows offers to install it the first time Sp
 Sprawl looks for a new version when it starts (and once a day while open) and asks before updating (Help > Check for Updates;
 Settings > Network turns the automatic check off). Updates are signed: a copy only accepts a release
 whose file list carries Sprawl's Ed25519 signature and whose files match it.
+Self-update runs without administrator rights. Before replacing files, it keeps the complete
+previous program in `.sprawl-recovery` beside the installation. If an update is interrupted,
+open `sprawl.exe` inside that folder, then reinstall with Sprawl Setup. Keep its accompanying
+DLL beside it. Recovery is removed after a matching, complete version starts successfully;
+unknown files in that folder are preserved.
 
 ## Building
 
@@ -150,8 +155,9 @@ The signing key is `%USERPROFILE%\.sprawl-release\signing.key`, made once with
 `crates/sprawl-install/src/lib.rs`; losing the key means installed copies can't take updates
 any more (they would need a new installer), so keep a copy somewhere safe.
 
-To try an update on a build that is already current, start it with
-`SPRAWL_PRETEND_VERSION=0.0.1`; it then sees the latest release as new.
+To try an update on a debug build that is already current, start it with
+`SPRAWL_PRETEND_VERSION=0.0.1`; it then sees the latest release as new. Production builds
+ignore this override and always require a version newer than the compiled version.
 
 ## Not built, and what is planned
 

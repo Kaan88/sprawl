@@ -8,11 +8,14 @@
 //!   public half is [`PUBLIC_KEY`]. An update is only applied when the signature checks out, the
 //!   manifest's version is the release's and is newer, and every file matches its hash.
 //! - **Swapping:** a running program can be renamed on Windows, so each file is moved aside to
-//!   `<name>.old` and the new one moved in; if any step fails, everything is put back. The
-//!   `.old` files are removed on the next start.
+//!   `<name>.old` and the new one moved in by checked handles. Failures attempt rollback
+//!   without overwriting unrelated arrivals. Before any rename, a complete previous bundle
+//!   is flushed to `.sprawl-recovery`, with its own `sprawl.exe` and bootstrap DLL. A matching
+//!   healthy version can discard that copy on startup; incomplete/mixed installations retain it.
 
 pub mod manifest;
 pub mod setup;
+pub mod recovery;
 
 pub use manifest::{newer, parse_version, sha256_hex, valid_name, verify, FileEntry, Manifest};
 

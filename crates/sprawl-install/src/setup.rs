@@ -170,7 +170,7 @@ pub fn is_link(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink() || m.file_attributes() & 0x400 != 0)
 }
 
-fn check_hash(file: &mut std::fs::File, sha: &str) -> Result<(), String> {
+pub(crate) fn hash_file(file: &mut std::fs::File) -> Result<String, String> {
     use std::io::Read;
     use sha2::{Digest, Sha256};
     let len = file.metadata().map_err(|e| e.to_string())?.len();
@@ -182,7 +182,11 @@ fn check_hash(file: &mut std::fs::File, sha: &str) -> Result<(), String> {
         if n == 0 { break; }
         hash.update(&buf[..n]);
     }
-    if format!("{:x}", hash.finalize()) != sha { return Err("An update file changed before it could be used".into()); }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+pub(crate) fn check_hash(file: &mut std::fs::File, sha: &str) -> Result<(), String> {
+    if hash_file(file)? != sha { return Err("An update file changed before it could be used".into()); }
     Ok(())
 }
 
@@ -212,7 +216,7 @@ fn rename_open(file: &std::fs::File, to: &Path) -> std::io::Result<()> {
     if unsafe { SetFileInformationByHandle(file.as_raw_handle().cast(), 3, buf.as_ptr().cast(), size as u32) } != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
-fn delete_open(file: &std::fs::File) -> bool {
+pub(crate) fn delete_open(file: &std::fs::File) -> bool {
     use std::os::windows::io::AsRawHandle;
     #[link(name = "kernel32")]
     extern "system" { fn SetFileInformationByHandle(file: *mut core::ffi::c_void, class: u32, info: *const core::ffi::c_void, size: u32) -> i32; }
@@ -222,14 +226,14 @@ fn delete_open(file: &std::fs::File) -> bool {
     unsafe { SetFileInformationByHandle(file.as_raw_handle().cast(), 21, (&flags as *const u32).cast(), 4) != 0 }
 }
 
-/// Put `staged` files (name, path of the new file on the same drive) into `dir`. Each current
-/// file is moved aside to `<name>.old` first; if any step fails, everything is put back as it
-/// was. Only names in [`crate::FILES`] are written.
-pub fn swap_in(dir: &Path, staged: &[(String, PathBuf, String)]) -> Result<(), String> {
-    swap_in_with(dir, staged, || {})
+/// Put staged files (name, path, expected hash) into `dir`, after retaining a complete
+/// previous launch bundle. Current files move aside to `<name>.old`; failures attempt
+/// rollback without overwriting unrelated arrivals. Only plain release file names are used.
+pub fn swap_in(dir: &Path, version: &str, staged: &[(String, PathBuf, String)]) -> Result<(), String> {
+    swap_in_with(dir, version, staged, || {})
 }
 
-fn swap_in_with(dir: &Path, staged: &[(String, PathBuf, String)], before_publish: impl FnOnce()) -> Result<(), String> {
+fn swap_in_with(dir: &Path, version: &str, staged: &[(String, PathBuf, String)], before_publish: impl FnOnce()) -> Result<(), String> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     per_user_only()?;
     let root = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
@@ -252,6 +256,10 @@ fn swap_in_with(dir: &Path, staged: &[(String, PathBuf, String)], before_publish
         check_hash(&mut file, sha)?;
         checked.push((name.clone(), file));
     }
+    let replacements = checked.iter().zip(staged).map(|((name, file), (_, _, sha))| {
+        file.metadata().map(|m| crate::FileEntry { name: name.clone(), size: m.len(), sha256: sha.clone() }).map_err(|e| e.to_string())
+    }).collect::<Result<Vec<_>, _>>()?;
+    let _recovery = crate::recovery::prepare(dir, version, replacements)?;
     remove_old(dir);
     let mut aside: Vec<(PathBuf, std::fs::File)> = Vec::new();
     let mut placed: Vec<usize> = Vec::new();
@@ -267,7 +275,7 @@ fn swap_in_with(dir: &Path, staged: &[(String, PathBuf, String)], before_publish
         }
         ok
     };
-    let back = |ok: bool| if ok { "nothing was changed" } else { "and putting the old files back failed too; reinstall Sprawl with its Setup" };
+    let back = |ok: bool| if ok { "nothing was changed".to_string() } else { format!("and putting the old files back failed too. Open {}\\{}\\sprawl.exe to use the previous copy, then reinstall with Sprawl Setup", dir.display(), crate::recovery::DIRECTORY) };
     for (name, _, _) in staged {
         let cur = dir.join(name);
         let current = std::fs::OpenOptions::new().access_mode(0x0001_0080).share_mode(1 | 2 | 4)
@@ -433,11 +441,12 @@ mod update_tests {
         std::fs::write(dir.join("sprawl.exe"), b"old program").unwrap();
         std::fs::write(dir.join(STAGE).join("sprawl.exe"), b"new program").unwrap();
         let mut files = vec![("sprawl.exe".into(), dir.join(STAGE).join("sprawl.exe"), crate::sha256_hex(b"wrong"))];
-        assert!(swap_in(&dir, &files).is_err());
+        assert!(swap_in(&dir, "99.0.0", &files).is_err());
         assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"old program");
         if per_user_only().is_ok() {
             files[0].2 = crate::sha256_hex(b"new program");
-            swap_in(&dir, &files).unwrap();
+            std::fs::write(dir.join(crate::FILES[1]), b"old bootstrap").unwrap();
+            swap_in(&dir, "99.0.0", &files).unwrap();
             assert_eq!(std::fs::read(dir.join("sprawl.exe.old")).unwrap(), b"old program");
             let launch = verified_launch(&dir, &files).unwrap();
             assert!(std::fs::write(dir.join("sprawl.exe"), b"changed").is_err());
@@ -475,11 +484,43 @@ mod update_tests {
             (name.to_string(), source, crate::sha256_hex(new.as_bytes()))
         }).collect();
         let blocked = dir.join(crate::FILES[1]);
-        let result = swap_in_with(&dir, &files, || std::fs::write(&blocked, b"unrelated new arrival").unwrap());
+        let result = swap_in_with(&dir, "99.0.0", &files, || std::fs::write(&blocked, b"unrelated new arrival").unwrap());
         assert!(result.is_err());
         assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"old sprawl.exe");
         assert_eq!(std::fs::read(&blocked).unwrap(), b"unrelated new arrival");
         assert_eq!(std::fs::read(dir.join(format!("{}.old", crate::FILES[1]))).unwrap(), format!("old {}", crate::FILES[1]).as_bytes());
+        for name in crate::FILES {
+            assert_eq!(std::fs::read(dir.join(crate::recovery::DIRECTORY).join(name)).unwrap(), format!("old {name}").as_bytes());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn interruption_after_displacement_retains_a_complete_previous_launch_bundle() {
+        if per_user_only().is_err() { return; }
+        let dir = fixture("interrupted");
+        let mut old = Vec::new();
+        let files: Vec<_> = crate::FILES.iter().map(|&name| {
+            let bytes = format!("complete old {name}");
+            std::fs::write(dir.join(name), &bytes).unwrap();
+            old.push((name.to_string(), dir.join(crate::recovery::DIRECTORY).join(name), crate::sha256_hex(bytes.as_bytes())));
+            let source = dir.join(STAGE).join(name);
+            std::fs::write(&source, b"new file").unwrap();
+            (name.to_string(), source, crate::sha256_hex(b"new file"))
+        }).collect();
+        let interrupted = std::panic::catch_unwind(|| swap_in_with(&dir, "99.0.0", &files, || panic!("simulated process interruption")));
+        assert!(interrupted.is_err());
+        assert!(!dir.join("sprawl.exe").exists(), "interruption happened after the old names moved");
+        let backup = dir.join(crate::recovery::DIRECTORY);
+        assert!(backup.join("READY").exists());
+        let launch = verified_launch(&backup, &old).unwrap();
+        assert_eq!(launch.len(), crate::FILES.len());
+        drop(launch);
+        crate::recovery::cleanup(&dir);
+        assert!(backup.join("READY").exists(), "an incomplete main folder cannot discard its recovery copy");
+        for name in crate::FILES { std::fs::rename(dir.join(format!("{name}.old")), dir.join(name)).unwrap(); }
+        crate::recovery::cleanup(&dir);
+        assert!(!backup.exists(), "a complete restored bundle may discard recovery at its own normal startup");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
