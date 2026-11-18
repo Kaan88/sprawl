@@ -28,7 +28,7 @@ fn base(f: &Finding) -> (f32, &'static str) {
         crate::chromium::ID => (0.75, "Chromium's own layout"),
         "app.unused" => (f.confidence, "not started for a long time"),
         _ if id.starts_with("project.") => (0.7, "the marker files of the tool that makes it"),
-        _ if id.starts_with("remedy.") || id.starts_with("anomaly.") || id.starts_with("growth.") => (f.confidence, "information"),
+        _ if id.starts_with("remedy.") || id.starts_with("anomaly.") || id.starts_with("growth.") || id.starts_with("stale.") => (f.confidence, "information"),
         _ => (0.75, "a rule names this exact place"),
     }
 }

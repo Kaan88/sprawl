@@ -40,6 +40,7 @@ pub mod remedies;
 pub mod rules;
 pub mod safety;
 pub mod snapshot;
+pub mod stale;
 pub mod tuning;
 pub mod recycle;
 
@@ -165,6 +166,14 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     }
     // folders left by applications that are gone: last, with everything else already known
     for f in leftovers::find(tree, facts, &seen) {
+        if seen.insert(f.path.to_string_lossy().to_lowercase()) {
+            found.push(f);
+        }
+    }
+    // big things nothing changed in for a year, as information: what a person looks at first on
+    // a drive of games, media or backups, where no rule knows a cache. After everything else,
+    // so nothing is said twice.
+    for f in stale::find(tree, facts, &seen) {
         if seen.insert(f.path.to_string_lossy().to_lowercase()) {
             found.push(f);
         }
