@@ -2,7 +2,8 @@
 //! snapshot onto the current tree (for the time-lapse and "what changed").
 //!
 //! Layout: `%LOCALAPPDATA%\Sprawl\snapshots\<key>\` per scanned root, holding `root.txt`
-//! (the root path) and `<unix seconds>.fo.dtsn` (folders only) and `<unix seconds>.full.dtsn`.
+//! (the root path) and `<unix seconds>.<unique>.fo.dtsn` (folders only) and `.full.dtsn`.
+//! New buckets use a SHA-256 root key; validated legacy buckets and filenames remain readable.
 //!
 //! Retention (see docs/plans/ai-advisor.md): every folders-only snapshot from the last 30
 //! days, then the newest per week for 6 months, then the newest per month; the newest 3 full
