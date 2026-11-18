@@ -116,6 +116,7 @@ crates/
     memory.rs, community.rs        your choices, your own and downloaded cleaner definitions
     history.rs, growth.rs, snapshot.rs   scan history
     llm/, mcp.rs    the optional AI: providers, its tools, the MCP server for Claude Code
+    mcp_scan.rs     the MCP server's own scans (scan_path) and the trees it answers from
   sprawl/           the WinUI 3 app (XAML built at run time, the map drawn with Direct3D)
     main.rs, state.rs, commands.rs, ui.rs   start-up, window state, commands, the window's markup
     tables.rs, treemap.rs, views/           the tree, file and type tables; the map and its views

@@ -1,7 +1,8 @@
 //! `sprawl --mcp`: Sprawl as an MCP server (JSON-RPC over stdio) for Claude Code.
 //!
 //! Three ways to run:
-//! - from the user's own Claude Code (`claude mcp add sprawl -- sprawl.exe --mcp`): it talks to
+//! - from the user's own Claude Code (`claude mcp add sprawl -- sprawl.exe --mcp`): it can scan
+//!   folders and drives itself (`mcp_scan`), and it talks to
 //!   the running app over a named pipe, so it sees the scan on screen, the Advisor's findings,
 //!   and can set the map's filter; with no app running it reads History's newest snapshot;
 //! - driven by the app (`--tree <snapshot> --out <file>`): the app runs `claude -p` with only
@@ -58,7 +59,20 @@ fn local_specs(mode: Mode) -> Vec<ToolSpec> {
 }
 
 fn report_spec() -> ToolSpec {
-    ToolSpec { name: "scan_report", description: "Start here: the scan's totals, biggest folders, file types and what Sprawl's rules found.", schema: json!({"type": "object", "properties": {}}) }
+    ToolSpec { name: "scan_report", description: "Start here: the scan's totals, biggest folders, file types and what Sprawl's rules found.", schema: which_scan() }
+}
+
+/// An optional `path` naming which scan a whole-scan tool is about.
+fn which_scan() -> Value {
+    json!({"type": "object", "properties": {"path": {"type": "string", "description": "Which scan: a path inside it (default: the scan open in Sprawl, else the newest)."}}})
+}
+
+/// The tools Claude Code gets from `sprawl --mcp` with no app arguments: the bridge's, and
+/// the scans this server makes.
+pub fn user_specs() -> Vec<ToolSpec> {
+    let mut v = bridge_specs();
+    v.extend(crate::mcp_scan::scan_specs());
+    v
 }
 
 /// Tools offered through the running app: looking, plus its findings and the map filter.
@@ -68,13 +82,13 @@ pub fn bridge_specs() -> Vec<ToolSpec> {
         name: "findings",
         description: "What Sprawl's Advisor found for the scan on screen: each with its risk, size, path and evidence. Don't delete anything yourself: \
             the user ticks findings in Sprawl's Advisor and presses Clean up; Sprawl removes them itself, links as links.",
-        schema: json!({"type": "object", "properties": {}}),
+        schema: which_scan(),
     });
     v.push(ToolSpec {
         name: "cleaners",
         description: "Sprawl's Cleaners for the scan on screen: each application found, its parts (caches, logs) with risk, size and paths. Read-only: \
             the user ticks parts in the Advisor and presses Clean up.",
-        schema: json!({"type": "object", "properties": {}}),
+        schema: which_scan(),
     });
     v.extend(chat_specs().into_iter().filter(|t| t.name == "set_filter"));
     v
@@ -111,7 +125,7 @@ pub fn rules_for(tree: &Tree, facts: &Facts) -> Vec<Finding> {
 }
 
 /// The rules' findings as the `findings` tool lists them.
-fn findings_list(found: &[Finding]) -> String {
+pub(crate) fn findings_list(found: &[Finding]) -> String {
     if found.is_empty() {
         return "Sprawl's rules ran over this scan and none matched.".into();
     }
@@ -245,71 +259,6 @@ fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
-/// History's newest full snapshot (any folder), or the newest of any kind.
-fn newest_entry() -> Option<crate::history::Entry> {
-    let base = crate::history::base_dir()?;
-    let mut list = crate::history::list(&base);
-    let i = list.iter().rposition(|e| e.full).or(list.len().checked_sub(1))?;
-    Some(list.swap_remove(i))
-}
-
-/// "3 hours ago"
-fn age(t: std::time::SystemTime) -> String {
-    let s = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
-    match s {
-        0..=89 => "just now".into(),
-        90..=5399 => format!("{} minutes ago", (s + 30) / 60),
-        5400..=129_599 => format!("{} hours ago", (s + 1800) / 3600),
-        _ => format!("{} days ago", (s + 43_200) / 86_400),
-    }
-}
-
-/// A saved scan the server answers from while the app isn't running.
-struct Snapshot {
-    entry: crate::history::Entry,
-    tree: Tree,
-    facts: Facts,
-    found: Option<Vec<Finding>>,
-}
-
-impl Snapshot {
-    /// History's newest scan, reusing `old` if it is still the newest.
-    fn newest(old: Option<Snapshot>) -> Option<Snapshot> {
-        let e = newest_entry()?;
-        if let Some(o) = old.filter(|o| o.entry.file == e.file && o.entry.taken == e.taken) {
-            return Some(o);
-        }
-        let tree = crate::history::load(&e).ok()?;
-        let mut facts = Facts::gather();
-        facts.attach_usage(&tree);
-        Some(Snapshot { entry: e, tree, facts, found: None })
-    }
-
-    /// One call answered from the snapshot, with a first line saying where the answer is from.
-    fn call(&mut self, name: &str, input: &Value, memory: &Memory) -> Result<String, String> {
-        let note = format!(
-            "(Sprawl isn't running, so this is from History's saved scan of {}, taken {}. Scans done since aren't in it.)
-
-",
-            self.entry.root.display(),
-            age(self.entry.taken)
-        );
-        let answer = match name {
-            "scan_report" | "findings" => {
-                let found = self.found.get_or_insert_with(|| rules_for(&self.tree, &self.facts));
-                Ok(if name == "findings" { findings_list(found) } else { crate::llm::report::build(&self.tree, &self.facts, Some(found), None, None) })
-            }
-            "cleaners" | "set_filter" => Err("That needs Sprawl open: start Sprawl and ask again.".to_string()),
-            _ if bridge_specs().iter().any(|t| t.name == name) => Tools::new(&self.tree, &self.facts, "claude-code", &[], memory).call(name, input),
-            _ => Err(format!("there is no tool called {name}")),
-        };
-        match answer {
-            Ok(t) => Ok(note + &t),
-            Err(e) => Err(note + &e),
-        }
-    }
-}
-
 /// Ask the running app, connecting afresh for every call: an app started (or restarted) after
 /// this server is found, and the one pipe isn't held between calls. `None`: the app isn't there.
 fn ask_app(name: &str, input: &Value) -> Option<Result<String, String>> {
@@ -331,19 +280,26 @@ pub fn main(args: &[String]) {
     let step = |s: &str| if dbg { eprintln!("mcp: {s}") };
     step("start");
     let Some(tree_file) = arg(args, "--tree").map(PathBuf::from) else {
-        // the user's own Claude Code: the running app when there is one, checked on every call,
-        // else History's newest scan, said so in every answer
-        step("serving through the app or History");
+        // the user's own Claude Code: a path in a scan made here is answered from it; else the
+        // running app when there is one (checked on every call); what the app doesn't have,
+        // and everything while it isn't running, from the freshest of this server's scans and
+        // History's, said so in every answer
+        step("serving through the app, this server's scans or History");
         let memory = Memory::load_readonly();
-        let mut snap: Option<Snapshot> = None;
-        serve(bridge_specs(), &mut |name, input| {
-            if let Some(a) = ask_app(name, input) {
-                return a;
+        let mut index = crate::mcp_scan::Index::default();
+        serve(user_specs(), &mut |name, input| {
+            use crate::mcp_scan::{path_of, NOT_IN_SCAN, NO_SCAN_OPEN};
+            if crate::mcp_scan::is_scan_tool(name) {
+                return index.scan_call(name, input);
             }
-            snap = Snapshot::newest(snap.take());
-            match snap.as_mut() {
-                Some(s) => s.call(name, input, &memory),
-                None => Err("Sprawl isn't running and has no saved scan yet: open Sprawl and scan a drive.".into()),
+            let app_only = matches!(name, "cleaners" | "set_filter");
+            if !app_only && path_of(input).is_some_and(|p| index.has_scan_for(&p)) {
+                return index.answer(name, input, &memory, false);
+            }
+            match ask_app(name, input) {
+                Some(Err(e)) if e.ends_with(NOT_IN_SCAN) || e == NO_SCAN_OPEN => index.answer(name, input, &memory, true),
+                Some(a) => a,
+                None => index.answer(name, input, &memory, false),
             }
         });
         return;
@@ -378,9 +334,15 @@ pub fn main(args: &[String]) {
 pub fn answer_bridge(line: &str, tree: Option<&Tree>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, filter: &mut dyn FnMut(String)) -> String {
     let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
     let Ok(req) = serde_json::from_str::<Value>(line) else { return reply(false, "bad request".into()) };
-    let Some(tree) = tree else { return reply(false, "No scan is open in Sprawl yet.".into()) };
+    let Some(tree) = tree else { return reply(false, crate::mcp_scan::NO_SCAN_OPEN.into()) };
     let name = req["tool"].as_str().unwrap_or("");
     let input = &req["input"];
+    // a whole-scan tool asked about another scan: the server answers it from its own or History's
+    if matches!(name, "findings" | "cleaners" | "scan_report") {
+        if let Some(p) = crate::mcp_scan::path_of(input).filter(|p| crate::find_path(tree, p).is_none()) {
+            return reply(false, format!("{} {}", p.display(), crate::mcp_scan::NOT_IN_SCAN));
+        }
+    }
     match name {
         "findings" => {
             let f = findings.split(CLEANERS_MARK).next().unwrap_or("");
@@ -498,5 +460,12 @@ mod tests {
         assert!(ask(Some(std::slice::from_ref(&one))).contains("a test finding"));
         let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |_| {});
         assert!(fl.contains("still looking"), "{fl}");
+        // a whole-scan tool about a path the app's tree doesn't hold goes back to the server
+        for tool in ["scan_report", "findings", "cleaners"] {
+            let other = answer_bridge(&json!({"tool": tool, "input": {"path": r"Q:\elsewhere"}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |_| {});
+            assert!(other.contains("\"ok\":false") && other.contains(crate::mcp_scan::NOT_IN_SCAN), "{other}");
+        }
+        let inside = answer_bridge(&json!({"tool": "scan_report", "input": {"path": root}}).to_string(), Some(&tree), &facts, &Memory::default(), "", None, &mut |_| {});
+        assert!(inside.contains("\"ok\":true"), "{inside}");
     }
 }

@@ -30,6 +30,7 @@ pub mod history;
 pub mod inuse;
 pub mod llm;
 pub mod mcp;
+pub mod mcp_scan;
 pub mod memory;
 pub mod pipe;
 pub mod plan;
