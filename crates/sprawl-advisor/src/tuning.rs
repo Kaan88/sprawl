@@ -21,7 +21,7 @@ pub struct Knob {
 }
 
 /// A project's build output counts as idle after this many days without a change.
-pub const PROJECT_IDLE_DAYS: Knob = Knob { key: "tuneProjectIdleDays", default: 30, floor: 7, max: 3650 };
+pub const PROJECT_IDLE_DAYS: Knob = Knob { key: "tuneProjectIdleDays", default: 30, floor: 30, max: 3650 };
 /// An application counts as unused after this many days.
 pub const UNUSED_APP_DAYS: Knob = Knob { key: "tuneUnusedAppDays", default: 180, floor: 30, max: 3650 };
 /// A leftover needs no change for this many days.
@@ -142,7 +142,7 @@ mod tests {
     /// leftovers, and the sizes that could list more safe findings never below their default.
     #[test]
     fn floors_hold() {
-        assert_eq!(PROJECT_IDLE_DAYS.clamp(1), 7);
+        assert_eq!(PROJECT_IDLE_DAYS.clamp(1), 30);
         assert_eq!(UNUSED_APP_DAYS.clamp(0), 30);
         assert_eq!(LEFTOVER_IDLE_DAYS.clamp(5), 30);
         assert_eq!(FINDING_MIN_MB.clamp(1), 50);

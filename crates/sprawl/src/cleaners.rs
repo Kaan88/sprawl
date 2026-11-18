@@ -14,6 +14,17 @@ use crate::cleanup::{key, untickable};
 use crate::state::State;
 use crate::ui;
 
+/// Bulk choices must use the actual finding's raised risk and current gates, not catalogue risk.
+fn auto_finding(f: &Finding, counted: bool, quiet: bool) -> bool {
+    matches!(f.risk, Risk::Green | Risk::Amber) && !f.other_account() && !quiet && !f.privacy()
+        && crate::cleanup::counts_as_space(f) && untickable(f, counted).is_none()
+        && crate::cleanup::held_in_app(f).is_none()
+}
+
+fn auto_takes(r: &Report, i: usize) -> bool {
+    auto_finding(&r.findings[i], r.counted[i], r.quiet.contains(&key(&r.findings[i].path)))
+}
+
 /// What the Cleaners section has open.
 #[derive(Default)]
 pub(crate) struct ClState {
@@ -638,7 +649,7 @@ impl State {
             }
             "AdvClA" => {
                 let Some(c) = rows.get(i) else { return };
-                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).filter(|&k| self.advisor.cleaners_tab_on() || !r.quiet.contains(&key(&r.findings[k].path))).map(|k| key(&r.findings[k].path))).collect();
+                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).filter(|&k| auto_takes(r, k)).map(|k| key(&r.findings[k].path))).collect();
                 // partly ticked: the first press unticks the app, as a box that shows a mark
                 let any = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&k| self.advisor.cleanup.ticked.contains(&key(&r.findings[k].path)));
                 let all = !keys.is_empty() && keys.iter().all(|k| self.advisor.cleanup.ticked.contains(k));
@@ -842,7 +853,7 @@ impl State {
         r.findings
             .iter()
             .enumerate()
-            .filter(|(i, f)| !r.quiet.contains(&key(&f.path)) && crate::cleanup::counts_as_space(f) && matches!(&f.source, Source::Rule(id) if usual.contains(id)) && untickable(f, r.counted[*i]).is_none())
+            .filter(|(i, f)| auto_takes(r, *i) && matches!(&f.source, Source::Rule(id) if usual.contains(id)))
             .map(|(_, f)| key(&f.path))
             .filter(|k| !self.advisor.cleanup.ticked.contains(k))
             .collect()
@@ -876,7 +887,7 @@ impl State {
             let declined = self.advisor.memory.declined_parts.iter().any(|d| d.eq_ignore_ascii_case(k)) || k.to_lowercase().starts_with("privacy.");
             match rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).find(|(_, p)| p.key.eq_ignore_ascii_case(k)) {
                 // safe and amber space only: never a privacy part, nor one the user turned down
-                Some((c, p)) if !declined && p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() && !p.findings.iter().any(|&i| r.quiet.contains(&key(&r.findings[i].path))) && self.part_true(r, p).0 > 0 => ok.push((c, p)),
+                Some((c, p)) if !declined && p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() && p.tickable(r).all(|i| auto_takes(r, i)) && self.part_true(r, p).0 > 0 => ok.push((c, p)),
                 _ => left += 1,
             }
         }
@@ -1626,9 +1637,10 @@ impl State {
             let keys: Vec<String> = {
                 let r = self.advice().unwrap();
                 let want = &self.advisor.memory.cleaner_ticks;
-                self.cleaner_layout(r).iter().flat_map(|c| c.parts.iter()).filter(|p| want.contains(&p.key)).flat_map(|p| p.tickable(r).map(|i| key(&r.findings[i].path))).collect()
+                self.cleaner_layout(r).iter().flat_map(|c| c.parts.iter()).filter(|p| want.contains(&p.key)).flat_map(|p| p.tickable(r).filter(|&i| auto_takes(r, i)).map(|i| key(&r.findings[i].path))).collect()
             };
             self.advisor.cleanup.ticked.extend(keys);
+            self.advisor.cleanup.own_ok = false;
             return;
         }
         if !changed {

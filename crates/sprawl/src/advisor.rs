@@ -2885,7 +2885,7 @@ impl State {
                 let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
                 let mut left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
                 if keeping > 0 {
-                    left += &format!(" {keeping} ticked item(s) with something kept inside (yours, or protected) were left out: clean those here, which leaves it.");
+                    left += &format!(" {keeping} ticked item(s) held by Keep, protection, scan exclusions or the recycle-only policy were left out. Review them inside Sprawl.");
                 }
                 self.adv_say(&format!("Script saved with the {} ticked item(s). Read it, then run it in PowerShell: as it is, it only measures.{left}", owned.len()));
                 self.advisor.exported = Some(Exported { file, items, verify: None });
@@ -3903,7 +3903,9 @@ impl State {
 /// Sprawl, which does.
 pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Finding>, usize, usize) {
     let guesses = ticked.iter().filter(|f| f.heuristic()).count();
-    let holds_kept = |f: &Finding| !f.carved.is_empty() || kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path));
+    let excluded = sprawl_advisor::exclusions::configured();
+    let holds_kept = |f: &Finding| f.forced_from.is_some() || !f.carved.is_empty() || sprawl_advisor::exclusions::intersects(&f.path, &excluded)
+        || kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path) || sprawl_advisor::finding::within(&f.path, k));
     let keeping = ticked.iter().filter(|f| !f.heuristic() && holds_kept(f)).count();
     (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some() && !holds_kept(f)).collect(), guesses, keeping)
 }
@@ -3949,6 +3951,10 @@ mod script_tests {
         assert_eq!(guesses, 1);
         assert_eq!(keeping, 2, "a folder the user keeps is inside C:\\c, a mail store in C:\\d: the script can't spare them");
         assert!(script_items(Vec::new(), &[]).0.is_empty(), "nothing ticked: nothing written");
+        assert!(script_items(vec![mk(r"C:\kept\child", "r")], &[r"C:\kept".into()]).0.is_empty(), "a kept ancestor also blocks scripts");
+        let mut forced = mk(r"C:\recycle-only", "r");
+        forced.forced_from = Some(sprawl_advisor::Remedy::Info);
+        assert!(script_items(vec![forced], &[]).0.is_empty(), "second-click rows cannot be made permanent by export");
     }
 }
 

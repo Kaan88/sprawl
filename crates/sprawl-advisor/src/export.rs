@@ -44,7 +44,8 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     s.push_str("$items = @(\n");
     let mut by_hand = Vec::new();
     // privacy parts are cleaned only inside Sprawl, with the browser closed: not even listed
-    for f in findings.iter().filter(|f| !f.privacy() && !f.heuristic()) {
+    let excluded = crate::exclusions::configured();
+    for f in findings.iter().filter(|f| !f.privacy() && !f.heuristic() && f.forced_from.is_none() && f.carved.is_empty() && !crate::exclusions::intersects(&f.path, &excluded)) {
         let Some(cmd) = &f.command else {
             by_hand.push(f);
             continue;
@@ -151,6 +152,8 @@ mod tests {
         let mut own = f("Old project", r"C:\Users\sam\Old", Some(format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath 'C:\\Users\\sam\\Old' -Force)")));
         own.risk = crate::Risk::Orange;
         assert!(script(&[&own], r"C:\", SystemTime::now()).contains("has no Recycle Bin"));
+        own.forced_from = Some(Remedy::Info);
+        assert!(!script(&[&own], r"C:\", SystemTime::now()).contains("Title = 'Old project'"), "recycle-only second-click rows never become permanent script deletes");
         let p = std::env::temp_dir().join(format!("sprawl-export-{}.ps1", std::process::id()));
         write_script(&p, &s).unwrap();
         let bytes = std::fs::read(&p).unwrap();
