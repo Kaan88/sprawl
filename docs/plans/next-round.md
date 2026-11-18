@@ -147,3 +147,11 @@ Kept up as the work goes. Each line: the item, the commit, what was done, what i
   to the top was focus falling to the first control when the clicked button was destroyed: the
   clicked row's button now takes focus back. Tried by hand (2026-11-18, `SPRAWL_FRONT=1` screenshot mode on a C:\ scan): rows
   lower in the list open and close in place, 2-3 ms each, and the list stays put.
+- **B4** (c56e6be): done. Not WinUI's `ContentDialog` but Sprawl's own card over the window
+  (`ask.rs`, `DlgHost`): the same look without new bindings or async code. Every `MessageBoxW`
+  is gone (`win32::confirm`/`info` removed). "Yes" is a callback that checks again (delete:
+  same `tree_gen`, node at the same path, `delete_refusal` for each, all before any goes).
+  The question owns the keyboard while open; menu commands wait. Tried by hand on a throwaway
+  folder: the card shows, the mouse and Esc (with the window in front) say no, nothing was
+  deleted. Not tried by hand: Tab/Enter, Esc right after the window comes to the front (the
+  refocus added last), "Yes" deleting for real, closing mid clean-up.
