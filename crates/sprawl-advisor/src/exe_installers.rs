@@ -22,6 +22,7 @@ fn norm(s: &str) -> String { s.split_whitespace().collect::<Vec<_>>().join(" ").
 fn owner<'a>(v: &Version, facts: &'a Facts) -> Option<&'a crate::facts::App> {
     let (product, company, description, original) = (norm(&v.product), norm(&v.company), norm(&v.description), norm(&v.original));
     if product.chars().count() < 4 || company.chars().count() < 3 || original.contains(['\\', '/', ':'])
+        || original.contains("unins") || description.contains("uninstall")
         || !original.ends_with(".exe") || !(original.contains("setup") || original.contains("install"))
         || !(description.contains("setup") || description.contains("installer") || description.contains("installation")) {
         return None;
@@ -148,6 +149,10 @@ mod tests {
         let mut ambiguous = facts();
         ambiguous.apps.push(ambiguous.apps[0].clone());
         assert!(owner(&metadata(), &ambiguous).is_none());
+        let mut uninstaller = metadata();
+        uninstaller.original = "uninstall.exe".into();
+        uninstaller.description = "Example Editor Uninstaller".into();
+        assert!(owner(&uninstaller, &known).is_none(), "uninstallers are not spare setup programs");
     }
 
     #[test]
