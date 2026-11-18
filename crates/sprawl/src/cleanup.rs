@@ -63,6 +63,8 @@ pub(crate) struct Item {
     pub recycle: bool,
     /// A privacy part's set: not counted in what was freed.
     pub privacy: bool,
+    /// The tool command it runs, written into the clean-up log with its output (R7).
+    pub command: Option<String>,
 }
 
 pub(crate) enum ItemState {
@@ -534,6 +536,10 @@ impl State {
                 },
                 recycle,
                 privacy: f.privacy(),
+                command: match clean::action(&f) {
+                    Some((Action::Tool { command }, _)) => Some(command),
+                    _ => None,
+                },
             });
         }
         if items.is_empty() {
@@ -994,8 +1000,10 @@ impl State {
         for (_, f) in &picked {
             let what = crate::advisor::risk_words_for(f);
             let ai = if matches!(f.source, Source::Model(_)) { " · suggested by the AI" } else { "" };
+            // a command is shown whole (R7): what runs is never cut short
+            let wrap = if matches!(clean::action(f), Some((Action::Tool { .. }, _))) { r#"TextWrapping="Wrap" IsTextSelectionEnabled="True""# } else { r#"TextTrimming="CharacterEllipsis""# };
             x += &format!(
-                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="12" Foreground="#FF8E97AA" {wrap}/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
                 crate::advisor::risk_hex(f.risk),
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
@@ -1247,6 +1255,13 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
         match &it.state {
             ItemState::Done(o) => {
                 s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
+                // a tool's command, as run, and the last lines it wrote (R7)
+                if let Some(c) = &it.command {
+                    s += &format!("\t  ran: {c}\r\n");
+                    for l in &o.output {
+                        s += &format!("\t  | {l}\r\n");
+                    }
+                }
                 if o.recycled > 0 {
                     s += &format!("\t  sent to the Recycle Bin: {} bytes, {} files\r\n", o.recycled, o.recycled_files);
                 }
