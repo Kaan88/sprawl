@@ -218,38 +218,38 @@ pub fn on_disk(path: &Path) -> Option<u64> {
     extern "system" {
         fn GetCompressedFileSizeW(name: *const u16, high: *mut u32) -> u32;
     }
-    let size = |p: &Path, len: u64| -> u64 {
+    let size = |p: &Path| -> Option<u64> {
         let w: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut high = 0u32;
         // SAFETY: a NUL-terminated wide path and a valid out pointer
+        unsafe { windows_sys::Win32::Foundation::SetLastError(0); }
         let low = unsafe { GetCompressedFileSizeW(w.as_ptr(), &mut high) };
-        if low == u32::MAX && high == 0 {
-            len
-        } else {
-            (high as u64) << 32 | low as u64
-        }
+        if low == u32::MAX && unsafe { windows_sys::Win32::Foundation::GetLastError() } != 0 { return None; }
+        Some((high as u64) << 32 | low as u64)
     };
-    let top = std::fs::symlink_metadata(path).ok()?;
+    let root = sprawl_core::local::storage(path).ok()?;
+    let excluded = crate::exclusions::configured();
+    if crate::exclusions::intersects(&root.path, &excluded) { return None; }
+    let top = root.metadata().ok()?;
     if !top.is_dir() {
-        return Some(size(path, top.len()));
+        return size(&root.path);
     }
-    let mut total = 0;
-    let mut stack = vec![path.to_path_buf()];
+    let (mut total, mut visited) = (0u64, 0usize);
+    let start = std::time::Instant::now();
+    let mut stack = vec![root.path.clone()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let Ok(m) = e.metadata() else { continue };
-            if m.file_type().is_symlink() {
-                continue;
-            }
+        let pinned = sprawl_core::local::directory(&d).ok()?;
+        let rd = std::fs::read_dir(&pinned.path).ok()?;
+        for e in rd {
+            visited += 1;
+            if visited > 1_000_000 || start.elapsed().as_secs() >= 30 { return None; }
+            let e = e.ok()?;
+            let pinned = sprawl_core::local::storage(&e.path()).ok()?;
+            let m = pinned.metadata().ok()?;
             if m.is_dir() {
-                use std::os::windows::fs::MetadataExt;
-                // a junction is a link too
-                if m.file_attributes() & REPARSE == 0 {
-                    stack.push(e.path());
-                }
+                stack.push(pinned.path.clone());
             } else {
-                total += size(&e.path(), m.len());
+                total = total.checked_add(size(&pinned.path)?)?;
             }
         }
     }
@@ -552,6 +552,29 @@ mod tests {
 #[cfg(test)]
 mod compress_tests {
     use super::*;
+
+    #[test]
+    fn disk_size_is_complete_without_reading_file_contents() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" { fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32; }
+        let dir = std::env::temp_dir().join(format!("sprawl-size-completeness-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let path = dir.join("sub/data.bin");
+        std::fs::write(&path, vec![1u8; 100_000]).unwrap();
+        assert!(on_disk(&dir).unwrap() > 0);
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        assert!(on_disk(&dir).unwrap() > 0, "metadata-only sizing needs no content read");
+        drop(locked);
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), 0x1000) }, 0);
+        assert_eq!(on_disk(&dir), None, "an offline child invalidates the whole measurement");
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), 0x80) }, 0);
+        assert!(on_disk(&dir).unwrap() > 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(on_disk(&dir), None);
+    }
 
     /// Sprawl's own compress command, run as a clean-up runs it, makes the folder smaller on
     /// disk and keeps every file as it was.

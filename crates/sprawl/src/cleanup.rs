@@ -123,6 +123,35 @@ pub(crate) fn rescan(p: &std::path::Path) -> std::io::Result<Tree> {
     sprawl_core::walk::walk(p, &sprawl_advisor::exclusions::progress())
 }
 
+fn rescan_after(path: &Path) -> Option<Option<Tree>> {
+    let path = sprawl_core::local::lexical(path).ok()?;
+    let _parent = sprawl_core::local::directory(path.parent().unwrap_or(&path)).ok()?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => rescan(&path).ok().map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
+}
+
+fn complete_size(scan: Option<&Option<Tree>>) -> Option<u64> {
+    match scan? {
+        None => Some(0),
+        Some(tree) if tree.errors == 0 => tree.nodes.get(sprawl_core::ROOT).map(|n| n.size),
+        _ => None,
+    }
+}
+
+fn succeeded(out: &Outcome) -> bool { !out.stopped && out.problems.is_empty() && out.more_problems == 0 }
+
+fn credit_tool(out: &mut Outcome, before: Option<u64>, after: Option<u64>) {
+    out.freed = 0;
+    if !succeeded(out) { return; }
+    match before.zip(after) {
+        Some((before, after)) => out.freed = before.saturating_sub(after),
+        None => out.problems.push("The tool finished, but complete comparable before/after sizes were unavailable; no space saving was credited.".into()),
+    }
+}
+
 pub(crate) fn key(p: &std::path::Path) -> String {
     p.to_string_lossy().to_lowercase()
 }
@@ -504,7 +533,7 @@ impl State {
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let bin_on = self.recycle_on();
-        let mut work: Vec<(PathBuf, Action, u64, Option<(String, Vec<String>)>, bool)> = Vec::new();
+        let mut work: Vec<(PathBuf, Action, Option<(String, Vec<String>)>, bool)> = Vec::new();
         let mut items = Vec::new();
         let mut held = Vec::new();
         // the privacy sets after the rest, checked the same way (their own set checks inside)
@@ -536,7 +565,7 @@ impl State {
                 continue;
             }
             let recycle = goes_to_bin(&f, bin_on);
-            work.push((f.path.clone(), action, f.bytes, gate, recycle));
+            work.push((f.path.clone(), action, gate, recycle));
             items.push(Item {
                 path: f.path.clone(),
                 title: f.title.clone(),
@@ -572,7 +601,7 @@ impl State {
         std::thread::spawn(move || {
             // each volume's Recycle Bin, found once; what this run sends counts against its room
             let mut bins: std::collections::HashMap<String, Result<sprawl_advisor::recycle::Bin, String>> = Default::default();
-            for (i, (path, action, before, gate, recycle)) in work.into_iter().enumerate() {
+            for (i, (path, action, gate, recycle)) in work.into_iter().enumerate() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
                 }
@@ -592,7 +621,10 @@ impl State {
                     let vol = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase();
                     bins.entry(vol).or_insert_with(|| sprawl_advisor::recycle::bin_for(&path))
                 });
-                let disk_before = sprawl_advisor::remedies::in_place(&action).then(|| sprawl_advisor::remedies::on_disk(&path)).flatten();
+                let tool = matches!(action, Action::Tool { .. });
+                let in_place = sprawl_advisor::remedies::in_place(&action);
+                let before = if in_place { sprawl_advisor::remedies::on_disk(&path) }
+                    else if tool { complete_size(rescan_after(&path).as_ref()) } else { None };
                 let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
                         last = Instant::now();
@@ -600,19 +632,11 @@ impl State {
                     }
                 });
                 // what is there now, for the tree
-                let now = match std::fs::symlink_metadata(&path) {
-                    Ok(_) => rescan(&path).ok().map(Some),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
-                    Err(_) => None,
-                };
-                // a compress or a shrink keeps every file: what it freed is what the path lost on disk
-                if let Some(b) = disk_before {
-                    out.freed = b.saturating_sub(sprawl_advisor::remedies::on_disk(&path).unwrap_or(b));
-                } else if matches!(action, Action::Tool { .. }) {
-                    // a tool removes things itself: what it freed is what the folder lost
-                    if let Some(now) = &now {
-                        out.freed = before.saturating_sub(now.as_ref().map_or(0, |t| t.nodes[sprawl_core::ROOT].size));
-                    }
+                let now = rescan_after(&path);
+                if tool {
+                    let after = if in_place { sprawl_advisor::remedies::on_disk(&path) }
+                        else { complete_size(now.as_ref()) };
+                    credit_tool(&mut out, before, after);
                 }
                 let _ = tx.send(Msg::Finished(i, out, now));
             }
@@ -748,11 +772,11 @@ impl State {
         let learned_at = sprawl_advisor::learning::now();
         for it in &run.items {
             if let (true, Some(rule), ItemState::Done(o)) = (it.learn, &it.rule, &it.state) {
-                if !o.stopped && o.problems.is_empty() && o.more_problems == 0 && o.freed > 0 {
+                if succeeded(o) && o.freed > 0 {
                     let remaining = run.rescans.iter().find(|(p, _)| p == &it.path).and_then(|(_, t)| match t {
                         None => Some(0), Some(t) if t.errors == 0 => Some(t.nodes[sprawl_core::ROOT].size), _ => None,
                     });
-                    self.advisor.memory.learning.success(&it.path, rule, o.freed, remaining, learned_at);
+                    if remaining.is_some() { self.advisor.memory.learning.success(&it.path, rule, o.freed, remaining, learned_at); }
                 }
             }
         }
@@ -791,14 +815,14 @@ impl State {
                     done.problems.push(format!("{}: and {} more", it.title, o.more_problems + o.problems.len().saturating_sub(3) as u64));
                 }
                 done.output.extend(o.output.iter().cloned());
-                if o.freed > 0 || o.recycled > 0 {
+                if succeeded(o) && (o.freed > 0 || o.recycled > 0) {
                     if let Some(tip) = it.prevention {
                         if !done.prevention.contains(&tip) { done.prevention.push(tip); }
                     }
                 }
                 // remembered as done when most of it went, never over the user's own Keep
                 let kept = self.advisor.memory.hides(&it.path).is_some_and(|d| d.verdict == sprawl_advisor::memory::Verdict::Keep);
-                if o.freed + o.recycled >= it.bytes / 2 && !kept {
+                if succeeded(o) && o.freed.saturating_add(o.recycled) > 0 && o.freed.saturating_add(o.recycled) >= it.bytes / 2 && !kept {
                     self.advisor.memory.decide(&it.path, &it.title, sprawl_advisor::memory::Verdict::Done);
                 }
             }
@@ -808,6 +832,7 @@ impl State {
         let mut freed: std::collections::BTreeMap<String, u64> = Default::default();
         for it in &run.items {
             if let (Some(rule), ItemState::Done(o), false) = (&it.rule, &it.state, it.privacy) {
+                if !succeeded(o) || o.freed == 0 { continue; }
                 *freed.entry(rule.clone()).or_default() += o.freed;
             }
         }
@@ -1575,6 +1600,34 @@ mod admin_tests {
         f.set_action(Action::Remove, false);
         assert_eq!(untickable(&f, true), None);
         assert!(f.risk >= Risk::Orange, "the own-files box is needed");
+    }
+}
+
+#[cfg(test)]
+mod accounting_tests {
+    use super::*;
+
+    #[test]
+    fn tool_credit_needs_success_and_complete_comparable_sizes() {
+        for (before, after, expected) in [(Some(100), Some(40), 60), (Some(100), Some(100), 0),
+            (Some(100), Some(120), 0), (None, Some(0), 0), (Some(100), None, 0)] {
+            let mut out = Outcome::default();
+            credit_tool(&mut out, before, after);
+            assert_eq!(out.freed, expected);
+            assert_eq!(succeeded(&out), before.is_some() && after.is_some());
+        }
+        for mut out in [Outcome { problems: vec!["tool failed".into()], ..Default::default() },
+            Outcome { stopped: true, ..Default::default() }, Outcome { more_problems: 1, ..Default::default() }] {
+            out.freed = 900;
+            credit_tool(&mut out, Some(1000), Some(1));
+            assert_eq!(out.freed, 0, "failure cannot become a successful saving");
+            assert!(!succeeded(&out));
+        }
+        let tree = |errors| Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { size: 40, ..Default::default() }], errors, method: sprawl_core::ScanMethod::Walk };
+        assert_eq!(complete_size(None), None);
+        assert_eq!(complete_size(Some(&None)), Some(0));
+        assert_eq!(complete_size(Some(&Some(tree(1)))), None);
+        assert_eq!(complete_size(Some(&Some(tree(0)))), Some(40));
     }
 }
 
