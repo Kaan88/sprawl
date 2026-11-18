@@ -163,7 +163,9 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 /// after the root that aren't wildcards (`?:\\**\\*.jpg` or `C:\\*` would reach everything).
 pub(crate) fn plain_pattern(p: &str) -> bool {
     let b = p.as_bytes();
-    if p.starts_with('%') && !VARS.iter().any(|v| p.len() > v.len() && p[..v.len()].eq_ignore_ascii_case(v) && p.as_bytes()[v.len()] == b'\\') {
+    // by bytes: a fixed offset can fall inside a non-ASCII letter (`%TEMP%\Günlük`), and slicing
+    // the str there panics
+    if p.starts_with('%') && !VARS.iter().any(|v| b.len() > v.len() && b[..v.len()].eq_ignore_ascii_case(v.as_bytes()) && b[v.len()] == b'\\') {
         return false;
     }
     let rooted = (b.len() >= 3 && (b[0].is_ascii_alphabetic() || b[0] == b'?') && b[1] == b':' && b[2] == b'\\') || p.starts_with('%');
@@ -284,6 +286,9 @@ pub(crate) fn check_local_rule(r: &Rule, never: &crate::safety::Never) -> Result
     }
     if r.allow_protected {
         return Err("only Sprawl's own rules may name a protected folder".into());
+    }
+    if r.admin {
+        return Err("only Sprawl's own rules run as administrator".into());
     }
     if r.paths.is_empty() || r.paths.len() > 8 || !r.paths.iter().all(|x| plain_pattern(x)) {
         return Err("give 1 to 8 absolute, narrow path patterns (C:\\... or %LOCALAPPDATA%\\..., at least two named folders)".into());
@@ -630,6 +635,11 @@ pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never,
         if c.parts.iter().any(|p| p.risk < Risk::Amber) {
             return Err(format!("{}: a community part is at least amber", c.id));
         }
+        // a downloaded definition cleans application data, never the user's own folders
+        // (Documents, Pictures, Downloads...): left out, not left to the orange tick
+        if let Some(x) = c.parts.iter().flat_map(|p| &p.paths).find(|x| sample_paths(x).iter().any(|s| never.is_user_data(s))) {
+            return Err(format!("{}: {x} is in your own folders", c.id));
+        }
     }
     Ok(pack)
 }
@@ -705,6 +715,16 @@ mod tests {
         assert!(kept.contains(&PathBuf::from(r"C:\Users\Sam\Downloads")));
         assert!(kept.contains(&PathBuf::from(r"C:\Users\Sam\Videos")), "an exact Keep protects too");
         assert_eq!(kept.len(), 2);
+    }
+
+    /// A non-ASCII letter where a variable's name would end (byte 13 of `%USERPROFILE%`) is
+    /// looked at by bytes, never sliced through.
+    #[test]
+    fn non_ascii_after_a_variable_does_not_panic() {
+        for p in ["%TEMP%\\G\u{fc}nl\u{fc}k\\cache", "%APPDATA%\\\u{f6}\u{f6}\u{f6}\\x", "%\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\\a\\b"] {
+            let _ = plain_pattern(p);
+        }
+        assert!(!plain_pattern("%\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\\a\\b"), "not a known variable");
     }
 
     #[test]

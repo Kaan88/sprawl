@@ -1051,6 +1051,7 @@ impl State {
             "AdvClUpd" => self.community_fetch(),
             "AdvClLeft" => self.advisor.cl.left_shown = !self.advisor.cl.left_shown,
             "AdvClComm" => {
+                self.advisor.memory_ready();
                 self.advisor.memory.community_off = !self.advisor.memory.community_off;
                 self.save_memory();
                 return self.advisor_start();
@@ -1329,6 +1330,10 @@ impl State {
             self.advisor.section = Section::Cleaners;
             // the user's ticks from last time come back each time the tab opens
             self.advisor.cl.restore_pending = true;
+        } else if self.advisor.section == Section::Cleaners {
+            // the Advisor tab has no Cleaners section of its own: left there, it drew its header
+            // and nothing under it (the "empty Advisor" after a visit to the Cleaners tab)
+            self.advisor.section = Section::Findings;
         }
         self.advisor.cleaners_tab = on;
     }

@@ -682,6 +682,9 @@ impl State {
                     if let Some((ix, i)) = self.search.more.item(d - 1, n) {
                         let p = ix.path_of(i);
                         self.search.more.sel = Some((d - 1, n));
+                        // as more_tapped does: a Delete afterwards must not act on a scan row
+                        self.selected = None;
+                        self.marked.clear();
                         self.refresh_rows();
                         self.shell_menu(p, false);
                         return;

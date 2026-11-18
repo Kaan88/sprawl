@@ -706,12 +706,19 @@ pub fn convert_cleanerml(file: &str, text: &str) -> (Option<Cleaner>, Vec<LeftOu
                 continue;
             }
             let search = a.attr("search").unwrap_or("file");
+            // BleachBit reads `*` and `?` literally outside a glob; Sprawl would match with them
+            if search != "glob" && raw.contains(['*', '?']) {
+                left.push(LeftOut { entry: what.clone(), why: "a path with * or ? that BleachBit reads as a plain name".into() });
+                continue;
+            }
             let (act, pattern, kind) = match search {
                 "walk.files" => (Act::Match, Some("*".to_string()), Kind::Dir),
                 "walk.all" => (Act::Clear, None, Kind::Dir),
                 "walk.top" => (Act::Remove, None, Kind::Dir),
-                "file" => (Act::Remove, None, Kind::Any),
-                "glob" if !raw.contains(['*', '?']) => (Act::Remove, None, Kind::Any),
+                // BleachBit removes a file there, and a folder only when it is empty: never a
+                // whole folder with what is in it
+                "file" => (Act::Remove, None, Kind::File),
+                "glob" if !raw.contains(['*', '?']) => (Act::Remove, None, Kind::File),
                 other => {
                     left.push(LeftOut { entry: what.clone(), why: format!("a \"{other}\" search, which Sprawl can't match the same way") });
                     continue;
@@ -722,6 +729,14 @@ pub fn convert_cleanerml(file: &str, text: &str) -> (Option<Cleaner>, Vec<LeftOu
             for (n, vals) in &vars {
                 let tag = format!("$${n}$$");
                 paths = paths.into_iter().flat_map(|p| if p.contains(&tag) { vals.iter().map(|v| p.replace(&tag, v)).collect() } else { vec![p] }).collect();
+                // many-valued variables multiply: a hostile file could fill the memory
+                if paths.len() > 64 {
+                    break;
+                }
+            }
+            if paths.len() > 64 {
+                left.push(LeftOut { entry: what.clone(), why: "more than 64 folders from one action".into() });
+                continue;
             }
             for p in paths {
                 if p.contains("$$") {
@@ -897,6 +912,11 @@ mod tests {
             good.replace("'amber'", "'green'"),
             good.replace("why = 'w'", "why = 'w'\nclass = 'privacy'\nclosed = 'must'"),
             format!("{good}[[rule]]\nid = 'winapp2.r'\ntitle = 'R'\nwhy = 'w'\nrisk = 'amber'\nremedy = 'delete'\npaths = ['%LOCALAPPDATA%\\A\\B']\n"),
+            // the user's own folders
+            good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Documents\Work"),
+            good.replace(r"%LOCALAPPDATA%\A\Cache", r"%USERPROFILE%\Pictures\2024"),
+            // a part that runs as administrator
+            good.replace("why = 'w'", "why = 'w'\nadmin = true"),
         ] {
             assert!(crate::memory::check_import_text(&bad, WINAPP2, &never, &mut HashSet::new()).is_err(), "{bad}");
         }

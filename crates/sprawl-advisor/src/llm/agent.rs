@@ -136,6 +136,11 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
         loop {
             // Claude Code runs the tools itself, in Sprawl's server: meanwhile its progress is
             // shown and its web lookups are answered here, through the same checks
+            // each turn starts a new server counting its lookups from 0: an answer left by the
+            // last turn (stopped before its server read it) would answer this turn's first one
+            if let Some(run) = cc.as_ref() {
+                run.clear_lookups();
+            }
             let turn = {
                 let mut tick = || {
                     if let Some(run) = cc.as_ref() {
@@ -247,8 +252,12 @@ pub fn chat(tree: &Tree, cfg: &AiConfig, memory: &Memory, notes: &str, questions
 fn run_dir() -> Result<std::path::PathBuf, String> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let runs = std::env::temp_dir().join("sprawl-claude-runs");
-    if let Ok(rd) = std::fs::read_dir(&runs) {
-        for e in rd.flatten() {
+    // only Sprawl's own run folders (`<pid>-<stamp>`), and never through a link: as
+    // administrator a swapped-in junction would aim this delete elsewhere
+    let ours = |n: &str| n.split_once('-').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit()));
+    let plain = |p: &std::path::Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && std::os::windows::fs::MetadataExt::file_attributes(&m) & 0x400 == 0); // FILE_ATTRIBUTE_REPARSE_POINT
+    if let Ok(rd) = std::fs::read_dir(&runs).map_err(|_| ()).and_then(|rd| if plain(&runs) { Ok(rd) } else { Err(()) }) {
+        for e in rd.flatten().filter(|e| ours(&e.file_name().to_string_lossy()) && plain(&e.path())) {
             if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 86_400) {
                 let _ = std::fs::remove_dir_all(e.path());
             }
@@ -282,6 +291,18 @@ impl CcRun {
         std::fs::write(&run.out, "").map_err(|e| e.to_string())?;
         std::fs::write(&run.cfg, crate::mcp::chat_config(exe, &tree_file, &run.out, model, web)).map_err(|e| e.to_string())?;
         Ok(run)
+    }
+
+    /// Remove the web-lookup answers (and a half-written one) of an earlier turn.
+    fn clear_lookups(&self) {
+        let stem = self.out.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.strip_prefix(&stem).is_some_and(|rest| rest.starts_with(".lookup-") || rest == ".tmp") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
     }
 
     /// Handle what the server wrote since last time: progress to the status line, effects kept

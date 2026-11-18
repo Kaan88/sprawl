@@ -3,6 +3,17 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+### Fixed
+- The Advisor tab could show its header and nothing under it after a visit to the Cleaners tab.
+- Community cleaners were downloaded when Sprawl opened on the Advisor or Cleaners tab even with the setting off.
+- A folder name with letters such as ü or ö right after `%TEMP%` or `%APPDATA%` could stop the community download, or the check of a cleaner of your own, with a crash.
+- Community cleaners can no longer name your own folders (Documents, Pictures, Downloads...), a BleachBit "file" action removes files only (never a whole folder), and a cleaner of your own can't run as administrator.
+- Claude Code's chat: an answer to a web search from a stopped question no longer answers the next question's search.
+- Web searches leave out paths written as addresses (`file:///C:/...`) and your user name inside a word.
+- The Windows menu checks the command chosen and gives add-ons more room for their command names.
+
 ## 0.3.0 — 2026-11-18
 
 ### New

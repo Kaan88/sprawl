@@ -446,6 +446,8 @@ impl State {
 
     /// Fetch the community files again, off the UI thread.
     pub(crate) fn community_fetch(&mut self) {
+        // the user's choice is in the memory: before it is read, `community_off` is a default
+        self.advisor.memory_ready();
         if self.advisor.cl.fetching.is_some() || self.advisor.memory.community_off || sprawl_advisor::offline() {
             return;
         }
@@ -460,6 +462,11 @@ impl State {
     /// Each frame: once a session, fetch when a week has passed (only while the Advisor is open,
     /// never in a screenshot run); and take a finished fetch in.
     pub(crate) fn community_poll(&mut self) {
+        if !self.advisor.cl.fetch_checked && self.view == crate::state::View::Advisor && self.shot.is_none() {
+            // read the user's choice first: an unread memory says "on" (opening on the Cleaners
+            // or Advisor tab, before any scan, fetched for users who had it off)
+            self.advisor.memory_ready();
+        }
         if !self.advisor.cl.fetch_checked && self.view == crate::state::View::Advisor && !self.advisor.memory.community_off && self.shot.is_none() {
             self.advisor.cl.fetch_checked = true;
             if sprawl_advisor::community::due(&sprawl_advisor::community::status()) {

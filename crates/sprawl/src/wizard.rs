@@ -812,6 +812,8 @@ impl State {
         let admin_changed = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().any(|l| self.prefs.orig.get(l.key) != self.prefs.draft.get(l.key));
         self.admin_flags();
         if ai_changed || admin_changed {
+            // an "Ask Claude" run under the old settings ends too, not only the chat
+            self.advisor_command("AdvStop");
             self.chat_reset();
             if self.view == crate::state::View::Advisor {
                 self.render_advisor();

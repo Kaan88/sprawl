@@ -88,7 +88,9 @@ pub(crate) fn show(owner: isize, path: &Path, allowed: bool) -> Result<Shown, St
             let _ = GetCursorPos(&mut pt);
             let id = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, hwnd, None).0 as u32;
             let _ = RemoveWindowSubclass(hwnd, Some(menu_proc), 0x5345_4C4C);
-            let result = if id >= FIRST {
+            // the ids the menu's handlers took: QueryContextMenu's code holds how many
+            let taken = (q.0 as u32) & 0xFFFF;
+            let result = if id >= FIRST && id - FIRST < taken {
                 let off = (id - FIRST) as usize;
                 let verb = verb_of(&cm, off).unwrap_or_default();
                 let info = CMINVOKECOMMANDINFOEX {
@@ -117,9 +119,10 @@ pub(crate) fn show(owner: isize, path: &Path, allowed: bool) -> Result<Shown, St
 
 /// The verb of menu item `off` ("delete", "rename"...), when it has one.
 unsafe fn verb_of(cm: &IContextMenu, off: usize) -> Option<String> {
-    let mut buf = [0u16; 128];
+    // MAX_PATH and more: some handlers write past the size they are given
+    let mut buf = [0u16; 1024];
     // GCS_VERBW
-    unsafe { cm.GetCommandString(off, 0x4, None, windows::core::PSTR(buf.as_mut_ptr().cast()), buf.len() as u32) }.ok()?;
+    unsafe { cm.GetCommandString(off, 0x4, None, windows::core::PSTR(buf.as_mut_ptr().cast()), 260) }.ok()?;
     let n = buf.iter().position(|&c| c == 0).unwrap_or(0);
     (n > 0).then(|| String::from_utf16_lossy(&buf[..n]))
 }

@@ -81,7 +81,13 @@ fn scrub_query_for(q: &str, private: &[String]) -> Result<String, String> {
     let refuse = || "That query is a path. Ask by application or folder name instead (like \"what is DXCache folder\"), without paths.".to_string();
     let is_path = |t: &str| {
         let t = t.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | ',' | ';'));
-        t.contains('\\') || t.contains('%') || t.as_bytes().get(1) == Some(&b':') && t.as_bytes()[0].is_ascii_alphabetic() || (t.contains('/') && !t.contains("://") && t.matches('/').count() >= 2)
+        let b = t.as_bytes();
+        // a drive anywhere in it (`file:///C:/Users/...`, `a://C:/x`), a file: address or a
+        // users folder is a path, also inside something shaped like a web address
+        // one letter alone, so the `s:/` of `https://` isn't a drive
+        let drive = (0..b.len().saturating_sub(2)).any(|i| b[i].is_ascii_alphabetic() && (i == 0 || !b[i - 1].is_ascii_alphanumeric()) && b[i + 1] == b':' && (b[i + 2] == b'\\' || b[i + 2] == b'/'));
+        let lower = t.to_lowercase();
+        t.contains('\\') || t.contains('%') || drive || lower.starts_with("file:") || lower.contains("users/") || b.get(1) == Some(&b':') && b[0].is_ascii_alphabetic() || (t.contains('/') && !t.contains("://") && t.matches('/').count() >= 2)
     };
     let private: Vec<String> = private.iter().map(|p| p.trim().to_lowercase()).filter(|p| p.len() >= 2).collect();
     let mut words = Vec::new();
@@ -99,7 +105,9 @@ fn scrub_query_for(q: &str, private: &[String]) -> Result<String, String> {
             plain += 1;
             tok.to_string()
         };
-        if w.is_empty() || private.iter().any(|p| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()) == p.as_str()) {
+        // a private name anywhere in the word (`kaan's`, `x-kaan`), not only as the whole word
+        let lw = w.to_lowercase();
+        if w.is_empty() || private.iter().any(|p| lw.trim_matches(|c: char| !c.is_alphanumeric()) == p.as_str() || lw.split(|c: char| !c.is_alphanumeric()).any(|r| r == p.as_str())) {
             continue;
         }
         // "users" next to a removed name says nothing
@@ -794,6 +802,10 @@ mod tests {
         assert!(scrub_query_for(r"C:\Users\kaan", &p).is_err());
         assert_eq!(scrub_query_for("what is https://example.com/a/b", &p).unwrap(), "what is https://example.com/a/b", "an address isn't a path");
         assert!(!scrub_query_for(r"what is C:\Users\kaan\x y", &p).unwrap().to_lowercase().contains("kaan"));
+        // paths inside address-shaped words, and the name inside a word
+        for q in ["what is file:///C:/Users/kaan/Documents/x", "what is a://C:/Users/kaan/x", "what is Users/kaan", "what is kaan's cache"] {
+            assert!(!scrub_query_for(q, &p).unwrap_or_default().to_lowercase().contains("kaan"), "{q}");
+        }
     }
 
     /// What the web said changes nothing about a finding: same risk, same checks, never ticked.
