@@ -1,6 +1,11 @@
 //! The user's own Codex CLI: `codex exec` with its login, no key needed. Like Claude Code
-//! without Sprawl's server, it answers from the text it is given: every tool Codex has is
-//! switched off, and its sandbox is read-only besides.
+//! without Sprawl's server, it answers from the text it is given. Codex can't be given an
+//! empty tool set, so before every run Sprawl asks it (in runs that send nothing) what the
+//! model would be offered, and starts it only when that is the checked set: its tool features
+//! off, every MCP server it would start switched off by name, and no tool beyond those that
+//! can't act. Its sandbox is read-only besides. The executable itself is trusted code: it
+//! runs with Sprawl's own rights, which is why it isn't started as administrator unless
+//! allowed.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -34,21 +39,42 @@ const OFF: [&str; 16] = [
     "goals", "sleep_tool", "tool_suggest", "skill_search", "in_app_browser",
 ];
 
-/// Arguments for `codex exec`: JSON events out, the prompt on stdin, no session saved, the
-/// user's config.toml (their MCP servers, hooks, profiles) and rules files not loaded, a
-/// read-only sandbox, nothing asked, no web search, and every tool feature off.
-pub(crate) fn args(model: &str, dir: &Path) -> Vec<String> {
-    let mut a: Vec<String> = [
-        "exec", "--json", "--color", "never", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-        "-c", "approval_policy=\"never\"", "-c", "web_search=\"disabled\"",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+/// The tools Codex 0.170 still offers with every feature above off, by namespace. None can
+/// act: `exec` runs code through the code-mode host, which is off (its calls fail with
+/// "code-mode host is disabled"), and the rest wait, ask or message within the run, or start
+/// a helper agent under the same settings. A tool or namespace not listed here (an MCP
+/// server's, a new feature's) is a Codex Sprawl hasn't checked, and it isn't started.
+const CHECKED_TOOLS: [(&str, &[&str]); 2] = [
+    ("functions", &["exec", "wait", "request_user_input", "request_user_input_async", "send_message_to_user_async"]),
+    ("collaboration", &["followup_task", "interrupt_agent", "list_agents", "send_message", "spawn_agent", "wait_agent"]),
+];
+
+/// Features in [`OFF`] that Codex 0.170 keeps on whatever it is told; what they would offer
+/// is checked through the tool list instead.
+const STAYS_ON: [&str; 1] = ["unified_exec"];
+
+/// The settings every run and every check shares: nothing asked, no web search, the tool
+/// features off.
+fn common() -> Vec<String> {
+    let mut a: Vec<String> = ["-c", "approval_policy=\"never\"", "-c", "web_search=\"disabled\""].iter().map(|s| s.to_string()).collect();
     for f in OFF {
         a.push("--disable".into());
         a.push(f.into());
     }
+    a
+}
+
+/// Arguments for `codex exec`: JSON events out, the prompt on stdin, no session saved, the
+/// user's config.toml (their MCP servers, hooks, profiles) and rules files not loaded, a
+/// read-only sandbox, the [`common`] settings, and `servers_off` (`-c
+/// mcp_servers.<name>.enabled=false` for each server the check found).
+pub(crate) fn args(model: &str, dir: &Path, servers_off: &[String]) -> Vec<String> {
+    let mut a: Vec<String> = ["exec", "--json", "--color", "never", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    a.extend(common());
+    a.extend(servers_off.iter().cloned());
     a.push("-C".into());
     a.push(dir.display().to_string());
     if !model.is_empty() && !model.starts_with('-') && model.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_') {
@@ -60,11 +86,186 @@ pub(crate) fn args(model: &str, dir: &Path) -> Vec<String> {
     a
 }
 
-/// An empty folder to run it in, so no project AGENTS.md or config is picked up.
-fn workdir() -> PathBuf {
-    let d = super::advisor_dir().map(|d| d.join("codex")).unwrap_or_else(std::env::temp_dir);
-    let _ = std::fs::create_dir_all(&d);
-    d
+/// A folder made for one run (none existed by its name), checked to be a plain empty folder,
+/// and removed with what Codex left in it when the run is over.
+struct Fresh(PathBuf);
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        // links inside are removed as links, never followed
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A real folder: not a link or junction, and not a file.
+fn plain_dir(p: &Path) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(p).map_err(|e| format!("{} couldn't be checked ({e})", p.display()))?;
+    if !m.is_dir() || m.file_attributes() & 0x400 != 0 {
+        return Err(format!("{} isn't a plain folder", p.display()));
+    }
+    Ok(())
+}
+
+/// Where the run folders go: Sprawl's own advisor folder, never Temp.
+fn base() -> Result<PathBuf, String> {
+    let advisor = super::advisor_dir().ok_or("this account's AppData folder isn't known")?;
+    let base = advisor.join("codex");
+    std::fs::create_dir_all(&base).map_err(|e| format!("couldn't make {} ({e})", base.display()))?;
+    plain_dir(&advisor)?;
+    plain_dir(&base)?;
+    Ok(base)
+}
+
+/// A new, empty folder of `base`, made by this call alone.
+fn fresh(base: &Path, what: &str) -> Result<Fresh, String> {
+    for n in 0..100u32 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let d = base.join(format!("{what}-{}-{nanos}-{n}", std::process::id()));
+        match std::fs::create_dir(&d) {
+            Ok(()) => {
+                let f = Fresh(d);
+                plain_dir(&f.0)?;
+                if std::fs::read_dir(&f.0).map_err(|e| e.to_string())?.next().is_some() {
+                    return Err(format!("{} wasn't empty", f.0.display()));
+                }
+                return Ok(f);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("couldn't make a folder for Codex ({e})")),
+        }
+    }
+    Err("couldn't make a folder for Codex".into())
+}
+
+/// The Codex home folder its login is in: `CODEX_HOME`, or `.codex` in the user's folder.
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".codex")))
+}
+
+/// One of Codex's own commands that sends nothing (`mcp list`, `features list`, `debug
+/// prompt-input`), run in `dir` with `home` as its Codex home: what it printed, or why not.
+fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], tail: &[&str]) -> Result<String, String> {
+    use std::io::Read;
+    let mut cmd = Command::new(exe);
+    cmd.args(sub).args(common()).args(extra).args(tail).current_dir(dir).env("CODEX_HOME", home);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut run = super::contain::spawn(&mut cmd, 0x0800_0000).map_err(|e| format!("couldn't start Codex ({e})"))?;
+    let mut out = run.child.stdout.take().ok_or("no stdout")?;
+    let mut err = run.child.stderr.take().ok_or("no stderr")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = (&mut out).take(8 << 20).read_to_end(&mut v);
+        let _ = tx.send(v);
+    });
+    let (etx, erx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = (&mut err).take(64 << 10).read_to_end(&mut v);
+        let _ = etx.send(String::from_utf8_lossy(&v).lines().find(|l| l.starts_with("Error")).unwrap_or("").to_string());
+    });
+    let got = rx.recv_timeout(Duration::from_secs(30));
+    let waited = Instant::now();
+    let status = loop {
+        match run.child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if waited.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(50)),
+            _ => break None,
+        }
+    };
+    run.end();
+    let got = got.map_err(|_| "Codex didn't finish a check in time".to_string())?;
+    match status {
+        Some(s) if s.success() => Ok(String::from_utf8_lossy(&got).into_owned()),
+        Some(s) => Err(match erx.recv_timeout(Duration::from_secs(2)).ok().filter(|l| !l.is_empty()) {
+            Some(l) => super::short(l.trim_start_matches("Error:").trim()),
+            None => format!("a check ended with an error ({s})"),
+        }),
+        None => Err("Codex didn't finish a check in time".into()),
+    }
+}
+
+/// The servers `codex mcp list --json` printed: (name, enabled). A name that couldn't be
+/// switched off by name in a setting is refused.
+fn parse_servers(out: &str) -> Result<Vec<(String, bool)>, String> {
+    let t = out.trim();
+    if t.is_empty() {
+        return Ok(Vec::new());
+    }
+    let v: Value = serde_json::from_str(t).map_err(|_| "its list of MCP servers couldn't be read".to_string())?;
+    let list = v.as_array().ok_or("its list of MCP servers couldn't be read")?;
+    list.iter()
+        .map(|s| {
+            let name = s["name"].as_str().ok_or("an MCP server without a name")?;
+            if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                return Err(format!("an MCP server named {:?}, which can't be switched off by name", super::short(name)));
+            }
+            Ok((name.to_string(), s["enabled"].as_bool().ok_or("an MCP server whose state isn't given")?))
+        })
+        .collect()
+}
+
+/// `codex features list`: each feature in [`OFF`] is known to this Codex and off (bar
+/// [`STAYS_ON`]).
+fn check_features(out: &str) -> Result<(), String> {
+    for f in OFF {
+        let line = out.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()).find(|w| w.first() == Some(&f));
+        match line.as_deref().and_then(|w| w.last().copied()) {
+            Some("false") => {}
+            Some(_) if STAYS_ON.contains(&f) => {}
+            Some(_) => return Err(format!("its feature {f} stays on")),
+            None => return Err(format!("this version doesn't list its feature {f}")),
+        }
+    }
+    Ok(())
+}
+
+/// `codex debug prompt-input`: the tools the model would be offered are within
+/// [`CHECKED_TOOLS`].
+fn check_tools(out: &str) -> Result<(), String> {
+    let v: Value = serde_json::from_str(out.trim()).map_err(|_| "what it would offer the model couldn't be read".to_string())?;
+    let items = v.as_array().ok_or("what it would offer the model couldn't be read")?;
+    for item in items {
+        let Some(tools) = item.get("tools") else { continue };
+        for ns in tools.as_array().ok_or("its tool list couldn't be read")? {
+            let name = ns["name"].as_str().unwrap_or("");
+            let allowed = CHECKED_TOOLS.iter().find(|(n, _)| *n == name).filter(|_| ns["type"] == "namespace");
+            let Some((_, allowed)) = allowed else { return Err(format!("it would offer the model tools Sprawl hasn't checked ({})", super::short(name))) };
+            for t in ns["tools"].as_array().ok_or("its tool list couldn't be read")? {
+                let tool = t["name"].as_str().unwrap_or("");
+                if !allowed.contains(&tool) {
+                    return Err(format!("it would offer the model a tool Sprawl hasn't checked ({name}.{})", super::short(tool)));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Before a run: what this Codex, in this folder, would start and offer, asked with a home
+/// folder of its own (`home`, without the user's config.toml, as the run skips it). Every MCP
+/// server it lists is switched off by name and must then list as off; the tool features must
+/// be off and the tools offered within [`CHECKED_TOOLS`]. The settings that switch the
+/// servers off, for the run; or why it isn't started.
+fn verify(exe: &Path, dir: &Path, home: &Path) -> Result<Vec<String>, String> {
+    // a configuration an administrator put in the login's home isn't seen by the check
+    if let Some(h) = codex_home() {
+        for f in ["managed_config.toml", "requirements.toml"] {
+            if h.join(f).exists() {
+                return Err(format!("a managed configuration ({}) Sprawl can't check", h.join(f).display()));
+            }
+        }
+    }
+    let listed = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &[], &[])?)?;
+    let off: Vec<String> = listed.iter().flat_map(|(n, _)| ["-c".to_string(), format!("mcp_servers.{n}.enabled=false")]).collect();
+    let again = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &off, &[])?)?;
+    if let Some((n, _)) = again.iter().find(|(n, on)| *on || !listed.iter().any(|(l, _)| l == n)) {
+        return Err(format!("its MCP server {n} couldn't be switched off"));
+    }
+    check_features(&probe(exe, dir, home, &["features", "list"], &off, &[])?)?;
+    check_tools(&probe(exe, dir, home, &["debug", "prompt-input"], &off, &["x"])?)?;
+    Ok(off)
 }
 
 /// The models Codex lists, from its own cache (`%USERPROFILE%\.codex\models_cache*.json`), in
@@ -173,10 +374,16 @@ impl Codex {
         if crate::offline() {
             return Err(crate::OFFLINE_MSG.into());
         }
+        // a folder of its own, and the check, before anything is sent; both folders go when
+        // this returns, after the run (declared before it, so dropped after it ends)
+        let base = base().map_err(|e| format!("Codex isn't started: {e}"))?;
+        let dir = fresh(&base, "run").map_err(|e| format!("Codex isn't started: {e}"))?;
+        let home = fresh(&base, "check").map_err(|e| format!("Codex isn't started: {e}"))?;
+        let off = verify(&self.exe, &dir.0, &home.0).map_err(|e| format!("Codex isn't started, as it isn't a set-up Sprawl has checked: {e}"))?;
+        drop(home);
         log_request(&format!("codex exec ({})", self.exe.display()), &self.prompt);
-        let dir = workdir();
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args(&self.model, &dir)).current_dir(&dir);
+        cmd.args(args(&self.model, &dir.0, &off)).current_dir(&dir.0);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // in a job with everything it starts: Stop, the time limit and every return end them all
         // (0x0800_0000: CREATE_NO_WINDOW)
@@ -312,7 +519,8 @@ mod tests {
     #[test]
     fn nothing_to_act_with() {
         let dir = std::path::Path::new(r"C:\x\codex");
-        let a = super::args("gpt-6-luna", dir);
+        let a = super::args("gpt-6-luna", dir, &["-c".into(), "mcp_servers.node_repl.enabled=false".into()]);
+        assert!(a.windows(2).any(|w| w[0] == "-c" && w[1] == "mcp_servers.node_repl.enabled=false"), "the servers the check found are switched off");
         let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
         assert_eq!(a[0], "exec");
         assert_eq!(after("--sandbox"), "read-only");
@@ -329,8 +537,61 @@ mod tests {
             assert!(a.windows(2).any(|w| w[0] == "--disable" && w[1] == f), "{f} is off");
         }
         assert!(!a.iter().any(|x| x.contains("dangerously")));
-        assert!(!super::args("--dangerously-bypass-approvals-and-sandbox", dir).contains(&"-m".to_string()), "a model name can't be a flag");
-        assert!(!super::args("", dir).contains(&"-m".to_string()), "no model: Codex picks its default");
+        assert!(!super::args("--dangerously-bypass-approvals-and-sandbox", dir, &[]).contains(&"-m".to_string()), "a model name can't be a flag");
+        assert!(!super::args("", dir, &[]).contains(&"-m".to_string()), "no model: Codex picks its default");
+    }
+
+    #[test]
+    fn only_a_checked_codex_starts() {
+        // Astra 1.0.2 S5 #1: servers by name, features off, tools within the checked set
+        assert_eq!(super::parse_servers("").unwrap(), vec![]);
+        assert_eq!(super::parse_servers(r#"[{"name":"node_repl","enabled":true},{"name":"x-y_1","enabled":false}]"#).unwrap(), vec![("node_repl".to_string(), true), ("x-y_1".to_string(), false)]);
+        assert!(super::parse_servers(r#"[{"name":"a.b","enabled":true}]"#).is_err(), "a name a setting can't address");
+        assert!(super::parse_servers(r#"[{"name":"a","enabled":"yes"}]"#).is_err());
+        assert!(super::parse_servers("WARNING: something").is_err());
+        let all_off: String = super::OFF.iter().map(|f| format!("{f:<40} stable  {}\n", if super::STAYS_ON.contains(f) { "true" } else { "false" })).collect();
+        assert!(super::check_features(&all_off).is_ok());
+        assert!(super::check_features(&all_off.replace("shell_tool                               stable  false", "shell_tool                               stable  true")).unwrap_err().contains("shell_tool"));
+        assert!(super::check_features(&all_off.replace("hooks", "hooks_renamed")).unwrap_err().contains("doesn't list"));
+        let tools = |extra: &str| format!(r#"[{{"type":"additional_tools","tools":[{{"type":"namespace","name":"functions","tools":[{{"type":"custom","name":"exec"}},{{"type":"function","name":"wait"}}{extra}]}}]}},{{"type":"message","role":"user","content":[]}}]"#);
+        assert!(super::check_tools(&tools("")).is_ok());
+        assert!(super::check_tools(&tools(r#",{"type":"function","name":"shell"}"#)).unwrap_err().contains("functions.shell"));
+        assert!(super::check_tools(r#"[{"type":"additional_tools","tools":[{"type":"namespace","name":"mcp__node_repl","tools":[]}]}]"#).is_err(), "an MCP server's tools");
+        assert!(super::check_tools(r#"[{"type":"additional_tools","tools":[{"type":"function","name":"functions","tools":[]}]}]"#).is_err(), "only namespaces");
+        assert!(super::check_tools("not json").is_err());
+        assert!(super::check_tools("[]").is_ok(), "no tools at all");
+    }
+
+    #[test]
+    fn each_run_has_a_folder_of_its_own() {
+        let base = std::env::temp_dir().join(format!("sprawl-codex-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let a = super::fresh(&base, "run").unwrap();
+        let b = super::fresh(&base, "run").unwrap();
+        assert_ne!(a.0, b.0);
+        std::fs::write(a.0.join("left.txt"), b"x").unwrap();
+        let (pa, pb) = (a.0.clone(), b.0.clone());
+        drop(a);
+        drop(b);
+        assert!(!pa.exists() && !pb.exists(), "removed after the run");
+        assert!(super::plain_dir(&base.join("missing")).is_err());
+        std::fs::write(base.join("file"), b"x").unwrap();
+        assert!(super::plain_dir(&base.join("file")).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The Codex installed here passes the check (sends nothing; run by hand with --ignored).
+    #[test]
+    #[ignore]
+    fn the_installed_codex_is_checked() {
+        let exe = crate::config::Detected::probe().codex.expect("no Codex here");
+        let base = super::base().unwrap();
+        let dir = super::fresh(&base, "run").unwrap();
+        let home = super::fresh(&base, "check").unwrap();
+        let off = super::verify(&exe, &dir.0, &home.0);
+        eprintln!("{exe:?}: {off:?}");
+        assert!(off.is_ok());
     }
 
     #[test]
