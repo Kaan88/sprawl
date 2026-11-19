@@ -286,6 +286,15 @@ pub(crate) struct Advisor {
     pub(crate) fn_suggest: Option<(Vec<String>, String)>,
     /// An uncompress running (F1): the exact record, its answer, what to show meanwhile.
     pub(crate) uncompress: Option<(sprawl_advisor::memory::Compressed, Receiver<(bool, String)>, String)>,
+    /// A Delete from the tree running on its own thread.
+    pub(crate) deleting: Option<Receiver<crate::commands::DelMsg>>,
+}
+
+impl Advisor {
+    /// A file operation other than a clean-up runs (an uncompress, a Delete from the tree).
+    pub(crate) fn file_op(&self) -> bool {
+        self.uncompress.is_some() || self.deleting.is_some()
+    }
 }
 
 impl Advisor {
@@ -798,7 +807,7 @@ impl State {
     /// own clean-up, Explorer). Then the rules run over the tree as it is now. Before, they ran
     /// over the same tree and found the same things.
     pub(crate) fn advisor_recheck(&mut self) {
-        if self.advisor.recheck.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() || self.update.applying {
+        if self.advisor.recheck.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying {
             return;
         }
         let (Some(t), Some(r)) = (self.tree.as_ref(), self.advisor.report.as_ref()) else { return self.advisor_start() };
@@ -872,6 +881,7 @@ impl State {
         crate::bridge::publish_scanning(self.job.is_some());
         self.recheck_poll();
         self.uncompress_poll();
+        self.delete_poll();
         self.chat_poll();
         self.community_poll();
         self.own_poll();
@@ -2191,7 +2201,7 @@ impl State {
         if list.is_empty() {
             return r##"<TextBlock Text="Nothing compressed by Sprawl." Foreground="#FFB9C2D6"/>"##.into();
         }
-        let busy = self.advisor.uncompress.is_some() || self.advisor.cleanup.running.is_some();
+        let busy = self.advisor.file_op() || self.advisor.cleanup.running.is_some();
         let mut x = String::from(r##"<TextBlock Text="Folders Sprawl compressed. An update writes new files uncompressed: when the folder is offered again in Findings, compress it again. Uncompress puts every file back as it was; it needs the space it saved free on the drive." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
         for (i, c) in list.iter().enumerate().rev() {
             let gone = std::fs::symlink_metadata(&c.path).is_err();
@@ -2220,7 +2230,7 @@ impl State {
 
     /// Uncompress the `i`th folder Sprawl compressed, after a question (it needs the space back).
     pub(crate) fn uncompress_ask(&mut self, i: usize) {
-        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() || self.update.applying { return; }
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying { return; }
         let Some(c) = self.advisor.memory.compressed.get(i).cloned() else { return };
         let path = std::path::PathBuf::from(&c.path);
         let pf = |v: &str| std::env::var_os(v).is_some_and(|d| sprawl_advisor::finding::within(&path, std::path::Path::new(&d)));
@@ -2233,7 +2243,7 @@ impl State {
     }
 
     fn uncompress_start(&mut self, record: sprawl_advisor::memory::Compressed) {
-        if self.advisor.uncompress.is_some() || self.advisor.cleanup.running.is_some() || self.job.is_some() || self.update.applying
+        if self.advisor.file_op() || self.advisor.cleanup.running.is_some() || self.job.is_some() || self.update.applying
             || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }

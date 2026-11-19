@@ -609,7 +609,7 @@ impl State {
     /// Why the selected item may not be deleted from here, if it may not.
     fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
         if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.job.is_some()
-            || self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.update.applying {
+            || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.update.applying {
             return Some("Deletion waits until scanning and other file operations finish; screenshot runs cannot delete.".into());
         }
         if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {
@@ -684,7 +684,7 @@ impl State {
         let node = &self.tree.as_ref().unwrap().nodes[n];
         let what = match (node.is_dir, permanent) {
             (true, true) => format!("Delete this folder permanently? It can't be brought back.\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
-            (true, false) => format!("Move this folder's files to the Recycle Bin? Folders remain.\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
+            (true, false) => format!("Move this folder to the Recycle Bin?\n\n{} files in {} folders, {}", node.files, node.folders, self.size(node.size)),
             (false, true) => format!("Delete this file permanently? It can't be brought back.\n\n{}", self.size(node.size)),
             (false, false) => format!("Move this file to the Recycle Bin?\n\n{}", self.size(node.size)),
         };
@@ -788,32 +788,81 @@ impl State {
     }
 
     /// Tree deletion uses the same handle-based walker as clean-up. It never asks the shell
-    /// to recursively remove a stale pathname, and it always rescans partial outcomes.
+    /// to recursively remove a stale pathname, and it always rescans partial outcomes. It runs
+    /// on its own thread (1.0 ran it on the window's, which froze on a big folder).
     fn manual_delete_paths(&mut self, paths: Vec<PathBuf>, permanent: bool) {
         use sprawl_advisor::clean::{self, Action, Spare};
+        if self.advisor.deleting.is_some() { return; }
         let mut keep = self.advisor.memory.kept_paths();
         keep.extend(sprawl_advisor::exclusions::configured());
         let spare = Spare { since: Some(self.active_began()), keep };
-        let stop = std::sync::atomic::AtomicBool::new(false);
-        let mut results = Vec::new();
-        let mut notes = Vec::new();
-        for path in paths {
-            self.own_deletes.push((path.to_string_lossy().trim_end_matches(std::path::MAIN_SEPARATOR).to_lowercase(), std::time::Instant::now()));
-            let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
-            let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |_| {});
-            notes.extend(outcome.problems);
-            if outcome.kept_new + outcome.kept_chosen + outcome.kept_protected > 0 {
-                notes.push(format!("{}: kept {} new, {} chosen and {} protected items", path.display(), outcome.kept_new, outcome.kept_chosen, outcome.kept_protected));
-            }
-            if let Some(now) = crate::shellmenu::read_now(&path) { results.push((path, now)); }
-            else { notes.push(format!("{} could not be read again; scan again to refresh it", path.display())); }
-        }
+        let at = std::time::Instant::now();
+        self.own_deletes.extend(paths.iter().map(|p| (p.to_string_lossy().trim_end_matches(std::path::MAIN_SEPARATOR).to_lowercase(), at)));
         self.marked.clear();
-        self.apply_rescans(results);
-        if !notes.is_empty() {
-            self.tell("Some items were left alone", &notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.advisor.deleting = Some(rx);
+        crate::state::text(&self.root, "FootLeft", if permanent { "Deleting..." } else { "Moving to the Recycle Bin..." });
+        std::thread::spawn(move || {
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let (mut results, mut notes) = (Vec::new(), Vec::new());
+            let (mut before, mut last) = (0u64, std::time::Instant::now());
+            for path in paths {
+                let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
+                let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |n| {
+                    if last.elapsed().as_millis() >= 200 {
+                        last = std::time::Instant::now();
+                        let _ = tx.send(DelMsg::Progress(before + n));
+                    }
+                });
+                before += outcome.freed + outcome.recycled;
+                notes.extend(outcome.problems);
+                if outcome.kept_new + outcome.kept_chosen + outcome.kept_protected > 0 {
+                    notes.push(format!("{}: kept {} new, {} chosen and {} protected items", path.display(), outcome.kept_new, outcome.kept_chosen, outcome.kept_protected));
+                }
+                if let Some(now) = crate::shellmenu::read_now(&path) { results.push((path, now)); }
+                else { notes.push(format!("{} could not be read again; scan again to refresh it", path.display())); }
+            }
+            let _ = tx.send(DelMsg::Done(results, notes));
+        });
+    }
+
+    /// Each frame: a Delete from the tree running on its own thread.
+    pub(crate) fn delete_poll(&mut self) {
+        let Some(rx) = &self.advisor.deleting else { return };
+        let mut msgs = Vec::new();
+        let gone = loop {
+            match rx.try_recv() {
+                Ok(m) => msgs.push(m),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
+            }
+        };
+        let mut finished = false;
+        for m in msgs {
+            match m {
+                DelMsg::Progress(bytes) => crate::state::text(&self.root, "FootLeft", &format!("Deleting... {} so far", self.size(bytes))),
+                DelMsg::Done(results, notes) => {
+                    finished = true;
+                    self.advisor.deleting = None;
+                    crate::state::text(&self.root, "FootLeft", "");
+                    self.apply_rescans(results);
+                    if !notes.is_empty() {
+                        self.tell("Some items were left alone", &notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
+                    }
+                }
+            }
+        }
+        if gone && !finished {
+            self.advisor.deleting = None;
+            crate::state::text(&self.root, "FootLeft", "The delete stopped unexpectedly. Scan again to see what is there now.");
         }
     }
+}
+
+/// From the thread of a Delete in the tree: bytes so far, then each path as it is now.
+pub(crate) enum DelMsg {
+    Progress(u64),
+    Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>),
 }
 /// Take node `n` out of the tree after it was deleted: its totals come off every parent and the
 /// whole branch is emptied so file-type totals forget it.

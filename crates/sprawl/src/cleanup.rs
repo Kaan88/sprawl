@@ -589,7 +589,7 @@ impl State {
 
     /// Start cleaning what is ticked: each item is checked again first.
     pub(crate) fn cleanup_start(&mut self) {
-        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() || self.update.applying {
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying {
             return;
         }
         if self.cleanup_context_sync() {
