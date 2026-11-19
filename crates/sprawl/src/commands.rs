@@ -833,6 +833,7 @@ impl State {
         let mut confirmed = self.advisor.memory.kept_paths();
         confirmed.extend(sprawl_advisor::exclusions::configured());
         let since = self.active_began();
+        let scanned = self.active_tree().map(clean::scanned_in);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.advisor.delete_stop = Some(stop.clone());
         let at = std::time::Instant::now();
@@ -854,10 +855,19 @@ impl State {
                     notes.push(format!("{}: not deleted, it contains or is inside a folder now skipped in Settings > Scanning", path.display()));
                     continue;
                 }
+                // a Keep added after the confirmation must still count: when the list can't be
+                // read now, nothing more is deleted (an empty list would mean "nothing kept")
+                let kept = match sprawl_advisor::memory::Memory::load_checked() {
+                    Ok(memory) => memory.kept_paths(),
+                    Err(e) => {
+                        notes.push(format!("{}: not deleted, your Keep list could not be read ({e})", path.display()));
+                        continue;
+                    }
+                };
                 let mut keep = confirmed.clone();
                 keep.extend(skipped);
-                keep.extend(sprawl_advisor::memory::Memory::load_readonly().kept_paths());
-                let spare = Spare { since: Some(since), keep };
+                keep.extend(kept);
+                let spare = Spare { since: Some(since), keep, scanned: scanned.clone() };
                 let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
                 let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |n| {
                     if last.elapsed().as_millis() >= 200 {

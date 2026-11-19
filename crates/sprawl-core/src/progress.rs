@@ -13,6 +13,11 @@ use std::sync::{Arc, Mutex};
 /// as skipped, network paths included (drive letters alone don't cover `\\server\share`).
 pub const UNREADABLE_POLICY: &str = "<the list of folders to skip could not be read>";
 
+/// In a list of exclusions: a folder to skip is on a network drive whose share Windows couldn't
+/// name, so it can't be told which `\\server\share` paths reach it: every such path counts as
+/// skipped (the network drives' letters are in the list as well).
+pub const REMOTE_UNKNOWN: &str = "<the share of a network drive with a folder to skip could not be read>";
+
 fn exclusion_key(path: &std::path::Path) -> String {
     let s = path.to_string_lossy().replace('/', "\\").to_lowercase();
     let s = if let Some(unc) = s.strip_prefix(r"\\?\unc\") { format!(r"\\{unc}") } else { s.strip_prefix(r"\\?\").unwrap_or(&s).to_string() };
@@ -132,6 +137,7 @@ impl Progress {
         if self.excluded.is_empty() { return false; }
         if self.excluded.iter().any(|p| p == UNREADABLE_POLICY) { return true; }
         let key = exclusion_key(path);
+        if key.starts_with(r"\\") && self.excluded.iter().any(|p| p == REMOTE_UNKNOWN) { return true; }
         self.excluded.iter().any(|p| key == *p || key.strip_prefix(p).is_some_and(|s| s.starts_with('\\')))
     }
 

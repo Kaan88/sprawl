@@ -558,9 +558,9 @@ mod tests {
         // the last run, which a slow, busy test run could exceed)
         let rewritten = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
         std::fs::write(&copies[1], &data).unwrap();
-        let o = clean::run(&f.path, &action, &Spare { since: None, keep: vec![copies[1].clone()] }, &AtomicBool::new(false), &mut |_| {});
+        let o = clean::run(&f.path, &action, &Spare { since: None, keep: vec![copies[1].clone()], ..Default::default() }, &AtomicBool::new(false), &mut |_| {});
         assert_eq!((o.freed, o.kept_chosen), (0, 1));
-        let o = clean::run(&f.path, &action, &Spare { since: Some(rewritten), keep: vec![] }, &AtomicBool::new(false), &mut |_| {});
+        let o = clean::run(&f.path, &action, &Spare { since: Some(rewritten), keep: vec![], ..Default::default() }, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(o.freed, 0, "{:?}", o.problems);
         let _ = std::fs::remove_dir_all(&dir);
     }

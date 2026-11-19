@@ -854,7 +854,8 @@ mod tests {
         assert_eq!(avd_images_in(&root, &mut 200), None);
         std::fs::write(&config, valid).unwrap();
         let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(&config).unwrap();
-        assert_eq!(avd_images_in(&root, &mut 200), None);
+        // an elevated test process can still read the locked file, which is a true answer too
+        if matches!(sprawl_core::elevation(), Ok(false)) { assert_eq!(avd_images_in(&root, &mut 200), None); }
         drop(locked);
         std::fs::write(&pointer, "path=\\\\unreachable.invalid\\share\\AVD\n").unwrap();
         assert_eq!(avd_images_in(&root, &mut 200), None, "remote references refuse before content access");

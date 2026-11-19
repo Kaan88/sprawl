@@ -312,14 +312,18 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
     }
     // The cap: folders-only snapshots first, then full ones, oldest first within each, but
     // never a root's newest snapshot. Full snapshots were never removed for the cap before
-    // 1.0.2, so three per root could keep History well over it.
+    // 1.0.2, so three per root could keep History well over it. Exactly one snapshot per root
+    // is protected: a full and a folders-only snapshot saved together share a second, and the
+    // full one is kept then (it holds everything the other does).
     let kept: Vec<&Entry> = entries.iter().filter(|e| !kill.contains(&e.file)).collect();
     let mut total: u64 = kept.iter().map(|e| e.bytes).sum();
     if total > cap_bytes {
-        let mut newest: std::collections::HashMap<&PathBuf, SystemTime> = std::collections::HashMap::new();
-        for e in &kept {
-            let t = newest.entry(&e.root).or_insert(e.taken);
-            *t = (*t).max(e.taken);
+        let mut newest: std::collections::HashMap<&PathBuf, &Entry> = std::collections::HashMap::new();
+        for &e in &kept {
+            let best = newest.entry(&e.root).or_insert(e);
+            if (e.taken, e.full, &e.file) > (best.taken, best.full, &best.file) {
+                *best = e;
+            }
         }
         let mut order = kept;
         order.sort_by_key(|e| (e.full, e.taken));
@@ -327,7 +331,7 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
             if total <= cap_bytes {
                 break;
             }
-            if newest.get(&e.root) == Some(&e.taken) {
+            if newest.get(&e.root).is_some_and(|best| best.file == e.file) {
                 continue;
             }
             total = total.saturating_sub(e.bytes);
@@ -661,8 +665,19 @@ mod tests {
         // a tight cap removes the oldest but keeps the newest
         let kill = doomed(&v, 100, now);
         let left: Vec<&Entry> = v.iter().filter(|x| !kill.contains(&x.file)).collect();
-        assert!(left.iter().any(|x| !x.full && x.taken == now));
-        assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 100 || left.iter().filter(|x| !x.full).count() == 1);
+        // the newest is a full and a folders-only snapshot from the same second: the full one
+        // is the one protected
+        assert!(left.iter().any(|x| x.full && x.taken == now));
+        assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 100);
+        // Under the cap's pressure a tie keeps just one snapshot per root, and it is the full one.
+        let tie = vec![e("C", 0, false, 50, now), e("C", 0, true, 80, now), e("D", 0, true, 80, now), e("D", 0, false, 50, now)];
+        let kill = doomed(&tie, 160, now);
+        let left: Vec<&Entry> = tie.iter().filter(|x| !kill.contains(&x.file)).collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left.iter().all(|x| x.full));
+        // the cap can stay exceeded when one snapshot per root is already over it
+        let kill = doomed(&tie, 100, now);
+        assert_eq!(tie.iter().filter(|x| !kill.contains(&x.file)).count(), 2);
         // Full snapshots count toward the cap too: many roots with three each must not stay over it.
         let mut many = Vec::new();
         for r in ["C", "D", "E", "F"] {

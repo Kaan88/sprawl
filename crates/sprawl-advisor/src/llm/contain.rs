@@ -13,7 +13,7 @@ extern "system" {
     fn AssignProcessToJobObject(job: H, process: H) -> i32;
     fn TerminateJobObject(job: H, code: u32) -> i32;
     #[link_name = "CloseHandle"]
-    fn close_job_handle(h: H) -> i32;
+    fn close_job_handle(h: isize) -> i32; // isize, as clean.rs declares it
 }
 
 /// The program, in its job.
@@ -44,14 +44,14 @@ pub(crate) fn spawn(cmd: &mut Command, flags: u32) -> Result<Contained, String> 
     // SAFETY: a valid job handle and a buffer of the size given
     if unsafe { SetInformationJobObject(job, 9, info.as_ptr().cast(), size) } == 0 {
         let e = std::io::Error::last_os_error();
-        unsafe { close_job_handle(job) };
+        unsafe { close_job_handle(job as isize) };
         return Err(format!("couldn't set up its job: {e}"));
     }
     cmd.creation_flags(flags | CREATE_SUSPENDED);
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            unsafe { close_job_handle(job) };
+            unsafe { close_job_handle(job as isize) };
             return Err(e.to_string());
         }
     };
@@ -91,12 +91,12 @@ fn resume(pid: u32) -> bool {
                     if ResumeThread(t) != u32::MAX {
                         resumed += 1;
                     }
-                    close_job_handle(t);
+                    close_job_handle(t as isize);
                 }
             }
             ok = Thread32Next(snap, &mut e) != 0;
         }
-        close_job_handle(snap);
+        close_job_handle(snap as isize);
         resumed > 0
     }
 }
@@ -114,7 +114,7 @@ impl Contained {
 impl Drop for Contained {
     fn drop(&mut self) {
         // closing the last handle ends whatever is still in the job (KILL_ON_JOB_CLOSE)
-        unsafe { close_job_handle(self.job) };
+        unsafe { close_job_handle(self.job as isize) };
     }
 }
 

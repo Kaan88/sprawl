@@ -782,11 +782,11 @@ pub(crate) mod tests {
         }
         assert!(prof.join("Login Data").exists() && prof.join("Visited Links").exists());
         // kept by the user, at any depth above
-        let kept = Spare { since: None, keep: vec![prof.join("Network")] };
+        let kept = Spare { since: None, keep: vec![prof.join("Network")], ..Default::default() };
         let o = run_set("privacy.chrome/cookies", &cookies, &kept, &places, Some(&none_running()), &nobody);
         assert!(stays(&o) && o.kept_chosen == 1, "{:?}", o.problems);
         // a side file that appeared after the scan: the set changed, all of it stays
-        let since = Spare { since: Some(std::time::SystemTime::now()), keep: Vec::new() };
+        let since = Spare { since: Some(std::time::SystemTime::now()), keep: Vec::new(), ..Default::default() };
         std::thread::sleep(std::time::Duration::from_millis(50));
         write(&prof.join(r"Network\Cookies-wal"), 5);
         let o = run_set("privacy.chrome/cookies", &cookies, &since, &places, Some(&none_running()), &nobody);
@@ -820,7 +820,7 @@ pub(crate) mod tests {
         let f = find_in(&tree, &places).into_iter().find(|f| f.path == files[0]).unwrap();
         assert_eq!(f.bytes, got.bytes);
         // a kept file: the run would take nothing, so the preview shows nothing
-        let kept = Spare { since: None, keep: vec![prof.join("Top Sites")] };
+        let kept = Spare { since: None, keep: vec![prof.join("Top Sites")], ..Default::default() };
         assert_eq!(crate::clean::set_preview(p, &files, &kept, &places).files, 0);
         // not a part's own file: nothing
         assert_eq!(crate::clean::set_preview(p, &[prof.join("Login Data")], &Spare::default(), &places).files, 0);

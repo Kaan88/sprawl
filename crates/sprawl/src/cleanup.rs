@@ -626,7 +626,7 @@ impl State {
         }
         let never = sprawl_advisor::safety::Never::default_list();
         // what the run leaves: anything new since the scan began, and what the user keeps
-        let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let spare = self.spare();
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let bin_on = self.recycle_on();
@@ -776,7 +776,7 @@ impl State {
     /// Count again, on a thread, what the run would free for each of `findings` that is an
     /// estimate; the answers replace the earlier ones as they come.
     fn measure(&mut self, findings: Vec<Finding>) {
-        let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let spare = self.spare();
         let work: Vec<(PathBuf, Action)> = findings.into_iter().filter(|f| f.estimate()).filter_map(|f| Some((f.path.clone(), clean::action(&f)?.0))).collect();
         let c = &mut self.advisor.cleanup;
         if work.is_empty() {
@@ -1534,7 +1534,7 @@ impl State {
         if privacy.is_empty() {
             return String::new();
         }
-        let spare = clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let spare = self.spare();
         let mut x = format!(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF" BorderBrush="#33F5B342" BorderThickness="1"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(PV_REVIEW_HEAD));
         let mut open: Vec<String> = Vec::new();
         for f in privacy {

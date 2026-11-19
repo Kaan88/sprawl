@@ -241,6 +241,16 @@ impl State {
         }
     }
 
+    /// What a clean-up of the report on show leaves alone: anything new since its read began,
+    /// what the user keeps, and folders changed since then that the read didn't see there.
+    pub(crate) fn spare(&self) -> sprawl_advisor::clean::Spare {
+        sprawl_advisor::clean::Spare {
+            since: Some(self.active_began()),
+            keep: self.advisor.memory.kept_paths(),
+            scanned: self.active_tree().map(sprawl_advisor::clean::scanned_in),
+        }
+    }
+
     /// The Cleaners tab is on show and works from its own read, not the scan's report.
     pub(crate) fn own_active(&self) -> bool {
         self.job.is_none() && self.view == crate::state::View::Advisor && self.advisor.cleaners_tab_on() && !self.scan_covers_cleaners()
@@ -1040,7 +1050,7 @@ impl State {
         if work.is_empty() {
             return false;
         }
-        let spare = sprawl_advisor::clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let spare = self.spare();
         // tried once: what can't be counted keeps the scan's figure, and the question still goes
         self.advisor.cl.ai_tried.extend(work.iter().map(|w| w.0.clone()));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1623,7 +1633,7 @@ impl State {
         if picked.is_empty() {
             return;
         }
-        let spare = sprawl_advisor::clean::Spare { since: Some(self.active_began()), keep: self.advisor.memory.kept_paths() };
+        let spare = self.spare();
         let work: Vec<(String, String, std::path::PathBuf, Option<sprawl_advisor::clean::Action>)> =
             picked.into_iter().map(|(_, f)| (f.title.clone(), key(&f.path), f.path.clone(), sprawl_advisor::clean::action(&f).map(|a| a.0))).collect();
         let (tx, rx) = std::sync::mpsc::channel();

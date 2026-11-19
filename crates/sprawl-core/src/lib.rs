@@ -135,9 +135,15 @@ pub fn extension_of(name: &str) -> String {
 /// absolute (a relative root would resolve against whatever folder a later step runs in),
 /// without the `\\?\` prefix, and with 8.3 short names (`PROGRA~1`) expanded to long ones.
 pub fn canonical_root(path: &Path) -> PathBuf {
+    let s = root_spelling(path);
+    long_name(&s).unwrap_or(s).into()
+}
+
+/// [`canonical_root`] without the long-name lookup (which may reach a server).
+pub(crate) fn root_spelling(path: &Path) -> String {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let s = abs.display().to_string();
-    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = s.strip_prefix(r"\\?\").or_else(|| s.strip_prefix(r"\\.\")).filter(|r| {
         // only `\\?\C:\...`: a `\\?\Volume{guid}\` stays as it is (stripped it would be relative)
@@ -147,8 +153,7 @@ pub fn canonical_root(path: &Path) -> PathBuf {
         rest.to_string()
     } else {
         s
-    };
-    long_name(&s).unwrap_or(s).into()
+    }
 }
 
 #[cfg(windows)]

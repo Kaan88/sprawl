@@ -413,6 +413,23 @@ impl Memory {
         file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| parse(&t).ok()).unwrap_or_default()
     }
 
+    /// Load for destructive work, where an empty list would wrongly mean "nothing is kept": no
+    /// file yet is an empty list, but an unknown location, a failed read (a save in progress, a
+    /// lock) or a file that doesn't parse is an error. A brief sharing conflict is retried.
+    pub fn load_checked() -> std::io::Result<Memory> {
+        let f = file().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Sprawl's settings folder is unknown (APPDATA is not set)"))?;
+        let mut tries = 0;
+        let text = loop {
+            match std::fs::read_to_string(&f) {
+                Ok(text) => break text,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Memory::default()),
+                Err(_) if tries < 5 => { tries += 1; std::thread::sleep(std::time::Duration::from_millis(100)); }
+                Err(e) => return Err(e),
+            }
+        };
+        parse(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    }
+
     pub fn load() -> Memory {
         // a new start fetches no community cleaners until the user turns them on; a file from
         // an older Sprawl keeps what it had (on, unless turned off)

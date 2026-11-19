@@ -41,11 +41,32 @@ pub fn lexical(path: &Path) -> io::Result<PathBuf> {
 /// there only list names (no pins, no WOF probes, no MFT), as before 1.0. Every storage
 /// action still goes through `lexical`, which refuses these, so nothing on a share is changed.
 pub fn remote_scan_root(path: &Path) -> Option<PathBuf> {
-    let raw = path.to_str()?.replace('/', "\\");
+    // The spelling given, the normalized one, and its long-name form must all be a share or a
+    // mapped drive: `\\?\UNC\.\C:\x` would normalize to the device path `\\.\C:\x`. The long
+    // name is looked up only for a spelling that already passed.
+    remote_spelling(path.to_str()?)?;
+    let normal = crate::root_spelling(path);
+    remote_spelling(&normal)?;
+    let long = crate::long_name(&normal).unwrap_or(normal);
+    remote_spelling(&long)?;
+    Some(PathBuf::from(long))
+}
+
+/// A share's server or share name: no device-like (`.`, `?`), empty, dot-only or trailing
+/// dot/space name, nothing a path parser reads as more than one name.
+fn share_component(c: &str) -> bool {
+    !c.is_empty() && !c.starts_with(['.', '?']) && !c.ends_with(['.', ' '])
+        && !c.contains([':', '\0', '\r', '\n', '*', '?', '"', '<', '>', '|', '/'])
+}
+
+/// [`remote_scan_root`]'s check of one spelling: `\\server\share\...`, `\\?\UNC\server\share\...`
+/// (one validator for both), or `Y:\...` on a mapped remote drive.
+fn remote_spelling(raw: &str) -> Option<()> {
+    let raw = raw.replace('/', "\\");
     let share = raw.strip_prefix(r"\\?\UNC\").or_else(|| raw.strip_prefix(r"\\").filter(|r| !r.starts_with(['?', '.'])));
     let tail = if let Some(rest) = share {
         let mut parts = rest.split('\\');
-        if parts.next().map_or(true, str::is_empty) || parts.next().map_or(true, str::is_empty) { return None; }
+        if !parts.next().is_some_and(share_component) || !parts.next().is_some_and(share_component) { return None; }
         rest
     } else {
         let s = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
@@ -56,8 +77,8 @@ pub fn remote_scan_root(path: &Path) -> Option<PathBuf> {
         if unsafe { GetDriveTypeW(root.as_ptr()) } != 4 { return None; }
         &s[2..]
     };
-    if tail.contains([':', '\0', '\r', '\n', '*', '?', '"', '<', '>', '|']) || tail.split('\\').any(|c| c == "..") { return None; }
-    Some(crate::canonical_root(path))
+    if tail.contains([':', '\0', '\r', '\n', '*', '?', '"', '<', '>', '|']) || tail.split('\\').any(|c| c == ".." || c == ".") { return None; }
+    Some(())
 }
 
 /// The root of a scan: pinned when local, listed as it is when on a network share.
@@ -271,6 +292,11 @@ mod tests {
         // Shares may be scanned (listed only); device, stream and half-named paths may not.
         for p in [r"\\server\share", r"\\server\share\dir", r"\\?\UNC\server\share\dir", "//server/share/dir"] { assert!(remote_scan_root(Path::new(p)).is_some(), "{p}"); }
         for p in [r"\\.\C:\file", r"\\?\C:\file", r"\\server", r"\\server\\", r"\\server\share\f:s", r"\\server\share\..\x", r"\\?\GLOBALROOT\x", r"C:\Windows"] { assert!(remote_scan_root(Path::new(p)).is_none(), "{p}"); }
+        // the verbatim form gets the same server/share check as the plain one (Astra 1.0.2 S1 #5)
+        for p in [r"\\?\UNC\.\C:\x", r"\\?\UNC\?\C:\x", r"\\?\UNC\..\share", r"\\?\UNC\server.\share", r"\\?\UNC\server\share.\x", r"\\?\UNC\server\share \x", r"\\?\UNC\server\\x", r"\\?\UNC\server\.\x", r"\\server\share\.\x"] {
+            assert!(remote_scan_root(Path::new(p)).is_none(), "{p}");
+        }
+        assert!(remote_spelling(r"\\.\C:\x").is_none() && remote_spelling(r"\\?\C:\x").is_none());
         let root = std::env::temp_dir().join(format!("sprawl-local-pin-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("manifest"), b"bounded").unwrap();

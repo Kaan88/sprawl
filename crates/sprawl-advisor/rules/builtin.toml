@@ -54,7 +54,7 @@ owner = "NuGet"
 paths = ['%SystemDrive%\Users\*\.nuget\packages']
 risk = "amber"
 remedy = "command"
-command = "dotnet nuget locals all --clear"
+command = "dotnet nuget locals global-packages --clear"
 why = "Packages restored for .NET projects. The next restore downloads them again, which takes a while for big solutions."
 
 [[rule]]

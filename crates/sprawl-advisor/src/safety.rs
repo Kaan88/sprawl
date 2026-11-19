@@ -562,40 +562,58 @@ fn unc_place(text: &str) -> UncPlace {
     unc_place_with(text, &this_pc_names(), own_addresses().as_deref(), &share_folder)
 }
 
+/// What this PC serves under a share name.
+#[derive(Debug, PartialEq)]
+enum Share {
+    /// The folder on this PC's own drive.
+    Folder(String),
+    /// This PC serves no share by that name.
+    Absent,
+    /// This PC's list of shares couldn't be read.
+    Unknown,
+}
+
 /// [`unc_place`] with this PC's names (lower case), its addresses (None: unknown) and a
 /// share-to-folder lookup given, for tests.
-fn unc_place_with(text: &str, names: &[String], addresses: Option<&[std::net::IpAddr]>, folder: &dyn Fn(&str) -> Option<String>) -> UncPlace {
+///
+/// A server name this PC doesn't recognize as its own (a DNS alias, a name its lookup missed)
+/// may still be this PC: then the share name decides. A share this PC serves under that name
+/// has its folder here protected; with no such share, the path can't lead here.
+fn unc_place_with(text: &str, names: &[String], addresses: Option<&[std::net::IpAddr]>, folder: &dyn Fn(&str) -> Share) -> UncPlace {
     let Some(rest) = text.strip_prefix(r"\\") else { return UncPlace::Unknown };
     let mut parts = rest.splitn(3, '\\');
     let (Some(server), Some(share)) = (parts.next(), parts.next()) else { return UncPlace::Unknown };
     let tail = parts.next().unwrap_or("").trim_end_matches('\\');
-    let bad = |s: &str| s.is_empty() || s.chars().any(|c| c.is_control() || "\"*?<>|:/".contains(c));
-    let host_ok = !server.is_empty() && !server.starts_with(['.', '?']) && server.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c));
-    if !host_ok || bad(share) || share.len() > 80
-        || tail.split('\\').any(|s| s.is_empty() && !tail.is_empty() || s == "." || s == ".." || s.ends_with('.') || s.ends_with(' ') || s.chars().any(|c| c.is_control() || "\"*?<>|:/".contains(c))) {
+    let bad_name = |s: &str| s.is_empty() || s == "." || s == ".." || s.ends_with('.') || s.ends_with(' ') || s.chars().any(|c| c.is_control() || "\"*?<>|:/".contains(c));
+    // one trailing dot is a fully qualified DNS name (`desk.home.lan.`); every label is plain
+    let host = server.strip_suffix('.').unwrap_or(server).to_ascii_lowercase();
+    let host_ok = !host.is_empty() && host.split('.').all(|label| !label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)));
+    if !host_ok || bad_name(share) || share.len() > 80 || (!tail.is_empty() && tail.split('\\').any(bad_name)) {
         return UncPlace::Unknown;
     }
-    let host = server.to_ascii_lowercase();
     let ip: Option<std::net::IpAddr> = match host.strip_suffix(".ipv6-literal.net") {
         Some(v6) => v6.split('s').next().unwrap_or("").replace('-', ":").parse().ok(),
         None => host.parse().ok(),
     };
+    // Some(true): this PC; Some(false): another PC; None: can't tell from the name
     let here = match ip {
-        Some(ip) if ip.is_loopback() => true,
-        Some(ip) => match addresses { Some(own) => own.contains(&ip), None => return UncPlace::Unknown },
-        None => host == "localhost" || names.iter().any(|n| *n == host),
+        Some(ip) if ip.is_loopback() => Some(true),
+        Some(ip) => addresses.map(|own| own.contains(&ip)),
+        None if host == "localhost" || names.iter().any(|n| *n == host) => Some(true),
+        None => None,
     };
-    if !here { return UncPlace::Elsewhere; }
+    if here == Some(false) { return UncPlace::Elsewhere; }
     let sb = share.as_bytes();
     let base = if sb.len() == 2 && sb[0].is_ascii_alphabetic() && sb[1] == b'$' {
-        Some(format!("{}:\\", sb[0].to_ascii_uppercase() as char))
+        Share::Folder(format!("{}:\\", sb[0].to_ascii_uppercase() as char))
     } else { folder(share) };
-    match base {
-        Some(base) => {
+    match (base, here) {
+        (Share::Folder(base), _) => {
             let base = base.trim_end_matches('\\');
             UncPlace::Here(if tail.is_empty() { format!("{base}\\") } else { format!("{base}\\{tail}") })
         }
-        None => UncPlace::Unknown,
+        (Share::Absent, None) => UncPlace::Elsewhere,
+        _ => UncPlace::Unknown,
     }
 }
 
@@ -665,13 +683,18 @@ fn own_addresses() -> Option<Vec<std::net::IpAddr>> {
 
 /// The folder a share of this PC serves, from the Server service's own list (readable without
 /// administrator rights): `Path=D:\...` in `HKLM\...\LanmanServer\Shares\<share>`.
-fn share_folder(share: &str) -> Option<String> {
+fn share_folder(share: &str) -> Share {
     if share.eq_ignore_ascii_case("admin$") {
-        return std::env::var("SystemRoot").ok().filter(|s| drive_forms(s).is_some());
+        return std::env::var("SystemRoot").ok().filter(|s| drive_forms(s).is_some()).map_or(Share::Unknown, Share::Folder);
     }
-    let key = crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Shares", crate::reg::View::Native)?;
-    let lines = key.strings(share)?;
-    lines.iter().find_map(|l| l.strip_prefix("Path=")).map(str::to_string).filter(|p| drive_forms(p).is_some() && !p.starts_with(r"\\"))
+    let Some(key) = crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Shares", crate::reg::View::Native) else { return Share::Unknown };
+    match key.strings(share) {
+        Some(lines) => lines.iter().find_map(|l| l.strip_prefix("Path=")).map(str::to_string)
+            .filter(|p| drive_forms(p).is_some() && !p.starts_with(r"\\")).map_or(Share::Unknown, Share::Folder),
+        // named in the list but not readable as a share: unknown; not in the list: absent
+        None if key.values().iter().any(|(name, _)| name.eq_ignore_ascii_case(share)) => Share::Unknown,
+        None => Share::Absent,
+    }
 }
 
 /// `names` (an item's name, then the folders above it) ends in `tail` (segments, the item last).
@@ -1130,7 +1153,7 @@ mod tests {
     fn a_folder_redirected_to_this_pcs_own_share_keeps_its_protection() {
         let names = vec!["desk".to_string(), "desk.home.lan".to_string()];
         let own: Vec<std::net::IpAddr> = vec!["192.0.2.20".parse().unwrap(), "fe80::1".parse().unwrap()];
-        let shares = |s: &str| (s.eq_ignore_ascii_case("docs")).then(|| r"D:\Shared\Docs".to_string());
+        let shares = |s: &str| if s.eq_ignore_ascii_case("docs") { Share::Folder(r"D:\Shared\Docs".to_string()) } else { Share::Absent };
         let place = |t: &str| unc_place_with(t, &names, Some(&own), &shares);
         // another PC: never cleaned from here, no pattern needed
         assert_eq!(place(r"\\nas\home\sam\Documents"), UncPlace::Elsewhere);
@@ -1144,11 +1167,21 @@ mod tests {
         assert_eq!(place(r"\\fe80--1.ipv6-literal.net\docs\x"), UncPlace::Here(r"D:\Shared\Docs\x".into()));
         // this PC's share whose folder can't be found, malformed or device spellings: fail closed
         assert_eq!(place(r"\\desk\unknown\Documents"), UncPlace::Unknown);
-        for bad in [r"\\", r"\\desk", r"\\desk\\x", r"\\.\C:\x", r"\\?\C:\x", r"\\desk\d$\..\x", r"\\desk\d$\a.\x", r"\\de*sk\d$", r"\\desk\d:\x"] {
+        for bad in [r"\\", r"\\desk", r"\\desk\\x", r"\\.\C:\x", r"\\?\C:\x", r"\\desk\d$\..\x", r"\\desk\d$\a.\x", r"\\de*sk\d$", r"\\desk\d:\x",
+                    r"\\desk\docs.\x", r"\\desk\docs \x", r"\\desk\.\x", r"\\desk\..\x", r"\\desk..\docs", r"\\.desk\docs", r"\\desk.home..lan\docs"] {
             assert_eq!(place(bad), UncPlace::Unknown, "{bad}");
         }
-        // an address while this PC's addresses are unknown: fail closed
-        assert_eq!(unc_place_with(r"\\192.0.2.7\ntfs", &names, None, &shares), UncPlace::Unknown);
+        // a name of this PC it doesn't list (a DNS alias, a trailing-dot FQDN): the share name
+        // decides, and a share this PC serves keeps its folder protected (Astra 1.0.2 S1 #10)
+        assert_eq!(place(r"\\desk.home.lan.\docs\sam"), UncPlace::Here(r"D:\Shared\Docs\sam".into()));
+        assert_eq!(place(r"\\files-alias\docs\sam"), UncPlace::Here(r"D:\Shared\Docs\sam".into()));
+        assert_eq!(place(r"\\files-alias\e$\Users\sam\Documents"), UncPlace::Here(r"E:\Users\sam\Documents".into()));
+        assert_eq!(unc_place_with(r"\\files-alias\docs", &[], Some(&own), &shares), UncPlace::Here(r"D:\Shared\Docs\".into()), "the name query failed");
+        assert_eq!(unc_place_with(r"\\files-alias\docs", &names, Some(&own), &|_| Share::Unknown), UncPlace::Unknown, "the share list can't be read");
+        // an address while this PC's addresses are unknown: the share name decides too
+        assert_eq!(unc_place_with(r"\\192.0.2.7\ntfs", &names, None, &shares), UncPlace::Elsewhere);
+        assert_eq!(unc_place_with(r"\\192.0.2.7\docs\x", &names, None, &shares), UncPlace::Here(r"D:\Shared\Docs\x".into()));
+        assert_eq!(unc_place_with(r"\\192.0.2.7\ntfs", &names, None, &|_| Share::Unknown), UncPlace::Unknown);
         // the real lookups answer on this PC (names, adapter addresses incl. loopback)
         assert!(!this_pc_names().is_empty());
         assert!(own_addresses().is_some_and(|a| a.iter().any(|ip| ip.is_loopback())), "{:?}", own_addresses());

@@ -42,34 +42,128 @@ pub fn system_dir() -> Result<PathBuf, String> {
     String::from_utf16(&buf[..n]).map(PathBuf::from).map_err(|e| e.to_string())
 }
 
-/// Whether the task's execution principal is exactly this account: one `<Principal>` in one
-/// `<Principals>`, with one `<UserId>` equal to `sid` and no `<GroupId>`. A SID named anywhere
-/// else (a logon trigger's `<UserId>`, for one) says nothing about who the task runs as.
-fn legacy_task_owned(xml: &str, sid: &str) -> bool {
-    if xml.matches("<Principals>").count() != 1 { return false; }
-    let Some((_, rest)) = xml.split_once("<Principals>") else { return false; };
-    let Some((principals, _)) = rest.split_once("</Principals>") else { return false; };
-    let opened = principals.matches("<Principal ").count() + principals.matches("<Principal>").count();
-    if opened != 1 || principals.contains("<GroupId") { return false; }
-    let ids: Option<Vec<&str>> = principals.split("<UserId>").skip(1).map(|s| s.split_once("</UserId>").map(|(id, _)| id.trim())).collect();
-    ids.is_some_and(|ids| ids == [sid])
+/// What Task Scheduler itself says about a task: its principal and its actions (type, program,
+/// arguments). Read through the Task Scheduler API, never parsed out of XML text.
+#[derive(Debug, Clone, PartialEq)]
+struct TaskFacts {
+    user_id: String,
+    group_id: String,
+    logon: i32,
+    actions: Vec<(i32, String, String)>,
+}
+
+/// Whether the task is the former shared low-space check of exactly this account: its principal
+/// is this account's SID (a name is looked up to its SID) and no group, it doesn't run as a
+/// group or service, and its only action is Sprawl's own `sprawl.exe --check`.
+fn legacy_task_owned(facts: &TaskFacts, sid: &str, sid_of: &dyn Fn(&str) -> Option<String>) -> bool {
+    const LOGON_GROUP: i32 = 4;
+    const LOGON_SERVICE: i32 = 5;
+    const ACTION_EXEC: i32 = 0;
+    if !facts.group_id.trim().is_empty() || matches!(facts.logon, LOGON_GROUP | LOGON_SERVICE) { return false; }
+    let user = facts.user_id.trim();
+    if user.is_empty() { return false; }
+    let principal = if user.starts_with("S-1-") { Some(user.to_string()) } else { sid_of(user) };
+    if !principal.is_some_and(|p| p.eq_ignore_ascii_case(sid)) { return false; }
+    let [(kind, program, args)] = facts.actions.as_slice() else { return false; };
+    let program = program.trim().trim_matches('"');
+    *kind == ACTION_EXEC
+        && Path::new(program).file_name().is_some_and(|n| n.eq_ignore_ascii_case("sprawl.exe"))
+        && args.trim() == "--check"
+}
+
+/// An account name's SID, as text.
+fn sid_of_account(name: &str) -> Option<String> {
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn LookupAccountNameW(system: *const u16, name: *const u16, sid: *mut core::ffi::c_void, sid_len: *mut u32, domain: *mut u16, domain_len: *mut u32, kind: *mut i32) -> i32;
+        fn ConvertSidToStringSidW(sid: *mut core::ffi::c_void, out: *mut *mut u16) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" { fn LocalFree(ptr: *mut core::ffi::c_void) -> *mut core::ffi::c_void; }
+    let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+    let mut sid = [0u64; 16];
+    let mut sid_len = std::mem::size_of_val(&sid) as u32;
+    let mut domain = [0u16; 256];
+    let mut domain_len = domain.len() as u32;
+    let mut kind = 0;
+    // SAFETY: every buffer is sized as passed; the SID text is freed with LocalFree.
+    unsafe {
+        if LookupAccountNameW(std::ptr::null(), wide.as_ptr(), sid.as_mut_ptr().cast(), &mut sid_len, domain.as_mut_ptr(), &mut domain_len, &mut kind) == 0 { return None; }
+        let mut out = std::ptr::null_mut();
+        if ConvertSidToStringSidW(sid.as_mut_ptr().cast(), &mut out) == 0 || out.is_null() { return None; }
+        let mut len = 0;
+        while len < 184 && *out.add(len) != 0 { len += 1; }
+        let text = String::from_utf16(std::slice::from_raw_parts(out, len)).ok();
+        LocalFree(out.cast());
+        text.filter(|t| len < 184 && t.starts_with("S-1-"))
+    }
+}
+
+/// Run `f` with the root task folder, on a thread of its own that joins COM's multithreaded
+/// apartment (the caller may be an STA UI thread).
+fn with_task_root<T: Send + 'static>(f: impl FnOnce(&windows::Win32::System::TaskScheduler::ITaskFolder) -> Option<T> + Send + 'static) -> Option<T> {
+    std::thread::spawn(move || {
+        use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+        use windows::Win32::System::TaskScheduler::{ITaskService, TaskScheduler};
+        use windows::Win32::System::Variant::VARIANT;
+        // SAFETY: COM is initialized on this thread for the calls below and uninitialized after
+        // every interface is dropped.
+        unsafe {
+            if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() { return None; }
+            let out = (|| {
+                let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER).ok()?;
+                let none = VARIANT::default();
+                service.Connect(&none, &none, &none, &none).ok()?;
+                let root = service.GetFolder(&windows::core::BSTR::from("\\")).ok()?;
+                f(&root)
+            })();
+            CoUninitialize();
+            out
+        }
+    }).join().ok().flatten()
+}
+
+/// The former shared task's facts, or None when it doesn't exist or can't be read completely.
+fn legacy_task_facts(root: &windows::Win32::System::TaskScheduler::ITaskFolder) -> Option<TaskFacts> {
+    use windows::core::{Interface, BSTR};
+    use windows::Win32::System::TaskScheduler::{IExecAction, TASK_ACTION_TYPE, TASK_LOGON_TYPE};
+    // SAFETY: plain COM calls on live interfaces; out-parameters are owned BSTRs and integers.
+    unsafe {
+        let task = root.GetTask(&BSTR::from(LEGACY_ALERT_TASK)).ok()?;
+        let definition = task.Definition().ok()?;
+        let principal = definition.Principal().ok()?;
+        let (mut user_id, mut group_id, mut logon) = (BSTR::new(), BSTR::new(), TASK_LOGON_TYPE(0));
+        principal.UserId(&mut user_id).ok()?;
+        principal.GroupId(&mut group_id).ok()?;
+        principal.LogonType(&mut logon).ok()?;
+        let collection = definition.Actions().ok()?;
+        let mut count = 0;
+        collection.Count(&mut count).ok()?;
+        if !(0..=16).contains(&count) { return None; }
+        let mut actions = Vec::new();
+        for i in 1..=count {
+            let action = collection.get_Item(i).ok()?;
+            let mut kind = TASK_ACTION_TYPE(-1);
+            action.Type(&mut kind).ok()?;
+            let (mut program, mut args) = (BSTR::new(), BSTR::new());
+            if let Ok(exec) = action.cast::<IExecAction>() {
+                exec.Path(&mut program).ok()?;
+                exec.Arguments(&mut args).ok()?;
+            }
+            actions.push((kind.0, program.to_string(), args.to_string()));
+        }
+        Some(TaskFacts { user_id: user_id.to_string(), group_id: group_id.to_string(), logon: logon.0, actions })
+    }
 }
 
 /// The argument that makes `sprawl.exe` retire the former shared task and exit (started by an
 /// elevated Sprawl without administrator rights).
 pub const MIGRATE_ARG: &str = "--migrate-alert-task";
 
-/// Whether the former shared task exists and runs as exactly this account. Read-only.
+/// Whether the former shared task exists and is exactly this account's low-space check. Read-only.
 fn legacy_task_is_ours() -> bool {
-    use std::os::windows::process::CommandExt;
-    let (Ok(sid), Ok(sys)) = (sprawl_core::identity::account_sid(), system_dir()) else { return false; };
-    let Ok(out) = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
-        .args(["/Query", "/TN", LEGACY_ALERT_TASK, "/XML"]).creation_flags(0x0800_0000).output() else { return false; };
-    if !out.status.success() || out.stdout.len() > 1 << 20 { return false; }
-    let xml = if out.stdout.starts_with(&[0xff, 0xfe]) {
-        String::from_utf16(&out.stdout[2..].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()
-    } else { String::from_utf8(out.stdout).ok() };
-    xml.is_some_and(|xml| legacy_task_owned(&xml, &sid))
+    let Ok(sid) = sprawl_core::identity::account_sid() else { return false; };
+    with_task_root(move |root| legacy_task_facts(root).map(|facts| legacy_task_owned(&facts, &sid, &sid_of_account))).unwrap_or(false)
 }
 
 /// Delete the former shared task name only after Task Scheduler identifies its principal
@@ -97,13 +191,19 @@ pub fn migrate_alert_task_unelevated() {
     if per_user_only().is_ok() && legacy_task_is_ours() { delete_legacy_task(); }
 }
 
+/// Checks the task again and deletes it in the same Task Scheduler session, without
+/// administrator rights. Task Scheduler deletes by name only: a task swapped in between this
+/// check and the delete would have to be one this account may delete anyway, with the same
+/// principal and Sprawl's own `--check` action.
 fn delete_legacy_task() {
-    use std::os::windows::process::CommandExt;
     if per_user_only().is_err() { return; }
-    let Ok(sys) = system_dir() else { return; };
-    let _ = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
-        .args(["/Delete", "/TN", LEGACY_ALERT_TASK, "/F"]).creation_flags(0x0800_0000)
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    let Ok(sid) = sprawl_core::identity::account_sid() else { return; };
+    with_task_root(move |root| {
+        let facts = legacy_task_facts(root)?;
+        if !legacy_task_owned(&facts, &sid, &sid_of_account) { return None; }
+        // SAFETY: a plain COM call on the live folder interface.
+        unsafe { root.DeleteTask(&windows::core::BSTR::from(LEGACY_ALERT_TASK), 0).ok() }
+    });
 }
 
 pub fn remove_alert_task() {
@@ -447,20 +547,32 @@ mod update_tests {
     #[test]
     fn legacy_task_migration_requires_the_exact_principal() {
         let sid = "S-1-5-21-100-200-300-1001";
-        let p = |inner: &str| format!("<Task><Triggers/><Principals><Principal id=\"Author\">{inner}<LogonType>InteractiveToken</LogonType></Principal></Principals></Task>");
-        assert!(legacy_task_owned(&p(&format!("<UserId>{sid}</UserId>")), sid));
-        assert!(!legacy_task_owned(&p("<UserId>S-1-5-21-100-200-300-1002</UserId>"), sid));
-        assert!(!legacy_task_owned(&p(r"<UserId>COMPUTER\sameusername</UserId>"), sid));
-        assert!(!legacy_task_owned(&format!("<Author>{sid}</Author>"), sid));
-        assert!(!legacy_task_owned(&p(&format!("<UserId>{sid}</UserId><UserId>other</UserId>")), sid));
-        // the SID in a logon trigger while the task runs as a group (Astra's case)
-        let group = format!("<Task><Triggers><LogonTrigger><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Author\"><GroupId>S-1-5-32-545</GroupId></Principal></Principals></Task>");
-        assert!(!legacy_task_owned(&group, sid));
-        let trigger_only = format!("<Task><Triggers><LogonTrigger><UserId>{sid}</UserId></LogonTrigger></Triggers></Task>");
-        assert!(!legacy_task_owned(&trigger_only, sid));
-        let two = format!("<Task><Principals><Principal id=\"A\"><UserId>{sid}</UserId></Principal><Principal id=\"B\"><GroupId>S-1-5-32-545</GroupId></Principal></Principals></Task>");
-        assert!(!legacy_task_owned(&two, sid));
-        assert!(!legacy_task_owned(&format!("{}{}", p(&format!("<UserId>{sid}</UserId>")), p(&format!("<UserId>{sid}</UserId>"))), sid));
+        let ours = TaskFacts { user_id: sid.into(), group_id: String::new(), logon: 3, actions: vec![(0, r"C:\Users\a\AppData\Local\Programs\Sprawl\sprawl.exe".into(), "--check".into())] };
+        let lookup = |name: &str| (name == r"PC\me").then(|| sid.to_string());
+        assert!(legacy_task_owned(&ours, sid, &lookup));
+        // the quoted program form schtasks /TR leaves, and a principal given as a name
+        assert!(legacy_task_owned(&TaskFacts { actions: vec![(0, r#""C:\Sprawl\sprawl.exe""#.into(), " --check ".into())], ..ours.clone() }, sid, &lookup));
+        assert!(legacy_task_owned(&TaskFacts { user_id: r"PC\me".into(), ..ours.clone() }, sid, &lookup));
+        // another account, an unknown name, no principal, a group or a service principal
+        assert!(!legacy_task_owned(&TaskFacts { user_id: "S-1-5-21-100-200-300-1002".into(), ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { user_id: r"COMPUTER\sameusername".into(), ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { user_id: String::new(), ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { group_id: "S-1-5-32-545".into(), ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { logon: 4, ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { logon: 5, ..ours.clone() }, sid, &lookup));
+        // anything but Sprawl's one --check action
+        assert!(!legacy_task_owned(&TaskFacts { actions: vec![], ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { actions: vec![(0, r"C:\x\other.exe".into(), "--check".into())], ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { actions: vec![(0, r"C:\x\sprawl.exe".into(), "--check --other".into())], ..ours.clone() }, sid, &lookup));
+        assert!(!legacy_task_owned(&TaskFacts { actions: vec![(5, r"C:\x\sprawl.exe".into(), "--check".into())], ..ours.clone() }, sid, &lookup));
+        let mut two = ours.clone();
+        two.actions.push((0, r"C:\Windows\System32\cmd.exe".into(), "/c x".into()));
+        assert!(!legacy_task_owned(&two, sid, &lookup));
+        // read-only: Task Scheduler answers through the API, and the account name maps to its SID
+        assert_eq!(with_task_root(|_| Some(7)), Some(7));
+        let me = sprawl_core::identity::account_sid().unwrap();
+        let name = format!("{}\\{}", std::env::var("USERDOMAIN").unwrap(), std::env::var("USERNAME").unwrap());
+        assert_eq!(sid_of_account(&name).as_deref(), Some(me.as_str()));
         let actual = sprawl_core::identity::account_sid().unwrap();
         assert_eq!(alert_task_name().unwrap(), format!("{LEGACY_ALERT_TASK} {actual}"));
     }
