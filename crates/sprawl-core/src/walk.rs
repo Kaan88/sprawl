@@ -67,7 +67,7 @@ struct Shared<'a> {
     /// and the length of the root job's path. Each folder is opened (links not followed),
     /// checked to be at this path plus its own relative path, and listed through that handle,
     /// so a folder or ancestor swapped for a junction after it was queued is never listed.
-    verify: Option<(String, usize)>,
+    verify: Option<(Vec<u16>, usize)>,
 }
 
 /// How many threads list folders. Listing is I/O- and kernel-bound; a handful more threads than
@@ -388,13 +388,13 @@ fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, 
 /// [`list_by_name`] through a handle to the folder itself, after checking that it is a plain
 /// folder at `root` plus the job's own relative path. A folder that has become a link, or whose
 /// path now leads elsewhere, is not listed (and counts as unreadable).
-fn list_by_handle(job: &Job, root: &str, root_len: usize, buf: &mut Vec<u64>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
+fn list_by_handle(job: &Job, root: &[u16], root_len: usize, buf: &mut Vec<u64>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
     let h = match dir::open(&job.path) {
         Ok(h) => h,
         Err(e) => return e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32),
     };
     let expected = expected_path(root, &job.path[root_len.min(job.path.len())..]);
-    if !dir::is_plain_dir(&h) || dir::real_path(&h).ok().as_deref() != Some(expected.as_str()) {
+    if !dir::is_plain_dir(&h) || dir::real_path(&h).ok().as_deref() != Some(&expected[..]) {
         return false;
     }
     dir::list(&h, buf, visit)
@@ -402,11 +402,20 @@ fn list_by_handle(job: &Job, root: &str, root_len: usize, buf: &mut Vec<u64>, vi
 
 /// Where a queued folder must really be: the root's real path (volume included) and the job's
 /// path below the root, joined by exactly one `\` (a drive root's job path keeps its own).
-/// Compared exactly, so a folder of another case on a case-sensitive volume is not taken.
-fn expected_path(root: &str, below: &[u16]) -> String {
-    let rel = String::from_utf16_lossy(below);
-    let rel = rel.trim_matches('\\');
-    if rel.is_empty() { root.to_string() } else { format!("{root}\\{rel}") }
+/// Compared exactly, in Windows' own UTF-16 units (never decoded: two names with different
+/// unpaired surrogates would both decode to U+FFFD), so a folder of another case on a
+/// case-sensitive volume is not taken either.
+fn expected_path(root: &[u16], below: &[u16]) -> Vec<u16> {
+    const SEP: u16 = b'\\' as u16;
+    let start = below.iter().position(|&c| c != SEP).unwrap_or(below.len());
+    let end = below.iter().rposition(|&c| c != SEP).map_or(start, |i| i + 1);
+    let rel = &below[start..end.max(start)];
+    let mut out = root.to_vec();
+    if !rel.is_empty() {
+        out.push(SEP);
+        out.extend_from_slice(rel);
+    }
+    out
 }
 
 /// Folders opened as themselves and listed through their handle.
@@ -438,15 +447,19 @@ mod dir {
     }
 
     /// Where the opened folder really is, with its volume (`\\?\Volume{...}`) and the names'
-    /// own case, without a trailing `\`.
-    pub(super) fn real_path(h: &OwnedHandle) -> std::io::Result<String> {
+    /// own case, without a trailing `\`, in UTF-16 units as Windows gives them.
+    pub(super) fn real_path(h: &OwnedHandle) -> std::io::Result<Vec<u16>> {
         const VOLUME_NAME_GUID: u32 = 0x1;
         let mut out = vec![0u16; 512];
         loop {
             // SAFETY: `out` has the capacity given.
             let n = unsafe { GetFinalPathNameByHandleW(h.as_raw_handle(), out.as_mut_ptr(), out.len() as u32, VOLUME_NAME_GUID) } as usize;
             if n == 0 { return Err(std::io::Error::last_os_error()); }
-            if n < out.len() { return Ok(String::from_utf16_lossy(&out[..n]).trim_end_matches('\\').to_string()); }
+            if n < out.len() {
+                out.truncate(n);
+                while out.last() == Some(&(b'\\' as u16)) { out.pop(); }
+                return Ok(out);
+            }
             if n > 65_536 { return Err(std::io::Error::other("The final path is too long")); }
             out.resize(n + 1, 0);
         }
@@ -600,18 +613,21 @@ mod tests {
     #[test]
     fn queued_folders_are_expected_below_the_root_by_one_separator() {
         let w = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
-        let vol = r"\\?\Volume{1}";
+        let vol = &w(r"\\?\Volume{1}");
         // a drive root: its job path ends in `\`, so a child's path below it has no leading one
-        assert_eq!(expected_path(vol, &w("")), vol);
-        assert_eq!(expected_path(vol, &w("Users")), r"\\?\Volume{1}\Users");
-        assert_eq!(expected_path(vol, &w(r"Users\Me")), r"\\?\Volume{1}\Users\Me");
+        assert_eq!(expected_path(vol, &w("")), *vol);
+        assert_eq!(expected_path(vol, &w("Users")), w(r"\\?\Volume{1}\Users"));
+        assert_eq!(expected_path(vol, &w(r"Users\Me")), w(r"\\?\Volume{1}\Users\Me"));
         // a folder root, with or without a trailing separator given
-        let root = r"\\?\Volume{1}\Work";
-        assert_eq!(expected_path(root, &w(r"\src")), r"\\?\Volume{1}\Work\src");
-        assert_eq!(expected_path(root, &w("src")), r"\\?\Volume{1}\Work\src");
-        assert_eq!(expected_path(root, &w(r"\src\")), r"\\?\Volume{1}\Work\src");
+        let root = &w(r"\\?\Volume{1}\Work");
+        assert_eq!(expected_path(root, &w(r"\src")), w(r"\\?\Volume{1}\Work\src"));
+        assert_eq!(expected_path(root, &w("src")), w(r"\\?\Volume{1}\Work\src"));
+        assert_eq!(expected_path(root, &w(r"\src\")), w(r"\\?\Volume{1}\Work\src"));
+        assert_eq!(expected_path(root, &w(r"\\")), *root);
         // exact: another case is another folder
         assert_ne!(expected_path(root, &w("SRC")), expected_path(root, &w("src")));
+        // and two different unpaired surrogates are two names, not one U+FFFD (re-review S1 #7)
+        assert_ne!(expected_path(root, &[0xD800]), expected_path(root, &[0xD801]));
         // and on the disk: a drive root's direct child is listed (one folder listing, no scan)
         let temp = std::path::absolute(std::env::temp_dir()).unwrap();
         let mut parts = temp.components();
@@ -620,7 +636,7 @@ mod tests {
         let child = drive.join(parts.next().unwrap().as_os_str());
         let root_job = long_path(&drive);
         let real = dir::real_path(&dir::open(&root_job).unwrap()).unwrap();
-        assert!(real.starts_with(r"\\?\Volume{"), "{real}");
+        assert!(String::from_utf16_lossy(&real).starts_with(r"\\?\Volume{"), "{}", String::from_utf16_lossy(&real));
         let mut seen = 0;
         let mut visit = |_: &[u16], _: u32, _: u32, _: u64, _: u64| { seen += 1; true };
         assert!(list_by_handle(&Job { id: 1, path: long_path(&child), top: 0 }, &real, root_job.len(), &mut Vec::new(), &mut visit), "{}", child.display());

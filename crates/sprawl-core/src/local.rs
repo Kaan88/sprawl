@@ -52,10 +52,16 @@ pub fn remote_scan_root(path: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(long))
 }
 
-/// A share's server or share name: no device-like (`.`, `?`), empty, dot-only or trailing
-/// dot/space name, nothing a path parser reads as more than one name.
+/// A share's server name: no device-like (`.`, `?`), empty or trailing dot/space name,
+/// nothing a path parser reads as more than one name.
+fn server_component(c: &str) -> bool {
+    !c.starts_with(['.', '?']) && share_component(c)
+}
+
+/// A share name: as a server name, but it may begin with a dot (`\\nas\.photos`) as long as it
+/// isn't only dots (a trailing dot is refused, so `.` and `..` are too).
 fn share_component(c: &str) -> bool {
-    !c.is_empty() && !c.starts_with(['.', '?']) && !c.ends_with(['.', ' '])
+    !c.is_empty() && !c.ends_with(['.', ' '])
         && !c.contains([':', '\0', '\r', '\n', '*', '?', '"', '<', '>', '|', '/'])
 }
 
@@ -66,7 +72,7 @@ fn remote_spelling(raw: &str) -> Option<()> {
     let share = raw.strip_prefix(r"\\?\UNC\").or_else(|| raw.strip_prefix(r"\\").filter(|r| !r.starts_with(['?', '.'])));
     let tail = if let Some(rest) = share {
         let mut parts = rest.split('\\');
-        if !parts.next().is_some_and(share_component) || !parts.next().is_some_and(share_component) { return None; }
+        if !parts.next().is_some_and(server_component) || !parts.next().is_some_and(share_component) { return None; }
         rest
     } else {
         let s = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
@@ -397,6 +403,11 @@ mod tests {
             assert!(remote_scan_root(Path::new(p)).is_none(), "{p}");
         }
         assert!(remote_spelling(r"\\.\C:\x").is_none() && remote_spelling(r"\\?\C:\x").is_none());
+        // a share name may begin with a dot, not be only dots (re-review S1 #5)
+        assert!(remote_spelling(r"\\nas\.photos\2024").is_some() && remote_spelling(r"\\?\UNC\nas\.photos").is_some());
+        for bad in [r"\\nas\.", r"\\nas\..", r"\\nas\...\x", r"\\.nas\share", r"\\?\UNC\.\C:\x", r"\\?\UNC\..\x", r"\\nas\?x"] {
+            assert!(remote_spelling(bad).is_none(), "{bad}");
+        }
         let root = std::env::temp_dir().join(format!("sprawl-local-pin-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("manifest"), b"bounded").unwrap();
