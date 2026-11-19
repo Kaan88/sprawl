@@ -12,9 +12,9 @@ use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibili
 use crate::state::{find, keep, load, with, State};
 use crate::ui;
 
-/// The welcome overlay over the map, and the hints in the two empty tables.
+/// The welcome page: the whole workspace (tables, map bar and map) until something is scanned.
 pub(crate) fn xaml() -> &'static str {
-    r##"<Border x:Name="Welcome" Visibility="Collapsed"/>"##
+    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000" Visibility="Collapsed"/>"##
 }
 
 pub(crate) fn tree_hint() -> &'static str {
@@ -55,6 +55,11 @@ fn drive_of(p: &std::path::Path) -> String {
 }
 
 impl State {
+    /// The welcome takes the workspace: nothing scanned, and a table view open.
+    pub(crate) fn welcome_page(&self) -> bool {
+        self.welcome == Some(true) && matches!(self.view, crate::state::View::Tree | crate::state::View::Files)
+    }
+
     /// Shows the welcome while nothing is scanned or scanning, and hides it after.
     pub(crate) fn welcome_frame(&mut self) {
         let want = self.tree.is_none() && self.job.is_none();
@@ -69,11 +74,15 @@ impl State {
                 self.update_header(std::path::Path::new(&d));
             }
         }
-        for n in ["Welcome", "TreeHint", "TypesHint"] {
+        // over the tables (Tree and File view): the Advisor, Search and About keep their pages
+        let page = want && self.welcome_page();
+        for (n, on) in [("Welcome", page), ("Panes", !page)] {
             if let Ok(e) = find::<UIElement>(&self.root, n) {
-                let _ = e.SetVisibility(if want { Visibility::Visible } else { Visibility::Collapsed });
+                let _ = e.SetVisibility(if on { Visibility::Visible } else { Visibility::Collapsed });
             }
         }
+        // the map bar and the map wait for a scan too
+        self.map_room();
     }
 
     fn welcome_build(&mut self) {

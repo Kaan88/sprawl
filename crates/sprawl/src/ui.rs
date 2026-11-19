@@ -790,7 +790,7 @@ pub fn page(drives: &[String]) -> String {
   </StackPanel>
   </Grid>
 
-  <Grid Grid.Row="4" Margin="12,0,12,0" ColumnSpacing="10">
+  <Grid x:Name="Panes" Grid.Row="4" Margin="12,0,12,0" ColumnSpacing="10">
     <Grid.ColumnDefinitions>
       <ColumnDefinition x:Name="TreeCol" Width="1.4*"/>
       <ColumnDefinition x:Name="TypesCol" Width="1*"/>
@@ -891,11 +891,11 @@ pub fn page(drives: &[String]) -> String {
     <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="5" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
     <TextBlock x:Name="MapPath" Grid.Column="1" Text=" " HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/>
   </Grid>
+  {welcome}
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000">
     <SwapChainPanel x:Name="MapPanel"/>
     <TextBlock x:Name="MapCaption" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,10,14,0" MaxWidth="720" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>
     <Border x:Name="MapKey" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Padding="10,6" CornerRadius="6" Background="#B314161E"/>
-    {welcome}
     {hud}
     {tweaks}
     {hist}

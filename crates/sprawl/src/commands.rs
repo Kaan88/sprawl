@@ -29,6 +29,10 @@ impl State {
 
     pub(crate) fn set_view(&mut self, v: View) {
         self.view = v;
+        // the welcome page is drawn again for this view on the next frame
+        if self.tree.is_none() && self.job.is_none() {
+            self.welcome = None;
+        }
         let vis = |b: bool| if b { Visibility::Visible } else { Visibility::Collapsed };
         if let Ok(a) = find::<UIElement>(&self.root, "AboutPanel") {
             let _ = a.SetVisibility(vis(v == View::About));
@@ -74,7 +78,7 @@ impl State {
     pub(crate) fn map_room(&self) {
         let map_on = find::<ToggleMenuFlyoutItem>(&self.root, "oTreemap").and_then(|t| t.IsChecked()).unwrap_or(true);
         // in Search the map shows only on request (its Map button): the results take the room
-        let room = self.view != View::Advisor && (self.view != View::Search || self.search.map);
+        let room = self.view != View::Advisor && (self.view != View::Search || self.search.map) && !self.welcome_page();
         let shown = map_on && room;
         // the bar (the map's modes) stays when only the map is switched off, as before
         for (n, on) in [("MapBorder", shown), ("MapPath", map_on && room), ("MapBar", room)] {
