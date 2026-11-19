@@ -378,6 +378,14 @@ impl Never {
         Self::from_locations(std::env::var("USERPROFILE").ok().as_deref(), personal_places())
     }
 
+    /// A never-list made without reading anything (no known folders, no settings): the fixed
+    /// patterns only, and incomplete, so nothing destructive may rely on it. For answering a
+    /// restricted MCP client from the scan on screen.
+    pub fn inert() -> Never {
+        let patterns = NEVER.iter().map(|p| (p.to_string(), Pattern::new(p))).collect();
+        Never { excluded: Vec::new(), patterns, user_data: Vec::new(), user_roots: Vec::new(), incomplete: true }
+    }
+
     fn from_locations(home: Option<&str>, places: Result<Vec<String>, ()>) -> Never {
         let projected = |list: &[&str]| -> Vec<String> {
             let mut paths: Vec<String> = list.iter().map(|p| p.to_string()).collect();

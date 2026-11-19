@@ -180,6 +180,17 @@ impl Facts {
         Facts { apps, index, runs: HashMap::new(), runs_complete: false, opened: Vec::new() }
     }
 
+    /// What a client that may only see the scan on screen gets: the apps with a folder in
+    /// `tree`, and Recent items inside it. Program starts outside it (Prefetch, UserAssist) are
+    /// left out; each kept app's own last use stays.
+    pub fn scoped_to(&self, tree: &Tree) -> Facts {
+        let apps: Vec<App> = self.apps.iter().filter(|a| a.locations.iter().any(|l| find_path(tree, l).is_some())).cloned().collect();
+        let mut out = Facts::from_apps(apps);
+        out.runs_complete = self.runs_complete;
+        out.opened = self.opened.iter().filter(|(p, _)| find_path(tree, Path::new(p)).is_some()).cloned().collect();
+        out
+    }
+
     /// The app whose folder holds `path`, if any (the most specific one).
     pub fn owner_of(&self, path: &Path) -> Option<&App> {
         let segs = segments(&path.to_string_lossy());

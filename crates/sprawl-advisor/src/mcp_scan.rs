@@ -3,7 +3,9 @@
 //! `scan_path` scans a folder or drive with the folder walk and the user's own rights, never the
 //! MFT and never elevated (the user's decision, 2026-11-18: an AI's scan sees no more than the
 //! user could list). The running app makes it when it isn't elevated; an elevated app hands it
-//! back to the server's own process ([`PASS_TO_SERVER`]). `scan_status` follows the scan; `list_scans` lists every tree the other tools can
+//! back to the server's own process ([`PASS_TO_SERVER`]), unless the user turned on "MCP tools
+//! reading the disk (as administrator)" (2026-11-19): then the elevated app scans (still the
+//! folder walk, never the MFT). `scan_status` follows the scan; `list_scans` lists every tree the other tools can
 //! answer from (this session's scans and History's saved ones). A finished scan goes into
 //! History when the app's setting keeps History, so the user sees it there.
 //!
@@ -302,11 +304,13 @@ impl Index {
         self.jobs.iter().find(|j| matches!(j.state, JobState::Running { .. }))
     }
 
-    /// Answer `scan_path`, `scan_status` or `list_scans`.
-    pub fn scan_call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+    /// Answer `scan_path`, `scan_status` or `list_scans`. `as_admin`: the app may scan with
+    /// administrator rights for this client (an elevated client, or the user's switch).
+    pub fn scan_call(&mut self, name: &str, input: &Value, as_admin: bool) -> Result<String, String> {
         if !is_scan_tool(name) { return Err(format!("there is no tool called {name}")); }
-        // an app running as administrator would scan with its rights: the server does it
-        if self.in_app && !sprawl_core::elevation().is_ok_and(|elevated| !elevated) {
+        // an app running as administrator (or that can't tell) would scan with its rights:
+        // unless that is allowed, the server does it with its own
+        if self.in_app && !as_admin && !sprawl_core::elevation().is_ok_and(|elevated| !elevated) {
             return Err(PASS_TO_SERVER.into());
         }
         self.poll();
@@ -529,10 +533,10 @@ mod tests {
         std::fs::write(dir.join("inner").join("a.bin"), vec![0u8; 5000]).unwrap();
         let mut ix = Index { no_history: true, ..Default::default() };
         let p = dir.to_string_lossy().to_string();
-        let first = ix.scan_call("scan_path", &json!({"path": p, "wait_seconds": 30})).unwrap();
+        let first = ix.scan_call("scan_path", &json!({"path": p, "wait_seconds": 30}), false).unwrap();
         assert!(first.contains("done"), "{first}");
         assert!(first.contains("Not saved in History"), "{first}");
-        let again = ix.scan_call("scan_path", &json!({"path": format!("{p}\\inner")})).unwrap();
+        let again = ix.scan_call("scan_path", &json!({"path": format!("{p}\\inner")}), false).unwrap();
         assert!(again.contains("rescan"), "{again}");
         assert!(ix.has_scan_for(&dir.join("inner")));
         let memory = Memory::default();
@@ -540,7 +544,7 @@ mod tests {
         assert!(kids.contains("a.bin") && kids.contains("made through this server"), "{kids}");
         let none = ix.answer("list_children", &json!({"path": r"Q:\elsewhere"}), &memory, false).unwrap_err();
         assert!(none.contains("call scan_path"), "{none}");
-        assert!(ix.scan_call("list_scans", &json!({})).unwrap().contains(&p));
+        assert!(ix.scan_call("list_scans", &json!({}), false).unwrap().contains(&p));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

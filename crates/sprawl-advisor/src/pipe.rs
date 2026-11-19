@@ -21,7 +21,19 @@ mod ffi {
         pub fn GetNamedPipeServerProcessId(h: isize, pid: *mut u32) -> i32;
         pub fn GetNamedPipeClientProcessId(h: isize, pid: *mut u32) -> i32;
         pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        pub fn GetCurrentThread() -> isize;
     }
+    #[link(name = "advapi32")]
+    extern "system" {
+        pub fn ImpersonateNamedPipeClient(h: isize) -> i32;
+        pub fn RevertToSelf() -> i32;
+        pub fn OpenThreadToken(thread: isize, access: u32, as_self: i32, token: *mut isize) -> i32;
+        pub fn GetTokenInformation(token: *mut c_void, class: i32, info: *mut c_void, len: u32, used: *mut u32) -> i32; // as recycle.rs declares it
+        pub fn ConvertSidToStringSidW(sid: *mut c_void, out: *mut *mut u16) -> i32;
+    }
+    pub const TOKEN_QUERY: u32 = 0x0008;
+    pub const TOKEN_USER: i32 = 1;
+    pub const TOKEN_ELEVATION: i32 = 20;
     #[repr(C)]
     pub struct SecurityAttributes { pub length: u32, pub descriptor: *mut c_void, pub inherit: i32 }
     #[link(name = "advapi32")]
@@ -74,7 +86,17 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
                 if !line.ends_with('\n') {
                     break;
                 }
-                let mut out = answer(line.trim(), client_elevated).replace(['\r', '\n'], " ");
+                // Who wrote this message: the pipe's own record of the client's security
+                // context, not only the process behind a client PID (which could have exited and
+                // been reused). Administrator only when both say so; another account, or no
+                // answer, ends the connection.
+                let mut out = match message_identity(h) {
+                    Some((account, elevated)) if account == sid => answer(line.trim(), client_elevated && elevated),
+                    _ => {
+                        let _ = (&*file).write_all(b"{\"ok\":false,\"text\":\"Sprawl couldn't confirm who is asking.\"}\n");
+                        break;
+                    }
+                }.replace(['\r', '\n'], " ");
                 out.push('\n');
                 if (&*file).write_all(out.as_bytes()).is_err() {
                     break;
@@ -138,6 +160,48 @@ fn peer(pipe: isize, server: bool) -> Option<bool> {
     (same_account && ours.ok().zip(theirs.ok()).is_some_and(|(ours, theirs)| ours == theirs)).then_some(elevated)
 }
 
+/// The account (SID text) and elevation of the security context the client's last message on
+/// `pipe` was written with, at identification level (the client connects with
+/// SECURITY_IDENTIFICATION: Sprawl can learn who it is, not act as it). None when Windows can't
+/// say. Sprawl never goes on running as the client: a failed revert ends the process.
+#[cfg(windows)]
+fn message_identity(pipe: isize) -> Option<(String, bool)> {
+    // SAFETY: the impersonation is undone before anything else runs on this thread; the token
+    // handle and the SID text are released here.
+    unsafe {
+        if ffi::ImpersonateNamedPipeClient(pipe) == 0 { return None; }
+        let mut token = 0isize;
+        let opened = ffi::OpenThreadToken(ffi::GetCurrentThread(), ffi::TOKEN_QUERY, 1, &mut token) != 0;
+        if ffi::RevertToSelf() == 0 { std::process::abort(); }
+        if !opened { return None; }
+        let out = token_identity(token);
+        ffi::CloseHandle(token);
+        out
+    }
+}
+
+/// SAFETY: `token` is an open token handle with TOKEN_QUERY.
+#[cfg(windows)]
+unsafe fn token_identity(token: isize) -> Option<(String, bool)> {
+    unsafe {
+        let mut buf = [0u64; 64];
+        let mut used = 0u32;
+        if ffi::GetTokenInformation(token as *mut std::ffi::c_void, ffi::TOKEN_USER, buf.as_mut_ptr().cast(), std::mem::size_of_val(&buf) as u32, &mut used) == 0 { return None; }
+        if (used as usize) < std::mem::size_of::<usize>() { return None; }
+        // TOKEN_USER { SID_AND_ATTRIBUTES { Sid, Attributes } }: the SID pointer comes first
+        let sid = *(buf.as_ptr() as *const *mut std::ffi::c_void);
+        let mut text = std::ptr::null_mut();
+        if sid.is_null() || ffi::ConvertSidToStringSidW(sid, &mut text) == 0 || text.is_null() { return None; }
+        let mut len = 0;
+        while len < 184 && *text.add(len) != 0 { len += 1; }
+        let account = String::from_utf16(std::slice::from_raw_parts(text, len)).ok();
+        ffi::LocalFree(text.cast());
+        let mut elevation = 0u32;
+        if ffi::GetTokenInformation(token as *mut std::ffi::c_void, ffi::TOKEN_ELEVATION, (&mut elevation as *mut u32).cast(), 4, &mut used) == 0 { return None; }
+        account.filter(|a| len < 184 && a.starts_with("S-1-")).map(|a| (a, elevation != 0))
+    }
+}
+
 impl Client {
     /// `None` when the app isn't running, or when whatever holds the pipe isn't this same
     /// program (another process could have taken the name first).
@@ -185,6 +249,31 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_message_carries_the_writers_account_and_elevation() {
+        use std::io::Write;
+        use std::os::windows::fs::OpenOptionsExt;
+        let name = format!(r"\\.\pipe\sprawl-identity-test-{}", std::process::id());
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let h = unsafe { super::ffi::CreateNamedPipeW(wide.as_ptr(), super::ffi::ACCESS_DUPLEX | super::ffi::FIRST_INSTANCE, super::ffi::REJECT_REMOTE, 1, 4096, 4096, 0, std::ptr::null()) };
+        assert_ne!(h, -1);
+        let mut client = std::fs::OpenOptions::new().read(true).write(true).security_qos_flags(super::ffi::SECURITY_IDENTIFICATION).open(&name).unwrap();
+        client.write_all(b"hello\n").unwrap();
+        let ok = unsafe { super::ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(super::ffi::ERROR_PIPE_CONNECTED);
+        assert!(ok);
+        let mut buf = [0u8; 6];
+        let mut read = 0u32;
+        #[link(name = "kernel32")]
+        extern "system" { fn ReadFile(h: isize, buf: *mut u8, len: u32, read: *mut u32, overlapped: *mut std::ffi::c_void) -> i32; }
+        assert_ne!(unsafe { ReadFile(h, buf.as_mut_ptr(), 6, &mut read, std::ptr::null_mut()) }, 0);
+        let (account, elevated) = super::message_identity(h).expect("the client's context");
+        assert_eq!(account, sprawl_core::identity::account_sid().unwrap());
+        assert_eq!(elevated, sprawl_core::elevation().unwrap());
+        // after the revert this thread is itself again
+        assert_eq!(sprawl_core::identity::account_sid().unwrap(), account);
+        unsafe { super::ffi::DisconnectNamedPipe(h); super::ffi::CloseHandle(h); }
+    }
+
     #[test]
     fn pipe_identity_is_the_windows_token_account() {
         let sid = sprawl_core::identity::account_sid().unwrap();

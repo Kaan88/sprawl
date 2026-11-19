@@ -302,10 +302,20 @@ fn limit(input: &Value, default: u64, max: u64) -> usize {
 
 impl<'a> Tools<'a> {
     pub fn new(tree: &'a Tree, facts: &'a Facts, model: &str, already: &[Finding], memory: &Memory) -> Tools<'a> {
+        Self::with_never(tree, facts, model, already, memory, Never::default_list())
+    }
+
+    /// For a client that may only see the scan on screen: nothing is read to make these tools
+    /// (the never-list is [`Never::inert`]); only the tree and the facts given answer.
+    pub fn restricted(tree: &'a Tree, facts: &'a Facts, memory: &Memory) -> Tools<'a> {
+        Self::with_never(tree, facts, "claude-code", &[], memory, Never::inert())
+    }
+
+    fn with_never(tree: &'a Tree, facts: &'a Facts, model: &str, already: &[Finding], memory: &Memory, never: Never) -> Tools<'a> {
         let mut t = Tools {
             tree,
             facts,
-            never: Never::default_list(),
+            never,
             model: model.to_string(),
             known: HashSet::new(),
             known_list: Vec::new(),
@@ -415,6 +425,10 @@ impl<'a> Tools<'a> {
             }
             "owner_of" => {
                 let p = path_arg(input)?;
+                // only for what this scan holds: an owner lookup is no way to ask about anything else
+                if crate::find_path(self.tree, &p).is_none() {
+                    return Err(format!("{} {}", p.display(), crate::mcp_scan::NOT_IN_SCAN));
+                }
                 Ok(match self.facts.owner_of(&p) {
                     None => "No installed app is known to own it.".into(),
                     Some(a) => {

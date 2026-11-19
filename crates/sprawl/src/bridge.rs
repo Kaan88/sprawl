@@ -81,14 +81,23 @@ pub(crate) fn start() {
             };
             // a screenshot run writes nothing; its flag is set after this thread starts
             index.set_app_state(scanning, !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed));
-            if report_facts.is_none() && facts.as_ref().is_none_or(|(weak, _)| !same_tree(weak, tree.as_ref())) {
-                let mut f = if tree.is_some() { Facts::gather() } else { Facts::default() };
-                if let Some(t) = &tree {
-                    f.attach_usage(t);
+            // A client that may only see the scan on screen gets what the app has published,
+            // cut down to that tree: no app facts, recent items or program starts are read for
+            // it (they would be, with the app's rights, before anything else was decided).
+            let scoped;
+            let f: Option<&Facts> = if disk {
+                if report_facts.is_none() && facts.as_ref().is_none_or(|(weak, _)| !same_tree(weak, tree.as_ref())) {
+                    let mut f = if tree.is_some() { Facts::gather() } else { Facts::default() };
+                    if let Some(t) = &tree {
+                        f.attach_usage(t);
+                    }
+                    facts = Some((tree.as_ref().map(Arc::downgrade).unwrap_or_default(), f));
                 }
-                facts = Some((tree.as_ref().map(Arc::downgrade).unwrap_or_default(), f));
-            }
-            let f = report_facts.as_deref().unwrap_or_else(|| &facts.as_ref().expect("made for an unfinished report").1);
+                Some(report_facts.as_deref().unwrap_or_else(|| &facts.as_ref().expect("made for an unfinished report").1))
+            } else {
+                scoped = report_facts.as_deref().zip(tree.as_deref()).map(|(f, t)| f.scoped_to(t));
+                scoped.as_ref()
+            };
             let mut wanted = None;
             // a panic answers an error and leaves the pipe working
             let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), scan_before, f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, disk, &mut |x| wanted = Some(x))))
