@@ -276,3 +276,4 @@ See [current status](status.md) for deliberate deferrals and the new mockup-firs
 fa7ce20 (per-folder path pinning in inventories; network-drive scans), dbbadb9 (per-file opens
 in evidence of use, compressed-size measurement and the daily scan) and 39548e2 (whole-folder
 recycling). Workspace tests pass. Queued for review; not pushed or released until the user says so.
+Fuller review of Codex's 1.0 work after the user asked: c223324 (elevated copies could never update), da9573d (tree Delete froze the window), 081747d (History roots listed twice). Not pushed or released.

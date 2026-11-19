@@ -9,6 +9,9 @@ in-app updater shows.
 - Network drives and `\\server\share` folders can be scanned again (read only; clean-up actions stay on local drives).
 - Advice after a scan is quicker: last-use times come from folder listings instead of opening every file.
 - Folders go to the Recycle Bin whole again when nothing in them must stay, as one entry Explorer can restore, instead of every file alone with the empty folders left behind.
+- Updates work again with Options > Always Run as Administrator on: Sprawl reopens itself without administrator rights to install the update, then comes back as usual. 1.0 refused to update while elevated.
+- Delete in the tree no longer freezes the window on a big folder: it runs in the background with progress in the footer.
+- Recent scans on the welcome page list each folder once.
 
 ## 1.0.0 — 2026-11-19
 
