@@ -126,6 +126,10 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     // which file or folder the root is: the one pinned for the whole walk (a file root too,
     // before it returns: Astra 1.0.2 round 4, S1 #3)
     root.id = scan.pinned.as_ref().and_then(|p| p.handle().ok()).and_then(|h| dir::id(h).ok()).unwrap_or(0);
+    // and the volume it is on, read now: the ids in the tree are on it
+    let serial = scan.pinned.as_ref().and_then(|p| p.handle().ok()).and_then(crate::local::volume_id)
+        .or_else(|| crate::volume_serial(path));
+    let volumes: Vec<(std::path::PathBuf, u64)> = serial.map(|v| (path.to_path_buf(), v)).into_iter().collect();
     if !meta.is_dir() {
         let mut errors = 0;
         if root.attributes & attr::COMPRESSED == 0 && meta.len() > 0 {
@@ -140,7 +144,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
         root.files = 1;
         progress.add_counts(1, 0, root.size);
         progress.set_phase("Done");
-        return Ok(Tree { root_path: path.to_path_buf(), nodes: vec![root], errors, method: ScanMethod::Walk });
+        return Ok(Tree { volumes, root_path: path.to_path_buf(), nodes: vec![root], errors, method: ScanMethod::Walk });
     }
     let errors_before = progress.errors();
 
@@ -207,7 +211,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
         }
         nodes[ni].children = children;
     }
-    let mut tree = Tree { root_path: path.to_path_buf(), nodes, errors: progress.errors() - errors_before, method: ScanMethod::Walk };
+    let mut tree = Tree { volumes, root_path: path.to_path_buf(), nodes, errors: progress.errors() - errors_before, method: ScanMethod::Walk };
     tree.compute_totals();
     progress.top_reset(top_of(&tree));
     progress.set_phase("Done");

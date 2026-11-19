@@ -537,7 +537,7 @@ mod tests {
             node("Readme.MD", false, 1 << 20, Some(5), vec![], Some(T0 + 200 * DAY)),
             node("Photo.JPG", false, 500_000, Some(10), vec![], Some(T0 + 20 * DAY)),
         ];
-        let mut t = Tree { root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
     }
@@ -551,7 +551,7 @@ mod tests {
             node("D:\\Backup\\", true, 0, Some(0), vec![4], Some(T0)),
             node("old.ZIP", false, 10, Some(3), vec![], Some(T0)),
         ];
-        let mut t = Tree { root_path: PathBuf::from(crate::MULTIPLE), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from(crate::MULTIPLE), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
     }
@@ -713,7 +713,7 @@ mod tests {
             nodes[p].children.push(id);
             nodes.push(node(&format!("{}{k}.txt", if p == 1 { "inner" } else { "after" }), false, 1, Some(p), vec![], Some(T0)));
         }
-        let t = Tree { root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
+        let t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
         let c = CompactIndex::build(&t);
         for q in ["\\odd\\", "path:inner", "\\data\\after", "path:txt", "\\odd\\inner99"] {
             let q = Query::parse(q);
@@ -741,7 +741,7 @@ mod tests {
                 nodes.push(node(&name, false, f as u64, Some(p), vec![], Some(T0 + f as u64 * DAY)));
             }
         }
-        let mut t = Tree { root_path: PathBuf::from("C:\\"), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\"), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         let c = CompactIndex::build(&t);
         for q in ["\\dir1\\", "\\dir17\\sub\\ *.log", "case:\\Dir3\\Sub\\Deep", "path:dir4", "regex:\\\\dir4\\d\\\\", "\\sub\\"] {

@@ -527,7 +527,7 @@ impl Index {
         }
         if progress.excludes(path) {
             let name = path.display().to_string();
-            return Tree { root_path: path.to_path_buf(), nodes: vec![Node { name, is_dir: true, attributes: attr::DIRECTORY, ..Default::default() }], errors: 0, method: ScanMethod::Mft };
+            return Tree { volumes: Vec::new(), root_path: path.to_path_buf(), nodes: vec![Node { name, is_dir: true, attributes: attr::DIRECTORY, ..Default::default() }], errors: 0, method: ScanMethod::Mft };
         }
         let inside = |p: &Path| progress.exclusion_inside(p).then(|| p.to_path_buf());
         let mut queue: VecDeque<(usize, usize, Option<PathBuf>)> = VecDeque::from([(ROOT, root, inside(path))]);
@@ -553,7 +553,7 @@ impl Index {
             }
             nodes[ni].children = children;
         }
-        let mut tree = Tree { root_path: path.to_path_buf(), nodes, errors: 0, method: ScanMethod::Mft };
+        let mut tree = Tree { volumes: Vec::new(), root_path: path.to_path_buf(), nodes, errors: 0, method: ScanMethod::Mft };
         tree.compute_totals();
         tree
     }
@@ -1091,6 +1091,8 @@ pub fn scan_multi(paths: &[PathBuf], progress: &Progress) -> io::Result<Vec<Tree
         }
         roots.push((frn, p.clone()));
     }
+    // each root's volume serial, read before the MFT: the ids in the trees are on it
+    let serials: Vec<Option<u64>> = paths.iter().map(|p| crate::volume_serial(p)).collect();
     progress.set_method(ScanMethod::Mft);
     progress.set_phase("Reading MFT");
     // With skipped folders, the live list of top folders and the current-file line would show
@@ -1098,8 +1100,11 @@ pub fn scan_multi(paths: &[PathBuf], progress: &Progress) -> io::Result<Vec<Tree
     let live = if roots.len() == 1 && !progress.has_exclusions() { Some(roots[0].0) } else { None };
     let mut index = read_mft(&volume, progress, live)?;
     progress.set_phase("Building tree");
-    let trees = index.build_excluding(&roots, progress);
+    let mut trees = index.build_excluding(&roots, progress);
     drop(index);
+    for ((t, p), v) in trees.iter_mut().zip(paths).zip(serials) {
+        t.volumes = v.map(|v| (p.clone(), v)).into_iter().collect();
+    }
     if let [t] = trees.as_slice() {
         let r = &t.nodes[ROOT];
         progress.set_counts(r.files, r.folders, r.size);

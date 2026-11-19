@@ -574,7 +574,7 @@ mod recheck_tests {
 
     #[test]
     fn selected_roots_keep_their_own_refresh_boundary() {
-        let tree = Tree { root_path: sprawl_core::MULTIPLE.into(), errors: 0, method: ScanMethod::Walk, nodes: vec![
+        let tree = Tree { volumes: Vec::new(), root_path: sprawl_core::MULTIPLE.into(), errors: 0, method: ScanMethod::Walk, nodes: vec![
             Node { name: sprawl_core::MULTIPLE.into(), is_dir: true, children: vec![1, 2], ..Default::default() },
             Node { name: r"C:\A".into(), is_dir: true, parent: Some(0), children: vec![3], ..Default::default() },
             Node { name: r"D:\B".into(), is_dir: true, parent: Some(0), children: vec![4], ..Default::default() },
@@ -4173,7 +4173,7 @@ mod chat_context_tests {
 
     #[test]
     fn replies_cannot_reuse_indices_after_context_changes() {
-        let tree = Arc::new(Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { is_dir: true, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk });
+        let tree = Arc::new(Tree { volumes: Vec::new(), root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { is_dir: true, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk });
         let finding = |path: &str| serde_json::from_value::<Finding>(serde_json::json!({
             "path": path, "bytes": 1, "risk": "green", "remedy": "info", "title": path,
             "evidence": [], "confidence": 1.0, "source": {"kind": "rule", "id": "test.rule"}

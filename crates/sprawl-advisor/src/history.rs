@@ -551,7 +551,7 @@ mod tests {
         snapshot::write(&lower, taken, 3, &mut fs::File::create(&legacy_file).unwrap()).unwrap();
         let entry = list(&base).into_iter().find(|entry| entry.file == legacy_file).unwrap();
         assert!(load(&entry).is_err(), "a legacy folded bucket cannot relabel a case-distinct snapshot");
-        let file = Tree { root_path: r"C:\Files\one.bin".into(), nodes: vec![sprawl_core::Node { name: r"C:\Files\one.bin".into(), size: 40, allocated: 4096, files: 1, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk };
+        let file = Tree { volumes: Vec::new(), root_path: r"C:\Files\one.bin".into(), nodes: vec![sprawl_core::Node { name: r"C:\Files\one.bin".into(), size: 40, allocated: 4096, files: 1, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk };
         prepare(&file, taken, false).save(&base, u64::MAX).unwrap();
         let entry = covering(&base, &file.root_path).pop().unwrap();
         let back = load(&entry).unwrap();

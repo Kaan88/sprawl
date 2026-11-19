@@ -556,7 +556,7 @@ mod tests {
             children,
             id: 0,
         };
-        let mut tree = Tree {
+        let mut tree = Tree { volumes: Vec::new(),
             root_path: r"C:\Users\sam".into(),
             nodes: vec![
                 node(r"C:\Users\sam", true, 0, 0, None, vec![1]),

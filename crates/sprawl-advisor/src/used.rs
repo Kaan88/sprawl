@@ -309,6 +309,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The same for two scan roots differing only in case (Astra 1.0.3 review, S3 #2).
+    #[test]
+    fn a_case_only_scan_root_is_never_taken_by_chance() {
+        use sprawl_core::{Node, Tree, MULTIPLE};
+        let dir = |name: &str, parent| Node { name: name.into(), is_dir: true, parent, ..Default::default() };
+        let mut nodes = vec![dir(MULTIPLE, None), dir(r"C:\Apps\Game", Some(0)), dir(r"C:\Apps\game", Some(0)), dir("bin", Some(1)), dir("bin", Some(2))];
+        nodes[0].children = vec![1, 2];
+        nodes[1].children = vec![3];
+        nodes[2].children = vec![4];
+        let tree = Tree { volumes: Vec::new(), root_path: MULTIPLE.into(), nodes, errors: 0, method: Default::default() };
+        let find = |p: &str| crate::find_path_unambiguous(&tree, std::path::Path::new(p));
+        assert_eq!(find(r"C:\Apps\Game\bin"), Some(3));
+        assert_eq!(find(r"C:\Apps\game\bin"), Some(4), "the second root's app gets its own usage");
+        assert_eq!(find(r"c:\Apps\game"), Some(2), "the drive letter's case doesn't count");
+        assert_eq!(find(r"C:\Apps\GAME\bin"), None, "neither by chance");
+    }
+
     /// The real readers on a small folder of this repository (run by hand).
     #[test]
     #[ignore]

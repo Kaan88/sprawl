@@ -204,7 +204,7 @@ pub fn filter_tree(tree: &Tree, pattern: &str) -> Tree {
             nodes[map[i]].children = kids;
         }
     }
-    let mut out = Tree { root_path: tree.root_path.clone(), nodes, errors: tree.errors, method: tree.method };
+    let mut out = Tree { volumes: tree.volumes.clone(), root_path: tree.root_path.clone(), nodes, errors: tree.errors, method: tree.method };
     // Folders that lost all their children would otherwise keep their old totals.
     for n in out.nodes.iter_mut().filter(|n| n.is_dir && n.children.is_empty()) {
         n.size = 0;
@@ -265,7 +265,7 @@ mod tests {
             node("deep", true, 0, Some(4), vec![9]),
             node("f.json", false, 2, Some(8), vec![]),
         ];
-        let mut t = Tree { root_path: PathBuf::from("C:\\data"), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\data"), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
     }

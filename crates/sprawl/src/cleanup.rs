@@ -89,6 +89,19 @@ impl Cleanup {
 
     fn bind(&mut self, next: Option<SelectionContext>) -> bool {
         if self.context.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| a.same(b)) || self.context.is_none() && next.is_none() { return false; }
+        // No report for now (the Advisor reading the tree again after a clean-up): the ticks
+        // wait, still bound to the findings they were made on, and are reconciled with the next
+        // report when it comes. Nothing can run meanwhile: there is nothing to review.
+        if next.is_none() {
+            let had = self.review || self.single.is_some() || self.armed.is_some() || self.own_ok || self.privacy_ok;
+            self.own_ok = false;
+            self.privacy_ok = false;
+            self.review = false;
+            self.single = None;
+            self.armed = None;
+            self.measuring = None;
+            return had;
+        }
         if let Some(old) = &self.context {
             self.ticked.retain(|path| next.as_ref().is_some_and(|n| n.findings.iter().any(|f| key(&f.path) == *path && old.unchanged(f, n))));
             self.privacy_ticked.retain(|path| next.as_ref().is_some_and(|n| n.privacy.iter().any(|f| key(&f.path) == *path && old.unchanged(f, n))));
@@ -1023,7 +1036,8 @@ impl State {
                 }
                 // remembered as done when most of it went, never over the user's own Keep
                 let kept = self.advisor.memory.hides(&it.path).is_some_and(|d| d.verdict == sprawl_advisor::memory::Verdict::Keep);
-                if succeeded(o) && o.freed.saturating_add(o.recycled) > 0 && o.freed.saturating_add(o.recycled) >= it.bytes / 2 && !kept {
+                // (a compress is remembered under Compressed instead, complete or not)
+                if it.fate != Fate::Compress && succeeded(o) && o.freed.saturating_add(o.recycled) > 0 && o.freed.saturating_add(o.recycled) >= it.bytes / 2 && !kept {
                     self.advisor.memory.decide(&it.path, &it.title, sprawl_advisor::memory::Verdict::Done);
                 }
             }
@@ -1044,23 +1058,31 @@ impl State {
         for it in &run.items {
             let (Some(c), ItemState::Done(o)) = (&it.command, &it.state) else { continue };
             let Some(alg) = sprawl_advisor::remedies::compress_alg(c) else { continue };
-            // compressed now, or found compressed already (by an earlier run): either way it is
-            // no longer offered, which the scan alone can't tell
-            if o.freed == 0 && !(succeeded(o) && o.compress.as_ref().is_some_and(|c| c.already > 0)) {
+            // compressed now (some files or all), or found compressed already by an earlier run:
+            // recorded, so it can be undone
+            let Some(d) = &o.compress else { continue };
+            if o.freed == 0 && d.compressed == 0 && !(succeeded(o) && d.already > 0) {
                 continue;
             }
+            // only a pass through every file stops it being offered, which the scan alone can't
+            // tell; one stopped or with files busy, changed or failing keeps its retry
+            let complete = succeeded(o) && !d.stopped && d.in_use + d.failed + d.changed == 0;
             let path = it.path.display().to_string();
             let list = &mut self.advisor.memory.compressed;
+            // an earlier run's saving is kept: a run over files compressed already saves no more
+            let earlier = list.iter().filter(|r| r.path.eq_ignore_ascii_case(&path)).map(|r| r.saved).max().unwrap_or(0);
             list.retain(|r| !r.path.eq_ignore_ascii_case(&path));
-            list.push(sprawl_advisor::memory::Compressed { path, alg: alg.to_string(), when: now, saved: o.freed, size: it.bytes });
+            let saved = earlier.saturating_add(o.freed).min(it.bytes.max(o.freed));
+            list.push(sprawl_advisor::memory::Compressed { path, alg: alg.to_string(), when: now, saved, size: it.bytes, partial: !complete });
         }
         self.save_memory();
         self.advisor.cleanup.done = Some(done);
         // what ran no longer counts as ticked, nor is put back by the Cleaners tab on this
         // report; the other ticks stay as they were (a "Clean up just this" runs that one only)
         self.advisor.cl.preview = None;
+        // (only the items that started: a stopped batch's waiting ones stay ticked)
         let c = &mut self.advisor.cleanup;
-        for it in &run.items {
+        for it in run.items.iter().filter(|it| !matches!(it.state, ItemState::Waiting)) {
             c.ticked.remove(&key(&it.path));
         }
         c.auto = false;
@@ -1085,7 +1107,16 @@ impl State {
                 ItemState::Waiting => 0,
             }).sum();
             let only_compress = run.items.iter().all(|it| it.fate == Fate::Compress);
-            let head = if only_compress { format!("Compressing... {} saved so far", self.size(freed)) } else { format!("Cleaning up... {} freed so far", self.size(freed)) };
+            // a compress's saving is measured when it ends: meanwhile, how far through it is
+            let through: u64 = run.items.iter().map(|it| match &it.state {
+                ItemState::Running(f) => (*f).min(it.bytes),
+                ItemState::Done(_) => it.bytes,
+                ItemState::Waiting => 0,
+            }).sum();
+            let total: u64 = run.items.iter().map(|it| it.bytes).sum();
+            let head = if only_compress && freed == 0 { format!("Compressing... {} of {} gone through", self.size(through), self.size(total)) }
+                else if only_compress { format!("Compressing... {} of {} gone through, {} saved so far", self.size(through), self.size(total), self.size(freed)) }
+                else { format!("Cleaning up... {} freed so far", self.size(freed)) };
             x += &format!(
                 r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
                 ui::esc(&head),
@@ -1728,8 +1759,20 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
         match &it.state {
             ItemState::Done(o) => {
                 s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
-                // a tool's command, as run, and the last lines it wrote (R7)
-                if let Some(c) = &it.command {
+                // a compress ran in Sprawl itself: what it did, file by file
+                let alg = it.command.as_deref().and_then(sprawl_advisor::remedies::compress_alg);
+                if let (Some(alg), Some(d)) = (alg, &o.compress) {
+                    s += &format!("\t  compressed in place ({alg}, in Sprawl): {} compressed, {} compressed already, {} in use, {} changed since the plan, {} failed{}{}\r\n",
+                        d.compressed, d.already, d.in_use, d.changed, d.failed,
+                        if d.unmeasured > 0 { format!(", {} not measured", d.unmeasured) } else { String::new() },
+                        if d.stopped { ", stopped" } else { "" });
+                    if let Some(e) = &d.first_error {
+                        s += &format!("\t  first error: {e}\r\n");
+                    }
+                } else if alg.is_some() {
+                    s += "\t  compress in place (in Sprawl): not started\r\n";
+                } else if let Some(c) = &it.command {
+                    // a tool's command, as run, and the last lines it wrote (R7)
                     s += &format!("\t  ran: {c}\r\n");
                     for l in &o.output {
                         s += &format!("\t  | {l}\r\n");
@@ -1978,7 +2021,7 @@ mod accounting_tests {
             assert_eq!(out.freed, 0, "failure cannot become a successful saving");
             assert!(!succeeded(&out));
         }
-        let tree = |errors| Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { size: 40, ..Default::default() }], errors, method: sprawl_core::ScanMethod::Walk };
+        let tree = |errors| Tree { volumes: Vec::new(), root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { size: 40, ..Default::default() }], errors, method: sprawl_core::ScanMethod::Walk };
         assert_eq!(complete_size(None), None);
         assert_eq!(complete_size(Some(&None)), Some(0));
         assert_eq!(complete_size(Some(&Some(tree(1)))), None);
@@ -1992,7 +2035,7 @@ mod selection_context_tests {
 
     #[test]
     fn changed_definitions_actions_and_selection_require_fresh_consent() {
-        let tree = || Arc::new(Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node::default()], errors: 0, method: sprawl_core::ScanMethod::Walk });
+        let tree = || Arc::new(Tree { volumes: Vec::new(), root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node::default()], errors: 0, method: sprawl_core::ScanMethod::Walk });
         let a = tree();
         let b = tree();
         let definitions = sprawl_advisor::cleaners::catalogue(&[sprawl_advisor::rules::RulePack::builtin()]);
@@ -2026,6 +2069,26 @@ mod selection_context_tests {
         c.privacy_ticked.insert("new privacy selection".into());
         assert!(c.sync_confirmation_selection());
         assert!(!c.own_ok && !c.privacy_ok);
+    }
+
+    /// Astra 1.0.3 review: the Advisor reading the tree again after a clean-up shows no report
+    /// for a moment; the other ticks wait for the new one, and stay where it still has them.
+    #[test]
+    fn ticks_wait_through_a_refresh_with_no_report() {
+        let a = Arc::new(Tree { volumes: Vec::new(), root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node::default()], errors: 0, method: sprawl_core::ScanMethod::Walk });
+        let b = Arc::new((*a).clone());
+        let item = |p: &str| -> Finding { serde_json::from_value(serde_json::json!({"path": p, "bytes": 10, "risk": "green", "remedy": "delete", "title": "x", "evidence": [], "confidence": 1.0, "source": {"kind": "model", "id": "m"}})).unwrap() };
+        let (one, two) = (item(r"C:\Data\one"), item(r"C:\Data\two"));
+        let ctx = |t: &Arc<Tree>, f: Vec<Finding>| SelectionContext { tree: Arc::downgrade(t), findings: f, privacy: vec![], definitions: vec![] };
+        let mut c = Cleanup::default();
+        c.bind(Some(ctx(&a, vec![one.clone(), two.clone()])));
+        c.ticked.insert(key(&one.path));
+        c.ticked.insert(key(&two.path));
+        c.bind(None);
+        assert_eq!(c.ticked.len(), 2, "no report: the ticks wait");
+        // the refreshed report: `one` went (cleaned), `two` is as it was
+        c.bind(Some(ctx(&b, vec![two.clone()])));
+        assert_eq!(c.ticked.iter().collect::<Vec<_>>(), [&key(&two.path)]);
     }
 }
 

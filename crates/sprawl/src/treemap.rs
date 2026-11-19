@@ -24,7 +24,7 @@ pub(crate) struct LiveMap {
 impl LiveMap {
     pub(crate) fn new() -> Self {
         let root = Node { is_dir: true, ..Default::default() };
-        LiveMap { tree: Tree { nodes: vec![root], ..Default::default() }, index: HashMap::new() }
+        LiveMap { tree: Tree { volumes: Vec::new(), nodes: vec![root], ..Default::default() }, index: HashMap::new() }
     }
 
     /// Update sizes of the top-level entries found so far.

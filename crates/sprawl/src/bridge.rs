@@ -153,7 +153,7 @@ pub(crate) fn take_filters(map: Option<&Arc<Tree>>) -> Vec<String> {
 #[cfg(test)]
 mod context_tests {
     use super::*;
-    fn tree() -> Arc<Tree> { Arc::new(Tree { root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { is_dir: true, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk }) }
+    fn tree() -> Arc<Tree> { Arc::new(Tree { volumes: Vec::new(), root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { is_dir: true, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk }) }
 
     #[test]
     fn switching_source_drops_reports_and_filters() {

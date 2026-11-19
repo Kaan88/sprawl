@@ -931,8 +931,8 @@ impl State {
                     "compdemo" => {
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                         let pf = std::env::var("ProgramFiles").unwrap_or_default();
-                        self.advisor.memory.compressed.push(sprawl_advisor::memory::Compressed { path: format!(r"{pf}\dotnet"), alg: "xpress8k".into(), when: now - 86_400 * 3, saved: 1_300_000_000, size: 2_900_000_000 });
-                        self.advisor.memory.compressed.push(sprawl_advisor::memory::Compressed { path: format!(r"{pf}\Gone Game"), alg: "xpress16k".into(), when: now - 86_400 * 40, saved: 4_200_000_000, size: 9_100_000_000 });
+                        self.advisor.memory.compressed.push(sprawl_advisor::memory::Compressed { path: format!(r"{pf}\dotnet"), alg: "xpress8k".into(), when: now - 86_400 * 3, saved: 1_300_000_000, size: 2_900_000_000, partial: false });
+                        self.advisor.memory.compressed.push(sprawl_advisor::memory::Compressed { path: format!(r"{pf}\Gone Game"), alg: "xpress16k".into(), when: now - 86_400 * 40, saved: 4_200_000_000, size: 9_100_000_000, partial: false });
                         self.advisor_command("AdvOnlyComp");
                     }
                     // dev: an AI suggestion of the first three findings it may suggest (R9)

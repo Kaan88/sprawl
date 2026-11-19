@@ -3,19 +3,22 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.3 — 2026-11-19
 
-- Compressing a folder is much faster: Sprawl compresses the files itself, several at a time, instead of running compact.exe on them in batches. While it runs, the item shows how far through it is ("Compressing... 40%, 1.2 GiB of 3.2 GiB"); Stop ends it after the files being compressed at that moment.
+- Compressing a folder is much faster: Sprawl compresses the files itself, several at a time, instead of running compact.exe on them in batches. While it runs, the item and the header show how far through it is ("Compressing... 40%, 1.2 GiB of 3.2 GiB"); Stop ends it after the files being compressed at that moment.
+- Each compression setting (XPRESS4K, 8K, 16K, LZX) is stored as chosen. A file that changed or was replaced after Sprawl planned the run is left alone. A file Windows won't let Sprawl read counts as a failure, with its reason, not as "in use". The saving counts every data stream of a file both before and after.
+- The clean-up log says what a compress did (compressed, already compressed, in use, changed, failed) instead of naming compact.exe.
 - After compressing, the banner says the files were compressed in place and nothing was deleted (it said "deleted for good" before), how many files were compressed and what was saved, and how many a program had open and were left as they were.
-- A folder Sprawl has compressed is no longer offered for compressing again (Windows doesn't show compression in a folder listing), until it grows by a tenth, after a big update say.
+- A folder Sprawl has compressed completely is no longer offered for compressing again (Windows doesn't show compression in a folder listing), until it grows by a tenth, after a big update say. One stopped part way, or with files a program had open, is still offered so you can finish it; either can be undone under Compressed, and compressing again keeps the earlier saving.
 - A compress suggestion's button says "Compress this...", and its text says nothing is deleted.
-- "Clean up just this..." on one item leaves the other ticked items ticked.
+- "Clean up just this..." on one item leaves the other ticked items ticked, also while the Advisor reads the folder again afterwards; a stopped clean-up leaves the items it didn't start ticked.
 - A question pasted into the AI chat with line breaks shows them as line breaks, not as "�".
-- Linking duplicates: the original is made read-only before its last check, so no new data stream can be added to it after that check, even if Sprawl closes at that moment.
-- A clean-up treats an item as the one scanned only when it has the same full file id on the same drive. In a folder that changed since the scan, an item without one stays. The preview of what would go uses the same test.
+- Linking duplicates: the original is made read-only before its last check, so no new data stream can be added to it after that check. A copy that has another name (a hard link elsewhere) is left alone, since linking it would free nothing and would leave that other name read-only.
+- A clean-up treats an item as the one scanned only when it has the same full file id on the same drive, the drive read when it was scanned (each folder of a multi-folder scan on its own). An item on another drive now, after a drive letter was given to another disk, stays. In a folder that changed since the scan, an item without an id stays. The preview of what would go uses the same test.
 - npm's cache clean-up holds the cache and its logs folder from before npm is first asked where its cache is.
 - Codex: a turn that finishes without an answer of its own is reported as such, never answered with the previous turn's text.
-- An app's last use is taken from its own folder only, never from a folder whose name differs only in case. A recent item still matches when only the drive letter's case differs.
+- An app's last use is taken from its own folder only, never from a folder whose name differs only in case, also when both were scanned as separate folders. A recent item still matches when only the drive letter's case differs.
+- Sprawl's own temporary folders are removed only when they are provably the same folder it made.
 - The scan's Details line about network folders gives the number on the network, on this PC and unknown, once each.
 
 ## 1.0.2 — 2026-11-19

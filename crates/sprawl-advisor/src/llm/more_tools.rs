@@ -215,7 +215,7 @@ mod tests {
         use sprawl_core::{Node, ScanMethod};
         let dir = std::env::temp_dir().join(format!("sprawl-growth-case-{}", std::process::id()));
         let root = dir.join("Synthetic");
-        let mut old = Tree { root_path: root.clone(), nodes: vec![
+        let mut old = Tree { volumes: Vec::new(), root_path: root.clone(), nodes: vec![
             Node { name: root.display().to_string(), is_dir: true, children: vec![1, 2], ..Default::default() },
             Node { name: "Data".into(), is_dir: true, parent: Some(0), children: vec![3], ..Default::default() },
             Node { name: "data".into(), is_dir: true, parent: Some(0), children: vec![4], ..Default::default() },

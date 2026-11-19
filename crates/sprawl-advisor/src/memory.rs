@@ -154,6 +154,10 @@ pub struct Compressed {
     pub saved: u64,
     /// The folder's size (the data, which compression doesn't change).
     pub size: u64,
+    /// The run didn't go through every file (stopped, or files busy, changed or failing): it
+    /// can be undone, but the folder is still offered for compressing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 fn now() -> u64 {
@@ -530,12 +534,12 @@ impl Memory {
         (shown, hidden)
     }
 
-    /// A compress suggestion for a folder Sprawl compressed, that hasn't grown by a tenth since:
-    /// done. A listing doesn't show which files Windows keeps compressed, so the scan alone
+    /// A compress suggestion for a folder Sprawl compressed completely, that hasn't grown by a
+    /// tenth since: done. One compressed only partly is still offered. A listing doesn't show which files Windows keeps compressed, so the scan alone
     /// would offer it again; a big update (new, uncompressed files) brings it back.
     pub fn compressed_already(&self, f: &Finding) -> bool {
         crate::remedies::compresses(f)
-            && self.compressed.iter().any(|c| segments(&c.path) == segments(&f.path.to_string_lossy()) && f.bytes <= c.size.saturating_add(c.size / 10))
+            && self.compressed.iter().any(|c| !c.partial && segments(&c.path) == segments(&f.path.to_string_lossy()) && f.bytes <= c.size.saturating_add(c.size / 10))
     }
 
     pub fn label_for(&self, path: &Path) -> Option<&Label> {
@@ -860,7 +864,9 @@ mod tests {
         };
         let mut m = Memory::default();
         assert_eq!(m.filter(vec![f(5 << 30)]).0.len(), 1);
-        m.compressed.push(Compressed { path: r"c:\program files\big app".into(), alg: "xpress8k".into(), when: 1, saved: 2 << 30, size: 5 << 30 });
+        m.compressed.push(Compressed { path: r"c:\program files\big app".into(), alg: "xpress8k".into(), when: 1, saved: 2 << 30, size: 5 << 30, partial: true });
+        assert_eq!(m.filter(vec![f(5 << 30)]).0.len(), 1, "compressed part way: still offered");
+        m.compressed[0].partial = false;
         let (shown, hidden) = m.filter(vec![f(5 << 30)]);
         assert!(shown.is_empty() && hidden[0].1 == Verdict::Done);
         assert_eq!(m.filter(vec![f(6 << 30)]).0.len(), 1, "grown by a fifth: offered again");

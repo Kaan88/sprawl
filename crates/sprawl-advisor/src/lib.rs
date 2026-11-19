@@ -110,15 +110,23 @@ pub(crate) fn find_path_unambiguous(tree: &Tree, path: &Path) -> Option<usize> {
     let s = path.to_string_lossy();
     let spelled: Vec<&str> = s.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
     let want = segments(&s);
-    let starts: Vec<(usize, Vec<String>)> = if tree.nodes[ROOT].name == MULTIPLE {
-        tree.nodes[ROOT].children.iter().map(|&c| (c, segments(&tree.nodes[c].name))).collect()
+    // (node, its path's segments lower-cased, and as spelled)
+    let root = |n: usize, p: &str| (n, segments(p), p.split(['\\', '/']).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>());
+    let starts: Vec<(usize, Vec<String>, Vec<String>)> = if tree.nodes[ROOT].name == MULTIPLE {
+        tree.nodes[ROOT].children.iter().map(|&c| root(c, &tree.nodes[c].name)).collect()
     } else {
-        vec![(ROOT, segments(&tree.path_of(ROOT).to_string_lossy()))]
+        vec![root(ROOT, &tree.path_of(ROOT).to_string_lossy())]
     };
-    'start: for (start, base) in starts {
-        if want.len() < base.len() || want[..base.len()] != base[..] {
+    let starts: Vec<_> = starts.into_iter().filter(|(_, base, _)| want.len() >= base.len() && want[..base.len()] == base[..]).collect();
+    'start: for (start, base, as_spelled) in &starts {
+        // scan roots differing only in case (`Game` and `game`): only the one spelled as in
+        // `path` matches, and none when neither is
+        // (a drive letter's case never counts)
+        let same = |a: &&str, b: &String| *a == b.as_str() || a.ends_with(':') && a.eq_ignore_ascii_case(b);
+        if starts.iter().filter(|s| s.1 == *base).count() > 1 && !spelled[..base.len()].iter().zip(as_spelled).all(|(a, b)| same(a, b)) {
             continue;
         }
+        let (start, base) = (*start, base);
         let mut n = start;
         for (i, part) in want.iter().enumerate().skip(base.len()) {
             let alike: Vec<usize> = tree.nodes[n].children.iter().copied().filter(|&c| tree.nodes[c].name.to_lowercase() == *part).collect();

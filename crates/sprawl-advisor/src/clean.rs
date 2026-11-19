@@ -180,8 +180,8 @@ pub struct Spare {
 /// [`sprawl_core::Node::id`]), nothing (the scan listed that folder with ids and nothing had
 /// that name), or not known (the scan didn't cover it, or had no ids there).
 ///
-/// An item is known with the volume the scanned folder is on now (when it could be read), so
-/// a match is the same file id on the same volume.
+/// An item is known with the volume its scan root was on when it was scanned (when it could be
+/// read then), so a match is the same file id on the same volume.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SeenAt {
     Item(u64, Option<u64>),
@@ -198,9 +198,9 @@ pub type Seen = std::sync::Arc<dyn Fn(&Path) -> SeenAt + Send + Sync>;
 pub fn seen_in(tree: std::sync::Arc<sprawl_core::Tree>) -> Seen {
     type Folder = (PathBuf, Option<std::collections::HashMap<String, u64>>);
     let recent: std::sync::Mutex<std::collections::VecDeque<Folder>> = std::sync::Mutex::new(std::collections::VecDeque::new());
-    // the volume the scanned folder is on: every item the scan saw is on it
-    let volume = win::open_attrs(&tree.root_path).ok().and_then(|(_, i)| i.volume);
     std::sync::Arc::new(move |p: &Path| {
+        // the volume p's scan root was on when it was scanned (read then, root by root)
+        let volume = tree.volume_of(p);
         let node = |n: usize| match tree.nodes[n].id { 0 => SeenAt::Unknown, id => SeenAt::Item(id, volume) };
         let (Some(parent), Some(name)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) else {
             return crate::history::find_path(&tree, p).map_or(SeenAt::Unknown, node);
@@ -254,6 +254,9 @@ impl Spare {
         match seen {
             // another item put at this path, or one moved in from elsewhere with its old times
             SeenAt::Item(id, _) if id != info.id => return true,
+            // the same id, but on another volume than the scan saw (a drive letter given to
+            // another disk since): not the same item, whatever its times
+            SeenAt::Item(_, Some(v)) if info.volume.is_some_and(|now| now != v) => return true,
             SeenAt::Nothing => return true,
             _ => {}
         }
@@ -1233,7 +1236,8 @@ fn unreadable(n: usize) -> String {
 /// is renamed by handle to a no-replace backup, a link is created only at its vacant old name,
 /// then that same original handle is deleted. A failed publish restores by no-replace rename,
 /// or preserves the backup if another file occupies the old name. Nothing is overwritten.
-/// Freed: zero while another hard link still holds the original data.
+/// A copy that has another name (a hard link) is left alone: it would free nothing, and its
+/// other name would be left read-only.
 fn link(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
     link_with(keep, copies, spare, stop, o, progress, &mut |_| {}, &mut |_| {});
 }
@@ -1274,6 +1278,9 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
             (Some(a), Some(b)) if a.0 == b.0 => {},
             _ => { o.problem(c, "left alone: file identity or volume could not be verified"); continue; }
         }
+        // A copy with another name (a hard link, maybe outside the folder) frees nothing, and
+        // making the original read-only below would leave that other name read-only.
+        if ci.links != 1 { o.problem(c, "left alone: it has another name (a hard link) elsewhere, so linking it would free nothing"); continue; }
         match crate::dupes::same_open(&mut kf.file, &mut cf, stop) {
             Some(true) => {},
             Some(false) => { o.problem(c, "left alone: no longer the same bytes"); continue; }
@@ -1308,6 +1315,10 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
         // it marked for deletion when this handle closes. Sprawl ending at any moment so leaves
         // either a checked original that may go, or the original kept at the backup name
         // (read-only), never an unchecked one going (Astra 1.0.2 round 4, S4 #5).
+        // Accepted risk (the user's decision, 2026-11-19, on Astra's 1.0.3 review): sharing
+        // doesn't cover attribute-only access, so another program could clear read-only and add
+        // a stream between the check below and the mark; the check after the mark sees it,
+        // unless Sprawl is ended in that same instant, when the original goes with that stream.
         let restore = |cf: &std::fs::File| win::set_attributes(cf, ci.attrs);
         if let Err(e) = win::set_attributes(&cf, ci.attrs | 1) {
             o.problem(c, format!("linked, but original copy remains at {} ({e}); no space credited", backup.display())); continue;
@@ -1334,7 +1345,7 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
         }
         after_last_check(&backup);
         drop(cf);
-        if ci.links == 1 { o.freed += ci.size; }
+        o.freed += ci.size;
         o.files += 1;
         progress(o.freed);
     }
@@ -2227,9 +2238,14 @@ mod tests {
         std::fs::hard_link(&copy, &alias).unwrap();
         let mut outcome = Outcome::default();
         link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut outcome, &mut |_| {});
-        assert_eq!((outcome.files, outcome.freed), (1, 0), "an external alias still owns the original data: {:?}", outcome.problems);
+        assert_eq!((outcome.files, outcome.freed), (0, 0), "a copy with another name is left alone: {:?}", outcome.problems);
+        assert!(outcome.problems.iter().any(|p| p.contains("another name")), "{:?}", outcome.problems);
         assert_eq!(std::fs::read(&alias).unwrap(), b"same bytes");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"same bytes");
         assert!(!backup.exists());
+        // the other name, outside the reviewed folder, stays writable
+        assert!(!std::fs::metadata(&alias).unwrap().permissions().readonly());
+        std::fs::write(&alias, b"still writable").unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2771,6 +2787,39 @@ mod tests {
         // nothing was removed
         assert!(base.join("a.log").exists() && base.join("sub").join("c.log").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// S1 #3 (Astra 1.0.3 review): the volume an item was scanned on is read at scan time, root
+    /// by root, and kept with the tree; an item on another volume now is held whatever its times.
+    #[test]
+    fn each_scan_root_keeps_the_volume_it_was_scanned_on() {
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-volumes").unwrap();
+        let base = owned.path().to_path_buf();
+        for r in ["one", "two"] {
+            std::fs::create_dir_all(base.join(r).join("sub")).unwrap();
+            std::fs::write(base.join(r).join("sub").join("a.log"), vec![0u8; 100]).unwrap();
+        }
+        let roots = [base.join("one"), base.join("two")];
+        let scan = sprawl_core::scan_many_inventory(&roots, &sprawl_core::Progress::new()).unwrap();
+        assert_eq!(scan.root_path, Path::new(sprawl_core::MULTIPLE));
+        let now = sprawl_core::volume_serial(&base).expect("NTFS gives the serial");
+        assert_eq!(scan.volumes.len(), 2, "{:?}", scan.volumes);
+        assert_eq!(scan.volume_of(&base.join("two").join("sub").join("a.log")), Some(now));
+        // a multi-root scan knows its items by the volume each root was on
+        let seen = seen_in(std::sync::Arc::new(scan.clone()));
+        assert!(matches!(seen(&base.join("two").join("sub").join("a.log")), SeenAt::Item(_, Some(v)) if v == now));
+        let m = Action::Match { pattern: "*.log".into() };
+        let since = Some(SystemTime::now());
+        std::thread::sleep(Duration::from_millis(20));
+        let spare = Spare { since, keep: Vec::new(), seen: Some(seen) };
+        assert_eq!(preview(&base.join("two"), &m, &spare, 0).unwrap().bytes, 100, "the same volume: it goes");
+        // the scan was of another volume (a drive letter given to another disk since): held,
+        // though nothing changed since
+        let mut other = scan;
+        for v in &mut other.volumes { v.1 ^= 1; }
+        let spare = Spare { since, keep: Vec::new(), seen: Some(seen_in(std::sync::Arc::new(other))) };
+        assert_eq!(preview(&base.join("two"), &m, &spare, 0).unwrap().bytes, 0, "another volume: held");
+        drop(owned);
     }
 
     #[test]

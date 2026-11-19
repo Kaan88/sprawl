@@ -951,7 +951,7 @@ mod tests {
             nodes.push(Node { name: name.into(), is_dir: dir, size, parent: Some(parent), ..Default::default() });
             nodes[parent].children.push(i);
         }
-        let mut t = Tree { root_path: PathBuf::from(root), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from(root), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
     }

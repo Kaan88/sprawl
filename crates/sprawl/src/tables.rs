@@ -1112,7 +1112,7 @@ mod tests {
         add("k.dll", false, a, 1);
         add("j.log", false, x, 90);
         add("i.TXT", false, big_a, 2);
-        let mut t = Tree { root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
     }
@@ -1152,7 +1152,7 @@ mod tests {
                 add(n, false, p, (k % 4) * 1000 + j as u64, k % 3);
             }
         }
-        let mut t = Tree { root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: r"C:\T".into(), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         let alloc: Vec<u64> = t.nodes.iter().map(|n| n.allocated).collect();
         let ranks = Ranks::of(&t);

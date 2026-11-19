@@ -484,7 +484,7 @@ pub fn load_csv(path: &Path, progress: &Progress) -> io::Result<Tree> {
         nodes[ROOT].parent = None;
         nodes[ROOT].name = root_path.display().to_string();
     }
-    let mut tree = Tree { root_path, nodes, errors: 0, method: ScanMethod::Csv };
+    let mut tree = Tree { volumes: Vec::new(), root_path, nodes, errors: 0, method: ScanMethod::Csv };
     tree.compute_totals();
     let r = &tree.nodes[ROOT];
     progress.set_counts(r.files, r.folders, r.size);
@@ -557,7 +557,7 @@ mod tests {
             n("Sub", true, 0, 0x10, Some(1), vec![6]),
             n("deep.bin", false, 5, 0x20, Some(5), vec![]),
         ];
-        let mut t = Tree { root_path: PathBuf::from(r"C:\Program Files"), nodes, errors: 0, method: ScanMethod::Walk };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from(r"C:\Program Files"), nodes, errors: 0, method: ScanMethod::Walk };
         t.compute_totals();
         t
     }

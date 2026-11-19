@@ -121,6 +121,33 @@ pub struct Tree {
     pub errors: u64,
     /// How the tree was produced.
     pub method: ScanMethod,
+    /// The volume serial of each real scan root (its path as scanned), read when it was
+    /// scanned: node ids are only meaningful on that volume. Empty when not known (a tree
+    /// read from a CSV file or a saved snapshot).
+    pub volumes: Vec<(PathBuf, u64)>,
+}
+
+impl Tree {
+    /// The volume serial `p` was scanned on: that of the deepest scan root holding it (names
+    /// compared whole, ignoring case), or None when not known.
+    pub fn volume_of(&self, p: &Path) -> Option<u64> {
+        let parts = |p: &Path| -> Vec<String> { p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).filter(|c| c != "\\").collect() };
+        let want = parts(p);
+        self.volumes.iter()
+            .map(|(r, v)| (parts(r), *v))
+            .filter(|(r, _)| want.starts_with(r))
+            .max_by_key(|(r, _)| r.len())
+            .map(|(_, v)| v)
+    }
+}
+
+/// The volume serial of the item at `path` (not following a link), read now (see
+/// [`local::volume_id`]).
+pub fn volume_serial(path: &Path) -> Option<u64> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_READ_ATTRIBUTES; FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+    let f = fs::OpenOptions::new().access_mode(0x80).share_mode(7).custom_flags(0x0200_0000 | 0x0020_0000).open(path).ok()?;
+    local::volume_id(&f)
 }
 
 pub const ROOT: usize = 0;
@@ -311,6 +338,7 @@ fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::
 /// Put `trees` under a synthetic [`MULTIPLE`] root; `names` become the children's names.
 pub(crate) fn combine(trees: Vec<Tree>, names: Vec<String>) -> Tree {
     let method = if trees.iter().all(|t| t.method == ScanMethod::Mft) { ScanMethod::Mft } else { ScanMethod::Walk };
+    let volumes = trees.iter().flat_map(|t| t.volumes.iter().cloned()).collect();
     let total: usize = 1 + trees.iter().map(|t| t.nodes.len()).sum::<usize>();
     let mut nodes: Vec<Node> = Vec::with_capacity(total);
     nodes.push(Node { name: MULTIPLE.to_string(), is_dir: true, attributes: attr::DIRECTORY, ..Default::default() });
@@ -328,7 +356,7 @@ pub(crate) fn combine(trees: Vec<Tree>, names: Vec<String>) -> Tree {
             nodes.push(n);
         }
     }
-    let mut tree = Tree { root_path: PathBuf::from(MULTIPLE), nodes, errors: 0, method };
+    let mut tree = Tree { volumes, root_path: PathBuf::from(MULTIPLE), nodes, errors: 0, method };
     tree.compute_totals();
     tree
 }
@@ -357,7 +385,7 @@ pub fn elevation() -> io::Result<bool> {
 pub fn scan_std(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
     use std::os::windows::fs::MetadataExt;
     let meta = fs::symlink_metadata(path)?;
-    let mut tree = Tree { root_path: path.to_path_buf(), nodes: Vec::new(), errors: 0, method: ScanMethod::Walk };
+    let mut tree = Tree { volumes: Vec::new(), root_path: path.to_path_buf(), nodes: Vec::new(), errors: 0, method: ScanMethod::Walk };
     tree.nodes.push(Node {
         name: path.display().to_string(),
         is_dir: meta.is_dir(),
@@ -536,7 +564,7 @@ impl Tree {
             }
         }
         nodes[ROOT].name = root_path.display().to_string();
-        Tree { root_path, nodes, errors: self.errors, method: self.method }
+        Tree { volumes: self.volumes.clone(), root_path, nodes, errors: self.errors, method: self.method }
     }
 }
 

@@ -456,7 +456,7 @@ mod tests {
             node("temp.tmp", false, 5, Some(5), vec![]),
             node("setup.exe", false, 2 << 30, Some(0), vec![]),
         ];
-        let mut t = Tree { root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
     }
@@ -540,7 +540,7 @@ mod tests {
             nodes.push(node(&format!("Some File Name {f} v{}.dll", f % 97), false, (f as u64 * 31) % 100_000, Some(p), Vec::new()));
             nodes[p].children.push(f);
         }
-        let t = Tree { root_path: PathBuf::from("C:\\"), nodes, errors: 0, method: Default::default() };
+        let t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\"), nodes, errors: 0, method: Default::default() };
         let start = std::time::Instant::now();
         let ix = Index::build(&t);
         println!("index: {:?}, {} MB", start.elapsed(), ix.memory() >> 20);

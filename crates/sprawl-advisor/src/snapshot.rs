@@ -311,7 +311,7 @@ pub fn decode(body: &[u8]) -> io::Result<(Tree, Meta)> {
         n.modified = from_secs(prev);
     }
     if c.at != body.len() { return Err(Cursor::bad()); }
-    let mut tree = Tree { root_path: root_path.clone(), nodes, errors, method };
+    let mut tree = Tree { volumes: Vec::new(), root_path: root_path.clone(), nodes, errors, method };
     tree.compute_totals();
     if tree.nodes[0].size > i64::MAX as u64 || tree.nodes[0].allocated > i64::MAX as u64 { return Err(Cursor::bad()); }
     Ok((tree, Meta { root_path, method, taken, nodes: count }))
@@ -362,7 +362,7 @@ pub fn folders_only(t: &Tree) -> Tree {
             nodes[me].children.push(pf);
         }
     }
-    let mut out = Tree { root_path: t.root_path.clone(), nodes, errors: t.errors, method: t.method };
+    let mut out = Tree { volumes: t.volumes.clone(), root_path: t.root_path.clone(), nodes, errors: t.errors, method: t.method };
     out.compute_totals();
     out
 }
@@ -383,7 +383,7 @@ mod tests {
         ];
         nodes[0].children = vec![1, 3, 4];
         nodes[1].children = vec![2, 5];
-        let mut t = Tree { root_path: r"C:\data".into(), nodes, errors: 3, method: ScanMethod::Walk };
+        let mut t = Tree { volumes: Vec::new(), root_path: r"C:\data".into(), nodes, errors: 3, method: ScanMethod::Walk };
         t.compute_totals();
         t
     }

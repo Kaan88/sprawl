@@ -246,6 +246,14 @@ pub(crate) fn check_plain(f: &File, kind: Kind) -> io::Result<u32> {
     Ok(a)
 }
 
+/// The volume serial of an open handle as FILE_ID_INFO gives it (all 64 bits; the serial in
+/// [`identity`] is only the low 32), or None where Windows doesn't give it (FAT, for one).
+pub fn volume_id(f: &File) -> Option<u64> {
+    let mut full = [0u64; 3];
+    // SAFETY: the buffer is the size given; class 18 is FileIdInfo.
+    (unsafe { GetFileInformationByHandleEx(f.as_raw_handle().cast(), 18, full.as_mut_ptr().cast(), 24) } != 0).then_some(full[0])
+}
+
 /// Volume and file index of an open handle: which file it is.
 pub fn identity(f: &File) -> io::Result<(u32, u64)> {
     use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
@@ -473,6 +481,11 @@ pub struct OwnedDir {
     /// short id isn't, and on NTFS not reused for another folder (Astra 1.0.2 round 4, S5).
     id: (u64, u128),
     held: Option<File>,
+    /// An attribute-only handle on the same folder, open from its making to its removal: it
+    /// takes no part in sharing (so it doesn't stop the removal's own open), and while it is
+    /// open the folder's id can't be given to another one. The folder opened again to be
+    /// removed is compared with it, two open handles (Astra 1.0.3 review, S5).
+    anchor: Option<File>,
     parent: Directory,
     /// Run between letting go of the hold and opening the folder to remove it.
     #[cfg(test)]
@@ -514,11 +527,15 @@ impl OwnedDir {
             match open_rel(parent.handle()?, &name, READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Create, Kind::Folder) {
                 Ok((held, _)) => {
                     let id = full_identity(&held)?;
+                    // the hold shares no delete, so the name is still this folder
+                    let anchor = open_rel(parent.handle()?, &name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Folder)
+                        .ok().filter(|(a, _)| full_identity(a).ok() == Some(id)).map(|(a, _)| a);
                     return Ok(OwnedDir {
                         path: parent.path.join(&name),
                         name,
                         id,
                         held: Some(held),
+                        anchor,
                         parent,
                         #[cfg(test)]
                         before_reopen: None,
@@ -577,19 +594,25 @@ fn empty_through(dir: &File, depth: u32) -> bool {
 impl Drop for OwnedDir {
     fn drop(&mut self) {
         let Some(held) = self.held.take() else { return };
+        // without the anchor, the folder can't be known across the reopen: it is left (empty)
+        let anchor = self.anchor.take();
         let emptied = empty_through(&held, 0);
         // the hold shares no delete, so it goes before the folder can be opened to be removed
         drop(held);
-        if !emptied { return; }
+        let Some(anchor) = anchor.filter(|_| emptied) else { return };
         #[cfg(test)]
         if let Some(f) = self.before_reopen.take() { (f.0)(); }
         let Ok(parent) = self.parent.handle() else { return };
         // no delete sharing: from this open to the removal it can't be swapped; it goes only
-        // when it is the very folder made (its full id on its volume), else it is left
+        // when it is the very folder made: the same full id on the same volume as the anchor,
+        // open all along, else it is left
         let Ok((h, _)) = open_rel(parent, &self.name, DELETE | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Open, Kind::Folder) else { return };
-        if check_plain(&h, Kind::Folder).is_ok() && full_identity(&h).ok() == Some(self.id) {
+        let same = full_identity(&anchor).ok() == Some(self.id) && full_identity(&h).ok() == Some(self.id);
+        if check_plain(&h, Kind::Folder).is_ok() && same {
             let _ = dispose(&h);
         }
+        drop(h);
+        drop(anchor);
     }
 }
 

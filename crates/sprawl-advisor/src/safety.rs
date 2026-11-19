@@ -1145,7 +1145,7 @@ mod tests {
         assert!(f.other_account());
         let mut excluded = Never::default_list();
         excluded.excluded = vec![f.path.join("skipped")];
-        let empty = Tree { root_path: f.path.clone(), nodes: vec![], errors: 0, method: sprawl_core::ScanMethod::Walk };
+        let empty = Tree { volumes: Vec::new(), root_path: f.path.clone(), nodes: vec![], errors: 0, method: sprawl_core::ScanMethod::Walk };
         assert!(matches!(check_in(&f, &empty, &excluded, &[], None, None), Err(Rejection::Never(_))), "an unscanned child forbids a parent cleanup");
         let mut linked = f.clone();
         linked.path = r"Z:\other".into();

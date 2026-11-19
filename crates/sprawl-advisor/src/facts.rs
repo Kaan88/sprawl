@@ -965,7 +965,7 @@ mod tests {
             nodes.push(sprawl_core::Node { name: name.into(), is_dir: true, parent: Some(parent), ..Default::default() });
             nodes[parent].children.push(at);
         }
-        Tree { root_path: root.to_path_buf(), nodes, errors: 0, method: Default::default() }
+        Tree { volumes: Vec::new(), root_path: root.to_path_buf(), nodes, errors: 0, method: Default::default() }
     }
 
     #[test]

@@ -1010,7 +1010,7 @@ mod tests {
         let part = &pack.cleaners[0].parts[0];
         assert_eq!((&*part.title, &*part.why, &*part.cost), ("Cache", "Evidence", "Rebuild"));
         assert_eq!(pack.part_rules[0].title, "A B: Cache");
-        let tree = sprawl_core::Tree { root_path: r"C:\SprawlFixture\Product\Cache".into(),
+        let tree = sprawl_core::Tree { volumes: Vec::new(), root_path: r"C:\SprawlFixture\Product\Cache".into(),
             nodes: vec![sprawl_core::Node { name: "Cache".into(), is_dir: true, size: 200 << 20, ..Default::default() }],
             errors: 0, method: sprawl_core::ScanMethod::Walk };
         let packs = vec![RulePack::builtin(), pack];

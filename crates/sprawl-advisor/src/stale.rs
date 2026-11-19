@@ -207,7 +207,7 @@ mod tests {
     /// D:\ with an old game, a folder that is partly old, a small old folder, and an old big file.
     fn tree(now: SystemTime) -> Tree {
         const GB: u64 = 1 << 30;
-        let mut t = Tree {
+        let mut t = Tree { volumes: Vec::new(),
             root_path: r"D:\".into(),
             nodes: vec![node(r"D:\", true, 0, Some(1), None, now)],
             errors: 0,
