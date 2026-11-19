@@ -46,7 +46,7 @@ impl State {
         let help = sq::help();
         for (host, prefix, intro) in [
             ("SearchHelpHost", "SxHelp", ""),
-            ("SearchEmptyHost", "SxEmpty", "Type a name to find it in this scan (and on the drives switched on below). The filters under the box write their words into it. Or start from an example:"),
+            ("SearchEmptyHost", "SxEmpty", "Type a name to find it in this scan (and on the drives chosen in Search in). The filters under the box write their words into it. Or start from an example:"),
         ] {
             let Ok(h) = find::<Border>(&self.root, host) else { continue };
             let Ok(content) = load::<UIElement>(&help_xaml(prefix, intro)) else { continue };

@@ -810,7 +810,7 @@ pub fn page(drives: &[String]) -> String {
           </FlyoutBase.AttachedFlyout>
         </Border>
         <Grid x:Name="SearchBar" Visibility="Collapsed" Margin="8,8,8,6" ColumnSpacing="8" RowSpacing="6">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBox x:Name="SearchBox" FontSize="13" Height="32" PlaceholderText="Search names:  report 2024    *.iso    \steam\ *.vdf    &gt;1gb    folder:cache    !tmp" ToolTipService.ToolTip="Space: and.  a|b: either.  !word: not.  *, ?: wildcards.  A word with \ looks at the whole path.  &gt;1gb, &lt;10kb: size.  folder: or file: one kind.  ? lists everything."/>
           <Button x:Name="SearchHelp" Grid.Column="1" Content="?" FontSize="13" Padding="10,3" Height="32" ToolTipService.ToolTip="Everything the search box understands, with examples to try">
@@ -819,9 +819,11 @@ pub fn page(drives: &[String]) -> String {
           <Border x:Name="SearchSaved" Grid.Column="2"/>
           <TextBlock x:Name="SearchInfo" Grid.Column="3" {num} VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
           <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
-          <ScrollViewer Grid.Row="1" Grid.ColumnSpan="5" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled"><StackPanel Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel></ScrollViewer>
-          <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="5" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxLines="3"/>
+          <ToggleButton x:Name="SearchMapBtn" Grid.Column="5" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Show the map under the results, with the matches lit"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80A;" FontSize="12"/><TextBlock Text="Map"/></StackPanel></ToggleButton>
+          <ScrollViewer Grid.Row="1" Grid.ColumnSpan="6" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled"><StackPanel Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel></ScrollViewer>
+          <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="6" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxLines="3"/>
         </Grid>
+        <Border x:Name="SearchNone" Grid.Row="2" Visibility="Collapsed" Padding="16,14" VerticalAlignment="Top" IsHitTestVisible="False" Canvas.ZIndex="5"><TextBlock x:Name="SearchNoneText" TextWrapping="Wrap" FontSize="13" LineHeight="22" Foreground="#FFB9C2D6"/></Border>
         <Border x:Name="SearchEmpty" Grid.Row="2" Visibility="Collapsed" Background="Transparent"><ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="16,12"><Border x:Name="SearchEmptyHost"/></ScrollViewer></Border>
         <Border x:Name="SearchSuggest" Grid.RowSpan="3" Canvas.ZIndex="20" Visibility="Collapsed" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,42,0,0" MinWidth="320" MaxWidth="640" Padding="4" CornerRadius="6" Background="#F21C1F2A" BorderBrush="#33FFFFFF" BorderThickness="1"/>
         <Border x:Name="TreeHeader" Grid.Row="1"/>

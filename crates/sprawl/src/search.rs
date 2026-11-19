@@ -34,6 +34,10 @@ const SORT_HERE: usize = 20_000;
 pub(crate) struct Search {
     /// What is typed.
     pub(crate) query: String,
+    /// The map is shown under the results (the Map button; off at first: results take the room).
+    pub(crate) map: bool,
+    /// What the no-match message says now ("" hidden; `None` not drawn yet).
+    pub(crate) none: Option<String>,
     /// The last tap on a result: (row, when, already taken as a double-click).
     last_tap: Option<((usize, usize), std::time::Instant, bool)>,
     /// The index and the `tree_gen` it was built for.
@@ -183,7 +187,50 @@ impl State {
     }
 
     /// Each frame: the index, the results, and a tree that changed under the results.
+    /// A search that found nothing says so where the results would be, with what was searched
+    /// and the ways to widen it (the query stays in the box).
+    fn search_none_state(&mut self) {
+        let m = &self.search.more;
+        let q = self.search.query.trim();
+        let settled = self.search.running.is_none() && self.search.sorting.is_none() && !self.search.pending && self.search.typed.is_none() && !m.is_reading();
+        let none = self.view == View::Search
+            && !q.is_empty()
+            && settled
+            && Query::parse(q).errors().is_empty()
+            && self.search.results_gen == self.tree_gen
+            && self.search.results.is_empty()
+            && m.current_hits().is_empty();
+        let msg = if none {
+            let drives = m.on_list();
+            let place = match (self.tree.is_some(), drives.is_empty()) {
+                (true, true) => "this scan".to_string(),
+                (true, false) => format!("this scan and {}", drives.join(", ")),
+                _ => drives.join(", "),
+            };
+            let mut ways = vec!["check the words", "take a filter off (a lit button under the box, or its words in the box)"];
+            if drives.is_empty() {
+                ways.push("add a drive with Search in");
+            }
+            let mut s = format!("Nothing matches \u{201c}{q}\u{201d} in {place}.\nTo widen it: {}.", ways.join("; "));
+            if self.full_tree.is_some() {
+                s += &format!("\nThe scan is filtered by \u{201c}{}\u{201d}: only what matches it is searched. Empty the Filter box on the Tree tab to search everything.", self.filter);
+            }
+            s
+        } else {
+            String::new()
+        };
+        if self.search.none.as_deref() == Some(msg.as_str()) {
+            return;
+        }
+        text(&self.root, "SearchNoneText", &msg);
+        if let Ok(e) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "SearchNone") {
+            let _ = e.SetVisibility(if msg.is_empty() { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible });
+        }
+        self.search.none = Some(msg);
+    }
+
     pub(crate) fn search_poll(&mut self) {
+        self.search_none_state();
         if self.search.typed.is_some_and(|t| t.elapsed().as_millis() >= TYPING_PAUSE_MS) {
             self.search.typed = None;
             self.search_run();

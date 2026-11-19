@@ -128,6 +128,11 @@ impl More {
         self.resorting.is_some()
     }
 
+    /// The other drives switched on, `D:` style.
+    pub(crate) fn on_list(&self) -> Vec<String> {
+        self.drives_on.iter().map(|d| d.trim_end_matches('\\').to_string()).collect()
+    }
+
     pub(crate) fn is_reading(&self) -> bool {
         !self.reading.is_empty()
     }
@@ -778,12 +783,16 @@ impl State {
                 (None, None) => {}
             }
         }
-        for r in &m.reading {
+        // the drives being read, on one line
+        let reading: Vec<String> = m
+            .reading
+            .iter()
             // a drive read again shows on its entry above
-            if r.drive.as_ref().is_some_and(|d| m.places.iter().flatten().any(|p| p.drive.as_ref() == Some(d))) {
-                continue;
-            }
-            entries.push(("reading", format!("Reading {}", reading_label(r)), None));
+            .filter(|r| !r.drive.as_ref().is_some_and(|d| m.places.iter().flatten().any(|p| p.drive.as_ref() == Some(d))))
+            .map(reading_label)
+            .collect();
+        if !reading.is_empty() {
+            entries.push(("reading", format!("Reading {}", reading.join("   ·   ")), None));
         }
         for (what, why) in &m.failed {
             let d = m.drives_on.contains(what).then(|| what.clone());
@@ -853,37 +862,51 @@ impl State {
         }
     }
 
-    /// "Also search  C: D: E:" beside the chips: one toggle a fixed drive (not the scan's own).
+    /// "Search in: this scan + D:" beside the chips: its menu switches each fixed drive (not
+    /// the scan's own) on or off.
     fn render_drive_toggles(&mut self) {
         let Ok(host) = find::<Border>(&self.root, "SearchDrives") else { return };
         let cur = self.current_root();
         let offer: Vec<String> = Self::fixed_drives().into_iter().filter(|d| cur.as_ref().is_none_or(|c| norm(Path::new(d)) != *c)).collect();
         let m = &self.search.more;
-        let shape = offer.iter().map(|d| format!("{d}{}", m.drives_on.contains(d))).collect::<Vec<_>>().join(",");
+        let shape = offer.iter().map(|d| format!("{d}{}", m.drives_on.contains(d))).collect::<Vec<_>>().join(",") + if self.tree.is_some() { ";scan" } else { "" };
         if shape == m.toggles_shape && host.Child().is_ok() {
             return;
         }
-        let mut x = format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="4">"##, ui::NS);
-        if !offer.is_empty() {
-            x += r##"<TextBlock Text="Also search" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>"##;
+        let on: Vec<String> = offer.iter().filter(|d| m.drives_on.contains(*d)).map(|d| d.trim_end_matches('\\').to_string()).collect();
+        let label = match (self.tree.is_some(), on.is_empty()) {
+            (true, true) => "this scan".to_string(),
+            (true, false) => format!("this scan + {}", on.join(", ")),
+            (false, false) => on.join(", "),
+            (false, true) => "nothing yet".to_string(),
+        };
+        let mut items = String::new();
+        if self.tree.is_some() {
+            items += r##"<MenuFlyoutItem Text="This scan: always searched" IsEnabled="False"/><MenuFlyoutSeparator/>"##;
         }
         for d in &offer {
             let letter = d.chars().next().unwrap_or('C');
-            let on = m.drives_on.contains(d);
-            x += &format!(
-                r##"<ToggleButton x:Name="SxD{letter}" IsChecked="{on}" FontSize="11" Padding="8,2" MinWidth="40" ToolTipService.ToolTip="Search {root} too: it is read now and kept in memory until Sprawl closes (remembered for next time). Press again to leave it out." Content="{letter}:"/>"##,
-                on = if on { "True" } else { "False" },
+            items += &format!(
+                r##"<ToggleMenuFlyoutItem x:Name="SxD{letter}" IsChecked="{on}" Text="Also drive {letter}:" ToolTipService.ToolTip="Search {root} too: it is read now and kept in memory until Sprawl closes (remembered for next time). Choose again to leave it out."/>"##,
+                on = if m.drives_on.contains(d) { "True" } else { "False" },
                 root = ui::esc(d),
             );
         }
-        x += "</StackPanel>";
+        if offer.is_empty() {
+            items += r##"<MenuFlyoutItem Text="No other fixed drive to add" IsEnabled="False"/>"##;
+        }
+        let x = format!(
+            r##"<DropDownButton {} FontSize="12" Padding="10,3,6,3" ToolTipService.ToolTip="Where Search looks: this scan, and the other drives you switch on"><TextBlock Text="Search in: {}" FontSize="12"/><DropDownButton.Flyout><MenuFlyout Placement="Bottom">{items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>"##,
+            ui::NS,
+            ui::esc(&label)
+        );
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
         self.search.more.toggles_shape = shape;
         let Ok(fe) = content.cast::<FrameworkElement>() else { return };
         for d in &offer {
             let letter = d.chars().next().unwrap_or('C');
-            if let Ok(b) = find::<ButtonBase>(&fe, &format!("SxD{letter}")) {
+            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>(&fe, &format!("SxD{letter}")) {
                 if let Ok(t) = b.Click(move |_, _| {
                     with(|s| s.more_drive(letter));
                 }) {

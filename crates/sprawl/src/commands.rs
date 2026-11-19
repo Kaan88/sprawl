@@ -43,8 +43,12 @@ impl State {
             }
         }
         self.paint_tabs();
-        // the Advisor takes the whole width; the types pane comes back as the user left it
-        let types = v != View::Advisor && find::<ToggleMenuFlyoutItem>(&self.root, "oTypes").and_then(|t| t.IsChecked()).unwrap_or(true);
+        // the Advisor and Search take the whole width; the types pane comes back as the user left it
+        let types = !matches!(v, View::Advisor | View::Search) && find::<ToggleMenuFlyoutItem>(&self.root, "oTypes").and_then(|t| t.IsChecked()).unwrap_or(true);
+        // Search has its own box: the Filter box beside it would be a second one
+        if let Ok(e) = find::<UIElement>(&self.root, "FilterBox") {
+            let _ = e.SetVisibility(vis(v != View::Search));
+        }
         if let Ok(e) = find::<UIElement>(&self.root, "TypesPanel") {
             let _ = e.SetVisibility(vis(types));
         }
@@ -69,9 +73,11 @@ impl State {
     /// or Cleaners tab is open (their lists take the height).
     pub(crate) fn map_room(&self) {
         let map_on = find::<ToggleMenuFlyoutItem>(&self.root, "oTreemap").and_then(|t| t.IsChecked()).unwrap_or(true);
-        let shown = map_on && self.view != View::Advisor;
+        // in Search the map shows only on request (its Map button): the results take the room
+        let room = self.view != View::Advisor && (self.view != View::Search || self.search.map);
+        let shown = map_on && room;
         // the bar (the map's modes) stays when only the map is switched off, as before
-        for (n, on) in [("MapBorder", shown), ("MapPath", map_on), ("MapBar", self.view != View::Advisor)] {
+        for (n, on) in [("MapBorder", shown), ("MapPath", map_on && room), ("MapBar", room)] {
             if let Ok(e) = find::<UIElement>(&self.root, n) {
                 let _ = e.SetVisibility(if on { Visibility::Visible } else { Visibility::Collapsed });
             }
@@ -107,6 +113,10 @@ impl State {
             // while scanning the button is Stop
             "ScanButton" if self.job.is_some() => self.stop_scan(),
             "CoverageDetails" => self.coverage_details(),
+            "SearchMapBtn" => {
+                self.search.map = !self.search.map;
+                self.map_room();
+            }
             // F5 and File > Scan: the folder on screen again (the button scans what the box says)
             "mScan" | "ScanButton" | "ScanSelectedDrive" => {
                 let idx = find::<Selector>(&self.root, "DriveBox").and_then(|c| c.SelectedIndex()).unwrap_or(0);
@@ -354,6 +364,9 @@ impl State {
                         }
                     }
                     "oTypes" => {
+                        // not beside the Advisor or Search (they take the width): it shows when the tree does
+                        let on = on && !matches!(self.view, View::Advisor | View::Search);
+                        let vis = if on { Visibility::Visible } else { Visibility::Collapsed };
                         if let Ok(e) = find::<UIElement>(&self.root, "TypesPanel") {
                             let _ = e.SetVisibility(vis);
                         }

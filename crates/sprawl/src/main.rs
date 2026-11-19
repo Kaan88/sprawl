@@ -229,7 +229,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             }
         });
     })?);
-    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
+    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
