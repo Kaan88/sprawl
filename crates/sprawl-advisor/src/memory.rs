@@ -407,19 +407,6 @@ fn parse(text: &str) -> Result<Memory, toml::de::Error> {
     toml::from_str(&fixed)
 }
 
-/// Whether `f` is simply not there yet: nothing at its own name (not even a link that leads
-/// nowhere), and its folder is a plain folder (not a link), or is itself not there yet inside
-/// a folder that is.
-fn no_file_yet(f: &Path) -> bool {
-    let absent = |p: &Path| matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-    let plain_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink() && {
-        use std::os::windows::fs::MetadataExt;
-        m.file_attributes() & 0x400 == 0
-    });
-    let Some(parent) = f.parent() else { return false };
-    absent(f) && (plain_dir(parent) || absent(parent) && parent.parent().is_some_and(|g| std::fs::metadata(g).is_ok_and(|m| m.is_dir())))
-}
-
 impl Memory {
     /// Load without touching the file, even if it doesn't parse.
     pub fn load_readonly() -> Memory {
@@ -429,24 +416,28 @@ impl Memory {
     /// Load for destructive work, where an empty list would wrongly mean "nothing is kept": no
     /// file yet is an empty list, but an unknown location, a failed read (a save in progress, a
     /// lock) or a file that doesn't parse is an error. A brief sharing conflict is retried.
+    ///
+    /// The file is read through a checked chain from this account's AppData folder down
+    /// ([`sprawl_core::local::read_checked`]): every folder on the way and the file are opened
+    /// as themselves through their parent and held while it is read, so a link anywhere is an
+    /// error, and "no list yet" is only a folder or file that is genuinely not there.
     pub fn load_checked() -> std::io::Result<Memory> {
-        let f = file().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Sprawl's settings folder is unknown (APPDATA is not set)"))?;
-        Self::load_checked_at(&f)
+        let appdata = std::env::var_os("APPDATA").ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Sprawl's settings folder is unknown (APPDATA is not set)"))?;
+        Self::load_checked_from(Path::new(&appdata), &["Sprawl", "advisor"])
     }
 
-    fn load_checked_at(f: &Path) -> std::io::Result<Memory> {
+    fn load_checked_from(trusted: &Path, below: &[&str]) -> std::io::Result<Memory> {
         let mut tries = 0;
-        let text = loop {
-            match std::fs::read_to_string(f) {
-                Ok(text) => break text,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return if no_file_yet(f) { Ok(Memory::default()) }
-                        else { Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the Keep list's file is a link that leads nowhere, or its folder isn't a plain folder")) };
-                }
-                Err(_) if tries < 5 => { tries += 1; std::thread::sleep(std::time::Duration::from_millis(100)); }
+        let bytes = loop {
+            match sprawl_core::local::read_checked(trusted, below, "memory.toml", 64 << 20) {
+                Ok(None) => return Ok(Memory::default()),
+                Ok(Some(bytes)) => break bytes,
+                // a save in progress
+                Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) && tries < 5 => { tries += 1; std::thread::sleep(std::time::Duration::from_millis(100)); }
                 Err(e) => return Err(e),
             }
         };
+        let text = String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         parse(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
@@ -850,21 +841,34 @@ mod tests {
     fn only_a_missing_file_is_an_empty_keep_list() {
         // Astra 1.0.2 re-review S1 #6: a link that leads nowhere is not "nothing kept"
         let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-keep-file").unwrap();
-        let dir = owned.path().join("Sprawl");
-        std::fs::create_dir(&dir).unwrap();
+        let load = |below: &[&str]| Memory::load_checked_from(owned.path(), below);
+        // a fresh profile: neither folder there yet (round 3: this was an error)
+        assert!(load(&["Sprawl", "advisor"]).is_ok_and(|m| m.decisions.is_empty()), "no folders yet");
+        let dir = owned.path().join("Sprawl").join("advisor");
+        std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("memory.toml");
-        assert!(Memory::load_checked_at(&f).is_ok(), "no file yet");
-        assert!(Memory::load_checked_at(&owned.path().join("NotYet").join("memory.toml")).is_ok(), "no folder yet");
+        assert!(load(&["Sprawl", "advisor"]).is_ok(), "no file yet");
+        let mut m = Memory::default();
+        m.decide(Path::new(r"C:\Users\Sam\Downloads"), "Downloads", Verdict::Keep);
+        std::fs::write(&f, toml::to_string(&m).unwrap()).unwrap();
+        assert_eq!(load(&["Sprawl", "advisor"]).unwrap().kept_paths().len(), 1, "read through the chain");
+        std::fs::remove_file(&f).unwrap();
         if std::os::windows::fs::symlink_file(owned.path().join("gone.toml"), &f).is_ok() {
-            assert!(Memory::load_checked_at(&f).is_err(), "a dangling link");
+            assert!(load(&["Sprawl", "advisor"]).is_err(), "a dangling link");
             std::fs::remove_file(&f).unwrap();
         }
-        let junction = owned.path().join("Linked");
-        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&junction).arg(&dir).output().is_ok_and(|o| o.status.success());
-        if made {
-            assert!(Memory::load_checked_at(&junction.join("memory.toml")).is_err(), "a folder that is a link");
-            std::fs::remove_dir(&junction).unwrap();
+        // a link anywhere on the way, the immediate folder or one above it (round 3)
+        std::fs::write(&f, toml::to_string(&m).unwrap()).unwrap();
+        let junction = |at: &Path, to: &Path| std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(at).arg(to).output().is_ok_and(|o| o.status.success());
+        if junction(&owned.path().join("Linked"), &owned.path().join("Sprawl")) {
+            assert!(load(&["Linked", "advisor"]).is_err(), "a folder above that is a link");
+            std::fs::remove_dir(owned.path().join("Linked")).unwrap();
         }
+        if junction(&owned.path().join("Sprawl").join("adv2"), &dir) {
+            assert!(load(&["Sprawl", "adv2"]).is_err(), "the file's own folder is a link");
+            std::fs::remove_dir(owned.path().join("Sprawl").join("adv2")).unwrap();
+        }
+        std::fs::remove_file(&f).unwrap();
         drop(owned);
     }
 

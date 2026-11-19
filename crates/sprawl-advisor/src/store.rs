@@ -6,6 +6,9 @@ use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
 
 fn bad() -> io::Error { io::Error::other("Local storage path or metadata changed") }
 
+/// The folder `path`, made where missing, held (see [`sprawl_core::local::Directory`]): the
+/// folders that are there are pinned from the drive down, and each missing one is made and
+/// opened through its parent's handle as itself, never through a link.
 pub(crate) fn ensure_dir(path: &Path) -> io::Result<sprawl_core::local::Directory> {
     let mut path = sprawl_core::local::lexical(path)?;
     let mut missing = Vec::new();
@@ -13,16 +16,14 @@ pub(crate) fn ensure_dir(path: &Path) -> io::Result<sprawl_core::local::Director
         match sprawl_core::local::directory(&path) {
             Ok(held) => break held,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                missing.push(path.file_name().ok_or_else(bad)?.to_os_string());
+                missing.push(path.file_name().and_then(|n| n.to_str()).ok_or_else(bad)?.to_string());
                 path = path.parent().ok_or_else(bad)?.to_path_buf();
             }
             Err(e) => return Err(e),
         }
     };
     for name in missing.into_iter().rev() {
-        let next = held.path.join(name);
-        match fs::create_dir(&next) { Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}, Err(e) => return Err(e) }
-        held = sprawl_core::local::directory(&next)?;
+        held = held.child(&name, true)?;
     }
     Ok(held)
 }
@@ -75,40 +76,39 @@ pub(crate) fn write_atomic(dir: &Path, name: &str, replace: bool, write: impl Fn
     result
 }
 
-/// Open `name` in the held folder `dir` as itself, never through a link: a plain file with
-/// one name only, really at that place. `create`: made when missing. With delete access, so
-/// it can be renamed or removed through the handle.
+/// Open `name` in the held folder `dir` through its handle, as itself: a plain file with one
+/// name only (a link at its name is refused, never followed). `create`: made when missing.
+/// With delete access, so it can be renamed or removed through the handle, and shared for
+/// reading only: while it is open no one else can write, rename or remove it.
 fn open_own(dir: &sprawl_core::local::Directory, name: &str, create: bool) -> io::Result<fs::File> {
-    #[link(name = "kernel32")]
-    extern "system" { fn GetFileInformationByHandleEx(file: *mut core::ffi::c_void, class: i32, buf: *mut core::ffi::c_void, size: u32) -> i32; }
-    use std::os::windows::fs::MetadataExt;
-    if name.is_empty() || name.contains(['\\', '/', ':']) || matches!(name, "." | "..") { return Err(bad()); }
-    let leaf = dir.path.join(name);
-    // FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, DELETE, SYNCHRONIZE; open the link itself
-    let file = fs::OpenOptions::new().append(true).create(create).access_mode(0x4 | 0x80 | 0x0001_0000 | 0x0010_0000)
-        .share_mode(1 | 4).custom_flags(0x0020_0000).open(&leaf)?;
-    let m = file.metadata()?;
-    if !m.is_file() || m.file_attributes() & 0x400 != 0 { return Err(bad()); }
-    // FILE_STANDARD_INFO (class 1): allocation, end of file, then the number of names
-    let mut info = [0u32; 6];
-    if unsafe { GetFileInformationByHandleEx(file.as_raw_handle().cast(), 1, info.as_mut_ptr().cast(), 24) } == 0 { return Err(io::Error::last_os_error()); }
-    if info[4] != 1 { return Err(bad()); }
-    let real = sprawl_core::local::final_path(&file)?;
-    let key = |p: &Path| p.to_string_lossy().trim_start_matches(r"\\?\").replace('/', "\\").to_lowercase();
-    if key(&real) != key(&leaf) { return Err(bad()); }
-    Ok(file)
+    use sprawl_core::local::{Disposition, Kind, APPEND_DATA, DELETE, SHARE_READ};
+    let how = if create { Disposition::OpenOrCreate } else { Disposition::Open };
+    // append only: what is written goes at the end, never over what is there
+    dir.open_in(name, APPEND_DATA | DELETE, SHARE_READ, how, Kind::File, true)
 }
 
 /// Append to `dir\name` as [`open_own`] opens it, the folders on the way held. Past
-/// `rotate_at` bytes the file is first renamed (through its handle) to `rotated`, replacing
-/// what has that name, and a new one is begun.
+/// `rotate_at` bytes the file is first renamed (through its handle, within the held folder) to
+/// `rotated`, replacing what has that name, and a new one is begun. Appends from this process
+/// take turns; one from another Sprawl (its MCP server) is waited for, briefly.
 pub(crate) fn append_checked(dir: &Path, name: &str, rotate_at: u64, rotated: &str, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let held = ensure_dir(dir)?;
-    let mut file = open_own(&held, name, true)?;
+    let open = || {
+        let mut tries = 0;
+        loop {
+            match open_own(&held, name, true) {
+                Err(e) if e.raw_os_error() == Some(32) && tries < 100 => { tries += 1; std::thread::sleep(Duration::from_millis(20)); }
+                r => return r,
+            }
+        }
+    };
+    let mut file = open()?;
     if file.metadata()?.len() > rotate_at {
-        rename(&file, &held.path.join(rotated), true)?;
+        held.rename_in(&file, rotated, true)?;
         drop(file);
-        file = open_own(&held, name, true)?;
+        file = open()?;
     }
     write(&mut file)
 }
@@ -122,7 +122,7 @@ pub(crate) fn remove_checked(dir: &Path, name: &str) -> io::Result<()> {
         Err(e) => return Err(e),
     };
     match open_own(&held, name, false) {
-        Ok(file) => delete(&file),
+        Ok(file) => sprawl_core::local::dispose(&file),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
@@ -163,6 +163,18 @@ fn the_log_is_appended_and_removed_only_as_itself() {
     assert!(!dir.join("requests.log.old").exists());
     remove_checked(&dir, "requests.log").unwrap();
     remove_checked(&owned.path().join("nowhere"), "requests.log").unwrap();
+    // appends that overlap all get written (Astra 1.0.2 round 3: one could fail on sharing)
+    let threads: Vec<_> = (0..8).map(|t| {
+        let dir = dir.clone();
+        std::thread::spawn(move || (0..20).all(|i| append_checked(&dir, "busy.log", 1 << 30, "busy.log.old", |f| f.write_all(format!("{t}-{i}\n").as_bytes())).is_ok()))
+    }).collect();
+    assert!(threads.into_iter().all(|t| t.join().unwrap()));
+    assert_eq!(fs::read_to_string(dir.join("busy.log")).unwrap().lines().count(), 160);
+    // while one is open, its name can't be renamed or removed by anyone else
+    let held = ensure_dir(&dir).unwrap();
+    let open = open_own(&held, "busy.log", false).unwrap();
+    assert!(fs::rename(dir.join("busy.log"), dir.join("away.log")).is_err() && fs::remove_file(dir.join("busy.log")).is_err());
+    drop((open, held));
     drop(owned);
 }
 
