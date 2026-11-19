@@ -738,7 +738,7 @@ impl Scene {
             }
             out.push(Label { x: sx, y: sy, max_w, text: text(n), strong: a.depth == 1 });
         }
-        out
+        declutter(out)
     }
 
     /// City view: district names on the street in front of each top-level folder, and of big
@@ -866,5 +866,42 @@ mod tests {
             let (bx, by) = s.unproject(px, py);
             assert!((bx - x).abs() < 0.5 && (by - y).abs() < 0.5, "{x},{y} -> {bx},{by}");
         }
+    }
+}
+
+/// A label is drawn only where it doesn't run into one already kept: the top-level folders'
+/// first, then the widest. On a tilted map a folder's band and its first child's lie only a
+/// few pixels apart, and both names on top of each other read as neither.
+pub(crate) fn declutter(mut labels: Vec<Label>) -> Vec<Label> {
+    // the text is 11.5 px: a line takes about 14
+    const LINE: f32 = 14.0;
+    labels.sort_by(|a, b| b.strong.cmp(&a.strong).then(b.max_w.total_cmp(&a.max_w)));
+    let mut kept: Vec<Label> = Vec::with_capacity(labels.len());
+    for l in labels {
+        let clash = kept.iter().any(|k| (l.y - k.y).abs() < LINE && l.x < k.x + k.max_w && k.x < l.x + l.max_w);
+        if !clash {
+            kept.push(l);
+        }
+    }
+    kept
+}
+
+#[cfg(test)]
+mod declutter_tests {
+    use super::declutter;
+    use crate::gpu::Label;
+
+    fn label(x: f32, y: f32, w: f32, strong: bool, text: &str) -> Label {
+        Label { x, y, max_w: w, text: text.into(), strong }
+    }
+
+    #[test]
+    fn names_on_top_of_each_other_keep_the_outer_one() {
+        let out = declutter(vec![label(234.0, 752.0, 200.0, false, "target"), label(230.0, 743.0, 300.0, true, "proj"), label(1050.0, 728.0, 200.0, true, "media")]);
+        let names: Vec<&str> = out.iter().map(|l| l.text.as_str()).collect();
+        assert!(names.contains(&"proj") && names.contains(&"media") && !names.contains(&"target"), "{names:?}");
+        // a child label further down its folder stays
+        let out = declutter(vec![label(230.0, 743.0, 300.0, true, "proj"), label(234.0, 800.0, 200.0, false, "target")]);
+        assert_eq!(out.len(), 2);
     }
 }
