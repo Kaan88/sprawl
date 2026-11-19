@@ -2813,10 +2813,7 @@ impl State {
             .collect();
         let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let v = serde_json::json!({"when": when, "model": run.model, "summary": run.summary, "with_tools": run.with_tools, "turns": run.turns, "usage": run.usage.text(), "claims": claims});
-        if let Some(d) = file.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        let _ = std::fs::write(file, v.to_string());
+        let _ = sprawl_advisor::write_local(&file, v.to_string().as_bytes(), true);
     }
 
     /// The last AI result for this folder, if there is one from the last 30 days: each claim

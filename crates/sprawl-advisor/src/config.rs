@@ -97,9 +97,8 @@ impl AiConfig {
 
     pub fn save(&self) -> std::io::Result<()> {
         let d = dir().ok_or_else(|| std::io::Error::other("APPDATA is not set"))?;
-        std::fs::create_dir_all(&d)?;
         let text = toml::to_string(self).map_err(std::io::Error::other)?;
-        std::fs::write(d.join("ai.toml"), text)
+        crate::write_local(&d.join("ai.toml"), text.as_bytes(), true)
     }
 }
 

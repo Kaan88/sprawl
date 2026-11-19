@@ -174,10 +174,7 @@ pub fn rules_dir() -> Option<PathBuf> {
 
 /// Written next to the target and renamed over it, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let parent = crate::store::ensure_dir(path.parent().ok_or_else(|| std::io::Error::other("No local storage folder"))?)?;
-    let name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| std::io::Error::other("Invalid local storage name"))?;
-    crate::store::write_atomic(&parent.path, name, true, |file| file.write_all(text.as_bytes()))
+    crate::write_local(path, text.as_bytes(), true)
 }
 
 /// Keep the rules folder pinned and serialize the whole read/validate/publish transaction

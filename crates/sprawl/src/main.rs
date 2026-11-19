@@ -563,8 +563,7 @@ fn main() {
 ", std::backtrace::Backtrace::force_capture());
         eprintln!("{msg}");
         if let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Sprawl")) {
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(dir.join("crash.log"), msg);
+            let _ = sprawl_advisor::write_local(&dir.join("crash.log"), msg.as_bytes(), true);
         }
     }));
     #[cfg(has_bootstrap)]

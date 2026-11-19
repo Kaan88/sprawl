@@ -83,6 +83,18 @@ use std::path::Path;
 
 use sprawl_core::{Tree, MULTIPLE, ROOT};
 
+/// Write one of this account's files (settings, notes, exports) safely from an app that may be
+/// elevated: every folder on the way is opened as itself (no link), the bytes go to a new
+/// temporary file of its own, and that is renamed to `path` through its handle. A link planted
+/// at the temporary name or at `path` is never followed. `replace: false` refuses a name that
+/// already exists.
+pub fn write_local(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = store::ensure_dir(path.parent().ok_or_else(|| std::io::Error::other("No folder to write in"))?)?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| std::io::Error::other("Invalid file name"))?;
+    store::write_atomic(&parent.path, name, replace, |f| f.write_all(bytes))
+}
+
 /// Lower-case path segments, without empty ones: `C:\Users\` -> `["c:", "users"]`.
 pub(crate) fn segments(path: &str) -> Vec<String> {
     path.split(['\\', '/']).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()
@@ -298,6 +310,28 @@ pub(crate) fn advise_report_in(tree: &Tree, packs: &[RulePack], facts: &facts::F
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn local_writes_replace_the_name_never_what_it_links_to() {
+        let base = std::env::temp_dir().join(format!("sprawl-write-local-{}", store::nonce()));
+        std::fs::create_dir_all(&base).unwrap();
+        let other = base.join("other.txt");
+        std::fs::write(&other, b"keep me").unwrap();
+        // the settings name made a second name of another file: only the name is replaced
+        std::fs::hard_link(&other, base.join("settings.ini")).unwrap();
+        write_local(&base.join("settings.ini"), b"a=1", true).unwrap();
+        assert_eq!(std::fs::read(&other).unwrap(), b"keep me");
+        assert_eq!(std::fs::read(base.join("settings.ini")).unwrap(), b"a=1");
+        // a missing folder on the way is made
+        write_local(&base.join("new").join("x.txt"), b"x", true).unwrap();
+        // never over an existing name when asked not to
+        assert!(write_local(&other, b"no", false).is_err());
+        assert_eq!(std::fs::read(&other).unwrap(), b"keep me");
+        // no temporary file is left behind
+        let names: Vec<String> = std::fs::read_dir(&base).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     fn temp_tree(tag: &str) -> (PathBuf, Tree) {
         let dir = std::env::temp_dir().join(format!("dt-adv-{tag}-{}", std::process::id()));

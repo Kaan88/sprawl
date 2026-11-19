@@ -39,10 +39,7 @@ fn load_state() -> BTreeMap<String, u64> {
 
 fn save_state(s: &BTreeMap<String, u64>) {
     let Some(p) = state_path() else { return };
-    if let Some(d) = p.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
-    let _ = std::fs::write(p, s.iter().map(|(k, v)| format!("{k}={v}\r\n")).collect::<String>());
+    let _ = sprawl_advisor::write_local(&p, s.iter().map(|(k, v)| format!("{k}={v}\r\n")).collect::<String>().as_bytes(), true);
 }
 
 /// Which drives to warn about now, and the state to keep. `drives` is (root, free bytes); a

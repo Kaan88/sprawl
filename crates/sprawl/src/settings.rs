@@ -48,15 +48,10 @@ impl Settings {
             return;
         }
         let Some(p) = path() else { return };
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let text: String = self.values.iter().map(|(k, v)| format!("{k}={v}\r\n")).collect();
-        // write a temporary file and swap it in, so a crash mid-write can't leave half a file
-        let tmp = p.with_extension("ini.tmp");
-        if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &p).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
+        // a fresh temporary file swapped in through its handle: a crash mid-write can't leave
+        // half a file, and an elevated Sprawl never writes through a link planted on the way
+        let _ = sprawl_advisor::write_local(&p, text.as_bytes(), true);
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

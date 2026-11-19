@@ -618,7 +618,7 @@ impl State {
 
     pub(crate) fn save_text(&self, base: &str, s: &str) {
         let path = user_dir("Documents").join(format!("{base} {}.csv", stamp()));
-        let msg = match std::fs::write(&path, s) {
+        let msg = match sprawl_advisor::write_local(&path, s.as_bytes(), false) {
             Ok(()) => format!("Saved {}", path.display()),
             Err(e) => format!("Couldn't save: {e}"),
         };

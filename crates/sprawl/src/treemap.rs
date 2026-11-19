@@ -383,7 +383,7 @@ impl State {
                                     q.swap(0, 2);
                                     q[3] = 255;
                                 }
-                                match std::fs::write(&path, paint::png(cw, ch, &px)) {
+                                match sprawl_advisor::write_local(&path, &paint::png(cw, ch, &px), false) {
                                     Ok(()) => format!("Saved the treemap picture to {}", path.display()),
                                     Err(e) => format!("Couldn't save the picture: {e}"),
                                 }

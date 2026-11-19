@@ -97,11 +97,12 @@ if ($Run -and $Report) { Set-Content -LiteralPath $Report -Value $total -Encodin
     s
 }
 
-/// Write the script as UTF-8 with a byte order mark.
+/// Write the script as UTF-8 with a byte order mark, as a new file (never over one, or through
+/// a link planted at its name).
 pub fn write_script(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(text.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
-    std::fs::write(path, bytes)
+    crate::write_local(path, &bytes, false)
 }
 
 #[cfg(test)]

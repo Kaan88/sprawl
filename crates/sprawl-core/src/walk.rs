@@ -393,11 +393,20 @@ fn list_by_handle(job: &Job, root: &str, root_len: usize, buf: &mut Vec<u64>, vi
         Ok(h) => h,
         Err(e) => return e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32),
     };
-    let expected = format!("{root}{}", String::from_utf16_lossy(&job.path[root_len.min(job.path.len())..]).trim_end_matches('\\')).to_lowercase();
+    let expected = expected_path(root, &job.path[root_len.min(job.path.len())..]);
     if !dir::is_plain_dir(&h) || dir::real_path(&h).ok().as_deref() != Some(expected.as_str()) {
         return false;
     }
     dir::list(&h, buf, visit)
+}
+
+/// Where a queued folder must really be: the root's real path (volume included) and the job's
+/// path below the root, joined by exactly one `\` (a drive root's job path keeps its own).
+/// Compared exactly, so a folder of another case on a case-sensitive volume is not taken.
+fn expected_path(root: &str, below: &[u16]) -> String {
+    let rel = String::from_utf16_lossy(below);
+    let rel = rel.trim_matches('\\');
+    if rel.is_empty() { root.to_string() } else { format!("{root}\\{rel}") }
 }
 
 /// Folders opened as themselves and listed through their handle.
@@ -428,16 +437,16 @@ mod dir {
         ok && tag[0] & crate::attr::DIRECTORY != 0 && tag[0] & crate::attr::REPARSE_POINT == 0
     }
 
-    /// Where the opened folder really is on its volume, lower case, without a trailing `\`
-    /// (`\` for a volume's root becomes the empty string).
+    /// Where the opened folder really is, with its volume (`\\?\Volume{...}`) and the names'
+    /// own case, without a trailing `\`.
     pub(super) fn real_path(h: &OwnedHandle) -> std::io::Result<String> {
-        const VOLUME_NAME_NONE: u32 = 0x4;
+        const VOLUME_NAME_GUID: u32 = 0x1;
         let mut out = vec![0u16; 512];
         loop {
             // SAFETY: `out` has the capacity given.
-            let n = unsafe { GetFinalPathNameByHandleW(h.as_raw_handle(), out.as_mut_ptr(), out.len() as u32, VOLUME_NAME_NONE) } as usize;
+            let n = unsafe { GetFinalPathNameByHandleW(h.as_raw_handle(), out.as_mut_ptr(), out.len() as u32, VOLUME_NAME_GUID) } as usize;
             if n == 0 { return Err(std::io::Error::last_os_error()); }
-            if n < out.len() { return Ok(String::from_utf16_lossy(&out[..n]).trim_end_matches('\\').to_lowercase()); }
+            if n < out.len() { return Ok(String::from_utf16_lossy(&out[..n]).trim_end_matches('\\').to_string()); }
             if n > 65_536 { return Err(std::io::Error::other("The final path is too long")); }
             out.resize(n + 1, 0);
         }
@@ -586,6 +595,36 @@ mod tests {
         assert_eq!(many.method, ScanMethod::Walk);
         assert_eq!(many.errors, 0);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queued_folders_are_expected_below_the_root_by_one_separator() {
+        let w = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let vol = r"\\?\Volume{1}";
+        // a drive root: its job path ends in `\`, so a child's path below it has no leading one
+        assert_eq!(expected_path(vol, &w("")), vol);
+        assert_eq!(expected_path(vol, &w("Users")), r"\\?\Volume{1}\Users");
+        assert_eq!(expected_path(vol, &w(r"Users\Me")), r"\\?\Volume{1}\Users\Me");
+        // a folder root, with or without a trailing separator given
+        let root = r"\\?\Volume{1}\Work";
+        assert_eq!(expected_path(root, &w(r"\src")), r"\\?\Volume{1}\Work\src");
+        assert_eq!(expected_path(root, &w("src")), r"\\?\Volume{1}\Work\src");
+        assert_eq!(expected_path(root, &w(r"\src\")), r"\\?\Volume{1}\Work\src");
+        // exact: another case is another folder
+        assert_ne!(expected_path(root, &w("SRC")), expected_path(root, &w("src")));
+        // and on the disk: a drive root's direct child is listed (one folder listing, no scan)
+        let temp = std::path::absolute(std::env::temp_dir()).unwrap();
+        let mut parts = temp.components();
+        let drive = std::path::PathBuf::from(format!("{}\\", parts.next().unwrap().as_os_str().to_string_lossy()));
+        let _ = parts.next();
+        let child = drive.join(parts.next().unwrap().as_os_str());
+        let root_job = long_path(&drive);
+        let real = dir::real_path(&dir::open(&root_job).unwrap()).unwrap();
+        assert!(real.starts_with(r"\\?\Volume{"), "{real}");
+        let mut seen = 0;
+        let mut visit = |_: &[u16], _: u32, _: u32, _: u64, _: u64| { seen += 1; true };
+        assert!(list_by_handle(&Job { id: 1, path: long_path(&child), top: 0 }, &real, root_job.len(), &mut Vec::new(), &mut visit), "{}", child.display());
+        assert!(seen > 0);
     }
 
     #[test]

@@ -655,13 +655,7 @@ pub(crate) fn history_save(h: &History) {
         let _ = std::fs::remove_file(&p);
         return;
     }
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let tmp = p.with_extension("txt.tmp");
-    if std::fs::write(&tmp, h.to_text()).is_ok() && std::fs::rename(&tmp, &p).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    let _ = sprawl_advisor::write_local(&p, h.to_text().as_bytes(), true);
 }
 
 #[cfg(test)]
