@@ -1401,15 +1401,23 @@ pub(crate) fn outcome(f: &Finding, bin_on: bool) -> Fate {
 /// and what only changes in place.
 pub(crate) fn lead_line(outcomes: &[Fate], privacy: usize) -> String {
     let count = |o: Fate| outcomes.iter().filter(|x| **x == o).count();
-    let (gone, bin) = (count(Fate::Gone) + privacy, count(Fate::Bin));
+    let (gone, bin) = (count(Fate::Gone), count(Fate::Bin));
     let mut s: Vec<&str> = Vec::new();
-    match (gone > 0, bin > 0) {
-        // (privacy wording promises nothing about recovery: deleted, not to the bin)
-        (true, false) if count(Fate::Gone) == 0 => s.push("The privacy items are deleted, not sent to the Recycle Bin."),
-        (true, false) => s.push("Deleted for good, not sent to the Recycle Bin."),
-        (false, true) => s.push("Sent to the Recycle Bin: Explorer can put them back. Their space is freed when the bin is emptied. What can't go to the bin (too big for it, or a drive without one) is left as it is."),
-        (true, true) => s.push("Your own files (marked below) go to the Recycle Bin, and their space is freed when the bin is emptied; the rest is deleted for good."),
+    // each group named for what it is, never "the rest": compressed or linked items aren't
+    // deleted at all (privacy wording promises nothing about recovery: deleted, not to the bin)
+    match (gone > 0, privacy > 0) {
+        (true, true) => s.push("What is under \"Deleted for good\", and the privacy items, are deleted without the Recycle Bin."),
+        (true, false) if outcomes.iter().all(|o| *o == Fate::Gone) => s.push("Deleted for good, not sent to the Recycle Bin."),
+        (true, false) => s.push("What is under \"Deleted for good\" is deleted without the Recycle Bin."),
+        (false, true) => s.push("The privacy items are deleted without the Recycle Bin."),
         (false, false) => {}
+    }
+    if bin > 0 {
+        s.push(if gone + privacy > 0 {
+            "What is under \"To the Recycle Bin\" goes there: Explorer can put it back, and its space is freed when the bin is emptied."
+        } else {
+            "Sent to the Recycle Bin: Explorer can put them back. Their space is freed when the bin is emptied. What can't go to the bin (too big for it, or a drive without one) is left as it is."
+        });
     }
     if count(Fate::Tool) > 0 {
         s.push("A program's own clean-up decides what it removes, usually for good rather than to the Recycle Bin.");
@@ -1418,7 +1426,7 @@ pub(crate) fn lead_line(outcomes: &[Fate], privacy: usize) -> String {
         s.push(if outcomes.iter().all(|o| *o == Fate::Link) && privacy == 0 {
             "Nothing is deleted: each copy becomes a link to the one kept, so every path still opens the same file. Then a change to one changes all."
         } else {
-            "Copies made links keep their contents: the kept one holds the bytes, and a copy with data of its own (an extra stream) is left as it is."
+            "Copies made links keep their contents: the kept one holds the bytes, and copies with an extra stream (data of their own, such as a download mark) are left as they are."
         });
     }
     if count(Fate::Compress) > 0 {
@@ -1436,11 +1444,12 @@ pub(crate) fn final_action(outcomes: &[Fate], privacy: usize) -> String {
     let count = |o: Fate| outcomes.iter().filter(|x| **x == o).count();
     let gone = count(Fate::Gone);
     let mut parts = Vec::new();
+    // privacy sets go in the same clause, which says the Recycle Bin is skipped for all of it
     match (gone, privacy) {
         (0, 0) => {}
         (n, 0) => parts.push(format!("delete {n} for good")),
-        (0, p) => parts.push(format!("delete {}", privacy_count(p))),
-        (n, p) => parts.push(format!("delete {n} for good and {}", privacy_count(p))),
+        (0, p) => parts.push(format!("delete {} without the Recycle Bin", privacy_count(p))),
+        (n, p) => parts.push(format!("delete {n} {} and {} without the Recycle Bin", if n == 1 { "item" } else { "items" }, privacy_count(p))),
     }
     let forever = parts.len();
     for (o, word) in [(Fate::Bin, "recycle {}"), (Fate::Tool, "run {} clean-up"), (Fate::Link, "link {}"), (Fate::Compress, "compress {}"), (Fate::Shrink, "shrink {}")] {
@@ -1957,21 +1966,26 @@ mod review_tests {
     fn the_button_names_what_it_does() {
         assert_eq!(final_action(&[Fate::Gone], 0), "Delete 1 for good");
         assert_eq!(final_action(&[Fate::Bin, Fate::Gone, Fate::Bin], 0), "Delete 1 for good, recycle 2");
-        assert_eq!(final_action(&[Fate::Tool, Fate::Tool], 1), "Delete 1 privacy item, run 2 clean-ups");
-        assert_eq!(final_action(&[], 2), "Delete 2 privacy items");
-        assert_eq!(final_action(&[Fate::Gone, Fate::Bin], 1), "Delete 1 for good and 1 privacy item, recycle 1");
+        assert_eq!(final_action(&[Fate::Tool, Fate::Tool], 1), "Delete 1 privacy item without the Recycle Bin, run 2 clean-ups");
+        assert_eq!(final_action(&[], 2), "Delete 2 privacy items without the Recycle Bin");
+        assert_eq!(final_action(&[Fate::Gone, Fate::Bin], 1), "Delete 1 item and 1 privacy item without the Recycle Bin, recycle 1");
         assert_eq!(final_action(&[Fate::Link], 0), "Link 1");
         assert_eq!(final_action(&[], 0), "Clean up now");
         assert_eq!(final_action(&[Fate::Gone, Fate::Bin, Fate::Tool, Fate::Link], 0), "Delete 1 for good, clean up 3 more", "what can't be undone is always named");
-        assert_eq!(final_action(&[Fate::Bin, Fate::Tool, Fate::Link], 2), "Delete 2 privacy items, clean up 3 more", "privacy sets are named with what is deleted (Astra 1.0.2 S4 #2)");
+        assert_eq!(final_action(&[Fate::Bin, Fate::Tool, Fate::Link], 2), "Delete 2 privacy items without the Recycle Bin, clean up 3 more", "privacy sets are named with what is deleted (Astra 1.0.2 S4 #2)");
         assert_eq!(final_action(&[Fate::Bin, Fate::Tool, Fate::Link, Fate::Compress], 0), "Clean up now", "too many parts for a button");
         // the first line agrees with the groups (Astra 1.0.2 S4 #3)
         assert!(!lead_line(&[Fate::Compress], 0).contains("Deleted for good"));
         assert!(!lead_line(&[Fate::Shrink], 0).contains("Deleted for good"));
         assert!(lead_line(&[Fate::Tool], 0).contains("usually for good"));
         assert!(lead_line(&[Fate::Bin, Fate::Compress], 0).starts_with("Sent to the Recycle Bin"));
-        assert!(lead_line(&[Fate::Bin], 1).contains("the rest is deleted for good"));
-        assert!(lead_line(&[], 1).starts_with("The privacy items are deleted, not sent to the Recycle Bin"));
+        assert!(lead_line(&[], 1).starts_with("The privacy items are deleted without the Recycle Bin"));
+        // mixed: only the counted groups skip the bin; compression deletes nothing (re-review S4 #3)
+        for (o, p) in [(&[Fate::Gone, Fate::Bin, Fate::Compress][..], 0), (&[Fate::Bin, Fate::Link][..], 1)] {
+            let l = lead_line(o, p);
+            assert!(!l.contains("the rest") && l.contains("To the Recycle Bin"), "{l}");
+        }
+        assert!(lead_line(&[Fate::Gone, Fate::Compress], 0).starts_with("What is under \"Deleted for good\""));
         assert!(lead_line(&[Fate::Link], 0).starts_with("Nothing is deleted"));
         assert!(!lead_line(&[Fate::Link, Fate::Gone], 0).contains("lose nothing"));
         assert_eq!(lead_line(&[], 0), "");

@@ -1142,13 +1142,14 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
             Some(false) => { o.problem(c, "left alone: no longer the same bytes"); continue; }
             None => { o.problem(c, "left alone: comparison stopped or failed"); continue; }
         }
-        // The copy's name will open the kept file: data of its own in an extra stream (an
-        // application's metadata, a download mark) would be lost with its last name. Only
-        // when both have none, or the very same ones, is it linked.
-        match same_streams(&kf.file, keep, &cf, c) {
-            Ok(true) => {},
-            Ok(false) => { o.problem(c, "left alone: it or the kept copy has data of its own in an extra stream (a download mark, for one), which a link would lose"); continue; }
-            Err(e) => { o.problem(c, format!("left alone: its extra streams couldn't be checked ({e})")); continue; }
+        // The copy's name will open the kept file: data in an extra stream (an application's
+        // metadata, a download mark) would be lost with the copy's last name, and its bytes can
+        // change after any comparison. So neither file may have one at all; a list that can't
+        // be read holds the copy too.
+        match (win::named_streams(&kf.file), win::named_streams(&cf)) {
+            (Ok(a), Ok(b)) if a.is_empty() && b.is_empty() => {},
+            (Ok(_), Ok(_)) => { o.problem(c, "left alone: it or the kept copy has data in an extra stream (a download mark, for one), which a link could lose"); continue; }
+            (Err(e), _) | (_, Err(e)) => { o.problem(c, format!("left alone: its extra streams couldn't be checked ({e})")); continue; }
         }
         let Some(name) = c.file_name() else { continue };
         let backup = c.with_file_name(format!("{}.sprawl-original", name.to_string_lossy()));
@@ -1163,6 +1164,10 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
                 else { format!("not linked ({e}); original preserved at {} because its old name is occupied", backup.display()) });
             continue;
         }
+        // a stream added to the original meanwhile: it is kept, not deleted with it
+        if !win::named_streams(&cf).is_ok_and(|s| s.is_empty()) {
+            o.problem(c, format!("linked, but the original gained an extra stream (or its streams couldn't be read again), so it is kept at {}; no space credited", backup.display())); continue;
+        }
         if let Err(e) = win::delete_file(&cf) {
             o.problem(c, format!("linked, but original copy remains at {} ({e}); no space credited", backup.display())); continue;
         }
@@ -1172,22 +1177,6 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
         progress(o.freed);
     }
 }
-/// Whether two open files have the same named data streams: none on either, or the same names
-/// with the same bytes (each at most 1 MB; anything bigger counts as different).
-fn same_streams(a: &std::fs::File, a_path: &Path, b: &std::fs::File, b_path: &Path) -> std::io::Result<bool> {
-    let (mut sa, mut sb) = (win::named_streams(a)?, win::named_streams(b)?);
-    if sa.is_empty() && sb.is_empty() { return Ok(true); }
-    sa.sort();
-    sb.sort();
-    if sa != sb { return Ok(false); }
-    for (name, size) in &sa {
-        if *size > 1 << 20 { return Ok(false); }
-        let stream = |p: &Path| std::fs::read(format!("{}{name}", p.display()));
-        if stream(a_path)? != stream(b_path)? { return Ok(false); }
-    }
-    Ok(true)
-}
-
 fn never() -> &'static crate::safety::Never {
     static N: std::sync::OnceLock<crate::safety::Never> = std::sync::OnceLock::new();
     N.get_or_init(crate::safety::Never::default_list)
@@ -1903,15 +1892,25 @@ mod tests {
         let mut o = Outcome::default();
         link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {});
         assert_eq!(o.files, 0, "{:?}", o.problems);
-        // the very same stream on both: nothing of its own is lost, so it is linked
+        // the very same stream on both is held too: its bytes could change after any comparison
+        // (Astra 1.0.2 re-review S4 #5)
         std::fs::write(format!("{}:notes", copy.display()), b"kept only").unwrap();
         let mut o = Outcome::default();
         link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {});
-        assert_eq!(o.files, 1, "{:?}", o.problems);
-        assert_eq!(std::fs::read(format!("{}:notes", copy.display())).unwrap(), b"kept only");
+        assert_eq!(o.files, 0, "{:?}", o.problems);
         let file = std::fs::File::open(&keep).unwrap();
         assert_eq!(win::named_streams(&file).unwrap(), vec![(":notes:$DATA".to_string(), 9)]);
         drop(file);
+        // a stream added to the original between the link and its removal: the original stays
+        std::fs::remove_file(&keep).unwrap();
+        std::fs::write(&keep, b"same bytes").unwrap();
+        std::fs::remove_file(&copy).unwrap();
+        std::fs::write(&copy, b"same bytes").unwrap();
+        let mut o = Outcome::default();
+        link_with(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {},
+            &mut |c| std::fs::write(format!("{}.sprawl-original:late", c.display()), b"late").unwrap());
+        assert_eq!((o.files, o.freed), (0, 0), "{:?}", o.problems);
+        assert_eq!(std::fs::read(format!("{}.sprawl-original:late", copy.display())).unwrap(), b"late");
         drop(owned);
     }
 

@@ -461,7 +461,7 @@ impl State {
                         self.scan_taken = std::time::SystemTime::now();
                         let began = self.scan_taken.checked_sub(job.started.elapsed()).unwrap_or(self.scan_taken);
                         self.scan_began = if job.csv { std::fs::metadata(&job.path).and_then(|m| m.modified()).map_or(began, |t| t.min(began)) } else { began };
-                        self.coverage = Some(crate::coverage::Coverage { roots: job.roots.clone(), skips: job.skips.clone(), elevated: sprawl_core::is_elevated() });
+                        self.coverage = Some(crate::coverage::Coverage { network: crate::coverage::network_roots(&job.roots), roots: job.roots.clone(), skips: job.skips.clone(), elevated: sprawl_core::is_elevated() });
                         self.set_tree(prepared, &header);
                         self.map.scene.start_wave();
                         self.watch();
