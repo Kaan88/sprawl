@@ -3664,6 +3664,9 @@ impl State {
             chip("AdvPOpenAi", "OpenAI-compatible", e.provider == Provider::OpenAi),
             chip("AdvPOff", "Off", e.provider == Provider::Off),
         );
+        if e.provider == Provider::Codex {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::llm::codex::RISK));
+        }
         let choices = self.advisor.models.choices(&e.model);
         // the quick picks, when there's no list to pick from
         if choices.is_none() && matches!(e.provider, Provider::Anthropic | Provider::ClaudeCode) {

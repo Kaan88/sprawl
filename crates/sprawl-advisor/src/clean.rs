@@ -1883,8 +1883,8 @@ mod tests {
 
     #[test]
     fn a_copy_with_an_extra_stream_of_its_own_is_not_linked() {
-        let root = std::env::temp_dir().join(format!("sprawl-link-streams-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-link-streams").unwrap();
+        let root = owned.path().to_path_buf();
         std::fs::create_dir_all(&root).unwrap();
         let keep = root.join("keep.bin");
         let copy = root.join("copy.bin");
@@ -1912,7 +1912,7 @@ mod tests {
         let file = std::fs::File::open(&keep).unwrap();
         assert_eq!(win::named_streams(&file).unwrap(), vec![(":notes:$DATA".to_string(), 9)]);
         drop(file);
-        std::fs::remove_dir_all(root).unwrap();
+        drop(owned);
     }
 
     #[test]
@@ -2164,8 +2164,8 @@ mod tests {
 
     #[test]
     fn an_old_folder_moved_in_after_the_scan_stays() {
-        let base = std::env::temp_dir().join(format!("sprawl-moved-dir-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-moved-dir").unwrap();
+        let base = owned.path().to_path_buf();
         let cache = base.join("cache");
         std::fs::create_dir_all(cache.join("was_here")).unwrap();
         std::fs::create_dir_all(base.join("mine").join("deep")).unwrap();
@@ -2196,7 +2196,7 @@ mod tests {
         let blind = Spare { since: Some(scan), keep: Vec::new(), scanned: None };
         let o = run(&cache, &Action::Remove, &blind, &stop, &mut |_| {});
         assert!(cache.join("mine").join("deep").join("thesis.doc").exists(), "{:?}", o.problems);
-        let _ = std::fs::remove_dir_all(&base);
+        drop(owned);
     }
 
     #[test]
@@ -2538,8 +2538,8 @@ mod tests {
 
     #[test]
     fn a_package_tool_runs_only_on_the_reviewed_cache() {
-        let base = std::env::temp_dir().join(format!("sprawl-tool-scope-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-tool-scope").unwrap();
+        let base = owned.path().to_path_buf();
         let cache = base.join("packages");
         std::fs::create_dir_all(cache.join("v10")).unwrap();
         std::fs::create_dir_all(base.join("other")).unwrap();
@@ -2571,7 +2571,7 @@ mod tests {
         // a folder skipped in Settings, or not there at all
         assert!(scope_matches(&base.join("gone"), &npm, &out(&[s(&base.join("gone"))])).is_err());
         assert_eq!(package_tool("Clear-RecycleBin -Force"), None, "not a package cache");
-        let _ = std::fs::remove_dir_all(&base);
+        drop(owned);
     }
 
     #[test]

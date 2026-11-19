@@ -241,6 +241,79 @@ fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Dire
     Ok(Directory { path: crate::canonical_root(&path), _handles: handles })
 }
 
+/// A folder made by this process alone and held as its own until dropped: test fixtures and
+/// Codex's run folders. It is made where no folder of its name was (an existing one is never
+/// taken), with its parent's chain pinned, then opened as itself without delete sharing and
+/// checked to be the plain empty folder just made. While it lives no one can rename, replace or
+/// delete it, so what Drop removes inside it is what was put there; the folder itself is then
+/// removed by name only if empty. One that couldn't be acquired is never removed.
+#[derive(Debug)]
+pub struct OwnedDir {
+    path: PathBuf,
+    held: Option<File>,
+    _parent: Directory,
+}
+
+impl OwnedDir {
+    /// A new folder in `parent`, named `<prefix>-<pid>-<nanos>-<try>`.
+    pub fn create_in(parent: &Path, prefix: &str) -> io::Result<OwnedDir> {
+        let pinned = directory(parent)?;
+        for n in 0..100u32 {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+            let path = pinned.path.join(format!("{prefix}-{}-{nanos}-{n}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+            // listing access, so the sharing rules apply to this handle (attribute-only handles
+            // take no part in them); no delete sharing: nothing can rename or remove it now
+            let held = std::fs::OpenOptions::new().access_mode(0x1 | 0x80).share_mode(1 | 2).custom_flags(FLAGS).open(&path)?;
+            let m = held.metadata()?;
+            if !m.is_dir() || m.file_attributes() & crate::attr::REPARSE_POINT != 0 || !same(&final_path(&held)?, &crate::canonical_root(&path))
+                || std::fs::read_dir(&path)?.next().is_some()
+            {
+                return Err(io::Error::other("The new folder was replaced before it could be held"));
+            }
+            return Ok(OwnedDir { path, held: Some(held), _parent: pinned });
+        }
+        Err(io::Error::other("No free folder name"))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for OwnedDir {
+    fn drop(&mut self) {
+        // what is inside, links removed as links and never followed
+        if let Ok(entries) = std::fs::read_dir(&self.path) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+                let gone = if m.is_dir() && m.file_attributes() & crate::attr::REPARSE_POINT == 0 {
+                    std::fs::remove_dir_all(&p)
+                } else if m.is_dir() {
+                    std::fs::remove_dir(&p)
+                } else {
+                    std::fs::remove_file(&p).or_else(|_| {
+                        let mut perm = m.permissions();
+                        #[allow(clippy::permissions_set_readonly_false)]
+                        perm.set_readonly(false);
+                        std::fs::set_permissions(&p, perm)?;
+                        std::fs::remove_file(&p)
+                    })
+                };
+                let _ = gone;
+            }
+        }
+        // then the folder, by name and only if empty, with the parent still pinned
+        drop(self.held.take());
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
+
 pub struct LocalFile {
     pub file: File,
     _parent: Directory,
@@ -258,6 +331,33 @@ pub fn file(path: &Path, max: u64) -> io::Result<LocalFile> {
     }
     if !same(&final_path(&file)?, &crate::canonical_root(&path)) { return Err(io::Error::other("The opened file resolved elsewhere")); }
     Ok(LocalFile { file, _parent: parent })
+}
+
+#[cfg(test)]
+mod owned_tests {
+    use super::OwnedDir;
+
+    #[test]
+    fn an_owned_folder_is_held_and_removed_with_what_is_in_it() {
+        let a = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-owned").unwrap();
+        let b = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-owned").unwrap();
+        assert_ne!(a.path(), b.path());
+        std::fs::create_dir(a.path().join("inner")).unwrap();
+        std::fs::write(a.path().join("inner").join("f.txt"), b"x").unwrap();
+        std::fs::write(a.path().join("ro.txt"), b"x").unwrap();
+        let mut perm = std::fs::metadata(a.path().join("ro.txt")).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(a.path().join("ro.txt"), perm).unwrap();
+        // held: it can't be renamed away and replaced
+        let moved = a.path().with_extension("moved");
+        assert!(std::fs::rename(a.path(), &moved).is_err());
+        // a path below it can still be pinned
+        assert!(super::directory(&a.path().join("inner")).is_ok());
+        let (pa, pb) = (a.path().to_path_buf(), b.path().to_path_buf());
+        drop(a);
+        drop(b);
+        assert!(!pa.exists() && !pb.exists());
+    }
 }
 
 #[cfg(test)]

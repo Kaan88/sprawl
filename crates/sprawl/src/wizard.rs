@@ -85,6 +85,7 @@ pub fn xaml() -> String {
         <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
         <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="12" CornerRadius="4" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
+        <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="12" Foreground="#FFF5B342" Margin="0,4,0,2" Text="{}"/>
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
         <StackPanel x:Name="WizModelRow" MaxWidth="420" HorizontalAlignment="Left" Width="420">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
@@ -92,6 +93,7 @@ pub fn xaml() -> String {
         </StackPanel>"##,
         label("Provider"),
         format!(r##"<ComboBox x:Name="WizProvider" HorizontalAlignment="Left" Width="420" SelectedIndex="0">{}</ComboBox>"##, providers.iter().map(|i| format!(r##"<ComboBoxItem Content="{i}"/>"##)).collect::<String>()),
+        crate::ui::esc(sprawl_advisor::llm::codex::RISK),
         label("API key (kept in Windows Credential Manager, not in a file)"),
         label("Base URL"),
         label("Model"),
@@ -718,6 +720,7 @@ impl State {
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         shown(self, "WizKeyRow", p.needs_key());
         shown(self, "WizUrlRow", p == Provider::OpenAi);
+        shown(self, "WizCodexRisk", p == Provider::Codex);
         shown(self, "WizModelRow", p != Provider::Off);
         // an empty model, or another provider's default, becomes this provider's default
         let m = field(self, "WizModel").trim().to_string();

@@ -2,10 +2,12 @@
 //! without Sprawl's server, it answers from the text it is given. Codex can't be given an
 //! empty tool set, so before every run Sprawl asks it (in runs that send nothing) what the
 //! model would be offered, and starts it only when that is the checked set: its tool features
-//! off, every MCP server it would start switched off by name, and no tool beyond those that
-//! can't act. Its sandbox is read-only besides. The executable itself is trusted code: it
-//! runs with Sprawl's own rights, which is why it isn't started as administrator unless
-//! allowed.
+//! off, every MCP server it would start switched off by name, and no tool beyond those listed
+//! in [`CHECKED_TOOLS`]. Its sandbox is read-only besides. This is a check, not a boundary:
+//! tool names don't prove what a tool does, and the check runs with a Codex home of its own,
+//! not the login's. The user accepts that by choosing Codex (AI setup says so), and Sprawl
+//! never picks Codex by itself. The executable itself is trusted code: it runs with Sprawl's
+//! own rights, which is why it isn't started as administrator unless allowed.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::{log_request, Chat, Turn};
+
+/// Said in AI setup whenever Codex is picked: what choosing it accepts.
+pub const RISK: &str = "Codex can't be started without tools: it still offers its model a code runner and helper agents. Before each answer Sprawl checks, without sending anything, that these are switched off and that no MCP server would start, and refuses otherwise, but that check can't prove what Codex will do. Choosing Codex accepts that. For an AI with no tools at all, use Claude Code, an API key or a local model.";
 
 pub struct Codex {
     exe: PathBuf,
@@ -77,7 +82,7 @@ pub(crate) fn args(model: &str, dir: &Path, servers_off: &[String]) -> Vec<Strin
     a.extend(servers_off.iter().cloned());
     a.push("-C".into());
     a.push(dir.display().to_string());
-    if !model.is_empty() && !model.starts_with('-') && model.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_') {
+    if valid_model(model) {
         a.push("-m".into());
         a.push(model.into());
     }
@@ -86,56 +91,28 @@ pub(crate) fn args(model: &str, dir: &Path, servers_off: &[String]) -> Vec<Strin
     a
 }
 
-/// A folder made for one run (none existed by its name), checked to be a plain empty folder,
-/// and removed with what Codex left in it when the run is over.
-struct Fresh(PathBuf);
-
-impl Drop for Fresh {
-    fn drop(&mut self) {
-        // links inside are removed as links, never followed
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// A real folder: not a link or junction, and not a file.
-fn plain_dir(p: &Path) -> Result<(), String> {
-    use std::os::windows::fs::MetadataExt;
-    let m = std::fs::symlink_metadata(p).map_err(|e| format!("{} couldn't be checked ({e})", p.display()))?;
-    if !m.is_dir() || m.file_attributes() & 0x400 != 0 {
-        return Err(format!("{} isn't a plain folder", p.display()));
-    }
-    Ok(())
-}
-
-/// Where the run folders go: Sprawl's own advisor folder, never Temp.
+/// Where the run folders go: Sprawl's own advisor folder, never Temp. Each run's folder is an
+/// [`sprawl_core::local::OwnedDir`] in it: made by that run alone, held until the run is over,
+/// and removed only through that hold.
 fn base() -> Result<PathBuf, String> {
-    let advisor = super::advisor_dir().ok_or("this account's AppData folder isn't known")?;
-    let base = advisor.join("codex");
+    let base = super::advisor_dir().ok_or("this account's AppData folder isn't known")?.join("codex");
     std::fs::create_dir_all(&base).map_err(|e| format!("couldn't make {} ({e})", base.display()))?;
-    plain_dir(&advisor)?;
-    plain_dir(&base)?;
     Ok(base)
 }
 
-/// A new, empty folder of `base`, made by this call alone.
-fn fresh(base: &Path, what: &str) -> Result<Fresh, String> {
-    for n in 0..100u32 {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-        let d = base.join(format!("{what}-{}-{nanos}-{n}", std::process::id()));
-        match std::fs::create_dir(&d) {
-            Ok(()) => {
-                let f = Fresh(d);
-                plain_dir(&f.0)?;
-                if std::fs::read_dir(&f.0).map_err(|e| e.to_string())?.next().is_some() {
-                    return Err(format!("{} wasn't empty", f.0.display()));
-                }
-                return Ok(f);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("couldn't make a folder for Codex ({e})")),
-        }
-    }
-    Err("couldn't make a folder for Codex".into())
+/// A new folder of `base` for this run, or why not.
+fn fresh(base: &Path, what: &str) -> Result<sprawl_core::local::OwnedDir, String> {
+    sprawl_core::local::OwnedDir::create_in(base, what).map_err(|e| format!("couldn't make a folder for Codex in {} ({e})", base.display()))
+}
+
+/// `-c model="..."` for the checks, so they see the model the run will use.
+fn model_setting(model: &str) -> Vec<String> {
+    if valid_model(model) { vec!["-c".into(), format!("model=\"{model}\"")] } else { Vec::new() }
+}
+
+/// A model name that is one plain argument: letters, digits, `-`, `.`, `_`, not starting with `-`.
+fn valid_model(model: &str) -> bool {
+    !model.is_empty() && !model.starts_with('-') && model.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
 }
 
 /// The Codex home folder its login is in: `CODEX_HOME`, or `.codex` in the user's folder.
@@ -145,7 +122,7 @@ fn codex_home() -> Option<PathBuf> {
 
 /// One of Codex's own commands that sends nothing (`mcp list`, `features list`, `debug
 /// prompt-input`), run in `dir` with `home` as its Codex home: what it printed, or why not.
-fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], tail: &[&str]) -> Result<String, String> {
+fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], tail: &[&str], stopped: &dyn Fn() -> bool) -> Result<String, String> {
     use std::io::Read;
     let mut cmd = Command::new(exe);
     cmd.args(sub).args(common()).args(extra).args(tail).current_dir(dir).env("CODEX_HOME", home);
@@ -156,8 +133,9 @@ fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], ta
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut v = Vec::new();
-        let _ = (&mut out).take(8 << 20).read_to_end(&mut v);
-        let _ = tx.send(v);
+        // one byte past the limit says the output was cut: a cut answer is no answer
+        let read = (&mut out).take((8 << 20) + 1).read_to_end(&mut v);
+        let _ = tx.send(if read.is_err() || v.len() > 8 << 20 { None } else { Some(v) });
     });
     let (etx, erx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -165,7 +143,19 @@ fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], ta
         let _ = (&mut err).take(64 << 10).read_to_end(&mut v);
         let _ = etx.send(String::from_utf8_lossy(&v).lines().find(|l| l.starts_with("Error")).unwrap_or("").to_string());
     });
-    let got = rx.recv_timeout(Duration::from_secs(30));
+    // Stop ends the check at once (its job with it)
+    let asked = Instant::now();
+    let got = loop {
+        if stopped() {
+            run.end();
+            return Err(super::STOPPED.into());
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(v) => break Ok(v),
+            Err(_) if asked.elapsed() < Duration::from_secs(30) => continue,
+            Err(e) => break Err(e),
+        }
+    };
     let waited = Instant::now();
     let status = loop {
         match run.child.try_wait() {
@@ -175,7 +165,7 @@ fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], ta
         }
     };
     run.end();
-    let got = got.map_err(|_| "Codex didn't finish a check in time".to_string())?;
+    let got = got.map_err(|_| "Codex didn't finish a check in time".to_string())?.ok_or("a check's output couldn't be read whole")?;
     match status {
         Some(s) if s.success() => Ok(String::from_utf8_lossy(&got).into_owned()),
         Some(s) => Err(match erx.recv_timeout(Duration::from_secs(2)).ok().filter(|l| !l.is_empty()) {
@@ -189,10 +179,8 @@ fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], ta
 /// The servers `codex mcp list --json` printed: (name, enabled). A name that couldn't be
 /// switched off by name in a setting is refused.
 fn parse_servers(out: &str) -> Result<Vec<(String, bool)>, String> {
+    // no servers is `[]`: nothing at all is not an answer
     let t = out.trim();
-    if t.is_empty() {
-        return Ok(Vec::new());
-    }
     let v: Value = serde_json::from_str(t).map_err(|_| "its list of MCP servers couldn't be read".to_string())?;
     let list = v.as_array().ok_or("its list of MCP servers couldn't be read")?;
     list.iter()
@@ -227,8 +215,14 @@ fn check_tools(out: &str) -> Result<(), String> {
     let v: Value = serde_json::from_str(out.trim()).map_err(|_| "what it would offer the model couldn't be read".to_string())?;
     let items = v.as_array().ok_or("what it would offer the model couldn't be read")?;
     for item in items {
-        let Some(tools) = item.get("tools") else { continue };
-        for ns in tools.as_array().ok_or("its tool list couldn't be read")? {
+        // only the kinds checked: messages, and the tool list; anything else (a tool list in a
+        // new shape, say) is something Sprawl hasn't checked
+        match item["type"].as_str() {
+            Some("message") if item.get("tools").is_none() => continue,
+            Some("additional_tools") => {}
+            other => return Err(format!("it would give the model something Sprawl hasn't checked ({})", super::short(other.unwrap_or("?")))),
+        }
+        for ns in item["tools"].as_array().ok_or("its tool list couldn't be read")? {
             let name = ns["name"].as_str().unwrap_or("");
             let allowed = CHECKED_TOOLS.iter().find(|(n, _)| *n == name).filter(|_| ns["type"] == "namespace");
             let Some((_, allowed)) = allowed else { return Err(format!("it would offer the model tools Sprawl hasn't checked ({})", super::short(name))) };
@@ -248,23 +242,27 @@ fn check_tools(out: &str) -> Result<(), String> {
 /// server it lists is switched off by name and must then list as off; the tool features must
 /// be off and the tools offered within [`CHECKED_TOOLS`]. The settings that switch the
 /// servers off, for the run; or why it isn't started.
-fn verify(exe: &Path, dir: &Path, home: &Path) -> Result<Vec<String>, String> {
-    // a configuration an administrator put in the login's home isn't seen by the check
-    if let Some(h) = codex_home() {
-        for f in ["managed_config.toml", "requirements.toml"] {
-            if h.join(f).exists() {
-                return Err(format!("a managed configuration ({}) Sprawl can't check", h.join(f).display()));
-            }
+fn verify(exe: &Path, dir: &Path, home: &Path, model: &str, stopped: &dyn Fn() -> bool) -> Result<Vec<String>, String> {
+    // a configuration an administrator put in the login's home isn't seen by the check; one
+    // that can't be looked for counts as there
+    let h = codex_home().ok_or("the Codex home folder isn't known")?;
+    for f in ["managed_config.toml", "requirements.toml"] {
+        match std::fs::symlink_metadata(h.join(f)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(format!("a managed configuration ({}) Sprawl can't check", h.join(f).display())),
+            Err(e) => return Err(format!("{} couldn't be looked for ({e})", h.join(f).display())),
         }
     }
-    let listed = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &[], &[])?)?;
+    let with_model = model_setting(model);
+    let listed = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &with_model, &[], stopped)?)?;
     let off: Vec<String> = listed.iter().flat_map(|(n, _)| ["-c".to_string(), format!("mcp_servers.{n}.enabled=false")]).collect();
-    let again = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &off, &[])?)?;
+    let checked: Vec<String> = with_model.iter().chain(off.iter()).cloned().collect();
+    let again = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &checked, &[], stopped)?)?;
     if let Some((n, _)) = again.iter().find(|(n, on)| *on || !listed.iter().any(|(l, _)| l == n)) {
         return Err(format!("its MCP server {n} couldn't be switched off"));
     }
-    check_features(&probe(exe, dir, home, &["features", "list"], &off, &[])?)?;
-    check_tools(&probe(exe, dir, home, &["debug", "prompt-input"], &off, &["x"])?)?;
+    check_features(&probe(exe, dir, home, &["features", "list"], &checked, &[], stopped)?)?;
+    check_tools(&probe(exe, dir, home, &["debug", "prompt-input"], &checked, &["x"], stopped)?)?;
     Ok(off)
 }
 
@@ -325,7 +323,11 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
     for line in out.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
         match v["type"].as_str() {
-            Some("item.completed") if v["item"]["type"] == "agent_message" => text = v["item"]["text"].as_str().map(str::to_string),
+            Some("item.completed") if v["item"]["type"] == "agent_message" => {
+                text = v["item"]["text"].as_str().map(str::to_string);
+                // the turn's end counts only after the message it ends
+                completed = false;
+            }
             Some("turn.completed") => {
                 completed = true;
                 let u = &v["usage"];
@@ -379,11 +381,19 @@ impl Codex {
         let base = base().map_err(|e| format!("Codex isn't started: {e}"))?;
         let dir = fresh(&base, "run").map_err(|e| format!("Codex isn't started: {e}"))?;
         let home = fresh(&base, "check").map_err(|e| format!("Codex isn't started: {e}"))?;
-        let off = verify(&self.exe, &dir.0, &home.0).map_err(|e| format!("Codex isn't started, as it isn't a set-up Sprawl has checked: {e}"))?;
+        let stop = self.stop.clone();
+        let stopped = move || stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
+        let off = verify(&self.exe, dir.path(), home.path(), &self.model, &stopped).map_err(|e| {
+            if e == super::STOPPED { e } else { format!("Codex isn't started, as it isn't a set-up Sprawl has checked: {e}") }
+        })?;
         drop(home);
+        // Stop pressed during the check: nothing is sent
+        if stopped() {
+            return Err(super::STOPPED.into());
+        }
         log_request(&format!("codex exec ({})", self.exe.display()), &self.prompt);
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args(&self.model, &dir.0, &off)).current_dir(&dir.0);
+        cmd.args(args(&self.model, dir.path(), &off)).current_dir(dir.path());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // in a job with everything it starts: Stop, the time limit and every return end them all
         // (0x0800_0000: CREATE_NO_WINDOW)
@@ -398,17 +408,24 @@ impl Codex {
         // the pipe mustn't keep its answer from being read
         let mut stdout = run.child.stdout.take().ok_or("no stdout")?;
         let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        // set when the output was more than is kept, or couldn't be read: then it is no answer
+        let cut = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (otx, orx) = std::sync::mpsc::channel::<()>();
-        let g2 = got.clone();
+        let (g2, c2) = (got.clone(), cut.clone());
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
-            while let Ok(n) = std::io::Read::read(&mut stdout, &mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                if let Ok(mut g) = g2.lock() {
-                    if g.len() < 16 << 20 {
-                        g.extend_from_slice(&chunk[..n]);
+            loop {
+                match std::io::Read::read(&mut stdout, &mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => match g2.lock() {
+                        Ok(mut g) if g.len() + n <= 16 << 20 => g.extend_from_slice(&chunk[..n]),
+                        _ => c2.store(true, std::sync::atomic::Ordering::Relaxed),
+                    },
+                    // a broken pipe once Codex is ended is the normal end
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => break,
+                    Err(_) => {
+                        c2.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
                     }
                 }
             }
@@ -453,6 +470,10 @@ impl Codex {
         let text_now = || got.lock().map(|g| String::from_utf8_lossy(&g).into_owned()).unwrap_or_default();
         let waited = Instant::now();
         while orx.recv_timeout(Duration::from_millis(100)).is_err() && waited.elapsed() < Duration::from_secs(30) {
+            if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
+                run.end();
+                return Err(super::STOPPED.into());
+            }
             if finished(&text_now()) {
                 break;
             }
@@ -460,6 +481,9 @@ impl Codex {
         // whatever it started ends now, which closes the pipes it held
         run.end();
         let out = text_now();
+        if cut.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Codex's output was longer than Sprawl reads, or couldn't be read whole: no answer is taken from it".into());
+        }
         let error_line = || erx.recv_timeout(Duration::from_secs(2)).ok().filter(|l| !l.is_empty());
         let (text, usage) = match parse(&out) {
             // an answer counts only with the turn's end and a clean exit
@@ -544,7 +568,8 @@ mod tests {
     #[test]
     fn only_a_checked_codex_starts() {
         // Astra 1.0.2 S5 #1: servers by name, features off, tools within the checked set
-        assert_eq!(super::parse_servers("").unwrap(), vec![]);
+        assert_eq!(super::parse_servers("[]\n").unwrap(), vec![]);
+        assert!(super::parse_servers("").is_err(), "no output isn't an empty list");
         assert_eq!(super::parse_servers(r#"[{"name":"node_repl","enabled":true},{"name":"x-y_1","enabled":false}]"#).unwrap(), vec![("node_repl".to_string(), true), ("x-y_1".to_string(), false)]);
         assert!(super::parse_servers(r#"[{"name":"a.b","enabled":true}]"#).is_err(), "a name a setting can't address");
         assert!(super::parse_servers(r#"[{"name":"a","enabled":"yes"}]"#).is_err());
@@ -560,25 +585,11 @@ mod tests {
         assert!(super::check_tools(r#"[{"type":"additional_tools","tools":[{"type":"function","name":"functions","tools":[]}]}]"#).is_err(), "only namespaces");
         assert!(super::check_tools("not json").is_err());
         assert!(super::check_tools("[]").is_ok(), "no tools at all");
-    }
-
-    #[test]
-    fn each_run_has_a_folder_of_its_own() {
-        let base = std::env::temp_dir().join(format!("sprawl-codex-fresh-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let a = super::fresh(&base, "run").unwrap();
-        let b = super::fresh(&base, "run").unwrap();
-        assert_ne!(a.0, b.0);
-        std::fs::write(a.0.join("left.txt"), b"x").unwrap();
-        let (pa, pb) = (a.0.clone(), b.0.clone());
-        drop(a);
-        drop(b);
-        assert!(!pa.exists() && !pb.exists(), "removed after the run");
-        assert!(super::plain_dir(&base.join("missing")).is_err());
-        std::fs::write(base.join("file"), b"x").unwrap();
-        assert!(super::plain_dir(&base.join("file")).is_err());
-        std::fs::remove_dir_all(&base).unwrap();
+        assert!(super::check_tools(r#"[{"type":"tool_list_v2","items":[{"name":"shell"}]}]"#).is_err(), "an item of a kind not checked");
+        assert!(super::check_tools(r#"[{"type":"additional_tools"}]"#).is_err(), "a tool list without its tools");
+        assert!(super::check_tools(r#"[{"type":"message","role":"user","content":[],"tools":[]}]"#).is_err());
+        assert_eq!(super::model_setting("gpt-6-luna"), vec!["-c".to_string(), "model=\"gpt-6-luna\"".to_string()]);
+        assert!(super::model_setting("--x").is_empty() && super::model_setting("").is_empty());
     }
 
     /// The Codex installed here passes the check (sends nothing; run by hand with --ignored).
@@ -589,7 +600,8 @@ mod tests {
         let base = super::base().unwrap();
         let dir = super::fresh(&base, "run").unwrap();
         let home = super::fresh(&base, "check").unwrap();
-        let off = super::verify(&exe, &dir.0, &home.0);
+        let off = super::verify(&exe, dir.path(), home.path(), "", &|| false);
+        assert_eq!(super::verify(&exe, dir.path(), home.path(), "", &|| true).unwrap_err(), super::super::STOPPED, "Stop ends the check");
         eprintln!("{exe:?}: {off:?}");
         assert!(off.is_ok());
     }
@@ -608,6 +620,8 @@ mod tests {
         assert!(super::parse(r#"{"type":"turn.failed","error":{"message":"not signed in"}}"#).unwrap_err().contains("not signed in"));
         assert!(super::parse("").unwrap_err().contains("codex login"));
         assert!(super::parse("garbage").is_err());
+        // the turn's end before the last message doesn't end that message (Astra 1.0.2 re-review S2 #4)
+        assert!(super::parse(concat!(r#"{"type":"turn.completed","usage":{}}"#, "\n", r#"{"type":"item.completed","item":{"type":"agent_message","text":"late"}}"#)).unwrap_err().contains("before finishing"));
         // an answer without the turn's end is not an answer
         assert!(super::parse(r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"half"}}"#).unwrap_err().contains("before finishing"));
         // the end is a whole, parsed last line, not a mention of it

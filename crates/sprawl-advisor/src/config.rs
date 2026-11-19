@@ -268,12 +268,11 @@ impl Detected {
     }
 
     /// The best choice for someone who hasn't picked: Claude Code if it is installed (no key
-    /// needed), then a local model server, then off.
+    /// needed), then an API key, then a local model server, then off. Never Codex: it keeps
+    /// tools Sprawl can't remove, so only the user picks it (see `llm::codex::RISK`).
     pub fn suggest(&self) -> AiConfig {
         if self.claude_code.is_some() {
             AiConfig { provider: Provider::ClaudeCode, model: Provider::ClaudeCode.default_model().into(), ..AiConfig::default() }
-        } else if self.codex.is_some() {
-            AiConfig { provider: Provider::Codex, ..AiConfig::default() }
         } else if self.anthropic_env {
             AiConfig { provider: Provider::Anthropic, model: Provider::Anthropic.default_model().into(), ..AiConfig::default() }
         } else if self.ollama {

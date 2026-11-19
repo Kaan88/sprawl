@@ -2,7 +2,7 @@
 //! before listing it: 15-55x slower). Timing-sensitive, so ignored in normal runs; the release
 //! tool runs it with `--ignored` in release mode before building. Disposable data only: the
 //! folder is created fresh by this run and only that folder is removed.
-use std::{fs, io, path::{Path, PathBuf}, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
+use std::{fs, path::Path, time::{Duration, Instant}};
 
 /// The least work any folder scan must do: list every folder and read each entry's metadata.
 fn plain_listing(dir: &Path) -> (u64, u64) {
@@ -18,31 +18,10 @@ fn plain_listing(dir: &Path) -> (u64, u64) {
     (files, bytes)
 }
 
-/// A folder this run made itself: `create_dir` fails on an existing name, so an old folder or one
-/// that another process put there is never reused or removed. Removed on drop.
-struct Fresh(PathBuf);
-
-impl Fresh {
-    fn new() -> Fresh {
-        let base = std::env::temp_dir();
-        let pid = std::process::id();
-        for attempt in 0..100u32 {
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-            let p = base.join(format!("sprawl-speed-guard-{pid}-{nanos:08x}-{attempt}"));
-            match fs::create_dir(&p) {
-                Ok(()) => return Fresh(p),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => panic!("can't create the speed-guard folder {}: {e}", p.display()),
-            }
-        }
-        panic!("no fresh speed-guard folder name after 100 tries");
-    }
-}
-
-impl Drop for Fresh {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+/// The folder for this run: made by it alone and held until the end, so only what this run
+/// put there is removed (see `sprawl_core::local::OwnedDir`).
+fn fresh() -> sprawl_core::local::OwnedDir {
+    sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-speed-guard").expect("can't create the speed-guard folder")
 }
 
 /// Best-of timings for the plain listing and each scan, measured in turns (plain, inventory,
@@ -71,8 +50,8 @@ fn paired(root: &Path, runs: usize, files: u64, bytes: u64, auto: bool) -> (Dura
 #[ignore = "timing; run by sprawl-release build"]
 fn folder_inventory_stays_close_to_a_plain_listing() {
     // Deep and wide: 3^6 = 729 leaf folders six levels down, 1,093 folders, 2,186 files.
-    let fresh = Fresh::new();
-    let root = fresh.0.clone();
+    let fresh = fresh();
+    let root = fresh.path().to_path_buf();
     let mut level = vec![root.clone()];
     for _ in 0..6 {
         level = level.iter().flat_map(|p| (0..3).map(move |i| p.join(format!("level-folder-{i}")))).collect();
