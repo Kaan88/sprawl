@@ -480,11 +480,17 @@ impl Index {
 
     /// Trees for each `(root FRN, path)`; names are moved out when there is one root.
     pub fn build(&mut self, roots: &[(u64, PathBuf)]) -> Vec<Tree> {
+        self.build_excluding(roots, &Progress::new())
+    }
+
+    /// Build the trees, leaving out every scope `progress` excludes (and all below it). Paths
+    /// are made only for folders holding an excluded scope, so this costs nothing without one.
+    pub fn build_excluding(&mut self, roots: &[(u64, PathBuf)], progress: &Progress) -> Vec<Tree> {
         let (off, kids) = self.link();
         let take = roots.len() == 1;
         let mut out = Vec::with_capacity(roots.len());
         for (root_frn, path) in roots {
-            out.push(self.build_one(*root_frn as usize, path, &off, &kids, take));
+            out.push(self.build_one(*root_frn as usize, path, &off, &kids, take, progress));
         }
         out
     }
@@ -507,7 +513,7 @@ impl Index {
         }
     }
 
-    fn build_one(&mut self, root: usize, path: &Path, off: &[u32], kids: &[u32], take: bool) -> Tree {
+    fn build_one(&mut self, root: usize, path: &Path, off: &[u32], kids: &[u32], take: bool, progress: &Progress) -> Tree {
         let mut nodes: Vec<Node> = Vec::new();
         if root < self.recs.len() {
             let mut r = self.node_of(root, None, take);
@@ -516,8 +522,9 @@ impl Index {
         } else {
             nodes.push(Node { name: path.display().to_string(), is_dir: true, attributes: attr::DIRECTORY, ..Default::default() });
         }
-        let mut queue: VecDeque<(usize, usize)> = VecDeque::from([(ROOT, root)]);
-        while let Some((ni, frn)) = queue.pop_front() {
+        let inside = |p: &Path| progress.exclusion_inside(p).then(|| p.to_path_buf());
+        let mut queue: VecDeque<(usize, usize, Option<PathBuf>)> = VecDeque::from([(ROOT, root, inside(path))]);
+        while let Some((ni, frn, here)) = queue.pop_front() {
             if frn + 1 >= off.len() {
                 continue;
             }
@@ -525,13 +532,16 @@ impl Index {
             let mut children = Vec::with_capacity(list.len());
             for &k in list {
                 let k = k as usize;
+                // Only below a folder that holds an excluded scope can a child be one.
+                let child = here.as_ref().map(|h| h.join(&self.names[k]));
+                if child.as_deref().is_some_and(|c| progress.excludes(c)) { continue; }
                 let idx = nodes.len();
                 children.push(idx);
                 let node = self.node_of(k, Some(ni), take);
                 let dir = node.is_dir;
                 nodes.push(node);
                 if dir {
-                    queue.push_back((idx, k));
+                    queue.push_back((idx, k, child.as_deref().and_then(inside)));
                 }
             }
             nodes[ni].children = children;
@@ -1028,7 +1038,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                     }
                 }
             }
-            if let Some(f) = last_file {
+            if let Some(f) = last_file.filter(|_| !progress.has_exclusions()) {
                 chunk_res.batch.current = Some(format!("{label}\\{}", index.path_hint(f)));
             }
             progress.add_counts(files, folders, bytes);
@@ -1067,14 +1077,19 @@ pub fn scan_multi(paths: &[PathBuf], progress: &Progress) -> io::Result<Vec<Tree
         if attrs & attr::DIRECTORY == 0 || attrs & attr::REPARSE_POINT != 0 {
             return Err(unsupported("not a plain folder"));
         }
+        if progress.excludes(p) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "This folder is excluded in Settings > Scanning"));
+        }
         roots.push((frn, p.clone()));
     }
     progress.set_method(ScanMethod::Mft);
     progress.set_phase("Reading MFT");
-    let live = if roots.len() == 1 { Some(roots[0].0) } else { None };
+    // With skipped folders, the live list of top folders and the current-file line would show
+    // what is skipped while the whole MFT is read: leave both out until the tree is built.
+    let live = if roots.len() == 1 && !progress.has_exclusions() { Some(roots[0].0) } else { None };
     let mut index = read_mft(&volume, progress, live)?;
     progress.set_phase("Building tree");
-    let trees = index.build(&roots);
+    let trees = index.build_excluding(&roots, progress);
     drop(index);
     if let [t] = trees.as_slice() {
         let r = &t.nodes[ROOT];
@@ -1400,6 +1415,17 @@ mod tests {
         assert_eq!(sub.nodes[ROOT].size, 123_456 + 300 + 20);
         assert_eq!(sub.nodes[ROOT].files, 3);
         assert_eq!(sub.nodes.len(), 5);
+
+        // Skipped folders leave the tree whole, with every total below them, at any depth.
+        let progress = Progress::with_exclusions(&[PathBuf::from(r"c:\program files\SUB"), PathBuf::from(r"C:\pagefile.sys")]);
+        let trees = idx.build_excluding(&[(5, PathBuf::from("C:\\"))], &progress);
+        let t = &trees[0];
+        assert!(!t.nodes.iter().any(|n| n.name == "Sub" || n.name == "tiny.ini" || n.name == "pagefile.sys"));
+        assert_eq!(t.nodes[ROOT].size, 123_456 + 300);
+        assert_eq!(t.nodes[ROOT].files, 3);
+        assert!(t.nodes.iter().any(|n| n.name == "app.exe"));
+        let whole = Progress::with_exclusions(&[PathBuf::from(r"D:\Elsewhere")]);
+        assert_eq!(idx.build_excluding(&[(5, PathBuf::from("C:\\"))], &whole)[0].nodes.len(), idx.build(&[(5, PathBuf::from("C:\\"))])[0].nodes.len(), "other volumes' scopes change nothing");
     }
 
     #[test]

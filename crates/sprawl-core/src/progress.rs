@@ -130,6 +130,13 @@ impl Progress {
         self.excluded.iter().any(|p| key == *p || key.strip_prefix(p).is_some_and(|s| s.starts_with('\\')))
     }
 
+    /// Some excluded scope lies strictly inside `path`: its children need checking.
+    pub(crate) fn exclusion_inside(&self, path: &std::path::Path) -> bool {
+        if self.excluded.is_empty() { return false; }
+        let key = exclusion_key(path);
+        self.excluded.iter().any(|p| p.strip_prefix(&key).is_some_and(|s| s.starts_with('\\') && s.len() > 1))
+    }
+
     /// A consistent-enough copy for drawing. Cheap: one short lock.
     pub fn snapshot(&self) -> ProgressSnapshot {
         let total = self.total_units.load(Relaxed);

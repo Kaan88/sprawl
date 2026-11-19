@@ -191,7 +191,7 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
     let root = local::scan_root(path, false)?;
     let path = &root.path;
-    if root.pinned.is_some() && is_elevated() && !progress.has_exclusions() {
+    if root.pinned.is_some() && is_elevated() {
         match mft::scan(path, progress) {
             Ok(tree) => return Ok(tree),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
@@ -224,7 +224,7 @@ fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::
     let abs: Vec<PathBuf> = pinned.iter().map(|p| p.path.clone()).collect();
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
-    if use_mft && is_elevated() && !progress.has_exclusions() {
+    if use_mft && is_elevated() {
         // Group by volume so each MFT is read once.
         let mut groups: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for (i, p) in abs.iter().enumerate() {
