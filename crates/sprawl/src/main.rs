@@ -117,8 +117,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     let a = args();
     let mut settings = settings::Settings::load();
     settings.keep_old_defaults();
+    // An elevated copy handing its update over: this copy stays without administrator rights.
+    let update_resume = if a.shot.is_none() { update::take_handoff() } else { None };
     // "Always run as administrator": come back elevated (the UAC prompt shows) and quit this copy.
-    if a.shot.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() {
+    if a.shot.is_none() && update_resume.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() {
         let args: Vec<String> = std::env::args_os().skip(1).map(|x| dialogs::quote(std::path::Path::new(&x))).collect();
         if dialogs::restart_elevated(0, &args.join(" ")) {
             std::process::exit(0);
@@ -460,7 +462,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         wizard_page: 0,
         wizard_all: false,
         wizard_offered: false,
-        update: Default::default(),
+        update: update::Updater::resuming(update_resume),
         wiz_models: Default::default(),
         prefs: Default::default(),
         search: crate::search::Search::new(),

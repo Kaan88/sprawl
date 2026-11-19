@@ -66,6 +66,46 @@ pub(crate) struct Updater {
     pub(crate) applying: bool,
     /// When a Sprawl left open looks again (a day after the last look).
     next: Option<std::time::Instant>,
+    /// Started by an elevated copy to install this version without administrator rights.
+    pub(crate) resume: Option<String>,
+}
+
+impl Updater {
+    pub(crate) fn resuming(resume: Option<String>) -> Self {
+        Self { resume, ..Default::default() }
+    }
+}
+
+/// The note an elevated Sprawl leaves for the copy it starts without administrator rights.
+fn handoff_note() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("Sprawl").join("update-unelevated.txt"))
+}
+
+/// At start: a version an elevated copy asked this one to install, if it asked within the last
+/// two minutes. The note is used once. A forged note can only make Sprawl start without
+/// administrator rights and offer a signed release from GitHub, as the Update button would.
+pub(crate) fn take_handoff() -> Option<String> {
+    let p = handoff_note()?;
+    let fresh = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().is_ok_and(|age| age.as_secs() <= 120);
+    let version = std::fs::read_to_string(&p).ok();
+    let _ = std::fs::remove_file(&p);
+    let version = version?.trim().to_string();
+    (fresh && sprawl_install::parse_version(&version).is_some() && newer(&version, current())).then_some(version)
+}
+
+/// An elevated Sprawl can't update its per-user folder (1.0 refused, which left "Always run as
+/// administrator" copies unable to update). Start this exe through Explorer, which runs as the
+/// signed-in user without administrator rights, and let that copy download, check and install.
+fn hand_off_unelevated(version: &str) -> Result<(), String> {
+    let note = handoff_note().ok_or("Sprawl's settings folder is unknown")?;
+    if let Some(dir) = note.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+    std::fs::write(&note, version).map_err(|e| format!("could not leave the update note ({e})"))?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let windows = sprawl_install::setup::system_dir()?.parent().map(PathBuf::from).ok_or("Windows' folder is unknown")?;
+    match std::process::Command::new(windows.join("explorer.exe")).arg(&exe).spawn() {
+        Ok(_) => Ok(()),
+        Err(e) => { let _ = std::fs::remove_file(&note); Err(format!("could not start Sprawl without administrator rights ({e})")) }
+    }
 }
 
 /// How often a Sprawl left open looks again.
@@ -214,7 +254,10 @@ impl State {
             }
             // every start looks (a release since yesterday's look is offered at once)
             self.update.next = Some(std::time::Instant::now() + AGAIN);
-            if self.update_auto() {
+            if self.update.resume.is_some() && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+                text(&self.root, "FootLeft", "Installing the update without administrator rights...");
+                self.update_check(true);
+            } else if self.update_auto() {
                 self.update_check(false);
             }
         }
@@ -247,8 +290,13 @@ impl State {
                 text(&self.root, "UpdateSub", &format!("You have {}. What's new:", current()));
                 text(&self.root, "UpdateNotes", &plain(&a.notes));
                 text(&self.root, "UpdateStatus", "");
+                let resume = self.update.resume.take().is_some_and(|v| v == a.version);
                 self.update.avail = Some(a);
                 self.update_card(true);
+                // handed over by the elevated copy that just closed: carry on with its Update
+                if resume {
+                    self.update_command("UpdateNow");
+                }
             }
             Msg::Latest => {
                 self.update.rx = None;
@@ -296,12 +344,24 @@ impl State {
                 if self.update.applying || self.update.rx.is_some() {
                     return;
                 }
-                if let Err(e) = sprawl_install::setup::per_user_only() { text(&self.root, "UpdateStatus", &e); return; }
                 if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.shot.is_some() { return; }
-                if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
+                if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() {
                     text(&self.root, "UpdateStatus", "A scan or file operation is running. Update when it has finished."); return;
                 }
                 let Some(a) = self.update.avail.clone() else { return };
+                if sprawl_core::elevation().unwrap_or(false) {
+                    text(&self.root, "UpdateStatus", "Reopening Sprawl without administrator rights to install the update...");
+                    match hand_off_unelevated(&a.version) {
+                        Ok(()) => {
+                            if let Some(p) = crate::win32::window_place(self.hwnd) { self.settings.set("window", p); }
+                            self.settings.save();
+                            if self.window.Close().is_err() { std::process::exit(0); }
+                        }
+                        Err(e) => text(&self.root, "UpdateStatus", &format!("{e}. Close Sprawl, turn off Options > Always Run as Administrator, and update from a normal Sprawl.")),
+                    }
+                    return;
+                }
+                if let Err(e) = sprawl_install::setup::per_user_only() { text(&self.root, "UpdateStatus", &e); return; }
                 let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else { return };
                 self.update.applying = true;
                 let (tx, rx) = channel();
@@ -332,7 +392,7 @@ impl State {
         if let Err(e) = sprawl_install::setup::per_user_only() { return fail(self, e); }
         if !newer(version, current()) { return fail(self, "This update is not newer than this copy of Sprawl.".into()); }
         if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.shot.is_some() { return fail(self, "Updates are disabled in this run.".into()); }
-        if self.advisor.cleanup.running.is_some() || self.advisor.uncompress.is_some() || self.job.is_some() {
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() {
             return fail(self, "A scan or file operation is running; press Update again when it's done.".into());
         }
         let Some(exe) = std::env::current_exe().ok() else { return };
