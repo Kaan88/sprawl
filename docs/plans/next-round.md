@@ -277,3 +277,4 @@ fa7ce20 (per-folder path pinning in inventories; network-drive scans), dbbadb9 (
 in evidence of use, compressed-size measurement and the daily scan) and 39548e2 (whole-folder
 recycling). Workspace tests pass. Queued for review; not pushed or released until the user says so.
 Fuller review of Codex's 1.0 work after the user asked: c223324 (elevated copies could never update), da9573d (tree Delete froze the window), 081747d (History roots listed twice). Not pushed or released.
+Line-by-line review of the rest (2026-11-19): 0de55bf (a personal folder redirected to a share refused every delete; settings saves could fail during an exclusions read), 678a4c2 (snapshot trees: manifests and archive copies compared times exactly), f71e6a7 (old shared alert task left running when elevated or turning alerts off). Workspace tests pass. Not pushed or released.

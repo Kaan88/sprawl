@@ -12,6 +12,11 @@ in-app updater shows.
 - Updates work again with Options > Always Run as Administrator on: Sprawl reopens itself without administrator rights to install the update, then comes back as usual. 1.0 refused to update while elevated.
 - Delete in the tree no longer freezes the window on a big folder: it runs in the background with progress in the footer.
 - Recent scans on the welcome page list each folder once.
+- Deleting works again on PCs where Documents, Desktop or another personal folder is redirected to a network share. 1.0 could not check those folders and refused every delete.
+- Changing a setting no longer fails silently when Sprawl reads its skipped folders at the same moment.
+- The assistant can read project manifests again when it works through Claude Code, and copies of extracted archives are found in scans opened from History.
+- Turning alerts off now also removes the scheduled task made before 1.0, including when Sprawl always runs as administrator.
+- If Always Run as Administrator is on, 1.0.0 cannot install this update itself: turn the option off once, update, then turn it back on, or run Setup.
 
 ## 1.0.0 — 2026-11-19
 
