@@ -475,7 +475,8 @@ impl State {
     /// The matched part of `name` in bold.
     pub(crate) fn name_runs(&self, name: &str) -> String {
         let q = Query::parse(&self.search.query);
-        match q.highlight(name) {
+        // (a cut inside a character would panic on the window's thread: plain text instead)
+        match q.highlight(name).filter(|&(a, b)| a <= b && name.is_char_boundary(a) && name.is_char_boundary(b)) {
             Some((a, b)) => format!(
                 r##"<Run Text="{}"/><Run Text="{}" FontWeight="Bold" Foreground="#FF7FD4FF"/><Run Text="{}"/>"##,
                 ui::esc(&name[..a]),

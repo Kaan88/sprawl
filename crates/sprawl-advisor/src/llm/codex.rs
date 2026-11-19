@@ -157,7 +157,8 @@ impl Codex {
             return Ok(Turn::default());
         }
         self.pending = false;
-        if let Some(why) = elevated_refusal(sprawl_core::is_elevated(), crate::ELEVATED_CLAUDE_CODE.load(std::sync::atomic::Ordering::Relaxed)) {
+        // an elevation Windows can't confirm counts as elevated: the switch then has to allow it
+        if let Some(why) = elevated_refusal(sprawl_core::elevation().unwrap_or(true), crate::ELEVATED_CLAUDE_CODE.load(std::sync::atomic::Ordering::Relaxed)) {
             return Err(why.into());
         }
         if crate::offline() {
@@ -179,12 +180,23 @@ impl Codex {
         let writer = std::thread::spawn(move || {
             let _ = stdin.write_all(prompt.as_bytes());
         });
+        // kept as it comes: a helper process that outlives Codex and still holds the pipe
+        // mustn't keep its answer from being read
         let mut stdout = child.stdout.take().ok_or("no stdout")?;
-        let (otx, orx) = std::sync::mpsc::channel::<String>();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let (otx, orx) = std::sync::mpsc::channel::<()>();
+        let g2 = got.clone();
         let reader = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = std::io::Read::read_to_string(&mut stdout, &mut s);
-            let _ = otx.send(s);
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = std::io::Read::read(&mut stdout, &mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut g) = g2.lock() {
+                    g.extend_from_slice(&chunk[..n]);
+                }
+            }
+            let _ = otx.send(());
         });
         // its log lines, read as they come so a full pipe can't stall it: the "Error:" line
         // says why when it refused to start (an option this version doesn't know)
@@ -214,8 +226,17 @@ impl Codex {
             }
         }
         let _ = writer.join();
-        // a grandchild still holding the pipe mustn't keep this waiting
-        let out = orx.recv_timeout(Duration::from_secs(30)).unwrap_or_default();
+        // the end of the output, or the turn's last event, whichever comes first (30 s at most)
+        let text_now = || got.lock().map(|g| String::from_utf8_lossy(&g).into_owned()).unwrap_or_default();
+        let waited = Instant::now();
+        while orx.recv_timeout(Duration::from_millis(100)).is_err() && waited.elapsed() < Duration::from_secs(30) {
+            let now = text_now();
+            // (and that line whole)
+            if (now.contains("\"turn.completed\"") || now.contains("\"turn.failed\"")) && now.ends_with('\n') {
+                break;
+            }
+        }
+        let out = text_now();
         drop(reader);
         let (text, usage) = parse(&out).map_err(|e| match erx.recv_timeout(Duration::from_secs(2)).ok().filter(|l| !l.is_empty()) {
             Some(l) if out.trim().is_empty() => format!("Codex: {}", super::short(l.trim_start_matches("Error:").trim())),

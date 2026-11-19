@@ -5,6 +5,19 @@ in-app updater shows.
 
 ## Unreleased
 
+- A file name whose letters change width when lowercased (rare symbols) no longer crashes Sprawl when Search shows it.
+- After a command from the Windows menu, Delete works again once Sprawl has reread that folder, instead of waiting until a restart.
+- The review's button always names what is deleted for good, however many kinds of item are ticked; compression and shrinking a virtual disk get their own groups.
+- Compressing a folder is refused when it holds a link (junction) that compact.exe could follow out of it.
+- When Windows can't say whether Sprawl runs as administrator, Claude Code, Codex and the Windows menu treat it as administrator (they need the switch in Settings).
+- Codex's answer is read even if a helper it started keeps running; rules with many * in a name pattern can no longer stall a clean-up.
+- The header says what was scanned and on which drive, on two lines; a Details link beside it explains what the scan covered: how it was read, what couldn't be read, the folders skipped by your settings, and the drives it didn't include.
+- Advisor: with AI off, one line replaces the AI column; with nothing ticked, the bottom bar is one row; Clean up is now "Review selection...". Cleaners shows its state once, in the tab.
+- The review before a clean-up groups what is ticked by what will happen to it (deleted for good first, then the Recycle Bin, programs' own clean-ups, links, and what is held back), and its button says what it does, such as "Delete 1 for good, recycle 2".
+- Search: one search box (the Filter box and the file types pane step aside), a "Search in" menu for other drives, the map only when you press Map, and a message saying what was searched when nothing matches.
+- The first start shows the welcome page across the whole window, not under two empty panes.
+- The tree's top row starts with the scanned folder's own name, and long folder paths in File view and Search keep their drive and last folders (the whole path is in the tooltip).
+- Map labels that would overlap are no longer drawn on top of each other, and the map's animations follow Windows' Animation effects setting until you set Sprawl's own.
 - AI answers draw folder trees, tables and code in a fixed-width font with their lines intact, keep the answer's line breaks, and show nested lists, quotes, links (with their address) and struck-through text.
 - Codex can be the Advisor's AI, like Claude Code: it uses your own Codex sign-in (no key), found on PATH or in the Codex app. It answers from the scan's report with all of its tools switched off.
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".

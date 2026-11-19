@@ -770,6 +770,24 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
             }
         }
     }
+    // compression is waived from the never-list only, not from links: compact.exe /s could
+    // follow a junction inside to files outside the folder that was reviewed
+    if !destructive && crate::remedies::compresses(f) {
+        let mut i = Some(n);
+        while let Some(k) = i {
+            if tree.nodes[k].is_reparse_point() {
+                return Err(Rejection::ThroughLink(tree.path_of(k).display().to_string()));
+            }
+            i = tree.nodes[k].parent;
+        }
+        let mut stack = tree.nodes[n].children.clone();
+        while let Some(k) = stack.pop() {
+            if tree.nodes[k].is_reparse_point() {
+                return Err(Rejection::LinksInside(tree.path_of(k).display().to_string()));
+            }
+            stack.extend(tree.nodes[k].children.iter().copied());
+        }
+    }
     if destructive {
         let multi_top = tree.nodes[sprawl_core::ROOT].name == sprawl_core::MULTIPLE && tree.nodes[n].parent == Some(sprawl_core::ROOT);
         if n == sprawl_core::ROOT || multi_top {

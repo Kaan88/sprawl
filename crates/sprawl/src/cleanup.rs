@@ -1379,6 +1379,10 @@ pub(crate) enum Fate {
     Tool = 2,
     /// Copies made links: nothing is deleted.
     Link = 3,
+    /// Compressed in place (compact.exe): nothing is deleted, and it can be undone.
+    Compress = 4,
+    /// A virtual disk file shrunk: nothing inside it is deleted.
+    Shrink = 5,
 }
 
 impl Fate {
@@ -1386,14 +1390,22 @@ impl Fate {
         match self {
             Fate::Gone => "Deleted for good",
             Fate::Bin => "To the Recycle Bin",
-            Fate::Tool => "Cleaned by its own program",
+            Fate::Tool => "Cleaned by its own program (it decides what goes; usually not to the Recycle Bin)",
             Fate::Link => "Copies made links",
+            Fate::Compress => "Compressed in place (nothing deleted; can be undone)",
+            Fate::Shrink => "Virtual disk shrunk (nothing inside it deleted)",
         }
     }
 }
 
 /// The same tests the run uses: a command, a link, the bin, or deleted for good.
 pub(crate) fn outcome(f: &Finding, bin_on: bool) -> Fate {
+    if sprawl_advisor::remedies::shrinks(f) {
+        return Fate::Shrink;
+    }
+    if sprawl_advisor::remedies::compresses(f) {
+        return Fate::Compress;
+    }
     match clean::action(f) {
         Some((Action::Tool { .. }, _)) => Fate::Tool,
         _ if f.links() => Fate::Link,
@@ -1406,7 +1418,7 @@ pub(crate) fn outcome(f: &Finding, bin_on: bool) -> Fate {
 pub(crate) fn final_action(outcomes: &[Fate], privacy: usize) -> String {
     let count = |o: Fate| outcomes.iter().filter(|x| **x == o).count();
     let mut parts = Vec::new();
-    for (o, word) in [(Fate::Gone, "delete {} for good"), (Fate::Bin, "recycle {}"), (Fate::Tool, "run {} clean-up"), (Fate::Link, "link {}")] {
+    for (o, word) in [(Fate::Gone, "delete {} for good"), (Fate::Bin, "recycle {}"), (Fate::Tool, "run {} clean-up"), (Fate::Link, "link {}"), (Fate::Compress, "compress {}"), (Fate::Shrink, "shrink {}")] {
         let n = count(o);
         if n > 0 {
             let s = word.replace("{}", &n.to_string());
@@ -1416,8 +1428,14 @@ pub(crate) fn final_action(outcomes: &[Fate], privacy: usize) -> String {
     if privacy > 0 {
         parts.push(format!("clean {}", privacy_count(privacy)));
     }
-    if parts.is_empty() || parts.len() > 3 {
+    if parts.is_empty() {
         return "Clean up now".into();
+    }
+    // too many for a button: what is deleted for good is always named, the rest counted
+    if parts.len() > 3 {
+        let gone = count(Fate::Gone);
+        let rest = outcomes.len() - gone + privacy;
+        parts = if gone > 0 { vec![format!("delete {gone} for good"), format!("clean up {rest} more")] } else { vec!["clean up now".to_string()] };
     }
     let s = parts.join(", ");
     let mut c = s.chars();
@@ -1921,6 +1939,8 @@ mod review_tests {
         assert_eq!(final_action(&[Fate::Tool, Fate::Tool], 1), "Run 2 clean-ups, clean 1 privacy item");
         assert_eq!(final_action(&[Fate::Link], 0), "Link 1");
         assert_eq!(final_action(&[], 0), "Clean up now");
-        assert_eq!(final_action(&[Fate::Gone, Fate::Bin, Fate::Tool, Fate::Link], 0), "Clean up now", "too many parts for a button");
+        assert_eq!(final_action(&[Fate::Gone, Fate::Bin, Fate::Tool, Fate::Link], 0), "Delete 1 for good, clean up 3 more", "what can't be undone is always named");
+        assert_eq!(final_action(&[Fate::Bin, Fate::Tool, Fate::Link], 2), "Clean up now", "too many parts for a button");
+        assert_eq!(final_action(&[Fate::Compress, Fate::Shrink], 0), "Compress 1, shrink 1");
     }
 }

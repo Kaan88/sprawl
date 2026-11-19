@@ -1065,36 +1065,48 @@ fn odd_name(p: &Path) -> bool {
     p.file_name().map(|n| n.to_string_lossy()).is_some_and(|n| n.ends_with('.') || n.ends_with(' '))
 }
 
-/// PowerShell's `-like`: `*`, `?` and `[...]`, ignoring case.
+/// PowerShell's `-like`: `*`, `?` and `[...]`, ignoring case. Each (name, pattern) position is
+/// worked out once, so a pattern with many `*` against a long name can't take exponential time.
 pub fn like(name: &str, pattern: &str) -> bool {
-    fn go(n: &[char], p: &[char]) -> bool {
-        match p.first() {
-            None => n.is_empty(),
-            Some('*') => (0..=n.len()).any(|i| go(&n[i..], &p[1..])),
-            Some('?') => !n.is_empty() && go(&n[1..], &p[1..]),
-            Some('[') => {
-                let Some(end) = p.iter().position(|&c| c == ']') else { return !n.is_empty() && n[0] == '[' && go(&n[1..], &p[1..]) };
-                let Some(&c) = n.first() else { return false };
-                let set = &p[1..end];
-                let mut hit = false;
-                let mut i = 0;
-                while i < set.len() {
-                    if i + 2 < set.len() && set[i + 1] == '-' {
-                        hit |= set[i] <= c && c <= set[i + 2];
-                        i += 3;
-                    } else {
-                        hit |= set[i] == c;
-                        i += 1;
-                    }
-                }
-                hit && go(&n[1..], &p[end + 1..])
-            }
-            Some(&c) => n.first() == Some(&c) && go(&n[1..], &p[1..]),
+    fn go(n: &[char], p: &[char], i: usize, j: usize, memo: &mut [Option<bool>]) -> bool {
+        let at = i * (p.len() + 1) + j;
+        if let Some(r) = memo[at] {
+            return r;
         }
+        let r = match p.get(j) {
+            None => i == n.len(),
+            Some('*') => (i..=n.len()).any(|k| go(n, p, k, j + 1, memo)),
+            Some('?') => i < n.len() && go(n, p, i + 1, j + 1, memo),
+            Some('[') => match p[j..].iter().position(|&c| c == ']').map(|e| j + e) {
+                None => n.get(i) == Some(&'[') && go(n, p, i + 1, j + 1, memo),
+                Some(end) => match n.get(i) {
+                    None => false,
+                    Some(&c) => {
+                        let set = &p[j + 1..end];
+                        let mut hit = false;
+                        let mut k = 0;
+                        while k < set.len() {
+                            if k + 2 < set.len() && set[k + 1] == '-' {
+                                hit |= set[k] <= c && c <= set[k + 2];
+                                k += 3;
+                            } else {
+                                hit |= set[k] == c;
+                                k += 1;
+                            }
+                        }
+                        hit && go(n, p, i + 1, end + 1, memo)
+                    }
+                },
+            },
+            Some(&c) => n.get(i) == Some(&c) && go(n, p, i + 1, j + 1, memo),
+        };
+        memo[at] = Some(r);
+        r
     }
     let n: Vec<char> = name.to_lowercase().chars().collect();
     let p: Vec<char> = pattern.to_lowercase().chars().collect();
-    go(&n, &p)
+    let mut memo = vec![None; (n.len() + 1) * (p.len() + 1)];
+    go(&n, &p, 0, 0, &mut memo)
 }
 
 /// The Windows calls the clean-up is made of.
@@ -1807,6 +1819,12 @@ mod tests {
         assert!(like("a1.log", "a?.log"));
         assert!(like("b.log", "[a-c].log"));
         assert!(!like("d.log", "[a-c].log"));
+        assert!(like("[x", "[x"), "a [ without its ] is itself");
+        assert!(like("abc", "*") && like("", "*") && !like("", "?"));
+        // many stars against a long name that doesn't match: quick, not exponential
+        let t = std::time::Instant::now();
+        assert!(!like(&"a".repeat(200), "*a*a*a*a*a*a*a*a*b"));
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "{:?}", t.elapsed());
     }
 
     #[test]

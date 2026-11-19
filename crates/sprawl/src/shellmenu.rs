@@ -57,7 +57,8 @@ unsafe extern "system" fn menu_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM, _id: 
 /// Show Explorer's menu for `path` at the mouse pointer, and run what is chosen. `allowed`: the
 /// user allowed it as administrator (crate::admin); an elevated Sprawl refuses without it.
 pub(crate) fn show(owner: isize, path: &Path, allowed: bool) -> Result<Shown, String> {
-    if sprawl_core::is_elevated() && !allowed {
+    // an elevation Windows can't confirm counts as elevated
+    if sprawl_core::elevation().unwrap_or(true) && !allowed {
         return Err(crate::admin::refused(&crate::admin::SHELL_MENU));
     }
     if std::fs::symlink_metadata(path).is_err() {
@@ -199,10 +200,21 @@ impl crate::state::State {
         }
     }
 
-    /// A rescan after the Windows menu, when one has come in.
+    /// A rescan after the Windows menu, when one has come in. When both reads are done (the
+    /// thread has gone) it is over, and Delete, which waits for it, works again.
     pub(crate) fn drain_shell_rescans(&mut self) {
         let Some(rx) = &self.shell_rescans else { return };
-        let got: Vec<_> = rx.try_iter().collect();
+        let mut got = Vec::new();
+        let done = loop {
+            match rx.try_recv() {
+                Ok(r) => got.push(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
+            }
+        };
+        if done {
+            self.shell_rescans = None;
+        }
         if !got.is_empty() {
             self.apply_rescans(got);
         }

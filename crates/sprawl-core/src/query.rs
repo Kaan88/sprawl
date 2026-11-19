@@ -849,6 +849,15 @@ impl Query {
 
     /// Where the first plain word is in `name` (byte range), to show it in bold.
     pub fn highlight(&self, name: &str) -> Option<(usize, usize)> {
+        // the lowercased name's byte offsets are the name's only when every character keeps its
+        // width (a whole length that matches can still hide one that grew and one that shrank)
+        let same = name.chars().all(|c| {
+            let mut l = c.to_lowercase();
+            l.next().is_some_and(|x| x.len_utf8() == c.len_utf8()) && l.next().is_none()
+        });
+        if !same {
+            return None;
+        }
         let lower = name.to_lowercase();
         if lower.len() != name.len() {
             return None;
@@ -1029,6 +1038,9 @@ mod tests {
         assert_eq!(q.highlight("Report 2024.PDF"), Some((7, 11)));
         assert_eq!(Query::parse("*.pdf").highlight("a.pdf"), None);
         assert_eq!(Query::parse("case:PDF").highlight("a.pdf.PDF"), Some((6, 9)));
+        // the Ohm sign lowercases one byte shorter, Ⱥ one byte longer: the same length in all,
+        // but the offsets would cut a character (and panic where the name is drawn)
+        assert_eq!(Query::parse("a").highlight("\u{2126}a\u{023A}"), None);
     }
 
     #[test]

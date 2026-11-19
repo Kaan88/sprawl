@@ -327,6 +327,8 @@ impl State {
             text(&self.root, "FootLeft", "A file operation is running: scan again when it has finished.");
             return;
         }
+        // rereads after a Windows menu command were for the tree this scan replaces
+        self.shell_rescans = None;
         let (path, csv) = match &source {
             Source::Folders(v) if v.len() == 1 => (v[0].clone(), false),
             Source::Folders(v) if v.is_empty() => return,

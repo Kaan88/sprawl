@@ -107,7 +107,8 @@ impl ClaudeCode {
             return Ok(Turn::default());
         }
         self.pending = false;
-        if let Some(why) = elevated_refusal(sprawl_core::is_elevated(), crate::ELEVATED_CLAUDE_CODE.load(std::sync::atomic::Ordering::Relaxed)) {
+        // an elevation Windows can't confirm counts as elevated: the switch then has to allow it
+        if let Some(why) = elevated_refusal(sprawl_core::elevation().unwrap_or(true), crate::ELEVATED_CLAUDE_CODE.load(std::sync::atomic::Ordering::Relaxed)) {
             return Err(why.into());
         }
         if crate::offline() {
