@@ -92,11 +92,29 @@ pub(crate) fn segments(path: &str) -> Vec<String> {
 /// tree is read from a snapshot, which keeps whole seconds only, so an exact comparison
 /// (1.0) called every such file changed and refused it.
 pub(crate) fn same_time(now: Option<std::time::SystemTime>, scanned: Option<std::time::SystemTime>) -> bool {
-    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).ok();
+    // signed whole seconds, cut toward 1970 as a snapshot stores them (before 1970 too)
+    let secs = |t: std::time::SystemTime| match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i128,
+        Err(e) => -(e.duration().as_secs() as i128),
+    };
     match (now, scanned) {
-        (Some(a), Some(b)) => secs(a).is_some() && secs(a) == secs(b),
+        (Some(a), Some(b)) => secs(a) == secs(b),
         _ => false,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn same_time_compares_whole_seconds_before_1970_too() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let before = UNIX_EPOCH - Duration::from_millis(86_400_250);
+    let stored = UNIX_EPOCH - Duration::from_secs(86_400);
+    assert!(same_time(Some(stored), Some(stored)), "identical pre-1970 times (Astra's case)");
+    assert!(same_time(Some(before), Some(stored)), "a snapshot keeps whole seconds");
+    assert!(!same_time(Some(UNIX_EPOCH - Duration::from_secs(86_401)), Some(stored)));
+    let after = UNIX_EPOCH + Duration::from_millis(1_700_000_000_900);
+    assert!(same_time(Some(after), Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000))));
+    assert!(!same_time(None, None));
 }
 
 /// Only a live multiple-root scan's direct children may carry absolute names.

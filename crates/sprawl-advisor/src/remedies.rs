@@ -248,13 +248,14 @@ pub fn on_disk(path: &Path) -> Option<u64> {
             if visited > 1_000_000 || start.elapsed().as_secs() >= 30 { return None; }
             let e = e.ok()?;
             let m = e.metadata().ok()?;
-            // A link, a cloud placeholder or an offline file can't be measured here.
-            if m.file_attributes() & (sprawl_core::attr::REPARSE_POINT | crate::dupes::NOT_LOCAL) != 0 { return None; }
+            // A cloud placeholder, an offline file or a link folder can't be measured here; a
+            // file is measured on itself (a visible WOF file counts, at its compressed size).
+            if m.file_attributes() & crate::dupes::NOT_LOCAL != 0 { return None; }
             if m.is_dir() {
+                if m.file_attributes() & sprawl_core::attr::REPARSE_POINT != 0 { return None; }
                 stack.push(e.path());
             } else {
-                if sprawl_core::local::links(&e.path()).ok()? != 1 { return None; }
-                total = total.checked_add(size(&e.path())?)?;
+                total = total.checked_add(sprawl_core::local::file_on_disk(&e.path()).ok()?)?;
             }
         }
     }

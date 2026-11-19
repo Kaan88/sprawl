@@ -147,6 +147,44 @@ pub fn links(path: &Path) -> io::Result<u32> {
     Ok(info.nNumberOfLinks)
 }
 
+/// What one file takes on disk (compressed files, WOF ones included, at their compressed size),
+/// measured on the file itself: opened as itself first (a link or other reparse point other than
+/// WOF, a cloud or offline file, or a file with other names is refused), then opened through the
+/// compression filter and checked to be the same file before its size is read. Measuring only.
+pub fn file_on_disk(path: &Path) -> io::Result<u64> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let path = lexical(path)?;
+    let id = |f: &File| -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(f.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+        Ok(info)
+    };
+    let itself = std::fs::OpenOptions::new().access_mode(0x80).share_mode(1 | 2 | 4).custom_flags(FLAGS).open(&path)?;
+    let mut tag = [0u32; 2];
+    if unsafe { GetFileInformationByHandleEx(itself.as_raw_handle().cast(), 9, tag.as_mut_ptr().cast(), 8) } == 0 { return Err(io::Error::last_os_error()); }
+    let (attrs, tag) = (tag[0], tag[1]);
+    if attrs & crate::attr::DIRECTORY != 0 || attrs & (0x1000 | 0x0004_0000 | 0x0040_0000) != 0
+        || attrs & crate::attr::REPARSE_POINT != 0 && tag != 0x8000_0017 {
+        return Err(io::Error::other("Not a plain local file"));
+    }
+    let a = id(&itself)?;
+    if a.nNumberOfLinks != 1 { return Err(io::Error::other("The file has other names")); }
+    // through the compression filter (no reparse flag): only now does WOF report its size
+    let through = std::fs::OpenOptions::new().access_mode(0x80).share_mode(1 | 2 | 4).custom_flags(0x0010_0000).open(&path)?;
+    let b = id(&through)?;
+    if (a.dwVolumeSerialNumber, a.nFileIndexHigh, a.nFileIndexLow) != (b.dwVolumeSerialNumber, b.nFileIndexHigh, b.nFileIndexLow) {
+        return Err(io::Error::other("The file changed while it was measured"));
+    }
+    let mut compressed = [0u64; 3]; // FILE_COMPRESSION_INFO: CompressedFileSize first
+    if unsafe { GetFileInformationByHandleEx(through.as_raw_handle().cast(), 8, compressed.as_mut_ptr().cast(), 24) } != 0 {
+        return Ok(compressed[0]);
+    }
+    // a volume without compression: the file's size, as GetCompressedFileSizeW gives it
+    let mut standard = [0u64; 3]; // FILE_STANDARD_INFO: AllocationSize, EndOfFile, ...
+    if unsafe { GetFileInformationByHandleEx(through.as_raw_handle().cast(), 1, standard.as_mut_ptr().cast(), 24) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok(standard[1])
+}
+
 /// Open every ancestor as itself without delete sharing, from the local drive downward.
 pub fn directory(path: &Path) -> io::Result<Directory> {
     pin(path, true, false)
@@ -204,6 +242,29 @@ pub fn file(path: &Path, max: u64) -> io::Result<LocalFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_file_is_measured_on_itself_compressed_or_not() {
+        let dir = std::env::temp_dir().join(format!("sprawl-on-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = dir.join("plain.bin");
+        std::fs::write(&plain, vec![7u8; 10_000]).unwrap();
+        assert_eq!(file_on_disk(&plain).unwrap(), 10_000);
+        // a file with a second name is refused (its space isn't this name's alone)
+        std::fs::hard_link(&plain, dir.join("again.bin")).unwrap();
+        assert!(file_on_disk(&plain).is_err());
+        // a WOF-compressed file counts, at its compressed size (Astra's case)
+        let packed = dir.join("packed.bin");
+        std::fs::write(&packed, vec![0u8; 256 * 1024]).unwrap();
+        let sys = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32").join("compact.exe");
+        let ran = std::process::Command::new(sys).args(["/c", "/exe:xpress4k"]).arg(&packed).output().is_ok_and(|o| o.status.success());
+        if ran {
+            let size = file_on_disk(&packed).unwrap();
+            assert!(size < 256 * 1024, "{size}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn remote_device_and_stream_paths_are_rejected_before_open() {
         for p in [r"\\server\share\file", r"\\?\UNC\server\share\file", r"\\.\C:\file", r"C:\file:stream"] { assert!(lexical(Path::new(p)).is_err(), "{p}"); }
