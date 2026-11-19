@@ -529,14 +529,149 @@ fn personal_places() -> Result<Vec<String>, ()> {
         } else { None };
         if !path.is_null() { unsafe { CoTaskMemFree(path.cast()); } }
         let text = text.ok_or(())?;
-        // A folder redirected to a network share: nothing there is ever cleaned (storage
-        // actions refuse non-local paths), so it needs no local pattern. Failing closed here
-        // stopped every delete and several findings on PCs with redirected folders (1.0).
-        if text.starts_with(r"\\") && !text.starts_with(r"\\?\") { continue; }
+        // A folder redirected to a network share on another PC: nothing there is ever cleaned
+        // (storage actions refuse non-local paths), so it needs no local pattern. Failing
+        // closed here stopped every delete and several findings on such PCs (1.0). A share
+        // this PC itself serves is its own folder on a local drive: that folder is protected.
+        // Anything malformed, or a share of this PC whose folder can't be found, fails closed.
+        let text = if text.starts_with(r"\\") && !text.starts_with(r"\\?\") {
+            match unc_place(&text) {
+                UncPlace::Elsewhere => continue,
+                UncPlace::Here(local) => local,
+                UncPlace::Unknown => return Err(()),
+            }
+        } else { text };
         if text.contains(['%', '*', '?']) || drive_forms(&text).is_none() { return Err(()); }
         paths.push(text);
     }
     Ok(paths)
+}
+
+/// Where a known folder redirected to `\\server\share\...` really is.
+#[derive(Debug, PartialEq)]
+enum UncPlace {
+    /// On another PC: never cleaned from here.
+    Elsewhere,
+    /// A share this PC serves: the folder on its own drive.
+    Here(String),
+    /// Malformed, or this PC's share whose folder can't be found.
+    Unknown,
+}
+
+fn unc_place(text: &str) -> UncPlace {
+    unc_place_with(text, &this_pc_names(), own_addresses().as_deref(), &share_folder)
+}
+
+/// [`unc_place`] with this PC's names (lower case), its addresses (None: unknown) and a
+/// share-to-folder lookup given, for tests.
+fn unc_place_with(text: &str, names: &[String], addresses: Option<&[std::net::IpAddr]>, folder: &dyn Fn(&str) -> Option<String>) -> UncPlace {
+    let Some(rest) = text.strip_prefix(r"\\") else { return UncPlace::Unknown };
+    let mut parts = rest.splitn(3, '\\');
+    let (Some(server), Some(share)) = (parts.next(), parts.next()) else { return UncPlace::Unknown };
+    let tail = parts.next().unwrap_or("").trim_end_matches('\\');
+    let bad = |s: &str| s.is_empty() || s.chars().any(|c| c.is_control() || "\"*?<>|:/".contains(c));
+    let host_ok = !server.is_empty() && !server.starts_with(['.', '?']) && server.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c));
+    if !host_ok || bad(share) || share.len() > 80
+        || tail.split('\\').any(|s| s.is_empty() && !tail.is_empty() || s == "." || s == ".." || s.ends_with('.') || s.ends_with(' ') || s.chars().any(|c| c.is_control() || "\"*?<>|:/".contains(c))) {
+        return UncPlace::Unknown;
+    }
+    let host = server.to_ascii_lowercase();
+    let ip: Option<std::net::IpAddr> = match host.strip_suffix(".ipv6-literal.net") {
+        Some(v6) => v6.split('s').next().unwrap_or("").replace('-', ":").parse().ok(),
+        None => host.parse().ok(),
+    };
+    let here = match ip {
+        Some(ip) if ip.is_loopback() => true,
+        Some(ip) => match addresses { Some(own) => own.contains(&ip), None => return UncPlace::Unknown },
+        None => host == "localhost" || names.iter().any(|n| *n == host),
+    };
+    if !here { return UncPlace::Elsewhere; }
+    let sb = share.as_bytes();
+    let base = if sb.len() == 2 && sb[0].is_ascii_alphabetic() && sb[1] == b'$' {
+        Some(format!("{}:\\", sb[0].to_ascii_uppercase() as char))
+    } else { folder(share) };
+    match base {
+        Some(base) => {
+            let base = base.trim_end_matches('\\');
+            UncPlace::Here(if tail.is_empty() { format!("{base}\\") } else { format!("{base}\\{tail}") })
+        }
+        None => UncPlace::Unknown,
+    }
+}
+
+/// This PC's names, lower case: NetBIOS, DNS host name, fully qualified DNS name.
+fn this_pc_names() -> Vec<String> {
+    #[link(name = "kernel32")]
+    extern "system" { fn GetComputerNameExW(kind: i32, buf: *mut u16, len: *mut u32) -> i32; }
+    let mut out = Vec::new();
+    for kind in [0, 1, 3] {
+        let mut buf = vec![0u16; 512];
+        let mut len = buf.len() as u32;
+        if unsafe { GetComputerNameExW(kind, buf.as_mut_ptr(), &mut len) } != 0 && len > 0 && (len as usize) < buf.len() {
+            let name = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
+            if !out.contains(&name) { out.push(name); }
+        }
+    }
+    out
+}
+
+/// The addresses of this PC's network adapters. None when Windows can't list them.
+fn own_addresses() -> Option<Vec<std::net::IpAddr>> {
+    #[cfg(target_pointer_width = "64")]
+    {
+        #[link(name = "iphlpapi")]
+        extern "system" { fn GetAdaptersAddresses(family: u32, flags: u32, reserved: *const core::ffi::c_void, out: *mut u64, size: *mut u32) -> u32; }
+        const SKIP: u32 = 0x2 | 0x4 | 0x8; // anycast, multicast, DNS servers
+        let mut buf = vec![0u64; 2048];
+        let mut size = (buf.len() * 8) as u32;
+        let mut r = unsafe { GetAdaptersAddresses(0, SKIP, std::ptr::null(), buf.as_mut_ptr(), &mut size) };
+        if r == 111 && size as usize <= 4 << 20 {
+            buf = vec![0u64; (size as usize).div_ceil(8) + 1];
+            size = (buf.len() * 8) as u32;
+            r = unsafe { GetAdaptersAddresses(0, SKIP, std::ptr::null(), buf.as_mut_ptr(), &mut size) };
+        }
+        if r != 0 { return None; }
+        // x64 layouts: IP_ADAPTER_ADDRESSES_LH { 8 bytes, Next at 8, .., FirstUnicastAddress at 24 },
+        // IP_ADAPTER_UNICAST_ADDRESS_LH { 8 bytes, Next at 8, Address.lpSockaddr at 16 }
+        let read_ptr = |p: *const u8, at: usize| unsafe { std::ptr::read_unaligned(p.add(at) as *const *const u8) };
+        let mut out = Vec::new();
+        let mut adapter = buf.as_ptr() as *const u8;
+        let mut guard = 0;
+        while !adapter.is_null() && guard < 4096 {
+            let mut uni = read_ptr(adapter, 24);
+            while !uni.is_null() && guard < 4096 {
+                guard += 1;
+                let sa = read_ptr(uni, 16);
+                if !sa.is_null() {
+                    let family = unsafe { std::ptr::read_unaligned(sa as *const u16) };
+                    if family == 2 {
+                        let b: [u8; 4] = unsafe { std::ptr::read_unaligned(sa.add(4) as *const [u8; 4]) };
+                        out.push(std::net::IpAddr::from(b));
+                    } else if family == 23 {
+                        let b: [u8; 16] = unsafe { std::ptr::read_unaligned(sa.add(8) as *const [u8; 16]) };
+                        out.push(std::net::IpAddr::from(b));
+                    }
+                }
+                uni = read_ptr(uni, 8);
+            }
+            adapter = read_ptr(adapter, 8);
+            guard += 1;
+        }
+        Some(out)
+    }
+    #[cfg(not(target_pointer_width = "64"))]
+    { None }
+}
+
+/// The folder a share of this PC serves, from the Server service's own list (readable without
+/// administrator rights): `Path=D:\...` in `HKLM\...\LanmanServer\Shares\<share>`.
+fn share_folder(share: &str) -> Option<String> {
+    if share.eq_ignore_ascii_case("admin$") {
+        return std::env::var("SystemRoot").ok().filter(|s| drive_forms(s).is_some());
+    }
+    let key = crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Shares", crate::reg::View::Native)?;
+    let lines = key.strings(share)?;
+    lines.iter().find_map(|l| l.strip_prefix("Path=")).map(str::to_string).filter(|p| drive_forms(p).is_some() && !p.starts_with(r"\\"))
 }
 
 /// `names` (an item's name, then the folders above it) ends in `tail` (segments, the item last).
@@ -969,6 +1104,34 @@ mod tests {
         assert!(n.hit(r"C:\Users\sam\AppData\Local\npm-cache").is_none());
         assert!(n.is_user_data(r"C:\Users\sam\Documents\big.iso"));
         assert!(!n.is_user_data(r"C:\Users\sam\AppData\Local\Temp"));
+    }
+
+    #[test]
+    fn a_folder_redirected_to_this_pcs_own_share_keeps_its_protection() {
+        let names = vec!["desk".to_string(), "desk.home.lan".to_string()];
+        let own: Vec<std::net::IpAddr> = vec!["192.168.1.20".parse().unwrap(), "fe80::1".parse().unwrap()];
+        let shares = |s: &str| (s.eq_ignore_ascii_case("docs")).then(|| r"D:\Shared\Docs".to_string());
+        let place = |t: &str| unc_place_with(t, &names, Some(&own), &shares);
+        // another PC: never cleaned from here, no pattern needed
+        assert_eq!(place(r"\\nas\home\sam\Documents"), UncPlace::Elsewhere);
+        assert_eq!(place(r"\\192.168.1.3\ntfs\Documents"), UncPlace::Elsewhere);
+        // this PC, by name, address or loopback: the folder on its own drive (Astra's case)
+        assert_eq!(place(r"\\DESK\D$\Users\sam\Documents"), UncPlace::Here(r"D:\Users\sam\Documents".into()));
+        assert_eq!(place(r"\\desk.home.lan\docs\sam"), UncPlace::Here(r"D:\Shared\Docs\sam".into()));
+        assert_eq!(place(r"\\192.168.1.20\d$\Docs"), UncPlace::Here(r"D:\Docs".into()));
+        assert_eq!(place(r"\\127.0.0.1\c$\Users\sam\Documents"), UncPlace::Here(r"C:\Users\sam\Documents".into()));
+        assert_eq!(place(r"\\localhost\docs"), UncPlace::Here(r"D:\Shared\Docs\".into()));
+        assert_eq!(place(r"\\fe80--1.ipv6-literal.net\docs\x"), UncPlace::Here(r"D:\Shared\Docs\x".into()));
+        // this PC's share whose folder can't be found, malformed or device spellings: fail closed
+        assert_eq!(place(r"\\desk\unknown\Documents"), UncPlace::Unknown);
+        for bad in [r"\\", r"\\desk", r"\\desk\\x", r"\\.\C:\x", r"\\?\C:\x", r"\\desk\d$\..\x", r"\\desk\d$\a.\x", r"\\de*sk\d$", r"\\desk\d:\x"] {
+            assert_eq!(place(bad), UncPlace::Unknown, "{bad}");
+        }
+        // an address while this PC's addresses are unknown: fail closed
+        assert_eq!(unc_place_with(r"\\192.168.1.3\ntfs", &names, None, &shares), UncPlace::Unknown);
+        // the real lookups answer on this PC (names, adapter addresses incl. loopback)
+        assert!(!this_pc_names().is_empty());
+        assert!(own_addresses().is_some_and(|a| a.iter().any(|ip| ip.is_loopback())), "{:?}", own_addresses());
     }
 
     #[test]

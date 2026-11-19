@@ -101,6 +101,28 @@ impl Key {
         }
     }
 
+    /// A REG_MULTI_SZ value, its strings in order (empty ones left out).
+    pub fn strings(&self, name: &str) -> Option<Vec<String>> {
+        const RRF_RT_REG_MULTI_SZ: u32 = 0x0020;
+        let n = wide(name);
+        let mut size = 0u32;
+        unsafe {
+            if RegGetValueW(self.0, std::ptr::null(), n.as_ptr(), RRF_RT_REG_MULTI_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) != 0 {
+                return None;
+            }
+            if size == 0 || size > 1 << 20 {
+                return None;
+            }
+            let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
+            let mut size2 = (buf.len() * 2) as u32;
+            if RegGetValueW(self.0, std::ptr::null(), n.as_ptr(), RRF_RT_REG_MULTI_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut size2) != 0 {
+                return None;
+            }
+            let len = (size2 as usize / 2).min(buf.len());
+            Some(buf[..len].split(|&c| c == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect())
+        }
+    }
+
     pub fn dword(&self, name: &str) -> Option<u32> {
         let n = wide(name);
         let mut v = 0u32;
