@@ -95,8 +95,13 @@ fn with_aliases_mapped(paths: Vec<PathBuf>, mapped: &Mapped) -> Vec<PathBuf> {
 struct Mapped {
     /// `\\server\share[\folder]` of each mapped network drive letter.
     letters: Vec<(char, String)>,
-    /// Network drive letters whose share couldn't be read.
+    /// Network drive letters whose share couldn't be read, and present letters whose kind
+    /// Windows couldn't tell (either may be a share).
     failed: Vec<char>,
+    /// Letters Windows says are local drives (fixed, removable, optical, RAM disk). A letter in
+    /// none of these lists (not there now, or no drive list at all) may be a disconnected
+    /// network drive, so a skip on it is treated as one whose share is unknown.
+    local: Vec<char>,
 }
 
 /// `\\server\share` for each mapped network drive letter (`Y:`).
@@ -111,7 +116,11 @@ fn mapped_drives() -> Mapped {
         if mask & (1 << i) == 0 { continue; }
         let letter = (b'A' + i) as char;
         let root: Vec<u16> = format!("{letter}:\\").encode_utf16().chain(Some(0)).collect();
-        if unsafe { GetDriveTypeW(root.as_ptr()) } != 4 { continue; }
+        match unsafe { GetDriveTypeW(root.as_ptr()) } {
+            4 => {}
+            2 | 3 | 5 | 6 => { out.local.push(letter); continue; }
+            _ => { out.failed.push(letter); continue; } // unknown, or no root folder
+        }
         let local: Vec<u16> = format!("{letter}:").encode_utf16().chain(Some(0)).collect();
         let mut buf = vec![0u16; 1024];
         let mut len = buf.len() as u32;
@@ -146,7 +155,14 @@ fn network_aliases(path: &Path, mapped: &Mapped, policy: &mut Vec<PathBuf>) -> V
                 let rest = text[2..].trim_start_matches('\\');
                 if rest.is_empty() { share.clone() } else { format!("{share}\\{rest}") }
             }
-            None => return out, // a local drive
+            None if mapped.local.contains(&letter) => return out, // a local drive
+            None => {
+                // not there now, or of a kind Windows can't tell: possibly a disconnected
+                // network drive, whose share can't be known
+                if !policy.iter().any(|p| p.as_os_str() == REMOTE_UNKNOWN) { policy.push(PathBuf::from(REMOTE_UNKNOWN)); }
+                out.extend(mapped.letters.iter().map(|(l, _)| *l).chain(mapped.failed.iter().copied()).map(|l| PathBuf::from(format!("{l}:\\"))));
+                return out;
+            }
         },
         None if text.starts_with(r"\\") => text.trim_end_matches('\\').to_string(),
         None => return out,
@@ -154,7 +170,12 @@ fn network_aliases(path: &Path, mapped: &Mapped, policy: &mut Vec<PathBuf>) -> V
     out.push(PathBuf::from(&unc));
     for (other, remote) in &mapped.letters {
         if crate::finding::within(Path::new(&unc), Path::new(remote)) {
-            let rest = unc[remote.len()..].trim_start_matches('\\');
+            // by names, not bytes: `within` compares lowercased, and a name can change width
+            // when lowercased, so the two spellings' lengths can differ
+            let names = |p: &str| -> Vec<String> {
+                Path::new(p).components().filter(|c| matches!(c, std::path::Component::Normal(_))).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()
+            };
+            let rest = names(&unc).split_off(names(remote).len().min(names(&unc).len())).join("\\");
             out.push(PathBuf::from(format!("{other}:\\{rest}")));
         } else if crate::finding::within(Path::new(remote), Path::new(&unc)) {
             out.push(PathBuf::from(format!("{other}:\\")));
@@ -224,7 +245,7 @@ mod tests {
 
     #[test]
     fn network_aliases_cover_overlapping_and_unknown_mappings() {
-        let mapped = Mapped { letters: vec![('Y', r"\\srv\share".into()), ('Z', r"\\srv\share\sub".into()), ('X', r"\\other\data".into())], failed: vec![] };
+        let mapped = Mapped { letters: vec![('Y', r"\\srv\share".into()), ('Z', r"\\srv\share\sub".into()), ('X', r"\\other\data".into())], failed: vec![], local: vec!['C'] };
         let all = |p: &str| with_aliases_mapped(vec![PathBuf::from(p)], &mapped);
         // a skip on Y: inside the folder Z: maps: the share's name, and Z: below its own root
         let y = all(r"Y:\sub\private");
@@ -241,7 +262,7 @@ mod tests {
         assert!(!progress.excludes(Path::new(r"\\srv\share\other")));
         // a network letter whose share can't be read: a skip on it refuses every share path and
         // every network letter; a skip elsewhere on the network refuses that letter
-        let unknown = Mapped { letters: vec![('Y', r"\\srv\share".into())], failed: vec!['W'] };
+        let unknown = Mapped { letters: vec![('Y', r"\\srv\share".into())], failed: vec!['W'], local: vec!['C'] };
         let on_w = with_aliases_mapped(vec![PathBuf::from(r"W:\private")], &unknown);
         assert!(intersects(Path::new(r"\\anything\at\all"), &on_w));
         assert!(sprawl_core::Progress::with_exclusions(&on_w).excludes(Path::new(r"\\anything\at\all")));
@@ -250,5 +271,19 @@ mod tests {
         let on_y = with_aliases_mapped(vec![PathBuf::from(r"Y:\private")], &unknown);
         assert!(intersects(Path::new(r"W:\x"), &on_y));
         assert!(!intersects(Path::new(r"\\other\share"), &on_y));
+        // a letter Windows doesn't list as a local drive (a mapped drive now disconnected, say)
+        // is treated like one whose share is unknown; a local one isn't (re-review S1 #9)
+        let gone = with_aliases_mapped(vec![PathBuf::from(r"Q:\private")], &unknown);
+        assert!(intersects(Path::new(r"\\anything\at\all"), &gone) && intersects(Path::new(r"Y:\data"), &gone));
+        let here = with_aliases_mapped(vec![PathBuf::from(r"C:\private")], &unknown);
+        assert!(!intersects(Path::new(r"\\anything\at\all"), &here) && !intersects(Path::new(r"Y:\data"), &here));
+        // no drive list at all: no letter is known to be local
+        let none = with_aliases_mapped(vec![PathBuf::from(r"C:\private")], &Mapped::default());
+        assert!(intersects(Path::new(r"\\anything\at\all"), &none));
+        // a mapped folder whose name changes width when lowercased (İ is 2 bytes, i̇ is 3):
+        // the rest is cut by names, not bytes
+        let wide = Mapped { letters: vec![('V', "\\\\srv\\share\\\u{130}".into())], failed: vec![], local: vec![] };
+        let v = with_aliases_mapped(vec![PathBuf::from("\\\\SRV\\SHARE\\i\u{307}\\secret")], &wide);
+        assert!(v.contains(&PathBuf::from(r"V:\secret")), "{v:?}");
     }
 }
