@@ -114,6 +114,71 @@ fn uncompress_scope(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::p
     Ok(())
 }
 
+/// Run one of Sprawl's compress commands on `path`, checked now rather than in the scan: the
+/// folder is read again completely (a folder that can't be, or that holds a link, a cloud
+/// file or a skipped folder now, is left whole), and compact.exe gets the plain files by
+/// exact name, never `/s` or a wildcard. Each file is pinned while compact runs, and one with
+/// another name elsewhere (a hard link) is left as it is: its storage is shared with a file
+/// outside the folder. Kept items are left too. The number of files compressed.
+pub fn compress_scope(path: &Path, command: &str, spare: &crate::clean::Spare, stop: &std::sync::atomic::AtomicBool) -> Result<usize, String> {
+    use std::sync::atomic::Ordering;
+    let alg = compress_alg(command).filter(|a| matches!(*a, "xpress4k" | "xpress8k" | "xpress16k" | "lzx")).ok_or("not one of Sprawl's compress commands")?;
+    if !command.ends_with(&ps_quote(&format!("{}\\*", path.display()))) {
+        return Err("the command names another folder than the one reviewed".into());
+    }
+    let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    let excluded = crate::exclusions::configured();
+    let tree = sprawl_core::walk::walk(&root.path, &sprawl_core::Progress::new()).map_err(|e| e.to_string())?;
+    if tree.errors != 0 {
+        return Err("the folder couldn't be read completely now, so nothing in it was compressed".into());
+    }
+    let mut work = Vec::new();
+    for (n, node) in tree.nodes.iter().enumerate() {
+        let p = tree.path_of(n);
+        if crate::exclusions::intersects(&p, &excluded) || node.attributes & crate::dupes::NOT_LOCAL != 0 {
+            return Err(format!("{} is a cloud file or a skipped folder now, so nothing was compressed", p.display()));
+        }
+        // a link (junction, symlink, other reparse point); a WOF-compressed file is data
+        if node.is_reparse_point() && (node.is_dir || node.attributes & sprawl_core::attr::WOF == 0) {
+            return Err(format!("{} is a link now, so nothing was compressed (compact.exe could follow it out of the folder)", p.display()));
+        }
+        if !node.is_dir && node.size > 0 && node.attributes & sprawl_core::attr::WOF == 0 && !node.is_compressed() && !spare.keeps(&p) {
+            work.push(p);
+        }
+    }
+    let (mut done, mut i) = (0, 0);
+    while i < work.len() && !stop.load(Ordering::Relaxed) {
+        // up to 64 files and about 4000 characters a command
+        let mut pins = Vec::new();
+        let mut args = String::new();
+        while i < work.len() && pins.len() < 64 {
+            let q = ps_quote(&work[i].display().to_string());
+            if !args.is_empty() && args.len() + q.len() > 4000 {
+                break;
+            }
+            i += 1;
+            let Ok(pinned) = sprawl_core::local::storage(&work[i - 1]) else { continue };
+            let plain = pinned.metadata().is_ok_and(|m| m.is_file()) && pinned.file_links().ok() == Some(1) && pinned.externally_backed().ok() == Some(false);
+            if plain {
+                args.push(' ');
+                args.push_str(&q);
+                pins.push(pinned);
+            }
+        }
+        if pins.is_empty() {
+            continue;
+        }
+        let command = format!("compact.exe /c /a /i /q /exe:{alg}{args}");
+        let r = crate::clean::run(path, &Action::Tool { command }, &crate::clean::Spare::default(), stop, &mut |_| {});
+        done += pins.len();
+        drop(pins);
+        if !r.problems.is_empty() || r.more_problems != 0 {
+            return Err(r.problems.join("; "));
+        }
+    }
+    Ok(done)
+}
+
 /// The command is one of Sprawl's own compress commands.
 pub fn is_compress(a: &Action) -> bool {
     matches!(a, Action::Tool { command } if command.starts_with(COMPRESS))
@@ -623,6 +688,40 @@ mod compress_tests {
         assert!(back >= before / 10 * 9, "before {before}, back {back}");
         assert_eq!(compress_alg(&format!("{COMPRESS}xpress16k 'x'")), Some("xpress16k"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Compression checks the folder as it is now: a file with a second name outside is left
+    /// as it is, and a link that appeared after the scan stops the whole run.
+    #[test]
+    fn compress_checks_the_folder_now() {
+        let base = std::env::temp_dir().join(format!("sprawl-compress-now-{}", crate::store::nonce()));
+        let dir = base.join("game");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let text: String = (0..30_000).map(|i| format!("line {i} of a very compressible text file\n")).collect();
+        std::fs::write(dir.join("a.txt"), &text).unwrap();
+        std::fs::write(base.join("outside.txt"), &text).unwrap();
+        std::fs::hard_link(base.join("outside.txt"), dir.join("sub").join("shared.txt")).unwrap();
+        let command = format!("{COMPRESS}xpress8k {}", crate::rules::ps_quote(&format!("{}\\*", dir.display())));
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let spare = crate::clean::Spare::default();
+        // a command for another folder than the one given is refused
+        assert!(compress_scope(&base, &command, &spare, &stop).is_err());
+        // the shared file is left uncompressed; the plain one is compressed
+        assert_eq!(compress_scope(&dir, &command, &spare, &stop), Ok(1));
+        let walk = sprawl_core::walk::walk(&base, &sprawl_core::Progress::new()).unwrap();
+        let compressed = |name: &str| walk.nodes.iter().any(|n| n.name == name && n.is_compressed());
+        assert!(compressed("a.txt"));
+        assert!(!compressed("shared.txt") && !compressed("outside.txt"));
+        // compressed files are data, not links: compressing again is fine
+        assert!(compress_scope(&dir, &command, &spare, &stop).is_ok());
+        // a junction that appeared after the scan: nothing is compressed
+        std::fs::create_dir_all(base.join("elsewhere")).unwrap();
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(dir.join("sub").join("link")).arg(base.join("elsewhere")).output().is_ok_and(|o| o.status.success());
+        if made {
+            assert!(compress_scope(&dir, &command, &spare, &stop).is_err_and(|e| e.contains("is a link now")));
+            let _ = std::fs::remove_dir(dir.join("sub").join("link"));
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

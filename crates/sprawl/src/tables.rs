@@ -806,7 +806,7 @@ impl State {
         // with several rows picked the Windows menu is off: it would act on one of them only
         if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "cShell") {
             // ...nor during a clean-up, nor as administrator unless Settings > Scanning allows it
-            let admin_ok = !sprawl_core::is_elevated() || self.admin_on(&crate::admin::SHELL_MENU);
+            let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
             let _ = i.SetIsEnabled(self.picked_nodes().len() <= 1 && self.advisor.cleanup.running.is_none() && admin_ok);
         }
         // Shift+right-click: straight to the Windows menu

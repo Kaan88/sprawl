@@ -120,11 +120,13 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
     let mut text: Option<String> = None;
     let mut usage = super::Usage::default();
     let mut failed: Option<String> = None;
+    let mut completed = false;
     for line in out.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
         match v["type"].as_str() {
             Some("item.completed") if v["item"]["type"] == "agent_message" => text = v["item"]["text"].as_str().map(str::to_string),
             Some("turn.completed") => {
+                completed = true;
                 let u = &v["usage"];
                 let cached = u["cached_input_tokens"].as_u64().unwrap_or(0);
                 usage = super::Usage { input: u["input_tokens"].as_u64().unwrap_or(0).saturating_sub(cached), cached, output: u["output_tokens"].as_u64().unwrap_or(0), cost_usd: None };
@@ -138,10 +140,17 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
         return Err(format!("Codex: {}", super::short(&why)));
     }
     match text {
-        Some(t) => Ok((t, usage)),
+        Some(t) if completed => Ok((t, usage)),
+        Some(_) => Err("Codex stopped before finishing its answer".into()),
         None if out.trim().is_empty() => Err("Codex gave no answer. Is it signed in? Run codex login once.".into()),
         None => Err(format!("Codex answered something unexpected: {}", super::short(out))),
     }
+}
+
+/// The output ends with the turn's own last event, whole (a parsed line, not a mention).
+fn finished(out: &str) -> bool {
+    out.ends_with('\n') && out.lines().rev().find(|l| !l.trim().is_empty()).and_then(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .is_some_and(|v| matches!(v["type"].as_str(), Some("turn.completed" | "turn.failed")))
 }
 
 /// Why Codex isn't started, when Sprawl runs as administrator: like Claude Code it comes from
@@ -169,50 +178,58 @@ impl Codex {
         let mut cmd = Command::new(&self.exe);
         cmd.args(args(&self.model, &dir)).current_dir(&dir);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let mut child = cmd.spawn().map_err(|e| format!("couldn't start Codex: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        // in a job with everything it starts: Stop, the time limit and every return end them all
+        // (0x0800_0000: CREATE_NO_WINDOW)
+        let mut run = super::contain::spawn(&mut cmd, 0x0800_0000).map_err(|e| format!("couldn't start Codex: {e}"))?;
+        let mut stdin = run.child.stdin.take().ok_or("no stdin")?;
         let prompt = self.prompt.clone();
-        let writer = std::thread::spawn(move || {
+        // never waited for: a helper holding stdin without reading it can't keep this waiting
+        std::thread::spawn(move || {
             let _ = stdin.write_all(prompt.as_bytes());
         });
-        // kept as it comes: a helper process that outlives Codex and still holds the pipe
-        // mustn't keep its answer from being read
-        let mut stdout = child.stdout.take().ok_or("no stdout")?;
+        // kept as it comes (at most 16 MB): a helper process that outlives Codex and still holds
+        // the pipe mustn't keep its answer from being read
+        let mut stdout = run.child.stdout.take().ok_or("no stdout")?;
         let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let (otx, orx) = std::sync::mpsc::channel::<()>();
         let g2 = got.clone();
-        let reader = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             while let Ok(n) = std::io::Read::read(&mut stdout, &mut chunk) {
                 if n == 0 {
                     break;
                 }
                 if let Ok(mut g) = g2.lock() {
-                    g.extend_from_slice(&chunk[..n]);
+                    if g.len() < 16 << 20 {
+                        g.extend_from_slice(&chunk[..n]);
+                    }
                 }
             }
             let _ = otx.send(());
         });
-        // its log lines, read as they come so a full pipe can't stall it: the "Error:" line
-        // says why when it refused to start (an option this version doesn't know)
-        let mut stderr = child.stderr.take().ok_or("no stderr")?;
+        // its log lines, read as they come so a full pipe can't stall it (the first 64 KB kept):
+        // the "Error:" line says why when it refused to start (an option this version doesn't know)
+        let mut stderr = run.child.stderr.take().ok_or("no stderr")?;
         let (etx, erx) = std::sync::mpsc::channel::<String>();
         std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = std::io::Read::read_to_string(&mut stderr, &mut s);
+            let (mut kept, mut chunk) = (Vec::new(), [0u8; 8192]);
+            while let Ok(n) = std::io::Read::read(&mut stderr, &mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if kept.len() < 64 << 10 {
+                    kept.extend_from_slice(&chunk[..n]);
+                }
+            }
+            let s = String::from_utf8_lossy(&kept).into_owned();
             let _ = etx.send(s.lines().find(|l| l.starts_with("Error")).unwrap_or("").to_string());
         });
         let start = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
+        let status = loop {
+            match run.child.try_wait() {
+                Ok(Some(status)) => break status,
                 Ok(None) if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
-                    super::claude_code::kill_tree(&mut child);
+                    run.end();
                     return Err(super::STOPPED.into());
                 }
                 Ok(None) if start.elapsed() < Duration::from_secs(900) => {
@@ -220,28 +237,39 @@ impl Codex {
                     tick();
                 }
                 _ => {
-                    super::claude_code::kill_tree(&mut child);
+                    run.end();
                     return Err("Codex took longer than 15 minutes".into());
                 }
             }
-        }
-        let _ = writer.join();
+        };
         // the end of the output, or the turn's last event, whichever comes first (30 s at most)
         let text_now = || got.lock().map(|g| String::from_utf8_lossy(&g).into_owned()).unwrap_or_default();
         let waited = Instant::now();
         while orx.recv_timeout(Duration::from_millis(100)).is_err() && waited.elapsed() < Duration::from_secs(30) {
-            let now = text_now();
-            // (and that line whole)
-            if (now.contains("\"turn.completed\"") || now.contains("\"turn.failed\"")) && now.ends_with('\n') {
+            if finished(&text_now()) {
                 break;
             }
         }
+        // whatever it started ends now, which closes the pipes it held
+        run.end();
         let out = text_now();
-        drop(reader);
-        let (text, usage) = parse(&out).map_err(|e| match erx.recv_timeout(Duration::from_secs(2)).ok().filter(|l| !l.is_empty()) {
-            Some(l) if out.trim().is_empty() => format!("Codex: {}", super::short(l.trim_start_matches("Error:").trim())),
-            _ => e,
-        })?;
+        let error_line = || erx.recv_timeout(Duration::from_secs(2)).ok().filter(|l| !l.is_empty());
+        let (text, usage) = match parse(&out) {
+            // an answer counts only with the turn's end and a clean exit
+            Ok(_) if !status.success() => {
+                return Err(match error_line() {
+                    Some(l) => format!("Codex: {}", super::short(l.trim_start_matches("Error:").trim())),
+                    None => format!("Codex stopped with an error ({status})"),
+                });
+            }
+            Ok(r) => r,
+            Err(e) => {
+                return Err(match error_line() {
+                    Some(l) if out.trim().is_empty() => format!("Codex: {}", super::short(l.trim_start_matches("Error:").trim())),
+                    _ => e,
+                });
+            }
+        };
         if let Some(s) = self.sink.as_mut() {
             s(&text);
         }
@@ -319,6 +347,12 @@ mod tests {
         assert!(super::parse(r#"{"type":"turn.failed","error":{"message":"not signed in"}}"#).unwrap_err().contains("not signed in"));
         assert!(super::parse("").unwrap_err().contains("codex login"));
         assert!(super::parse("garbage").is_err());
+        // an answer without the turn's end is not an answer
+        assert!(super::parse(r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"half"}}"#).unwrap_err().contains("before finishing"));
+        // the end is a whole, parsed last line, not a mention of it
+        assert!(super::finished(&format!("{out}\n")));
+        assert!(!super::finished(out), "a line not yet ended");
+        assert!(!super::finished(concat!(r#"{"type":"item.completed","item":{"type":"agent_message","text":"\"turn.completed\""}}"#, "\n")));
     }
 
     #[test]

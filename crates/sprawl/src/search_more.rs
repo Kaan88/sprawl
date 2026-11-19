@@ -666,7 +666,7 @@ impl State {
         self.refresh_rows();
         // the Windows menu: not during a clean-up, nor as administrator unless Settings allows it
         if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "sxShell") {
-            let admin_ok = !sprawl_core::is_elevated() || self.admin_on(&crate::admin::SHELL_MENU);
+            let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
             let _ = i.SetIsEnabled(self.advisor.cleanup.running.is_none() && admin_ok);
         }
         let shown = || -> windows_core::Result<()> {

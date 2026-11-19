@@ -160,6 +160,12 @@ impl crate::state::State {
             crate::state::text(&self.root, "FootLeft", "A clean-up or file operation is running: the Windows menu is back when it has finished.");
             return;
         }
+        // nor during a scan: the reread afterwards would be made for the old tree but arrive
+        // when the new one is on screen
+        if in_scan && self.job.is_some() {
+            crate::state::text(&self.root, "FootLeft", "A scan is running: the Windows menu for its rows is back when it has finished.");
+            return;
+        }
         let picked = if in_scan { self.picked_nodes().len() } else { 1 };
         if let Some(why) = unavailable(picked) {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
@@ -174,7 +180,8 @@ impl crate::state::State {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
             return;
         }
-        match show(self.hwnd, &path, true) {
+        // the switch itself, checked again inside show() against the elevation it finds there
+        match show(self.hwnd, &path, self.admin_on(&crate::admin::SHELL_MENU)) {
             Ok(Shown::Closed) => {}
             Ok(Shown::Ran(verb)) => {
                 let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)).filter(|_| in_scan) else { return };

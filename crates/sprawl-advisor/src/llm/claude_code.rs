@@ -129,18 +129,16 @@ impl ClaudeCode {
         cmd.args(a).current_dir(workdir());
         // stderr isn't read: a full pipe would stall it
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let mut child = cmd.spawn().map_err(|e| format!("couldn't start Claude Code: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        // in a job with everything it starts (a .cmd shim starts node): Stop, the time limit and
+        // every return end them all (0x0800_0000: CREATE_NO_WINDOW)
+        let mut run = super::contain::spawn(&mut cmd, 0x0800_0000).map_err(|e| format!("couldn't start Claude Code: {e}"))?;
+        let mut stdin = run.child.stdin.take().ok_or("no stdin")?;
         let prompt = self.prompt.clone();
-        let writer = std::thread::spawn(move || {
+        // never waited for: a helper holding stdin without reading it can't keep this waiting
+        std::thread::spawn(move || {
             let _ = stdin.write_all(prompt.as_bytes());
         });
-        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let stdout = run.child.stdout.take().ok_or("no stdout")?;
         let (otx, orx) = std::sync::mpsc::channel::<Option<String>>();
         std::thread::spawn(move || {
             // each line as it comes, then None at the end
@@ -188,10 +186,10 @@ impl ClaudeCode {
                     None => finished = true,
                 }
             }
-            match child.try_wait() {
+            match run.child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
-                    kill_tree(&mut child);
+                    run.end();
                     return Err(super::STOPPED.into());
                 }
                 Ok(None) if start.elapsed() < Duration::from_secs(900) => {
@@ -199,12 +197,11 @@ impl ClaudeCode {
                     tick();
                 }
                 _ => {
-                    kill_tree(&mut child);
+                    run.end();
                     return Err("Claude Code took longer than 15 minutes".into());
                 }
             }
         }
-        let _ = writer.join();
         // the rest of the output; a grandchild still holding the pipe mustn't keep this waiting
         let deadline = Instant::now() + Duration::from_secs(30);
         while !finished {
@@ -213,6 +210,8 @@ impl ClaudeCode {
                 _ => break,
             }
         }
+        // whatever it started ends now
+        run.end();
         let text = parse(&out)?;
         // each new process gets the whole conversation
         self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
@@ -239,21 +238,6 @@ impl Chat for ClaudeCode {
         self.prompt.push_str(&format!("\n\nThe user:\n{text}"));
         self.pending = true;
     }
-}
-
-/// End the process and everything it started (a .cmd shim starts node).
-pub(super) fn kill_tree(child: &mut std::process::Child) {
-    let pid = child.id().to_string();
-    let taskkill = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\taskkill.exe")).unwrap_or_else(|| "taskkill.exe".into());
-    let mut k = Command::new(taskkill);
-    k.args(["/T", "/F", "/PID", &pid]).stdout(Stdio::null()).stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        k.creation_flags(0x0800_0000);
-    }
-    let _ = k.status();
-    let _ = child.kill();
 }
 
 #[cfg(test)]

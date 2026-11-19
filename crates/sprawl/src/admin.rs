@@ -112,7 +112,18 @@ pub(crate) mod store {
     }
 }
 
-/// One of the four switches' keys.
+/// Whether Sprawl runs as administrator, for the switches: when Windows can't say, it does.
+pub(crate) fn elevated() -> bool {
+    sprawl_core::elevation().unwrap_or(true)
+}
+
+/// The gate for a switch, from what Windows answered about elevation (an error counts as
+/// elevated, so the switch decides).
+fn allows(elevation: std::io::Result<bool>, on: bool) -> Gate {
+    gate(elevation.unwrap_or(true), on)
+}
+
+/// One of the switches' keys.
 pub(crate) fn is_switch(key: &str) -> bool {
     [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS, &MCP_DISK].iter().any(|l| l.key == key)
 }
@@ -125,7 +136,7 @@ impl crate::state::State {
 
     /// Whether `l` may go ahead now.
     pub(crate) fn admin_allows(&mut self, l: &Lock) -> Result<(), String> {
-        match gate(sprawl_core::is_elevated(), self.admin_on(l)) {
+        match allows(sprawl_core::elevation(), self.admin_on(l)) {
             Gate::Run => Ok(()),
             Gate::Refuse => Err(refused(l)),
         }
@@ -141,6 +152,13 @@ impl crate::state::State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_elevation_needs_the_switch() {
+        assert_eq!(allows(Err(std::io::Error::other("no token")), false), Gate::Refuse);
+        assert_eq!(allows(Err(std::io::Error::other("no token")), true), Gate::Run);
+        assert_eq!(allows(Ok(false), false), Gate::Run);
+    }
 
     #[test]
     fn off_refuses_on_runs_and_not_elevated_runs() {

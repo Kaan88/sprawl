@@ -250,6 +250,12 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         return o;
     }
     match action {
+        // Sprawl's own compression: each file checked now and named to compact.exe, never /s
+        Action::Tool { command } if crate::remedies::is_compress(action) => {
+            if let Err(e) = crate::remedies::compress_scope(path, command, spare, stop) {
+                o.problem(path, format!("left alone: {e}"));
+            }
+        }
         Action::Tool { command } => tool(command, stop, &mut o),
         Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
             (Some(p), Some(places)) if same_path(path, files.first().map_or(Path::new(""), |f| f.as_path())) => {
