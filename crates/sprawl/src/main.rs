@@ -15,6 +15,7 @@ mod bridge;
 mod app;
 mod cleanup;
 mod commands;
+mod coverage;
 mod format;
 mod dialogs;
 mod galaxy;
@@ -228,7 +229,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             }
         });
     })?);
-    for name in ["ScanButton", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
+    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);
@@ -489,6 +490,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         job: None,
         pending_scan: None,
         scan_secs: 0.0,
+        coverage: None,
         shot,
         shot_ticks: 0,
         dialogs: Default::default(),

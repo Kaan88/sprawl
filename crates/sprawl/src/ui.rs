@@ -741,7 +741,10 @@ pub fn page(drives: &[String]) -> String {
         <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
         <TextBlock x:Name="HeadLabel" Text="Selected:" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock x:Name="SelText" {num} Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
-        <TextBlock x:Name="ScanInfo" {num} Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="Not scanned yet" FontSize="12" Foreground="#FFC9CFDC" TextTrimming="CharacterEllipsis"/>
+        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
+          <TextBlock x:Name="ScanInfo" {num} Text="Not scanned yet" FontSize="12" Foreground="#FFC9CFDC" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+          <HyperlinkButton x:Name="CoverageDetails" Content="Details" Visibility="Collapsed" Padding="4,0" FontSize="12" VerticalAlignment="Center" ToolTipService.ToolTip="What this scan covers: how it was read, what it couldn't read or skipped, and what isn't in it"/>
+        </StackPanel>
         <TextBlock x:Name="DriveLabel" Text="Drive:" Grid.Row="2" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock x:Name="DriveText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontSize="12" Foreground="#FFC9CFDC"/>
         <Grid Grid.Row="2" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">

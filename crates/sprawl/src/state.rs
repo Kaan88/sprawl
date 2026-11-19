@@ -113,6 +113,9 @@ pub(crate) struct Job {
     pub(crate) result: Arc<Mutex<Option<std::io::Result<crate::tables::Prepared>>>>,
     pub(crate) started: Instant,
     pub(crate) last_layout: Instant,
+    /// The folders scanned and the folders to skip in force, for its Details.
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) skips: Vec<PathBuf>,
 }
 
 /// A filter being made: its pattern, the full tree it filters and that tree's generation.
@@ -217,6 +220,8 @@ pub(crate) struct State {
     /// Latest requested source while the current scanner is stopping.
     pub(crate) pending_scan: Option<Source>,
     pub(crate) scan_secs: f64,
+    /// What the scan on screen covered (its Details link).
+    pub(crate) coverage: Option<crate::coverage::Coverage>,
     pub(crate) shot: Option<PathBuf>,
     pub(crate) shot_ticks: u32,
     /// Whether the welcome is shown (None before the first frame).
@@ -328,7 +333,13 @@ impl State {
             Source::Folders(_) => (PathBuf::from(sprawl_core::MULTIPLE), false),
             Source::Csv(p) => (p.clone(), true),
         };
-        let progress = sprawl_advisor::exclusions::progress();
+        // the same list the scan uses, kept for its Details
+        let skips = sprawl_advisor::exclusions::configured();
+        let progress = sprawl_core::Progress::with_exclusions(&skips);
+        let roots = match &source {
+            Source::Folders(v) => v.clone(),
+            Source::Csv(_) => Vec::new(),
+        };
         let result = Arc::new(Mutex::new(None));
         let (g2, r2) = (progress.clone(), result.clone());
         let sorts = self.sorts();
@@ -344,7 +355,7 @@ impl State {
             }
             *r2.lock().unwrap() = Some(tree.map(|t| crate::tables::prepare(t, sorts)));
         });
-        self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now() });
+        self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now(), roots, skips });
         if let Some((progress, _)) = self.advisor.cl.own_reading.take() { progress.cancel(); }
         self.advisor_scanning();
         self.scan_button(true);
@@ -448,6 +459,7 @@ impl State {
                         self.scan_taken = std::time::SystemTime::now();
                         let began = self.scan_taken.checked_sub(job.started.elapsed()).unwrap_or(self.scan_taken);
                         self.scan_began = if job.csv { std::fs::metadata(&job.path).and_then(|m| m.modified()).map_or(began, |t| t.min(began)) } else { began };
+                        self.coverage = Some(crate::coverage::Coverage { roots: job.roots.clone(), skips: job.skips.clone(), elevated: sprawl_core::is_elevated() });
                         self.set_tree(prepared, &header);
                         self.map.scene.start_wave();
                         self.watch();
@@ -621,6 +633,10 @@ impl State {
             None => "Not scanned yet".to_string(),
         };
         text(&self.root, "ScanInfo", &info);
+        if let Ok(e) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "CoverageDetails") {
+            let shown = scanned.is_some() && self.coverage.is_some();
+            let _ = e.SetVisibility(if shown { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
+        }
         text(&self.root, "DriveLabel", &drive_label(path));
         // A CSV file names any path it likes: asking a network path for its free space would
         // connect to that server just because the file was opened.

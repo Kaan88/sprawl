@@ -106,6 +106,7 @@ impl State {
         match name {
             // while scanning the button is Stop
             "ScanButton" if self.job.is_some() => self.stop_scan(),
+            "CoverageDetails" => self.coverage_details(),
             // F5 and File > Scan: the folder on screen again (the button scans what the box says)
             "mScan" | "ScanButton" | "ScanSelectedDrive" => {
                 let idx = find::<Selector>(&self.root, "DriveBox").and_then(|c| c.SelectedIndex()).unwrap_or(0);
