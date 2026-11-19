@@ -95,6 +95,14 @@ pub fn write_local(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<
     store::write_atomic(&parent.path, name, replace, |f| f.write_all(bytes))
 }
 
+/// Remove a file of Sprawl's own through its handle: the folders on the way held, the file
+/// opened as itself (a link at its name, or a file with other names, is left and refused).
+/// Nothing there is not an error.
+pub fn remove_local(path: &Path) -> std::io::Result<()> {
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| std::io::Error::other("Invalid file name"))?;
+    store::remove_checked(path.parent().ok_or_else(|| std::io::Error::other("No folder"))?, name)
+}
+
 /// Lower-case path segments, without empty ones: `C:\Users\` -> `["c:", "users"]`.
 pub(crate) fn segments(path: &str) -> Vec<String> {
     path.split(['\\', '/']).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()

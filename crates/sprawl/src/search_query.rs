@@ -652,7 +652,8 @@ pub(crate) fn history_save(h: &History) {
     }
     let Some(p) = history_path() else { return };
     if h.pinned.is_empty() && h.recent.is_empty() {
-        let _ = std::fs::remove_file(&p);
+        // through its handle, never by name: a link there is left alone
+        let _ = sprawl_advisor::remove_local(&p);
         return;
     }
     let _ = sprawl_advisor::write_local(&p, h.to_text().as_bytes(), true);

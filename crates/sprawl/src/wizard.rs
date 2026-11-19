@@ -651,12 +651,10 @@ impl State {
                 None => self.prefs.note = Some("The AI request log is empty.".into()),
             },
             "PfB_logClear" => {
-                if let Some(p) = sprawl_advisor::llm::request_log_path() {
-                    let _ = std::fs::remove_file(&p);
-                    let _ = std::fs::remove_file(p.with_extension("log.old"));
-                    let _ = std::fs::remove_file(p.with_extension("old"));
-                }
-                self.prefs.note = Some("The AI request log is cleared.".into());
+                self.prefs.note = Some(match sprawl_advisor::llm::clear_request_log() {
+                    Ok(()) => "The AI request log is cleared.".into(),
+                    Err(e) => format!("The AI request log couldn't be cleared ({e})."),
+                });
             }
             "PfB_aiForget" => {
                 self.advisor.memory_ready();

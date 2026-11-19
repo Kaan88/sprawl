@@ -75,6 +75,97 @@ pub(crate) fn write_atomic(dir: &Path, name: &str, replace: bool, write: impl Fn
     result
 }
 
+/// Open `name` in the held folder `dir` as itself, never through a link: a plain file with
+/// one name only, really at that place. `create`: made when missing. With delete access, so
+/// it can be renamed or removed through the handle.
+fn open_own(dir: &sprawl_core::local::Directory, name: &str, create: bool) -> io::Result<fs::File> {
+    #[link(name = "kernel32")]
+    extern "system" { fn GetFileInformationByHandleEx(file: *mut core::ffi::c_void, class: i32, buf: *mut core::ffi::c_void, size: u32) -> i32; }
+    use std::os::windows::fs::MetadataExt;
+    if name.is_empty() || name.contains(['\\', '/', ':']) || matches!(name, "." | "..") { return Err(bad()); }
+    let leaf = dir.path.join(name);
+    // FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, DELETE, SYNCHRONIZE; open the link itself
+    let file = fs::OpenOptions::new().append(true).create(create).access_mode(0x4 | 0x80 | 0x0001_0000 | 0x0010_0000)
+        .share_mode(1 | 4).custom_flags(0x0020_0000).open(&leaf)?;
+    let m = file.metadata()?;
+    if !m.is_file() || m.file_attributes() & 0x400 != 0 { return Err(bad()); }
+    // FILE_STANDARD_INFO (class 1): allocation, end of file, then the number of names
+    let mut info = [0u32; 6];
+    if unsafe { GetFileInformationByHandleEx(file.as_raw_handle().cast(), 1, info.as_mut_ptr().cast(), 24) } == 0 { return Err(io::Error::last_os_error()); }
+    if info[4] != 1 { return Err(bad()); }
+    let real = sprawl_core::local::final_path(&file)?;
+    let key = |p: &Path| p.to_string_lossy().trim_start_matches(r"\\?\").replace('/', "\\").to_lowercase();
+    if key(&real) != key(&leaf) { return Err(bad()); }
+    Ok(file)
+}
+
+/// Append to `dir\name` as [`open_own`] opens it, the folders on the way held. Past
+/// `rotate_at` bytes the file is first renamed (through its handle) to `rotated`, replacing
+/// what has that name, and a new one is begun.
+pub(crate) fn append_checked(dir: &Path, name: &str, rotate_at: u64, rotated: &str, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<()> {
+    let held = ensure_dir(dir)?;
+    let mut file = open_own(&held, name, true)?;
+    if file.metadata()?.len() > rotate_at {
+        rename(&file, &held.path.join(rotated), true)?;
+        drop(file);
+        file = open_own(&held, name, true)?;
+    }
+    write(&mut file)
+}
+
+/// Remove `dir\name` through its handle, as [`open_own`] opens it. Nothing there is not an
+/// error; a link or a file with other names is left and is one.
+pub(crate) fn remove_checked(dir: &Path, name: &str) -> io::Result<()> {
+    let held = match sprawl_core::local::directory(dir) {
+        Ok(held) => held,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    match open_own(&held, name, false) {
+        Ok(file) => delete(&file),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_log_is_appended_and_removed_only_as_itself() {
+    // Astra 1.0.2 re-review, other per-user writes: the request log and searches.txt
+    use std::io::Write;
+    let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-append").unwrap();
+    let dir = owned.path().join("advisor");
+    append_checked(&dir, "requests.log", 10, "requests.log.old", |f| f.write_all(b"first")).unwrap();
+    append_checked(&dir, "requests.log", 10, "requests.log.old", |f| f.write_all(b" second")).unwrap();
+    assert_eq!(fs::read(dir.join("requests.log")).unwrap(), b"first second");
+    // past the limit: the old one moves aside and a new one begins
+    append_checked(&dir, "requests.log", 10, "requests.log.old", |f| f.write_all(b"third")).unwrap();
+    assert_eq!(fs::read(dir.join("requests.log.old")).unwrap(), b"first second");
+    assert_eq!(fs::read(dir.join("requests.log")).unwrap(), b"third");
+    // a second name for the log (a hard link to another file): refused, nothing written
+    let other = owned.path().join("other.txt");
+    fs::write(&other, b"not the log").unwrap();
+    fs::remove_file(dir.join("requests.log")).unwrap();
+    fs::hard_link(&other, dir.join("requests.log")).unwrap();
+    assert!(append_checked(&dir, "requests.log", 1 << 20, "requests.log.old", |f| f.write_all(b"x")).is_err());
+    assert!(remove_checked(&dir, "requests.log").is_err());
+    assert_eq!(fs::read(&other).unwrap(), b"not the log");
+    fs::remove_file(dir.join("requests.log")).unwrap();
+    // a link at its name: refused, never followed
+    if std::os::windows::fs::symlink_file(&other, dir.join("requests.log")).is_ok() {
+        assert!(append_checked(&dir, "requests.log", 1 << 20, "requests.log.old", |f| f.write_all(b"x")).is_err());
+        assert!(remove_checked(&dir, "requests.log").is_err());
+        assert!(other.exists() && fs::read(&other).unwrap() == b"not the log");
+        fs::remove_file(dir.join("requests.log")).unwrap();
+    }
+    // removal of its own file, and of nothing, are fine
+    remove_checked(&dir, "requests.log.old").unwrap();
+    assert!(!dir.join("requests.log.old").exists());
+    remove_checked(&dir, "requests.log").unwrap();
+    remove_checked(&owned.path().join("nowhere"), "requests.log").unwrap();
+    drop(owned);
+}
+
 pub(crate) fn lock(dir: &Path) -> io::Result<fs::File> {
     use std::os::windows::fs::MetadataExt;
     // up to about 10 s: History saves run off the window's thread, and several at once (each

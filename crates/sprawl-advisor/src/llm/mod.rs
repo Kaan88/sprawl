@@ -261,18 +261,25 @@ pub fn request_log_path() -> Option<PathBuf> {
 }
 
 /// Append one outgoing request to the log (kept under 20 MB: the old half moves to `.old`).
+/// Through checked handles, also when elevated: the folders on the way are held, the log is
+/// opened as itself (a link at its name is refused, never followed) with one name only, and
+/// it is renamed through its handle.
 pub(crate) fn log_request(what: &str, body: &str) {
-    let Some(p) = request_log_path() else { return };
-    if let Some(d) = p.parent() {
-        let _ = std::fs::create_dir_all(d);
+    let Some(d) = advisor_dir() else { return };
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = crate::store::append_checked(&d, "requests.log", 20 << 20, "requests.log.old", |f| {
+        writeln!(f, "===== {} (unix {secs}) {what} ({} bytes)\n{body}\n", crate::facts::month_year(std::time::SystemTime::now()), body.len())
+    });
+}
+
+/// Empty the request log (and its older halves) through checked handles.
+pub fn clear_request_log() -> std::io::Result<()> {
+    let Some(d) = advisor_dir() else { return Ok(()) };
+    let mut result = Ok(());
+    for name in ["requests.log", "requests.log.old", "requests.old"] {
+        if let Err(e) = crate::store::remove_checked(&d, name) { result = Err(e); }
     }
-    if std::fs::metadata(&p).is_ok_and(|m| m.len() > 20 << 20) {
-        let _ = std::fs::rename(&p, p.with_extension("log.old"));
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = writeln!(f, "===== {} (unix {secs}) {what} ({} bytes)\n{body}\n", crate::facts::month_year(std::time::SystemTime::now()), body.len());
-    }
+    result
 }
 
 /// POST JSON and parse the JSON answer. Retries twice on rate limits and server errors.
