@@ -20,6 +20,14 @@ dated implementation notes (see the last section).
   only after the user approves. After 1.0.2 the first design release is the small batch
   (scope lines, Advisor quick wins, Cleaners states).
 
+## 1.0.2 in progress (reliability only)
+
+Local on main after v1.0.1, unreleased; review entry in the queue ("1.0.2 (reliability)").
+- 28524a0: the Advisor and AI report no longer list the scanned folder itself as unexplained.
+- b14d612: History's size limit now also removes older full snapshots (never a folder's newest).
+- eaba378: `sprawl-release build` first runs a scan-speed guard; it fails on 1.0.0's code (27x).
+- Still to come: Astra's findings on 1.0.1, and the runtime checks below that need the user.
+
 ## 1.0.1 corrections (Claude, 2026-11-19)
 
 The user reported 1.0.0 as slow ("indexing is slow") with critical bugs, and asked Claude to
