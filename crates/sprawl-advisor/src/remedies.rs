@@ -126,9 +126,37 @@ pub fn compress_scope(path: &Path, command: &str, spare: &crate::clean::Spare, s
     if !command.ends_with(&ps_quote(&format!("{}\\*", path.display()))) {
         return Err("the command names another folder than the one reviewed".into());
     }
-    let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    // a folder to skip in it or above it is known before anything is read: nothing is listed
     let excluded = crate::exclusions::configured();
-    let tree = sprawl_core::walk::walk(&root.path, &sprawl_core::Progress::new()).map_err(|e| e.to_string())?;
+    if crate::exclusions::intersects(path, &excluded) {
+        return Err(format!("{} holds or is in a folder you skip, so nothing was compressed", path.display()));
+    }
+    if stop.load(Ordering::Relaxed) {
+        return Ok(0);
+    }
+    let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    // the walk itself skips those folders too, and Stop ends it
+    let progress = sprawl_core::Progress::with_exclusions(&excluded);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let tree = std::thread::scope(|s| {
+        let (p2, d2) = (progress.clone(), &done);
+        s.spawn(move || {
+            while !d2.load(Ordering::Relaxed) {
+                if stop.load(Ordering::Relaxed) {
+                    p2.cancel();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+        let tree = sprawl_core::walk::walk(&root.path, &progress);
+        done.store(true, Ordering::Relaxed);
+        tree
+    })
+    .map_err(|e| e.to_string())?;
+    if stop.load(Ordering::Relaxed) || progress.is_cancelled() {
+        return Ok(0);
+    }
     if tree.errors != 0 {
         return Err("the folder couldn't be read completely now, so nothing in it was compressed".into());
     }

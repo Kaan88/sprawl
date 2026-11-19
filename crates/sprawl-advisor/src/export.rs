@@ -46,11 +46,13 @@ pub fn script(findings: &[&Finding], scan_root: &str, made: SystemTime) -> Strin
     // privacy parts are cleaned only inside Sprawl, with the browser closed: not even listed
     let excluded = crate::exclusions::configured();
     for f in findings.iter().filter(|f| !f.privacy() && !f.heuristic() && f.forced_from.is_none() && f.carved.is_empty() && !crate::exclusions::intersects(&f.path, &excluded)) {
-        let Some(cmd) = &f.command else {
+        // Only Sprawl's own delete functions run from a script. A program's own clean-up (npm,
+        // pip, NuGet...) or compact.exe decides for itself where it acts, which a script can't
+        // check as the app does: those are listed to do by hand.
+        let Some(body) = f.command.as_deref().and_then(|c| c.strip_prefix(RM_FN)).map(|r| r.trim_start_matches(';').trim_start()) else {
             by_hand.push(f);
             continue;
         };
-        let body = cmd.strip_prefix(RM_FN).map(|r| r.trim_start_matches(';').trim_start()).unwrap_or(cmd);
         let admin = needs_admin(body);
         let from = match &f.source {
             crate::finding::Source::Rule(id) if id.starts_with("local.") => format!("your rule {id}"),
@@ -148,6 +150,12 @@ mod tests {
         assert!(s.contains("7   # as administrator\n  } }"));
         assert!(s.contains("param([switch]$Run, [string]$Report)") && s.contains("Dry run"));
         assert!(s.contains("To do by hand") && s.contains(r"D:\Games\Old"));
+        // a program's own clean-up and compression aren't run by a script (Astra 1.0.2 re-review)
+        let tool = f("npm cache", r"C:\Users\sam\AppData\Local\npm-cache", Some("npm cache clean --force".into()));
+        let squeeze = f("Game", r"D:\Games\Big", Some(r"compact /c /s /exe:lzx 'D:\Games\Big\*'".into()));
+        let t = script(&[&tool, &squeeze], r"C:\", SystemTime::now());
+        assert!(!t.contains("npm cache clean") && !t.contains("compact /c"), "{t}");
+        assert!(t.contains("To do by hand") && t.contains("npm-cache") && t.contains(r"D:\Games\Big"));
         // only caches here; the user's own files make the script say it has no Recycle Bin
         assert!(!s.contains("has no Recycle Bin"));
         let mut own = f("Old project", r"C:\Users\sam\Old", Some(format!("{RM_FN}; sprawl-rm (Get-Item -LiteralPath 'C:\\Users\\sam\\Old' -Force)")));
