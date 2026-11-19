@@ -1230,7 +1230,24 @@ impl State {
         }
         // the rows scroll; the boxes and buttons under them stay in view
         x += r##"<ScrollViewer MaxHeight="190" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="8">"##;
-        for (_, f) in &picked {
+        // grouped by what will happen to each, the one that can't be undone first
+        let mut rows: Vec<&(usize, Finding)> = picked.iter().collect();
+        rows.sort_by_key(|(_, f)| outcome(f, bin_on) as u8);
+        let mut group = None;
+        for (_, f) in rows {
+            let o = outcome(f, bin_on);
+            if group != Some(o) {
+                group = Some(o);
+                let of: Vec<&Finding> = picked.iter().map(|(_, f)| f).filter(|f| outcome(f, bin_on) == o).collect();
+                let size: u64 = of.iter().map(|f| self.review_size(f).0).sum();
+                let n = if of.len() == 1 { "1 item".to_string() } else { format!("{} items", of.len()) };
+                let total = if o == Fate::Link || size == 0 { String::new() } else { format!(" · {}", self.size(size)) };
+                x += &format!(
+                    r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{}" Margin="0,4,0,0"/>"##,
+                    ui::esc(&format!("{} · {n}{total}", o.heading())),
+                    if o == Fate::Gone { "#FFF5B342" } else { "#FFD5DBE8" }
+                );
+            }
             let what = crate::advisor::risk_words_for(f);
             let ai = if matches!(f.source, Source::Model(_)) { " · suggested by the AI" } else { "" };
             // a command is shown whole (R7): what runs is never cut short
@@ -1242,10 +1259,10 @@ impl State {
                 ui::esc(&match clean::action(f) {
                     Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
                     Some((Action::Link { keep, copies }, _)) => format!("{} to {}, compared again first", if copies.len() == 1 { "1 copy made a link".to_string() } else { format!("{} copies made links", copies.len()) }, keep.display()),
-                    // not "gone for good": the bin can give it back
+                    // not "gone for good": the bin can give it back (its group says so)
                     _ if goes_to_bin(f, bin_on) => {
                         let what = if f.forced_from.is_some() { "You ticked it yourself" } else if f.risk == Risk::Orange { "Your own files" } else { what };
-                        format!("{what} · to the Recycle Bin · {}", f.path.display())
+                        format!("{what} · {}", f.path.display())
                     }
                     _ => format!("{what} · {}", f.path.display()),
                 }),
@@ -1255,6 +1272,9 @@ impl State {
                     (b, false) => self.size(b),
                 }
             );
+        }
+        if !held.is_empty() {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FF8E97AA" Margin="0,4,0,0"/>"##, ui::esc(&format!("Held back, not run · {}", if held.len() == 1 { "1 item".to_string() } else { format!("{} items", held.len()) })));
         }
         for (f, why) in &held {
             x += &format!(
@@ -1342,11 +1362,66 @@ impl State {
                 }
             );
         }
-        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="Clean up now" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, if (picked.is_empty() && privacy.is_empty()) || (own && !self.advisor.cleanup.own_ok) || (!privacy.is_empty() && !self.advisor.cleanup.privacy_ok) { "False" } else { "True" });
+        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="{}" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, ui::esc(&final_action(&picked.iter().map(|(_, f)| outcome(f, bin_on)).collect::<Vec<_>>(), privacy.len())), if (picked.is_empty() && privacy.is_empty()) || (own && !self.advisor.cleanup.own_ok) || (!privacy.is_empty() && !self.advisor.cleanup.privacy_ok) { "False" } else { "True" });
         x += r##"<Button x:Name="AdvReviewBack" Content="Back" Padding="14,6" FontSize="13" CornerRadius="6"/></StackPanel>"##;
         x += "</StackPanel></Border>";
         x
     }
+}
+
+/// What a clean-up does to one item, as the review groups them: the order is the review's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Fate {
+    /// Deleted, not to the Recycle Bin.
+    Gone = 0,
+    Bin = 1,
+    /// Its own program's clean-up command runs.
+    Tool = 2,
+    /// Copies made links: nothing is deleted.
+    Link = 3,
+}
+
+impl Fate {
+    fn heading(self) -> &'static str {
+        match self {
+            Fate::Gone => "Deleted for good",
+            Fate::Bin => "To the Recycle Bin",
+            Fate::Tool => "Cleaned by its own program",
+            Fate::Link => "Copies made links",
+        }
+    }
+}
+
+/// The same tests the run uses: a command, a link, the bin, or deleted for good.
+pub(crate) fn outcome(f: &Finding, bin_on: bool) -> Fate {
+    match clean::action(f) {
+        Some((Action::Tool { .. }, _)) => Fate::Tool,
+        _ if f.links() => Fate::Link,
+        _ if goes_to_bin(f, bin_on) => Fate::Bin,
+        _ => Fate::Gone,
+    }
+}
+
+/// The review's button, naming what it does: "Delete 2 for good, recycle 1".
+pub(crate) fn final_action(outcomes: &[Fate], privacy: usize) -> String {
+    let count = |o: Fate| outcomes.iter().filter(|x| **x == o).count();
+    let mut parts = Vec::new();
+    for (o, word) in [(Fate::Gone, "delete {} for good"), (Fate::Bin, "recycle {}"), (Fate::Tool, "run {} clean-up"), (Fate::Link, "link {}")] {
+        let n = count(o);
+        if n > 0 {
+            let s = word.replace("{}", &n.to_string());
+            parts.push(if o == Fate::Tool && n > 1 { s + "s" } else { s });
+        }
+    }
+    if privacy > 0 {
+        parts.push(format!("clean {}", privacy_count(privacy)));
+    }
+    if parts.is_empty() || parts.len() > 3 {
+        return "Clean up now".into();
+    }
+    let s = parts.join(", ");
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or(s)
 }
 
 impl State {
@@ -1832,5 +1907,20 @@ mod second_try_tests {
         for p in [home.join(r"downloads\old installers"), home.join(r"appdata\local\sandfall"), PathBuf::from(r"d:\games\old")] {
             assert!(!second_try_place_refused(&p), "{}", p.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::{final_action, Fate};
+
+    #[test]
+    fn the_button_names_what_it_does() {
+        assert_eq!(final_action(&[Fate::Gone], 0), "Delete 1 for good");
+        assert_eq!(final_action(&[Fate::Bin, Fate::Gone, Fate::Bin], 0), "Delete 1 for good, recycle 2");
+        assert_eq!(final_action(&[Fate::Tool, Fate::Tool], 1), "Run 2 clean-ups, clean 1 privacy item");
+        assert_eq!(final_action(&[Fate::Link], 0), "Link 1");
+        assert_eq!(final_action(&[], 0), "Clean up now");
+        assert_eq!(final_action(&[Fate::Gone, Fate::Bin, Fate::Tool, Fate::Link], 0), "Clean up now", "too many parts for a button");
     }
 }
