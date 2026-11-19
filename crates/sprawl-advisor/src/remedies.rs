@@ -238,20 +238,23 @@ pub fn on_disk(path: &Path) -> Option<u64> {
     let (mut total, mut visited) = (0u64, 0usize);
     let start = std::time::Instant::now();
     let mut stack = vec![root.path.clone()];
+    // Measuring only: the root stays pinned, entries come from the listings, and only each
+    // file itself is opened for its link count (1.0 pinned every ancestor of every file).
+    use std::os::windows::fs::MetadataExt;
     while let Some(d) = stack.pop() {
-        let pinned = sprawl_core::local::directory(&d).ok()?;
-        let rd = std::fs::read_dir(&pinned.path).ok()?;
+        let rd = std::fs::read_dir(&d).ok()?;
         for e in rd {
             visited += 1;
             if visited > 1_000_000 || start.elapsed().as_secs() >= 30 { return None; }
             let e = e.ok()?;
-            let pinned = sprawl_core::local::storage(&e.path()).ok()?;
-            let m = pinned.metadata().ok()?;
+            let m = e.metadata().ok()?;
+            // A link, a cloud placeholder or an offline file can't be measured here.
+            if m.file_attributes() & (sprawl_core::attr::REPARSE_POINT | crate::dupes::NOT_LOCAL) != 0 { return None; }
             if m.is_dir() {
-                stack.push(pinned.path.clone());
+                stack.push(e.path());
             } else {
-                if pinned.file_links().ok()? != 1 { return None; }
-                total = total.checked_add(size(&pinned.path)?)?;
+                if sprawl_core::local::links(&e.path()).ok()? != 1 { return None; }
+                total = total.checked_add(size(&e.path())?)?;
             }
         }
     }

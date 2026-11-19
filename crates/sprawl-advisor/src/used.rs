@@ -68,8 +68,8 @@ pub fn ntfs(_: char) -> bool {
 
 /// The newest last-access time of the files at or below `path` (folders don't count: listing
 /// one, as a scan does, moves its time; links aren't followed), from the folder listings alone,
-/// so no file contents are read. Local metadata handles pin the ancestor directories.
-/// At most `budget` entries are read,
+/// so no file contents are read and no file is opened. The starting path is pinned once;
+/// below it, folders listed as links aren't entered. At most `budget` entries are read,
 /// counted down; the flag says whether everything was read.
 pub fn accessed_in(path: &std::path::Path, budget: &mut usize) -> (Option<SystemTime>, bool) {
     accessed_in_with(path, budget, &crate::exclusions::configured())
@@ -91,7 +91,6 @@ fn accessed_in_with(path: &std::path::Path, budget: &mut usize, excluded: &[Path
     let mut stack = vec![path.to_path_buf()];
     while let Some(d) = stack.pop() {
         if excluded.iter().any(|p| crate::finding::within(&d, p)) { complete = false; continue; }
-        let Ok(_held) = sprawl_core::local::directory(&d) else { complete = false; continue };
         let Ok(rd) = std::fs::read_dir(&d) else { complete = false; continue };
         for entry in rd {
             if *budget == 0 {
@@ -101,7 +100,8 @@ fn accessed_in_with(path: &std::path::Path, budget: &mut usize, excluded: &[Path
             let Ok(e) = entry else { complete = false; continue };
             let p = e.path();
             if excluded.iter().any(|x| crate::finding::within(&p, x)) { complete = false; continue; }
-            let Ok(m) = std::fs::symlink_metadata(&p) else { complete = false; continue };
+            // From the listing itself: opening each file (1.0) made advice slow on big trees.
+            let Ok(m) = e.metadata() else { complete = false; continue };
             if m.file_attributes() & (REPARSE | crate::dupes::NOT_LOCAL) != 0 {
                 complete = false;
                 continue;

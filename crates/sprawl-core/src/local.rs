@@ -135,6 +135,17 @@ impl Directory {
     }
 }
 
+/// The hard-link count of a listed leaf, opened as itself (no reparse follow, no recall).
+/// Only the leaf is opened: for measuring, not for acting on the file.
+pub fn links(path: &Path) -> io::Result<u32> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let path = lexical(path)?;
+    let h = std::fs::OpenOptions::new().access_mode(0x80).share_mode(1 | 2 | 4).custom_flags(FLAGS).open(&path)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(h.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok(info.nNumberOfLinks)
+}
+
 /// Open every ancestor as itself without delete sharing, from the local drive downward.
 pub fn directory(path: &Path) -> io::Result<Directory> {
     pin(path, true, false)

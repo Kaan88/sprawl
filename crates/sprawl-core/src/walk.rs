@@ -85,6 +85,11 @@ pub fn inventory(path: &Path, progress: &Progress) -> io::Result<Tree> {
     walk_mode(path, progress, worker_count(), false)
 }
 
+/// [`inventory`] with an explicit number of worker threads (a quiet background scan).
+pub fn inventory_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
+    walk_mode(path, progress, threads, false)
+}
+
 /// [`walk`] with an explicit number of worker threads (for benchmarks).
 pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
     walk_mode(path, progress, threads, true)
