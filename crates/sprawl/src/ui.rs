@@ -37,7 +37,13 @@ pub(crate) fn markdown(text: &str, size: u32, colour: &str) -> String {
         out.push_str(&format!(r##"<TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="{size}" Foreground="{colour}"{extra}>{runs}</TextBlock>"##));
     };
     let mono = |out: &mut String, lines: &[&str]| {
-        let body = lines.iter().map(|l| esc(l.trim_end())).collect::<Vec<_>>().join("&#10;");
+        // XAML's `{}` escape is only for the start of the text, so a later line starting with
+        // `{` (code) doesn't get one
+        let body = lines.iter().enumerate().map(|(n, l)| {
+            let e = esc(l.trim_end());
+            if n > 0 && l.starts_with('{') { e[2..].to_string() } else { e }
+        });
+        let body = body.collect::<Vec<_>>().join("&#10;");
         out.push_str(&format!(
             r##"<Border Padding="8,6" CornerRadius="4" Background="#33000000"><ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Auto" VerticalScrollMode="Disabled"><TextBlock FontFamily="Cascadia Mono, Consolas" FontSize="{size}" IsTextSelectionEnabled="True" Foreground="{colour}" Text="{body}"/></ScrollViewer></Border>"##
         ));
@@ -308,6 +314,8 @@ mod esc_tests {
         assert!(x.contains(r#"<Run Text="C:\a\_cacache"/>"#), "a backslash in a path stays: {x}");
         assert!(x.contains(r#"<Run Text="x | y"/>"#), "{x}");
         assert!(!x.contains("---"), "the rule row isn't a row");
+        let x = super::markdown("```\n{a}\nfn f()\n{\n}\n```", 12, "#FFFFFFFF");
+        assert!(x.contains(r#"Text="{}{a}&#10;fn f()&#10;{&#10;}""#), "only the first line gets XAML's escape: {x}");
         // one line break inside a paragraph is kept
         assert!(super::markdown("Path: C:\\x\nSize: 5 GB", 12, "#FFFFFFFF").contains("<LineBreak/>"));
         // a link shows its text, and its target when that says more
