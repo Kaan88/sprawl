@@ -179,9 +179,12 @@ pub struct Spare {
 /// What the scan saw at a path: which file was there (its id on the volume, see
 /// [`sprawl_core::Node::id`]), nothing (the scan listed that folder with ids and nothing had
 /// that name), or not known (the scan didn't cover it, or had no ids there).
+///
+/// An item is known with the volume the scanned folder is on now (when it could be read), so
+/// a match is the same file id on the same volume.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SeenAt {
-    Item(u64),
+    Item(u64, Option<u64>),
     Nothing,
     Unknown,
 }
@@ -195,8 +198,10 @@ pub type Seen = std::sync::Arc<dyn Fn(&Path) -> SeenAt + Send + Sync>;
 pub fn seen_in(tree: std::sync::Arc<sprawl_core::Tree>) -> Seen {
     type Folder = (PathBuf, Option<std::collections::HashMap<String, u64>>);
     let recent: std::sync::Mutex<std::collections::VecDeque<Folder>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+    // the volume the scanned folder is on: every item the scan saw is on it
+    let volume = win::open_attrs(&tree.root_path).ok().and_then(|(_, i)| i.volume);
     std::sync::Arc::new(move |p: &Path| {
-        let node = |n: usize| match tree.nodes[n].id { 0 => SeenAt::Unknown, id => SeenAt::Item(id) };
+        let node = |n: usize| match tree.nodes[n].id { 0 => SeenAt::Unknown, id => SeenAt::Item(id, volume) };
         let (Some(parent), Some(name)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) else {
             return crate::history::find_path(&tree, p).map_or(SeenAt::Unknown, node);
         };
@@ -215,7 +220,7 @@ pub fn seen_in(tree: std::sync::Arc<sprawl_core::Tree>) -> Seen {
         match &recent[at].1 {
             Some(kids) => match kids.get(name) {
                 Some(0) => SeenAt::Unknown,
-                Some(&id) => SeenAt::Item(id),
+                Some(&id) => SeenAt::Item(id, volume),
                 None => SeenAt::Nothing,
             },
             // the parent isn't a folder the scan listed with ids: the path itself, a scan root
@@ -248,20 +253,26 @@ impl Spare {
         let seen = self.seen.as_ref().map_or(SeenAt::Unknown, |s| s(p));
         match seen {
             // another item put at this path, or one moved in from elsewhere with its old times
-            SeenAt::Item(id) if id != info.id => return true,
+            SeenAt::Item(id, _) if id != info.id => return true,
             SeenAt::Nothing => return true,
             _ => {}
         }
-        if info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0 {
+        // the very item the scan saw: the same id, which is its full id (ReFS doesn't keep the
+        // short one unique), on the same volume (Astra 1.0.2 round 4, S1 #3)
+        let known = matches!(seen, SeenAt::Item(_, Some(v)) if info.id_exact && info.volume == Some(v));
+        if info.newest > ft {
             // A folder's own write and change times move whenever something inside it does.
-            // When the scan knew this very folder here (by its id), what is inside is looked at
-            // one by one, each by this same test. Otherwise a changed folder may be another one
-            // put in its place, with old files inside that keep their old times: it is held
-            // whole until it is scanned again.
-            info.newest > ft && !matches!(seen, SeenAt::Item(_))
-        } else {
-            info.newest > ft
+            // When the scan knew this very folder here, what is inside is looked at one by one,
+            // each by this same test. Otherwise a changed folder may be another one put in its
+            // place, with old files inside that keep their old times: it is held whole until
+            // it is scanned again. A file changed since the scan stays.
+            let plain_dir = info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0;
+            return !plain_dir || !known;
         }
+        // An item not known for sure in a folder that changed since the scan may have been put
+        // there since with its old times (a folder gone through one by one because the scan
+        // knew it): it stays, with all inside it.
+        !known && self.seen.is_some() && p.parent().is_none_or(|d| win::open_attrs(d).map_or(true, |(_, i)| i.newest > ft))
     }
 }
 
@@ -578,11 +589,9 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
         Action::Match { pattern } => Some(pattern.as_str()),
         _ => None,
     };
-    use std::os::windows::fs::MetadataExt;
-    let since = spare.since.map(filetime);
-    // as the run sees it (it also counts a later rename or move as new, which this can't see)
-    let new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s || m.last_write_time() as i64 > s);
-    let born_new = |m: &std::fs::Metadata| since.is_some_and(|s| m.creation_time() as i64 > s);
+    // what is new is decided by the run's own test (its times, its id, the folder it is in),
+    // each item read through a handle that only reads its attributes (Astra 1.0.2 round 4)
+    let new = |k: &Path, i: &win::Info| spare.is_new(k, i);
     let mut out = Preview::default();
     // the biggest so far, smallest on top
     let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, PathBuf)>> = std::collections::BinaryHeap::new();
@@ -596,14 +605,14 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
             }
         }
     };
-    let top = std::fs::symlink_metadata(path).ok()?;
-    if attrs(&top) & REPARSE != 0 || odd_name(path) || never().path_hit(path).is_some() || spare.keeps(path) {
+    let (_, top) = win::open_attrs(path).ok()?;
+    if top.attrs & REPARSE != 0 || odd_name(path) || never().path_hit(path).is_some() || spare.keeps(path) || new(path, &top) {
         return Some(out);
     }
-    if !top.is_dir() {
+    if top.attrs & DIRECTORY == 0 {
         // a file: only Remove takes it
-        if matches!(action, Action::Remove) && !new(&top) {
-            take(path.to_path_buf(), top.len(), &mut out);
+        if matches!(action, Action::Remove) {
+            take(path.to_path_buf(), top.size, &mut out);
         }
         drop(take);
         out.biggest = heap.into_sorted_vec().into_iter().map(|std::cmp::Reverse((b, p))| (p, b)).collect();
@@ -618,16 +627,14 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
         if odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
             continue;
         }
-        let Ok(m) = std::fs::symlink_metadata(&k) else { continue };
-        if attrs(&m) & REPARSE != 0 {
+        let Ok((_, m)) = win::open_attrs(&k) else { continue };
+        if m.attrs & REPARSE != 0 || new(&k, &m) {
             continue;
         }
-        if m.is_dir() {
-            if !born_new(&m) {
-                stack.extend(list(&k).map(|l| l.0).unwrap_or_default());
-            }
-        } else if pattern.is_none_or(|p| like(&name, p)) && !new(&m) {
-            take(k, m.len(), &mut out);
+        if m.attrs & DIRECTORY != 0 {
+            stack.extend(list(&k).map(|l| l.0).unwrap_or_default());
+        } else if pattern.is_none_or(|p| like(&name, p)) {
+            take(k, m.size, &mut out);
         }
     }
     drop(take);
@@ -1219,7 +1226,8 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
         if odd_name(c) || never().path_hit(c).is_some() { o.problem(c, "left alone: protected or ambiguous name"); continue; }
         let _cp = match pin_parent(c) { Ok(p) => p, Err(e) => { o.problem(c, e); continue; } };
         // DELETE access is ours, but no other handle may write, rename or unlink this file.
-        let mut cf = match std::fs::OpenOptions::new().access_mode(0x8000_0000 | 0x0001_0000).share_mode(1)
+        // FILE_WRITE_ATTRIBUTES too: the original is made read-only before its last checks
+        let mut cf = match std::fs::OpenOptions::new().access_mode(0x8000_0000 | 0x0001_0000 | 0x0100).share_mode(1)
             .custom_flags(0x0020_0000 | 0x0010_0000).open(c) {
             Ok(f) => f, Err(e) => { o.problem(c, format!("left alone: in use or unavailable ({e})")); continue; }
         };
@@ -1263,16 +1271,31 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
             continue;
         }
         // Sharing is kept per stream, so the handle above doesn't stop another program adding a
-        // stream to the original. The original is first marked for deletion when this handle
-        // closes (undoable until then): from that moment Windows refuses to open any stream of
-        // it, a new one included. Only then is the stream list read a last time; a stream that
-        // appeared before the mark is in it, and keeps the original (mark undone).
-        if let Err(e) = win::delete_on_close(&cf, true) {
+        // stream to the original. So the original is first made read-only: from then on Windows
+        // refuses to create a stream on it. Its stream list is read after that, so a stream
+        // added before is seen and keeps the original, and none can be added after. Only then is
+        // it marked for deletion when this handle closes. Sprawl ending at any moment so leaves
+        // either a checked original that may go, or the original kept at the backup name
+        // (read-only), never an unchecked one going (Astra 1.0.2 round 4, S4 #5).
+        let restore = |cf: &std::fs::File| win::set_attributes(cf, ci.attrs);
+        if let Err(e) = win::set_attributes(&cf, ci.attrs | 1) {
             o.problem(c, format!("linked, but original copy remains at {} ({e}); no space credited", backup.display())); continue;
         }
         if !win::named_streams(&cf).is_ok_and(|s| s.is_empty()) {
-            let why = match win::delete_on_close(&cf, false) {
-                Ok(()) => format!("so it is kept at {}", backup.display()),
+            let _ = restore(&cf);
+            o.problem(c, format!("linked, but the original gained an extra stream (or its streams couldn't be read again), so it is kept at {}; no space credited", backup.display())); continue;
+        }
+        if let Err(e) = win::delete_on_close_readonly(&cf, true) {
+            let _ = restore(&cf);
+            o.problem(c, format!("linked, but original copy remains at {} ({e}); no space credited", backup.display())); continue;
+        }
+        // read once more after the mark (from it on, nothing can open the original at all)
+        if !win::named_streams(&cf).is_ok_and(|s| s.is_empty()) {
+            let why = match win::delete_on_close_readonly(&cf, false) {
+                Ok(()) => {
+                    let _ = restore(&cf);
+                    format!("so it is kept at {}", backup.display())
+                }
                 // not seen in practice: said as it is
                 Err(e) => format!("and its removal couldn't be called off ({e}), so it may be gone with that stream"),
             };
@@ -1451,6 +1474,10 @@ mod win {
         pub newest: i64,
         /// Which file it is on its volume (`nFileIndexHigh:Low`).
         pub id: u64,
+        /// The volume's serial (FILE_ID_INFO), when Windows gives it.
+        pub volume: Option<u64>,
+        /// `id` is the file's whole 128-bit id (NTFS), not a short form of it (ReFS).
+        pub id_exact: bool,
     }
 
     /// A path for the wide calls; a long one gets the `\\?\` form (std does the same in its own).
@@ -1537,7 +1564,15 @@ mod win {
             created = created.max(basic.created);
             newest = newest.max(basic.written).max(basic.changed);
         }
-        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest, id: (b.index_high as u64) << 32 | b.index_low as u64 })
+        let id = (b.index_high as u64) << 32 | b.index_low as u64;
+        // FILE_ID_INFO: the volume's serial, then the 128-bit id, its low half first
+        let mut full = [0u64; 3];
+        let (volume, id_exact) = if unsafe { GetFileInformationByHandleEx(h.0, 18, full.as_mut_ptr().cast(), 24) } != 0 {
+            (Some(full[0]), full[1] == id && full[2] == 0)
+        } else {
+            (None, false)
+        };
+        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest, id, volume, id_exact })
     }
 
     // Borrow the File's handle only for the synchronous call; ownership remains with File.
@@ -1551,11 +1586,28 @@ mod win {
     pub(super) fn delete_file(file: &std::fs::File) -> std::io::Result<()> { delete(&borrowed(file)) }
 
     /// Mark the open file to be deleted when its last handle closes (`yes`), or call that off.
-    /// Not the POSIX kind: the name stays until then, and the mark can be undone. The file must
-    /// not be read-only.
-    pub(super) fn delete_on_close(file: &std::fs::File, yes: bool) -> std::io::Result<()> {
-        let flag = yes as u8;
-        if unsafe { SetFileInformationByHandle(borrowed(file).0, 4, (&flag as *const u8).cast(), 1) } != 0 {
+    /// Not the POSIX kind: the name stays until then, and the mark can be undone. A read-only
+    /// file too (FileDispositionInfoEx, ignoring the read-only attribute).
+    pub(super) fn delete_on_close_readonly(file: &std::fs::File, yes: bool) -> std::io::Result<()> {
+        const DELETE: u32 = 0x1;
+        const IGNORE_READONLY_ATTRIBUTE: u32 = 0x10;
+        let flags: u32 = if yes { DELETE | IGNORE_READONLY_ATTRIBUTE } else { 0 };
+        // SAFETY: FILE_DISPOSITION_INFO_EX is one u32; class 21 is FileDispositionInfoEx.
+        if unsafe { SetFileInformationByHandle(borrowed(file).0, 21, (&flags as *const u32).cast(), 4) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Set the open file's attributes (FILE_BASIC_INFO with its times left as they are); the
+    /// handle needs FILE_WRITE_ATTRIBUTES.
+    pub(super) fn set_attributes(file: &std::fs::File, attrs: u32) -> std::io::Result<()> {
+        // four times (0: unchanged), the attributes, padding
+        let mut info = [0u64; 5];
+        info[4] = if attrs == 0 { 0x80 } else { attrs as u64 };
+        // SAFETY: 40 bytes, class 0 (FileBasicInfo).
+        if unsafe { SetFileInformationByHandle(borrowed(file).0, 0, info.as_ptr().cast(), 40) } != 0 {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error())
@@ -2012,7 +2064,7 @@ mod tests {
 
     #[test]
     fn recycle_never_falls_back_to_deleting_wof_cloud_or_unknown_reparse_files() {
-        let mut info = win::Info { attrs: REPARSE, tag: 0x8000_0017, size: 99, links: 1, created: 0, newest: 0, id: 0 };
+        let mut info = win::Info { attrs: REPARSE, tag: 0x8000_0017, size: 99, links: 1, created: 0, newest: 0, id: 0, volume: None, id_exact: false };
         assert!(recycling_refused(&info), "WOF is ordinary data, not a disposable link");
         info.tag = 0;
         assert!(recycling_refused(&info), "an unknown tag must stay");
@@ -2084,6 +2136,36 @@ mod tests {
         assert_eq!(tried, [("new", false), ("any", false), ("main", false)], "the original can't be opened, nor a stream added");
         assert_eq!(o.files, 1, "{:?}", o.problems);
         assert!(!backup.exists());
+        drop(owned);
+    }
+
+    /// S4 #5 (Astra 1.0.2 round 4): once the original is read-only no stream can be added to
+    /// it, so its last check stays true until the mark; a handle closed before the mark (Sprawl
+    /// ending there) leaves it whole, and the mark removes it although it is read-only.
+    #[test]
+    fn a_read_only_original_takes_no_new_stream_and_survives_an_early_end() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-link-ro").unwrap();
+        let f = owned.path().join("original.bin");
+        std::fs::write(&f, b"data").unwrap();
+        let open = || std::fs::OpenOptions::new().access_mode(0x8000_0000 | 0x0001_0000 | 0x0100).share_mode(1).open(&f).unwrap();
+        let h = open();
+        win::set_attributes(&h, 0x20 | 1).unwrap();
+        assert!(std::fs::OpenOptions::new().write(true).create_new(true).open(format!("{}:late", f.display())).is_err(), "a stream can't be added");
+        // Sprawl ends before the mark: the original is there, read-only, with its data
+        drop(h);
+        assert_eq!(std::fs::read(&f).unwrap(), b"data");
+        assert!(std::fs::metadata(&f).unwrap().permissions().readonly());
+        // the mark, read-only notwithstanding, and called off again
+        let h = open();
+        win::delete_on_close_readonly(&h, true).unwrap();
+        win::delete_on_close_readonly(&h, false).unwrap();
+        drop(h);
+        assert!(f.exists(), "called off");
+        let h = open();
+        win::delete_on_close_readonly(&h, true).unwrap();
+        drop(h);
+        assert!(!f.exists(), "removed on close");
         drop(owned);
     }
 
@@ -2628,10 +2710,25 @@ mod tests {
         assert_eq!(would_free(&base, &m, &none), Some(logs.bytes), "the same count as the measure");
         assert_eq!(preview(&base, &Action::Clear { days: 0 }, &none, 0).unwrap().bytes, 600);
         // made or changed after the scan began: stays
-        let spare = Spare { since: Some(SystemTime::now()), keep: Vec::new(), ..Default::default() };
+        let scan = std::sync::Arc::new(sprawl_core::walk::inventory(&base, &sprawl_core::Progress::new()).unwrap());
+        let spare = Spare { since: Some(SystemTime::now()), keep: Vec::new(), seen: Some(seen_in(scan)) };
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(base.join("new.log"), vec![0u8; 50]).unwrap();
         assert_eq!(preview(&base, &m, &spare, 0).unwrap().bytes, 500, "the new log stays");
+        // with no scan to know the changed folder by, it is held whole, as the run holds it
+        let blind = Spare { seen: None, ..spare.clone() };
+        assert_eq!(preview(&base, &m, &blind, 0).unwrap().bytes, 0, "the run's own rule");
+        // round 4, S1 #3: in a folder known by its id that changed since, an entry the scan
+        // has no id for (ReFS, a listing without ids) stays, in the preview and in the run
+        let known = spare.seen.clone().unwrap();
+        let no_id: Seen = std::sync::Arc::new(move |p: &Path| if p.ends_with("a.log") { SeenAt::Unknown } else { known(p) });
+        let partly = Spare { seen: Some(no_id), ..spare.clone() };
+        assert_eq!(preview(&base, &m, &partly, 0).unwrap().bytes, 200, "a.log stays; sub's c.log (its folder unchanged) goes");
+        let mut o = Outcome::default();
+        tree(&base, &m, &partly, None, &AtomicBool::new(false), &mut o, &mut |_| {});
+        assert!(base.join("a.log").exists() && !base.join("sub").join("c.log").exists(), "{:?}", o.problems);
+        assert_eq!(o.freed, 200);
+        old(&base.join("sub").join("c.log"), 200);
         std::fs::remove_file(base.join("new.log")).unwrap();
         // kept by the user
         let kept = Spare { since: None, keep: vec![base.join("sub")], ..Default::default() };

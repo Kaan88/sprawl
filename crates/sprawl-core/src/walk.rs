@@ -123,6 +123,9 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
         attributes: meta.file_attributes(),
         ..Default::default()
     };
+    // which file or folder the root is: the one pinned for the whole walk (a file root too,
+    // before it returns: Astra 1.0.2 round 4, S1 #3)
+    root.id = scan.pinned.as_ref().and_then(|p| p.handle().ok()).and_then(|h| dir::id(h).ok()).unwrap_or(0);
     if !meta.is_dir() {
         let mut errors = 0;
         if root.attributes & attr::COMPRESSED == 0 && meta.len() > 0 {
@@ -148,8 +151,6 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     } else {
         None
     };
-    // which folder the root is: the one pinned for the whole walk
-    root.id = scan.pinned.as_ref().and_then(|p| p.handle().ok()).and_then(|h| dir::id(h).ok()).unwrap_or(0);
     let shared = Shared {
         queue: Mutex::new(Queue { jobs: vec![Job { id: 0, path: root_job, top: NO_JOB }], pending: 1 }),
         cv: Condvar::new(),
@@ -672,6 +673,9 @@ mod tests {
         let d = walk(&dir, &Progress::new()).unwrap();
         let sub = d.nodes[ROOT].children.iter().copied().find(|&c| d.nodes[c].name == "sub").unwrap();
         assert_eq!((d.nodes[ROOT].id, d.nodes[sub].id, d.nodes[d.nodes[sub].children[0]].id), (id_of(&dir), id_of(&dir.join("sub")), id_of(&dir.join("sub").join("a.bin"))));
+        // a file scanned on its own knows which file it is too (round 4)
+        let f = inventory(&dir.join("sub").join("a.bin"), &Progress::new()).unwrap();
+        assert_eq!(f.nodes[ROOT].id, id_of(&dir.join("sub").join("a.bin")));
         fs::remove_dir_all(dir).unwrap();
     }
 
