@@ -146,7 +146,18 @@ struct Placement {
 extern "system" {
     fn GetWindowPlacement(h: HWND, p: *mut Placement) -> i32;
     fn SetWindowPlacement(h: HWND, p: *const Placement) -> i32;
-    fn SystemParametersInfoW(action: u32, param: u32, out: *mut RECT, flags: u32) -> i32;
+    fn SystemParametersInfoW(action: u32, param: u32, out: *mut c_void, flags: u32) -> i32;
+}
+
+/// Windows' "Animation effects" (Settings > Accessibility > Visual effects): off asks apps
+/// for less motion. On when Windows can't say.
+pub fn animations_on() -> bool {
+    const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
+    let mut on = 1i32;
+    if unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) } == 0 {
+        return true;
+    }
+    on != 0
 }
 
 fn placement(h: HWND) -> Option<Placement> {
@@ -167,7 +178,7 @@ pub fn set_window_place(h: HWND, v: &str) -> bool {
     let n: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
     let [x, y, w, hh, max] = n[..] else { return false };
     let mut work = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    unsafe { SystemParametersInfoW(0x30, 0, &mut work, 0) };
+    unsafe { SystemParametersInfoW(0x30, 0, (&mut work as *mut RECT).cast(), 0) };
     // the primary work area only: a window left on a monitor since unplugged starts fresh
     if w < 640 || hh < 400 || x + 100 > work.right || y < work.top - 20 || x + w < work.left + 100 || y + 60 > work.bottom {
         return false;
@@ -181,7 +192,7 @@ pub fn set_window_place(h: HWND, v: &str) -> bool {
 /// Size the window to most of the primary screen's work area, centred.
 pub fn fit_work_area(h: HWND) {
     let mut work = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    if unsafe { SystemParametersInfoW(0x30, 0, &mut work, 0) } == 0 {
+    if unsafe { SystemParametersInfoW(0x30, 0, (&mut work as *mut RECT).cast(), 0) } == 0 {
         return;
     }
     let (ww, wh) = (work.right - work.left, work.bottom - work.top);

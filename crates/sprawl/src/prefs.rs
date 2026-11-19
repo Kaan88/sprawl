@@ -186,7 +186,7 @@ pub static PREFS: [Pref; 59] = [
     adv("searchMaxHits", Sec::Search, "Most results shown from other drives", "More takes more memory and time to sort.", Kind::Number(&tuning::SEARCH_MAX_HITS, "rows")),
     // Map and look
     p("palette", Sec::Map, "Colours", "The colours of the map and the file types.", Kind::Choice(&crate::paint::PALETTES, 0)),
-    p("animate", Sec::Map, "Animations", "Turn off for a calmer, lighter map.", Kind::Switch(true)),
+    p("animate", Sec::Map, "Animations", "Turn off for a calmer, lighter map. Until you choose, it follows Windows' Animation effects (Accessibility > Visual effects).", Kind::Switch(true)),
     p("oTilt", Sec::Map, "3D and tilt", "The map as lit 3D tiles, tilted.", Kind::Switch(true)),
     p("oNames", Sec::Map, "Folder and file names", "Names on the map's tiles.", Kind::Switch(true)),
     p("oCushion", Sec::Map, "Shading", "Cushion shading on the tiles.", Kind::Switch(true)),

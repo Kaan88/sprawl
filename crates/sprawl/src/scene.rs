@@ -298,6 +298,11 @@ impl Scene {
 
     /// Start the ripple that runs across the map when a scan finishes.
     pub fn start_wave(&mut self) {
+        // with animation off (Sprawl's switch, or Windows' "Animation effects" by default)
+        // the map just shows the finished scan
+        if !self.animate {
+            return;
+        }
         self.wave = Some(self.time + 0.25);
     }
 

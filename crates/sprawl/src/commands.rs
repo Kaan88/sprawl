@@ -534,7 +534,8 @@ impl State {
         let lift = s.num("lift").unwrap_or(1.0) as f32;
         let cushion = s.num("cushion").unwrap_or(1.0) as f32;
         let tilt = s.num("tilt").unwrap_or(0.44) as f32;
-        let animate = s.bool("animate").unwrap_or(true);
+        // never chosen in Sprawl: Windows' "Animation effects" decides
+        let animate = s.bool("animate").unwrap_or_else(crate::win32::animations_on);
         let palette = s.num("palette").unwrap_or(0.0) as usize;
         let units = s.get("units").map(str::to_string);
         let toggles: Vec<(&str, bool)> = TOGGLES.iter().filter_map(|&t| Some((t, s.bool(t)?))).collect();
