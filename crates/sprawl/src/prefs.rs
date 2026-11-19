@@ -173,7 +173,7 @@ pub static PREFS: [Pref; 59] = [
     // While Sprawl runs as administrator, also allow (off by default; never on the wizard)
     p("adminShellMenu", Sec::Scanning, "The Windows menu (as administrator)", "", Kind::Switch(false)),
     p("adminHandOff", Sec::Scanning, "Handing an application to your uninstaller (as administrator)", "", Kind::Switch(false)),
-    p("adminClaudeCode", Sec::Scanning, "Claude Code (as administrator)", "", Kind::Switch(false)),
+    p("adminClaudeCode", Sec::Scanning, "Claude Code and Codex (as administrator)", "", Kind::Switch(false)),
     p("adminUserTools", Sec::Scanning, "Clean-up commands from your own folders (as administrator)", "", Kind::Switch(false)),
     p("oExplorer", Sec::Scanning, "Add \"Scan with Sprawl\" to Explorer", "Right-click any folder or drive in Explorer to scan it. Only for your account; no administrator needed.", Kind::Switch(false)),
     p("oAuto", Sec::Scanning, "Scan as soon as a drive is picked", "Picking a drive in the list starts its scan.", Kind::Switch(true)),

@@ -241,7 +241,7 @@ impl Chat for ClaudeCode {
 }
 
 /// End the process and everything it started (a .cmd shim starts node).
-fn kill_tree(child: &mut std::process::Child) {
+pub(super) fn kill_tree(child: &mut std::process::Child) {
     let pid = child.id().to_string();
     let taskkill = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\taskkill.exe")).unwrap_or_else(|| "taskkill.exe".into());
     let mut k = Command::new(taskkill);

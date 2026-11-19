@@ -16,6 +16,7 @@ fn main() {
     let provider = match args.get(2).map(String::as_str).unwrap_or("claude-code") {
         "anthropic" => Provider::Anthropic,
         "open-ai" => Provider::OpenAi,
+        "codex" => Provider::Codex,
         _ => Provider::ClaudeCode,
     };
     let cfg = AiConfig { provider, model: args.get(3).cloned().unwrap_or_default(), base_url: std::env::var("SPRAWL_BASE_URL").unwrap_or_default(), web_lookup: false };

@@ -21,10 +21,12 @@ pub enum Provider {
     ClaudeCode,
     /// Any OpenAI-compatible endpoint: OpenAI, OpenRouter, Ollama, LM Studio, vLLM.
     OpenAi,
+    /// The user's own Codex CLI (`codex exec`), with its login.
+    Codex,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 4] = [Provider::Off, Provider::Anthropic, Provider::ClaudeCode, Provider::OpenAi];
+    pub const ALL: [Provider; 5] = [Provider::Off, Provider::Anthropic, Provider::ClaudeCode, Provider::Codex, Provider::OpenAi];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -32,6 +34,7 @@ impl Provider {
             Provider::Anthropic => "Claude (Anthropic API key)",
             Provider::ClaudeCode => "Claude Code (uses your claude login)",
             Provider::OpenAi => "OpenAI-compatible (OpenAI, OpenRouter, Ollama, LM Studio)",
+            Provider::Codex => "Codex (uses your codex login)",
         }
     }
 
@@ -59,7 +62,8 @@ impl Provider {
             Provider::Anthropic => "claude-opus-5-5",
             // the advisor's work is mostly reading lists; Haiku does it fast and costs the least
             Provider::ClaudeCode => "claude-haiku-5-5",
-            Provider::OpenAi => "",
+            // Codex picks its own default unless one is chosen
+            Provider::OpenAi | Provider::Codex => "",
             Provider::Off => "",
         }
     }
@@ -210,6 +214,8 @@ pub fn has_key(p: Provider) -> bool {
 pub struct Detected {
     /// `claude` on PATH.
     pub claude_code: Option<PathBuf>,
+    /// `codex` on PATH, or the one the Codex app keeps for itself.
+    pub codex: Option<PathBuf>,
     pub ollama: bool,
     pub lm_studio: bool,
     pub anthropic_env: bool,
@@ -232,10 +238,29 @@ fn on_path(names: &[&str]) -> Option<PathBuf> {
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
 }
 
+/// The newest `codex.exe` the Codex desktop app keeps under `%USERPROFILE%\.codex\packages`
+/// (it isn't put on PATH): `app-server-daemon\releases\<version>\bin\codex.exe`.
+fn codex_app_cli() -> Option<PathBuf> {
+    let releases = PathBuf::from(std::env::var_os("USERPROFILE")?).join(".codex").join("packages").join("app-server-daemon").join("releases");
+    let mut found: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(&releases)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let exe = e.path().join("bin").join("codex.exe");
+            let version: Vec<u64> = name.split(['-', '+']).next()?.split('.').map(|n| n.parse().ok()).collect::<Option<_>>()?;
+            exe.is_file().then_some((version, exe))
+        })
+        .collect();
+    found.sort();
+    found.pop().map(|(_, p)| p)
+}
+
 impl Detected {
     pub fn probe() -> Detected {
         Detected {
             claude_code: on_path(&["claude.exe", "claude.cmd"]),
+            codex: on_path(&["codex.exe", "codex.cmd"]).or_else(codex_app_cli),
             ollama: listening(11434),
             lm_studio: listening(1234),
             anthropic_env: std::env::var_os("ANTHROPIC_API_KEY").is_some(),
@@ -248,6 +273,8 @@ impl Detected {
     pub fn suggest(&self) -> AiConfig {
         if self.claude_code.is_some() {
             AiConfig { provider: Provider::ClaudeCode, model: Provider::ClaudeCode.default_model().into(), ..AiConfig::default() }
+        } else if self.codex.is_some() {
+            AiConfig { provider: Provider::Codex, ..AiConfig::default() }
         } else if self.anthropic_env {
             AiConfig { provider: Provider::Anthropic, model: Provider::Anthropic.default_model().into(), ..AiConfig::default() }
         } else if self.ollama {
@@ -265,6 +292,9 @@ impl Detected {
         if self.claude_code.is_some() {
             found.push("Claude Code");
         }
+        if self.codex.is_some() {
+            found.push("Codex");
+        }
         if self.anthropic_env {
             found.push("ANTHROPIC_API_KEY");
         }
@@ -278,7 +308,7 @@ impl Detected {
             found.push("OPENAI_API_KEY");
         }
         if found.is_empty() {
-            "Nothing found on this PC yet. You can add a key or install Claude Code later.".into()
+            "Nothing found on this PC yet. You can add a key or install Claude Code or Codex later.".into()
         } else {
             format!("Found on this PC: {}", found.join(", "))
         }
@@ -297,6 +327,7 @@ mod tests {
         assert!(t.contains("provider = \"open-ai\""));
         assert_eq!(toml::from_str::<AiConfig>(&t).unwrap(), c);
         assert_eq!(toml::from_str::<AiConfig>("provider = \"off\"").unwrap(), AiConfig::default());
+        assert_eq!(toml::from_str::<AiConfig>("provider = \"codex\"").unwrap().provider, Provider::Codex);
     }
 
     #[test]

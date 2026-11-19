@@ -7,6 +7,7 @@ use sprawl_core::Tree;
 
 use super::anthropic::Anthropic;
 use super::claude_code::ClaudeCode;
+use super::codex::Codex;
 use super::openai::OpenAi;
 use super::tools::{chat_specs_with, specs, Tools};
 use super::{clip, Chat, Metered, Stop, Usage, STOPPED};
@@ -85,7 +86,12 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
     // scan; without one (no server program, the snapshot couldn't be written) it answers from
     // the report
     let cc = if cfg.provider == Provider::ClaudeCode { super::mcp_exe().and_then(|exe| CcRun::new(tree, scan_before, exe, &model, web).ok()) } else { None };
-    let tools_ok = cfg.provider != Provider::ClaudeCode || cc.is_some();
+    // Codex has no tools here at all: it answers from the report
+    let tools_ok = match cfg.provider {
+        Provider::ClaudeCode => cc.is_some(),
+        Provider::Codex => false,
+        _ => true,
+    };
     let opening = format!("{report}\n\n# The user asks\n{first}");
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
         let specs = if with_tools { chat_specs_with(web) } else { Vec::new() };
@@ -104,6 +110,10 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
                     Some(run) => Box::new(c.with_mcp(&run.cfg)),
                     None => Box::new(c),
                 }
+            }
+            Provider::Codex => {
+                let exe = Detected::probe().codex.ok_or("Codex (codex) isn't installed or isn't on PATH.")?;
+                Box::new(Codex::new(&exe, &model, &system, &opening).with_stop(stop.clone()))
             }
         };
         Ok(Box::new(Metered::new(c, stop.clone(), Rc::new(RefCell::new(Usage::default())))) as Box<dyn Chat>)
@@ -132,7 +142,7 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
         // a Stop for an earlier question doesn't carry over
         stop.store(false, Ordering::Relaxed);
         let mut failed = false;
-        events(ChatEvent::Progress(format!("Asking {model}...")));
+        events(ChatEvent::Progress(format!("Asking {}...", named(cfg.provider, &model))));
         let mut turns = 0;
         let mut reply = String::new();
         loop {
@@ -408,6 +418,10 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode, stop: &Stop) -> 
             let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
             Box::new(ClaudeCode::new(&exe, model, &system, &first).with_stop(stop.clone()))
         }
+        Provider::Codex => {
+            let exe = Detected::probe().codex.ok_or("Codex (codex) isn't installed or isn't on PATH.")?;
+            Box::new(Codex::new(&exe, model, &system, &first).with_stop(stop.clone()))
+        }
     })
 }
 
@@ -543,6 +557,15 @@ fn second_opinion(cfg: &AiConfig, model: &str, run: &mut AiRun, stop: &Stop, pro
     }
 }
 
+/// The model as the app shows it: its name, or the provider's when it picks its own (Codex).
+fn named(p: Provider, model: &str) -> String {
+    match (model.trim(), p) {
+        ("", Provider::Codex) => "Codex".into(),
+        ("", _) => "the model".into(),
+        (m, _) => m.to_string(),
+    }
+}
+
 /// One question to a fresh conversation without tools; its answer, or None.
 fn one_shot(cfg: &AiConfig, model: &str, system: &str, text: String, stop: &Stop, usage: &Rc<RefCell<Usage>>) -> Option<String> {
     let chat: Result<Box<dyn Chat>, String> = match cfg.provider {
@@ -553,6 +576,7 @@ fn one_shot(cfg: &AiConfig, model: &str, system: &str, text: String, stop: &Stop
             .ok_or_else(|| "no key".to_string()),
         Provider::OpenAi => openai_key(&cfg.base_url).map(|k| Box::new(OpenAi::new(&cfg.base_url, k, model, system.into(), text.clone(), &[])) as Box<dyn Chat>),
         Provider::ClaudeCode => Detected::probe().claude_code.map(|exe| Box::new(ClaudeCode::new(&exe, model, system, &text).with_stop(stop.clone())) as Box<dyn Chat>).ok_or_else(|| "no claude".to_string()),
+        Provider::Codex => Detected::probe().codex.map(|exe| Box::new(Codex::new(&exe, model, system, &text).with_stop(stop.clone())) as Box<dyn Chat>).ok_or_else(|| "no codex".to_string()),
         Provider::Off => Err("off".into()),
     };
     chat.ok().map(|c| Metered::new(c, stop.clone(), usage.clone())).and_then(|mut c| c.turn().ok()).map(|t| t.text)
@@ -682,7 +706,7 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     let report = super::report::build(tree, &facts, Some(already), hidden, goal) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory).at_scan(scan_before);
     tools.allowed = Some(specs().iter().map(|t| t.name).collect());
-    let mut run = AiRun { model: model.clone(), ..AiRun::default() };
+    let mut run = AiRun { model: named(cfg.provider, &model), ..AiRun::default() };
 
     // Claude Code with Sprawl's own tools, when the app can serve them
     if cfg.provider == Provider::ClaudeCode {
@@ -692,9 +716,9 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     }
     let usage = Rc::new(RefCell::new(Usage::default()));
     let metered = |c: Box<dyn Chat>| Box::new(Metered::new(c, stop.clone(), usage.clone())) as Box<dyn Chat>;
-    let mut mode = if cfg.provider == Provider::ClaudeCode { Mode::Single } else { Mode::Tools };
+    let mut mode = if matches!(cfg.provider, Provider::ClaudeCode | Provider::Codex) { Mode::Single } else { Mode::Tools };
     let mut chat = metered(open(cfg, &model, &report, &mode, &stop)?);
-    progress(format!("Waiting for {model}'s first step"));
+    progress(format!("Waiting for {}'s first step", named(cfg.provider, &model)));
     let mut first = match chat.turn() {
         Ok(t) => t,
         // a local model without tool calling: ask once instead

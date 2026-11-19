@@ -12,6 +12,7 @@
 pub mod agent;
 pub mod anthropic;
 pub mod claude_code;
+pub mod codex;
 pub mod http;
 pub mod models;
 pub mod more_tools;

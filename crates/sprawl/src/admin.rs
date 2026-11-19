@@ -22,7 +22,7 @@ pub(crate) const HAND_OFF: Lock = Lock {
 };
 pub(crate) const CLAUDE_CODE: Lock = Lock {
     key: "adminClaudeCode",
-    what: "Claude Code",
+    what: "Claude Code and Codex",
 };
 pub(crate) const USER_TOOLS: Lock = Lock {
     key: "adminUserTools",
@@ -33,7 +33,7 @@ pub(crate) const USER_TOOLS: Lock = Lock {
 pub(crate) const ALL: [&Lock; 4] = [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS];
 
 /// The one warning for all four, shown once in Settings above their switches.
-pub(crate) const WARNING: &str = "Each of these lets another program run as administrator: Explorer's menu add-ons, your uninstaller, Claude Code, or a clean-up tool such as npm or pip found in your own folders. Leave them off unless you trust everything installed for your account.";
+pub(crate) const WARNING: &str = "Each of these lets another program run as administrator: Explorer's menu add-ons, your uninstaller, Claude Code or Codex, or a clean-up tool such as npm or pip found in your own folders. Leave them off unless you trust everything installed for your account.";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Gate {

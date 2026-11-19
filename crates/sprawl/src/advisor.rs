@@ -1136,16 +1136,19 @@ impl State {
                 return;
             }
             "AdvAiEdit" => self.advisor.ai_edit = if self.advisor.ai_edit.is_some() { None } else { Some(AiConfig::load()) },
-            "AdvPOff" | "AdvPAnthropic" | "AdvPClaudeCode" | "AdvPOpenAi" => {
+            "AdvPOff" | "AdvPAnthropic" | "AdvPClaudeCode" | "AdvPCodex" | "AdvPOpenAi" => {
                 self.read_ai_fields();
                 if let Some(c) = &mut self.advisor.ai_edit {
                     c.provider = match name {
                         "AdvPAnthropic" => Provider::Anthropic,
                         "AdvPClaudeCode" => Provider::ClaudeCode,
+                        "AdvPCodex" => Provider::Codex,
                         "AdvPOpenAi" => Provider::OpenAi,
                         _ => Provider::Off,
                     };
-                    if c.model.is_empty() || (c.provider == Provider::OpenAi) != c.model.starts_with("claude") {
+                    // a Claude model only for the Claude providers, another one only for the others
+                    let claude = matches!(c.provider, Provider::Anthropic | Provider::ClaudeCode);
+                    if c.model.is_empty() || claude != c.model.starts_with("claude") {
                         c.model = c.provider.default_model().into();
                     }
                 }
@@ -2015,7 +2018,7 @@ impl State {
         }
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide", "AdvOnlyComp",
-            "AdvExplainUnknown", "AdvUnknownSetup", "AdvAskFinding", "AdvKeep", "AdvLater", "AdvStillUse", "AdvManageLibrary", "AdvForgetLearning", "AdvQuiet", "AdvSortRecommended", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
+            "AdvExplainUnknown", "AdvUnknownSetup", "AdvAskFinding", "AdvKeep", "AdvLater", "AdvStillUse", "AdvManageLibrary", "AdvForgetLearning", "AdvQuiet", "AdvSortRecommended", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPCodex", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
             "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain", "AdvGoalOptions", "AdvGoalHide", "AdvGoalGreen", "AdvGoalCleanup", "AdvGoalCompress", "AdvGoalMove",
         ] {
@@ -2594,7 +2597,7 @@ impl State {
             self.advisor.ai = Ai::Failed("AI is off. Choose a provider with Set up AI.".into());
             return;
         }
-        if cfg.provider == Provider::ClaudeCode {
+        if matches!(cfg.provider, Provider::ClaudeCode | Provider::Codex) {
             if let Err(why) = self.admin_allows(&crate::admin::CLAUDE_CODE) {
                 self.advisor.ai = Ai::Failed(why);
                 return;
@@ -3234,7 +3237,7 @@ impl State {
             };
             let scan_before = self.active_began();
             let cfg = AiConfig::load();
-            if cfg.provider == Provider::ClaudeCode {
+            if matches!(cfg.provider, Provider::ClaudeCode | Provider::Codex) {
                 if let Err(why) = self.admin_allows(&crate::admin::CLAUDE_CODE) {
                     self.adv_say(&why);
                     return;
@@ -3480,6 +3483,7 @@ impl State {
         let cleaning = self.advisor.section == Section::Cleaners;
         let who = match AiConfig::load().provider {
             Provider::ClaudeCode => "Claude Code",
+            Provider::Codex => "Codex",
             Provider::Anthropic => "Claude",
             _ => "AI",
         };
@@ -3647,8 +3651,9 @@ impl State {
         };
         let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF"><StackPanel Spacing="8">"##);
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4">{}{}{}{}</StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="4">{}{}{}{}{}</StackPanel>"##,
             chip("AdvPClaudeCode", "Claude Code", e.provider == Provider::ClaudeCode),
+            chip("AdvPCodex", "Codex", e.provider == Provider::Codex),
             chip("AdvPAnthropic", "Anthropic API", e.provider == Provider::Anthropic),
             chip("AdvPOpenAi", "OpenAI-compatible", e.provider == Provider::OpenAi),
             chip("AdvPOff", "Off", e.provider == Provider::Off),
@@ -3746,6 +3751,7 @@ impl State {
             Provider::Off => btn("AdvSetup", "Set up AI"),
             Provider::Anthropic => btn("AdvAsk", "Ask Claude"),
             Provider::ClaudeCode => btn("AdvAsk", "Ask Claude Code"),
+            Provider::Codex => btn("AdvAsk", "Ask Codex"),
             Provider::OpenAi => btn("AdvAsk", &format!("Ask {}", ui::esc(if cfg.model.is_empty() { "the model" } else { &cfg.model }))),
         };
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="8">"##);
@@ -3757,7 +3763,7 @@ impl State {
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
             if cfg.provider == Provider::Off && self.advisor.ai_edit.is_none() {
-                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you press Clean up. It can use your own Claude Code (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
+                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you press Clean up. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
             }
             if let Some(e) = &self.advisor.ai_edit {
                 x += &self.ai_settings(e);

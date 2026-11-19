@@ -5,6 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
+- Codex can be the Advisor's AI, like Claude Code: it uses your own Codex sign-in (no key), found on PATH or in the Codex app. It answers from the scan's report with all of its tools switched off.
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
 - History keeps to its size limit (Settings) when many folders have full snapshots: older full snapshots are removed too, never a folder's newest.
 - Safer updating as administrator: Sprawl reopens itself without administrator rights through Windows' own desktop and writes no file while elevated. The old low-space task is removed only when it is really yours.

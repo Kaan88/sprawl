@@ -27,6 +27,8 @@ pub fn list(provider: Provider, base_url: &str) -> Result<Vec<String>, String> {
             (format!("{}/models", base.trim_end_matches('/')), h, true)
         }
         Provider::ClaudeCode => return Ok(CLAUDE.iter().map(|m| m.to_string()).collect()),
+        // Codex's own list, from its cache: nothing is fetched
+        Provider::Codex => return Ok(super::codex::models()),
         Provider::Off => return Err("no provider chosen".into()),
     };
     let r = http::get(&url, &headers, Duration::from_secs(10))?;
