@@ -1,6 +1,10 @@
 # The Advisor: where it could go next
 
-Written 2026-11-18, after 0.3.0. Ideas, not commitments. Nothing here is built or measured.
+Written 2026-11-18, after 0.3.0. These original ideas remain design notes, not a current backlog.
+By 1.0.0, supported usage evidence, recognition, duplicate hints/linking, goal alternatives,
+learning, prevention and approved AI recognisers have shipped. Broader launcher/media support
+and other extensions remain partial or future work. See [current status](status.md) for the
+supported boundaries, completed Astra review and remaining verification work.
 They are ordered by how much they would change what the Advisor is worth to someone, not by
 effort. Every one keeps the rules the Advisor has today: findings pass the safety checks,
 nothing is ticked for the user, the review comes first, and what is only a guess is shown as

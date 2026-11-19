@@ -1,5 +1,11 @@
 # AI Advisor: plan and roadmap
 
+**Status, 2026-11-19:** the original AI phases and their follow-up implementation have shipped.
+The historical advise-only decision below was superseded by explicit selection, checked
+in-app cleanup and confirmation; models still cannot execute cleanup directly. Astra approved
+the entire retained dossier and all 33 corrections for 1.0.0. See [current status](status.md)
+for scope limits, remaining ideas and the newly requested mockup-first design/product review.
+
 An on-demand advisor that analyses a scan and highlights where space can be won back, for the
 user and other power users.
 

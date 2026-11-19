@@ -1,5 +1,10 @@
 # Handoff: implementing the audit roadmap
 
+**Current review status, 2026-11-19:** this historical handoff and the later retained Fable
+backlog were read in the complete Astra audit. All 33 findings are Fixed/Done and 1.0.0 is
+released; no Fable referral remains. See [current status and next work](status.md). The dated
+instructions below describe the original phase handoff, not a new pending review requirement.
+
 **Status, 2026-11-18: done.** Phases 0 to 5, the look-and-feel pass and the Windows menu were built, reviewed and released as 0.3.0. This file is kept as the record of what was asked. One thing below was overruled later by the user: the administrator switches do not ask on first use; a switch that is on is the answer, and there is one warning above them in Settings.
 
 You are implementing fixes in Sprawl (Rust + WinUI 3 disk analyser, this repository). A Fable session audited version 0.2.5 on 2026-11-17 and will review your work. Work one phase at a time and hand each phase back for review before starting the next.

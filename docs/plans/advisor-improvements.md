@@ -1,14 +1,20 @@
 # Advisor improvements: plan
 
+**Status, 2026-11-19:** this is the original milestone design. Most visible Advisor, streaming,
+cleanup, map and settings work has shipped; delta snapshots and additional verification remain
+future work. The original "Ask" section and visible-PowerShell proposal below were superseded
+by the shared AI column and checked in-app execution/review. See [current status](status.md).
+
 The AI advisor plan (`ai-advisor.md`) is built: phases 0 to 7. This plan covers what using it
 showed: the AI feels slow and opaque, the findings stop at "copy this command", the Advisor
 tab is one long page, and the map, which is Sprawl's strength, does little of the advisor's
 work.
 
 The rules from the first plan still hold. Rust finds, the model judges. Every claim is checked.
-Commands come only from Rust. Every safety-relevant step gets an independent review: Opus at
-xhigh effort while Fable is out of limit, and Fable's overall pass later
-(`.claude/fable-review-queue.md`).
+Commands come only from the checked implementation. The complete Fable backlog and current
+code passed independent GPT Astra review for 1.0.0, with all 33 findings Fixed/Done and no
+Fable referral. The current user instruction is one Astra reviewer at medium effort, without
+helpers. A new visual/product review is commissioned; proposed UI changes require mockups first.
 
 ## Milestones
 

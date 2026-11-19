@@ -1,8 +1,15 @@
 # Future features
 
-Written 2026-11-17, after the audit. **Not for now:** these come after the audit roadmap (`audit-2026-11-17-final.md`, phases 0 to 5). None of this was built, measured or tested; where a detail needs checking against Windows before building, it says so.
+Originally written 2026-11-17, after the audit. The designs below are retained as history.
+**Status as of 1.0.0 (2026-11-19):** F1/F2/F3/F4/F6 have shipped within the supported scope
+recorded in `next-round.md`; F5's generic headless report remains future work. F1's dedicated
+drift/recompression workflow and F4's Separate again action also remain unimplemented.
+See [current status](status.md) for the complete backlog and runtime limits. A "Done when"
+paragraph below is a design acceptance target, not a claim that every live workflow was tested.
 
-Every feature here follows the rules the app already has: a finding passes `safety::check`, nothing is ticked for the user, the review comes before any change, results are measured, and each change to disk gets a Fable review.
+Every feature retains the app's safety checks and explicit review before cleanup. The full
+retained Fable queue and current fixes passed Astra review for 1.0.0; no additional Fable read
+was requested. Future safety changes still need independent review.
 
 ## Order
 
@@ -13,7 +20,7 @@ Every feature here follows the rules the app already has: a finding passes `safe
 | F3 | Shrink virtual disks | Small list of cases; needs care with running VMs | Medium |
 | F4 | Duplicates resolved by linking | Duplicate search exists; the action is new and must be exact | Medium |
 | F5 | Headless report | Parts exist; no UI | Small |
-| F6 | Low-space and growth alert | Needs something running in the background, which the app does not have today | Large |
+| F6 | Low-space and growth alert | Shipped with the account's scheduled task; no resident background app | Large |
 
 F5 can be done at any time; it helps test the others.
 
@@ -210,6 +217,12 @@ F5 can be done at any time; it helps test the others.
 ---
 
 ## Look-and-feel pass
+
+**New brief, 2026-11-19:** the user requested an Astra assessment of modern WinUI 3 visuals,
+motion, interaction feel, design and usability, plus worthwhile features and AI enhancements.
+Mockups must precede implementation of proposed UI changes. This broader brief supersedes
+the earlier narrow polish scope below; its old reports remain useful evidence, not a current
+claim that all three problems still reproduce. See [current status](status.md).
 
 Asked for by the user on 2026-11-18, for a later release: one pass over how the window looks and moves, after the layout work of phases 3 and 4 has settled. Not a redesign. Start from these three reports and then walk every tab at 100 % and 150 % scaling.
 

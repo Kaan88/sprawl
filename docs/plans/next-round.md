@@ -3,8 +3,10 @@
 Written 2026-11-18 from the user's list. It ties together `future-features.md` (F1-F6),
 `advisor-next.md` (A1-A6), the new requests (R7-R11) and the MCP report. The Progress section
 below records what has since been built and released; the phase descriptions retain the design.
-Independent review is recorded in `.claude/fable-review-queue.md`; GPT Astra will read that
-document when the remaining roadmap is finished, as requested on 2026-11-18.
+**Current status, 2026-11-19:** the agreed continuation shipped in Sprawl 1.0.0. GPT Astra
+read the complete review dossier and code, verified all 33 findings Fixed/Done and approved
+the release. See [current status and next work](status.md) for remaining ideas, verification
+limits and the newly commissioned design/AI review. Dated progress notes below are historical.
 
 ## Remaining work at Codex takeover (2026-11-18)
 
@@ -24,7 +26,8 @@ Sol (Codex) maintains implementation and review notes from `e86c346`. Simple tas
 delegated to Luna and checked by Sol when that model is available through the agent tools.
 A2 now recognises MSI packages, metadata-matched EXE installers and Steam library leftovers.
 A4 goal comparison, A5 prevention, A6 learning and the smaller items are implemented;
-see Progress for verification and limits. Astra review has not started.
+see Progress for the original verification and limits. Astra's review and the 1.0.0 release
+are now complete; historical "pending" entries below retain their original dates.
 
 ## Phase 0: bugs first (0.3.2)
 
@@ -264,4 +267,7 @@ to be discussed with the user before building.
 - **Final implementation checkpoint:** the authorised roadmap continuation is implemented, with the previously agreed deferrals (A1 additional launcher readers pending real data; privacy parts/accessibility; Phase 1 extras intentionally left out) retained. MSI/EXE and Steam-layout recognition and Steam/Windows guided moves retain the supported-scope limits above; unsupported launchers are not guessed. No version bump, release, push or independent Astra review was performed.
 - **Final checks:** release suite: 171 advisor + 57 core + 6 install passed (234), 6 ignored. App suite: 58 passed, 1 ignored; app build passed. Final display-cache invalidation passed cargo check. Exclusion traversal/counts, ancestor and link-member refusal, input validation, compressed tree/compact parity, NTFS/WOF versus ordinary links and MFT tag order are tested. A test initially used inherited OR syntax incorrectly, corrected to an explicit `ext:` alternative; new preference defaults were added to the existing exhaustive table. `git diff --check` passed. Later screenshots, including direct launches, remain black; the direct computer-use helper lost its session during capture. Narrow-layout/settings/reset visuals therefore remain unverified and are explicitly queued for Astra/user inspection. No real cleanup, compressor, disk shrink, game move or live model request in this continuation's final checks.
 
-**Stop here before Astra review.** `.claude/fable-review-queue.md` contains the takeover marker, commit-by-commit continuation notes, safety boundaries and the remaining manual/visual checks. The implementation status does not close the independent review backlog.
+**Closure, 2026-11-19:** Astra subsequently read `.claude/fable-review-queue.md` in full,
+reviewed the source and corrections, and marked all 33 findings Fixed/Done. Sprawl 1.0.0 is
+released. Earlier implementation checkpoints above precede that review and remain as history.
+See [current status](status.md) for deliberate deferrals and the new mockup-first design review.
