@@ -617,6 +617,19 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
         }
         return;
     }
+    // to the bin: the whole folder when nothing in it must stay. One move, one record that
+    // Explorer can put back; 1.0 recycled every file alone, flushing a record for each and
+    // leaving the emptied folders behind.
+    if let (Some(b), Action::Remove) = (bin.as_deref_mut(), action) {
+        if let Some((bytes, files)) = whole(path, spare) {
+            match recycle_one(path, &h, bytes, files, b, o, progress) {
+                Ok(()) => return,
+                Err(Moved::Held(why)) => return o.problem(path, why),
+                // it couldn't be moved as one (a file in it is open): one by one below
+                Err(Moved::Failed(_)) => {}
+            }
+        }
+    }
     let kids = match list(path) {
         Ok((k, 0)) => k,
         Ok((k, n)) => {
@@ -679,6 +692,20 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
             continue;
         }
         if info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0 {
+            if pattern.is_none() {
+                if let Some(b) = bin.as_deref_mut() {
+                    if let Some((bytes, files)) = whole(&k, spare) {
+                        match recycle_one(&k, &h, bytes, files, b, o, progress) {
+                            Ok(()) => continue,
+                            Err(Moved::Held(why)) => {
+                                o.problem(&k, why);
+                                continue;
+                            }
+                            Err(Moved::Failed(_)) => {}
+                        }
+                    }
+                }
+            }
             match list(&k) {
                 Ok((kids, unread)) => {
                     if unread > 0 {
@@ -709,6 +736,41 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
             }
         }
     }
+}
+
+/// Everything in folder `p` would go by a Remove: nothing in it is new since the scan, kept,
+/// on the never-list or oddly named, no link, junction, cloud or offline item (those go one
+/// item at a time, or stay), and all of it can be read. Its bytes and files. Moving the folder
+/// is a rename: links inside are moved as links, never followed, and the bin can undo it.
+fn whole(p: &Path, spare: &Spare) -> Option<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let since = spare.since.map(filetime);
+    let (mut bytes, mut files) = (0u64, 0u64);
+    let readable = |p: &Path| list(p).ok().filter(|l| l.1 == 0).map(|l| l.0);
+    let mut stack = readable(p)?;
+    while let Some(k) = stack.pop() {
+        if odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
+            return None;
+        }
+        let m = std::fs::symlink_metadata(&k).ok()?;
+        let born = m.creation_time() as i64;
+        if attrs(&m) & (REPARSE | crate::dupes::NOT_LOCAL) != 0 {
+            return None;
+        }
+        if m.is_dir() {
+            if since.is_some_and(|s| born > s) {
+                return None;
+            }
+            stack.extend(readable(&k)?);
+        } else {
+            if since.is_some_and(|s| born > s || m.last_write_time() as i64 > s) {
+                return None;
+            }
+            bytes += m.len();
+            files += 1;
+        }
+    }
+    Some((bytes, files))
 }
 
 /// Delete one opened item (a file, a link, an empty folder) through its handle.
@@ -2037,7 +2099,7 @@ mod tests {
     }
 
     #[test]
-    fn own_files_go_to_the_bin_one_by_one() {
+    fn own_files_go_to_the_bin_whole_or_one_by_one() {
         let base = std::env::temp_dir().join(format!("sprawl-bin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let proj = base.join("Old project");
@@ -2052,16 +2114,16 @@ mod tests {
         .unwrap();
         let stop = AtomicBool::new(false);
 
-        // Every file has its own last-moment handle checks and Explorer restoration record.
+        // a folder with nothing in it to spare goes whole, with one record Explorer reads
         let mut bin = test_bin(&base, 1 << 30);
         let o = run_with(&proj, &Action::Remove, &Spare::default(), Some(&mut bin), &stop, &mut |_| {});
         assert!(o.problems.is_empty(), "{:?}", o.problems);
         assert_eq!((o.freed, o.recycled, o.recycled_files), (0, 500, 2), "nothing is freed until the bin is emptied");
-        assert!(proj.exists(), "folders stay; they are never moved after a stale prewalk");
+        assert!(!proj.exists());
         let got = in_bin(&base);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got.iter().map(|g| (g.0.clone(), g.1)).collect::<Vec<_>>(), vec![(proj.join("notes.txt"), 200), (proj.join("src/main.rs"), 300)]);
-        assert!(got.iter().all(|g| g.2.is_file()), "read-only files are preserved too");
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].0.clone(), got[0].1), (proj.clone(), 500));
+        assert!(got[0].2.join("src").join("main.rs").exists() && got[0].2.join("notes.txt").exists(), "all of it, read-only files too");
         assert_eq!(bin.as_ref().unwrap().room, (1 << 30) - 500);
         drop(bin);
         let _ = std::fs::remove_dir_all(base.join("bin"));
