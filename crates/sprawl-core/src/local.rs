@@ -469,9 +469,32 @@ fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Dire
 pub struct OwnedDir {
     path: PathBuf,
     name: String,
-    id: (u32, u64),
+    /// Its volume and full 128-bit file id (FILE_ID_INFO): unique on ReFS too, where the
+    /// short id isn't, and on NTFS not reused for another folder (Astra 1.0.2 round 4, S5).
+    id: (u64, u128),
     held: Option<File>,
     parent: Directory,
+    /// Run between letting go of the hold and opening the folder to remove it.
+    #[cfg(test)]
+    before_reopen: Option<Hook>,
+}
+
+#[cfg(test)]
+struct Hook(Box<dyn FnOnce()>);
+
+#[cfg(test)]
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("Hook") }
+}
+
+/// The volume's serial and the full 128-bit id of an open file or folder (FILE_ID_INFO).
+pub fn full_identity(f: &File) -> io::Result<(u64, u128)> {
+    let mut b = [0u64; 3];
+    // SAFETY: 24 bytes; class 18 is FileIdInfo.
+    if unsafe { GetFileInformationByHandleEx(f.as_raw_handle().cast(), 18, b.as_mut_ptr().cast(), 24) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((b[0], (b[2] as u128) << 64 | b[1] as u128))
 }
 
 impl OwnedDir {
@@ -490,8 +513,16 @@ impl OwnedDir {
             // as its current folder
             match open_rel(parent.handle()?, &name, READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Create, Kind::Folder) {
                 Ok((held, _)) => {
-                    let id = identity(&held)?;
-                    return Ok(OwnedDir { path: parent.path.join(&name), name, id, held: Some(held), parent });
+                    let id = full_identity(&held)?;
+                    return Ok(OwnedDir {
+                        path: parent.path.join(&name),
+                        name,
+                        id,
+                        held: Some(held),
+                        parent,
+                        #[cfg(test)]
+                        before_reopen: None,
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
@@ -503,6 +534,15 @@ impl OwnedDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+#[cfg(test)]
+type ChildHook = std::cell::RefCell<Option<Box<dyn FnMut(&str)>>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Run with each name teardown has just opened (a test tries to move it out then).
+    static AFTER_CHILD_OPEN: ChildHook = const { std::cell::RefCell::new(None) };
 }
 
 /// Remove everything in the folder `dir` is open on, through handles only (see [`OwnedDir`]).
@@ -519,7 +559,11 @@ fn empty_through(dir: &File, depth: u32) -> bool {
     let mut all = true;
     for wide in names {
         let Ok(name) = String::from_utf16(&wide) else { all = false; continue };
-        let Ok((h, _)) = open_rel(dir, &name, DELETE | READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either) else { all = false; continue };
+        // no delete sharing: nothing can rename or move it out of the owned folder while it is
+        // gone through and removed (Astra 1.0.2 round 4, S6)
+        let Ok((h, _)) = open_rel(dir, &name, DELETE | READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Open, Kind::Either) else { all = false; continue };
+        #[cfg(test)]
+        AFTER_CHILD_OPEN.with(|f| if let Some(f) = f.borrow_mut().as_mut() { f(&name) });
         let Ok(a) = attributes(&h) else { all = false; continue };
         if a & crate::attr::DIRECTORY != 0 && a & crate::attr::REPARSE_POINT == 0 && !empty_through(&h, depth + 1) {
             all = false;
@@ -537,9 +581,13 @@ impl Drop for OwnedDir {
         // the hold shares no delete, so it goes before the folder can be opened to be removed
         drop(held);
         if !emptied { return; }
+        #[cfg(test)]
+        if let Some(f) = self.before_reopen.take() { (f.0)(); }
         let Ok(parent) = self.parent.handle() else { return };
-        let Ok((h, _)) = open_rel(parent, &self.name, DELETE | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Folder) else { return };
-        if check_plain(&h, Kind::Folder).is_ok() && identity(&h).ok() == Some(self.id) {
+        // no delete sharing: from this open to the removal it can't be swapped; it goes only
+        // when it is the very folder made (its full id on its volume), else it is left
+        let Ok((h, _)) = open_rel(parent, &self.name, DELETE | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Open, Kind::Folder) else { return };
+        if check_plain(&h, Kind::Folder).is_ok() && full_identity(&h).ok() == Some(self.id) {
             let _ = dispose(&h);
         }
     }
@@ -643,16 +691,41 @@ mod owned_tests {
         let parent = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-owned-parent").unwrap();
         let a = OwnedDir::create_in(parent.path(), "inner").unwrap();
         let pa = a.path().to_path_buf();
-        // the hold is what keeps it; with it gone (as at the end of Drop), another folder at the
-        // name is not the one made
+        // Drop lets go of the hold before it opens the folder to remove it: swapped right there
+        // (Astra 1.0.2 round 4, S6: the test took the hold first, so Drop returned at once), the
+        // folder now at the name is not the one made, and stays
         let mut a = a;
-        drop(a.held.take());
-        std::fs::rename(&pa, parent.path().join("moved")).unwrap();
-        std::fs::create_dir(&pa).unwrap();
+        let (from, to) = (pa.clone(), parent.path().join("moved"));
+        a.before_reopen = Some(super::Hook(Box::new(move || {
+            std::fs::rename(&from, &to).unwrap();
+            std::fs::create_dir(&from).unwrap();
+        })));
         drop(a);
         assert!(pa.exists(), "another folder at its name is not removed");
+        assert!(parent.path().join("moved").exists(), "the one made, moved away, isn't followed");
         std::fs::remove_dir(&pa).unwrap();
         std::fs::remove_dir(parent.path().join("moved")).unwrap();
+        // not swapped: removed at the same step
+        let b = OwnedDir::create_in(parent.path(), "inner").unwrap();
+        let pb = b.path().to_path_buf();
+        drop(b);
+        assert!(!pb.exists());
+        // round 4, S6: a folder in it, once teardown has opened it, can't be moved out while it
+        // is gone through (the move is tried right after that open)
+        let c = OwnedDir::create_in(parent.path(), "inner").unwrap();
+        std::fs::create_dir_all(c.path().join("sub").join("deep")).unwrap();
+        std::fs::write(c.path().join("sub").join("deep").join("f.txt"), b"x").unwrap();
+        let (from, to) = (c.path().join("sub"), parent.path().join("escaped"));
+        let tried = std::rc::Rc::new(std::cell::Cell::new(None));
+        let t2 = tried.clone();
+        super::AFTER_CHILD_OPEN.with(|h| *h.borrow_mut() = Some(Box::new(move |name: &str| {
+            if name == "sub" { t2.set(Some(std::fs::rename(&from, &to).is_ok())); }
+        })));
+        let pc = c.path().to_path_buf();
+        drop(c);
+        super::AFTER_CHILD_OPEN.with(|h| *h.borrow_mut() = None);
+        assert_eq!(tried.get(), Some(false), "the open child can't be moved out");
+        assert!(!parent.path().join("escaped").exists() && !pc.exists(), "all of it removed");
     }
 
     #[test]

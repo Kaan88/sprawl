@@ -103,6 +103,36 @@ pub fn remove_local(path: &Path) -> std::io::Result<()> {
     store::remove_checked(path.parent().ok_or_else(|| std::io::Error::other("No folder"))?, name)
 }
 
+/// [`find_path`] that never takes one of several names differing only in case (in a
+/// case-sensitive folder) by chance: at such a level only the name as spelled in `path`
+/// matches. Elsewhere case is ignored, as Windows does.
+pub(crate) fn find_path_unambiguous(tree: &Tree, path: &Path) -> Option<usize> {
+    let s = path.to_string_lossy();
+    let spelled: Vec<&str> = s.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+    let want = segments(&s);
+    let starts: Vec<(usize, Vec<String>)> = if tree.nodes[ROOT].name == MULTIPLE {
+        tree.nodes[ROOT].children.iter().map(|&c| (c, segments(&tree.nodes[c].name))).collect()
+    } else {
+        vec![(ROOT, segments(&tree.path_of(ROOT).to_string_lossy()))]
+    };
+    'start: for (start, base) in starts {
+        if want.len() < base.len() || want[..base.len()] != base[..] {
+            continue;
+        }
+        let mut n = start;
+        for (i, part) in want.iter().enumerate().skip(base.len()) {
+            let alike: Vec<usize> = tree.nodes[n].children.iter().copied().filter(|&c| tree.nodes[c].name.to_lowercase() == *part).collect();
+            n = match alike.as_slice() {
+                [] => continue 'start,
+                [one] => *one,
+                many => many.iter().copied().find(|&c| tree.nodes[c].name == spelled[i])?,
+            };
+        }
+        return Some(n);
+    }
+    None
+}
+
 /// Lower-case path segments, without empty ones: `C:\Users\` -> `["c:", "users"]`.
 pub(crate) fn segments(path: &str) -> Vec<String> {
     path.split(['\\', '/']).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()

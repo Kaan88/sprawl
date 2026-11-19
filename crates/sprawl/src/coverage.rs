@@ -111,11 +111,22 @@ pub(crate) fn rows(c: &Coverage, s: &Seen) -> Vec<(&'static str, String)> {
     let mut net = if all_network {
         if several { "Network folders: they are only listed. Nothing is run, compressed or deleted there." } else { "A network folder: it is only listed. Nothing is run, compressed or deleted there." }.to_string()
     } else if s.network > 0 {
-        format!("Mixed: {} of these {} folders {} on the network, only listed (nothing is run, compressed or deleted there); the rest are on this PC.", s.network, c.roots.len(), if s.network == 1 { "is" } else { "are" })
+        // each count said once: on the network, on this PC, couldn't be told (Astra 1.0.2
+        // round 4, S4 #4: "the rest are on this PC" contradicted an unknown one)
+        let unknown = if csv { 0 } else { c.unknown };
+        let local = c.roots.len().saturating_sub(s.network + unknown);
+        let mut t = format!("Mixed: {} of these {} folders {} on the network, only listed (nothing is run, compressed or deleted there)", s.network, c.roots.len(), if s.network == 1 { "is" } else { "are" });
+        if local > 0 {
+            t += &format!("; {local} {} on this PC", if local == 1 { "is" } else { "are" });
+        }
+        if unknown > 0 {
+            t += &format!("; for {unknown}, whether {} on the network couldn't be told when the scan opened {}", if unknown == 1 { "it is" } else { "they are" }, if unknown == 1 { "it" } else { "them" });
+        }
+        t + "."
     } else {
         String::new()
     };
-    if c.unknown > 0 && !csv {
+    if c.unknown > 0 && !csv && s.network == 0 {
         let which = if c.roots.len() == 1 { "this folder is".to_string() } else { format!("{} of these folders {}", c.unknown, if c.unknown == 1 { "is" } else { "are" }) };
         let gap = if net.is_empty() { "" } else { " " };
         net = format!("{net}{gap}Whether {which} on the network couldn't be told when the scan opened {}.", if c.unknown == 1 { "it" } else { "them" });
@@ -247,7 +258,12 @@ mod tests {
         let mut s = seen(ScanMethod::Walk, 0, true, &drives);
         s.network = 1;
         let net = text(&rows(&c, &s), "Network");
-        assert!(net.starts_with("Mixed: 1 of these 3") && net.ends_with("Whether 1 of these folders is on the network couldn't be told when the scan opened it."), "{net}");
+        // each count once, none contradicting another (round 4, S4 #4)
+        assert_eq!(net, "Mixed: 1 of these 3 folders is on the network, only listed (nothing is run, compressed or deleted there); 1 is on this PC; for 1, whether it is on the network couldn't be told when the scan opened it.");
+        assert!(!net.contains("the rest"));
+        // two on this PC, none unknown
+        let c4 = Coverage { roots: vec![roots[0].clone(), roots[1].clone(), roots[2].clone()], skips: vec![], elevated: false, network: 1, unknown: 0 };
+        assert!(text(&rows(&c4, &s), "Network").ends_with("; 2 are on this PC."));
         // a real scan records its root from the handle it opened: this PC's temp folder
         let p = sprawl_core::Progress::new();
         assert!(sprawl_core::walk::inventory(&std::env::temp_dir(), &p).is_ok());

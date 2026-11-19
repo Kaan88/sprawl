@@ -38,10 +38,21 @@ pub fn recent_items() -> Vec<(String, SystemTime)> {
 /// own case (a restricted view, whose items were kept only as spelled on screen); otherwise
 /// case is ignored.
 pub fn opened_in(items: &[(String, SystemTime)], path: &str, exact: bool) -> Option<SystemTime> {
-    let key = |s: &str| if exact { s.trim_end_matches('\\').to_string() } else { s.trim_end_matches('\\').to_lowercase() };
+    // exact: each name in its own case, but the drive letter as Windows takes it (either
+    // case), as everywhere else (Astra 1.0.2 round 4, S3 #2)
+    let key = |s: &str| if exact { drive_upper(s.trim_end_matches('\\')) } else { s.trim_end_matches('\\').to_lowercase() };
     let at = key(path);
     let inside = format!("{at}\\");
     items.iter().filter(|(p, _)| { let p = key(p); p == at || p.starts_with(&inside) }).map(|&(_, t)| t).max()
+}
+
+/// `c:\x` as `C:\x`: only a drive letter's case changes.
+fn drive_upper(s: &str) -> String {
+    let mut c = s.chars();
+    match (c.next(), c.next()) {
+        (Some(d), Some(':')) if d.is_ascii_alphabetic() => format!("{}:{}", d.to_ascii_uppercase(), &s[2..]),
+        _ => s.to_string(),
+    }
 }
 
 /// Whether NTFS keeps last-access times on this machine: only when the setting says so plainly
@@ -271,6 +282,31 @@ mod tests {
         assert_eq!(opened_in(&items, r"D:\Films", false), Some(t(10)));
         assert_eq!(opened_in(&items, r"D:\Films", true), None);
         assert_eq!(opened_in(&items, r"d:\films\old", true), Some(t(5)));
+        // ...but the drive letter's case never decides (round 4, S3 #2)
+        assert_eq!(opened_in(&items, r"D:\films\old", true), Some(t(5)));
+        assert_eq!(opened_in(&items, r"D:\Films\old", true), None);
+    }
+
+    /// Usage is looked up in the app's own folder, never a sibling differing only in case.
+    #[test]
+    fn a_case_only_sibling_is_never_taken_by_chance() {
+        let dir = std::env::temp_dir().join(format!("sprawl-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Game")).unwrap();
+        let mut tree = sprawl_core::walk::inventory(&dir, &sprawl_core::Progress::new()).unwrap();
+        // a case-sensitive folder can hold `game` beside `Game`: made in the tree
+        let mut twin = tree.nodes[tree.nodes[sprawl_core::ROOT].children[0]].clone();
+        twin.name = "game".into();
+        twin.children.clear();
+        let at = tree.nodes.len();
+        tree.nodes.push(twin);
+        tree.nodes[sprawl_core::ROOT].children.insert(0, at);
+        let real = tree.nodes[sprawl_core::ROOT].children[1];
+        assert_eq!(crate::find_path_unambiguous(&tree, &dir.join("Game")), Some(real));
+        assert_eq!(crate::find_path_unambiguous(&tree, &dir.join("game")), Some(at));
+        assert_eq!(crate::find_path_unambiguous(&tree, &dir.join("GAME")), None, "neither by chance");
+        assert_eq!(crate::find_path(&tree, &dir.join("GAME")), Some(at), "the plain lookup takes the first");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The real readers on a small folder of this repository (run by hand).

@@ -268,7 +268,9 @@ impl Facts {
             // still in use
             let mut best: Option<(SystemTime, UsedFrom)> = app.last_used;
             for l in &app.locations {
-                let Some(n) = find_path(tree, l) else { continue };
+                // its own folder, never a sibling whose name differs only in case (Astra 1.0.2
+                // round 4, S3 #2): a restricted view copies this last use
+                let Some(n) = crate::find_path_unambiguous(tree, l) else { continue };
                 for exe in programs_in(tree, n, 6) {
                     // installers, updaters and crash reporters say nothing about use of the app
                     if helper(&exe) {

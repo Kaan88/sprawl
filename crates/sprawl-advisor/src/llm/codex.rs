@@ -341,6 +341,8 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
     let mut failed: Option<String> = None;
     let mut completed = false;
     let mut last: Option<String> = None;
+    // a turn was begun (so an empty answer is an unfinished or empty turn, not no output)
+    let mut began = false;
     for line in out.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
             return Err(if text.is_some() { "Codex's output ended in something that isn't one of its events: no answer is taken from it".into() } else { format!("Codex answered something unexpected: {}", super::short(out)) });
@@ -352,8 +354,13 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
                 // the turn's end counts only after the message it ends
                 completed = false;
             }
-            // a turn begun anew isn't finished until its own end
-            Some("turn.started") => completed = false,
+            // a turn begun anew isn't finished until its own end, and its answer is its own:
+            // an earlier turn's message isn't carried into it (Astra 1.0.2 round 4, S2 #4)
+            Some("turn.started") => {
+                completed = false;
+                text = None;
+                began = true;
+            }
             Some("turn.completed") => {
                 completed = true;
                 let u = &v["usage"];
@@ -371,6 +378,8 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
     match text {
         Some(t) if completed && last.as_deref() == Some("turn.completed") => Ok((t, usage)),
         Some(_) => Err("Codex stopped before finishing its answer".into()),
+        None if began && completed => Err("Codex's last turn ended without an answer".into()),
+        None if began => Err("Codex stopped before finishing its answer".into()),
         None if out.trim().is_empty() => Err("Codex gave no answer. Is it signed in? Run codex login once.".into()),
         None => Err(format!("Codex answered something unexpected: {}", super::short(out))),
     }
@@ -658,6 +667,10 @@ mod tests {
         assert!(super::parse(&format!("{out}\n{{\"type\":\"turn.started\"}}")).unwrap_err().contains("before finishing"));
         assert!(super::parse(&format!("{out}\n{{\"type\":\"turn.started\"}}\n{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"x\"}}}}")).unwrap_err().contains("before finishing"));
         assert!(super::parse(&format!("{out}\n{{\"type\":\"thread.closed\"}}")).unwrap_err().contains("before finishing"), "the last event must be the turn's end");
+        // round 4: a later turn that completes without a message of its own doesn't return
+        // the earlier turn's answer (with the later turn's usage)
+        let e = super::parse(&format!("{out}\n{{\"type\":\"turn.started\"}}\n{{\"type\":\"turn.completed\",\"usage\":{{}}}}")).unwrap_err();
+        assert!(e.contains("without an answer"), "{e}");
     }
 
     #[test]

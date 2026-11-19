@@ -339,7 +339,6 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         return o;
     }
     match action {
-        // Sprawl's own compression: each file checked now and named to compact.exe, never /s
         // Sprawl's own compression: each file checked now and compressed through its held
         // folder; `progress` gets the bytes gone through, not freed
         Action::Tool { command } if crate::remedies::is_compress(action) => match crate::remedies::compress_scope(path, command, spare, stop, progress) {
@@ -360,7 +359,16 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         Action::Tool { command } => match package_tool(command) {
             None => tool(command, stop, &mut o),
             Some(Err(why)) => o.problem(path, format!("left alone: {why}")),
-            Some(Ok(scoped)) => {
+            Some(Ok(scoped)) => 'tool: {
+                // the reviewed folder, and the folder in it the tool writes to while it is asked
+                // (npm's logs), held through both commands (Astra 1.0.2 round 4, S1 #4)
+                let before = match hold_before(path, &scoped) {
+                    Ok(h) => h,
+                    Err(why) => {
+                        o.problem(path, format!("left alone: {why}"));
+                        break 'tool;
+                    }
+                };
                 let env = scoped.env(path);
                 let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
                 let mut asked = Outcome::default();
@@ -379,6 +387,7 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
                         Err(why) => o.problem(path, format!("left alone: {why}")),
                     }
                 }
+                drop(before);
             }
         },
         Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
@@ -419,6 +428,9 @@ struct PackageTool {
     var: Option<&'static str>,
     /// Settings both commands run with besides (Go: its saved settings and flags off).
     fixed: &'static [(&'static str, &'static str)],
+    /// A folder in the reviewed one the tool writes to on every start (npm's `_logs`): made
+    /// as a plain folder when it isn't there, and held with it through both commands.
+    writes: Option<&'static str>,
 }
 
 impl PackageTool {
@@ -442,12 +454,15 @@ enum Answer {
 /// The package-manager commands of the built-in rules, bound to the reviewed folder; Err for
 /// one that can't be (it is held). Other commands are not package caches.
 fn package_tool(command: &str) -> Option<Result<PackageTool, &'static str>> {
-    let t = |probe, run, answer, var, fixed| Some(Ok(PackageTool { probe, run, answer, var, fixed }));
+    let t = |probe, run, answer, var, fixed| Some(Ok(PackageTool { probe, run, answer, var, fixed, writes: None }));
     match command.trim() {
         // npm also rotates its logs wherever `logs-dir` says, on every start: they go in the
         // reviewed folder (where npm keeps them by default), for both commands
-        "npm cache clean --force" => t(r#"npm config get cache --cache "$env:SPRAWL_TOOL_DIR" --logs-dir "$env:SPRAWL_TOOL_DIR\_logs""#,
-            r#"npm cache clean --force --cache "$env:SPRAWL_TOOL_DIR" --logs-dir "$env:SPRAWL_TOOL_DIR\_logs""#, Answer::Same, None, &[]),
+        "npm cache clean --force" => Some(Ok(PackageTool {
+            probe: r#"npm config get cache --cache "$env:SPRAWL_TOOL_DIR" --logs-dir "$env:SPRAWL_TOOL_DIR\_logs""#,
+            run: r#"npm cache clean --force --cache "$env:SPRAWL_TOOL_DIR" --logs-dir "$env:SPRAWL_TOOL_DIR\_logs""#,
+            answer: Answer::Same, var: None, fixed: &[], writes: Some("_logs"),
+        })),
         "pip cache purge" => t(r#"pip cache dir --cache-dir "$env:SPRAWL_TOOL_DIR""#, r#"pip cache purge --cache-dir "$env:SPRAWL_TOOL_DIR""#, Answer::Same, None, &[]),
         // `all` also clears the HTTP cache, temp and plugin caches, wherever they are set up
         "dotnet nuget locals all --clear" | "dotnet nuget locals global-packages --clear" =>
@@ -485,6 +500,22 @@ fn hold_place(place: &Path) -> std::io::Result<Held> {
     if !m.is_dir() || m.file_attributes() & REPARSE != 0 { return Err(std::io::Error::other("not a plain folder")); }
     if !same_path(&sprawl_core::local::final_path(&file)?, &chain.path) { return Err(std::io::Error::other("resolved elsewhere")); }
     Ok((chain, file))
+}
+
+/// The reviewed folder, and the folder in it the tool writes to while it is asked (made when
+/// it isn't there: a plain folder Sprawl made can't lead elsewhere), each held as itself.
+fn hold_before(path: &Path, tool: &PackageTool) -> Result<Vec<Held>, String> {
+    let mut held = vec![hold_place(path).map_err(|e| format!("the folder reviewed couldn't be held ({e})"))?];
+    if let Some(name) = tool.writes {
+        let inner = path.join(name);
+        match std::fs::create_dir(&inner) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("{} couldn't be made ({e})", inner.display())),
+        }
+        held.push(hold_place(&inner).map_err(|e| format!("{} is not a plain folder in it ({e})", inner.display()))?);
+    }
+    Ok(held)
 }
 
 /// Whether the place the tool says it would clear (its whole answer) is the reviewed folder
@@ -2879,6 +2910,20 @@ mod tests {
         drop(held);
         std::fs::rename(&cache, base.join("moved")).unwrap();
         std::fs::rename(base.join("moved"), &cache).unwrap();
+        // round 4, S1 #4: npm writes its logs while it is asked: the cache and a plain `_logs`
+        // in it (made when missing) are held from before the question
+        assert!(npm.writes == Some("_logs"));
+        let before = hold_before(&cache, &npm).unwrap();
+        assert!(cache.join("_logs").is_dir(), "made");
+        assert!(std::fs::rename(cache.join("_logs"), cache.join("_old")).is_err(), "held");
+        assert!(std::fs::rename(&cache, base.join("moved")).is_err(), "held");
+        drop(before);
+        std::fs::remove_dir(cache.join("_logs")).unwrap();
+        std::fs::create_dir_all(base.join("elsewhere")).unwrap();
+        if std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(cache.join("_logs")).arg(base.join("elsewhere")).output().is_ok_and(|o| o.status.success()) {
+            assert!(hold_before(&cache, &npm).is_err(), "a `_logs` that is a link is refused");
+            std::fs::remove_dir(cache.join("_logs")).unwrap();
+        }
         // a folder skipped in Settings, or not there at all
         assert!(scope_matches(&base.join("gone"), &npm, &out(&[s(&base.join("gone"))])).is_err());
         assert_eq!(package_tool("Clear-RecycleBin -Force"), None, "not a package cache");
