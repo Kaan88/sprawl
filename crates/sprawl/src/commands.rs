@@ -1103,11 +1103,6 @@ impl State {
         self.refresh_exts();
         self.render_map();
         self.update_header(&root);
-        if let Some(t) = self.tree.as_ref() {
-            let n = &t.nodes[ROOT];
-            let info = format!("{} files, {} folders, {} unreadable", crate::format::thousands(n.files), crate::format::thousands(n.folders), crate::format::thousands(t.errors));
-            text(&self.root, "ScanInfo", &info);
-        }
         self.advisor_start();
     }
 }

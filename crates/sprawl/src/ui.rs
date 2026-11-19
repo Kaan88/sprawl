@@ -736,20 +736,17 @@ pub fn page(drives: &[String]) -> String {
       </StackPanel>
     </Border>
     <Border Grid.Column="1" {CARD} Padding="14,10">
-      <Grid ColumnSpacing="14" RowSpacing="3">
+      <Grid ColumnSpacing="14" RowSpacing="7" VerticalAlignment="Center">
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-        <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
-        <TextBlock Text="Selection:" Foreground="#FF8E97AA" FontSize="12"/>
-        <TextBlock Text="Total Space:" Grid.Row="1" Foreground="#FF8E97AA" FontSize="12"/>
-        <TextBlock Text="Space Used:" Grid.Row="2" Foreground="#FF8E97AA" FontSize="12"/>
-        <TextBlock Text="Space Free:" Grid.Row="3" Foreground="#FF8E97AA" FontSize="12"/>
+        <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+        <TextBlock x:Name="HeadLabel" Text="Selected:" Foreground="#FF8E97AA" FontSize="12"/>
         <TextBlock x:Name="SelText" {num} Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
-        <TextBlock x:Name="TotalText" {num} Grid.Row="1" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <TextBlock x:Name="UsedText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <TextBlock x:Name="FreeText" {num} Grid.Row="3" Grid.Column="1" Text="-" FontWeight="SemiBold" FontSize="12"/>
-        <Grid Grid.Row="1" Grid.RowSpan="3" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
-          <Border x:Name="UsageTrack" Height="10" CornerRadius="5" Background="#14FFFFFF"/>
-          <Border x:Name="UsageBar" Height="10" CornerRadius="5" HorizontalAlignment="Left" Width="0">
+        <TextBlock x:Name="ScanInfo" {num} Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="Not scanned yet" FontSize="12" Foreground="#FFC9CFDC" TextTrimming="CharacterEllipsis"/>
+        <TextBlock x:Name="DriveLabel" Text="Drive:" Grid.Row="2" Foreground="#FF8E97AA" FontSize="12"/>
+        <TextBlock x:Name="DriveText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontSize="12" Foreground="#FFC9CFDC"/>
+        <Grid Grid.Row="2" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
+          <Border x:Name="UsageTrack" Height="8" CornerRadius="4" Background="#14FFFFFF"/>
+          <Border x:Name="UsageBar" Height="8" CornerRadius="4" HorizontalAlignment="Left" Width="0">
             <Border.Background>
               <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                 <GradientStop Color="#FF4CC2FF" Offset="0"/><GradientStop Color="#FF9B7BFF" Offset="0.8"/><GradientStop Color="#FFFF6B8B" Offset="1"/>
@@ -757,7 +754,6 @@ pub fn page(drives: &[String]) -> String {
             </Border.Background>
           </Border>
         </Grid>
-        <TextBlock x:Name="ScanInfo" {num} Grid.Row="4" Grid.ColumnSpan="3" Text="" FontSize="12" Foreground="#FF8E97AA"/>
       </Grid>
     </Border>
     <Border x:Name="BrandCard" Grid.Column="2" {CARD} Padding="16,10,22,10">

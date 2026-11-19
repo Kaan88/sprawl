@@ -61,9 +61,40 @@ fn scan_result<T>(result: std::io::Result<T>, cancelled: bool) -> std::io::Resul
     else { result }
 }
 
+/// How a scan was read, as the header and the status line say it.
+fn method_label(m: sprawl_core::ScanMethod) -> &'static str {
+    match m {
+        sprawl_core::ScanMethod::Mft => "read from the MFT",
+        sprawl_core::ScanMethod::Csv => "loaded from CSV",
+        sprawl_core::ScanMethod::Walk => "folder walk",
+    }
+}
+
+/// The header's name for the volume a path is on: "Drive C:", "Share:" for a network path,
+/// "Drives:" for a scan of several folders.
+fn drive_label(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        format!("Drive {}:", (b[0] as char).to_ascii_uppercase())
+    } else if s.starts_with(r"\\") {
+        "Share:".into()
+    } else {
+        "Drives:".into()
+    }
+}
+
 #[cfg(test)]
 mod scan_result_tests {
-    use super::scan_result;
+    use super::{drive_label, scan_result};
+
+    #[test]
+    fn the_header_names_the_drive_a_scan_is_on() {
+        assert_eq!(drive_label(std::path::Path::new(r"c:\Users\x")), "Drive C:");
+        assert_eq!(drive_label(std::path::Path::new(r"D:\")), "Drive D:");
+        assert_eq!(drive_label(std::path::Path::new(r"\\server\share\x")), "Share:");
+        assert_eq!(drive_label(std::path::Path::new(sprawl_core::MULTIPLE)), "Drives:");
+    }
 
     #[test]
     fn cancellation_wins_over_a_completed_or_failed_worker() {
@@ -542,20 +573,10 @@ impl State {
             self.sort_exts();
         }
         let t = self.tree.as_ref().unwrap();
-        let how = match t.method {
-            sprawl_core::ScanMethod::Mft => "read from the MFT",
-            sprawl_core::ScanMethod::Csv => "loaded from CSV",
-            sprawl_core::ScanMethod::Walk => "folder walk",
-        };
-        text(&self.root, "StatusText", &format!("Scan complete in {:.2} seconds ({how})", self.scan_secs));
+        text(&self.root, "StatusText", &format!("Scan complete in {:.2} seconds ({})", self.scan_secs, method_label(t.method)));
         if t.method == sprawl_core::ScanMethod::Walk && !sprawl_core::is_elevated() {
             text(&self.root, "FootLeft", "Tip: Options > Restart as Administrator reads the MFT directly, which is much faster on big drives.");
         }
-        text(
-            &self.root,
-            "ScanInfo",
-            &format!("{} files, {} folders, {} unreadable", thousands(t.nodes[ROOT].files), thousands(t.nodes[ROOT].folders), thousands(t.errors)),
-        );
         self.update_header(path);
         self.scan_title(path);
         // The free-space tile only makes sense when a whole drive was scanned.
@@ -573,22 +594,56 @@ impl State {
         self.colours = self.exts.iter().take(paint::COUNT).enumerate().map(|(i, e)| (e.ext.clone(), i)).collect();
     }
 
+    /// The header card: what was scanned (or is picked, before a scan) on one line, what the
+    /// scan holds on the next, and the drive it lives on on its own line, so a folder's scan
+    /// isn't read as the drive's numbers.
     pub(crate) fn update_header(&self, path: &std::path::Path) {
+        let scanned = self.tree.as_ref().filter(|t| t.root_path == path);
+        text(&self.root, "HeadLabel", if scanned.is_some() { "Scanned:" } else { "Selected:" });
         text(&self.root, "SelText", &path.display().to_string());
+        let info = match scanned {
+            Some(t) => {
+                let n = &t.nodes[ROOT];
+                // a CSV wasn't read from the disk: it has no scan time to show
+                let when = if self.scan_secs > 0.0 && t.method != sprawl_core::ScanMethod::Csv {
+                    format!("read in {:.2} s ({})", self.scan_secs, method_label(t.method))
+                } else {
+                    method_label(t.method).to_string()
+                };
+                format!(
+                    "{}   ·   {} files, {} folders   ·   {} unreadable   ·   {when}",
+                    self.size(n.size),
+                    thousands(n.files),
+                    thousands(n.folders),
+                    thousands(t.errors)
+                )
+            }
+            None => "Not scanned yet".to_string(),
+        };
+        text(&self.root, "ScanInfo", &info);
+        text(&self.root, "DriveLabel", &drive_label(path));
         // A CSV file names any path it likes: asking a network path for its free space would
         // connect to that server just because the file was opened.
         let from_csv = self.tree.as_ref().is_some_and(|t| t.method == sprawl_core::ScanMethod::Csv);
         let remote = path.to_string_lossy().starts_with(r"\\");
         let space = if from_csv && remote { None } else { win32::disk_space(path) };
+        let bar = (find::<FrameworkElement>(&self.root, "UsageTrack"), find::<FrameworkElement>(&self.root, "UsageBar"));
         if let Some((total, free)) = space {
             let used = total.saturating_sub(free);
             let pct = |v: u64| if total == 0 { 0.0 } else { v as f64 * 100.0 / total as f64 };
-            text(&self.root, "TotalText", &self.size(total));
-            text(&self.root, "UsedText", &format!("{}   ({:.1}%)", self.size(used), pct(used)));
-            text(&self.root, "FreeText", &format!("{}   ({:.1}%)", self.size(free), pct(free)));
-            if let (Ok(track), Ok(bar)) = (find::<FrameworkElement>(&self.root, "UsageTrack"), find::<FrameworkElement>(&self.root, "UsageBar")) {
+            text(
+                &self.root,
+                "DriveText",
+                &format!("{}   ·   {} used ({:.1}%)   ·   {} free ({:.1}%)", self.size(total), self.size(used), pct(used), self.size(free), pct(free)),
+            );
+            if let (Ok(track), Ok(bar)) = bar {
                 let w = track.ActualWidth().unwrap_or(200.0);
                 let _ = bar.SetWidth((w * pct(used) / 100.0).max(14.0));
+            }
+        } else {
+            text(&self.root, "DriveText", "-");
+            if let (_, Ok(bar)) = bar {
+                let _ = bar.SetWidth(0.0);
             }
         }
     }

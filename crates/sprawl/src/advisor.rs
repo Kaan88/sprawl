@@ -1544,7 +1544,7 @@ impl State {
                 self.advisor_ask();
             }
             // the AI's choices right here, not the whole wizard
-            "AdvSetup" => self.advisor.ai_edit = Some(AiConfig::load()),
+            "AdvSetup" => { self.show_ai(); self.advisor.ai_edit = Some(AiConfig::load()); }
             "AdvExport" => self.advisor_export(),
             "AdvVerify" => self.advisor_verify(),
             "AdvLog" => {
@@ -2142,12 +2142,17 @@ impl State {
         let mut x = format!(r##"<Grid {} Padding="18,14,18,8" RowSpacing="10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><StackPanel Spacing="10">"##, ui::NS);
         x += &self.advisor_head(r);
         x += "</StackPanel>";
-        let ai = self.cl_ai_open();
+        // AI off and nothing of it to show: one line over the findings instead of a column
+        let ai_off = self.ai_off_line();
+        let ai = self.cl_ai_open() && !ai_off;
         x += &format!(
             r##"<Grid Grid.Row="1" ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="420"/><ColumnDefinition Width="{}"/></Grid.ColumnDefinitions>"##,
             if ai { "400" } else { "Auto" }
         );
         x += r##"<ScrollViewer x:Name="FnScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="10">"##;
+        if ai_off {
+            x += r##"<Border Padding="12,6" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list, and answer questions about this scan. Nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."><Run Text="AI is off" FontWeight="SemiBold" Foreground="#FFD5DBE8"/><Run Text="  ·  nothing is sent anywhere. With one, Sprawl can explain folders its rules don't know and answer questions about this scan."/></TextBlock><Button x:Name="AdvSetup" Grid.Column="1" Content="Set up AI" Padding="10,3" FontSize="12" CornerRadius="5"/></Grid></Border>"##;
+        }
         x += &self.findings_section(r);
         x += "</StackPanel></ScrollViewer>";
         if ai {
@@ -2157,7 +2162,7 @@ impl State {
             x += &self.ai_found_card(r);
             x += &self.chat_card();
             x += "</StackPanel></ScrollViewer></Grid>";
-        } else {
+        } else if !ai_off {
             x += r##"<Button x:Name="AdvClAiFold" Grid.Column="1" VerticalAlignment="Top" Padding="8,4" FontSize="12" CornerRadius="5" Content="AI" ToolTipService.ToolTip="Show the AI's column"/>"##;
         }
         x += "</Grid></Grid>";
@@ -2300,7 +2305,11 @@ impl State {
             let off = AiConfig::load().provider == Provider::Off;
             x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="5"><TextBlock Text="Folders the rules haven't explained" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="These may be useful data. The AI can inspect the scan and propose reusable information rules; you approve each before a future scan uses it." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##);
             for (p, bytes) in r.unexplained.iter().take(5) { x += &format!(r##"<TextBlock Text="{} · {}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(&p.display().to_string()), self.size(*bytes)); }
-            x += &format!(r##"<Button x:Name="{}" Content="{}" Padding="10,3" FontSize="12" HorizontalAlignment="Left"/></StackPanel></Border>"##, if off { "AdvUnknownSetup" } else { "AdvExplainUnknown" }, if off { "Set up AI" } else { "Explain and propose recognisers" });
+            if off && self.ai_off_line() {
+                x += "</StackPanel></Border>";
+            } else {
+                x += &format!(r##"<Button x:Name="{}" Content="{}" Padding="10,3" FontSize="12" HorizontalAlignment="Left"/></StackPanel></Border>"##, if off { "AdvUnknownSetup" } else { "AdvExplainUnknown" }, if off { "Set up AI" } else { "Explain and propose recognisers" });
+            }
         }
         let chip = |name: &str, label: &str, on: bool| {
             format!(r##"<Button x:Name="{name}" Content="{label}" {} Padding="8,2" CornerRadius="10"/>"##, crate::look::pick(crate::look::Pick::Chip, on))
@@ -3743,6 +3752,16 @@ impl State {
         x
     }
 
+    /// The Advisor's AI column folds to one line: AI is off, its settings aren't open, and it
+    /// has no answer, chat or run to show.
+    fn ai_off_line(&self) -> bool {
+        AiConfig::load().provider == Provider::Off
+            && self.advisor.ai_edit.is_none()
+            && self.advisor.chat.log.is_empty()
+            && self.advisor.chat.live.is_none()
+            && matches!(self.advisor.ai, Ai::Idle)
+    }
+
     /// `plan`: the goal, the plan and the script; otherwise asking the AI and its answer.
     fn ai_card(&self, _r: &Report) -> String {
         let cfg = AiConfig::load();
@@ -3763,7 +3782,7 @@ impl State {
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
             if cfg.provider == Provider::Off && self.advisor.ai_edit.is_none() {
-                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you press Clean up. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
+                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
             }
             if let Some(e) = &self.advisor.ai_edit {
                 x += &self.ai_settings(e);
@@ -3801,7 +3820,7 @@ impl State {
                 );
                 // its findings are in the one list, marked AI: ticked and cleaned there
                 if *found > 0 {
-                    x += r##"<TextBlock Text="Tick them below or in the list (marked AI), then Clean up." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##;
+                    x += r##"<TextBlock Text="Tick them below or in the list (marked AI), then review the selection." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##;
                 }
                 if !summary.is_empty() {
                     x += r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF">"##;
@@ -3995,7 +4014,7 @@ impl State {
         }
         if let Some(c) = &f.command {
             if crate::cleanup::untickable(f, r.counted[i]).is_none() {
-                x += r##"<TextBlock Text="Sprawl does this for you: tick it and press Clean up, or Clean up just this." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##;
+                x += r##"<TextBlock Text="Sprawl does this for you: tick it and review the selection, or Clean up just this." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##;
             }
             if self.advisor.show_cmd {
                 // the safe-delete functions are long and the same every time: shown folded, copied whole

@@ -82,7 +82,7 @@ pub fn xaml() -> String {
     let providers: Vec<&str> = Provider::ALL.iter().map(|p| p.label()).collect();
     let ai = format!(
         r##"<StackPanel x:Name="WizAi" Spacing="2" Visibility="Collapsed">
-        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it and press Clean up."/>
+        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
         <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="#FF8FB4FF"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="12" CornerRadius="4" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>

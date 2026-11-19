@@ -64,7 +64,9 @@ pub(crate) struct ClState {
     /// doesn't cover them (no scan, another drive, one folder).
     pub(crate) own: Option<Own>,
     /// That read going on: its progress, and where its answer comes.
-    pub(crate) own_reading: Option<(Arc<sprawl_core::Progress>, std::sync::mpsc::Receiver<Option<Own>>)>,
+    pub(crate) own_reading: Option<(Arc<sprawl_core::Progress>, std::sync::mpsc::Receiver<Result<Own, OwnFailed>>)>,
+    /// Why the last read gave nothing: said once, in the tab's body beside Check.
+    pub(crate) own_failed: Option<OwnFailed>,
     own_count: u64,
     /// The folders the cleaners look at, and the large ones the quick read leaves out
     /// (worked out once).
@@ -100,6 +102,15 @@ pub(crate) enum PreviewRun {
 
 /// How many of the biggest files a preview lists.
 const PREVIEW_FILES: usize = 25;
+
+/// Why the Cleaners tab's own read gave nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OwnFailed {
+    /// None of the cleaners' folders is here (or all are excluded): nothing to read, not a failure.
+    NoFolders,
+    /// The read failed or was stopped.
+    Unreadable,
+}
 
 /// The cleaners' folders as read by the Cleaners tab itself, and the report made from them.
 pub(crate) struct Own {
@@ -243,6 +254,7 @@ impl State {
         if self.job.is_some() || self.advisor.cl.own_reading.is_some() || self.advisor.file_op() {
             return;
         }
+        self.advisor.cl.own_failed = None;
         // the user's decisions (what they keep) apply to this read too
         self.advisor.memory_ready();
         let mut roots = self.cleaner_roots();
@@ -257,16 +269,19 @@ impl State {
         std::thread::spawn(move || {
             let began = std::time::SystemTime::now();
             let own = (|| {
+                if roots.is_empty() {
+                    return Err(OwnFailed::NoFolders);
+                }
                 // one folder this account can't open would fail the whole read: it is left out
                 let (roots, unread): (Vec<_>, Vec<_>) = roots.into_iter().partition(|r| std::fs::read_dir(r).is_ok());
                 if roots.is_empty() {
-                    return None;
+                    return Err(OwnFailed::Unreadable);
                 }
-                let tree = Arc::new(sprawl_core::scan_many_inventory(&roots, &p2).ok()?);
-                if p2.is_cancelled() { return None; }
+                let tree = Arc::new(sprawl_core::scan_many_inventory(&roots, &p2).map_err(|_| OwnFailed::Unreadable)?);
+                if p2.is_cancelled() { return Err(OwnFailed::Unreadable); }
                 let measured_at = began.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on, measured_at))?;
-                Some(Own { tree, report, began, roots: roots.len(), unread })
+                let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on, measured_at)).ok_or(OwnFailed::Unreadable)?;
+                Ok(Own { tree, report, began, roots: roots.len(), unread })
             })();
             let _ = tx.send(own);
         });
@@ -285,12 +300,18 @@ impl State {
                 }
                 return;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(OwnFailed::Unreadable),
         };
         self.advisor.cl.own_reading = None;
-        if got.is_none() {
-            self.adv_say("The cleaners' folders couldn't be read. Press Check again.");
-        }
+        // the failure is said in the tab's body only, beside its Check button: not again in
+        // the header's status line and the foot
+        let got = match got {
+            Ok(o) => Some(o),
+            Err(why) => {
+                self.advisor.cl.own_failed = Some(why);
+                None
+            }
+        };
         if let Some(o) = &got {
             if self.advisor.memory.learning.mark_refills(&o.report.refill_observations) { self.save_memory(); }
         }
@@ -552,7 +573,7 @@ impl State {
             return String::new();
         }
         let mut x = String::from(
-            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Cleaners the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved cleaners join your own rules and show in Cleaners. Their parts are at least amber, never run as administrator, and nothing is cleaned until you tick it and press Clean up." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Cleaners the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved cleaners join your own rules and show in Cleaners. Their parts are at least amber, never run as administrator, and nothing is cleaned until you tick it, review it and confirm." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
         );
         for (i, p) in m.cleaner_proposals.iter().enumerate() {
             let c = &p.cleaner;
@@ -1122,7 +1143,11 @@ impl State {
         let Some(r) = self.advice() else {
             let msg = match reading {
                 Some(n) => format!("Reading the folders the cleaners look at... {} items", crate::format::thousands(n)),
-                None if self.own_active() => "Press Check to read the folders the cleaners look at.".into(),
+                None if self.own_active() => match self.advisor.cl.own_failed {
+                    Some(OwnFailed::NoFolders) => "None of the folders the cleaners look at is on this PC: there is nothing for them to clean.".into(),
+                    Some(OwnFailed::Unreadable) => "The folders the cleaners look at couldn't be read. Press Check to try again.".into(),
+                    None => "Press Check to read the folders the cleaners look at.".into(),
+                },
                 None if self.advisor.running => "Looking for what the cleaners can clean...".into(),
                 None => self.advisor.note.unwrap_or("Scan a drive or folder, and the cleaners show what can go.").into(),
             };
@@ -1411,7 +1436,7 @@ impl State {
             match found {
                 Some((n, (c, p))) => x += &self.part_details(r, c, p, n),
                 None => {
-                    x += r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><TextBlock Text="Pick a part to see what it is, what cleaning it costs, where it is and whether its application is open. Nothing goes before you press Clean up and confirm." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></Border>"##
+                    x += r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><TextBlock Text="Pick a part to see what it is, what cleaning it costs, where it is and whether its application is open. Nothing goes before you review it and confirm." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></Border>"##
                 }
             }
         }
