@@ -14,6 +14,7 @@ dated implementation notes (see the last section).
   Findings go into a 1.0.2.
 - **Next:** the user wants both: review [Astra's alternative roadmap](alternative-roadmap-astra.md)
   together with the backlog below, then choose. UI changes still need approved mockups first.
+  Claude's review of it and a proposed order: [roadmap-review-claude.md](roadmap-review-claude.md).
 
 ## 1.0.1 corrections (Claude, 2026-11-19)
 
