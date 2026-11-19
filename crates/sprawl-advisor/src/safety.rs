@@ -1109,16 +1109,16 @@ mod tests {
     #[test]
     fn a_folder_redirected_to_this_pcs_own_share_keeps_its_protection() {
         let names = vec!["desk".to_string(), "desk.home.lan".to_string()];
-        let own: Vec<std::net::IpAddr> = vec!["192.168.1.20".parse().unwrap(), "fe80::1".parse().unwrap()];
+        let own: Vec<std::net::IpAddr> = vec!["192.0.2.20".parse().unwrap(), "fe80::1".parse().unwrap()];
         let shares = |s: &str| (s.eq_ignore_ascii_case("docs")).then(|| r"D:\Shared\Docs".to_string());
         let place = |t: &str| unc_place_with(t, &names, Some(&own), &shares);
         // another PC: never cleaned from here, no pattern needed
         assert_eq!(place(r"\\nas\home\sam\Documents"), UncPlace::Elsewhere);
-        assert_eq!(place(r"\\192.168.1.3\ntfs\Documents"), UncPlace::Elsewhere);
+        assert_eq!(place(r"\\192.0.2.7\ntfs\Documents"), UncPlace::Elsewhere);
         // this PC, by name, address or loopback: the folder on its own drive (Astra's case)
         assert_eq!(place(r"\\DESK\D$\Users\sam\Documents"), UncPlace::Here(r"D:\Users\sam\Documents".into()));
         assert_eq!(place(r"\\desk.home.lan\docs\sam"), UncPlace::Here(r"D:\Shared\Docs\sam".into()));
-        assert_eq!(place(r"\\192.168.1.20\d$\Docs"), UncPlace::Here(r"D:\Docs".into()));
+        assert_eq!(place(r"\\192.0.2.20\d$\Docs"), UncPlace::Here(r"D:\Docs".into()));
         assert_eq!(place(r"\\127.0.0.1\c$\Users\sam\Documents"), UncPlace::Here(r"C:\Users\sam\Documents".into()));
         assert_eq!(place(r"\\localhost\docs"), UncPlace::Here(r"D:\Shared\Docs\".into()));
         assert_eq!(place(r"\\fe80--1.ipv6-literal.net\docs\x"), UncPlace::Here(r"D:\Shared\Docs\x".into()));
@@ -1128,7 +1128,7 @@ mod tests {
             assert_eq!(place(bad), UncPlace::Unknown, "{bad}");
         }
         // an address while this PC's addresses are unknown: fail closed
-        assert_eq!(unc_place_with(r"\\192.168.1.3\ntfs", &names, None, &shares), UncPlace::Unknown);
+        assert_eq!(unc_place_with(r"\\192.0.2.7\ntfs", &names, None, &shares), UncPlace::Unknown);
         // the real lookups answer on this PC (names, adapter addresses incl. loopback)
         assert!(!this_pc_names().is_empty());
         assert!(own_addresses().is_some_and(|a| a.iter().any(|ip| ip.is_loopback())), "{:?}", own_addresses());
