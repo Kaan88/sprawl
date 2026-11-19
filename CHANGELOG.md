@@ -23,7 +23,7 @@ in-app updater shows.
 - Codex can be the Advisor's AI, like Claude Code: it uses your own Codex sign-in (no key), found on PATH or in the Codex app. It answers from the scan's report. Before each answer Sprawl checks, without sending anything, that Codex would start no MCP server and offer only tools that can't act; a Codex set up otherwise isn't started.
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
 - History keeps to its size limit (Settings) when many folders have full snapshots: older full snapshots are removed too, never a folder's newest.
-- Safer updating as administrator: Sprawl reopens itself without administrator rights through Windows' own desktop and writes no file while elevated. The old low-space task is removed only when it is really yours.
+- Safer updating as administrator: Sprawl reopens itself without administrator rights through Windows' own desktop and writes no file while elevated. Sprawl no longer deletes the low-space task made before 1.0 ("Sprawl low-space check"): if you have it, it follows the alert setting, and you can remove it in Task Scheduler.
 - Moving a folder to the Recycle Bin whole now checks every file as carefully as one at a time (a file moved in after the scan stays), and Stop is obeyed before the move.
 - Nothing is ever run on a network folder, including commands such as compressing a game library on a share; the Windows menu is not offered for network rows.
 - Delete in the tree checks the folders to skip and your Keep choices again before each item. It waits for Check again, and closing Sprawl during a Delete stops it after the current item.

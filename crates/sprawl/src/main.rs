@@ -541,9 +541,8 @@ fn main() {
         alert::check();
         return;
     }
-    // started without administrator rights by an elevated Sprawl to retire the old shared task
+    // 1.0.1 started a copy with this to retire the old shared task; nothing is deleted now
     if args.first().map(String::as_str) == Some(sprawl_install::setup::MIGRATE_ARG) {
-        sprawl_install::setup::migrate_alert_task_unelevated();
         return;
     }
     // `sprawl --uninstall`: from Settings > Apps

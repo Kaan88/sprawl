@@ -227,12 +227,9 @@ pub fn schedule(on: bool) -> bool {
     let args = schtasks_args(on, &exe);
     if args.is_empty() { return false; }
     c.args(args);
-    let done = c.status().is_ok_and(|s| s.success());
-    // Retire the former shared name once this account's task exists, and always when alerts
-    // are turned off: there is then no task of this account's own name to delete (1.0 only
-    // migrated after a successful delete), and the old one must not keep running.
-    if done || !on { sprawl_install::setup::migrate_alert_task(); }
-    done
+    // (a task under the former shared name, from 1.0, is left for the user to remove in Task
+    // Scheduler: its check respects the setting turned off here)
+    c.status().is_ok_and(|s| s.success())
 }
 
 // ---- the notice: a tray icon with a balloon (Windows 10 and 11 show it as a notification) ----
