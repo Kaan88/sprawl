@@ -251,6 +251,9 @@ pub fn specs() -> Vec<ToolSpec> {
 }
 
 pub struct Tools<'a> {
+    /// Paths name the tree's nodes with their own case (for a client restricted to the scan
+    /// on screen); otherwise as Windows usually compares them.
+    exact: bool,
     tree: &'a Tree,
     facts: &'a Facts,
     never: Never,
@@ -308,7 +311,9 @@ impl<'a> Tools<'a> {
     /// For a client that may only see the scan on screen: nothing is read to make these tools
     /// (the never-list is [`Never::inert`]); only the tree and the facts given answer.
     pub fn restricted(tree: &'a Tree, facts: &'a Facts, memory: &Memory) -> Tools<'a> {
-        Self::with_never(tree, facts, "claude-code", &[], memory, Never::inert())
+        let mut t = Self::with_never(tree, facts, "claude-code", &[], memory, Never::inert());
+        t.exact = true;
+        t
     }
 
     fn with_never(tree: &'a Tree, facts: &'a Facts, model: &str, already: &[Finding], memory: &Memory, never: Never) -> Tools<'a> {
@@ -316,6 +321,7 @@ impl<'a> Tools<'a> {
             tree,
             facts,
             never,
+            exact: false,
             model: model.to_string(),
             known: HashSet::new(),
             known_list: Vec::new(),
@@ -425,10 +431,13 @@ impl<'a> Tools<'a> {
             }
             "owner_of" => {
                 let p = path_arg(input)?;
-                // only for what this scan holds: an owner lookup is no way to ask about anything else
-                if crate::find_path(self.tree, &p).is_none() {
+                // only for what this scan holds: an owner lookup is no way to ask about anything
+                // else; restricted, the node's own path is asked about, not the spelling given
+                let node = if self.exact { crate::history::find_path(self.tree, &p) } else { crate::find_path(self.tree, &p) };
+                let Some(node) = node else {
                     return Err(format!("{} {}", p.display(), crate::mcp_scan::NOT_IN_SCAN));
-                }
+                };
+                let p = if self.exact { self.tree.path_of(node) } else { p };
                 Ok(match self.facts.owner_of(&p) {
                     None => "No installed app is known to own it.".into(),
                     Some(a) => {

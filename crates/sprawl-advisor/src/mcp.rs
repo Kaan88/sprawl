@@ -408,6 +408,7 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
             reply(true, if c.trim().is_empty() { "The Advisor hasn't listed cleaners yet (or is still looking).".into() } else { c.to_string() })
         }
         "scan_report" => match facts {
+            Some(facts) if !disk => reply(true, crate::llm::report::build_restricted(tree, facts, found)),
             Some(facts) => reply(true, crate::llm::report::build(tree, facts, found, None, None)),
             None => not_ready(),
         },
@@ -595,8 +596,12 @@ mod tests {
             let outside = ask("owner_of", json!({"path": r"Q:\Programs\Away\x.exe"}), disk);
             assert!(outside.contains("\"ok\":false") && !outside.contains("Elsewhere app"), "{outside}");
         }
+        let before = crate::llm::report::UNEXPLAINED_CALLS.with(|c| c.get());
         let report = ask("scan_report", json!({}), false);
         assert!(report.contains("\"ok\":true") && !report.contains("Elsewhere app"), "{report}");
+        assert_eq!(crate::llm::report::UNEXPLAINED_CALLS.with(|c| c.get()), before, "the restricted report reads no settings (re-review S3 #1)");
+        ask("scan_report", json!({}), true);
+        assert_eq!(crate::llm::report::UNEXPLAINED_CALLS.with(|c| c.get()), before + 1, "the full one does");
         // facts not published yet: not ready, nothing gathered
         let early = ask_with("scan_report", json!({}), false, None, &mut crate::mcp_scan::Index::for_app(false));
         assert!(early.contains("\"ok\":false") && early.contains("still reading"), "{early}");

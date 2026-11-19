@@ -183,11 +183,21 @@ impl Facts {
     /// What a client that may only see the scan on screen gets: the apps with a folder in
     /// `tree`, and Recent items inside it. Program starts outside it (Prefetch, UserAssist) are
     /// left out; each kept app's own last use stays.
+    /// Matched with each name's own case (a case-only sibling on a case-sensitive folder isn't
+    /// the folder on screen); an app keeps only its locations the tree holds.
     pub fn scoped_to(&self, tree: &Tree) -> Facts {
-        let apps: Vec<App> = self.apps.iter().filter(|a| a.locations.iter().any(|l| find_path(tree, l).is_some())).cloned().collect();
+        let held = |p: &Path| crate::history::find_path(tree, p).is_some();
+        let apps: Vec<App> = self
+            .apps
+            .iter()
+            .filter_map(|a| {
+                let locations: Vec<PathBuf> = a.locations.iter().filter(|l| held(l)).cloned().collect();
+                (!locations.is_empty()).then(|| App { locations, ..a.clone() })
+            })
+            .collect();
         let mut out = Facts::from_apps(apps);
         out.runs_complete = self.runs_complete;
-        out.opened = self.opened.iter().filter(|(p, _)| find_path(tree, Path::new(p)).is_some()).cloned().collect();
+        out.opened = self.opened.iter().filter(|(p, _)| held(Path::new(p))).cloned().collect();
         out
     }
 
@@ -872,6 +882,18 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restricted_view_matches_names_in_their_own_case() {
+        // Astra 1.0.2 re-review S3 #2: a case-only sibling isn't the folder on screen
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-scoped-case").unwrap();
+        std::fs::create_dir(owned.path().join("Data")).unwrap();
+        let tree = sprawl_core::scan(owned.path(), |_| {}).unwrap();
+        let root = tree.path_of(ROOT);
+        let app = |name: &str, at: &str| App { name: name.into(), publisher: None, kind: AppKind::Installed, locations: vec![root.join(at)], last_used: None, how_to_remove: String::new() };
+        let scoped = Facts::from_apps(vec![app("Here", "Data"), app("Sibling", "data"), app("Away", "Elsewhere")]).scoped_to(&tree);
+        assert_eq!(scoped.apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Here"]);
+    }
 
     #[test]
     fn steam_manifest() {

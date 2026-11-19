@@ -81,27 +81,22 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
             let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(h as _) });
             let mut reader = BufReader::new(&*file);
             let mut line = String::new();
-            // a line is at most 1 MB: a client that never sends a newline can't fill memory
-            while (&mut reader).take(1 << 20).read_line(&mut line).is_ok_and(|n| n > 0) {
-                if !line.ends_with('\n') {
-                    break;
-                }
+            // One request per connection (the client connects afresh for every call): the
+            // identity read below is the one this connection was opened with, so a reused or
+            // handed-on connection can't carry a second request under it. A line is at most
+            // 1 MB: a client that never sends a newline can't fill memory.
+            if (&mut reader).take(1 << 20).read_line(&mut line).is_ok_and(|n| n > 0) && line.ends_with('\n') {
                 // Who wrote this message: the pipe's own record of the client's security
                 // context, not only the process behind a client PID (which could have exited and
                 // been reused). Administrator only when both say so; another account, or no
-                // answer, ends the connection.
+                // answer, gets no answer from the scan.
                 let mut out = match message_identity(h) {
                     Some((account, elevated)) if account == sid => answer(line.trim(), client_elevated && elevated),
-                    _ => {
-                        let _ = (&*file).write_all(b"{\"ok\":false,\"text\":\"Sprawl couldn't confirm who is asking.\"}\n");
-                        break;
-                    }
-                }.replace(['\r', '\n'], " ");
-                out.push('\n');
-                if (&*file).write_all(out.as_bytes()).is_err() {
-                    break;
+                    _ => "{\"ok\":false,\"text\":\"Sprawl couldn't confirm who is asking.\"}".to_string(),
                 }
-                line.clear();
+                .replace(['\r', '\n'], " ");
+                out.push('\n');
+                let _ = (&*file).write_all(out.as_bytes());
             }
             unsafe {
                 ffi::FlushFileBuffers(h);
