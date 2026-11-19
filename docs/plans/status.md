@@ -6,12 +6,14 @@ dated implementation notes (see the last section).
 
 ## Where things stand
 
-- **Released:** 1.0.0 (tag `v1.0.0`, rebuilt in place by Codex, see below).
-- **On main, not released:** the 1.0.1 corrections, `fa7ce20..d5b9d4a` and the notes after it.
-  `Cargo.toml` still says 1.0.0, so the auto-updater offers nothing yet. The CHANGELOG has a
-  `## 1.0.1 — unreleased` section. Releasing waits for the user's word.
+- **Released:** 1.0.1 (2026-11-19, at the user's word, before the Astra review), with the
+  corrections below. The user's installed copy was replaced with the same build first.
+  1.0.0 (tag `v1.0.0`, rebuilt in place by Codex) is described further down.
 - **Review:** the 1.0.1 commits await a GPT Astra (or Fable) read. The self-contained report
   is `.claude/fable-review-queue.md`, section "1.0.1 corrections by Claude", items 1-14.
+  Findings go into a 1.0.2.
+- **Next:** the user wants both: review [Astra's alternative roadmap](alternative-roadmap-astra.md)
+  together with the backlog below, then choose. UI changes still need approved mockups first.
 
 ## 1.0.1 corrections (Claude, 2026-11-19)
 
@@ -36,7 +38,7 @@ Tests at d5b9d4a: app 66 passed / 1 ignored, advisor 200 / 5, core 60 / 1, insta
 
 ## Known limitations
 
-These are true of main now. Each is deliberate or accepted unless it is under "Open questions".
+These are true of 1.0.1. Each is deliberate or accepted unless it is under "Open questions".
 
 **Scanning**
 - Folder inventories (non-MFT scans, search index, Cleaners reads, daily scan) don't see
@@ -49,6 +51,7 @@ These are true of main now. Each is deliberate or accepted unless it is under "O
 - With skipped folders, an MFT scan still reads the skipped records into memory. They are
   never shown or kept, but 1.0 never enumerated them. Live counts during the read include
   them; final counts don't. The live top-folder list stays empty during such a read.
+  Accepted by the user (2026-11-19: "it's good").
 - Snapshots keep whole seconds. A file rewritten at the same size within the same second
   passes the freshness check of `read_manifest` and archive-copy findings.
 
@@ -83,18 +86,18 @@ These are true of main now. Each is deliberate or accepted unless it is under "O
   Sprawl. Unverified.
 - In-app MCP scans refuse while the app is elevated (or elevation is unknown).
 
-## Open questions for the user
+## Open questions
 
-1. Release 1.0.1 before or after the Astra review?
-2. Is reading skipped folders' MFT records into memory (never shown) acceptable, or should
-   skipped folders force the slower folder walk again as an option?
-3. Keep the System32-only rule for elevated tool commands, or allow known toolchain paths
+Answered by the user on 2026-11-19: release 1.0.1 before the Astra review; reading skipped
+folders' MFT records into memory is fine; after 1.0.1, review Astra's roadmap and the backlog
+together. The user had no view on the three below, so they stay as they are until a reviewer
+or real use gives a reason:
+
+1. Keep the System32-only rule for elevated tool commands, or allow known toolchain paths
    such as `dotnet` in Program Files?
-4. Should the bridge accept an elevated app when the token can't be read but the image path
+2. Should the bridge accept an elevated app when the token can't be read but the image path
    matches (the pre-1.0 check)? Needs a UAC test first.
-5. Should a tool whose folder couldn't be measured show a note instead of a problem?
-6. After 1.0.1: return to the Astra design roadmap (all Codex mockups were rejected; any UI
-   change needs approved mockups first), or the backlog below?
+3. Should a tool whose folder couldn't be measured show a note instead of a problem?
 
 ## Needs runtime verification
 

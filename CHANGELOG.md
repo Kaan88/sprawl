@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## 1.0.1 — unreleased
+## 1.0.1 — 2026-11-19
 
 - Scans are fast again on drives and folders read without the MFT (exFAT and FAT drives, the search index, the daily background scan). 1.0 re-checked every folder's whole path before listing it, which made these scans many times slower.
 - Skipping folders (Settings > Scanning) no longer turns off the fast MFT scan: whole drives scan as fast as without skipped folders, which are left out as the tree is built.
