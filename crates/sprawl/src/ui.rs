@@ -25,42 +25,77 @@ pub fn esc(s: &str) -> String {
 }
 
 
-/// The bit of Markdown models write, as XAML: paragraphs, `#` headings, `-`/`*`/`1.` lists,
-/// fenced code, and inline **bold**, *italic* and `code`. Everything else is plain text, escaped.
+/// The Markdown models write, as XAML: paragraphs (a single line break kept), `#` headings,
+/// `-`/`*`/`1.` lists with their nesting, fenced code, tables, `>` quotes, `---` rules, and
+/// folder trees drawn with `├──`/`│` (or `|--`), kept line by line in a fixed-width font so
+/// they line up. Inline: **bold**, *italic*, ~~struck~~, `code` and `[links](target)`.
+/// Everything else is plain text, escaped.
 pub(crate) fn markdown(text: &str, size: u32, colour: &str) -> String {
     let mut out = String::from(r##"<StackPanel Spacing="4">"##);
-    let mut para: Vec<String> = Vec::new();
-    let mut code: Option<Vec<String>> = None;
+    let lines: Vec<&str> = text.lines().collect();
     let block = |out: &mut String, runs: String, extra: &str| {
         out.push_str(&format!(r##"<TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="{size}" Foreground="{colour}"{extra}>{runs}</TextBlock>"##));
     };
-    let flush = |out: &mut String, para: &mut Vec<String>| {
+    let mono = |out: &mut String, lines: &[&str]| {
+        let body = lines.iter().map(|l| esc(l.trim_end())).collect::<Vec<_>>().join("&#10;");
+        out.push_str(&format!(
+            r##"<Border Padding="8,6" CornerRadius="4" Background="#33000000"><ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Auto" VerticalScrollMode="Disabled"><TextBlock FontFamily="Cascadia Mono, Consolas" FontSize="{size}" IsTextSelectionEnabled="True" Foreground="{colour}" Text="{body}"/></ScrollViewer></Border>"##
+        ));
+    };
+    let mut para: Vec<&str> = Vec::new();
+    let flush = |out: &mut String, para: &mut Vec<&str>| {
         if !para.is_empty() {
-            block(out, inline(&para.join(" ")), "");
+            // a line break inside a paragraph is kept: answers list "Size: ..." under "Path: ..."
+            block(out, para.iter().map(|l| inline(l)).collect::<Vec<_>>().join("<LineBreak/>"), "");
             para.clear();
         }
     };
-    for line in text.lines() {
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
         let t = line.trim();
-        if t.starts_with("```") {
-            match code.take() {
-                Some(lines) => {
-                    let body = lines.iter().map(|l| esc(l)).collect::<Vec<_>>().join("&#10;");
-                    out.push_str(&format!(r##"<Border Padding="8,6" CornerRadius="4" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="{size}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{body}"/></Border>"##));
-                }
-                None => {
-                    flush(&mut out, &mut para);
-                    code = Some(Vec::new());
-                }
+        if let Some(fence) = ["```", "~~~"].into_iter().find(|f| t.starts_with(f)) {
+            flush(&mut out, &mut para);
+            let end = lines[i + 1..].iter().position(|l| l.trim().starts_with(fence)).map_or(lines.len(), |p| i + 1 + p);
+            mono(&mut out, &lines[i + 1..end]);
+            i = end + 1;
+            continue;
+        }
+        if is_tree(line) {
+            // its root line just above (a folder), taken as a paragraph line, goes with it; a
+            // sentence leading into it ("Here is the tree:") stays a sentence
+            let root = (i > 0 && para.last() == Some(&lines[i - 1].trim()) && !lines[i - 1].trim_end().ends_with(':') && lines[i - 1].len() < 100).then(|| lines[i - 1]);
+            if root.is_some() {
+                para.pop();
             }
+            flush(&mut out, &mut para);
+            let mut end = i;
+            while end < lines.len() && !lines[end].trim().is_empty() && (is_tree(lines[end]) || lines[end].starts_with("    ")) {
+                end += 1;
+            }
+            let tree: Vec<&str> = root.into_iter().chain(lines[i..end].iter().copied()).collect();
+            mono(&mut out, &tree);
+            i = end;
             continue;
         }
-        if let Some(c) = code.as_mut() {
-            c.push(line.to_string());
+        if t.starts_with('|') && lines.get(i + 1).is_some_and(|n| is_table_rule(n)) {
+            flush(&mut out, &mut para);
+            let mut end = i + 2;
+            while end < lines.len() && lines[end].trim().starts_with('|') {
+                end += 1;
+            }
+            out.push_str(&table(lines[i], &lines[i + 2..end], size, colour));
+            i = end;
             continue;
         }
+        i += 1;
         if t.is_empty() {
             flush(&mut out, &mut para);
+            continue;
+        }
+        if t.len() >= 3 && (t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*') || t.chars().all(|c| c == '_')) {
+            flush(&mut out, &mut para);
+            out.push_str(r##"<Border Height="1" Background="#22FFFFFF" Margin="0,4"/>"##);
             continue;
         }
         let heading = t.trim_start_matches('#');
@@ -69,34 +104,102 @@ pub(crate) fn markdown(text: &str, size: u32, colour: &str) -> String {
             block(&mut out, inline(heading.trim()), r##" FontWeight="SemiBold""##);
             continue;
         }
+        if let Some(q) = t.strip_prefix('>') {
+            flush(&mut out, &mut para);
+            out.push_str(&format!(
+                r##"<Border BorderBrush="#44FFFFFF" BorderThickness="2,0,0,0" Padding="8,0,0,0"><TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="{size}" Foreground="#FFB9C2D6">{}</TextBlock></Border>"##,
+                inline(q.trim())
+            ));
+            continue;
+        }
+        // two spaces (or a tab) of indent a level, for nested lists
+        let depth = (line.len() - line.trim_start().len() + line.chars().take_while(|c| c.is_whitespace()).filter(|c| *c == '\t').count()) / 2;
+        let margin = format!(r##" Margin="{},0,0,0""##, 6 + 16 * depth.min(6));
         let bullet = ["- ", "* ", "+ "].iter().find_map(|b| t.strip_prefix(b));
-        let number = t.split_once(". ").filter(|(n, _)| !n.is_empty() && n.len() < 4 && n.bytes().all(|b| b.is_ascii_digit()));
+        let number = t.split_once(". ").or_else(|| t.split_once(") ")).filter(|(n, _)| !n.is_empty() && n.len() < 4 && n.bytes().all(|b| b.is_ascii_digit()));
         if let Some(rest) = bullet {
             flush(&mut out, &mut para);
-            block(&mut out, format!(r##"<Run Text="•  "/>{}"##, inline(rest)), r##" Margin="6,0,0,0""##);
+            let dot = if depth == 0 { "•" } else { "◦" };
+            let (mark, rest) = match rest.strip_prefix("[ ] ").map(|r| ("☐", r)).or_else(|| rest.strip_prefix("[x] ").or_else(|| rest.strip_prefix("[X] ")).map(|r| ("☑", r))) {
+                Some((m, r)) => (m, r),
+                None => (dot, rest),
+            };
+            block(&mut out, format!(r##"<Run Text="{mark}  "/>{}"##, inline(rest)), &margin);
         } else if let Some((n, rest)) = number {
             flush(&mut out, &mut para);
-            block(&mut out, format!(r##"<Run Text="{n}.  "/>{}"##, inline(rest)), r##" Margin="6,0,0,0""##);
+            block(&mut out, format!(r##"<Run Text="{n}.  "/>{}"##, inline(rest)), &margin);
         } else {
-            para.push(t.to_string());
+            para.push(t);
         }
-    }
-    if let Some(lines) = code {
-        para.extend(lines);
     }
     flush(&mut out, &mut para);
     out.push_str("</StackPanel>");
     out
 }
 
-/// Runs for one paragraph: `**bold**`, `*italic*` (only around a word, so `*.mp4` stays as it
-/// is) and `` `code` ``.
+/// A line of a folder tree: box-drawing characters (`├── `, `└── `, `│`), or the ASCII kind
+/// (`|-- `, `` `-- ``, `+-- `) after any indent.
+fn is_tree(line: &str) -> bool {
+    let t = line.trim_start();
+    t.chars().next().is_some_and(|c| ('\u{2500}'..='\u{257F}').contains(&c)) || ["|-- ", "|__ ", "`-- ", "+-- ", "\\-- "].iter().any(|p| t.starts_with(p))
+}
+
+/// The line under a table's head: `|---|:---:|`.
+fn is_table_rule(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('|') && t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
+/// The cells of a table row, `\|` kept as a bar inside a cell.
+fn cells(row: &str) -> Vec<String> {
+    let t = row.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    let mut out = vec![String::new()];
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                out.last_mut().unwrap().push('|');
+                chars.next();
+            }
+            '|' => out.push(String::new()),
+            c => out.last_mut().unwrap().push(c),
+        }
+    }
+    out.into_iter().map(|c| c.trim().to_string()).collect()
+}
+
+/// A table as a grid: the head in semibold, then its rows; wider than the pane, it scrolls.
+fn table(head: &str, rows: &[&str], size: u32, colour: &str) -> String {
+    let head = cells(head);
+    let rows: Vec<Vec<String>> = rows.iter().map(|r| cells(r)).collect();
+    let n = rows.iter().map(Vec::len).chain(std::iter::once(head.len())).max().unwrap_or(1).min(12);
+    let mut x = format!(
+        r##"<Border CornerRadius="4" Background="#14FFFFFF" Padding="8,6"><ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Auto" VerticalScrollMode="Disabled"><Grid ColumnSpacing="16" RowSpacing="4"><Grid.ColumnDefinitions>{}</Grid.ColumnDefinitions><Grid.RowDefinitions>{}</Grid.RowDefinitions>"##,
+        r##"<ColumnDefinition Width="Auto"/>"##.repeat(n),
+        r##"<RowDefinition Height="Auto"/>"##.repeat(rows.len() + 1)
+    );
+    for (r, row) in std::iter::once(&head).chain(rows.iter()).enumerate() {
+        for (c, cell) in row.iter().take(n).enumerate() {
+            let weight = if r == 0 { r##" FontWeight="SemiBold""## } else { "" };
+            x += &format!(r##"<TextBlock Grid.Row="{r}" Grid.Column="{c}" FontSize="{size}" Foreground="{colour}" IsTextSelectionEnabled="True" MaxWidth="420" TextWrapping="Wrap"{weight}>{}</TextBlock>"##, inline(cell));
+        }
+    }
+    x += "</Grid></ScrollViewer></Border>";
+    x
+}
+
+/// Runs for one line: `**bold**`, `*italic*` (only around a word, so `*.mp4` stays as it is),
+/// `~~struck~~`, `` `code` `` and `[text](target)` (the text, with the target after it when it
+/// says something else). `\*` and `\|` are the characters themselves; other backslashes stay,
+/// as they are Windows paths (`npm-cache\_cacache`).
 fn inline(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
     let mut cur = String::new();
-    let (mut bold, mut italic, mut code) = (false, false, false);
-    let emit = |out: &mut String, cur: &mut String, bold: bool, italic: bool, code: bool| {
+    let (mut bold, mut italic, mut code, mut struck) = (false, false, false, false);
+    let emit = |out: &mut String, cur: &mut String, bold: bool, italic: bool, code: bool, struck: bool| {
         if cur.is_empty() {
             return;
         }
@@ -108,7 +211,10 @@ fn inline(s: &str) -> String {
             attrs.push_str(r##" FontStyle="Italic""##);
         }
         if code {
-            attrs.push_str(r##" FontFamily="Consolas""##);
+            attrs.push_str(r##" FontFamily="Cascadia Mono, Consolas""##);
+        }
+        if struck {
+            attrs.push_str(r##" TextDecorations="Strikethrough""##);
         }
         out.push_str(&format!(r##"<Run Text="{}"{attrs}/>"##, esc(cur)));
         cur.clear();
@@ -117,23 +223,53 @@ fn inline(s: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        let next = chars.get(i + 1);
         if c == '`' {
-            emit(&mut out, &mut cur, bold, italic, code);
+            emit(&mut out, &mut cur, bold, italic, code, struck);
             code = !code;
-        } else if !code && c == '*' && chars.get(i + 1) == Some(&'*') {
-            emit(&mut out, &mut cur, bold, italic, code);
+        } else if code {
+            cur.push(c);
+        } else if c == '\\' && matches!(next, Some('*') | Some('|') | Some('`')) {
+            cur.push(chars[i + 1]);
+            i += 1;
+        } else if c == '*' && next == Some(&'*') {
+            emit(&mut out, &mut cur, bold, italic, code, struck);
             bold = !bold;
             i += 1;
-        } else if !code && c == '*' && ((!italic && word(chars.get(i + 1)) && chars[i + 1..].contains(&'*')) || (italic && i > 0 && word(chars.get(i - 1)))) {
-            emit(&mut out, &mut cur, bold, italic, code);
+        } else if c == '~' && next == Some(&'~') && (struck || chars[i + 2..].windows(2).any(|w| w == ['~', '~'])) {
+            emit(&mut out, &mut cur, bold, italic, code, struck);
+            struck = !struck;
+            i += 1;
+        } else if c == '*' && ((!italic && word(next) && chars[i + 1..].contains(&'*')) || (italic && i > 0 && word(chars.get(i - 1)))) {
+            emit(&mut out, &mut cur, bold, italic, code, struck);
             italic = !italic;
+        } else if let Some((text, target, len)) = (c == '[').then(|| link(&chars[i..])).flatten() {
+            cur.push_str(&text);
+            if target != text && !target.is_empty() {
+                emit(&mut out, &mut cur, bold, italic, code, struck);
+                out.push_str(&format!(r##"<Run Text=" ({})" Foreground="#FF8E97AA"/>"##, esc(&target)));
+            }
+            i += len;
+            continue;
         } else {
             cur.push(c);
         }
         i += 1;
     }
-    emit(&mut out, &mut cur, bold, italic, code);
+    emit(&mut out, &mut cur, bold, italic, code, struck);
     out
+}
+
+/// `[text](target)` at the start of `s`: its text, its target and how many characters it took.
+fn link(s: &[char]) -> Option<(String, String, usize)> {
+    let close = s.iter().position(|&c| c == ']')?;
+    if s.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let end = close + 2 + s[close + 2..].iter().position(|&c| c == ')')?;
+    let text: String = s[1..close].iter().collect();
+    let target: String = s[close + 2..end].iter().collect();
+    (!text.is_empty()).then(|| (text, target.trim().to_string(), end + 1))
 }
 
 #[cfg(test)]
@@ -144,13 +280,48 @@ mod esc_tests {
         let x = super::markdown("The biggest is **D:\\Games**, at *1.3 TB*.\n\n- one `*.mp4`\n2. two\n\n# Head", 12, "#FFFFFFFF");
         assert!(x.contains(r#"<Run Text="D:\Games" FontWeight="SemiBold"/>"#), "{x}");
         assert!(x.contains(r#"FontStyle="Italic""#));
-        assert!(x.contains(r#"<Run Text="*.mp4" FontFamily="Consolas"/>"#), "{x}");
+        assert!(x.contains(r#"<Run Text="*.mp4" FontFamily="Cascadia Mono, Consolas"/>"#), "{x}");
         assert!(x.contains("•") && x.contains(r#"<Run Text="2.  "/>"#));
         assert_eq!(x.matches("<TextBlock").count(), 4);
         // not markup: escaped
         assert!(!super::markdown("<Button x:Name=\"a\"/>", 12, "#FFFFFFFF").contains("<Button"));
         // a lone star stays a star
         assert!(super::inline("files *.log and *.tmp").contains("*.log and *.tmp"));
+    }
+
+    #[test]
+    fn folder_trees_keep_their_lines() {
+        let x = super::markdown("Here is the tree:\nC:\\Users\\me\\\n├── AppData (40 GB)\n│   └── Local\n└── Videos\n\nDone.", 12, "#FFFFFFFF");
+        // the sentence stays a paragraph; the root and the tree are one fixed-width block
+        assert!(x.contains(r#"<Run Text="Here is the tree:"/>"#), "{x}");
+        assert!(x.contains("C:\\Users\\me\\&#10;├── AppData (40 GB)&#10;│   └── Local&#10;└── Videos"), "{x}");
+        assert!(x.contains("Cascadia Mono"));
+        // the ASCII kind too
+        assert!(super::markdown("root\n|-- a\n`-- b", 12, "#FFFFFFFF").contains("root&#10;|-- a&#10;`-- b"));
+    }
+
+    #[test]
+    fn tables_breaks_links_and_paths() {
+        let x = super::markdown("| Folder | Size |\n|---|---:|\n| C:\\a\\_cacache | 2 GB |\n| x \\| y | 1 GB |", 12, "#FFFFFFFF");
+        assert!(x.contains("<Grid ColumnSpacing"), "{x}");
+        assert!(x.contains(r#"Grid.Row="0" Grid.Column="1""#) && x.contains(r#"Grid.Row="2" Grid.Column="1""#));
+        assert!(x.contains(r#"<Run Text="C:\a\_cacache"/>"#), "a backslash in a path stays: {x}");
+        assert!(x.contains(r#"<Run Text="x | y"/>"#), "{x}");
+        assert!(!x.contains("---"), "the rule row isn't a row");
+        // one line break inside a paragraph is kept
+        assert!(super::markdown("Path: C:\\x\nSize: 5 GB", 12, "#FFFFFFFF").contains("<LineBreak/>"));
+        // a link shows its text, and its target when that says more
+        let l = super::inline("see [the cache](C:\\cache) or [x](x)");
+        assert!(l.contains(r#"<Run Text="see the cache"/><Run Text=" (C:\cache)""#), "{l}");
+        assert!(!l.contains("[x]") && !l.contains(" (x)"), "{l}");
+        assert!(super::inline("~~old~~ new").contains(r#"TextDecorations="Strikethrough""#));
+        assert!(super::inline(r"a \* b").contains(r#"<Run Text="a * b"/>"#));
+        // nesting, quotes and rules
+        let n = super::markdown("- top\n  - inner\n> quoted\n\n---", 12, "#FFFFFFFF");
+        assert!(n.contains("◦") && n.contains(r#"Margin="22,0,0,0""#), "{n}");
+        assert!(n.contains(r#"BorderThickness="2,0,0,0""#) && n.contains(r#"<Border Height="1""#), "{n}");
+        // an unclosed fence is still code, line by line
+        assert!(super::markdown("```\na\nb", 12, "#FFFFFFFF").contains("a&#10;b"));
     }
 
     #[test]

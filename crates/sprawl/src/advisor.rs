@@ -355,7 +355,7 @@ pub(crate) struct Chat {
     tx: Option<Sender<String>>,
     rx: Option<Receiver<ChatMsg>>,
     /// (from the user, text)
-    log: Vec<(bool, String)>,
+    pub(crate) log: Vec<(bool, String)>,
     pub(crate) status: Option<String>,
     /// What is typed in the question box, kept across redraws.
     text: String,

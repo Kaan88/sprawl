@@ -5,6 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
+- AI answers draw folder trees, tables and code in a fixed-width font with their lines intact, keep the answer's line breaks, and show nested lists, quotes, links (with their address) and struck-through text.
 - Codex can be the Advisor's AI, like Claude Code: it uses your own Codex sign-in (no key), found on PATH or in the Codex app. It answers from the scan's report with all of its tools switched off.
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
 - History keeps to its size limit (Settings) when many folders have full snapshots: older full snapshots are removed too, never a folder's newest.

@@ -52,6 +52,9 @@ pub(crate) enum Source {
     Csv(PathBuf),
 }
 
+/// The sample answer the `mddemo` screenshot step shows.
+const MD_DEMO: &str = "## Biggest folders\nMost of it is in your profile:\nC:\\Users\\me\\\n├── AppData (40.2 GB)\n│   ├── Local\\npm-cache\\_cacache (6.1 GB)\n│   └── Roaming\n└── Videos (12.0 GB)\n\n| Folder | Size | Safe? |\n|---|---:|---|\n| `npm-cache` | 6.1 GB | yes, **rebuilt** on demand |\n| Videos | 12.0 GB | ~~no~~ your own files |\n\n- Caches\n  - npm: run `npm cache clean --force`\n- See [the npm docs](https://docs.npmjs.com/cli/cache)\n> Nothing is deleted until you review it.\n\nPath: C:\\Users\\me\\Videos\nSize: 12.0 GB\n\n---\n```\nnpm cache verify\n```";
+
 /// Cancellation wins even when a worker finished successfully before the UI polled it.
 fn scan_result<T>(result: std::io::Result<T>, cancelled: bool) -> std::io::Result<T> {
     if cancelled { Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "scan cancelled")) }
@@ -773,6 +776,14 @@ impl State {
                                 .filter_map(|id| sprawl_advisor::prevention::for_rule(id)).collect(),
                             ..Default::default()
                         });
+                        self.render_advisor();
+                    }
+                    // dev: a sample AI answer in the chat, to see the Markdown drawn; nothing is sent
+                    // (mddemo2: only its second half, which a screenshot can't otherwise reach)
+                    "mddemo" | "mddemo2" => {
+                        let half = if c == "mddemo2" { MD_DEMO.find("- Caches").unwrap_or(0) } else { 0 };
+                        self.advisor.chat.log.push((true, "Where did the space go?".into()));
+                        self.advisor.chat.log.push((false, MD_DEMO[half..].into()));
                         self.render_advisor();
                     }
                     // dev: Enter in the search box, or a key in the main table (key=40 is Down)
