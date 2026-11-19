@@ -1413,8 +1413,10 @@ pub(crate) fn lead_line(outcomes: &[Fate], privacy: usize) -> String {
         (false, false) => {}
     }
     if bin > 0 {
-        s.push(if gone + privacy > 0 {
-            "What is under \"To the Recycle Bin\" goes there: Explorer can put it back, and its space is freed when the bin is emptied."
+        // named whenever anything else is in the review too (a tool's clean-up, links...):
+        // an unqualified "Sent to the Recycle Bin" would read as the whole review's fate
+        s.push(if privacy > 0 || outcomes.iter().any(|o| *o != Fate::Bin) {
+            "What is under \"To the Recycle Bin\" goes there: Explorer can put it back, and its space is freed when the bin is emptied. What can't go to the bin is left as it is."
         } else {
             "Sent to the Recycle Bin: Explorer can put them back. Their space is freed when the bin is emptied. What can't go to the bin (too big for it, or a drive without one) is left as it is."
         });
@@ -1978,7 +1980,13 @@ mod review_tests {
         assert!(!lead_line(&[Fate::Compress], 0).contains("Deleted for good"));
         assert!(!lead_line(&[Fate::Shrink], 0).contains("Deleted for good"));
         assert!(lead_line(&[Fate::Tool], 0).contains("usually for good"));
-        assert!(lead_line(&[Fate::Bin, Fate::Compress], 0).starts_with("Sent to the Recycle Bin"));
+        assert!(lead_line(&[Fate::Bin, Fate::Bin], 0).starts_with("Sent to the Recycle Bin"), "the bin alone: plainly");
+        // anything else beside the bin (a tool, compression...): the bin group is named, so its
+        // sentence isn't read as the whole review's fate (round 3, S4 #3)
+        for o in [&[Fate::Bin, Fate::Compress][..], &[Fate::Bin, Fate::Tool][..], &[Fate::Bin, Fate::Link][..], &[Fate::Bin, Fate::Shrink][..]] {
+            let l = lead_line(o, 0);
+            assert!(l.starts_with("What is under \"To the Recycle Bin\" goes there") && !l.contains("Sent to the Recycle Bin"), "{o:?}: {l}");
+        }
         assert!(lead_line(&[], 1).starts_with("The privacy items are deleted without the Recycle Bin"));
         // mixed: only the counted groups skip the bin; compression deletes nothing (re-review S4 #3)
         for (o, p) in [(&[Fate::Gone, Fate::Bin, Fate::Compress][..], 0), (&[Fate::Bin, Fate::Link][..], 1)] {

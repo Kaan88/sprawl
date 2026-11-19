@@ -316,6 +316,13 @@ fn path_span(chars: &[char], i: usize, bold: bool, italic: bool, struck: bool) -
     if !drive && !share {
         return None;
     }
+    // in quotes ("C:\My Files\[draft](old).txt"): up to the closing quote, spaces and all. A
+    // Windows name can't hold a `"`, so that quote ends it (round 3, S5 #3).
+    if prev == Some('"') {
+        if let Some(close) = chars[i..].iter().take_while(|&&c| c != '\n').position(|&c| c == '"') {
+            return Some(close);
+        }
+    }
     let mut end = i + chars[i..].iter().position(|c| c.is_whitespace()).unwrap_or(chars.len() - i);
     // (punctuation after the closing mark, as in `**D:\Games**,`, is the sentence's)
     loop {
@@ -438,6 +445,13 @@ mod esc_tests {
             let x = super::inline(&format!("see {p} now"));
             assert!(x.contains(&super::esc(&format!("see {p} now"))), "{p}: {x}");
         }
+        // a quoted path keeps its spaces and what follows them (round 3, S5 #3)
+        for p in [r#""C:\My Files\[draft](old).txt""#, r#""\\nas\My Share\~~old~~ copy\*.iso""#, r#""C:\a b\**c**.txt""#] {
+            let x = super::inline(&format!("see {p} now"));
+            assert!(x.contains(&super::esc(&format!("see {p} now"))), "{p}: {x}");
+        }
+        // an unclosed quote: the path ends at the space as before
+        assert!(super::inline(r#"open "C:\Cache now"#).contains(&super::esc(r#"open "C:\Cache now"#)));
         // a path still takes bold and code around it
         assert!(super::inline(r"**C:\Cache\*.log**").contains(r#"<Run Text="C:\Cache\*.log" FontWeight="SemiBold"/>"#));
         assert!(super::inline(r"*C:\Cache* and ~~D:\old~~").contains(r#"<Run Text="C:\Cache" FontStyle="Italic"/>"#));
