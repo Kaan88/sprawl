@@ -9,6 +9,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
+/// In a list of exclusions: the list of folders to skip couldn't be read, so every path counts
+/// as skipped, network paths included (drive letters alone don't cover `\\server\share`).
+pub const UNREADABLE_POLICY: &str = "<the list of folders to skip could not be read>";
+
 fn exclusion_key(path: &std::path::Path) -> String {
     let s = path.to_string_lossy().replace('/', "\\").to_lowercase();
     let s = if let Some(unc) = s.strip_prefix(r"\\?\unc\") { format!(r"\\{unc}") } else { s.strip_prefix(r"\\?\").unwrap_or(&s).to_string() };
@@ -126,6 +130,7 @@ impl Progress {
 
     pub fn excludes(&self, path: &std::path::Path) -> bool {
         if self.excluded.is_empty() { return false; }
+        if self.excluded.iter().any(|p| p == UNREADABLE_POLICY) { return true; }
         let key = exclusion_key(path);
         self.excluded.iter().any(|p| key == *p || key.strip_prefix(p).is_some_and(|s| s.starts_with('\\')))
     }
