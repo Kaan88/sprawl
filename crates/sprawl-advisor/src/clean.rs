@@ -155,6 +155,9 @@ pub struct Outcome {
     /// A tool finished without a problem, but what it saved couldn't be measured (its folder
     /// couldn't be read completely before or after): nothing is credited, and it isn't a failure.
     pub saving_unknown: bool,
+    /// A compress: what it did, file by file (what it saved is `before - after`, measured on
+    /// the files themselves).
+    pub compress: Option<sprawl_core::wof::Done>,
 }
 
 /// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
@@ -326,11 +329,19 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     }
     match action {
         // Sprawl's own compression: each file checked now and named to compact.exe, never /s
-        Action::Tool { command } if crate::remedies::is_compress(action) => {
-            if let Err(e) = crate::remedies::compress_scope(path, command, spare, stop) {
-                o.problem(path, format!("left alone: {e}"));
+        // Sprawl's own compression: each file checked now and compressed through its held
+        // folder; `progress` gets the bytes gone through, not freed
+        Action::Tool { command } if crate::remedies::is_compress(action) => match crate::remedies::compress_scope(path, command, spare, stop, progress) {
+            Ok(d) => {
+                o.stopped = d.stopped;
+                o.files = d.compressed as u64;
+                if d.failed > 0 {
+                    o.problem(path, format!("{} file(s) couldn't be compressed ({})", d.failed, d.first_error.as_deref().unwrap_or("no reason given")));
+                }
+                o.compress = Some(d);
             }
-        }
+            Err(e) => o.problem(path, format!("left alone: {e}")),
+        },
         // A package manager clears wherever it is set up to keep its cache, which need not be
         // the folder that was reviewed. So it is told that folder (a flag, or the variable it
         // reads before its settings files), asked with the very same binding where it would

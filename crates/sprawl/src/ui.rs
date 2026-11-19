@@ -24,6 +24,13 @@ pub fn esc(s: &str) -> String {
     out
 }
 
+/// [`esc`] for text that may hold line breaks (a pasted question, an answer being written):
+/// each break (`\r\n`, `\r` or `\n`) is kept as one, and a tab is a space, where `esc` would
+/// show a replacement character.
+pub fn esc_lines(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n").replace('\t', " ").split('\n').map(esc).collect::<Vec<_>>().join("&#10;")
+}
+
 
 /// The Markdown models write, as XAML: paragraphs (a single line break kept), `#` headings,
 /// `-`/`*`/`1.` lists with their nesting, fenced code, tables, `>` quotes, `---` rules, and
@@ -384,6 +391,14 @@ fn link(s: &[char]) -> Option<(String, String, usize)> {
 
 #[cfg(test)]
 mod esc_tests {
+
+    /// A pasted question keeps its line breaks, in every form, and shows no replacement character.
+    #[test]
+    fn line_breaks_are_kept_not_replaced() {
+        let e = super::esc_lines("one\r\n- two\n- three\rfour\tfive <6>");
+        assert_eq!(e, "one&#10;- two&#10;- three&#10;four five &lt;6&gt;");
+        assert!(!e.contains('\u{FFFD}'));
+    }
 
     #[test]
     fn markdown_to_xaml() {

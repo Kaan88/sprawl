@@ -122,6 +122,8 @@ pub(crate) struct Item {
     /// Advice shown only if this item actually removed something.
     pub prevention: Option<&'static str>,
     pub learn: bool,
+    /// What happens to it (deleted, to the bin, compressed in place...), as the review said.
+    pub fate: Fate,
 }
 
 pub(crate) enum ItemState {
@@ -154,6 +156,16 @@ pub(crate) struct Done {
     pub privacy_open: Vec<String>,
     /// Tools that finished but whose saving couldn't be measured.
     pub unmeasured: usize,
+    /// Of `items`: deleted (by Sprawl, or by the program's own command), compressed in place,
+    /// copies made links, virtual disks shrunk. Only the first deletes anything.
+    pub deleted_items: usize,
+    pub compressed_items: usize,
+    pub linked_items: usize,
+    pub shrunk_items: usize,
+    /// Files compressed, found compressed already, and left because a program had them open.
+    pub compressed_files: usize,
+    pub already_compressed: usize,
+    pub in_use: usize,
     /// Left because they were new since the scan, or kept by the user.
     pub kept_new: u64,
     pub kept_chosen: u64,
@@ -195,6 +207,70 @@ fn complete_size(scan: Option<&Option<Tree>>) -> Option<u64> {
         Some(tree) if tree.errors == 0 => tree.nodes.get(sprawl_core::ROOT).map(|n| n.size),
         _ => None,
     }
+}
+
+/// A running item's state: a compress by how far through it is (the review's size is the
+/// folder's), anything else by what it freed so far.
+fn running_label(it: &Item, so_far: u64) -> String {
+    match it.fate {
+        Fate::Compress if it.bytes > 0 => format!("Compressing... {}%, {} of {}", (so_far.min(it.bytes) * 100 / it.bytes).min(99), crate::format::size(so_far.min(it.bytes)), crate::format::size(it.bytes)),
+        Fate::Compress => "Compressing...".to_string(),
+        _ if it.privacy => "Removing...".to_string(),
+        _ if it.recycle => format!("To the Recycle Bin... {}", crate::format::size(so_far)),
+        _ => format!("Removing... {}", crate::format::size(so_far)),
+    }
+}
+
+/// A finished compress's row: what it saved, and what it left.
+fn compress_label(o: &Outcome) -> (&'static str, &'static str, String) {
+    let saved = crate::format::size(o.freed);
+    let Some(c) = &o.compress else {
+        return ("&#xE7BA;", "#FFF5B342", "Not compressed; nothing changed".to_string());
+    };
+    let busy = if c.in_use > 0 { format!("; {} file(s) in use left as they were", c.in_use) } else { String::new() };
+    match (succeeded(o), c.compressed) {
+        (true, 0) if c.already > 0 => ("&#xE73E;", "#FF4CC38A", "Already compressed".to_string()),
+        (true, 0) => ("&#xE73E;", "#FF4CC38A", format!("Nothing to compress{busy}")),
+        (true, n) => ("&#xE73E;", "#FF4CC38A", format!("Compressed {n} files, saved {saved}{busy}")),
+        (false, _) if o.stopped => ("&#xE7BA;", "#FFF5B342", format!("Stopped part way: saved {saved}")),
+        (false, _) => ("&#xE7BA;", "#FFF5B342", format!("Saved {saved}; some files couldn't be compressed")),
+    }
+}
+
+/// The done banner's second line: what happened to the items, by what each did. Only a delete
+/// says deleted: compressed, linked and shrunk items are all still there.
+fn done_words(d: &Done) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match (d.deleted_items > 0, d.recycled > 0) {
+        (true, true) => parts.push("Caches were deleted for good; your own files are in the Recycle Bin, and their space is freed when the bin is emptied.".into()),
+        (false, true) => parts.push("Your files are in the Recycle Bin: Explorer can put them back, and their space is freed when the bin is emptied.".into()),
+        (true, false) => parts.push(if d.compressed_items + d.linked_items + d.shrunk_items > 0 { "The caches were deleted for good." } else { "They were deleted for good." }.into()),
+        (false, false) => {}
+    }
+    if d.compressed_items > 0 || d.compressed_files + d.already_compressed > 0 {
+        let mut s = format!("Compressed in place: nothing was deleted, every file opens as before{}.", if d.compressed_files > 0 { format!(" ({} files compressed)", d.compressed_files) } else { String::new() });
+        if d.compressed_files == 0 && d.already_compressed > 0 {
+            s = "It was compressed already: nothing was changed or deleted.".into();
+        }
+        if d.in_use > 0 {
+            s += &format!(" {} file(s) a program had open were left as they were: close it and compress again for those.", d.in_use);
+        }
+        s += " Undo it under Compressed.";
+        parts.push(s);
+    }
+    if d.linked_items > 0 {
+        parts.push("Copies now share one file on disk: every path still opens the same content.".into());
+    }
+    if d.shrunk_items > 0 {
+        parts.push("The virtual disk was shrunk in place: nothing inside it was deleted.".into());
+    }
+    if d.privacy_items > 0 {
+        parts.push(PV_DONE.into());
+    }
+    if parts.is_empty() {
+        parts.push("Nothing was removed.".into());
+    }
+    parts.join(" ")
 }
 
 fn succeeded(out: &Outcome) -> bool { !out.stopped && out.problems.is_empty() && out.more_problems == 0 }
@@ -686,6 +762,7 @@ impl State {
                     Some((Action::Tool { command }, _)) => Some(command),
                     _ => None,
                 },
+                fate: outcome(&f, bin_on),
             });
         }
         if items.is_empty() {
@@ -723,8 +800,12 @@ impl State {
                     bins.entry(vol).or_insert_with(|| sprawl_advisor::recycle::bin_for(&path))
                 });
                 let tool = matches!(action, Action::Tool { .. });
+                // a compress measures what it saved on each file it compresses: the folder isn't
+                // read twice more for it
+                let compress = sprawl_advisor::remedies::is_compress(&action);
                 let in_place = sprawl_advisor::remedies::in_place(&action);
-                let before = if in_place { sprawl_advisor::remedies::on_disk(&path) }
+                let before = if compress { None }
+                    else if in_place { sprawl_advisor::remedies::on_disk(&path) }
                     else if tool { complete_size(rescan_after(&path).as_ref()) } else { None };
                 let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
@@ -734,7 +815,10 @@ impl State {
                 });
                 // what is there now, for the tree
                 let now = rescan_after(&path);
-                if tool {
+                if compress {
+                    // what the files compressed now saved, also when it was stopped part way
+                    out.freed = out.compress.as_ref().map_or(0, |d| d.before.saturating_sub(d.after));
+                } else if tool {
                     let after = if in_place { sprawl_advisor::remedies::on_disk(&path) }
                         else { complete_size(now.as_ref()) };
                     credit_tool(&mut out, before, after);
@@ -843,7 +927,7 @@ impl State {
                     if let Some(it) = run.items.get_mut(i) {
                         it.state = ItemState::Running(freed);
                         if let Some(p) = &self.advisor.foot {
-                            crate::state::text(p, &format!("AdvCS{i}"), &format!("Removing... {}", crate::format::size(freed)));
+                            crate::state::text(p, &format!("AdvCS{i}"), &running_label(it, freed));
                         }
                     }
                 }
@@ -869,7 +953,7 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), unmeasured: 0, kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new(), prevention: Vec::new() };
+        let mut done = Done { problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), ..Done::default() };
         let learned_at = sprawl_advisor::learning::now();
         for it in &run.items {
             if let (true, Some(rule), ItemState::Done(o)) = (it.learn, &it.rule, &it.state) {
@@ -902,6 +986,21 @@ impl State {
                 }
                 if o.freed > 0 {
                     done.items += 1;
+                }
+                // what happened to it, for the banner's words: only a delete deletes
+                match it.fate {
+                    Fate::Compress => {
+                        if let Some(c) = &o.compress {
+                            done.compressed_files += c.compressed;
+                            done.already_compressed += c.already;
+                            done.in_use += c.in_use;
+                        }
+                        if o.freed > 0 { done.compressed_items += 1; }
+                    }
+                    Fate::Link if o.freed > 0 => done.linked_items += 1,
+                    Fate::Shrink if o.freed > 0 => done.shrunk_items += 1,
+                    Fate::Gone | Fate::Tool if o.freed > 0 => done.deleted_items += 1,
+                    _ => {}
                 }
                 if o.recycled > 0 {
                     done.recycled_items += 1;
@@ -945,7 +1044,9 @@ impl State {
         for it in &run.items {
             let (Some(c), ItemState::Done(o)) = (&it.command, &it.state) else { continue };
             let Some(alg) = sprawl_advisor::remedies::compress_alg(c) else { continue };
-            if o.freed == 0 {
+            // compressed now, or found compressed already (by an earlier run): either way it is
+            // no longer offered, which the scan alone can't tell
+            if o.freed == 0 && !(succeeded(o) && o.compress.as_ref().is_some_and(|c| c.already > 0)) {
                 continue;
             }
             let path = it.path.display().to_string();
@@ -955,10 +1056,14 @@ impl State {
         }
         self.save_memory();
         self.advisor.cleanup.done = Some(done);
-        // what went no longer counts as ticked, nor is put back by the Cleaners tab on this report
+        // what ran no longer counts as ticked, nor is put back by the Cleaners tab on this
+        // report; the other ticks stay as they were (a "Clean up just this" runs that one only)
         self.advisor.cl.preview = None;
-        self.advisor.cleanup.ticked.clear();
-        self.advisor.cleanup.ticked_for = None;
+        let c = &mut self.advisor.cleanup;
+        for it in &run.items {
+            c.ticked.remove(&key(&it.path));
+        }
+        c.auto = false;
         // the tree as it is now: each item's folder scanned again, or taken out when gone
         self.apply_rescans(run.rescans);
         // the Cleaners tab's own read: read again
@@ -972,14 +1077,18 @@ impl State {
         let c = &self.advisor.cleanup;
         let mut x = String::new();
         if let Some(run) = &c.running {
+            // a compress reports what it has gone through, not what it freed
             let freed: u64 = run.items.iter().filter(|it| !it.recycle && !it.privacy).map(|it| match &it.state {
+                ItemState::Running(_) if it.fate == Fate::Compress => 0,
                 ItemState::Running(f) => *f,
                 ItemState::Done(o) => o.freed,
                 ItemState::Waiting => 0,
             }).sum();
+            let only_compress = run.items.iter().all(|it| it.fate == Fate::Compress);
+            let head = if only_compress { format!("Compressing... {} saved so far", self.size(freed)) } else { format!("Cleaning up... {} freed so far", self.size(freed)) };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="Cleaning up... {} freed so far" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
-                self.size(freed),
+                r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                ui::esc(&head),
                 num = crate::look::NUM
             );
             for (i, it) in run.items.iter().enumerate() {
@@ -988,8 +1097,8 @@ impl State {
                     ItemState::Running(_) if it.privacy => ("&#xE895;", "#FF8FB4FF", "Removing...".to_string()),
                     ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", "Removed".to_string()),
                     ItemState::Done(_) if it.privacy => ("&#xE7BA;", "#FFF5B342", "Held back: nothing in this set went".to_string()),
-                    ItemState::Running(f) if it.recycle => ("&#xE895;", "#FF8FB4FF", format!("To the Recycle Bin... {}", self.size(*f))),
-                    ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", format!("Removing... {}", self.size(*f))),
+                    ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", running_label(it, *f)),
+                    ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
                     ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("{} to the Recycle Bin", self.size(o.recycled))),
                     ItemState::Done(o) if it.recycle => ("&#xE7BA;", "#FFF5B342", format!("{} to the Recycle Bin; some couldn't go", self.size(o.recycled))),
                     ItemState::Done(o) if o.saving_unknown && succeeded(o) => ("&#xE73E;", "#FF4CC38A", "Done; the saving couldn't be measured".to_string()),
@@ -1034,13 +1143,8 @@ impl State {
                 n => format!("{head} {} removed.", privacy_count(n)).trim().to_string(),
             };
             // what happened to them, in plain words
-            let gone = match (d.items > 0, d.recycled > 0) {
-                (true, true) => "Caches were deleted for good; your own files are in the Recycle Bin, and their space is freed when the bin is emptied.",
-                (false, true) => "They are in the Recycle Bin: Explorer can put them back, and their space is freed when the bin is emptied.",
-                (false, false) if d.privacy_items > 0 => PV_DONE,
-                (false, false) => "Nothing was removed.",
-                _ => "They were deleted for good.",
-            };
+            let gone = done_words(d);
+            let gone = gone.as_str();
             x += &format!(
                 r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="{gone} The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvCleanLog" Content="See what was removed" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
                 ui::esc(&head),
@@ -1962,7 +2066,22 @@ mod second_try_tests {
 
 #[cfg(test)]
 mod review_tests {
-    use super::{final_action, lead_line, Fate};
+    use super::{done_words, final_action, lead_line, Done, Fate};
+
+    /// The banner after compressing: never "deleted", and what was left is said.
+    #[test]
+    fn a_compress_is_never_called_a_delete() {
+        let d = Done { freed: 3 << 30, items: 1, compressed_items: 1, compressed_files: 900, in_use: 2, ..Done::default() };
+        let w = done_words(&d);
+        assert!(!w.contains("deleted for good") && w.contains("nothing was deleted") && w.contains("2 file(s)"), "{w}");
+        let d = Done { already_compressed: 40, ..Done::default() };
+        assert!(done_words(&d).contains("compressed already"));
+        // a delete and a compress together: each said as it is
+        let d = Done { items: 2, deleted_items: 1, compressed_items: 1, compressed_files: 5, ..Done::default() };
+        let w = done_words(&d);
+        assert!(w.starts_with("The caches were deleted for good.") && w.contains("Compressed in place"), "{w}");
+        assert_eq!(done_words(&Done { items: 1, deleted_items: 1, ..Done::default() }), "They were deleted for good.");
+    }
 
     #[test]
     fn the_button_names_what_it_does() {

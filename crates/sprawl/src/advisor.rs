@@ -3503,7 +3503,7 @@ impl State {
             if *user {
                 x += &format!(
                     r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True" Margin="0,4,0,0"><Run Text="You: " FontWeight="SemiBold" Foreground="#FF8FB4FF"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##,
-                    ui::esc(text)
+                    ui::esc_lines(text)
                 );
             } else {
                 x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/>"##);
@@ -3537,7 +3537,7 @@ impl State {
             );
         }
         if let Some(t) = &c.live {
-            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, t.split('\n').map(ui::esc).collect::<Vec<_>>().join("&#10;"));
+            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc_lines(t));
         }
         if let Some(s) = &c.status {
             // which provider is working (Stop is below, where Ask was: it never moves with the text)
@@ -4014,7 +4014,11 @@ impl State {
         }
         if let Some(c) = &f.command {
             if crate::cleanup::untickable(f, r.counted[i]).is_none() {
-                x += r##"<TextBlock Text="Sprawl does this for you: tick it and review the selection, or Clean up just this." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##;
+                x += if sprawl_advisor::remedies::compresses(f) {
+                    r##"<TextBlock Text="Sprawl compresses it for you: Compress this... shows what happens, then compresses it with its progress shown. Nothing is deleted, and it can be undone under Compressed." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##
+                } else {
+                    r##"<TextBlock Text="Sprawl does this for you: tick it and review the selection, or Clean up just this." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##
+                };
             }
             if self.advisor.show_cmd {
                 // the safe-delete functions are long and the same every time: shown folded, copied whole
@@ -4032,7 +4036,8 @@ impl State {
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if f.command.is_some() {
             if crate::cleanup::untickable(f, r.counted[i]).is_none() && self.advisor.cleanup.running.is_none() {
-                x += r##"<Button x:Name="AdvRun" Content="Clean up just this..." Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/>"##;
+                let run = if sprawl_advisor::remedies::compresses(f) { "Compress this..." } else { "Clean up just this..." };
+                x += &format!(r##"<Button x:Name="AdvRun" Content="{run}" Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/>"##);
             }
             x += &format!(r##"<Button x:Name="AdvShowCmd" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/>"##, if self.advisor.show_cmd { "Hide the command" } else { "Show the command" });
             if self.advisor.show_cmd {

@@ -523,10 +523,19 @@ impl Memory {
         for f in findings {
             match self.hides(&f.path) {
                 Some(d) => hidden.push((f, d.verdict)),
+                None if self.compressed_already(&f) => hidden.push((f, Verdict::Done)),
                 None => shown.push(f),
             }
         }
         (shown, hidden)
+    }
+
+    /// A compress suggestion for a folder Sprawl compressed, that hasn't grown by a tenth since:
+    /// done. A listing doesn't show which files Windows keeps compressed, so the scan alone
+    /// would offer it again; a big update (new, uncompressed files) brings it back.
+    pub fn compressed_already(&self, f: &Finding) -> bool {
+        crate::remedies::compresses(f)
+            && self.compressed.iter().any(|c| segments(&c.path) == segments(&f.path.to_string_lossy()) && f.bytes <= c.size.saturating_add(c.size / 10))
     }
 
     pub fn label_for(&self, path: &Path) -> Option<&Label> {
@@ -836,6 +845,26 @@ pub fn local_packs() -> Vec<RulePack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder Sprawl compressed isn't offered for compressing again (a listing can't show
+    /// it), until it grows by more than a tenth.
+    #[test]
+    fn a_compressed_folder_is_not_offered_again() {
+        let path = std::path::PathBuf::from(r"C:\Program Files\Big App");
+        let f = |bytes: u64| Finding {
+            path: path.clone(), owner: None, bytes, risk: crate::finding::Risk::Green, remedy: crate::finding::Remedy::Command, command: None,
+            title: "Compress Big App".into(), evidence: vec![], confidence: 0.9, source: crate::finding::Source::Rule("compact".into()),
+            allow_protected: true, trusted: true, builtin: true, on_path: false,
+            action: Some(crate::finding::Action::Tool { command: format!("{}xpress8k 'x'", crate::remedies::COMPRESS) }),
+            admin: false, carved: Vec::new(), gain: None, forced_from: None,
+        };
+        let mut m = Memory::default();
+        assert_eq!(m.filter(vec![f(5 << 30)]).0.len(), 1);
+        m.compressed.push(Compressed { path: r"c:\program files\big app".into(), alg: "xpress8k".into(), when: 1, saved: 2 << 30, size: 5 << 30 });
+        let (shown, hidden) = m.filter(vec![f(5 << 30)]);
+        assert!(shown.is_empty() && hidden[0].1 == Verdict::Done);
+        assert_eq!(m.filter(vec![f(6 << 30)]).0.len(), 1, "grown by a fifth: offered again");
+    }
 
     #[test]
     fn only_a_missing_file_is_an_empty_keep_list() {

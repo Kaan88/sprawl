@@ -206,7 +206,7 @@ fn plain_name(name: &str) -> io::Result<Vec<u16>> {
 
 /// Open `name` in the folder `dir` is open on, through that handle (synchronous, as with
 /// backup semantics, the link itself, no cloud recall). (handle, whether it was made now).
-fn open_rel(dir: &File, name: &str, access: u32, share: u32, how: Disposition, kind: Kind) -> io::Result<(File, bool)> {
+pub(crate) fn open_rel(dir: &File, name: &str, access: u32, share: u32, how: Disposition, kind: Kind) -> io::Result<(File, bool)> {
     use std::os::windows::io::FromRawHandle;
     let wide = plain_name(name)?;
     let us = UnicodeString { len: (wide.len() * 2) as u16, max: (wide.len() * 2) as u16, buf: wide.as_ptr() };
@@ -236,7 +236,7 @@ fn attributes(f: &File) -> io::Result<u32> {
 }
 
 /// A plain local folder or file: no link or other reparse point, no cloud or offline item.
-fn check_plain(f: &File, kind: Kind) -> io::Result<u32> {
+pub(crate) fn check_plain(f: &File, kind: Kind) -> io::Result<u32> {
     let a = attributes(f)?;
     let dir = a & crate::attr::DIRECTORY != 0;
     if a & crate::attr::REPARSE_POINT != 0 || a & (0x1000 | 0x0004_0000 | 0x0040_0000) != 0

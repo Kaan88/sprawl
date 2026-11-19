@@ -27,6 +27,7 @@ pub mod query;
 pub mod identity;
 pub mod search;
 pub mod walk;
+pub mod wof;
 
 pub use csv::{export_csv, load_csv};
 pub use filter::{filter_tree, matches, Filter};
