@@ -86,7 +86,8 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
     // scan; without one (no server program, the snapshot couldn't be written) it answers from
     // the report
     let cc = if cfg.provider == Provider::ClaudeCode { super::mcp_exe().and_then(|exe| CcRun::new(tree, scan_before, exe, &model, web).ok()) } else { None };
-    // Codex has no tools here at all: it answers from the report
+    // Codex gets none of Sprawl's tools: it answers from the report (what Codex itself still
+    // offers its model is the accepted risk in `codex::RISK`)
     let tools_ok = match cfg.provider {
         Provider::ClaudeCode => cc.is_some(),
         Provider::Codex => false,

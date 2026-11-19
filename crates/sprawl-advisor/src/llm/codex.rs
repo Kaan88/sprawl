@@ -19,7 +19,7 @@ use serde_json::Value;
 use super::{log_request, Chat, Turn};
 
 /// Said in AI setup whenever Codex is picked: what choosing it accepts.
-pub const RISK: &str = "Codex can't be started without tools: it still offers its model a code runner and helper agents. Before each answer Sprawl checks, without sending anything, that these are switched off and that no MCP server would start, and refuses otherwise, but that check can't prove what Codex will do. Choosing Codex accepts that. For an AI with no tools at all, use Claude Code, an API key or a local model.";
+pub const RISK: &str = "Codex still offers its model a code runner and helper agents. Sprawl checks the configuration before each answer. Those tools may still run, and Sprawl cannot verify what they will do. Choosing Codex accepts that.";
 
 pub struct Codex {
     exe: PathBuf,
@@ -94,15 +94,22 @@ pub(crate) fn args(model: &str, dir: &Path, servers_off: &[String]) -> Vec<Strin
 /// Where the run folders go: Sprawl's own advisor folder, never Temp. Each run's folder is an
 /// [`sprawl_core::local::OwnedDir`] in it: made by that run alone, held until the run is over,
 /// and removed only through that hold.
-fn base() -> Result<PathBuf, String> {
-    let base = super::advisor_dir().ok_or("this account's AppData folder isn't known")?.join("codex");
-    std::fs::create_dir_all(&base).map_err(|e| format!("couldn't make {} ({e})", base.display()))?;
-    Ok(base)
+/// Each folder from AppData down (`Sprawl`, `advisor`, `codex`) is opened, or made, through
+/// its parent's handle as itself (a link on the way is refused) and held.
+fn base() -> Result<sprawl_core::local::Directory, String> {
+    let appdata = std::env::var_os("APPDATA").ok_or("this account's AppData folder isn't known")?;
+    let mut held = sprawl_core::local::directory(Path::new(&appdata)).map_err(|e| format!("its AppData folder isn't a plain local folder ({e})"))?;
+    for name in ["Sprawl", "advisor", "codex"] {
+        held = held.child(name, true).map_err(|e| format!("couldn't make its {name} folder ({e})"))?;
+    }
+    Ok(held)
 }
 
-/// A new folder of `base` for this run, or why not.
-fn fresh(base: &Path, what: &str) -> Result<sprawl_core::local::OwnedDir, String> {
-    sprawl_core::local::OwnedDir::create_in(base, what).map_err(|e| format!("couldn't make a folder for Codex in {} ({e})", base.display()))
+/// A new folder in [`base`] for this run, or why not.
+fn fresh(what: &str) -> Result<sprawl_core::local::OwnedDir, String> {
+    let base = base()?;
+    let at = base.path.display().to_string();
+    sprawl_core::local::OwnedDir::create_under(base, what).map_err(|e| format!("couldn't make a folder for Codex in {at} ({e})"))
 }
 
 /// `-c model="..."` for the checks, so they see the model the run will use.
@@ -158,6 +165,10 @@ fn probe(exe: &Path, dir: &Path, home: &Path, sub: &[&str], extra: &[String], ta
     };
     let waited = Instant::now();
     let status = loop {
+        if stopped() {
+            run.end();
+            return Err(super::STOPPED.into());
+        }
         match run.child.try_wait() {
             Ok(Some(s)) => break Some(s),
             Ok(None) if waited.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(50)),
@@ -214,6 +225,11 @@ fn check_features(out: &str) -> Result<(), String> {
 fn check_tools(out: &str) -> Result<(), String> {
     let v: Value = serde_json::from_str(out.trim()).map_err(|_| "what it would offer the model couldn't be read".to_string())?;
     let items = v.as_array().ok_or("what it would offer the model couldn't be read")?;
+    // the list of tools is part of the format checked: without it, what the model would be
+    // offered wasn't seen
+    if !items.iter().any(|i| i["type"] == "additional_tools") {
+        return Err("it didn't say which tools it would offer the model".into());
+    }
     for item in items {
         // only the kinds checked: messages, and the tool list; anything else (a tool list in a
         // new shape, say) is something Sprawl hasn't checked
@@ -315,19 +331,29 @@ impl Codex {
 /// Codex's events (`codex exec --json`, one JSON object a line): its last message is the
 /// answer, `turn.completed` carries the tokens, and a failed turn or a top-level error is the
 /// failure. Items of type "error" are warnings (a setting it ignores) and are skipped.
+///
+/// Only a stream read whole counts: every line one whole event, and the last of them the
+/// turn's end, after its answer. A line that doesn't parse, or a turn begun after the last end
+/// (an unfinished turn), is no answer.
 pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
     let mut text: Option<String> = None;
     let mut usage = super::Usage::default();
     let mut failed: Option<String> = None;
     let mut completed = false;
-    for line in out.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
+    let mut last: Option<String> = None;
+    for line in out.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+            return Err(if text.is_some() { "Codex's output ended in something that isn't one of its events: no answer is taken from it".into() } else { format!("Codex answered something unexpected: {}", super::short(out)) });
+        };
+        last = v["type"].as_str().map(str::to_string);
         match v["type"].as_str() {
             Some("item.completed") if v["item"]["type"] == "agent_message" => {
                 text = v["item"]["text"].as_str().map(str::to_string);
                 // the turn's end counts only after the message it ends
                 completed = false;
             }
+            // a turn begun anew isn't finished until its own end
+            Some("turn.started") => completed = false,
             Some("turn.completed") => {
                 completed = true;
                 let u = &v["usage"];
@@ -343,17 +369,11 @@ pub(crate) fn parse(out: &str) -> Result<(String, super::Usage), String> {
         return Err(format!("Codex: {}", super::short(&why)));
     }
     match text {
-        Some(t) if completed => Ok((t, usage)),
+        Some(t) if completed && last.as_deref() == Some("turn.completed") => Ok((t, usage)),
         Some(_) => Err("Codex stopped before finishing its answer".into()),
         None if out.trim().is_empty() => Err("Codex gave no answer. Is it signed in? Run codex login once.".into()),
         None => Err(format!("Codex answered something unexpected: {}", super::short(out))),
     }
-}
-
-/// The output ends with the turn's own last event, whole (a parsed line, not a mention).
-fn finished(out: &str) -> bool {
-    out.ends_with('\n') && out.lines().rev().find(|l| !l.trim().is_empty()).and_then(|l| serde_json::from_str::<Value>(l.trim()).ok())
-        .is_some_and(|v| matches!(v["type"].as_str(), Some("turn.completed" | "turn.failed")))
 }
 
 /// Why Codex isn't started, when Sprawl runs as administrator: like Claude Code it comes from
@@ -378,9 +398,8 @@ impl Codex {
         }
         // a folder of its own, and the check, before anything is sent; both folders go when
         // this returns, after the run (declared before it, so dropped after it ends)
-        let base = base().map_err(|e| format!("Codex isn't started: {e}"))?;
-        let dir = fresh(&base, "run").map_err(|e| format!("Codex isn't started: {e}"))?;
-        let home = fresh(&base, "check").map_err(|e| format!("Codex isn't started: {e}"))?;
+        let dir = fresh("run").map_err(|e| format!("Codex isn't started: {e}"))?;
+        let home = fresh("check").map_err(|e| format!("Codex isn't started: {e}"))?;
         let stop = self.stop.clone();
         let stopped = move || stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
         let off = verify(&self.exe, dir.path(), home.path(), &self.model, &stopped).map_err(|e| {
@@ -392,6 +411,10 @@ impl Codex {
             return Err(super::STOPPED.into());
         }
         log_request(&format!("codex exec ({})", self.exe.display()), &self.prompt);
+        // and once more right before it starts
+        if stopped() {
+            return Err(super::STOPPED.into());
+        }
         let mut cmd = Command::new(&self.exe);
         cmd.args(args(&self.model, dir.path(), &off)).current_dir(dir.path());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -400,9 +423,13 @@ impl Codex {
         let mut run = super::contain::spawn(&mut cmd, 0x0800_0000).map_err(|e| format!("couldn't start Codex: {e}"))?;
         let mut stdin = run.child.stdin.take().ok_or("no stdin")?;
         let prompt = self.prompt.clone();
-        // never waited for: a helper holding stdin without reading it can't keep this waiting
+        let stop_writer = self.stop.clone();
+        // never waited for: a helper holding stdin without reading it can't keep this waiting;
+        // nothing is sent once Stop is pressed
         std::thread::spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
+            if !stop_writer.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
+                let _ = stdin.write_all(prompt.as_bytes());
+            }
         });
         // kept as it comes (at most 16 MB): a helper process that outlives Codex and still holds
         // the pipe mustn't keep its answer from being read
@@ -466,21 +493,22 @@ impl Codex {
                 }
             }
         };
-        // the end of the output, or the turn's last event, whichever comes first (30 s at most)
-        let text_now = || got.lock().map(|g| String::from_utf8_lossy(&g).into_owned()).unwrap_or_default();
+        // Codex has ended: whatever it started ends now too, which closes the pipes they held, and
+        // the reader then reaches the end of the output. Only that whole output is read for the
+        // answer; a reader that doesn't finish in time is no answer.
+        run.end();
         let waited = Instant::now();
-        while orx.recv_timeout(Duration::from_millis(100)).is_err() && waited.elapsed() < Duration::from_secs(30) {
+        loop {
             if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
-                run.end();
                 return Err(super::STOPPED.into());
             }
-            if finished(&text_now()) {
-                break;
+            match orx.recv_timeout(Duration::from_millis(100)) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if waited.elapsed() < Duration::from_secs(10) => continue,
+                Err(_) => return Err("Codex's output couldn't be read to its end: no answer is taken from it".into()),
             }
         }
-        // whatever it started ends now, which closes the pipes it held
-        run.end();
-        let out = text_now();
+        let out = got.lock().map(|g| String::from_utf8_lossy(&g).into_owned()).map_err(|_| "Codex's output couldn't be read".to_string())?;
         if cut.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("Codex's output was longer than Sprawl reads, or couldn't be read whole: no answer is taken from it".into());
         }
@@ -584,7 +612,8 @@ mod tests {
         assert!(super::check_tools(r#"[{"type":"additional_tools","tools":[{"type":"namespace","name":"mcp__node_repl","tools":[]}]}]"#).is_err(), "an MCP server's tools");
         assert!(super::check_tools(r#"[{"type":"additional_tools","tools":[{"type":"function","name":"functions","tools":[]}]}]"#).is_err(), "only namespaces");
         assert!(super::check_tools("not json").is_err());
-        assert!(super::check_tools("[]").is_ok(), "no tools at all");
+        assert!(super::check_tools("[]").is_err(), "no tool list at all isn't the format checked");
+        assert!(super::check_tools(r#"[{"type":"message","role":"user","content":[]}]"#).is_err(), "messages only: no tool list seen");
         assert!(super::check_tools(r#"[{"type":"tool_list_v2","items":[{"name":"shell"}]}]"#).is_err(), "an item of a kind not checked");
         assert!(super::check_tools(r#"[{"type":"additional_tools"}]"#).is_err(), "a tool list without its tools");
         assert!(super::check_tools(r#"[{"type":"message","role":"user","content":[],"tools":[]}]"#).is_err());
@@ -597,9 +626,8 @@ mod tests {
     #[ignore]
     fn the_installed_codex_is_checked() {
         let exe = crate::config::Detected::probe().codex.expect("no Codex here");
-        let base = super::base().unwrap();
-        let dir = super::fresh(&base, "run").unwrap();
-        let home = super::fresh(&base, "check").unwrap();
+        let dir = super::fresh("run").unwrap();
+        let home = super::fresh("check").unwrap();
         let off = super::verify(&exe, dir.path(), home.path(), "", &|| false);
         assert_eq!(super::verify(&exe, dir.path(), home.path(), "", &|| true).unwrap_err(), super::super::STOPPED, "Stop ends the check");
         eprintln!("{exe:?}: {off:?}");
@@ -624,10 +652,12 @@ mod tests {
         assert!(super::parse(concat!(r#"{"type":"turn.completed","usage":{}}"#, "\n", r#"{"type":"item.completed","item":{"type":"agent_message","text":"late"}}"#)).unwrap_err().contains("before finishing"));
         // an answer without the turn's end is not an answer
         assert!(super::parse(r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"half"}}"#).unwrap_err().contains("before finishing"));
-        // the end is a whole, parsed last line, not a mention of it
-        assert!(super::finished(&format!("{out}\n")));
-        assert!(!super::finished(out), "a line not yet ended");
-        assert!(!super::finished(concat!(r#"{"type":"item.completed","item":{"type":"agent_message","text":"\"turn.completed\""}}"#, "\n")));
+        // only a stream read whole (Astra 1.0.2 round 3, S2 #4): a malformed tail, or a turn
+        // begun after the last end, is no answer
+        assert!(super::parse(&format!("{out}\n{{\"type\":\"item.compl")).unwrap_err().contains("isn't one of its events"));
+        assert!(super::parse(&format!("{out}\n{{\"type\":\"turn.started\"}}")).unwrap_err().contains("before finishing"));
+        assert!(super::parse(&format!("{out}\n{{\"type\":\"turn.started\"}}\n{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"x\"}}}}")).unwrap_err().contains("before finishing"));
+        assert!(super::parse(&format!("{out}\n{{\"type\":\"thread.closed\"}}")).unwrap_err().contains("before finishing"), "the last event must be the turn's end");
     }
 
     #[test]
