@@ -10,8 +10,9 @@ use std::time::SystemTime;
 /// The most shortcuts read.
 const MOST: usize = 5000;
 
-/// (lower-case target path without a trailing `\`, when it was last opened) for each shortcut in
-/// this account's Recent items.
+/// (target path as the shortcut spells it, without a trailing `\`, when it was last opened) for
+/// each shortcut in this account's Recent items. The case is kept: a restricted view matches
+/// it exactly (Astra 1.0.2 round 3, S3 #2), the rest ignore it ([`opened_in`]).
 pub fn recent_items() -> Vec<(String, SystemTime)> {
     let Some(dir) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Recent")) else { return Vec::new() };
     let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
@@ -27,16 +28,20 @@ pub fn recent_items() -> Vec<(String, SystemTime)> {
         }
         let (Ok(t), Ok(bytes)) = (m.modified(), std::fs::read(&p)) else { continue };
         if let Some(target) = lnk_target(&bytes) {
-            out.push((target.to_lowercase().trim_end_matches('\\').to_string(), t));
+            out.push((target.trim_end_matches('\\').to_string(), t));
         }
     }
     out
 }
 
-/// The newest time something at `path_lc` or inside it (lower case, no trailing `\`) was opened.
-pub fn opened_in(items: &[(String, SystemTime)], path_lc: &str) -> Option<SystemTime> {
-    let inside = format!("{}\\", path_lc.trim_end_matches('\\'));
-    items.iter().filter(|(p, _)| p == path_lc.trim_end_matches('\\') || p.starts_with(&inside)).map(|&(_, t)| t).max()
+/// The newest time something at `path` or inside it was opened. `exact`: the names in their
+/// own case (a restricted view, whose items were kept only as spelled on screen); otherwise
+/// case is ignored.
+pub fn opened_in(items: &[(String, SystemTime)], path: &str, exact: bool) -> Option<SystemTime> {
+    let key = |s: &str| if exact { s.trim_end_matches('\\').to_string() } else { s.trim_end_matches('\\').to_lowercase() };
+    let at = key(path);
+    let inside = format!("{at}\\");
+    items.iter().filter(|(p, _)| { let p = key(p); p == at || p.starts_with(&inside) }).map(|&(_, t)| t).max()
 }
 
 /// Whether NTFS keeps last-access times on this machine: only when the setting says so plainly
@@ -258,10 +263,14 @@ mod tests {
     fn opened_inside_a_folder() {
         let t = |s| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
         let items = vec![(r"d:\films\a.mkv".to_string(), t(10)), (r"d:\films\old\b.mkv".to_string(), t(5)), (r"d:\filmsx\c.mkv".to_string(), t(20))];
-        assert_eq!(opened_in(&items, r"d:\films"), Some(t(10)));
-        assert_eq!(opened_in(&items, r"d:\films\old"), Some(t(5)));
-        assert_eq!(opened_in(&items, r"d:\films\a.mkv"), Some(t(10)));
-        assert_eq!(opened_in(&items, r"d:\music"), None);
+        assert_eq!(opened_in(&items, r"d:\films", false), Some(t(10)));
+        assert_eq!(opened_in(&items, r"d:\films\old", false), Some(t(5)));
+        assert_eq!(opened_in(&items, r"d:\films\a.mkv", false), Some(t(10)));
+        assert_eq!(opened_in(&items, r"d:\music", false), None);
+        // case: ignored, or (a restricted view) kept
+        assert_eq!(opened_in(&items, r"D:\Films", false), Some(t(10)));
+        assert_eq!(opened_in(&items, r"D:\Films", true), None);
+        assert_eq!(opened_in(&items, r"d:\films\old", true), Some(t(5)));
     }
 
     /// The real readers on a small folder of this repository (run by hand).

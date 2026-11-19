@@ -114,7 +114,7 @@ pub(crate) fn find_at(tree: &Tree, facts: &Facts, seen: &HashSet<String>, now: S
         let app = facts.owner_of(&path);
         let mut used = [
             app.and_then(|a| a.last_used).map(|(t, from)| (t, if from == crate::facts::UsedFrom::Steam { "played" } else { "used" }, from.label())),
-            crate::used::opened_in(&facts.opened, &lc).map(|t| (t, "opened", "Explorer's Recent items")),
+            crate::used::opened_in(&facts.opened, &s, facts.exact).map(|t| (t, "opened", "Explorer's Recent items")),
         ]
         .into_iter()
         .flatten()
@@ -201,7 +201,7 @@ mod tests {
     use sprawl_core::Node;
 
     fn node(name: &str, dir: bool, size: u64, days_ago: Option<u64>, parent: Option<usize>, now: SystemTime) -> Node {
-        Node { name: name.into(), is_dir: dir, size, allocated: size, files: u64::from(!dir), folders: 0, modified: days_ago.map(|d| now - Duration::from_secs(d * 86_400)), attributes: 0, parent, children: Vec::new() }
+        Node { name: name.into(), is_dir: dir, size, allocated: size, files: u64::from(!dir), folders: 0, modified: days_ago.map(|d| now - Duration::from_secs(d * 86_400)), attributes: 0, parent, children: Vec::new(), id: 0 }
     }
 
     /// D:\ with an old game, a folder that is partly old, a small old folder, and an old big file.

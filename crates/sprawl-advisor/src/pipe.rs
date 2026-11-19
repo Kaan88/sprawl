@@ -86,10 +86,12 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
             // handed-on connection can't carry a second request under it. A line is at most
             // 1 MB: a client that never sends a newline can't fill memory.
             if (&mut reader).take(1 << 20).read_line(&mut line).is_ok_and(|n| n > 0) && line.ends_with('\n') {
-                // Who wrote this message: the pipe's own record of the client's security
-                // context, not only the process behind a client PID (which could have exited and
-                // been reused). Administrator only when both say so; another account, or no
-                // answer, gets no answer from the scan.
+                // Who opened this connection: the security context the pipe recorded when the
+                // client opened it, not only the process behind a client PID (which could have
+                // exited and been reused). That authenticates the opening, not each write: a
+                // connection handed to another process would still read as its opener's, which
+                // is why it carries this one request only. Administrator only when both say so;
+                // another account, or no answer, gets no answer from the scan.
                 let mut out = match message_identity(h) {
                     Some((account, elevated)) if account == sid => answer(line.trim(), client_elevated && elevated),
                     _ => "{\"ok\":false,\"text\":\"Sprawl couldn't confirm who is asking.\"}".to_string(),

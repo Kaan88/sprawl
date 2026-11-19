@@ -138,9 +138,16 @@ pub struct Facts {
     /// Prefetch could be read and is current, so a program missing from `runs` hasn't been
     /// started lately (without it only Explorer starts are known).
     pub runs_complete: bool,
-    /// Explorer's Recent items: (lower-case path, when last opened), filled in by
-    /// [`Facts::attach_usage`] (A1).
+    /// Explorer's Recent items: (path as the shortcut spells it, when last opened), filled in
+    /// by [`Facts::attach_usage`] (A1).
     pub opened: Vec<(String, SystemTime)>,
+    /// The index again with each location as its source spelled it: (location, its segments
+    /// in that case, app index), longest first.
+    spelled: Vec<(PathBuf, Vec<String>, usize)>,
+    /// A restricted view's facts ([`Facts::scoped_to`]): an owner, and a Recent item, belong
+    /// only to the very folder or file on screen, its names in their own case. A case-only
+    /// sibling on a case-sensitive folder is another folder (Astra 1.0.2 round 3, S3 #2).
+    pub exact: bool,
 }
 
 impl Facts {
@@ -165,6 +172,7 @@ impl Facts {
 
     pub fn from_apps(mut apps: Vec<App>) -> Facts {
         let mut index: Vec<(Vec<String>, usize)> = Vec::new();
+        let mut spelled: Vec<(PathBuf, Vec<String>, usize)> = Vec::new();
         for (i, a) in apps.iter_mut().enumerate() {
             // names come from the registry and manifests: shown, so cleaned
             a.name = clean_text(&a.name);
@@ -172,12 +180,14 @@ impl Facts {
                 let segs = segments(&l.to_string_lossy());
                 if ownable(&segs) {
                     index.push((segs, i));
+                    spelled.push((l.clone(), spelled_segments(l), i));
                 }
             }
         }
         // longest first; for equal locations the first source wins (Steam over its Uninstall key)
         index.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        Facts { apps, index, runs: HashMap::new(), runs_complete: false, opened: Vec::new() }
+        spelled.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        Facts { apps, index, runs: HashMap::new(), runs_complete: false, opened: Vec::new(), spelled, exact: false }
     }
 
     /// What a client that may only see the scan on screen gets: the apps with a folder in
@@ -196,13 +206,21 @@ impl Facts {
             })
             .collect();
         let mut out = Facts::from_apps(apps);
+        out.exact = true;
         out.runs_complete = self.runs_complete;
+        // each Recent item as its shortcut spells it: one whose spelling isn't a path on screen
+        // is left out, never matched to a sibling differing only in case
         out.opened = self.opened.iter().filter(|(p, _)| held(Path::new(p))).cloned().collect();
         out
     }
 
-    /// The app whose folder holds `path`, if any (the most specific one).
+    /// The app whose folder holds `path`, if any (the most specific one). In a restricted view
+    /// ([`Facts::exact`]), only the folder spelled exactly so, and what is inside it.
     pub fn owner_of(&self, path: &Path) -> Option<&App> {
+        if self.exact {
+            let segs = spelled_segments(path);
+            return self.spelled.iter().find(|(_, loc, _)| segs.len() >= loc.len() && segs[..loc.len()] == loc[..]).map(|&(_, _, i)| &self.apps[i]);
+        }
         let segs = segments(&path.to_string_lossy());
         self.index.iter().find(|(loc, _)| segs.len() >= loc.len() && segs[..loc.len()] == loc[..]).map(|&(_, i)| &self.apps[i])
     }
@@ -211,9 +229,18 @@ impl Facts {
     pub fn owner_map(&self, tree: &Tree) -> Vec<Option<u32>> {
         let mut own: Vec<Option<u32>> = vec![None; tree.nodes.len()];
         // most specific last, so it overwrites the broader one
-        for (loc, i) in self.index.iter().rev() {
-            if let Some(n) = find_path(tree, Path::new(&loc.join("\\"))) {
-                own[n] = Some(*i as u32);
+        if self.exact {
+            // the very node each location is, its names in their own case
+            for (loc, _, i) in self.spelled.iter().rev() {
+                if let Some(n) = crate::history::find_path(tree, loc) {
+                    own[n] = Some(*i as u32);
+                }
+            }
+        } else {
+            for (loc, i) in self.index.iter().rev() {
+                if let Some(n) = find_path(tree, Path::new(&loc.join("\\"))) {
+                    own[n] = Some(*i as u32);
+                }
             }
         }
         let mut stack = vec![(ROOT, None)];
@@ -336,6 +363,18 @@ const SHARED: &[&str] = &["common files", "windowsapps", "windows nt", "microsof
 /// that holds many apps, a profile or its own folders (Documents, AppData, .vscode), an AppData
 /// root or anything of Windows: an installer naming one of those as its location must not
 /// claim everything in it.
+/// A path's names in their own case (a drive letter's case aside, which never matters; the
+/// `\\?\` forms read as the plain ones), for the restricted view's exact matching.
+fn spelled_segments(path: &Path) -> Vec<String> {
+    let s = path.to_string_lossy().replace('/', "\\");
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") { format!(r"\\{rest}") } else { s.strip_prefix(r"\\?\").map_or(s.clone(), str::to_string) };
+    let mut out: Vec<String> = s.split('\\').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    if let Some(first) = out.first_mut().filter(|f| f.len() == 2 && f.ends_with(':')) {
+        *first = first.to_ascii_uppercase();
+    }
+    out
+}
+
 fn ownable(segs: &[String]) -> bool {
     let s: Vec<&str> = segs.iter().map(String::as_str).collect();
     match s.as_slice() {
@@ -893,6 +932,38 @@ mod tests {
         let app = |name: &str, at: &str| App { name: name.into(), publisher: None, kind: AppKind::Installed, locations: vec![root.join(at)], last_used: None, how_to_remove: String::new() };
         let scoped = Facts::from_apps(vec![app("Here", "Data"), app("Sibling", "data"), app("Away", "Elsewhere")]).scoped_to(&tree);
         assert_eq!(scoped.apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Here"]);
+        // round 3: the owner lookups keep the case too. Two case-only siblings (a case-sensitive
+        // folder) each have only their own owner, and an app spelled "data" owns neither.
+        let both = tree_of(&root, &["Data", "data"]);
+        let scoped = Facts::from_apps(vec![app("Upper", "Data"), app("Lower", "data")]).scoped_to(&both);
+        assert_eq!(scoped.owner_of(&root.join(r"Data\x")).map(|a| a.name.as_str()), Some("Upper"));
+        assert_eq!(scoped.owner_of(&root.join(r"data\x")).map(|a| a.name.as_str()), Some("Lower"));
+        let map = scoped.owner_map(&both);
+        let name = |n: usize| map[n].map(|i| scoped.apps[i as usize].name.as_str());
+        assert_eq!((name(1), name(2)), (Some("Upper"), Some("Lower")));
+        let one = Facts::from_apps(vec![app("Lower", "data")]).scoped_to(&tree);
+        assert!(one.apps.is_empty() && one.owner_of(&root.join("Data")).is_none());
+        // Recent items: kept only as spelled, so a record for the sibling isn't this folder's
+        let mut f = Facts::from_apps(vec![]);
+        f.opened = vec![(root.join(r"data\x").to_string_lossy().into_owned(), SystemTime::UNIX_EPOCH), (root.join(r"Data\y").to_string_lossy().into_owned(), SystemTime::UNIX_EPOCH)];
+        let tree_y = tree_of(&root, &[r"Data", r"Data\y"]);
+        assert_eq!(f.scoped_to(&tree_y).opened.len(), 1);
+        assert!(f.scoped_to(&tree_y).opened[0].0.ends_with(r"Data\y"));
+    }
+
+    /// A tree with these folders under `root` (no disk): `a\b` puts b in a.
+    fn tree_of(root: &Path, dirs: &[&str]) -> Tree {
+        let mut nodes = vec![sprawl_core::Node { name: root.to_string_lossy().into_owned(), is_dir: true, ..Default::default() }];
+        for d in dirs {
+            let (parent, name) = match d.rsplit_once('\\') {
+                Some((p, n)) => (nodes.iter().position(|x| x.name == p).unwrap(), n),
+                None => (0, *d),
+            };
+            let at = nodes.len();
+            nodes.push(sprawl_core::Node { name: name.into(), is_dir: true, parent: Some(parent), ..Default::default() });
+            nodes[parent].children.push(at);
+        }
+        Tree { root_path: root.to_path_buf(), nodes, errors: 0, method: Default::default() }
     }
 
     #[test]
