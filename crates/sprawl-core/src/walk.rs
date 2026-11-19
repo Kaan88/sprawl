@@ -63,6 +63,11 @@ struct Shared<'a> {
     next_id: AtomicU32,
     progress: &'a Progress,
     detect_wof: bool,
+    /// Local inventories: the root's real path on its volume (lower case, no trailing `\`)
+    /// and the length of the root job's path. Each folder is opened (links not followed),
+    /// checked to be at this path plus its own relative path, and listed through that handle,
+    /// so a folder or ancestor swapped for a junction after it was queued is never listed.
+    verify: Option<(String, usize)>,
 }
 
 /// How many threads list folders. Listing is I/O- and kernel-bound; a handful more threads than
@@ -133,12 +138,20 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     }
     let errors_before = progress.errors();
 
+    let root_job = long_path(&abs);
+    // the detailed walk pins every folder's whole chain instead; a share is listed as it is
+    let verify = if scan.pinned.is_some() && !detect_wof {
+        Some((dir::open(&root_job).and_then(|h| dir::real_path(&h))?, root_job.len()))
+    } else {
+        None
+    };
     let shared = Shared {
-        queue: Mutex::new(Queue { jobs: vec![Job { id: 0, path: long_path(&abs), top: NO_JOB }], pending: 1 }),
+        queue: Mutex::new(Queue { jobs: vec![Job { id: 0, path: root_job, top: NO_JOB }], pending: 1 }),
         cv: Condvar::new(),
         next_id: AtomicU32::new(1),
         progress,
         detect_wof,
+        verify,
     };
     let results: Vec<Vec<(u32, Vec<Entry>)>> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads.max(1)).map(|_| s.spawn(|| worker(&shared))).collect();
@@ -201,6 +214,7 @@ fn worker(sh: &Shared) -> Vec<(u32, Vec<Entry>)> {
     // SAFETY: WIN32_FIND_DATAW is plain old data; all-zero is a valid value.
     let mut find: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
     let mut pattern: Vec<u16> = Vec::with_capacity(1024);
+    let mut buf: Vec<u64> = Vec::new();
     loop {
         let job = {
             let mut q = sh.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -219,7 +233,7 @@ fn worker(sh: &Shared) -> Vec<(u32, Vec<Entry>)> {
             }
         };
         let mut subjobs = Vec::new();
-        let entries = list_dir(sh, &job, &mut find, &mut pattern, &mut subjobs, &mut batch);
+        let entries = list_dir(sh, &job, &mut find, &mut pattern, &mut buf, &mut subjobs, &mut batch);
         out.push((job.id, entries));
         if last_flush.elapsed() > Duration::from_millis(15) {
             batch.current = Some(display_path(&job.path));
@@ -247,13 +261,14 @@ fn list_dir(
     job: &Job,
     find: &mut WIN32_FIND_DATAW,
     pattern: &mut Vec<u16>,
+    buf: &mut Vec<u64>,
     subjobs: &mut Vec<Job>,
     batch: &mut LiveBatch,
 ) -> Vec<Entry> {
     let mut entries = Vec::new();
     // Only the detailed walk opens files (the WOF probe), so only it pins the folder's whole
-    // chain first. An inventory just lists names: a folder listed as a reparse point is never
-    // queued, and pinning every ancestor of every folder made scans 15-55x slower (1.0).
+    // chain first. An inventory opens the folder itself once and checks where it really is
+    // (`Shared::verify`): pinning every ancestor of every folder made scans 15-55x slower (1.0).
     let pinned = if sh.detect_wof {
         match crate::local::directory(Path::new(&display_path(&job.path))) {
             Ok(p) => Some(p),
@@ -262,44 +277,16 @@ fn list_dir(
     } else {
         None
     };
-    pattern.clear();
-    pattern.extend_from_slice(&job.path);
-    if pattern.last() != Some(&(b'\\' as u16)) {
-        pattern.push(b'\\' as u16);
-    }
-    pattern.push(b'*' as u16);
-    pattern.push(0);
-    // SAFETY: `pattern` is NUL-terminated, `find` is a valid WIN32_FIND_DATAW.
-    let h = unsafe {
-        FindFirstFileExW(
-            pattern.as_ptr(),
-            FindExInfoBasic,
-            find as *mut WIN32_FIND_DATAW as *mut _,
-            FindExSearchNameMatch,
-            std::ptr::null(),
-            FIND_FIRST_EX_LARGE_FETCH,
-        )
-    };
-    if h == INVALID_HANDLE_VALUE {
-        // SAFETY: trivially safe.
-        if unsafe { GetLastError() } != ERROR_FILE_NOT_FOUND {
-            sh.progress.add_errors(1);
-        }
-        return entries;
-    }
     let is_root = job.top == NO_JOB;
     let mut top_names: Vec<(String, u64)> = Vec::new();
     let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
-    loop {
-        if sh.progress.is_cancelled() { break; }
-        let len = find.cFileName.iter().position(|&c| c == 0).unwrap_or(find.cFileName.len());
-        let wname = &find.cFileName[..len];
+    let mut visit = |wname: &[u16], raw_attrs: u32, tag: u32, size: u64, modified: u64| -> bool {
+        if sh.progress.is_cancelled() { return false; }
         let dot = wname == [b'.' as u16] || wname == [b'.' as u16, b'.' as u16];
         let excluded = !dot && sh.progress.has_exclusions() && sh.progress.excludes(&Path::new(&display_path(&job.path)).join(String::from_utf16_lossy(wname)));
         if !dot && !excluded {
             let name = String::from_utf16_lossy(wname);
-            let mut attrs = find.dwFileAttributes | if find.dwFileAttributes & attr::REPARSE_POINT != 0 && find.dwReserved0 == 0x8000_0017 { attr::WOF } else { 0 };
-            let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
+            let mut attrs = raw_attrs | if raw_attrs & attr::REPARSE_POINT != 0 && tag == 0x8000_0017 { attr::WOF } else { 0 };
             if let Some(pinned) = pinned.as_ref().filter(|_| size > 0 && attrs & (attr::DIRECTORY | attr::REPARSE_POINT | attr::COMPRESSED | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0) {
                 #[cfg(test)]
                 sh.progress.wof_probes.fetch_add(1, Ordering::Relaxed);
@@ -309,7 +296,6 @@ fn list_dir(
                     Err(_) => sh.progress.add_errors(1),
                 }
             }
-            let modified = (u64::from(find.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(find.ftLastWriteTime.dwLowDateTime);
             let is_dir = attrs & attr::DIRECTORY != 0;
             let slot = if is_root { entries.len() as u32 } else { job.top };
             let mut child_job = NO_JOB;
@@ -338,17 +324,15 @@ fn list_dir(
             }
             entries.push(Entry { name, size, attrs, modified, job: child_job });
         }
-        // SAFETY: `h` is a valid find handle.
-        if unsafe { FindNextFileW(h, find) } == 0 {
-            // SAFETY: trivially safe.
-            if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
-                sh.progress.add_errors(1);
-            }
-            break;
-        }
+        true
+    };
+    let listed = match &sh.verify {
+        Some((root, root_len)) => list_by_handle(job, root, *root_len, buf, &mut visit),
+        None => list_by_name(job, find, pattern, &mut visit),
+    };
+    if !listed {
+        sh.progress.add_errors(1);
     }
-    // SAFETY: `h` is a valid find handle, closed once.
-    unsafe { FindClose(h) };
     if is_root {
         sh.progress.top_reset(top_names);
     } else {
@@ -356,6 +340,141 @@ fn list_dir(
     }
     sh.progress.add_counts(files, folders, bytes);
     entries
+}
+
+/// Each entry of `job`'s folder as (name, attributes, reparse tag, size, modified), by name
+/// (`FindFirstFileExW`). False when the listing failed (a folder that is gone is not a failure).
+fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
+    pattern.clear();
+    pattern.extend_from_slice(&job.path);
+    if pattern.last() != Some(&(b'\\' as u16)) {
+        pattern.push(b'\\' as u16);
+    }
+    pattern.push(b'*' as u16);
+    pattern.push(0);
+    // SAFETY: `pattern` is NUL-terminated, `find` is a valid WIN32_FIND_DATAW.
+    let h = unsafe {
+        FindFirstFileExW(
+            pattern.as_ptr(),
+            FindExInfoBasic,
+            find as *mut WIN32_FIND_DATAW as *mut _,
+            FindExSearchNameMatch,
+            std::ptr::null(),
+            FIND_FIRST_EX_LARGE_FETCH,
+        )
+    };
+    if h == INVALID_HANDLE_VALUE {
+        // SAFETY: trivially safe.
+        return unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND;
+    }
+    let mut ok = true;
+    loop {
+        let len = find.cFileName.iter().position(|&c| c == 0).unwrap_or(find.cFileName.len());
+        let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
+        let modified = (u64::from(find.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(find.ftLastWriteTime.dwLowDateTime);
+        if !visit(&find.cFileName[..len], find.dwFileAttributes, find.dwReserved0, size, modified) { break; }
+        // SAFETY: `h` is a valid find handle.
+        if unsafe { FindNextFileW(h, find) } == 0 {
+            // SAFETY: trivially safe.
+            ok = unsafe { GetLastError() } == ERROR_NO_MORE_FILES;
+            break;
+        }
+    }
+    // SAFETY: `h` is a valid find handle, closed once.
+    unsafe { FindClose(h) };
+    ok
+}
+
+/// [`list_by_name`] through a handle to the folder itself, after checking that it is a plain
+/// folder at `root` plus the job's own relative path. A folder that has become a link, or whose
+/// path now leads elsewhere, is not listed (and counts as unreadable).
+fn list_by_handle(job: &Job, root: &str, root_len: usize, buf: &mut Vec<u64>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
+    let h = match dir::open(&job.path) {
+        Ok(h) => h,
+        Err(e) => return e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32),
+    };
+    let expected = format!("{root}{}", String::from_utf16_lossy(&job.path[root_len.min(job.path.len())..]).trim_end_matches('\\')).to_lowercase();
+    if !dir::is_plain_dir(&h) || dir::real_path(&h).ok().as_deref() != Some(expected.as_str()) {
+        return false;
+    }
+    dir::list(&h, buf, visit)
+}
+
+/// Folders opened as themselves and listed through their handle.
+mod dir {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, GetFileInformationByHandleEx, GetFinalPathNameByHandleW};
+
+    pub(super) fn open(long: &[u16]) -> std::io::Result<OwnedHandle> {
+        const LIST_DIRECTORY: u32 = 0x1;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let mut w = long.to_vec();
+        w.push(0);
+        // SAFETY: `w` is NUL-terminated; the handle is owned below.
+        let h = unsafe { CreateFileW(w.as_ptr(), LIST_DIRECTORY | SYNCHRONIZE, 0x1 | 0x2 | 0x4, std::ptr::null(), OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, std::ptr::null_mut()) };
+        if h as isize == -1 { return Err(std::io::Error::last_os_error()); }
+        // SAFETY: a fresh handle from CreateFileW.
+        Ok(unsafe { OwnedHandle::from_raw_handle(h) })
+    }
+
+    /// A folder, not a link or other reparse point.
+    pub(super) fn is_plain_dir(h: &OwnedHandle) -> bool {
+        let mut tag = [0u32; 2]; // FILE_ATTRIBUTE_TAG_INFO: attributes, reparse tag
+        // SAFETY: the buffer is the size given; class 9 is FileAttributeTagInfo.
+        let ok = unsafe { GetFileInformationByHandleEx(h.as_raw_handle(), 9, tag.as_mut_ptr().cast(), 8) } != 0;
+        ok && tag[0] & crate::attr::DIRECTORY != 0 && tag[0] & crate::attr::REPARSE_POINT == 0
+    }
+
+    /// Where the opened folder really is on its volume, lower case, without a trailing `\`
+    /// (`\` for a volume's root becomes the empty string).
+    pub(super) fn real_path(h: &OwnedHandle) -> std::io::Result<String> {
+        const VOLUME_NAME_NONE: u32 = 0x4;
+        let mut out = vec![0u16; 512];
+        loop {
+            // SAFETY: `out` has the capacity given.
+            let n = unsafe { GetFinalPathNameByHandleW(h.as_raw_handle(), out.as_mut_ptr(), out.len() as u32, VOLUME_NAME_NONE) } as usize;
+            if n == 0 { return Err(std::io::Error::last_os_error()); }
+            if n < out.len() { return Ok(String::from_utf16_lossy(&out[..n]).trim_end_matches('\\').to_lowercase()); }
+            if n > 65_536 { return Err(std::io::Error::other("The final path is too long")); }
+            out.resize(n + 1, 0);
+        }
+    }
+
+    /// Every entry, as FindFirstFileExW's basic listing gives them (FILE_FULL_DIR_INFO).
+    pub(super) fn list(h: &OwnedHandle, buf: &mut Vec<u64>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
+        const FULL_DIRECTORY_INFO: i32 = 14;
+        const FULL_DIRECTORY_RESTART_INFO: i32 = 15;
+        const NO_MORE_FILES: i32 = 18;
+        if buf.len() < 8192 { buf.resize(8192, 0); } // 64 KiB, 8-byte aligned
+        let bytes = buf.len() * 8;
+        let mut class = FULL_DIRECTORY_RESTART_INFO;
+        loop {
+            // SAFETY: `buf` holds `bytes` bytes.
+            if unsafe { GetFileInformationByHandleEx(h.as_raw_handle(), class, buf.as_mut_ptr().cast(), bytes as u32) } == 0 {
+                return std::io::Error::last_os_error().raw_os_error() == Some(NO_MORE_FILES);
+            }
+            class = FULL_DIRECTORY_INFO;
+            // SAFETY: the reads below stay inside `buf` (checked against `bytes`).
+            let base = buf.as_ptr() as *const u8;
+            let mut off = 0usize;
+            loop {
+                if off + 68 > bytes { return false; }
+                let rd = |at: usize| unsafe { std::ptr::read_unaligned(base.add(off + at) as *const u32) };
+                let rd64 = |at: usize| unsafe { std::ptr::read_unaligned(base.add(off + at) as *const u64) };
+                let (next, written, size, attrs, name_len, ea) = (rd(0) as usize, rd64(24), rd64(40), rd(56), rd(60) as usize, rd(64));
+                if off + 68 + name_len > bytes || name_len % 2 != 0 { return false; }
+                // SAFETY: in bounds (checked above); u16 reads unaligned-safe via a copy.
+                let name: Vec<u16> = (0..name_len / 2).map(|i| unsafe { std::ptr::read_unaligned(base.add(off + 68 + 2 * i) as *const u16) }).collect();
+                // the reparse tag is in EaSize for a reparse point, as FindFirstFile's dwReserved0
+                if !visit(&name, attrs, if attrs & crate::attr::REPARSE_POINT != 0 { ea } else { 0 }, size, written) { return true; }
+                if next == 0 { break; }
+                off += next;
+            }
+        }
+    }
 }
 
 pub(crate) fn round_up(size: u64, cluster: u64) -> u64 {
@@ -467,6 +586,36 @@ mod tests {
         assert_eq!(many.method, ScanMethod::Walk);
         assert_eq!(many.errors, 0);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_reached_through_a_junction_is_not_listed() {
+        let base = std::env::temp_dir().join(format!("sprawl-walk-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real").join("inner")).unwrap();
+        std::fs::write(base.join("real").join("inner").join("secret.txt"), b"x").unwrap();
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(base.join("link")).arg(base.join("real")).output().is_ok_and(|o| o.status.success());
+        if !made { let _ = std::fs::remove_dir_all(&base); return; }
+        let abs = std::path::absolute(&base).unwrap();
+        let root_job = long_path(&abs);
+        let root = dir::real_path(&dir::open(&root_job).unwrap()).unwrap();
+        let job = |p: &Path| Job { id: 1, path: long_path(p), top: 0 };
+        let mut buf = Vec::new();
+        let mut names = Vec::new();
+        let mut visit = |w: &[u16], _: u32, _: u32, _: u64, _: u64| { names.push(String::from_utf16_lossy(w)); true };
+        // the folder where it really is: listed
+        assert!(list_by_handle(&job(&abs.join("real").join("inner")), &root, root_job.len(), &mut buf, &mut visit));
+        // the same folder through a junction above it (a queued folder's parent swapped for a
+        // link, Astra's case): refused, nothing listed
+        assert!(!list_by_handle(&job(&abs.join("link").join("inner")), &root, root_job.len(), &mut buf, &mut visit));
+        // the junction itself in place of a queued folder: refused
+        assert!(!list_by_handle(&job(&abs.join("link")), &root, root_job.len(), &mut buf, &mut visit));
+        assert_eq!(names.iter().filter(|n| *n == "secret.txt").count(), 1, "{names:?}");
+        // and an inventory lists the link as a link, never what is behind it
+        let t = inventory(&base, &Progress::new()).unwrap();
+        assert_eq!((t.nodes[ROOT].files, t.errors), (1, 0));
+        let _ = std::fs::remove_dir(base.join("link"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
