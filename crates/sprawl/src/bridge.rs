@@ -70,7 +70,10 @@ pub(crate) fn start() {
         let mut facts: Option<(Weak<Tree>, Facts)> = None;
         // scans servers ask for, kept on this thread, saved to History as the app's own are
         let mut index = sprawl_advisor::mcp_scan::Index::for_app(false);
-        let _ = sprawl_advisor::pipe::serve(|line| {
+        let _ = sprawl_advisor::pipe::serve(|line, client_elevated| {
+            // an elevated app reads the disk for a client that isn't only when the user allowed
+            // it (an elevation Windows can't confirm counts as elevated)
+            let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
             sprawl_advisor::mcp::with_bridge_request(line, || {
             let (tree, revision, scan_before, findings, found, report_facts, memory, scanning) = {
                 let s = shared().lock().unwrap_or_else(|e| e.into_inner());
@@ -88,7 +91,7 @@ pub(crate) fn start() {
             let f = report_facts.as_deref().unwrap_or_else(|| &facts.as_ref().expect("made for an unfinished report").1);
             let mut wanted = None;
             // a panic answers an error and leaves the pipe working
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), scan_before, f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, &mut |x| wanted = Some(x))))
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), scan_before, f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, disk, &mut |x| wanted = Some(x))))
                 .unwrap_or_else(|_| r#"{"ok":false,"text":"Sprawl hit an internal error answering that."}"#.to_string());
             if let Some(x) = wanted {
                 let mut s = shared().lock().unwrap_or_else(|e| e.into_inner());

@@ -106,7 +106,7 @@ pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 59] = [
+pub static PREFS: [Pref; 60] = [
     // General
     p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons, for example D:\\Games; C:\\Work\\Private. New app, Search, Cleaners and MCP scans omit them. Fast MFT scans still work: skipped folders are left out as the tree is built. Cleanup actions covering a skipped folder are refused. Existing History and CSV imports remain unchanged; rescan to replace old results.", Kind::Text("D:\\Games; C:\\Work\\Private")),
     p("units", Sec::General, "Sizes in", "Best fit or a fixed unit. The base below determines GB versus GiB. Search sizes, goals and alert thresholds keep their stated binary meaning.", Kind::Choice(&UNITS, 0)),
@@ -175,6 +175,7 @@ pub static PREFS: [Pref; 59] = [
     p("adminHandOff", Sec::Scanning, "Handing an application to your uninstaller (as administrator)", "", Kind::Switch(false)),
     p("adminClaudeCode", Sec::Scanning, "Claude Code and Codex (as administrator)", "", Kind::Switch(false)),
     p("adminUserTools", Sec::Scanning, "Clean-up commands from your own folders (as administrator)", "", Kind::Switch(false)),
+    p("adminMcpDisk", Sec::Scanning, "MCP tools reading the disk (as administrator)", "", Kind::Switch(false)),
     p("oExplorer", Sec::Scanning, "Add \"Scan with Sprawl\" to Explorer", "Right-click any folder or drive in Explorer to scan it. Only for your account; no administrator needed.", Kind::Switch(false)),
     p("oAuto", Sec::Scanning, "Scan as soon as a drive is picked", "Picking a drive in the list starts its scan.", Kind::Switch(true)),
     p("oPulses", Sec::Scanning, "Watch for changes after a scan", "Tiles pulse when their files change (Live Change Pulses).", Kind::Switch(true)),
@@ -317,6 +318,7 @@ mod tests {
             ("adminHandOff", "0"),
             ("adminClaudeCode", "0"),
             ("adminUserTools", "0"),
+            ("adminMcpDisk", "0"),
             ("tuneCommunityDays", "7"),
             ("oldScanMinutes", "60"),
             ("tuneFindingMinMb", "50"),

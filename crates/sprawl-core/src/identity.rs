@@ -6,6 +6,12 @@ pub fn account_sid() -> io::Result<String> {
 }
 
 /// The actual account token of a local peer, independent of its environment or image name.
+/// Whether `process` runs elevated (as administrator).
+pub fn process_elevated(process: std::os::windows::io::BorrowedHandle<'_>) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    unsafe { token_elevated(process.as_raw_handle()) }
+}
+
 pub fn process_account_sid(process: std::os::windows::io::BorrowedHandle<'_>) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;
     unsafe { token_account_sid(process.as_raw_handle()) }

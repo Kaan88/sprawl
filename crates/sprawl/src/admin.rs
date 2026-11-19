@@ -28,12 +28,18 @@ pub(crate) const USER_TOOLS: Lock = Lock {
     key: "adminUserTools",
     what: "Clean-up commands from your own folders",
 };
+/// MCP clients that aren't administrator having the disk read for them (new scans, manifests):
+/// off, they get only the scan on screen.
+pub(crate) const MCP_DISK: Lock = Lock {
+    key: "adminMcpDisk",
+    what: "MCP tools reading the disk",
+};
 
 #[cfg(test)]
-pub(crate) const ALL: [&Lock; 4] = [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS];
+pub(crate) const ALL: [&Lock; 5] = [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS, &MCP_DISK];
 
 /// The one warning for all four, shown once in Settings above their switches.
-pub(crate) const WARNING: &str = "Each of these lets another program run as administrator: Explorer's menu add-ons, your uninstaller, Claude Code or Codex, or a clean-up tool such as npm or pip found in your own folders. Leave them off unless you trust everything installed for your account.";
+pub(crate) const WARNING: &str = "Each of these lets another program run as administrator: Explorer's menu add-ons, your uninstaller, Claude Code or Codex, or a clean-up tool such as npm or pip found in your own folders; the last lets any program of yours have Sprawl list folders only an administrator can read. Leave them off unless you trust everything installed for your account.";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Gate {
@@ -108,7 +114,7 @@ pub(crate) mod store {
 
 /// One of the four switches' keys.
 pub(crate) fn is_switch(key: &str) -> bool {
-    [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS].iter().any(|l| l.key == key)
+    [&SHELL_MENU, &HAND_OFF, &CLAUDE_CODE, &USER_TOOLS, &MCP_DISK].iter().any(|l| l.key == key)
 }
 
 impl crate::state::State {

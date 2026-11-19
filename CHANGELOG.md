@@ -9,6 +9,7 @@ in-app updater shows.
 - After a command from the Windows menu, Delete works again once Sprawl has reread that folder, instead of waiting until a restart.
 - The review's button always names what is deleted for good, however many kinds of item are ticked; compression and shrinking a virtual disk get their own groups.
 - Compressing a folder is refused when it holds a link (junction) that compact.exe could follow out of it.
+- When Sprawl runs as administrator, an MCP client that doesn't (such as Claude Desktop) is answered only from the scan on screen: it can't start new scans or read files through Sprawl. A switch in Settings > Scanning allows it.
 - When Windows can't say whether Sprawl runs as administrator, Claude Code, Codex and the Windows menu treat it as administrator (they need the switch in Settings).
 - Codex's answer is read even if a helper it started keeps running; rules with many * in a name pattern can no longer stall a clean-up.
 - The header says what was scanned and on which drive, on two lines; a Details link beside it explains what the scan covered: how it was read, what couldn't be read, the folders skipped by your settings, and the drives it didn't include.

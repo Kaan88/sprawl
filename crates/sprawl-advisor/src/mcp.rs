@@ -354,8 +354,11 @@ pub fn main(args: &[String]) {
 /// The app's side of the pipe: answer one request line against `tree`. `filter` receives a
 /// filter the model wants shown; `findings` is the Advisor's list as text, and `found` the same
 /// as a list (`None` while the Advisor is still looking).
+/// `disk`: the client may have the disk read for it with the app's rights (new scans, the
+/// background scans' answers, manifests). False when the app runs as administrator and the
+/// client doesn't, unless the user allowed it: then only the scan on screen answers.
 #[allow(clippy::too_many_arguments)]
-pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::time::SystemTime>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, index: &mut crate::mcp_scan::Index, filter: &mut dyn FnMut(String)) -> String {
+pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::time::SystemTime>, facts: &Facts, memory: &Memory, findings: &str, found: Option<&[Finding]>, index: &mut crate::mcp_scan::Index, disk: bool, filter: &mut dyn FnMut(String)) -> String {
     let reply = |ok: bool, text: String| json!({"ok": ok, "text": text}).to_string();
     let req = match bridge_request(line) { Ok(req) => req, Err(error) => return reply(false, error) };
     let name = req["tool"].as_str().unwrap_or("");
@@ -364,13 +367,20 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
         Ok(t) => reply(true, t),
         Err(e) => reply(false, e),
     };
+    let elevated_only = || reply(false, ELEVATED_ONLY.into());
     // scans asked for by a server: made here, in the background, with the app's rights
     if crate::mcp_scan::is_scan_tool(name) {
+        if !disk {
+            return elevated_only();
+        }
         return as_reply(index.scan_call(name, input));
     }
     // a path the screen's tree doesn't hold, in a background scan: answered from that
     let elsewhere = crate::mcp_scan::path_of(input).filter(|p| tree.is_none_or(|t| crate::find_path(t, p).is_none()));
     if elsewhere.is_some_and(|p| !matches!(name, "cleaners" | "set_filter") && index.has_scan_for(&p)) {
+        if !disk {
+            return elevated_only();
+        }
         return as_reply(index.answer(name, input, memory, true));
     }
     let Some(tree) = tree else { return reply(false, crate::mcp_scan::NO_SCAN_OPEN.into()) };
@@ -394,6 +404,8 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
             reply(true, if c.trim().is_empty() { "The Advisor hasn't listed cleaners yet (or is still looking).".into() } else { c.to_string() })
         }
         "scan_report" => reply(true, crate::llm::report::build(tree, facts, found, None, None)),
+        // a manifest's text is read from the disk now, with the app's rights
+        "read_manifest" if !disk => elevated_only(),
         _ if bridge_specs().iter().any(|t| t.name == name) => {
             let mut tools = Tools::new(tree, facts, "claude-code", &[], memory);
             tools.scan_before = scan_before;
@@ -410,6 +422,9 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
         _ => reply(false, format!("there is no tool called {name}")),
     }
 }
+
+/// Why a client that isn't administrator gets only the scan on screen from an elevated app.
+pub const ELEVATED_ONLY: &str = "Sprawl runs as administrator and this client doesn't, so it answers only from the scan on screen. The switch \"MCP tools reading the disk (as administrator)\" in Settings > Scanning allows new scans too.";
 
 fn bridge_request(line: &str) -> Result<Value, String> {
     let req: Value = serde_json::from_str(line).map_err(|_| "bad request")?;
@@ -453,7 +468,7 @@ mod tests {
             let mut index = crate::mcp_scan::Index::default();
             let input = json!({"path": "Q:\\other", "title": "draft"});
             assert!(index.answer(name, &input, &Memory::default(), false).unwrap_err().starts_with("there is no tool called"));
-            let result = answer_bridge(&json!({"tool": name, "input": input}).to_string(), None, None, &Facts::default(), &Memory::default(), "", None, &mut index, &mut |_| panic!("unexpected filter"));
+            let result = answer_bridge(&json!({"tool": name, "input": input}).to_string(), None, None, &Facts::default(), &Memory::default(), "", None, &mut index, true, &mut |_| panic!("unexpected filter"));
             assert!(result.contains("there is no tool called"));
         }
         assert_eq!(calls, 0);
@@ -500,14 +515,14 @@ mod tests {
         let facts = Facts::from_apps(Vec::new());
         let mut shown = None;
         let root = tree.path_of(sprawl_core::ROOT).display().to_string();
-        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |f| shown = Some(f));
+        let a = answer_bridge(&json!({"tool": "list_children", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |f| shown = Some(f));
         assert!(a.contains("\"ok\":true") && a.contains("lib.rs"), "{a}");
-        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |f| shown = Some(f));
+        let f = answer_bridge(&json!({"tool": "set_filter", "input": {"filter": "*.rs"}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |f| shown = Some(f));
         assert!(f.contains("\"ok\":true") && shown.as_deref() == Some("*.rs"));
-        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let n = answer_bridge(&json!({"tool": "report_finding", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |_| {});
         assert!(n.contains("no tool"), "reporting isn't offered over the bridge");
         // the report says whether the rules ran, never a bare "(nothing)"
-        let ask = |found: Option<&[Finding]>| answer_bridge(&json!({"tool": "scan_report", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", found, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let ask = |found: Option<&[Finding]>| answer_bridge(&json!({"tool": "scan_report", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", found, &mut crate::mcp_scan::Index::default(), true, &mut |_| {});
         assert!(ask(None).contains("haven't run"));
         assert!(ask(Some(&[])).contains("none matched"));
         let one = Finding {
@@ -532,14 +547,30 @@ mod tests {
             forced_from: None,
         };
         assert!(ask(Some(std::slice::from_ref(&one))).contains("a test finding"));
-        let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let fl = answer_bridge(&json!({"tool": "findings", "input": {}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |_| {});
         assert!(fl.contains("still looking"), "{fl}");
         // a whole-scan tool about a path the app's tree doesn't hold goes back to the server
         for tool in ["scan_report", "findings", "cleaners"] {
-            let other = answer_bridge(&json!({"tool": tool, "input": {"path": r"Q:\elsewhere"}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+            let other = answer_bridge(&json!({"tool": tool, "input": {"path": r"Q:\elsewhere"}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |_| {});
             assert!(other.contains("\"ok\":false") && other.contains(crate::mcp_scan::NOT_IN_SCAN), "{other}");
         }
-        let inside = answer_bridge(&json!({"tool": "scan_report", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), &mut |_| {});
+        let inside = answer_bridge(&json!({"tool": "scan_report", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |_| {});
         assert!(inside.contains("\"ok\":true"), "{inside}");
+    }
+
+    #[test]
+    fn elevated_app_reads_only_the_screen_for_a_client_that_isnt() {
+        let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
+        let facts = Facts::from_apps(Vec::new());
+        let root = tree.path_of(sprawl_core::ROOT).display().to_string();
+        let ask = |tool: &str, input: Value, disk: bool| answer_bridge(&json!({"tool": tool, "input": input}).to_string(), Some(&tree), None, &facts, &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), disk, &mut |_| {});
+        for (tool, input) in [("scan_path", json!({"path": root})), ("scan_status", json!({})), ("list_scans", json!({})), ("read_manifest", json!({"path": format!(r"{root}\lib.rs")}))] {
+            let no = ask(tool, input.clone(), false);
+            assert!(no.contains("\"ok\":false") && no.contains("answers only from the scan on screen"), "{tool}: {no}");
+            assert!(!ask(tool, input, true).contains("answers only from the scan on screen"), "{tool} answers when allowed");
+        }
+        // the scan on screen still answers
+        let a = ask("list_children", json!({"path": root}), false);
+        assert!(a.contains("\"ok\":true") && a.contains("lib.rs"), "{a}");
     }
 }

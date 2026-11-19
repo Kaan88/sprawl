@@ -42,7 +42,9 @@ mod ffi {
 /// Serve requests on the pipe forever, one client at a time: `answer` turns each request line
 /// into an answer line. Returns only if the pipe can't be made (another app instance has it).
 #[cfg(windows)]
-pub fn serve(mut answer: impl FnMut(&str) -> String) -> std::io::Result<()> {
+/// Serve the app's pipe. `answer` gets each request line, and whether the client process runs
+/// as administrator (false when Windows can't say).
+pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()> {
     use std::os::windows::io::FromRawHandle;
     let sid = sprawl_core::identity::account_sid()?;
     let wide: Vec<u16> = name()?.encode_utf16().chain(Some(0)).collect();
@@ -61,7 +63,8 @@ pub fn serve(mut answer: impl FnMut(&str) -> String) -> std::io::Result<()> {
     }
     loop {
         let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
-        if ok && peer_is_us(h, false) {
+        let client = if ok { peer(h, false) } else { None };
+        if let Some(client_elevated) = client {
             // the handle stays ours: the File is never dropped
             let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(h as _) });
             let mut reader = BufReader::new(&*file);
@@ -71,7 +74,7 @@ pub fn serve(mut answer: impl FnMut(&str) -> String) -> std::io::Result<()> {
                 if !line.ends_with('\n') {
                     break;
                 }
-                let mut out = answer(line.trim()).replace(['\r', '\n'], " ");
+                let mut out = answer(line.trim(), client_elevated).replace(['\r', '\n'], " ");
                 out.push('\n');
                 if (&*file).write_all(out.as_bytes()).is_err() {
                     break;
@@ -108,14 +111,21 @@ fn server_is_us(f: &std::fs::File) -> bool {
 
 #[cfg(windows)]
 fn peer_is_us(pipe: isize, server: bool) -> bool {
+    peer(pipe, server).is_some()
+}
+
+/// The other end runs this same program for this same account: whether it runs as
+/// administrator (false when Windows can't say). None when it isn't us.
+#[cfg(windows)]
+fn peer(pipe: isize, server: bool) -> Option<bool> {
     let mut pid = 0u32;
     let ok = unsafe { if server { ffi::GetNamedPipeServerProcessId(pipe, &mut pid) } else { ffi::GetNamedPipeClientProcessId(pipe, &mut pid) } };
     if ok == 0 {
-        return false;
+        return None;
     }
     let h = unsafe { ffi::OpenProcess(ffi::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if h == 0 {
-        return false;
+        return None;
     }
     // Hold the same process while querying both token and image: no PID reuse between them.
     let peer = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(h as _) };
@@ -123,8 +133,9 @@ fn peer_is_us(pipe: isize, server: bool) -> bool {
     let theirs = sprawl_core::identity::process_image_path(peer);
     let current = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(windows_sys::Win32::System::Threading::GetCurrentProcess()) };
     let ours = sprawl_core::identity::process_image_path(current);
+    let elevated = sprawl_core::identity::process_elevated(peer).unwrap_or(false);
     unsafe { ffi::CloseHandle(h) };
-    same_account && ours.ok().zip(theirs.ok()).is_some_and(|(ours, theirs)| ours == theirs)
+    (same_account && ours.ok().zip(theirs.ok()).is_some_and(|(ours, theirs)| ours == theirs)).then_some(elevated)
 }
 
 impl Client {
