@@ -322,20 +322,28 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
             }
         }
         // A package manager clears wherever it is set up to keep its cache, which need not be
-        // the folder that was reviewed: it is asked first, and runs only when every place it
-        // would clear is that folder.
+        // the folder that was reviewed. So it is told that folder (a flag, or the variable it
+        // reads before its settings files), asked with the very same binding where it would
+        // clear, and run only when its whole answer is that folder, held meanwhile.
         Action::Tool { command } => match package_tool(command) {
             None => tool(command, stop, &mut o),
-            Some(scoped) => {
+            Some(Err(why)) => o.problem(path, format!("left alone: {why}")),
+            Some(Ok(scoped)) => {
+                let env = scoped.env(path);
+                let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
                 let mut asked = Outcome::default();
-                tool(scoped.probe, stop, &mut asked);
+                let answer = tool_with(scoped.probe, stop, &mut asked, &env);
                 if asked.stopped {
                     o.stopped = true;
                 } else if let Some(why) = asked.problems.first() {
                     o.problem(path, format!("left alone: where it keeps its cache couldn't be asked ({why})"));
                 } else {
-                    match scope_matches(path, &scoped, &asked.output) {
-                        Ok(()) => tool(scoped.run, stop, &mut o),
+                    match answer.ok_or_else(|| "its answer about where it keeps its cache was too long or couldn't be read whole".to_string())
+                        .and_then(|text| scope_matches(path, &scoped, &text.lines().map(str::to_string).collect::<Vec<_>>())) {
+                        Ok(held) => {
+                            tool_with(scoped.run, stop, &mut o, &env);
+                            drop(held);
+                        }
                         Err(why) => o.problem(path, format!("left alone: {why}")),
                     }
                 }
@@ -364,7 +372,9 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     o
 }
 
-/// A package manager's clean-up command, with how to ask it where its cache is.
+/// A package manager's clean-up command, with how to ask it where its cache is. Both commands
+/// are bound to the reviewed folder: by a flag naming `$env:SPRAWL_TOOL_DIR` (set to it), or
+/// by the variable in `var`, which the tool reads before its settings files.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PackageTool {
     /// The command that prints where the cache is.
@@ -373,6 +383,17 @@ struct PackageTool {
     run: &'static str,
     /// How the probe's answer reads and how it must relate to the reviewed folder.
     answer: Answer,
+    /// The variable that sets the tool's cache, when it has no flag for it.
+    var: Option<&'static str>,
+}
+
+impl PackageTool {
+    /// The environment both commands run with: the reviewed folder, by name.
+    fn env(&self, reviewed: &Path) -> Vec<(&'static str, PathBuf)> {
+        let mut env = vec![("SPRAWL_TOOL_DIR", reviewed.to_path_buf())];
+        if let Some(var) = self.var { env.push((var, reviewed.to_path_buf())); }
+        env
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -383,31 +404,51 @@ enum Answer {
     Inside,
     /// One line `label: path`, the reviewed folder itself.
     Labelled(&'static str),
-    /// A `- path` list: every listed folder that exists is the reviewed folder (conda clears
-    /// every package folder it has).
-    List,
 }
 
-/// The package-manager commands of the built-in rules. Other commands are not package caches.
-fn package_tool(command: &str) -> Option<PackageTool> {
-    let t = |probe, run, answer| Some(PackageTool { probe, run, answer });
+/// The package-manager commands of the built-in rules, bound to the reviewed folder; Err for
+/// one that can't be (it is held). Other commands are not package caches.
+fn package_tool(command: &str) -> Option<Result<PackageTool, &'static str>> {
+    let t = |probe, run, answer, var| Some(Ok(PackageTool { probe, run, answer, var }));
     match command.trim() {
-        "npm cache clean --force" => t("npm config get cache", "npm cache clean --force", Answer::Same),
-        "pip cache purge" => t("pip cache dir", "pip cache purge", Answer::Same),
+        "npm cache clean --force" => t(r#"npm config get cache --cache "$env:SPRAWL_TOOL_DIR""#, r#"npm cache clean --force --cache "$env:SPRAWL_TOOL_DIR""#, Answer::Same, None),
+        "pip cache purge" => t(r#"pip cache dir --cache-dir "$env:SPRAWL_TOOL_DIR""#, r#"pip cache purge --cache-dir "$env:SPRAWL_TOOL_DIR""#, Answer::Same, None),
         // `all` also clears the HTTP cache, temp and plugin caches, wherever they are set up
         "dotnet nuget locals all --clear" | "dotnet nuget locals global-packages --clear" =>
-            t("dotnet nuget locals global-packages --list", "dotnet nuget locals global-packages --clear", Answer::Labelled("global-packages:")),
-        "pnpm store prune" => t("pnpm store path", "pnpm store prune", Answer::Inside),
-        "yarn cache clean" => t("yarn cache dir", "yarn cache clean", Answer::Inside),
-        "go clean -cache" => t("go env GOCACHE", "go clean -cache", Answer::Same),
-        "conda clean --all -y" => t("conda config --show pkgs_dirs", "conda clean --all -y", Answer::List),
+            t("dotnet nuget locals global-packages --list", "dotnet nuget locals global-packages --clear", Answer::Labelled("global-packages:"), Some("NUGET_PACKAGES")),
+        // both add their own version folder (v3, v6) inside the one given
+        "pnpm store prune" => t(r#"pnpm store path --store-dir "$env:SPRAWL_TOOL_DIR""#, r#"pnpm store prune --store-dir "$env:SPRAWL_TOOL_DIR""#, Answer::Inside, None),
+        "yarn cache clean" => t(r#"yarn cache dir --cache-folder "$env:SPRAWL_TOOL_DIR""#, r#"yarn cache clean --cache-folder "$env:SPRAWL_TOOL_DIR""#, Answer::Inside, None),
+        "go clean -cache" => t("go env GOCACHE", "go clean -cache", Answer::Same, Some("GOCACHE")),
+        // conda adds CONDA_PKGS_DIRS to the package folders its settings name, and clears them
+        // all: it can't be limited to the folder reviewed
+        "conda clean --all -y" => Some(Err("conda's clean-up can't be limited to the folder reviewed (it clears every package folder its settings name). Run conda clean yourself.")),
         _ => None,
     }
 }
 
-/// Whether every place the tool says it would clear is the reviewed folder `path` (or inside
-/// it, where that is the tool's layout), local, not skipped in Settings, and no link.
-fn scope_matches(path: &Path, tool: &PackageTool, output: &[String]) -> Result<(), String> {
+/// The reviewed cache folder (or the tool's own folder inside it), held while the tool runs:
+/// every folder on the way, and the place itself without delete sharing, so neither can be
+/// renamed or swapped for a link meanwhile.
+type Held = (sprawl_core::local::Directory, std::fs::File);
+
+fn hold_place(place: &Path) -> std::io::Result<Held> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    let chain = sprawl_core::local::directory(place)?;
+    // FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES; share read and write, not delete; the
+    // folder itself, never a link's target
+    let file = std::fs::OpenOptions::new().access_mode(0x1 | 0x80).share_mode(1 | 2)
+        .custom_flags(0x0200_0000 | 0x0020_0000).open(&chain.path)?;
+    let m = file.metadata()?;
+    if !m.is_dir() || m.file_attributes() & REPARSE != 0 { return Err(std::io::Error::other("not a plain folder")); }
+    if !same_path(&sprawl_core::local::final_path(&file)?, &chain.path) { return Err(std::io::Error::other("resolved elsewhere")); }
+    Ok((chain, file))
+}
+
+/// Whether the place the tool says it would clear (its whole answer) is the reviewed folder
+/// `path` (or inside it, where that is the tool's layout), local, not skipped in Settings, and
+/// no link. That place, held (see [`hold_place`]).
+fn scope_matches(path: &Path, tool: &PackageTool, output: &[String]) -> Result<Vec<Held>, String> {
     let lines: Vec<&str> = output.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
     let unknown = || "where it keeps its cache couldn't be told from its answer".to_string();
     let places: Vec<PathBuf> = match tool.answer {
@@ -419,19 +460,10 @@ fn scope_matches(path: &Path, tool: &PackageTool, output: &[String]) -> Result<(
             [one] => vec![PathBuf::from(one.strip_prefix(label).ok_or_else(unknown)?.trim())],
             _ => return Err(unknown()),
         },
-        Answer::List => {
-            let mut listed = Vec::new();
-            for l in &lines {
-                if let Some(p) = l.strip_prefix("- ") { listed.push(PathBuf::from(p.trim().trim_matches('"').trim_matches('\''))); }
-                else if !l.ends_with(':') { return Err(unknown()); }
-            }
-            if listed.is_empty() { return Err(unknown()); }
-            listed
-        }
     };
     let skipped = crate::exclusions::configured();
     let reviewed = lower(path);
-    let mut matched = false;
+    let mut held = Vec::new();
     for place in &places {
         if !place.is_absolute() { return Err(unknown()); }
         if let Err(e) = sprawl_core::local::lexical(place) { return Err(format!("its cache is at {} ({e})", place.display())); }
@@ -441,22 +473,15 @@ fn scope_matches(path: &Path, tool: &PackageTool, output: &[String]) -> Result<(
             Answer::Inside => here == reviewed || here.starts_with(&reviewed),
             _ => here == reviewed,
         };
-        if tool.answer == Answer::List && !fits {
-            // a package folder that isn't there holds nothing to clear
-            match std::fs::symlink_metadata(place) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                _ => return Err(format!("it would also clear {}, which wasn't reviewed", place.display())),
-            }
-        }
         if !fits { return Err(format!("it keeps its cache at {}, not in the folder reviewed", place.display())); }
-        // the place itself: every folder down to it opened as itself (no link, no share)
-        match sprawl_core::local::directory(place) {
-            Ok(_) => matched = true,
+        // the place itself: every folder down to it opened as itself (no link, no share), held
+        match hold_place(place) {
+            Ok(h) => held.push(h),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("its cache at {} couldn't be checked ({e})", place.display())),
         }
     }
-    if matched { Ok(()) } else { Err("its cache folder isn't there any more".into()) }
+    if held.is_empty() { Err("its cache folder isn't there any more".into()) } else { Ok(held) }
 }
 
 /// The paths written in a tool command as PowerShell single-quoted strings (`''` is a quote),
@@ -1797,24 +1822,40 @@ fn encoded(s: &str) -> String {
 /// reads settings from the folder Sprawl started in); its last lines of output are kept. The
 /// tool and anything it starts run in a job, so Stop (or closing Sprawl) ends all of them.
 fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
-    use std::io::Read;
-    use std::os::windows::process::CommandExt;
-    let Some(sys) = system_dir() else { return o.problem(Path::new(command), "Windows' System32 folder wasn't found") };
+    tool_with(command, stop, o, &[]);
+}
+
+/// The most output a tool's answer is read whole up to.
+const TOOL_OUTPUT: usize = 1 << 20;
+
+/// [`tool`], with `env` set for it. Its whole output (each line as the tool wrote it, never
+/// wrapped) when that was read completely and is at most [`TOOL_OUTPUT`]; None when it was
+/// longer, a read failed, or the run was stopped.
+fn tool_with(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
+    let Some(sys) = system_dir() else { o.problem(Path::new(command), "Windows' System32 folder wasn't found"); return None };
     let command = system_command(command, &sys);
     let command = command.as_str();
     let elevated = match checked_tool_elevation(sprawl_core::elevation()) {
         Ok(elevated) => elevated,
-        Err(error) => return o.problem(Path::new(command), error),
+        Err(error) => { o.problem(Path::new(command), error); return None }
     };
     if let Some(why) = refusal_unless_allowed(elevated_risk_at(command, elevated), crate::ELEVATED_USER_TOOLS.load(Ordering::Relaxed)) {
-        return o.problem(Path::new(command), why);
+        o.problem(Path::new(command), why);
+        return None;
     }
+    run_powershell(command, &sys, elevated, stop, o, env)
+}
+
+/// The run itself, once [`tool_with`] has let `command` through: see there.
+fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
+    use std::io::Read;
+    use std::os::windows::process::CommandExt;
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
     // kept, and the output in UTF-8
     // A program's text on stderr is not a failure; any other error (not found, a cmdlet's) is.
     let script = format!(
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$Error.Clear()\n$o = & {{\n{command}\n}} 2>&1; $c = $LASTEXITCODE\n$o | Out-String -Width 200\n\
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$Error.Clear()\n$o = & {{\n{command}\n}} 2>&1; $c = $LASTEXITCODE\nforeach ($l in @($o)) {{ [Console]::Out.WriteLine(\"$l\") }}\n\
          $bad = @($Error | Where-Object {{ \"$($_.FullyQualifiedErrorId)\" -notlike 'NativeCommandError*' }})\n\
          if ($c) {{ exit $c }} elseif ($bad.Count) {{ exit 1 }}"
     );
@@ -1825,6 +1866,9 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     if elevated {
         // no PowerShell module from the user's own folders loads into an elevated run
         cmd.env("PSModulePath", sys.join(r"WindowsPowerShell\v1.0\Modules"));
@@ -1835,24 +1879,36 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
     let job = win::Job::new();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return o.problem(Path::new(command), e),
+        Err(e) => { o.problem(Path::new(command), e); return None }
     };
     let in_job = job.as_ref().is_some_and(|j| j.add(&child));
     let mut out = child.stdout.take();
     let reader = std::thread::spawn(move || {
-        // read to the end (a tool must never block on a full pipe), keep the last megabyte
+        // read to the end (a tool must never block on a full pipe); past TOOL_OUTPUT the
+        // answer is cut (only its last part is kept, to show), and a failed read cuts it too
         let mut keep: Vec<u8> = Vec::new();
+        let mut cut = out.is_none();
         let mut buf = [0u8; 8192];
-        while let Some(Ok(n)) = out.as_mut().map(|o| o.read(&mut buf)) {
-            if n == 0 {
-                break;
-            }
-            keep.extend_from_slice(&buf[..n]);
-            if keep.len() > 2 << 20 {
-                keep.drain(..keep.len() - (1 << 20));
+        while let Some(o) = out.as_mut() {
+            match o.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    keep.extend_from_slice(&buf[..n]);
+                    if keep.len() > TOOL_OUTPUT {
+                        cut = true;
+                        if keep.len() > 2 * TOOL_OUTPUT {
+                            keep.drain(..keep.len() - TOOL_OUTPUT);
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => {
+                    cut = true;
+                    break;
+                }
             }
         }
-        String::from_utf8_lossy(&keep).into_owned()
+        (String::from_utf8_lossy(&keep).into_owned(), cut)
     });
     let started = std::time::Instant::now();
     let code = loop {
@@ -1885,12 +1941,13 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
             j.end();
         }
     }
-    let text = if o.stopped && !in_job { String::new() } else { reader.join().unwrap_or_default() };
+    let (text, cut) = if o.stopped && !in_job { (String::new(), true) } else { reader.join().unwrap_or((String::new(), true)) };
     let lines: Vec<String> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(|l| crate::llm::clip(l.to_string(), 200)).collect();
     o.output = lines[lines.len().saturating_sub(12)..].to_vec();
     if let Some(c) = code.filter(|&c| c != 0) {
         o.problem(Path::new(command.split_whitespace().next().unwrap_or(command)), format!("ended with code {c}"));
     }
+    (!cut && !o.stopped).then_some(text)
 }
 
 #[cfg(test)]
@@ -2601,31 +2658,55 @@ mod tests {
         let out = |lines: &[String]| lines.to_vec();
         let s = |p: &Path| p.display().to_string();
         // NuGet: never `all`; only the package folder, and only when it is the one reviewed
-        let nuget = package_tool("dotnet nuget locals all --clear").unwrap();
+        let nuget = package_tool("dotnet nuget locals all --clear").unwrap().unwrap();
         assert_eq!(nuget.run, "dotnet nuget locals global-packages --clear");
-        assert_eq!(package_tool("dotnet nuget locals global-packages --clear"), Some(nuget));
+        assert_eq!(package_tool("dotnet nuget locals global-packages --clear"), Some(Ok(nuget)));
+        // bound to the reviewed folder by the variable NuGet reads first (re-review S1 #4)
+        assert!(nuget.env(&cache).contains(&("NUGET_PACKAGES", cache.clone())));
         assert!(scope_matches(&cache, &nuget, &out(&[format!("global-packages: {}\\", s(&cache))])).is_ok());
         assert!(scope_matches(&cache, &nuget, &out(&[format!("global-packages: {}", s(&base.join("other")))])).is_err());
         assert!(scope_matches(&cache, &nuget, &out(&[r"global-packages: \\server\share\packages".into()])).is_err());
         assert!(scope_matches(&cache, &nuget, &out(&["something else".into()])).is_err());
         assert!(scope_matches(&cache, &nuget, &[]).is_err());
         // one-line answers: the folder itself, or (pnpm, Yarn) a store inside it
-        let npm = package_tool("npm cache clean --force").unwrap();
+        let npm = package_tool("npm cache clean --force").unwrap().unwrap();
+        // the probe and the run name the same folder, by flag
+        assert!(npm.probe.ends_with(r#"--cache "$env:SPRAWL_TOOL_DIR""#) && npm.run.ends_with(r#"--cache "$env:SPRAWL_TOOL_DIR""#));
+        assert!(npm.env(&cache).contains(&("SPRAWL_TOOL_DIR", cache.clone())));
         assert!(scope_matches(&cache, &npm, &out(&[s(&cache)])).is_ok());
         assert!(scope_matches(&cache, &npm, &out(&[s(&cache.join("v10"))])).is_err());
         assert!(scope_matches(&cache, &npm, &out(&[s(&cache), s(&cache)])).is_err(), "two answers are no answer");
-        let pnpm = package_tool("pnpm store prune").unwrap();
+        let pnpm = package_tool("pnpm store prune").unwrap().unwrap();
         assert!(scope_matches(&cache, &pnpm, &out(&[s(&cache.join("v10"))])).is_ok());
         assert!(scope_matches(&cache, &pnpm, &out(&[s(&base.join("packages-other"))])).is_err(), "a sibling with the same start isn't inside");
         assert!(scope_matches(&cache, &pnpm, &out(&["relative\\store".into()])).is_err());
-        // conda: every package folder that exists must be the reviewed one
-        let conda = package_tool("conda clean --all -y").unwrap();
-        let list = |extra: &Path| out(&["pkgs_dirs:".into(), format!("  - {}", s(&cache)), format!("  - {}", s(extra))]);
-        assert!(scope_matches(&cache, &conda, &list(&base.join("absent"))).is_ok());
-        assert!(scope_matches(&cache, &conda, &list(&base.join("other"))).is_err());
+        // conda can't be limited to one package folder: held
+        assert!(matches!(package_tool("conda clean --all -y"), Some(Err(_))));
+        // the place is held while the tool runs: it can't be renamed (or swapped for a link)
+        let held = scope_matches(&cache, &npm, &out(&[s(&cache)])).unwrap();
+        assert!(std::fs::rename(&cache, base.join("moved")).is_err());
+        drop(held);
+        std::fs::rename(&cache, base.join("moved")).unwrap();
+        std::fs::rename(base.join("moved"), &cache).unwrap();
         // a folder skipped in Settings, or not there at all
         assert!(scope_matches(&base.join("gone"), &npm, &out(&[s(&base.join("gone"))])).is_err());
         assert_eq!(package_tool("Clear-RecycleBin -Force"), None, "not a package cache");
+        // the answer is read whole, every line as written (not the last 12 lines, clipped to
+        // 200 characters), and an answer past the limit is no answer
+        let stop = AtomicBool::new(false);
+        let mut o = Outcome::default();
+        let long = "x".repeat(300);
+        let sys = system_dir().unwrap();
+        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[]).expect("read whole");
+        assert_eq!(text.lines().count(), 40, "{:?}", o.problems);
+        assert!(text.lines().all(|l| l.len() > 300));
+        let mut o = Outcome::default();
+        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[]).is_none(), "1.2 MB is cut");
+        // the binding reaches the tool
+        let mut o = Outcome::default();
+        let dir = std::ffi::OsString::from(r"C:\Reviewed\cache");
+        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())]).unwrap();
+        assert_eq!(text.trim(), r"C:\Reviewed\cache");
         drop(owned);
     }
 
