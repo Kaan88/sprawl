@@ -108,6 +108,9 @@ pub(crate) struct Own {
     /// When the read began: anything newer stays, as with a scan.
     pub(crate) began: std::time::SystemTime,
     pub(crate) roots: usize,
+    /// Folders the cleaners look at that this account can't open (Windows\Temp without
+    /// administrator rights): left out of the read and named, rather than failing all of it.
+    pub(crate) unread: Vec<std::path::PathBuf>,
 }
 
 /// Report generations of the tab's own reads: apart from the scans' own.
@@ -254,6 +257,8 @@ impl State {
         std::thread::spawn(move || {
             let began = std::time::SystemTime::now();
             let own = (|| {
+                // one folder this account can't open would fail the whole read: it is left out
+                let (roots, unread): (Vec<_>, Vec<_>) = roots.into_iter().partition(|r| std::fs::read_dir(r).is_ok());
                 if roots.is_empty() {
                     return None;
                 }
@@ -261,7 +266,7 @@ impl State {
                 if p2.is_cancelled() { return None; }
                 let measured_at = began.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on, measured_at))?;
-                Some(Own { tree, report, began, roots: roots.len() })
+                Some(Own { tree, report, began, roots: roots.len(), unread })
             })();
             let _ = tx.send(own);
         });
@@ -1145,6 +1150,10 @@ impl State {
                 };
                 let out = self.cleaner_roots_all().1;
                 let mut s = format!("Checked {when}: the {} folders the cleaners look at, read for this tab", o.roots);
+                if !o.unread.is_empty() {
+                    let names: Vec<String> = o.unread.iter().map(|p| p.display().to_string()).collect();
+                    s += &format!(". Not readable without administrator rights: {}", names.join(" and "));
+                }
                 if !out.is_empty() {
                     let names: Vec<String> = out.iter().map(|p| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).collect();
                     s += &format!(". Left out of this quick read, as they are large: {}; scan {} for them", names.join(" and "), std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()));

@@ -16,6 +16,7 @@ in-app updater shows.
 - If the list of folders to skip can't be read, network scans stop too. A folder skipped on a mapped drive is also skipped when the share is scanned by its own name.
 - Documents (or another personal folder) on a share served by this PC keeps its protection.
 - Compressed files are measured correctly after compressing; file times before 1970 compare correctly.
+- Cleaners works without administrator rights again: a folder this account can't open (such as Windows\Temp) is left out and named, instead of the whole check failing.
 
 ## 1.0.1 — 2026-11-19
 
