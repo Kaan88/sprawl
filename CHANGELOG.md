@@ -20,7 +20,7 @@ in-app updater shows.
 - The tree's top row starts with the scanned folder's own name, and long folder paths in File view and Search keep their drive and last folders (the whole path is in the tooltip).
 - Map labels that would overlap are no longer drawn on top of each other, and the map's animations follow Windows' Animation effects setting until you set Sprawl's own.
 - AI answers draw folder trees, tables and code in a fixed-width font with their lines intact, keep the answer's line breaks, and show nested lists, quotes, links (with their address) and struck-through text.
-- Codex can be the Advisor's AI, like Claude Code: it uses your own Codex sign-in (no key), found on PATH or in the Codex app. It answers from the scan's report with all of its tools switched off.
+- Codex can be the Advisor's AI, like Claude Code: it uses your own Codex sign-in (no key), found on PATH or in the Codex app. It answers from the scan's report. Before each answer Sprawl checks, without sending anything, that Codex would start no MCP server and offer only tools that can't act; a Codex set up otherwise isn't started.
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
 - History keeps to its size limit (Settings) when many folders have full snapshots: older full snapshots are removed too, never a folder's newest.
 - Safer updating as administrator: Sprawl reopens itself without administrator rights through Windows' own desktop and writes no file while elevated. The old low-space task is removed only when it is really yours.
@@ -32,7 +32,18 @@ in-app updater shows.
 - If the list of folders to skip can't be read, network scans stop too. A folder skipped on a mapped drive is also skipped when the share is scanned by its own name.
 - Documents (or another personal folder) on a share served by this PC keeps its protection.
 - Compressed files are measured correctly after compressing; file times before 1970 compare correctly.
-- Cleaners works without administrator rights again: a folder this account can't open (such as Windows\Temp) is left out and named, instead of the whole check failing.
+- Cleaners works without administrator rights again: a folder this account can't open (such as Windows\Temp) is left out and named with Windows' reason, instead of the whole check failing. If a later check fails, the earlier list and what was ticked in it go, so nothing out of date can be cleaned.
+- A program's own clean-up (npm, pip, NuGet, pnpm, yarn, Go, conda) runs only when the cache it would clear is the folder you reviewed.
+- An old folder moved in after the scan is left alone by a clean-up, like a new one.
+- If your Keep choices can't be read, Delete holds the item and says so, instead of going ahead without them.
+- Folders to skip on network drives still apply when a drive's mapping can't be read; Sprawl then treats every network place as possibly skipped.
+- MCP: the client's own account and administrator rights are read from the pipe itself.
+- With the Recycle Bin on, a link (junction or symbolic link) is left where it is with a note, instead of being deleted as a link.
+- Privacy items are named in the review's button and heading as deleted, not sent to the Recycle Bin, and counted as sets.
+- The review's first sentence comes from the same list as its groups: compressing or shrinking a virtual disk no longer reads "Deleted for good".
+- The Details card no longer claims every file was counted or every folder read when that isn't known, and says when the scanned folders were read in different ways or are partly on the network.
+- Duplicate files are made links only when neither has data of its own in an extra stream (such as a download mark).
+- AI answers show paths and wildcards as written (C:\Cache\*.log keeps its backslash), keep tildes and backticks in names, show a link's whole address, and show a table with more than 12 columns as written instead of dropping columns.
 
 ## 1.0.1 — 2026-11-19
 
