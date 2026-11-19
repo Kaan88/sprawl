@@ -231,7 +231,10 @@ pub fn schedule(on: bool) -> bool {
     if args.is_empty() { return false; }
     c.args(args);
     let done = c.status().is_ok_and(|s| s.success());
-    if done { sprawl_install::setup::migrate_alert_task(); }
+    // Retire the former shared name once this account's task exists, and always when alerts
+    // are turned off: there is then no task of this account's own name to delete (1.0 only
+    // migrated after a successful delete), and the old one must not keep running.
+    if done || !on { sprawl_install::setup::migrate_alert_task(); }
     done
 }
 

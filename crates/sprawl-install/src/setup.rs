@@ -50,9 +50,11 @@ fn legacy_task_owned(xml: &str, sid: &str) -> bool {
 
 /// Delete the former shared task name only after Task Scheduler identifies its principal
 /// as this process's exact SID. Unknown or other-account tasks are always left alone.
+/// An elevated Sprawl may do this too: the principal check is the gate, and requiring an
+/// unelevated process (1.0) left the old task running beside the new one, with no way to
+/// turn it off, wherever Sprawl always runs as administrator.
 pub fn migrate_alert_task() {
     use std::os::windows::process::CommandExt;
-    if per_user_only().is_err() { return; }
     let (Ok(sid), Ok(sys)) = (sprawl_core::identity::account_sid(), system_dir()) else { return; };
     let Ok(out) = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
         .args(["/Query", "/TN", LEGACY_ALERT_TASK, "/XML"]).creation_flags(0x0800_0000).output() else { return; };
