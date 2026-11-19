@@ -164,6 +164,11 @@ impl crate::state::State {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
             return;
         }
+        // a network share is shown read only; the Windows menu could change it (delete, rename)
+        if sprawl_core::local::lexical(&path).is_err() {
+            crate::state::text(&self.root, "FootLeft", "Windows menu: not for network folders, which Sprawl shows read only. Open the folder in Explorer instead.");
+            return;
+        }
         if let Err(why) = self.admin_allows(&crate::admin::SHELL_MENU) {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
             return;

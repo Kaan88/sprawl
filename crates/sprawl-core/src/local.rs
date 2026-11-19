@@ -50,7 +50,8 @@ pub fn remote_scan_root(path: &Path) -> Option<PathBuf> {
     } else {
         let s = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
         let b = s.as_bytes();
-        if s.starts_with('\\') || b.len() < 2 || !b[0].is_ascii_alphabetic() || b[1] != b':' { return None; }
+        // `Y:\...` only: `Y:` and `Y:folder` name the drive's current folder, not its root
+        if s.starts_with('\\') || b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' { return None; }
         let root = [b[0] as u16, b':' as u16, b'\\' as u16, 0];
         if unsafe { GetDriveTypeW(root.as_ptr()) } != 4 { return None; }
         &s[2..]

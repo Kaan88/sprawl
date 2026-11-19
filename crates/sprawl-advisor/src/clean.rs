@@ -229,6 +229,17 @@ pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progr
 /// it is never deleted instead. `progress` gets the bytes freed and sent to the bin so far.
 pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result<crate::recycle::Bin, String>>, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
     let mut o = Outcome::default();
+    // Network shares and mapped network drives are scanned read only: no action of any kind
+    // (a tool command, a privacy set, hard links, a delete) runs on one, whatever offered it.
+    let targets: Vec<&Path> = match action {
+        Action::Set { files, .. } => std::iter::once(path).chain(files.iter().map(PathBuf::as_path)).collect(),
+        Action::Link { keep, copies } => std::iter::once(path).chain(std::iter::once(keep.as_path())).chain(copies.iter().map(PathBuf::as_path)).collect(),
+        _ => vec![path],
+    };
+    if let Some(e) = targets.iter().find_map(|t| sprawl_core::local::lexical(t).err()) {
+        o.problem(path, format!("left alone: {e}"));
+        return o;
+    }
     match action {
         Action::Tool { command } => tool(command, stop, &mut o),
         Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
@@ -501,6 +512,10 @@ pub(crate) fn set(
     }
     let mut open: Vec<(PathBuf, win::Handle, win::Info)> = Vec::new();
     for m in &members {
+        // every member, side files included, on a local drive (a mapped share is read only)
+        if let Err(e) = sprawl_core::local::lexical(m) {
+            return o.problem(m, format!("{e}; {whole}"));
+        }
         let (h, info) = match win::open_alone(m) {
             Ok(x) => x,
             Err(e) => return o.problem(m, format!("couldn't be opened alone ({e}): in use or locked; {whole}")),
@@ -2173,6 +2188,20 @@ mod tests {
         assert!(in_bin(&base).is_empty());
         drop(bin);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn nothing_runs_on_a_network_path() {
+        let stop = AtomicBool::new(false);
+        let share = Path::new(r"\\server\share\Games\Big");
+        for action in [Action::Tool { command: "compact /c /s /a /i /exe:xpress16k 'x'".into() }, Action::Remove, Action::Clear { days: 0 }] {
+            let o = run(share, &action, &Spare::default(), &stop, &mut |_| {});
+            assert!(o.problems.iter().any(|p| p.contains("left alone")), "{:?}", o.problems);
+            assert_eq!((o.freed, o.files), (0, 0));
+        }
+        let local = std::env::temp_dir().join("sprawl-link-keep.bin");
+        let o = run(&local, &Action::Link { keep: local.clone(), copies: vec![local.clone(), share.join("copy.bin")] }, &Spare::default(), &stop, &mut |_| {});
+        assert!(o.problems.iter().any(|p| p.contains("left alone")), "{:?}", o.problems);
     }
 
     #[test]

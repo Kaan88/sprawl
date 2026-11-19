@@ -341,6 +341,10 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
             }
         }
         let path = tree.path_of(n);
+        // compact.exe only on a local drive: a games library on a share is read only
+        if sprawl_core::local::lexical(&path).is_err() {
+            continue;
+        }
         let game = segs.iter().any(|s| s == "steamapps");
         // the plan's defaults (future-features.md F1): games read big files and gain from the
         // bigger chunks; programs in daily use start faster with the smaller ones. Both save a
