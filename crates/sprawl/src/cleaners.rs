@@ -236,7 +236,8 @@ impl State {
     /// again, or after a clean-up). Every finding passes the same safety checks, against this
     /// read.
     pub(crate) fn own_start(&mut self) {
-        if self.job.is_some() || self.advisor.cl.own_reading.is_some() {
+        // not during a Delete or an uncompress: its handles would hold the folders being removed
+        if self.job.is_some() || self.advisor.cl.own_reading.is_some() || self.advisor.file_op() {
             return;
         }
         // the user's decisions (what they keep) apply to this read too

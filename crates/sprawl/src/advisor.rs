@@ -288,12 +288,22 @@ pub(crate) struct Advisor {
     pub(crate) uncompress: Option<(sprawl_advisor::memory::Compressed, Receiver<(bool, String)>, String)>,
     /// A Delete from the tree running on its own thread.
     pub(crate) deleting: Option<Receiver<crate::commands::DelMsg>>,
+    /// Stops that Delete after the item it is on (closing Sprawl asks for this).
+    pub(crate) delete_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Close Sprawl once that Delete has stopped.
+    pub(crate) close_after_delete: bool,
 }
 
 impl Advisor {
     /// A file operation other than a clean-up runs (an uncompress, a Delete from the tree).
     pub(crate) fn file_op(&self) -> bool {
         self.uncompress.is_some() || self.deleting.is_some()
+    }
+
+    /// Something reads folders a Delete could be asked to remove, holding them open meanwhile:
+    /// Check again, or the Cleaners tab's own read.
+    pub(crate) fn reading(&self) -> bool {
+        self.recheck.is_some() || self.cl.own_reading.is_some()
     }
 }
 

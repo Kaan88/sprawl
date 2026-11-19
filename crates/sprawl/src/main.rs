@@ -158,7 +158,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     // closing mid clean-up asks first (what is gone stays gone; the rest is left as it was)
     // (Sprawl's own box doesn't block: the close is called off, and "Close anyway" exits)
     win32::on_close(hwnd, || {
-        if with(|s| s.advisor.cleanup.running.is_some()) == Some(true) {
+        if with(|s| s.advisor.cleanup.running.is_some() || s.advisor.deleting.is_some()) == Some(true) {
             with(|s| s.ask_close());
             return false;
         }

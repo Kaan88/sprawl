@@ -155,8 +155,8 @@ impl crate::state::State {
     /// "Windows menu..." for `path`. `in_scan`: a row of the scan on screen, read again afterwards.
     pub(crate) fn shell_menu(&mut self, path: PathBuf, in_scan: bool) {
         // a delete from that menu in the middle of a clean-up would change the tree it is checking
-        if self.advisor.cleanup.running.is_some() {
-            crate::state::text(&self.root, "FootLeft", "A clean-up is running: the Windows menu is back when it has finished.");
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() {
+            crate::state::text(&self.root, "FootLeft", "A clean-up or file operation is running: the Windows menu is back when it has finished.");
             return;
         }
         let picked = if in_scan { self.picked_nodes().len() } else { 1 };

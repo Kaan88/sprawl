@@ -322,7 +322,7 @@ impl State {
                 self.save_text("Sprawl file types", &s);
             }
             "mExit" => {
-                if self.advisor.cleanup.running.is_some() {
+                if self.advisor.cleanup.running.is_some() || self.advisor.deleting.is_some() {
                     return self.ask_close();
                 }
                 self.exit_now();
@@ -609,8 +609,9 @@ impl State {
     /// Why the selected item may not be deleted from here, if it may not.
     fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
         if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.job.is_some()
-            || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.update.applying {
-            return Some("Deletion waits until scanning and other file operations finish; screenshot runs cannot delete.".into());
+            || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.update.applying
+            || self.advisor.reading() || self.shell_rescans.is_some() {
+            return Some("Deletion waits until scanning, Check again and other file operations finish; screenshot runs cannot delete.".into());
         }
         if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {
             return Some("This path contains or is inside a folder excluded in Settings > Scanning.".into());
@@ -713,6 +714,21 @@ impl State {
         if self.dialogs.open() {
             return;
         }
+        if self.advisor.deleting.is_some() && self.advisor.cleanup.running.is_none() {
+            if self.advisor.close_after_delete { return; }
+            self.ask(
+                "Close Sprawl?",
+                "A Delete is still running.\n\nSprawl stops it after the item it is on, then closes. What is already gone stays gone; the rest is left as it was.",
+                "Stop and close",
+                false,
+                |s| {
+                    if let Some(stop) = &s.advisor.delete_stop { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+                    s.advisor.close_after_delete = true;
+                    crate::state::text(&s.root, "FootLeft", "Stopping the Delete, then closing...");
+                },
+            );
+            return;
+        }
         self.ask(
             "Close Sprawl?",
             "A clean-up is still running.\n\nWhat is already deleted stays deleted; the rest is left as it was.",
@@ -793,9 +809,13 @@ impl State {
     fn manual_delete_paths(&mut self, paths: Vec<PathBuf>, permanent: bool) {
         use sprawl_advisor::clean::{self, Action, Spare};
         if self.advisor.deleting.is_some() { return; }
-        let mut keep = self.advisor.memory.kept_paths();
-        keep.extend(sprawl_advisor::exclusions::configured());
-        let spare = Spare { since: Some(self.active_began()), keep };
+        // what was kept and skipped when the user said yes; each item adds what is kept and
+        // skipped by then (a folder skipped in Settings meanwhile is never deleted)
+        let mut confirmed = self.advisor.memory.kept_paths();
+        confirmed.extend(sprawl_advisor::exclusions::configured());
+        let since = self.active_began();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.advisor.delete_stop = Some(stop.clone());
         let at = std::time::Instant::now();
         self.own_deletes.extend(paths.iter().map(|p| (p.to_string_lossy().trim_end_matches(std::path::MAIN_SEPARATOR).to_lowercase(), at)));
         self.marked.clear();
@@ -803,10 +823,22 @@ impl State {
         self.advisor.deleting = Some(rx);
         crate::state::text(&self.root, "FootLeft", if permanent { "Deleting..." } else { "Moving to the Recycle Bin..." });
         std::thread::spawn(move || {
-            let stop = std::sync::atomic::AtomicBool::new(false);
             let (mut results, mut notes) = (Vec::new(), Vec::new());
             let (mut before, mut last) = (0u64, std::time::Instant::now());
             for path in paths {
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    notes.push(format!("{}: not deleted, the Delete was stopped", path.display()));
+                    continue;
+                }
+                let skipped = sprawl_advisor::exclusions::configured();
+                if sprawl_advisor::exclusions::intersects(&path, &skipped) {
+                    notes.push(format!("{}: not deleted, it contains or is inside a folder now skipped in Settings > Scanning", path.display()));
+                    continue;
+                }
+                let mut keep = confirmed.clone();
+                keep.extend(skipped);
+                keep.extend(sprawl_advisor::memory::Memory::load_readonly().kept_paths());
+                let spare = Spare { since: Some(since), keep };
                 let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
                 let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |n| {
                     if last.elapsed().as_millis() >= 200 {
@@ -844,6 +876,8 @@ impl State {
                 DelMsg::Done(results, notes) => {
                     finished = true;
                     self.advisor.deleting = None;
+                    self.advisor.delete_stop = None;
+                    if self.advisor.close_after_delete { return self.exit_now(); }
                     crate::state::text(&self.root, "FootLeft", "");
                     self.apply_rescans(results);
                     if !notes.is_empty() {
@@ -854,6 +888,8 @@ impl State {
         }
         if gone && !finished {
             self.advisor.deleting = None;
+            self.advisor.delete_stop = None;
+            if self.advisor.close_after_delete { return self.exit_now(); }
             crate::state::text(&self.root, "FootLeft", "The delete stopped unexpectedly. Scan again to see what is there now.");
         }
     }
