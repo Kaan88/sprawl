@@ -35,7 +35,8 @@ pub fn unreadable(excluded: &[PathBuf]) -> bool {
     excluded.iter().any(|e| e.as_os_str() == sprawl_core::progress::UNREADABLE_POLICY)
 }
 
-fn configured_at(path: &Path) -> Vec<PathBuf> {
+/// The list at `path`, with the network spellings `mapped` (asked only when there is a list) gives.
+fn configured_with(path: &Path, mapped: impl FnOnce() -> Mapped) -> Vec<PathBuf> {
     use std::io::Read;
     // An ordinary open, which lets Settings replace the file meanwhile: a pinned read without
     // delete sharing (1.0) made a save that came at the same moment fail, silently.
@@ -52,11 +53,11 @@ fn configured_at(path: &Path) -> Vec<PathBuf> {
     if file.take((1 << 20) + 1).read_to_string(&mut text).is_err() || text.len() > 1 << 20 { return refuse_all(); }
     let value = text.trim_start_matches('\u{feff}').lines().rev().filter_map(|l| l.split_once('='))
         .find(|(key, _)| key.trim() == "scanExclude").map_or("", |(_, value)| value);
-    parse(value).map(with_aliases).unwrap_or_else(|_| refuse_all())
+    parse(value).map(|paths| with_aliases_mapped(paths, &mapped())).unwrap_or_else(|_| refuse_all())
 }
 
-fn with_aliases(paths: Vec<PathBuf>) -> Vec<PathBuf> {
-    with_aliases_mapped(paths, &mapped_drives())
+fn configured_at(path: &Path) -> Vec<PathBuf> {
+    configured_with(path, mapped_drives)
 }
 
 fn with_aliases_mapped(paths: Vec<PathBuf>, mapped: &Mapped) -> Vec<PathBuf> {
@@ -102,6 +103,17 @@ struct Mapped {
     /// none of these lists (not there now, or no drive list at all) may be a disconnected
     /// network drive, so a skip on it is treated as one whose share is unknown.
     local: Vec<char>,
+    /// Windows gave its list of drive letters. Without it no letter is known to be anything,
+    /// and a skip anywhere on the network is treated as reachable by every letter.
+    listed: bool,
+}
+
+impl Mapped {
+    /// Every letter not known to be a local drive, now present or not: any of them may be (or
+    /// may become, during the scan) a network drive reaching a share that can't be told apart.
+    fn maybe_network(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        (b'A'..=b'Z').map(char::from).filter(|l| !self.local.contains(l)).map(|l| PathBuf::from(format!("{l}:\\")))
+    }
 }
 
 /// `\\server\share` for each mapped network drive letter (`Y:`).
@@ -111,7 +123,7 @@ fn mapped_drives() -> Mapped {
     #[link(name = "kernel32")]
     extern "system" { fn GetLogicalDrives() -> u32; fn GetDriveTypeW(root: *const u16) -> u32; }
     let mask = unsafe { GetLogicalDrives() };
-    let mut out = Mapped::default();
+    let mut out = Mapped { listed: mask != 0, ..Mapped::default() };
     for i in 0..26u8 {
         if mask & (1 << i) == 0 { continue; }
         let letter = (b'A' + i) as char;
@@ -137,7 +149,8 @@ fn mapped_drives() -> Mapped {
 /// mapped letter whose share contains it (`Z:` mapped to `\\srv\share\sub` for a skip at
 /// `\\srv\share\sub\x` gives `Z:\x`) or lies inside it (that whole letter). When a drive's
 /// share can't be read and the skip may be reached through it, that letter is skipped whole, and
-/// when the skip itself is on such a drive, every share path is ([`REMOTE_UNKNOWN`]).
+/// when the skip itself is on such a drive, every share path is ([`REMOTE_UNKNOWN`]), with every
+/// letter not known to be local (Astra 1.0.2 round 3: one present now may not be the only one).
 fn network_aliases(path: &Path, mapped: &Mapped, policy: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     use sprawl_core::progress::REMOTE_UNKNOWN;
     let text = path.to_string_lossy().replace('/', "\\");
@@ -147,7 +160,7 @@ fn network_aliases(path: &Path, mapped: &Mapped, policy: &mut Vec<PathBuf>) -> V
         Some(letter) if mapped.failed.contains(&letter) => {
             // which share this is can't be told: every share path, and every network letter
             if !policy.iter().any(|p| p.as_os_str() == REMOTE_UNKNOWN) { policy.push(PathBuf::from(REMOTE_UNKNOWN)); }
-            out.extend(mapped.letters.iter().map(|(l, _)| *l).chain(mapped.failed.iter().copied()).map(|l| PathBuf::from(format!("{l}:\\"))));
+            out.extend(mapped.maybe_network());
             return out;
         }
         Some(letter) => match mapped.letters.iter().find(|(l, _)| *l == letter) {
@@ -160,7 +173,7 @@ fn network_aliases(path: &Path, mapped: &Mapped, policy: &mut Vec<PathBuf>) -> V
                 // not there now, or of a kind Windows can't tell: possibly a disconnected
                 // network drive, whose share can't be known
                 if !policy.iter().any(|p| p.as_os_str() == REMOTE_UNKNOWN) { policy.push(PathBuf::from(REMOTE_UNKNOWN)); }
-                out.extend(mapped.letters.iter().map(|(l, _)| *l).chain(mapped.failed.iter().copied()).map(|l| PathBuf::from(format!("{l}:\\"))));
+                out.extend(mapped.maybe_network());
                 return out;
             }
         },
@@ -181,8 +194,9 @@ fn network_aliases(path: &Path, mapped: &Mapped, policy: &mut Vec<PathBuf>) -> V
             out.push(PathBuf::from(format!("{other}:\\")));
         }
     }
-    // a letter whose share is unknown may be this share
-    out.extend(mapped.failed.iter().map(|l| PathBuf::from(format!("{l}:\\"))));
+    // a letter whose share is unknown may be this share; with no drive list, any letter may be
+    if mapped.listed { out.extend(mapped.failed.iter().map(|l| PathBuf::from(format!("{l}:\\")))); }
+    else { out.extend(mapped.maybe_network()); }
     out
 }
 
@@ -220,10 +234,12 @@ mod tests {
         std::fs::write(dir.join("public"), b"ok").unwrap();
         let settings = dir.join("settings.ini");
         std::fs::write(&settings, format!("scanExclude={};Z:\\unavailable\\scope", dir.join("skip").display())).unwrap();
-        let excluded = configured_at(&settings);
-        // both as written, plus the share's own name where this PC maps Z: to a share
-        assert_eq!(excluded[..2], [dir.join("skip"), PathBuf::from(r"Z:\unavailable\scope")]);
-        assert!(excluded[2..].iter().all(|p| p.to_string_lossy().starts_with(r"\\") && p.ends_with(r"unavailable\scope")), "{excluded:?}");
+        // a fixed mapping, not this PC's (round 3: the test followed whatever Z: was here)
+        let local = dir.to_string_lossy().chars().next().unwrap().to_ascii_uppercase();
+        let z_mapped = || Mapped { letters: vec![('Z', r"\\server\zshare".into())], failed: vec![], local: vec![local], listed: true };
+        let excluded = configured_with(&settings, z_mapped);
+        // both as written, plus the share's own name
+        assert_eq!(excluded, [dir.join("skip"), PathBuf::from(r"Z:\unavailable\scope"), PathBuf::from(r"\\server\zshare\unavailable\scope")]);
         assert!(intersects(&dir.join("skip/private"), &excluded));
         assert!(intersects(&dir, &excluded), "cleanup/export of a containing folder is still blocked");
         let tree = sprawl_core::walk::walk(&dir, &sprawl_core::Progress::with_exclusions(&excluded)).unwrap();
@@ -245,7 +261,7 @@ mod tests {
 
     #[test]
     fn network_aliases_cover_overlapping_and_unknown_mappings() {
-        let mapped = Mapped { letters: vec![('Y', r"\\srv\share".into()), ('Z', r"\\srv\share\sub".into()), ('X', r"\\other\data".into())], failed: vec![], local: vec!['C'] };
+        let mapped = Mapped { letters: vec![('Y', r"\\srv\share".into()), ('Z', r"\\srv\share\sub".into()), ('X', r"\\other\data".into())], failed: vec![], local: vec!['C'], listed: true };
         let all = |p: &str| with_aliases_mapped(vec![PathBuf::from(p)], &mapped);
         // a skip on Y: inside the folder Z: maps: the share's name, and Z: below its own root
         let y = all(r"Y:\sub\private");
@@ -262,11 +278,14 @@ mod tests {
         assert!(!progress.excludes(Path::new(r"\\srv\share\other")));
         // a network letter whose share can't be read: a skip on it refuses every share path and
         // every network letter; a skip elsewhere on the network refuses that letter
-        let unknown = Mapped { letters: vec![('Y', r"\\srv\share".into())], failed: vec!['W'], local: vec!['C'] };
+        let unknown = Mapped { letters: vec![('Y', r"\\srv\share".into())], failed: vec!['W'], local: vec!['C'], listed: true };
         let on_w = with_aliases_mapped(vec![PathBuf::from(r"W:\private")], &unknown);
         assert!(intersects(Path::new(r"\\anything\at\all"), &on_w));
         assert!(sprawl_core::Progress::with_exclusions(&on_w).excludes(Path::new(r"\\anything\at\all")));
         assert!(intersects(Path::new(r"Y:\data"), &on_w) && intersects(Path::new(r"W:\other"), &on_w));
+        // and every letter not known to be local, present now or not (round 3: a second letter
+        // mapped to that share, or mapped during the scan)
+        assert!(intersects(Path::new(r"M:\data"), &on_w));
         assert!(!intersects(Path::new(r"C:\Users"), &on_w), "local drives stay scannable");
         let on_y = with_aliases_mapped(vec![PathBuf::from(r"Y:\private")], &unknown);
         assert!(intersects(Path::new(r"W:\x"), &on_y));
@@ -280,9 +299,14 @@ mod tests {
         // no drive list at all: no letter is known to be local
         let none = with_aliases_mapped(vec![PathBuf::from(r"C:\private")], &Mapped::default());
         assert!(intersects(Path::new(r"\\anything\at\all"), &none));
+        // with a zero drive mask no letter is enumerated, yet every one may reach the share
+        for l in 'A'..='Z' { assert!(intersects(Path::new(&format!(r"{l}:\x")), &none), "{l}: {none:?}"); }
+        // and a skip on a share by name, with no drive list: every letter may map it
+        let unc = with_aliases_mapped(vec![PathBuf::from(r"\\srv\share\private")], &Mapped::default());
+        assert!(intersects(Path::new(r"K:\x"), &unc), "{unc:?}");
         // a mapped folder whose name changes width when lowercased (İ is 2 bytes, i̇ is 3):
         // the rest is cut by names, not bytes
-        let wide = Mapped { letters: vec![('V', "\\\\srv\\share\\\u{130}".into())], failed: vec![], local: vec![] };
+        let wide = Mapped { letters: vec![('V', "\\\\srv\\share\\\u{130}".into())], failed: vec![], local: vec![], listed: true };
         let v = with_aliases_mapped(vec![PathBuf::from("\\\\SRV\\SHARE\\i\u{307}\\secret")], &wide);
         assert!(v.contains(&PathBuf::from(r"V:\secret")), "{v:?}");
     }

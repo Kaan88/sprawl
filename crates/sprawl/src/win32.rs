@@ -121,6 +121,13 @@ pub fn drives() -> Vec<Drive> {
     out
 }
 
+/// The fixed drives' roots (`C:\` style), by kind alone: nothing else is asked of any drive.
+pub fn fixed_drives() -> Vec<String> {
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u32).filter(|i| mask & (1 << i) != 0).map(|i| format!("{}:\\", (b'A' + i as u8) as char))
+        .filter(|root| unsafe { GetDriveTypeW(wide(root).as_ptr()) } == 3).collect()
+}
+
 /// (total, free) bytes of the volume holding `path`.
 pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     let s = path.display().to_string();

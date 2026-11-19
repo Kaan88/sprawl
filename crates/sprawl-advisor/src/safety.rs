@@ -692,20 +692,19 @@ fn own_addresses() -> Option<Vec<std::net::IpAddr>> {
 /// The folder a share of this PC serves. Whether it exists is asked of the Server service
 /// itself (`NetShareGetInfo`, level 1, open to every user): only its "no such share" answer
 /// means absent, any other failure is unknown, and temporary shares with no registry entry are
-/// found too. The folder comes from level 2 (administrators only), else from the service's
-/// saved list (`Path=D:\...` in `HKLM\...\LanmanServer\Shares\<share>`), else it is unknown.
+/// found too. The folder comes from level 2 (administrators only), else it is unknown: the
+/// service's saved list in the registry says what a share of that name was set up with, not
+/// what it serves now (Astra 1.0.2 round 3, S1 #10).
 fn share_folder(share: &str) -> Share {
     if share.eq_ignore_ascii_case("admin$") {
         return std::env::var("SystemRoot").ok().filter(|s| drive_forms(s).is_some()).map_or(Share::Unknown, Share::Folder);
     }
     match live_share(share) {
-        LiveShare::Absent => return Share::Absent,
-        LiveShare::Unknown => return Share::Unknown,
-        LiveShare::Exists(Some(p)) => return local_share_path(&p),
-        LiveShare::Exists(None) => {}
+        LiveShare::Absent => Share::Absent,
+        LiveShare::Unknown => Share::Unknown,
+        LiveShare::Exists(Some(p)) => local_share_path(&p),
+        LiveShare::Exists(None) => Share::Unknown,
     }
-    let Some(key) = crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Shares", crate::reg::View::Native) else { return Share::Unknown };
-    key.strings(share).and_then(|lines| lines.iter().find_map(|l| l.strip_prefix("Path=")).map(str::to_string)).map_or(Share::Unknown, |p| local_share_path(&p))
 }
 
 /// A share's folder, when it is one on this PC's own drive.
