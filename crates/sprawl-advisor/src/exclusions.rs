@@ -29,13 +29,16 @@ fn refuse_all() -> Vec<PathBuf> { (b'A'..=b'Z').map(|drive| PathBuf::from(format
 
 fn configured_at(path: &Path) -> Vec<PathBuf> {
     use std::io::Read;
-    let mut file = match sprawl_core::local::file(path, 1 << 20) {
+    // An ordinary open, which lets Settings replace the file meanwhile: a pinned read without
+    // delete sharing (1.0) made a save that came at the same moment fail, silently.
+    let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(_) => return refuse_all(),
     };
+    if !file.metadata().is_ok_and(|m| m.is_file()) { return refuse_all(); }
     let mut text = String::new();
-    if file.file.read_to_string(&mut text).is_err() { return refuse_all(); }
+    if file.take((1 << 20) + 1).read_to_string(&mut text).is_err() || text.len() > 1 << 20 { return refuse_all(); }
     let value = text.trim_start_matches('\u{feff}').lines().rev().filter_map(|l| l.split_once('='))
         .find(|(key, _)| key.trim() == "scanExclude").map_or("", |(_, value)| value);
     parse(value).map(with_aliases).unwrap_or_else(|_| refuse_all())

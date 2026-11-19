@@ -529,6 +529,10 @@ fn personal_places() -> Result<Vec<String>, ()> {
         } else { None };
         if !path.is_null() { unsafe { CoTaskMemFree(path.cast()); } }
         let text = text.ok_or(())?;
+        // A folder redirected to a network share: nothing there is ever cleaned (storage
+        // actions refuse non-local paths), so it needs no local pattern. Failing closed here
+        // stopped every delete and several findings on PCs with redirected folders (1.0).
+        if text.starts_with(r"\\") && !text.starts_with(r"\\?\") { continue; }
         if text.contains(['%', '*', '?']) || drive_forms(&text).is_none() { return Err(()); }
         paths.push(text);
     }
