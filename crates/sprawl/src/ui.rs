@@ -259,6 +259,11 @@ fn inline(s: &str) -> String {
             code = !code;
         } else if code {
             cur.push(c);
+        } else if let Some(len) = path_span(&chars, i, bold, italic, struck) {
+            // a drive or share path, as written: brackets, stars and tildes in it are names
+            cur.extend(&chars[i..i + len]);
+            i += len;
+            continue;
         } else if c == '\\' && matches!(next, Some('*') | Some('|') | Some('`')) && !path_char(prev) {
             cur.push(chars[i + 1]);
             i += 1;
@@ -295,6 +300,39 @@ fn inline(s: &str) -> String {
     }
     emit(&mut out, &mut cur, bold, italic, code, struck);
     out
+}
+
+/// A drive (`C:\...`) or share (`\\server\...`) path starting at `i`: how many characters it
+/// takes, up to the next space. Marks at its end that close a style already open (`**`, `*`,
+/// `~~`) are left to close it, so `**C:\x**` is still bold.
+fn path_span(chars: &[char], i: usize, bold: bool, italic: bool, struck: bool) -> Option<usize> {
+    let at = |k: usize| chars.get(i + k).copied();
+    let prev = i.checked_sub(1).map(|p| chars[p]);
+    if prev.is_some_and(|p| p.is_alphanumeric() || p == '\\') {
+        return None;
+    }
+    let drive = at(0).is_some_and(|c| c.is_ascii_alphabetic()) && at(1) == Some(':') && at(2) == Some('\\');
+    let share = at(0) == Some('\\') && at(1) == Some('\\') && at(2).is_some_and(|c| c.is_alphanumeric() || matches!(c, '?' | '.'));
+    if !drive && !share {
+        return None;
+    }
+    let mut end = i + chars[i..].iter().position(|c| c.is_whitespace()).unwrap_or(chars.len() - i);
+    // (punctuation after the closing mark, as in `**D:\Games**,`, is the sentence's)
+    loop {
+        let mut core = end;
+        while core > i + 3 && matches!(chars[core - 1], ',' | '.' | ';' | ':' | '!' | '?' | ')' | '\'' | '"') {
+            core -= 1;
+        }
+        let tail = |m: &str| core - i > m.len() + 2 && chars[core - m.len()..core].iter().copied().eq(m.chars());
+        if bold && tail("**") || struck && tail("~~") {
+            end = core - 2;
+        } else if italic && tail("*") && !tail("**") {
+            end = core - 1;
+        } else {
+            break;
+        }
+    }
+    Some(end - i)
 }
 
 /// `~~` at `i` strikes through: opening at a word's start with a closing one later, or closing
@@ -394,12 +432,18 @@ mod esc_tests {
     #[test]
     fn paths_globs_and_names_stay_as_written() {
         // Astra 1.0.2 S5 #3: what is shown is the path that was written
-        for p in [r"C:\Cache\*.log", r"C:\x\**\*.tmp", r"\\nas\media\*.iso", r"D:\*", r"C:\Users\*\AppData", r"C:\a~~b~~c.txt", r"C:\odd`name.txt", "x~~y"] {
+        for p in [r"C:\Cache\*.log", r"C:\x\**\*.tmp", r"\\nas\media\*.iso", r"D:\*", r"C:\Users\*\AppData", r"C:\a~~b~~c.txt", r"C:\odd`name.txt", "x~~y",
+            // path-shaped links, strikes and stars inside a name (re-review S5 #3)
+            r"C:\[draft](old).txt", r"C:\~~draft~~.txt", r"C:\a*b*c.txt", r"\\nas\[x](y)\~~z~~", r"C:\**bold**.txt"] {
             let x = super::inline(&format!("see {p} now"));
             assert!(x.contains(&super::esc(&format!("see {p} now"))), "{p}: {x}");
         }
         // a path still takes bold and code around it
         assert!(super::inline(r"**C:\Cache\*.log**").contains(r#"<Run Text="C:\Cache\*.log" FontWeight="SemiBold"/>"#));
+        assert!(super::inline(r"*C:\Cache* and ~~D:\old~~").contains(r#"<Run Text="C:\Cache" FontStyle="Italic"/>"#));
+        assert!(super::inline(r"*C:\Cache* and ~~D:\old~~").contains(r#"<Run Text="D:\old" TextDecorations="Strikethrough"/>"#));
+        // a link that isn't path-shaped is still a link
+        assert!(super::inline("[docs](https://example.com)").contains(r#"<Run Text="docs"/>"#));
         assert!(super::inline(r"`C:\Cache\*.log`").contains(r#"<Run Text="C:\Cache\*.log" FontFamily"#));
         assert!(super::inline("~~old~~ new").contains(r#"TextDecorations="Strikethrough""#));
         assert!(super::inline(r"a \* b").contains(r#"<Run Text="a * b"/>"#));
