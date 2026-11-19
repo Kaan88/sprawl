@@ -1,9 +1,113 @@
 # Current status and next work
 
-Updated 2026-11-19 after Sprawl 1.0.0. This is the current index for the older design plans;
-their dated progress entries remain an implementation history.
+Updated 2026-11-19, after the 1.0.1 corrections. This page is the current index: status,
+known limitations, open questions and the backlog. The older plans keep their designs and
+dated implementation notes (see the last section).
 
-## Post-release scan regression correction
+## Where things stand
+
+- **Released:** 1.0.0 (tag `v1.0.0`, rebuilt in place by Codex, see below).
+- **On main, not released:** the 1.0.1 corrections, `fa7ce20..d5b9d4a` and the notes after it.
+  `Cargo.toml` still says 1.0.0, so the auto-updater offers nothing yet. The CHANGELOG has a
+  `## 1.0.1 — unreleased` section. Releasing waits for the user's word.
+- **Review:** the 1.0.1 commits await a GPT Astra (or Fable) read. The self-contained report
+  is `.claude/fable-review-queue.md`, section "1.0.1 corrections by Claude", items 1-14.
+
+## 1.0.1 corrections (Claude, 2026-11-19)
+
+The user reported 1.0.0 as slow ("indexing is slow") with critical bugs, and asked Claude to
+review Codex's work since `e022822`. Every changed file in `e022822..fed28fa` was read as a
+diff. Targeted fixes were preferred over a revert.
+
+| Commit | What 1.0.0 did wrong | Now |
+|---|---|---|
+| fa7ce20 | Pinned every folder's whole ancestor chain before listing it: non-MFT scans 15-55x slower. Refused network drives and shares. | Only the detailed walk pins per folder. Network roots are scanned read-only (no pins, WOF probe or MFT). |
+| dbbadb9 | Opened every file for evidence of use, compressed-size measurement and the daily scan. | Listing metadata; the root is pinned once. |
+| 39548e2 | Recycled folders file by file (50k bin entries, empty folders left). | Whole folder in one bin entry when nothing in it must stay. |
+| c223324 | Refused to update while elevated: Always Run as Administrator copies never updated. | Hands off to an unelevated copy through explorer.exe. |
+| da9573d | Delete in the tree ran on the window thread. | Runs on a worker with progress. |
+| 081747d | History roots listed twice (old and v3 buckets). | Newest per root. |
+| 0de55bf | A personal folder redirected to a share refused every delete. Reading exclusions blocked settings saves. | Share folders skipped in the protection list; plain read of settings.ini. |
+| 678a4c2 | Compared file times exactly with whole-second snapshot times: manifests unreadable through Claude Code, archive copies lost for History scans. | Compared to the second; size still exact. |
+| f71e6a7 | Left the pre-1.0 shared alert task running when elevated, and when turning alerts off. | Retired in both cases; the SID check stays. |
+| ed3ce14 | Any skipped folder turned MFT scanning off. | MFT kept; skipped scopes dropped while the tree is built. |
+
+Tests at d5b9d4a: app 66 passed / 1 ignored, advisor 200 / 5, core 60 / 1, installer 16.
+
+## Known limitations
+
+These are true of main now. Each is deliberate or accepted unless it is under "Open questions".
+
+**Scanning**
+- Folder inventories (non-MFT scans, search index, Cleaners reads, daily scan) don't see
+  WOF compression hidden behind a plain listing; MFT scans and the detailed walk do.
+  `compressed:` search says so.
+- Network drives and shares are listed only: no MFT, no WOF check, no clean-up. MCP
+  `scan_path` still refuses network paths.
+- A folder swapped for a junction between its parent's listing and its own can be listed
+  through the junction (wrong sizes in a read-only view; actions re-pin and check).
+- With skipped folders, an MFT scan still reads the skipped records into memory. They are
+  never shown or kept, but 1.0 never enumerated them. Live counts during the read include
+  them; final counts don't. The live top-folder list stays empty during such a read.
+- Snapshots keep whole seconds. A file rewritten at the same size within the same second
+  passes the freshness check of `read_manifest` and archive-copy findings.
+
+**Clean-up and safety**
+- A file created inside a folder after the last check and before the whole-folder move goes
+  to the Recycle Bin with it (undoable; a rename never follows links).
+- Folders redirected to a network share have no local protection pattern. Nothing there can
+  be cleaned: storage actions refuse non-local paths, mapped network letters included.
+- Elevated tool commands may only start programs directly in System32 (79611d8). `dotnet
+  nuget locals all --clear` is refused in an always-elevated Sprawl unless the override is on.
+- Tool items measure the folder before and after with a detailed walk. If either walk has
+  errors, no saving is credited and the item shows that as a problem, even when the tool
+  succeeded.
+- Per-file path pinning remains in `kinds::archives` (up to 50,000 matched files),
+  `remedies::uncompress_scope` and `recycle::held` (one per `$I` record). Bounded or explicit;
+  `held` is quick on the user's bin.
+- Learning's "quiet" lasts until Forget learning. `exe_installers` reads up to 500 version
+  resources per analysis. History name matching is case-sensitive (names come from disk).
+
+**Updates and install**
+- 1.0.0's own updater refuses to run elevated. 1.0.0 installs with Always Run as
+  Administrator on can't auto-update to 1.0.1: turn the option off once, or run Setup. The
+  CHANGELOG says so; the release notes must too.
+- If an elevated Sprawl is still running, the unelevated updater's `stop_other_instances`
+  can't stop it and says so.
+- A leftover `.sprawl-recovery` that a matching version can't retire (mixed bundle, unknown
+  files) makes the next update fail to prepare its recovery copy until it is removed.
+
+**AI and MCP**
+- `pipe::peer_is_us` compares the peer's token SID. A medium-integrity MCP client may be
+  denied the token of an elevated app, so the in-app bridge may refuse an always-elevated
+  Sprawl. Unverified.
+- In-app MCP scans refuse while the app is elevated (or elevation is unknown).
+
+## Open questions for the user
+
+1. Release 1.0.1 before or after the Astra review?
+2. Is reading skipped folders' MFT records into memory (never shown) acceptable, or should
+   skipped folders force the slower folder walk again as an option?
+3. Keep the System32-only rule for elevated tool commands, or allow known toolchain paths
+   such as `dotnet` in Program Files?
+4. Should the bridge accept an elevated app when the token can't be read but the image path
+   matches (the pre-1.0 check)? Needs a UAC test first.
+5. Should a tool whose folder couldn't be measured show a note instead of a problem?
+6. After 1.0.1: return to the Astra design roadmap (all Codex mockups were rejected; any UI
+   change needs approved mockups first), or the backlog below?
+
+## Needs runtime verification
+
+None of these has been run; each needs the user's consent (UAC, a real release, or a task):
+- The elevated update hand-off end to end (needs a newer published release and a UAC prompt
+  on restart). Watch the first update from 1.0.1.
+- An elevated MFT scan of a drive with a skipped folder (the build is tested on a synthetic
+  index only).
+- The alert task migration with a real pre-1.0 task (none exists on this PC).
+- The MCP bridge with an elevated app.
+- Full-drive and elevated MFT performance after the 1.0.1 changes.
+
+## Post-release scan regression correction (Codex, before 1.0.1)
 
 The user reported slow/high-CPU C: indexing, stale Advisor results after drive changes and
 slow Cleaners checks. Correction work takes priority over the alternative design roadmap.
@@ -27,7 +131,7 @@ benchmark measured about 127–133 ms wall / 1.1 s process CPU before, versus 12
 and live UI drive switching remain unmeasured. Existing 1.0.0 users need the replacement Setup
 because a same-version rebuild is not a version-based auto-update.
 
-## Released and reviewed
+## Released and reviewed (1.0.0)
 
 The agreed continuation of `next-round.md` is implemented and released in
 [Sprawl 1.0.0](https://github.com/Kaan88/sprawl/releases/tag/v1.0.0), source/tag `3452226`.
@@ -96,7 +200,7 @@ These are future work or deliberate scope limits, not unfinished 1.0.0 audit cor
 Volta per-version removal, unsupported launcher moves and additional VM products are not
 promised actions. Owner tools and reliable evidence are required before expanding support.
 
-## Runtime and visual verification still needed
+## Runtime and visual verification still needed (from 1.0.0)
 
 Astra's completed audit was source-based; Sol ran the recorded tests. Installed update and
 recovery launches, real scheduled-task changes, owner uninstall workflows, provider calls,
@@ -110,5 +214,6 @@ observations from historical screenshots and source-only conclusions.
 `next-round.md`, `future-features.md`, `advisor-next.md`, `advisor-improvements.md` and
 `handoff-opus.md` retain their original designs and dated implementation notes. Their old
 "awaiting Astra", "not built" or "stop before review" passages describe those checkpoints.
+The 1.0.1 work is recorded in `next-round.md`'s Progress section and in the table above.
 Use this page and the review dossier's final decision for current status. Do not erase the
 historical evidence or turn a deliberately deferred idea into a release requirement.

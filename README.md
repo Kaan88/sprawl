@@ -22,7 +22,9 @@
 **Explore.** Scan a drive or a folder and see where the space went: a sortable tree, the biggest
 files, a table of file types, and a treemap you can zoom into (with City and Galaxy views).
 As administrator Sprawl reads the NTFS file table directly, which takes seconds for a whole
-drive; otherwise it walks the folders on every core.
+drive; otherwise it walks the folders on every core. Folders you skip (Settings > Scanning) are
+left out either way. Network drives and shares can be scanned too, read only: nothing on them
+is ever cleaned.
 
 **Advisor.** What can go, and why. Each finding has a risk, what it costs to get back, and
 the evidence behind it: caches, build outputs of idle projects, folders left behind by removed
@@ -62,6 +64,7 @@ never deletes, never ticks, and what it adds is checked against the scan like an
   which program to close.
 - Sprawl is not an uninstaller: it hands an application to Windows' Installed apps, to Steam, or
   to a program you choose ([how](docs/uninstaller-handoff.md)).
+- Known limitations and open questions are listed in [the status page](docs/plans/status.md).
 - Nothing leaves your PC unless you turn it on: the AI, community cleaner definitions and the
   daily update check each have a switch, and "Work offline" stops them all.
 
@@ -76,7 +79,9 @@ App Runtime 1.8; if it's missing, Windows offers to install it the first time Sp
 Sprawl looks for a new version when it starts (and once a day while open) and asks before updating (Help > Check for Updates;
 Settings > Network turns the automatic check off). Updates are signed: a copy only accepts a release
 whose file list carries Sprawl's Ed25519 signature and whose files match it.
-Self-update runs without administrator rights. Before replacing files, it closes other Sprawl
+Self-update runs without administrator rights. A Sprawl running as administrator reopens
+itself without them to install the update (from 1.0.1; 1.0.0 can't, so with Always Run as
+Administrator on, turn it off once or run Setup to get 1.0.1). Before replacing files, it closes other Sprawl
 processes from this exact installation under your
 Windows account, including lingering MCP servers. MCP clients can reconnect after restart.
 It keeps the complete previous program in `.sprawl-recovery` beside the installation. If an update is interrupted,

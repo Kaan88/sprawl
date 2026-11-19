@@ -18,6 +18,7 @@ in-app updater shows.
 - The assistant can read project manifests again when it works through Claude Code, and copies of extracted archives are found in scans opened from History.
 - Turning alerts off now also removes the scheduled task made before 1.0, including when Sprawl always runs as administrator.
 - If Always Run as Administrator is on, 1.0.0 cannot install this update itself: turn the option off once, update, then turn it back on, or run Setup.
+- Known limitations and open questions: [docs/plans/status.md](docs/plans/status.md).
 
 ## 1.0.0 — 2026-11-19
 

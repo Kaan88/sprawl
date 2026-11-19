@@ -7,6 +7,8 @@ below records what has since been built and released; the phase descriptions ret
 read the complete review dossier and code, verified all 33 findings Fixed/Done and approved
 the release. See [current status and next work](status.md) for remaining ideas, verification
 limits and the newly commissioned design/AI review. Dated progress notes below are historical.
+The 1.0.1 corrections (Claude, after the user found 1.0.0 slow) are the last Progress entry;
+their limitations and open questions are in status.md.
 
 ## Remaining work at Codex takeover (2026-11-18)
 
@@ -272,19 +274,20 @@ reviewed the source and corrections, and marked all 33 findings Fixed/Done. Spra
 released. Earlier implementation checkpoints above precede that review and remain as history.
 See [current status](status.md) for deliberate deferrals and the new mockup-first design review.
 
-**1.0.1 corrections, 2026-11-19 (Claude):** the user reported slow scans in 1.0. Fixed locally in
-fa7ce20 (per-folder path pinning in inventories; network-drive scans), dbbadb9 (per-file opens
-in evidence of use, compressed-size measurement and the daily scan) and 39548e2 (whole-folder
-recycling). Workspace tests pass. Queued for review; not pushed or released until the user says so.
-Fuller review of Codex's 1.0 work after the user asked: c223324 (elevated copies could never update), da9573d (tree Delete froze the window), 081747d (History roots listed twice). Not pushed or released.
-Line-by-line review of the rest (2026-11-19): 0de55bf (a personal folder redirected to a share refused every delete; settings saves could fail during an exclusions read), 678a4c2 (snapshot trees: manifests and archive copies compared times exactly), f71e6a7 (old shared alert task left running when elevated or turning alerts off). Workspace tests pass. Not pushed or released.
-ed3ce14 (2026-11-19): skipped folders no longer turn off MFT scans; they are left out while the MFT tree is built (synthetic-index test; a real elevated MFT run not done, it needs UAC). Pushed to main at the user's word, not released.
-
-**Open after the 1.0.1 corrections (noted 2026-11-19, not fixed):**
-- 1.0.0's updater refuses to run elevated, so 1.0.0 installs with Always Run as Administrator can't auto-update to 1.0.1: turn the option off once or run Setup (CHANGELOG says so). Fixed from 1.0.1 on (c223324).
-- The in-app MCP bridge may refuse an always-elevated Sprawl: `pipe::peer_is_us` (1.0) compares the peer's token SID, and a medium-integrity client may not be allowed to open an elevated process's token. Unverified (needs UAC).
-- Per-file pinning (`local::scope`/`storage`/`file`) remains in `kinds::archives` (up to 50,000 matched files), `remedies::uncompress_scope` and `recycle::held` (per `$I` record). Bounded or explicit actions; `held` is fine on this PC. Speed up if anyone notices.
-- A tool item whose folder can't be read completely before or after shows "no space saving was credited" as a problem, so a successful tool looks not fully done. Show it as a note instead.
-- Elevated tool commands may only start programs directly in System32 (79611d8), so `dotnet nuget locals all --clear` is refused in an always-elevated Sprawl unless the override is on. Deliberate; reconsider.
-- Learning's "quiet" lasts until Forget learning; `exe_installers` reads up to 500 version resources per analysis; History name matching is case-sensitive. Judged fine, listed for the record.
-- The elevated update hand-off (c223324) has not been run end to end (needs a newer published release and a UAC prompt). Watch the first update from 1.0.1.
+**1.0.1 corrections, 2026-11-19 (Claude).** The user reported 1.0.0 as slow, with critical
+bugs, and asked for a review of Codex's work since e022822. Done in three rounds, then pushed
+to main (fed28fa..d5b9d4a and the notes after it) at the user's word; not released.
+- Round 1 (the reported slowness): fa7ce20 (per-folder ancestor pinning in inventories;
+  network-drive scans), dbbadb9 (per-file opens in evidence of use, compressed-size
+  measurement and the daily scan), 39548e2 (whole-folder recycling).
+- Round 2 (fuller review): c223324 (elevated copies could never update), da9573d (tree Delete
+  froze the window), 081747d (History roots listed twice).
+- Round 3 (every remaining changed file read as a diff): 0de55bf (a personal folder
+  redirected to a share refused every delete; exclusions read blocked settings saves),
+  678a4c2 (snapshot whole-second times vs exact comparisons), f71e6a7 (pre-1.0 alert task
+  left running), ed3ce14 (skipped folders turned MFT off).
+- Verified: workspace tests (app 66/1, advisor 200/5, core 60/1, installer 16); C:\Program
+  Files inventory 0.20 s for 325k files; Y:\Albums (network) 0.15 s. Not run: elevated MFT
+  with a skipped folder, the elevated update hand-off, a real alert task migration.
+- Review: `.claude/fable-review-queue.md`, "1.0.1 corrections by Claude", items 1-14.
+  Limitations, open questions and what still needs a runtime check: [status.md](status.md).
