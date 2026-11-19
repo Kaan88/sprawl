@@ -3,6 +3,13 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 1.0.1 — unreleased
+
+- Scans are fast again on drives and folders read without the MFT (exFAT and FAT drives, scans with skipped folders, the search index, the daily background scan). 1.0 re-checked every folder's whole path before listing it, which made these scans many times slower.
+- Network drives and `\server\share` folders can be scanned again (read only; clean-up actions stay on local drives).
+- Advice after a scan is quicker: last-use times come from folder listings instead of opening every file.
+- Folders go to the Recycle Bin whole again when nothing in them must stay, as one entry Explorer can restore, instead of every file alone with the empty folders left behind.
+
 ## 1.0.0 — 2026-11-19
 
 ### Replacement build: scan regressions

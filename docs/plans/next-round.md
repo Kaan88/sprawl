@@ -271,3 +271,8 @@ to be discussed with the user before building.
 reviewed the source and corrections, and marked all 33 findings Fixed/Done. Sprawl 1.0.0 is
 released. Earlier implementation checkpoints above precede that review and remain as history.
 See [current status](status.md) for deliberate deferrals and the new mockup-first design review.
+
+**1.0.1 corrections, 2026-11-19 (Claude):** the user reported slow scans in 1.0. Fixed locally in
+fa7ce20 (per-folder path pinning in inventories; network-drive scans), dbbadb9 (per-file opens
+in evidence of use, compressed-size measurement and the daily scan) and 39548e2 (whole-folder
+recycling). Workspace tests pass. Queued for review; not pushed or released until the user says so.
