@@ -93,6 +93,17 @@ pub struct ScanRoot {
     pub pinned: Option<Directory>,
 }
 
+impl ScanRoot {
+    /// On the network, as told when it was opened: a share is listed as it is (yes); a pinned
+    /// root is asked through its own handle (no, yes, or None when that can't be told).
+    pub fn on_network(&self) -> Option<bool> {
+        match &self.pinned {
+            None => Some(true),
+            Some(d) => d.handle().ok().and_then(on_network),
+        }
+    }
+}
+
 /// `allow_wof` as in [`storage`]: a WOF file may itself be the root.
 pub fn scan_root(path: &Path, allow_wof: bool) -> io::Result<ScanRoot> {
     if let Some(path) = remote_scan_root(path) { return Ok(ScanRoot { path, pinned: None }); }
@@ -116,13 +127,205 @@ fn same(a: &Path, b: &Path) -> bool {
     key(a) == key(b)
 }
 
+/// A pinned path: every folder from the drive down, each opened as itself and checked to be
+/// where its path says. The last one (the leaf) is held so that no one, Sprawl included, can
+/// rename, replace or delete it while this lives: open it again by name (a tool given its
+/// path, a file opened inside it) and it is the same one. To rename or delete a name instead,
+/// hold its parent and open the name through it ([`Directory::open_in`]) with delete access.
 #[derive(Debug)]
 pub struct Directory {
     pub path: PathBuf,
     _handles: Vec<File>,
 }
 
+// ---- names opened through their folder's handle (NtCreateFile relative to it): no path is
+// resolved, so no folder above can be swapped for a link meanwhile, and a link at the name is
+// opened as itself, never followed.
+
+#[repr(C)]
+struct UnicodeString { len: u16, max: u16, buf: *const u16 }
+#[repr(C)]
+struct ObjectAttributes { len: u32, root: *mut core::ffi::c_void, name: *const UnicodeString, attrs: u32, sd: *const core::ffi::c_void, qos: *const core::ffi::c_void }
+#[repr(C)]
+struct IoStatus { status: usize, info: usize }
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtCreateFile(handle: *mut *mut core::ffi::c_void, access: u32, oa: *const ObjectAttributes, io: *mut IoStatus, alloc: *const i64, attrs: u32, share: u32, disposition: u32, options: u32, ea: *const core::ffi::c_void, ea_len: u32) -> i32;
+    fn RtlNtStatusToDosError(status: i32) -> u32;
+    fn NtSetInformationFile(handle: *mut core::ffi::c_void, io: *mut IoStatus, info: *const core::ffi::c_void, len: u32, class: u32) -> i32;
+    fn NtQueryVolumeInformationFile(handle: *mut core::ffi::c_void, io: *mut IoStatus, info: *mut core::ffi::c_void, len: u32, class: u32) -> i32;
+}
+
+/// Whether the volume `f` was opened on is reached through the network, asked of that handle
+/// (FileFsDeviceInformation): the device is a network file system or a remote device. None
+/// when Windows doesn't say.
+pub fn on_network(f: &File) -> Option<bool> {
+    const FILE_FS_DEVICE_INFORMATION: u32 = 4;
+    const FILE_REMOTE_DEVICE: u32 = 0x10;
+    // DFS, network, network file system
+    const NETWORK_TYPES: [u32; 3] = [0x06, 0x12, 0x14];
+    let mut info = [0u32; 2]; // DeviceType, Characteristics
+    let mut io = IoStatus { status: 0, info: 0 };
+    let r = unsafe { NtQueryVolumeInformationFile(f.as_raw_handle().cast(), &mut io, info.as_mut_ptr().cast(), 8, FILE_FS_DEVICE_INFORMATION) };
+    (r >= 0).then(|| info[1] & FILE_REMOTE_DEVICE != 0 || NETWORK_TYPES.contains(&info[0]))
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetFileInformationByHandle(file: *mut core::ffi::c_void, class: i32, info: *const core::ffi::c_void, size: u32) -> i32;
+}
+
+/// How [`Directory::open_in`] treats the name: open what is there, make it (failing when
+/// something is there), or either.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Disposition { Open = 1, Create = 2, OpenOrCreate = 3 }
+
+/// What [`Directory::open_in`] may find at the name.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind { Folder, File, Either }
+
+pub const DELETE: u32 = 0x0001_0000;
+pub const READ_DATA: u32 = 0x1;
+pub const WRITE_DATA: u32 = 0x2;
+pub const APPEND_DATA: u32 = 0x4;
+pub const READ_ATTRIBUTES: u32 = 0x80;
+pub const SHARE_READ: u32 = 1;
+pub const SHARE_WRITE: u32 = 2;
+pub const SHARE_DELETE: u32 = 4;
+
+/// One plain name: no separator, stream, wildcard or device character, not `.` or `..`, and
+/// not ending in a dot or space (which Windows paths would drop).
+fn plain_name(name: &str) -> io::Result<Vec<u16>> {
+    if name.is_empty() || name.len() > 255 || matches!(name, "." | "..") || name.ends_with(['.', ' '])
+        || name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) || name.chars().any(|c| (c as u32) < 32) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not one plain name"));
+    }
+    Ok(name.encode_utf16().collect())
+}
+
+/// Open `name` in the folder `dir` is open on, through that handle (synchronous, as with
+/// backup semantics, the link itself, no cloud recall). (handle, whether it was made now).
+fn open_rel(dir: &File, name: &str, access: u32, share: u32, how: Disposition, kind: Kind) -> io::Result<(File, bool)> {
+    use std::os::windows::io::FromRawHandle;
+    let wide = plain_name(name)?;
+    let us = UnicodeString { len: (wide.len() * 2) as u16, max: (wide.len() * 2) as u16, buf: wide.as_ptr() };
+    // OBJ_CASE_INSENSITIVE, as CreateFileW opens names
+    let oa = ObjectAttributes { len: std::mem::size_of::<ObjectAttributes>() as u32, root: dir.as_raw_handle().cast(), name: &us, attrs: 0x40, sd: std::ptr::null(), qos: std::ptr::null() };
+    let mut status_block = IoStatus { status: 0, info: 0 };
+    let mut h: *mut core::ffi::c_void = std::ptr::null_mut();
+    // FILE_SYNCHRONOUS_IO_NONALERT, FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT,
+    // FILE_OPEN_NO_RECALL; FILE_DIRECTORY_FILE or FILE_NON_DIRECTORY_FILE
+    let options = 0x20 | 0x4000 | 0x0020_0000 | match kind { Kind::Folder => 0x1, Kind::File => 0x40 | 0x0040_0000, Kind::Either => 0 };
+    // SAFETY: every pointer is valid for the call; the handle is owned below.
+    let status = unsafe { NtCreateFile(&mut h, access | 0x0010_0000, &oa, &mut status_block, std::ptr::null(), 0, share, how as u32, options, std::ptr::null(), 0) };
+    if status < 0 {
+        // SAFETY: plain conversion.
+        return Err(io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32));
+    }
+    // SAFETY: a fresh handle from NtCreateFile.
+    Ok((unsafe { File::from_raw_handle(h.cast()) }, status_block.info == 2))
+}
+
+/// Attributes of an open handle (FILE_ATTRIBUTE_TAG_INFO).
+fn attributes(f: &File) -> io::Result<u32> {
+    let mut tag = [0u32; 2];
+    // SAFETY: the buffer is the size given; class 9 is FileAttributeTagInfo.
+    if unsafe { GetFileInformationByHandleEx(f.as_raw_handle().cast(), 9, tag.as_mut_ptr().cast(), 8) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok(tag[0])
+}
+
+/// A plain local folder or file: no link or other reparse point, no cloud or offline item.
+fn check_plain(f: &File, kind: Kind) -> io::Result<u32> {
+    let a = attributes(f)?;
+    let dir = a & crate::attr::DIRECTORY != 0;
+    if a & crate::attr::REPARSE_POINT != 0 || a & (0x1000 | 0x0004_0000 | 0x0040_0000) != 0
+        || kind == Kind::Folder && !dir || kind == Kind::File && dir {
+        return Err(io::Error::other("Not a plain local folder or file"));
+    }
+    Ok(a)
+}
+
+/// Volume and file index of an open handle: which file it is.
+pub fn identity(f: &File) -> io::Result<(u32, u64)> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid out-pointer.
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok((info.dwVolumeSerialNumber, (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64))
+}
+
+/// Mark an opened item (opened with DELETE) to go, through its handle: its name goes at once
+/// where the volume allows (POSIX semantics), a read-only file too without its attributes
+/// being changed (other names of the same file keep theirs). Falls back to the plain mark.
+pub fn dispose(f: &File) -> io::Result<()> {
+    // FILE_DISPOSITION_DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE
+    let flags = 0x1u32 | 0x2 | 0x10;
+    // SAFETY: the buffer is the size given; class 21 is FileDispositionInfoEx.
+    if unsafe { SetFileInformationByHandle(f.as_raw_handle().cast(), 21, (&flags as *const u32).cast(), 4) } != 0 { return Ok(()); }
+    let ex = io::Error::last_os_error();
+    if !matches!(ex.raw_os_error(), Some(1 | 50 | 87)) { return Err(ex); }
+    let delete = 1u8;
+    // SAFETY: class 4 is FileDispositionInfo, one BOOLEAN.
+    if unsafe { SetFileInformationByHandle(f.as_raw_handle().cast(), 4, (&delete as *const u8).cast(), 1) } != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
 impl Directory {
+    pub(crate) fn handle(&self) -> io::Result<&File> {
+        self._handles.last().ok_or_else(|| io::Error::other("No pinned folder"))
+    }
+
+    /// The plain folder `name` in this one, opened through this folder's handle as itself (a
+    /// link there is refused, never followed) and held like this one. `create`: made when
+    /// missing. NotFound when it isn't there.
+    pub fn child(mut self, name: &str, create: bool) -> io::Result<Directory> {
+        let how = if create { Disposition::OpenOrCreate } else { Disposition::Open };
+        let (h, _) = open_rel(self.handle()?, name, READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, how, Kind::Folder)?;
+        check_plain(&h, Kind::Folder)?;
+        self.path = self.path.join(name);
+        self._handles.push(h);
+        Ok(self)
+    }
+
+    /// `name` in this folder, opened through its handle as itself with `access` and `share`
+    /// (a link at the name is refused, never followed; so are cloud and offline items). A file
+    /// must have one name only when `single` (it is written or removed).
+    pub fn open_in(&self, name: &str, access: u32, share: u32, how: Disposition, kind: Kind, single: bool) -> io::Result<File> {
+        let (f, _) = open_rel(self.handle()?, name, access | READ_ATTRIBUTES, share, how, kind)?;
+        let a = check_plain(&f, kind)?;
+        if single && a & crate::attr::DIRECTORY == 0 && self.links_of(&f)? != 1 { return Err(io::Error::other("The file has other names")); }
+        Ok(f)
+    }
+
+    fn links_of(&self, f: &File) -> io::Result<u32> {
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a valid out-pointer.
+        if unsafe { GetFileInformationByHandle(f.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+        Ok(info.nNumberOfLinks)
+    }
+
+    /// Rename `file` (opened with DELETE, in this folder) to `name` in this folder, the new
+    /// name given relative to this folder's handle. `replace`: over what has that name.
+    pub fn rename_in(&self, file: &File, name: &str, replace: bool) -> io::Result<()> {
+        let wide = plain_name(name)?;
+        // FILE_RENAME_INFO: ReplaceIfExists, RootDirectory, FileNameLength, FileName
+        let head = 8 + std::mem::size_of::<usize>() + 4;
+        let size = head + wide.len() * 2 + 2;
+        let mut buf = vec![0u64; size.div_ceil(8)];
+        // SAFETY: `buf` holds at least `size` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), buf.len() * 8) };
+        bytes[0] = u8::from(replace);
+        bytes[8..8 + std::mem::size_of::<usize>()].copy_from_slice(&(self.handle()?.as_raw_handle() as usize).to_le_bytes());
+        bytes[8 + std::mem::size_of::<usize>()..head].copy_from_slice(&((wide.len() * 2) as u32).to_le_bytes());
+        for (i, c) in wide.iter().enumerate() { bytes[head + i * 2..head + i * 2 + 2].copy_from_slice(&c.to_le_bytes()); }
+        let mut status_block = IoStatus { status: 0, info: 0 };
+        // SAFETY: class 10 is FileRenameInformation; the buffer is the size given.
+        let status = unsafe { NtSetInformationFile(file.as_raw_handle().cast(), &mut status_block, buf.as_ptr().cast(), size as u32, 10) };
+        // SAFETY: plain conversion.
+        if status >= 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32)) }
+    }
+
     pub fn file_links(&self) -> io::Result<u32> {
         use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
         let file = self._handles.last().ok_or_else(|| io::Error::other("No pinned file"))?;
@@ -229,7 +432,12 @@ fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Dire
     ancestors.reverse();
     let mut handles = Vec::new();
     for p in ancestors {
-        let h = std::fs::OpenOptions::new().access_mode(0x80).share_mode(1 | 2).custom_flags(FLAGS).open(&p)?;
+        // Each folder above holds the next open, so it can't be renamed. The leaf itself is
+        // held with an access that takes part in sharing (listing a folder, reading a file),
+        // and without delete sharing: no one can rename, replace or delete it while it is held
+        // (an attribute-only handle would let it be renamed away under its name).
+        let access = if p == path { READ_DATA | READ_ATTRIBUTES } else { READ_ATTRIBUTES };
+        let h = std::fs::OpenOptions::new().access_mode(access).share_mode(1 | 2).custom_flags(FLAGS).open(&p)?;
         let m = h.metadata()?;
         let mut is_wof = false;
         if allow_wof && p == path && !m.is_dir() && m.file_attributes() & crate::attr::REPARSE_POINT != 0 {
@@ -248,40 +456,46 @@ fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Dire
 }
 
 /// A folder made by this process alone and held as its own until dropped: test fixtures and
-/// Codex's run folders. It is made where no folder of its name was (an existing one is never
-/// taken), with its parent's chain pinned, then opened as itself without delete sharing and
-/// checked to be the plain empty folder just made. While it lives no one can rename, replace or
-/// delete it, so what Drop removes inside it is what was put there; the folder itself is then
-/// removed by name only if empty. One that couldn't be acquired is never removed.
+/// Codex's run folders. It is made through its held parent's handle by the very call that
+/// returns its handle (an existing folder of that name is never taken), so the handle is the
+/// folder just made; that handle shares no delete, so while it lives no one can rename,
+/// replace or delete the folder. Drop removes what is inside through that handle, each item
+/// opened through its folder's handle as itself (a link is removed as a link) and removed
+/// through its own handle, a read-only file without its attributes being changed (another name
+/// of the same file keeps them). The folder itself is then opened again through the held
+/// parent and removed only if it is the same folder (by its file index). Anything that can't
+/// be removed so stays, and then so does the folder.
 #[derive(Debug)]
 pub struct OwnedDir {
     path: PathBuf,
+    name: String,
+    id: (u32, u64),
     held: Option<File>,
-    _parent: Directory,
+    parent: Directory,
 }
 
 impl OwnedDir {
     /// A new folder in `parent`, named `<prefix>-<pid>-<nanos>-<try>`.
     pub fn create_in(parent: &Path, prefix: &str) -> io::Result<OwnedDir> {
-        let pinned = directory(parent)?;
+        Self::create_under(directory(parent)?, prefix)
+    }
+
+    /// [`OwnedDir::create_in`] a folder already held.
+    pub fn create_under(parent: Directory, prefix: &str) -> io::Result<OwnedDir> {
         for n in 0..100u32 {
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-            let path = pinned.path.join(format!("{prefix}-{}-{nanos}-{n}", std::process::id()));
-            match std::fs::create_dir(&path) {
-                Ok(()) => {}
+            let name = format!("{prefix}-{}-{nanos}-{n}", std::process::id());
+            // listing access, so the sharing rules apply to this handle (attribute-only handles
+            // take no part in them); no delete access of its own, so a program may still use it
+            // as its current folder
+            match open_rel(parent.handle()?, &name, READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Create, Kind::Folder) {
+                Ok((held, _)) => {
+                    let id = identity(&held)?;
+                    return Ok(OwnedDir { path: parent.path.join(&name), name, id, held: Some(held), parent });
+                }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
             }
-            // listing access, so the sharing rules apply to this handle (attribute-only handles
-            // take no part in them); no delete sharing: nothing can rename or remove it now
-            let held = std::fs::OpenOptions::new().access_mode(0x1 | 0x80).share_mode(1 | 2).custom_flags(FLAGS).open(&path)?;
-            let m = held.metadata()?;
-            if !m.is_dir() || m.file_attributes() & crate::attr::REPARSE_POINT != 0 || !same(&final_path(&held)?, &crate::canonical_root(&path))
-                || std::fs::read_dir(&path)?.next().is_some()
-            {
-                return Err(io::Error::other("The new folder was replaced before it could be held"));
-            }
-            return Ok(OwnedDir { path, held: Some(held), _parent: pinned });
         }
         Err(io::Error::other("No free folder name"))
     }
@@ -291,33 +505,70 @@ impl OwnedDir {
     }
 }
 
+/// Remove everything in the folder `dir` is open on, through handles only (see [`OwnedDir`]).
+/// False when anything stayed.
+fn empty_through(dir: &File, depth: u32) -> bool {
+    if depth > 64 { return false; }
+    let mut names: Vec<Vec<u16>> = Vec::new();
+    let mut buf = Vec::new();
+    let listed = crate::walk::dir::list(dir, &mut buf, &mut |name, _, _, _, _, _| {
+        if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] { names.push(name.to_vec()); }
+        true
+    });
+    if !listed { return false; }
+    let mut all = true;
+    for wide in names {
+        let Ok(name) = String::from_utf16(&wide) else { all = false; continue };
+        let Ok((h, _)) = open_rel(dir, &name, DELETE | READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either) else { all = false; continue };
+        let Ok(a) = attributes(&h) else { all = false; continue };
+        if a & crate::attr::DIRECTORY != 0 && a & crate::attr::REPARSE_POINT == 0 && !empty_through(&h, depth + 1) {
+            all = false;
+            continue;
+        }
+        all &= dispose(&h).is_ok();
+    }
+    all
+}
+
 impl Drop for OwnedDir {
     fn drop(&mut self) {
-        // what is inside, links removed as links and never followed
-        if let Ok(entries) = std::fs::read_dir(&self.path) {
-            for e in entries.flatten() {
-                let p = e.path();
-                let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
-                let gone = if m.is_dir() && m.file_attributes() & crate::attr::REPARSE_POINT == 0 {
-                    std::fs::remove_dir_all(&p)
-                } else if m.is_dir() {
-                    std::fs::remove_dir(&p)
-                } else {
-                    std::fs::remove_file(&p).or_else(|_| {
-                        let mut perm = m.permissions();
-                        #[allow(clippy::permissions_set_readonly_false)]
-                        perm.set_readonly(false);
-                        std::fs::set_permissions(&p, perm)?;
-                        std::fs::remove_file(&p)
-                    })
-                };
-                let _ = gone;
-            }
+        let Some(held) = self.held.take() else { return };
+        let emptied = empty_through(&held, 0);
+        // the hold shares no delete, so it goes before the folder can be opened to be removed
+        drop(held);
+        if !emptied { return; }
+        let Ok(parent) = self.parent.handle() else { return };
+        let Ok((h, _)) = open_rel(parent, &self.name, DELETE | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Folder) else { return };
+        if check_plain(&h, Kind::Folder).is_ok() && identity(&h).ok() == Some(self.id) {
+            let _ = dispose(&h);
         }
-        // then the folder, by name and only if empty, with the parent still pinned
-        drop(self.held.take());
-        let _ = std::fs::remove_dir(&self.path);
     }
+}
+
+/// The bytes of `trusted\below...\name`, read through a checked chain: `trusted` pinned from
+/// the drive down, then each folder below it and the file itself opened through its parent's
+/// handle as itself (a link anywhere is an error, never followed) and held while it is read.
+/// None only when a name on the way, or the file, is genuinely not there. At most `max` bytes.
+pub fn read_checked(trusted: &Path, below: &[&str], name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut held = directory(trusted)?;
+    for part in below {
+        held = match held.child(part, false) {
+            Ok(h) => h,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+    }
+    let mut file = match held.open_in(name, READ_DATA, SHARE_READ, Disposition::Open, Kind::File, false) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if file.metadata()?.len() > max { return Err(io::Error::other("The file is bigger than expected")); }
+    let mut bytes = Vec::new();
+    (&mut file).take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max { return Err(io::Error::other("The file is bigger than expected")); }
+    Ok(Some(bytes))
 }
 
 pub struct LocalFile {
@@ -363,6 +614,78 @@ mod owned_tests {
         drop(a);
         drop(b);
         assert!(!pa.exists() && !pb.exists());
+    }
+
+    #[test]
+    fn removing_a_read_only_file_leaves_its_other_names_as_they_are() {
+        // Astra 1.0.2 round 3, S6: the fixture's teardown changed attributes by path
+        let keep = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-owned-keep").unwrap();
+        let other = keep.path().join("other.txt");
+        std::fs::write(&other, b"x").unwrap();
+        let mut perm = std::fs::metadata(&other).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&other, perm).unwrap();
+        let a = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-owned-links").unwrap();
+        std::fs::hard_link(&other, a.path().join("again.txt")).unwrap();
+        let pa = a.path().to_path_buf();
+        drop(a);
+        assert!(!pa.exists(), "the read-only name went, through its handle");
+        assert!(std::fs::metadata(&other).unwrap().permissions().readonly(), "the other name is still read-only");
+        let mut perm = std::fs::metadata(&other).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        std::fs::set_permissions(&other, perm).unwrap();
+    }
+
+    #[test]
+    fn a_folder_put_in_place_of_an_owned_one_stays() {
+        // the folder is removed only if it is the one made, not an empty one at its name
+        let parent = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-owned-parent").unwrap();
+        let a = OwnedDir::create_in(parent.path(), "inner").unwrap();
+        let pa = a.path().to_path_buf();
+        // the hold is what keeps it; with it gone (as at the end of Drop), another folder at the
+        // name is not the one made
+        let mut a = a;
+        drop(a.held.take());
+        std::fs::rename(&pa, parent.path().join("moved")).unwrap();
+        std::fs::create_dir(&pa).unwrap();
+        drop(a);
+        assert!(pa.exists(), "another folder at its name is not removed");
+        std::fs::remove_dir(&pa).unwrap();
+        std::fs::remove_dir(parent.path().join("moved")).unwrap();
+    }
+
+    #[test]
+    fn a_pinned_leaf_cant_be_renamed_away() {
+        // Astra 1.0.2 round 3: an attribute-only hold let the leaf be renamed under its name
+        let owned = OwnedDir::create_in(&std::env::temp_dir(), "sprawl-pin-leaf").unwrap();
+        let f = owned.path().join("data.bin");
+        std::fs::write(&f, b"x").unwrap();
+        std::fs::create_dir(owned.path().join("sub")).unwrap();
+        let held = super::storage(&f).unwrap();
+        assert!(std::fs::rename(&f, owned.path().join("moved.bin")).is_err(), "a held file keeps its name");
+        assert!(std::fs::read(&f).is_ok(), "and can still be read by name");
+        drop(held);
+        let held = super::directory(&owned.path().join("sub")).unwrap();
+        assert!(std::fs::rename(owned.path().join("sub"), owned.path().join("gone")).is_err(), "a held folder keeps its name");
+        std::fs::write(owned.path().join("sub").join("in.txt"), b"y").unwrap();
+        drop(held);
+        // through a held folder: names opened as themselves, renamed relative to it
+        let dir = super::directory(owned.path()).unwrap();
+        let file = dir.open_in("data.bin", super::DELETE, super::SHARE_READ, super::Disposition::Open, super::Kind::File, true).unwrap();
+        dir.rename_in(&file, "renamed.bin", false).unwrap();
+        assert!(owned.path().join("renamed.bin").exists() && !f.exists());
+        super::dispose(&file).unwrap();
+        drop(file);
+        assert!(!owned.path().join("renamed.bin").exists());
+        assert!(dir.open_in("nothing", super::READ_DATA, super::SHARE_READ, super::Disposition::Open, super::Kind::File, false).unwrap_err().kind() == std::io::ErrorKind::NotFound);
+        assert!(dir.open_in(r"sub\in.txt", super::READ_DATA, super::SHARE_READ, super::Disposition::Open, super::Kind::File, false).is_err(), "one name only");
+        let sub = super::directory(owned.path()).unwrap().child("sub", false).unwrap();
+        assert!(sub.open_in("in.txt", super::READ_DATA, super::SHARE_READ, super::Disposition::Open, super::Kind::File, false).is_ok());
+        let made = super::directory(owned.path()).unwrap().child("new", true).unwrap();
+        assert!(made.path.ends_with("new") && owned.path().join("new").is_dir());
+        drop((dir, sub, made));
+        drop(owned);
     }
 }
 

@@ -75,6 +75,11 @@ pub struct Node {
     pub attributes: u32,
     pub parent: Option<usize>,
     pub children: Vec<usize>,
+    /// Which file this is on its volume, as Windows gives it for an open handle (the NTFS file
+    /// reference, `nFileIndexHigh:Low`): what was seen at this path, so a clean-up can tell
+    /// the same item from another one put in its place. 0 when not known (a share, FAT, a
+    /// detailed walk, a tree from History or a CSV).
+    pub id: u64,
 }
 
 impl Node {
@@ -198,7 +203,7 @@ pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
     let path = &root.path;
     if root.pinned.is_some() && is_elevated() {
         match mft::scan(path, progress) {
-            Ok(tree) => return Ok(tree),
+            Ok(tree) => { progress.note_root(path, root.on_network()); return Ok(tree) }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
             Err(_) => progress.reset_counts(), // not NTFS, not a folder, no access: walk instead
         }
@@ -256,6 +261,7 @@ fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::
             match mft::scan_multi(&group, progress) {
                 Ok(ts) => {
                     for (&i, t) in idx.iter().zip(ts) {
+                        progress.note_root(&abs[i], pinned[i].on_network());
                         trees[i] = Some(t);
                     }
                 }

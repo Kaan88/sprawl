@@ -39,6 +39,8 @@ struct Entry {
     size: u64,
     attrs: u32,
     modified: u64,
+    /// The file's id on its volume (0: not known).
+    id: u64,
     /// The job that lists this folder, or NO_JOB.
     job: u32,
 }
@@ -103,6 +105,7 @@ pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result
 fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool) -> io::Result<Tree> {
     let scan = crate::local::scan_root(path, true)?;
     let path = &scan.path;
+    progress.note_root(path, scan.on_network());
     // WOF is local NTFS: a network share is listed only, never probed.
     let detect_wof = detect_wof && scan.pinned.is_some();
     if progress.excludes(path) {
@@ -145,6 +148,8 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     } else {
         None
     };
+    // which folder the root is: the one pinned for the whole walk
+    root.id = scan.pinned.as_ref().and_then(|p| p.handle().ok()).and_then(|h| dir::id(h).ok()).unwrap_or(0);
     let shared = Shared {
         queue: Mutex::new(Queue { jobs: vec![Job { id: 0, path: root_job, top: NO_JOB }], pending: 1 }),
         cv: Condvar::new(),
@@ -193,6 +198,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
                 attributes: e.attrs,
                 parent: Some(ni),
                 children: Vec::new(),
+                id: e.id,
             });
             if e.job != NO_JOB {
                 queue.push_back((idx, e.job));
@@ -280,7 +286,7 @@ fn list_dir(
     let is_root = job.top == NO_JOB;
     let mut top_names: Vec<(String, u64)> = Vec::new();
     let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
-    let mut visit = |wname: &[u16], raw_attrs: u32, tag: u32, size: u64, modified: u64| -> bool {
+    let mut visit = |wname: &[u16], raw_attrs: u32, tag: u32, size: u64, modified: u64, id: u64| -> bool {
         if sh.progress.is_cancelled() { return false; }
         let dot = wname == [b'.' as u16] || wname == [b'.' as u16, b'.' as u16];
         let excluded = !dot && sh.progress.has_exclusions() && sh.progress.excludes(&Path::new(&display_path(&job.path)).join(String::from_utf16_lossy(wname)));
@@ -322,13 +328,15 @@ fn list_dir(
             if is_root {
                 top_names.push((name.clone(), 0));
             }
-            entries.push(Entry { name, size, attrs, modified, job: child_job });
+            entries.push(Entry { name, size, attrs, modified, id, job: child_job });
         }
         true
     };
-    let listed = match &sh.verify {
-        Some((root, root_len)) => list_by_handle(job, root, *root_len, buf, &mut visit),
-        None => list_by_name(job, find, pattern, &mut visit),
+    // the detailed walk lists through the folder it pinned (that handle may list it)
+    let listed = match (&sh.verify, pinned.as_ref().and_then(|p| p.handle().ok())) {
+        (_, Some(h)) => dir::list(h, buf, &mut visit),
+        (Some((root, root_len)), None) => list_by_handle(job, root, *root_len, buf, &mut visit),
+        (None, None) => list_by_name(job, find, pattern, &mut visit),
     };
     if !listed {
         sh.progress.add_errors(1);
@@ -342,9 +350,13 @@ fn list_dir(
     entries
 }
 
+/// What a listing calls for each entry: (name, attributes, reparse tag, size, last written,
+/// file id); false stops the listing.
+pub(crate) type Visit<'a> = dyn FnMut(&[u16], u32, u32, u64, u64, u64) -> bool + 'a;
+
 /// Each entry of `job`'s folder as (name, attributes, reparse tag, size, modified), by name
 /// (`FindFirstFileExW`). False when the listing failed (a folder that is gone is not a failure).
-fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
+fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, visit: &mut Visit<'_>) -> bool {
     pattern.clear();
     pattern.extend_from_slice(&job.path);
     if pattern.last() != Some(&(b'\\' as u16)) {
@@ -372,7 +384,7 @@ fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, 
         let len = find.cFileName.iter().position(|&c| c == 0).unwrap_or(find.cFileName.len());
         let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
         let modified = (u64::from(find.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(find.ftLastWriteTime.dwLowDateTime);
-        if !visit(&find.cFileName[..len], find.dwFileAttributes, find.dwReserved0, size, modified) { break; }
+        if !visit(&find.cFileName[..len], find.dwFileAttributes, find.dwReserved0, size, modified, 0) { break; }
         // SAFETY: `h` is a valid find handle.
         if unsafe { FindNextFileW(h, find) } == 0 {
             // SAFETY: trivially safe.
@@ -388,7 +400,7 @@ fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, 
 /// [`list_by_name`] through a handle to the folder itself, after checking that it is a plain
 /// folder at `root` plus the job's own relative path. A folder that has become a link, or whose
 /// path now leads elsewhere, is not listed (and counts as unreadable).
-fn list_by_handle(job: &Job, root: &[u16], root_len: usize, buf: &mut Vec<u64>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
+fn list_by_handle(job: &Job, root: &[u16], root_len: usize, buf: &mut Vec<u64>, visit: &mut Visit<'_>) -> bool {
     let h = match dir::open(&job.path) {
         Ok(h) => h,
         Err(e) => return e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32),
@@ -419,7 +431,7 @@ fn expected_path(root: &[u16], below: &[u16]) -> Vec<u16> {
 }
 
 /// Folders opened as themselves and listed through their handle.
-mod dir {
+pub(crate) mod dir {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, GetFileInformationByHandleEx, GetFinalPathNameByHandleW};
 
@@ -465,33 +477,62 @@ mod dir {
         }
     }
 
-    /// Every entry, as FindFirstFileExW's basic listing gives them (FILE_FULL_DIR_INFO).
-    pub(super) fn list(h: &OwnedHandle, buf: &mut Vec<u64>, visit: &mut dyn FnMut(&[u16], u32, u32, u64, u64) -> bool) -> bool {
-        const FULL_DIRECTORY_INFO: i32 = 14;
-        const FULL_DIRECTORY_RESTART_INFO: i32 = 15;
+    /// Which file an open handle is on its volume (`nFileIndexHigh:Low`).
+    pub(crate) fn id(h: &impl AsRawHandle) -> std::io::Result<u64> {
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        // SAFETY: plain old data; all-zero is valid.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a valid out-pointer.
+        if unsafe { GetFileInformationByHandle(h.as_raw_handle(), &mut info) } == 0 { return Err(std::io::Error::last_os_error()); }
+        Ok((info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64)
+    }
+
+    /// Every entry: (name, attributes, reparse tag, size, write time, file id), from
+    /// FILE_ID_EXTD_DIR_INFO. A volume without that listing (FAT, for one) is listed as
+    /// FindFirstFileExW's basic listing is (FILE_FULL_DIR_INFO), with no ids (0); so is an id
+    /// wider than 64 bits (ReFS), which a handle's file index couldn't be compared with.
+    pub(crate) fn list(h: &impl AsRawHandle, buf: &mut Vec<u64>, visit: &mut super::Visit<'_>) -> bool {
+        // (class, restart class, where the name starts)
+        const ID_EXTD: (i32, i32, usize) = (19, 20, 88);
+        const FULL: (i32, i32, usize) = (14, 15, 68);
         const NO_MORE_FILES: i32 = 18;
         if buf.len() < 8192 { buf.resize(8192, 0); } // 64 KiB, 8-byte aligned
         let bytes = buf.len() * 8;
-        let mut class = FULL_DIRECTORY_RESTART_INFO;
+        let mut kind = ID_EXTD;
+        let mut class = kind.1;
         loop {
             // SAFETY: `buf` holds `bytes` bytes.
             if unsafe { GetFileInformationByHandleEx(h.as_raw_handle(), class, buf.as_mut_ptr().cast(), bytes as u32) } == 0 {
-                return std::io::Error::last_os_error().raw_os_error() == Some(NO_MORE_FILES);
+                let e = std::io::Error::last_os_error().raw_os_error();
+                if class == ID_EXTD.1 && matches!(e, Some(1 | 50 | 87 | 124)) {
+                    kind = FULL;
+                    class = FULL.1;
+                    continue;
+                }
+                return e == Some(NO_MORE_FILES);
             }
-            class = FULL_DIRECTORY_INFO;
+            class = kind.0;
+            let at_name = kind.2;
             // SAFETY: the reads below stay inside `buf` (checked against `bytes`).
             let base = buf.as_ptr() as *const u8;
             let mut off = 0usize;
             loop {
-                if off + 68 > bytes { return false; }
+                if off + at_name > bytes { return false; }
                 let rd = |at: usize| unsafe { std::ptr::read_unaligned(base.add(off + at) as *const u32) };
                 let rd64 = |at: usize| unsafe { std::ptr::read_unaligned(base.add(off + at) as *const u64) };
                 let (next, written, size, attrs, name_len, ea) = (rd(0) as usize, rd64(24), rd64(40), rd(56), rd(60) as usize, rd(64));
-                if off + 68 + name_len > bytes || name_len % 2 != 0 { return false; }
+                if off + at_name + name_len > bytes || name_len % 2 != 0 { return false; }
                 // SAFETY: in bounds (checked above); u16 reads unaligned-safe via a copy.
-                let name: Vec<u16> = (0..name_len / 2).map(|i| unsafe { std::ptr::read_unaligned(base.add(off + 68 + 2 * i) as *const u16) }).collect();
-                // the reparse tag is in EaSize for a reparse point, as FindFirstFile's dwReserved0
-                if !visit(&name, attrs, if attrs & crate::attr::REPARSE_POINT != 0 { ea } else { 0 }, size, written) { return true; }
+                let name: Vec<u16> = (0..name_len / 2).map(|i| unsafe { std::ptr::read_unaligned(base.add(off + at_name + 2 * i) as *const u16) }).collect();
+                let (tag, id) = if kind == ID_EXTD {
+                    // ReparsePointTag, then the 128-bit FileId
+                    let (low, high) = (rd64(72), rd64(80));
+                    (rd(68), if high == 0 { low } else { 0 })
+                } else {
+                    // the reparse tag is in EaSize for a reparse point, as FindFirstFile's dwReserved0
+                    (ea, 0)
+                };
+                if !visit(&name, attrs, if attrs & crate::attr::REPARSE_POINT != 0 { tag } else { 0 }, size, written, id) { return true; }
                 if next == 0 { break; }
                 off += next;
             }
@@ -611,6 +652,30 @@ mod tests {
     }
 
     #[test]
+    fn an_inventory_knows_which_file_each_entry_is() {
+        // Astra 1.0.2 round 3, S1 #3: the clean-up tells the item scanned from another one put
+        // at its path by the id the scan saw there
+        let dir = temp_dir("ids");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("a.bin"), b"a").unwrap();
+        let t = inventory(&dir, &Progress::new()).unwrap();
+        let id_of = |p: &Path| {
+            use std::os::windows::fs::OpenOptionsExt;
+            dir::id(&fs::OpenOptions::new().access_mode(0x80).custom_flags(0x0200_0000 | 0x0020_0000).open(p).unwrap()).unwrap()
+        };
+        let sub = t.nodes[ROOT].children.iter().copied().find(|&c| t.nodes[c].name == "sub").unwrap();
+        let a = t.nodes[sub].children[0];
+        assert!(t.nodes[ROOT].id != 0 && t.nodes[ROOT].id == id_of(&dir), "the root");
+        assert_eq!(t.nodes[sub].id, id_of(&dir.join("sub")));
+        assert_eq!(t.nodes[a].id, id_of(&dir.join("sub").join("a.bin")));
+        // the detailed walk too (a rescan after a clean-up uses it)
+        let d = walk(&dir, &Progress::new()).unwrap();
+        let sub = d.nodes[ROOT].children.iter().copied().find(|&c| d.nodes[c].name == "sub").unwrap();
+        assert_eq!((d.nodes[ROOT].id, d.nodes[sub].id, d.nodes[d.nodes[sub].children[0]].id), (id_of(&dir), id_of(&dir.join("sub")), id_of(&dir.join("sub").join("a.bin"))));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn queued_folders_are_expected_below_the_root_by_one_separator() {
         let w = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
         let vol = &w(r"\\?\Volume{1}");
@@ -638,7 +703,7 @@ mod tests {
         let real = dir::real_path(&dir::open(&root_job).unwrap()).unwrap();
         assert!(String::from_utf16_lossy(&real).starts_with(r"\\?\Volume{"), "{}", String::from_utf16_lossy(&real));
         let mut seen = 0;
-        let mut visit = |_: &[u16], _: u32, _: u32, _: u64, _: u64| { seen += 1; true };
+        let mut visit = |_: &[u16], _: u32, _: u32, _: u64, _: u64, _: u64| { seen += 1; true };
         assert!(list_by_handle(&Job { id: 1, path: long_path(&child), top: 0 }, &real, root_job.len(), &mut Vec::new(), &mut visit), "{}", child.display());
         assert!(seen > 0);
     }
@@ -657,7 +722,7 @@ mod tests {
         let job = |p: &Path| Job { id: 1, path: long_path(p), top: 0 };
         let mut buf = Vec::new();
         let mut names = Vec::new();
-        let mut visit = |w: &[u16], _: u32, _: u32, _: u64, _: u64| { names.push(String::from_utf16_lossy(w)); true };
+        let mut visit = |w: &[u16], _: u32, _: u32, _: u64, _: u64, _: u64| { names.push(String::from_utf16_lossy(w)); true };
         // the folder where it really is: listed
         assert!(list_by_handle(&job(&abs.join("real").join("inner")), &root, root_job.len(), &mut buf, &mut visit));
         // the same folder through a junction above it (a queued folder's parent swapped for a

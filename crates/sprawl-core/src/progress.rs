@@ -94,6 +94,8 @@ pub struct Progress {
     cancel: AtomicBool,
     method: AtomicU8,
     live: Mutex<Live>,
+    /// Each root this scan opened, and whether it was on the network (see [`Progress::note_root`]).
+    roots: Mutex<Vec<(std::path::PathBuf, Option<bool>)>>,
 }
 
 /// A copy of the progress at one moment.
@@ -132,6 +134,24 @@ impl Progress {
     }
 
     pub fn has_exclusions(&self) -> bool { !self.excluded.is_empty() }
+
+    /// Record, from the handle the scan opened `root` with, whether it is on the network:
+    /// `Some(true)` a share or a network drive, `Some(false)` a drive of this PC, `None` it
+    /// couldn't be told. Told when the root was opened, so a letter mapped later in the scan
+    /// doesn't change it; noted again for the same root (a walk after a failed MFT read), the
+    /// later word stands.
+    pub fn note_root(&self, root: &std::path::Path, network: Option<bool>) {
+        let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+        match roots.iter_mut().find(|(r, _)| r == root) {
+            Some(r) => r.1 = network,
+            None => roots.push((root.to_path_buf(), network)),
+        }
+    }
+
+    /// What [`Progress::note_root`] recorded, in the order the roots were opened.
+    pub fn roots(&self) -> Vec<(std::path::PathBuf, Option<bool>)> {
+        self.roots.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 
     pub fn excludes(&self, path: &std::path::Path) -> bool {
         if self.excluded.is_empty() { return false; }

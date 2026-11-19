@@ -511,6 +511,8 @@ impl Index {
             attributes: if is_dir { r.attrs | attr::DIRECTORY } else { r.attrs },
             parent,
             children: Vec::new(),
+            // the file reference Windows gives an open handle: record number and sequence
+            id: frn as u64 | (r.seq as u64) << 48,
         }
     }
 

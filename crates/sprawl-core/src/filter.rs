@@ -195,6 +195,7 @@ pub fn filter_tree(tree: &Tree, pattern: &str) -> Tree {
             attributes: o.attributes,
             parent: o.parent.map(|p| map[p]),
             children: Vec::new(),
+            id: o.id,
         });
     }
     for i in 0..n {
