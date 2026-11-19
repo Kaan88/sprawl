@@ -222,12 +222,18 @@ fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::
     }
     let pinned: Vec<_> = paths.iter().map(|p| local::scan_root(p, false)).collect::<io::Result<_>>()?;
     let abs: Vec<PathBuf> = pinned.iter().map(|p| p.path.clone()).collect();
+    // every root checked before any name is shown or anything is read
+    if abs.iter().any(|p| progress.excludes(p)) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "This folder is excluded in Settings > Scanning"));
+    }
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
     if use_mft && is_elevated() {
         // Group by volume so each MFT is read once.
         let mut groups: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for (i, p) in abs.iter().enumerate() {
+            // only pinned local roots: a share is listed, never asked for its volume or MFT
+            if pinned[i].pinned.is_none() { continue; }
             if let Some(vol) = mft::volume_of(p) {
                 match groups.iter_mut().find(|g| g.0 == vol) {
                     Some(g) => g.1.push(i),
@@ -835,6 +841,13 @@ mod tests {
         let s = p.snapshot();
         assert_eq!(s.top, vec![(a.display().to_string(), 700), (b.display().to_string(), 300)]);
         assert_eq!((s.files, s.folders, s.bytes), (2, 3, 1000));
+
+        // one root skipped: refused before any root's name is shown (Astra's case)
+        let skip = Progress::with_exclusions(std::slice::from_ref(&b));
+        let e = scan_many(&[a.clone(), b.clone()], &skip).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        let s = skip.snapshot();
+        assert!(s.top.is_empty() && !s.current.contains(&*b.display().to_string()), "{:?} {}", s.top, s.current);
 
         let sub = t.subtree(t.nodes[ROOT].children[0]);
         assert_eq!(sub.root_path, a);

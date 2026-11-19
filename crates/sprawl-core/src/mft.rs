@@ -485,6 +485,7 @@ impl Index {
 
     /// Build the trees, leaving out every scope `progress` excludes (and all below it). Paths
     /// are made only for folders holding an excluded scope, so this costs nothing without one.
+    /// A root that is itself excluded comes back empty (callers refuse it before reading).
     pub fn build_excluding(&mut self, roots: &[(u64, PathBuf)], progress: &Progress) -> Vec<Tree> {
         let (off, kids) = self.link();
         let take = roots.len() == 1;
@@ -521,6 +522,10 @@ impl Index {
             nodes.push(r);
         } else {
             nodes.push(Node { name: path.display().to_string(), is_dir: true, attributes: attr::DIRECTORY, ..Default::default() });
+        }
+        if progress.excludes(path) {
+            let name = path.display().to_string();
+            return Tree { root_path: path.to_path_buf(), nodes: vec![Node { name, is_dir: true, attributes: attr::DIRECTORY, ..Default::default() }], errors: 0, method: ScanMethod::Mft };
         }
         let inside = |p: &Path| progress.exclusion_inside(p).then(|| p.to_path_buf());
         let mut queue: VecDeque<(usize, usize, Option<PathBuf>)> = VecDeque::from([(ROOT, root, inside(path))]);
@@ -961,7 +966,9 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                 off += len;
             }
         });
-        // Parsers.
+        // Parsers. With skipped folders, no file types go to the live table: the records
+        // aren't sorted into folders yet, so a skipped file's type and size would show.
+        let live_types = !progress.has_exclusions();
         for _ in 0..parsers {
             let (work_rx, res_tx, free_tx) = (&work_rx, res_tx.clone(), free_tx.clone());
             s.spawn(move || loop {
@@ -971,7 +978,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                 let mut batch = LiveBatch::default();
                 for (i, rec) in buf[..len].chunks_exact_mut(rs as usize).enumerate() {
                     if let Some(p) = parse_record(rec, first + i as u64) {
-                        if p.base == 0 && !p.is_dir && p.frn >= FIRST_USER_FRN {
+                        if live_types && p.base == 0 && !p.is_dir && p.frn >= FIRST_USER_FRN {
                             if let (Some(n), Some((size, _))) = (&p.name, p.data) {
                                 batch.add_file(&n.name, size);
                             }
@@ -1553,5 +1560,19 @@ mod tests {
         assert_eq!((a.size, a.allocated, a.attributes), (10, 0, attr::ARCHIVE));
         assert_eq!(a.modified, filetime_to_system(133_000_000_000_000_021));
         assert!(!t.nodes.iter().any(|n| n.name == "deleted.txt" || n.name == "$LogFile" || n.name == "$MFT"));
+
+        // with a skipped file: its type and size never reach the live table (Astra's case),
+        // the tree leaves it out, and a skipped root comes back empty
+        let path = std::env::temp_dir().join(format!("sprawl-mft-image-x-{}.img", std::process::id()));
+        std::fs::write(&path, &img).unwrap();
+        let p = Progress::with_exclusions(&[PathBuf::from(r"X:\Users\big.bin")]);
+        let res = read_mft_device(&wide(path.as_os_str()), "X:", &p, None, 4 * CL);
+        let _ = std::fs::remove_file(&path);
+        let mut index = res.unwrap();
+        assert!(p.snapshot().by_ext.is_empty(), "{:?}", p.snapshot().by_ext);
+        let trees = index.build_excluding(&[(ROOT_FRN, PathBuf::from("X:\\")), (20, PathBuf::from(r"X:\Users\big.bin"))], &p);
+        assert!(!trees[0].nodes.iter().any(|n| n.name == "big.bin"));
+        assert_eq!(trees[0].nodes[ROOT].size, 10 + 5000 + 777);
+        assert_eq!((trees[1].nodes.len(), trees[1].nodes[ROOT].size), (1, 0));
     }
 }
