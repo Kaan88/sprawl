@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.2 — 2026-11-19
 
 - Saved clean-up scripts run only Sprawl's own deletes: a program's own clean-up and compressing a folder are listed to do by hand.
 - Compressing a folder is refused when it is in, or holds, a folder you skip, before anything in it is read; Stop also ends the check.
