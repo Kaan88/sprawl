@@ -3,6 +3,21 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Compressing a folder is much faster: Sprawl compresses the files itself, several at a time, instead of running compact.exe on them in batches. While it runs, the item shows how far through it is ("Compressing... 40%, 1.2 GiB of 3.2 GiB"); Stop ends it after the files being compressed at that moment.
+- After compressing, the banner says the files were compressed in place and nothing was deleted (it said "deleted for good" before), how many files were compressed and what was saved, and how many a program had open and were left as they were.
+- A folder Sprawl has compressed is no longer offered for compressing again (Windows doesn't show compression in a folder listing), until it grows by a tenth, after a big update say.
+- A compress suggestion's button says "Compress this...", and its text says nothing is deleted.
+- "Clean up just this..." on one item leaves the other ticked items ticked.
+- A question pasted into the AI chat with line breaks shows them as line breaks, not as "�".
+- Linking duplicates: the original is made read-only before its last check, so no new data stream can be added to it after that check, even if Sprawl closes at that moment.
+- A clean-up treats an item as the one scanned only when it has the same full file id on the same drive. In a folder that changed since the scan, an item without one stays. The preview of what would go uses the same test.
+- npm's cache clean-up holds the cache and its logs folder from before npm is first asked where its cache is.
+- Codex: a turn that finishes without an answer of its own is reported as such, never answered with the previous turn's text.
+- An app's last use is taken from its own folder only, never from a folder whose name differs only in case. A recent item still matches when only the drive letter's case differs.
+- The scan's Details line about network folders gives the number on the network, on this PC and unknown, once each.
+
 ## 1.0.2 — 2026-11-19
 
 - Saved clean-up scripts run only Sprawl's own deletes: a program's own clean-up and compressing a folder are listed to do by hand.

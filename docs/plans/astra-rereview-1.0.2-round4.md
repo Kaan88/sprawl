@@ -4,7 +4,21 @@ Astra's answer to `astra-rereview-1.0.2-round4-prompt.md`, 19 November 2026. It 
 seven round-3 commits through `8a6bc0d`. Local source links below are relative to the
 repository root.
 
-**Status: deferred to the next release (1.0.3).** None of these findings is a regression
+**Status: fixed for 1.0.3** in `3b94fec` (S4 #5, S1 #3) and `a50608c` (S1 #4, S2 #4, S3 #2,
+S4 #4, S5, S6), not yet reviewed again. How:
+- **S4 #5:** the original is made read-only before its last stream check (Windows then
+  refuses a new stream on it), and only then marked for deletion with FileDispositionInfoEx,
+  ignoring read-only. Exiting at any point leaves a checked original going, or the original
+  kept. Astra's smaller fix, keeping every original, would have made linking save nothing.
+- **S1 #3:** volume and full 128-bit id (FILE_ID_INFO). An item not known so, in a folder
+  changed since the scan, is held with its subtree. A file root gets its id. The preview
+  uses `Spare::is_new` itself.
+- **S5:** the final reopen compares the volume and full id, without delete sharing; it
+  leaves the folder when they can't be read.
+- **S6:** children are opened without delete sharing. The replacement test swaps the
+  folder at the real reopen step. Removing either guard fails a test (checked).
+
+Originally: deferred to the next release (1.0.3). None of these findings is a regression
 from 1.0.1, and the user chose to release 1.0.2 with them open. Why each one is deferred:
 - The S4 #5 window needs a new stream to land on a duplicate's original within the moment
   between its deletion mark and the final check, and Sprawl to exit in that same moment.
