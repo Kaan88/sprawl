@@ -1044,7 +1044,7 @@ fn check_set(f: &Finding, tree: &Tree, never: &Never, part_id: &str, files: &[st
 }
 
 const CARVED_LINE: &str = "Keeps what is protected inside";
-const LINKS_LINE: &str = ": removed as links, what they point to is not touched";
+const LINKS_LINE: &str = ": removed as links when deleted (left in place when the rest goes to the Recycle Bin), what they point to is not touched";
 
 /// A delete or command inside another account's profile is at least Amber.
 fn other_account_floor(out: &mut Finding, other_account: bool) {

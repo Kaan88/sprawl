@@ -247,7 +247,8 @@ pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progr
 
 /// [`run`], sending what would be deleted to the Recycle Bin when `bin` is given (the user's own
 /// files). The same items are left as for a delete: new since the scan, kept, never-list names,
-/// odd names, a path that leads elsewhere; links are still removed as links. A folder goes to the
+/// odd names, a path that leads elsewhere. A link can't go to the bin and stays where it is (a
+/// delete removes it as a link). A folder goes to the
 /// bin whole only when nothing inside it must stay; otherwise what can go goes, one by one. What
 /// can't go to the bin (none for this volume, too big for it) stays as it is, with the reason:
 /// it is never deleted instead. `progress` gets the bytes freed and sent to the bin so far.
@@ -798,13 +799,14 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
                 Some(_) if recycling_refused(&info) => {
                     o.problem(path, "left alone: a cloud or non-link reparse file cannot be recycled safely");
                 }
-                // a file to the bin; a link is removed as a link (what it points to stays)
+                // a file to the bin; a link can't go there, and is never deleted instead
                 Some(b) if info.attrs & REPARSE == 0 => {
                     if let Err(why) = recycle_one(path, &h, info.size, 1, b, o, progress) {
                         o.problem(path, why);
                     }
                 }
-                _ => delete_one(path, &h, &info, o, progress),
+                Some(_) => o.problem(path, LINK_LEFT),
+                None => delete_one(path, &h, &info, o, progress),
             }
         } else {
             o.problem(path, "not a plain folder any more");
@@ -926,10 +928,13 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
                 Err(e) => o.problem(&k, e),
             }
         } else if info.attrs & REPARSE != 0 && info.attrs & DIRECTORY != 0 {
-            // a junction or folder link: Match leaves it, the rest remove the link itself
+            // a junction or folder link: Match leaves it; a delete removes the link itself, and
+            // with the Recycle Bin it stays (a link can't go to the bin)
             if pattern.is_none() {
                 if recycling && recycling_refused(&info) {
                     o.problem(&k, "left alone: a non-link reparse folder cannot be recycled safely");
+                } else if recycling {
+                    o.problem(&k, LINK_LEFT);
                 } else { delete_one(&k, &h, &info, o, progress); }
             }
         } else if pattern.is_none_or(|p| like(&name, p)) {
@@ -942,7 +947,8 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
                         o.problem(&k, why);
                     }
                 }
-                _ => delete_one(&k, &h, &info, o, progress),
+                Some(_) => o.problem(&k, LINK_LEFT),
+                None => delete_one(&k, &h, &info, o, progress),
             }
         }
     }
@@ -981,11 +987,15 @@ fn whole(p: &Path, spare: &Spare, stop: &AtomicBool) -> Option<(u64, u64)> {
     Some((bytes, files))
 }
 
-/// Delete one opened item (a file, a link, an empty folder) through its handle.
+/// Why a link stays when its folder goes to the Recycle Bin: the bin can't take a link, and
+/// removing it for good would break the review's promise that everything can be put back.
+const LINK_LEFT: &str = "left in place: a link can't go to the Recycle Bin (what it points to is untouched)";
+
 fn recycling_refused(info: &win::Info) -> bool {
     info.attrs & crate::dupes::NOT_LOCAL != 0 || info.attrs & REPARSE != 0 && info.tag & NAME_SURROGATE == 0
 }
 
+/// Delete one opened item (a file, a link, an empty folder) through its handle.
 fn delete_one(p: &Path, h: &win::Handle, info: &win::Info, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
     match win::delete(h) {
         Ok(()) => {
@@ -1132,6 +1142,14 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
             Some(false) => { o.problem(c, "left alone: no longer the same bytes"); continue; }
             None => { o.problem(c, "left alone: comparison stopped or failed"); continue; }
         }
+        // The copy's name will open the kept file: data of its own in an extra stream (an
+        // application's metadata, a download mark) would be lost with its last name. Only
+        // when both have none, or the very same ones, is it linked.
+        match same_streams(&kf.file, keep, &cf, c) {
+            Ok(true) => {},
+            Ok(false) => { o.problem(c, "left alone: it or the kept copy has data of its own in an extra stream (a download mark, for one), which a link would lose"); continue; }
+            Err(e) => { o.problem(c, format!("left alone: its extra streams couldn't be checked ({e})")); continue; }
+        }
         let Some(name) = c.file_name() else { continue };
         let backup = c.with_file_name(format!("{}.sprawl-original", name.to_string_lossy()));
         // Rename the checked handle, never a pathname replacement. Every subsequent operation
@@ -1154,6 +1172,22 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
         progress(o.freed);
     }
 }
+/// Whether two open files have the same named data streams: none on either, or the same names
+/// with the same bytes (each at most 1 MB; anything bigger counts as different).
+fn same_streams(a: &std::fs::File, a_path: &Path, b: &std::fs::File, b_path: &Path) -> std::io::Result<bool> {
+    let (mut sa, mut sb) = (win::named_streams(a)?, win::named_streams(b)?);
+    if sa.is_empty() && sb.is_empty() { return Ok(true); }
+    sa.sort();
+    sb.sort();
+    if sa != sb { return Ok(false); }
+    for (name, size) in &sa {
+        if *size > 1 << 20 { return Ok(false); }
+        let stream = |p: &Path| std::fs::read(format!("{}{name}", p.display()));
+        if stream(a_path)? != stream(b_path)? { return Ok(false); }
+    }
+    Ok(true)
+}
+
 fn never() -> &'static crate::safety::Never {
     static N: std::sync::OnceLock<crate::safety::Never> = std::sync::OnceLock::new();
     N.get_or_init(crate::safety::Never::default_list)
@@ -1416,6 +1450,39 @@ mod win {
     pub(super) fn file_info(file: &std::fs::File) -> std::io::Result<Info> { info(&borrowed(file)) }
     pub(super) fn rename_file(file: &std::fs::File, to: &Path) -> std::io::Result<()> { rename(&borrowed(file), to) }
     pub(super) fn delete_file(file: &std::fs::File) -> std::io::Result<()> { delete(&borrowed(file)) }
+
+    /// The open file's named data streams (`:name:$DATA`) and their sizes, through its handle;
+    /// the unnamed main stream is left out.
+    pub(super) fn named_streams(file: &std::fs::File) -> std::io::Result<Vec<(String, u64)>> {
+        const FILE_STREAM_INFO: i32 = 7;
+        const MORE_DATA: i32 = 234;
+        let h = borrowed(file);
+        let mut buf = vec![0u64; 512];
+        loop {
+            if unsafe { GetFileInformationByHandleEx(h.0, FILE_STREAM_INFO, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32) } != 0 { break; }
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() != Some(MORE_DATA) || buf.len() >= 1 << 17 { return Err(e); }
+            buf.resize(buf.len() * 4, 0);
+        }
+        // FILE_STREAM_INFO: NextEntryOffset u32, StreamNameLength u32 (bytes), StreamSize i64,
+        // StreamAllocationSize i64, StreamName [u16]
+        let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 8) };
+        let (mut at, mut out) = (0usize, Vec::new());
+        loop {
+            let field = |o: usize, n: usize| bytes.get(at + o..at + o + n).ok_or_else(|| std::io::Error::other("malformed stream list"));
+            let next = u32::from_le_bytes(field(0, 4)?.try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(field(4, 4)?.try_into().unwrap()) as usize;
+            let size = i64::from_le_bytes(field(8, 8)?.try_into().unwrap());
+            let name: Vec<u16> = field(24, len)?.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+            let name = String::from_utf16(&name).map_err(|_| std::io::Error::other("a stream name isn't valid text"))?;
+            if name != "::$DATA" {
+                out.push((name, u64::try_from(size).map_err(|_| std::io::Error::other("malformed stream size"))?));
+            }
+            if next == 0 { break; }
+            at += next;
+        }
+        Ok(out)
+    }
 
     /// Delete exactly the opened item (an empty folder, a file, a link), read-only or not.
     pub(super) fn delete(h: &Handle) -> std::io::Result<()> {
@@ -1812,6 +1879,40 @@ mod tests {
         assert!(recycling_refused(&info), "a cloud object must stay");
         info.attrs = sprawl_core::attr::COMPRESSED;
         assert!(!recycling_refused(&info), "plain NTFS compression can be moved to the bin");
+    }
+
+    #[test]
+    fn a_copy_with_an_extra_stream_of_its_own_is_not_linked() {
+        let root = std::env::temp_dir().join(format!("sprawl-link-streams-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let keep = root.join("keep.bin");
+        let copy = root.join("copy.bin");
+        std::fs::write(&keep, b"same bytes").unwrap();
+        std::fs::write(&copy, b"same bytes").unwrap();
+        // the copy alone carries data in a named stream (Astra 1.0.2 S4 #5)
+        std::fs::write(format!("{}:notes", copy.display()), b"only here").unwrap();
+        let mut o = Outcome::default();
+        link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {});
+        assert_eq!(o.files, 0, "{:?}", o.problems);
+        assert!(o.problems.iter().any(|p| p.contains("extra stream")), "{:?}", o.problems);
+        assert_eq!(std::fs::read(format!("{}:notes", copy.display())).unwrap(), b"only here");
+        // the kept copy alone has one: the copy's name would gain it, and it is held too
+        std::fs::write(&copy, b"same bytes").unwrap();
+        std::fs::write(format!("{}:notes", keep.display()), b"kept only").unwrap();
+        let mut o = Outcome::default();
+        link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {});
+        assert_eq!(o.files, 0, "{:?}", o.problems);
+        // the very same stream on both: nothing of its own is lost, so it is linked
+        std::fs::write(format!("{}:notes", copy.display()), b"kept only").unwrap();
+        let mut o = Outcome::default();
+        link(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {});
+        assert_eq!(o.files, 1, "{:?}", o.problems);
+        assert_eq!(std::fs::read(format!("{}:notes", copy.display())).unwrap(), b"kept only");
+        let file = std::fs::File::open(&keep).unwrap();
+        assert_eq!(win::named_streams(&file).unwrap(), vec![(":notes:$DATA".to_string(), 9)]);
+        drop(file);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2570,7 +2671,8 @@ mod tests {
         assert!(o.problems.iter().any(|p| p.contains("not sent to the Recycle Bin")), "{:?}", o.problems);
         assert!(big.join("x.iso2").exists());
 
-        // a link inside goes as a link: what it points to stays where it is
+        // with the bin, a link inside stays where it is (Astra 1.0.2 S4 #1): nothing is deleted
+        // for good under "To the Recycle Bin", and what it points to is untouched
         let outside = base.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("precious.txt"), b"keep").unwrap();
@@ -2580,11 +2682,11 @@ mod tests {
         if std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(withlink.join("link")).arg(&outside).output().is_ok_and(|o| o.status.success()) {
             let mut bin = test_bin(&base, 1 << 30);
             let o = run_with(&withlink, &Action::Remove, &Spare::default(), Some(&mut bin), &stop, &mut |_| {});
-            assert!(o.problems.is_empty(), "{:?}", o.problems);
+            assert!(o.problems.iter().all(|p| p.contains("a link can't go to the Recycle Bin")) && o.problems.len() == 1, "{:?}", o.problems);
             assert_eq!(o.recycled, 7, "the link counts nothing");
             assert!(outside.join("precious.txt").exists());
-            // the folder went one item at a time: the link removed as a link, never into the bin
-            assert!(std::fs::symlink_metadata(withlink.join("link")).is_err(), "the link itself went");
+            // the folder went one item at a time: the link left as it is, never into the bin
+            assert!(std::fs::symlink_metadata(withlink.join("link")).is_ok(), "the link stays");
             let got: Vec<PathBuf> = in_bin(&base).into_iter().map(|g| g.0).collect();
             assert_eq!(got, vec![withlink.join("f.txt")], "only the file is in the bin");
             drop(bin);

@@ -24,8 +24,8 @@ pub(crate) struct Seen<'a> {
     pub(crate) errors: u64,
     pub(crate) when: String,
     pub(crate) secs: f64,
-    /// The scan is of a network share or a mapped network drive.
-    pub(crate) network: bool,
+    /// How many of the scanned folders are on a network share or a mapped network drive.
+    pub(crate) network: usize,
     /// The fixed drives on this PC, `C:\` style.
     pub(crate) drives: &'a [String],
     pub(crate) filter: &'a str,
@@ -43,25 +43,35 @@ fn inside(path: &Path, root: &Path) -> bool {
 pub(crate) fn rows(c: &Coverage, s: &Seen) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
     let csv = s.method == ScanMethod::Csv;
+    let several = c.roots.len() > 1;
+    let all_network = s.network > 0 && s.network >= c.roots.len();
+    let who = if c.elevated { "administrator" } else { "this account" };
     if !c.roots.is_empty() {
         out.push(("Scanned", c.roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join("\n")));
     }
     let how = match s.method {
         ScanMethod::Csv => "Loaded from a CSV file, not read from the disk now. What was skipped or couldn't be read when the file was made isn't in it.".to_string(),
-        ScanMethod::Mft => "Read from the drive's own file table (MFT), as administrator: every file is counted, also in folders this account can't open, and compressed files count what they take on disk.".to_string(),
+        // one method for the whole tree doesn't say how each folder was read
+        _ if several => format!(
+            "Several folders, scanned together. Each was read the way it allows: from its drive's file table (MFT) when Sprawl runs as administrator and it is on a local NTFS drive, otherwise folder by folder as {who}{}. The methods can differ between them, and so can how compressed files are counted.",
+            if s.network > 0 { "; network folders are only listed" } else { "" }
+        ),
+        ScanMethod::Mft => "Read from the drive's own file table (MFT), as administrator: the files the table records under the scanned folder are counted, also in folders this account can't open (Windows' own metadata files aren't). Compressed files count about what they take on disk.".to_string(),
         ScanMethod::Walk => format!(
-            "Folder by folder, as {}. Files Windows compressed with compact may show their full size rather than what they take on disk{}.",
-            if c.elevated { "administrator" } else { "this account" },
-            if s.network { "" } else { "; a scan as administrator reads the drive's file table, which shows it" }
+            "Folder by folder, as {who}. Files Windows compressed with compact may show their full size rather than what they take on disk{}.",
+            if s.network > 0 || c.elevated { "" } else { "; a scan as administrator reads the drive's file table, which shows it" }
         ),
     };
     out.push(("How", how));
     out.push(("When", if csv { format!("File saved {}", s.when) } else { format!("{}, took {:.2} s", s.when, s.secs) }));
     if !csv {
-        let unread = if s.errors == 0 {
-            "Nothing: every folder it reached could be read.".to_string()
+        let unread = if s.errors == 0 && s.method == ScanMethod::Mft && !several {
+            // the table read opens no folders, so "every folder could be read" isn't known
+            "No errors recorded: the file table was read whole. This method doesn't open folders one by one.".to_string()
+        } else if s.errors == 0 {
+            "No errors recorded: every folder it reached could be read.".to_string()
         } else {
-            let more = if !c.elevated && s.method == ScanMethod::Walk && !s.network { " Restart as administrator (Options) to read them." } else { "" };
+            let more = if !c.elevated && s.method == ScanMethod::Walk && s.network == 0 { " Restart as administrator (Options) to read them." } else { "" };
             format!(
                 "{} {} couldn't be read (access denied, or in use). Sprawl counts them but doesn't keep their names.{more}",
                 crate::format::thousands(s.errors),
@@ -72,11 +82,11 @@ pub(crate) fn rows(c: &Coverage, s: &Seen) -> Vec<(&'static str, String)> {
         let skipped: Vec<&PathBuf> = c.skips.iter().filter(|k| c.roots.iter().any(|r| inside(k, r))).collect();
         out.push((
             "Skipped",
-            if skipped.is_empty() && !(s.network && !c.skips.is_empty()) {
+            if skipped.is_empty() && !(s.network > 0 && !c.skips.is_empty()) {
                 "Nothing by your settings. Folders to skip are set in Options > Settings > Scanning.".to_string()
             } else {
                 let mut t: Vec<String> = skipped.iter().map(|k| k.display().to_string()).collect();
-                if s.network && !c.skips.is_empty() {
+                if s.network > 0 && !c.skips.is_empty() {
                     t.push("A folder skipped on a mapped drive is skipped on its share too.".into());
                 }
                 t.push("By your settings (Options > Settings > Scanning): neither they nor what is in them are counted.".into());
@@ -84,8 +94,10 @@ pub(crate) fn rows(c: &Coverage, s: &Seen) -> Vec<(&'static str, String)> {
             },
         ));
     }
-    if s.network {
-        out.push(("Network", "A network folder: it is only listed. Nothing is run, compressed or deleted there.".into()));
+    if all_network {
+        out.push(("Network", if several { "Network folders: they are only listed. Nothing is run, compressed or deleted there." } else { "A network folder: it is only listed. Nothing is run, compressed or deleted there." }.into()));
+    } else if s.network > 0 {
+        out.push(("Network", format!("Mixed: {} of these {} folders {} on the network, only listed (nothing is run, compressed or deleted there); the rest are on this PC.", s.network, c.roots.len(), if s.network == 1 { "is" } else { "are" })));
     }
     // drives this scan didn't include: not missing files, just not asked for
     let letters: Vec<String> = c.roots.iter().map(|r| r.to_string_lossy().to_string()).filter(|r| r.as_bytes().get(1) == Some(&b':')).map(|r| r[..2].to_uppercase()).collect();
@@ -103,10 +115,11 @@ impl State {
     /// The Details link: what this scan covered, in a card.
     pub(crate) fn coverage_details(&mut self) {
         let (Some(t), Some(c)) = (self.tree.clone(), self.coverage.as_ref()) else { return };
-        let network = c.roots.iter().any(|r| {
+        let remote = crate::win32::drives();
+        let network = c.roots.iter().filter(|r| {
             let s = r.to_string_lossy();
-            s.starts_with(r"\\") || crate::win32::drives().iter().any(|d| d.kind == 4 && s.to_uppercase().starts_with(&d.root[..2]))
-        });
+            s.starts_with(r"\\") || remote.iter().any(|d| d.kind == 4 && s.to_uppercase().starts_with(&d.root[..2]))
+        }).count();
         let drives: Vec<String> = crate::win32::drives().into_iter().filter(|d| d.kind == 3).map(|d| d.root).collect();
         let csv = t.method == ScanMethod::Csv;
         let seen = Seen {
@@ -124,7 +137,8 @@ impl State {
                 format!(
                     r##"<Grid ColumnSpacing="14" Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/><TextBlock Grid.Column="1" Text="{}" FontSize="13" Foreground="#FFD5DBE8" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></Grid>"##,
                     esc(label),
-                    esc(&text).replace('\n', "&#10;")
+                    // line by line: esc turns a line break into a replacement character
+                    text.split('\n').map(esc).collect::<Vec<_>>().join("&#10;")
                 )
             })
             .collect();
@@ -137,7 +151,7 @@ mod tests {
     use super::*;
 
     fn seen<'a>(method: ScanMethod, errors: u64, network: bool, drives: &'a [String]) -> Seen<'a> {
-        Seen { method, errors, when: "2026-11-19 10:00".into(), secs: 1.5, network, drives, filter: "" }
+        Seen { method, errors, when: "2026-11-19 10:00".into(), secs: 1.5, network: usize::from(network), drives, filter: "" }
     }
 
     fn text(rows: &[(&str, String)], label: &str) -> String {
@@ -162,8 +176,8 @@ mod tests {
         let drives = vec![r"C:\".to_string()];
         let c = Coverage { roots: vec![PathBuf::from(r"C:\")], skips: vec![], elevated: true };
         let r = rows(&c, &seen(ScanMethod::Mft, 0, false, &drives));
-        assert!(text(&r, "How").contains("MFT"));
-        assert!(text(&r, "Unreadable").starts_with("Nothing"));
+        assert!(text(&r, "How").contains("MFT") && !text(&r, "How").contains("every file"), "only what the table records (Astra 1.0.2 S4 #4)");
+        assert!(text(&r, "Unreadable").starts_with("No errors recorded") && !text(&r, "Unreadable").contains("every folder"));
         assert!(text(&r, "Skipped").starts_with("Nothing by your settings"));
         assert!(text(&r, "Not in it").is_empty(), "the only drive is scanned");
         let csv = Coverage { roots: vec![], skips: vec![], elevated: false };
@@ -183,6 +197,21 @@ mod tests {
         assert!(text(&r, "Skipped").contains("mapped drive"));
         assert!(!text(&r, "How").contains("file table"));
         assert!(text(&r, "Not in it").is_empty(), "drives aren't missing from a share's scan");
+    }
+
+    #[test]
+    fn several_folders_say_their_methods_can_differ() {
+        let drives = vec![r"C:\".to_string(), r"D:\".to_string()];
+        let c = Coverage { roots: vec![PathBuf::from(r"C:\Data"), PathBuf::from(r"\\nas\media")], skips: vec![], elevated: true };
+        let mut s = seen(ScanMethod::Mft, 0, true, &drives);
+        s.network = 1;
+        let r = rows(&c, &s);
+        assert!(text(&r, "How").starts_with("Several folders") && text(&r, "How").contains("can differ"), "{}", text(&r, "How"));
+        assert!(text(&r, "Network").starts_with("Mixed: 1 of these 2 folders is on the network"), "{}", text(&r, "Network"));
+        assert!(text(&r, "Unreadable").starts_with("No errors recorded"));
+        // an elevated folder walk (a FAT drive, say) doesn't suggest running as administrator
+        let one = Coverage { roots: vec![PathBuf::from(r"G:\")], skips: vec![], elevated: true };
+        assert!(!text(&rows(&one, &seen(ScanMethod::Walk, 0, false, &drives)), "How").contains("a scan as administrator"));
     }
 
     #[test]
