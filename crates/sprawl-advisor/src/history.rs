@@ -224,6 +224,9 @@ pub fn last_scans(base: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
         out.push((root, when, size));
     }
     out.sort_by(|a, b| b.1.cmp(&a.1));
+    // A root saved before 1.0 has an older folder beside its new one: name it once, newest.
+    let mut named = std::collections::HashSet::new();
+    out.retain(|(root, _, _)| named.insert(root_id(root).unwrap_or_else(|| root.display().to_string())));
     out
 }
 
