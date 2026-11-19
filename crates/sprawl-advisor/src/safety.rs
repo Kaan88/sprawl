@@ -689,20 +689,81 @@ fn own_addresses() -> Option<Vec<std::net::IpAddr>> {
     { None }
 }
 
-/// The folder a share of this PC serves, from the Server service's own list (readable without
-/// administrator rights): `Path=D:\...` in `HKLM\...\LanmanServer\Shares\<share>`.
+/// The folder a share of this PC serves. Whether it exists is asked of the Server service
+/// itself (`NetShareGetInfo`, level 1, open to every user): only its "no such share" answer
+/// means absent, any other failure is unknown, and temporary shares with no registry entry are
+/// found too. The folder comes from level 2 (administrators only), else from the service's
+/// saved list (`Path=D:\...` in `HKLM\...\LanmanServer\Shares\<share>`), else it is unknown.
 fn share_folder(share: &str) -> Share {
     if share.eq_ignore_ascii_case("admin$") {
         return std::env::var("SystemRoot").ok().filter(|s| drive_forms(s).is_some()).map_or(Share::Unknown, Share::Folder);
     }
-    let Some(key) = crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Shares", crate::reg::View::Native) else { return Share::Unknown };
-    match key.strings(share) {
-        Some(lines) => lines.iter().find_map(|l| l.strip_prefix("Path=")).map(str::to_string)
-            .filter(|p| drive_forms(p).is_some() && !p.starts_with(r"\\")).map_or(Share::Unknown, Share::Folder),
-        // named in the list but not readable as a share: unknown; not in the list: absent
-        None if key.values().iter().any(|(name, _)| name.eq_ignore_ascii_case(share)) => Share::Unknown,
-        None => Share::Absent,
+    match live_share(share) {
+        LiveShare::Absent => return Share::Absent,
+        LiveShare::Unknown => return Share::Unknown,
+        LiveShare::Exists(Some(p)) => return local_share_path(&p),
+        LiveShare::Exists(None) => {}
     }
+    let Some(key) = crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Services\LanmanServer\Shares", crate::reg::View::Native) else { return Share::Unknown };
+    key.strings(share).and_then(|lines| lines.iter().find_map(|l| l.strip_prefix("Path=")).map(str::to_string)).map_or(Share::Unknown, |p| local_share_path(&p))
+}
+
+/// A share's folder, when it is one on this PC's own drive.
+fn local_share_path(p: &str) -> Share {
+    if drive_forms(p).is_some() && !p.starts_with(r"\\") { Share::Folder(p.to_string()) } else { Share::Unknown }
+}
+
+/// What the Server service says about a share of this PC.
+#[derive(Debug, PartialEq)]
+enum LiveShare {
+    /// It exists, with its folder when Windows gave it (level 2 needs administrator rights).
+    Exists(Option<String>),
+    /// NERR_NetNameNotFound: the service has no share by that name.
+    Absent,
+    /// Any other answer (the service stopped, access denied, a bad name...).
+    Unknown,
+}
+
+fn live_share(share: &str) -> LiveShare {
+    #[link(name = "netapi32")]
+    extern "system" {
+        fn NetShareGetInfo(server: *const u16, name: *const u16, level: u32, buf: *mut *mut u8) -> u32;
+        fn NetApiBufferFree(buf: *mut core::ffi::c_void) -> u32;
+    }
+    const NERR_NET_NAME_NOT_FOUND: u32 = 2310;
+    if share.is_empty() || share.contains('\0') { return LiveShare::Unknown; }
+    let name: Vec<u16> = share.encode_utf16().chain(Some(0)).collect();
+    let ask = |level: u32| -> Result<*mut u8, u32> {
+        let mut buf = std::ptr::null_mut();
+        // SAFETY: a NUL-terminated name; the buffer is freed by the caller with NetApiBufferFree.
+        let r = unsafe { NetShareGetInfo(std::ptr::null(), name.as_ptr(), level, &mut buf) };
+        if r == 0 { Ok(buf) } else {
+            if !buf.is_null() { unsafe { NetApiBufferFree(buf.cast()) }; }
+            Err(r)
+        }
+    };
+    match ask(1) {
+        Ok(buf) => { unsafe { NetApiBufferFree(buf.cast()) }; }
+        Err(NERR_NET_NAME_NOT_FOUND) => return LiveShare::Absent,
+        Err(_) => return LiveShare::Unknown,
+    }
+    let Ok(buf) = ask(2) else { return LiveShare::Exists(None) };
+    // SHARE_INFO_2: netname, type, remark, permissions, max_uses, current_uses, path, passwd
+    #[repr(C)]
+    struct Info2 { _name: *const u16, _kind: u32, _remark: *const u16, _perm: u32, _max: u32, _cur: u32, path: *const u16, _pass: *const u16 }
+    // SAFETY: level 2 fills a SHARE_INFO_2; `path` is NUL-terminated or null.
+    let path = unsafe {
+        let info = &*(buf as *const Info2);
+        let p = info.path;
+        let text = (!p.is_null()).then(|| {
+            let mut n = 0;
+            while *p.add(n) != 0 && n < 32_768 { n += 1; }
+            String::from_utf16(std::slice::from_raw_parts(p, n)).ok()
+        }).flatten();
+        NetApiBufferFree(buf.cast());
+        text
+    };
+    LiveShare::Exists(path)
 }
 
 /// `names` (an item's name, then the folders above it) ends in `tail` (segments, the item last).
@@ -1190,6 +1251,15 @@ mod tests {
         assert_eq!(unc_place_with(r"\\192.0.2.7\ntfs", &names, None, &shares), UncPlace::Elsewhere);
         assert_eq!(unc_place_with(r"\\192.0.2.7\docs\x", &names, None, &shares), UncPlace::Here(r"D:\Shared\Docs\x".into()));
         assert_eq!(unc_place_with(r"\\192.0.2.7\ntfs", &names, None, &|_| Share::Unknown), UncPlace::Unknown);
+        // the live lookup: a made-up share is absent only on the service's own answer, and the
+        // IPC$ share (no folder) exists without being a folder (re-review S1 #10)
+        let made_up = live_share("sprawl-no-such-share-7f3c");
+        assert!(matches!(made_up, LiveShare::Absent | LiveShare::Unknown), "{made_up:?}");
+        if made_up == LiveShare::Absent {
+            assert!(matches!(live_share("IPC$"), LiveShare::Exists(_)));
+            assert_eq!(share_folder("IPC$"), Share::Unknown);
+        }
+        assert_eq!(live_share(""), LiveShare::Unknown);
         // the real lookups answer on this PC (names, adapter addresses incl. loopback)
         assert!(!this_pc_names().is_empty());
         assert!(own_addresses().is_some_and(|a| a.iter().any(|ip| ip.is_loopback())), "{:?}", own_addresses());
