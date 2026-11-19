@@ -38,7 +38,10 @@ fn unexplained_in(tree: &Tree, facts: &Facts, found: &[Finding], min: u64, home:
         if node.children.iter().any(|&c| (!tree.nodes[c].is_dir || tree.nodes[c].name.eq_ignore_ascii_case(".git")) && crate::projects::kind_of(&tree.nodes[c].name.to_ascii_lowercase()).is_some()) { continue; }
         let explained = found.iter().any(|f| !f.heuristic() && !matches!(&f.source, crate::Source::Rule(id) if id.starts_with("stale.") || id.starts_with("anomaly.") || id.starts_with("remedy.likely"))
             && crate::finding::within(&path, &f.path));
-        if !explained { candidates.push(n); }
+        // The scanned folder itself (or a root picked for a multiple scan) explains nothing:
+        // 1.0 listed a folder scan's own root as its biggest unexplained folder.
+        let picked_root = n == ROOT || depth == 1 && tree.root_path == std::path::Path::new(sprawl_core::MULTIPLE);
+        if !explained && !picked_root { candidates.push(n); }
     }
     candidates.sort_by_key(|&n| std::cmp::Reverse(tree.nodes[n].size));
     let mut chosen = Vec::new();
@@ -188,6 +191,12 @@ mod tests {
         let found = unexplained_in(&tree, &facts, &[], 1, Some(&dir));
         assert_eq!(found.len(), 1);
         assert!(tree.path_of(found[0]).ends_with("Unknown"), "nested unknown folders count once");
+        let plain = dir.parent().unwrap().join("Projects2");
+        std::fs::create_dir_all(plain.join("Inner")).unwrap();
+        std::fs::write(plain.join("Inner").join("a.bin"), vec![0u8; 300]).unwrap();
+        let folder_scan = sprawl_core::scan(&plain, |_| {}).unwrap();
+        let listed: Vec<_> = unexplained_in(&folder_scan, &Facts::default(), &[], 1, Some(&plain)).into_iter().map(|n| folder_scan.path_of(n)).collect();
+        assert_eq!(listed, vec![plain.join("Inner")], "the scanned folder itself is never listed");
         let mut pack = crate::RulePack::empty("known");
         pack.rules.push(crate::Rule::new("known.folder", "Known identity", vec![dir.join("Unknown").display().to_string()], crate::Risk::Orange, crate::Remedy::Info, "known"));
         pack.rules[0].min_bytes = Some(1);

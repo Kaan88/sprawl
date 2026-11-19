@@ -3,6 +3,10 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
+
 ## 1.0.1 — 2026-11-19
 
 - Scans are fast again on drives and folders read without the MFT (exFAT and FAT drives, the search index, the daily background scan). 1.0 re-checked every folder's whole path before listing it, which made these scans many times slower.
