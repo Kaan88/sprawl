@@ -613,6 +613,7 @@ mod tests {
             attributes,
             parent,
             children,
+            id: 0,
         };
         let mut tree = Tree {
             root_path: r"C:\Users\sam".into(),

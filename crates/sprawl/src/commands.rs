@@ -833,7 +833,7 @@ impl State {
         let mut confirmed = self.advisor.memory.kept_paths();
         confirmed.extend(sprawl_advisor::exclusions::configured());
         let since = self.active_began();
-        let scanned = self.active_tree().map(clean::scanned_in);
+        let seen = self.active_tree().map(clean::seen_in);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.advisor.delete_stop = Some(stop.clone());
         let at = std::time::Instant::now();
@@ -874,7 +874,7 @@ impl State {
                 let mut keep = confirmed.clone();
                 keep.extend(skipped);
                 keep.extend(kept_seen.iter().cloned());
-                let spare = Spare { since: Some(since), keep, scanned: scanned.clone() };
+                let spare = Spare { since: Some(since), keep, seen: seen.clone() };
                 let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
                 let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |n| {
                     if last.elapsed().as_millis() >= 200 {

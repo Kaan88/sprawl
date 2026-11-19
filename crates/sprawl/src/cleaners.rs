@@ -264,12 +264,12 @@ impl State {
     }
 
     /// What a clean-up of the report on show leaves alone: anything new since its read began,
-    /// what the user keeps, and folders changed since then that the read didn't see there.
+    /// what the user keeps, and anything that is not the item the read saw at its path.
     pub(crate) fn spare(&self) -> sprawl_advisor::clean::Spare {
         sprawl_advisor::clean::Spare {
             since: Some(self.active_began()),
             keep: self.advisor.memory.kept_paths(),
-            scanned: self.active_tree().map(sprawl_advisor::clean::scanned_in),
+            seen: self.active_tree().map(sprawl_advisor::clean::seen_in),
         }
     }
 
