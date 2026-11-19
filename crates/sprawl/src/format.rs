@@ -60,6 +60,43 @@ pub(crate) fn file_type(ext: &str) -> String {
     if known.is_empty() { format!("{} File", ext.to_uppercase()) } else { known.to_string() }
 }
 
+/// A long folder path shortened in the middle, so its drive and its last folders stay:
+/// `C:\Users\…\target\qw\media`. The whole path goes in the tooltip.
+pub(crate) fn mid_path(p: &str, max: usize) -> String {
+    // 0: the column isn't measured yet, the text trims as before
+    if max == 0 || p.chars().count() <= max {
+        return p.to_string();
+    }
+    // the drive (or \\server\share) stays whole
+    let (head, rest) = match p.strip_prefix("\\\\") {
+        Some(unc) => {
+            let mut it = unc.splitn(3, '\\');
+            let (server, share, rest) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+            (format!("\\\\{server}\\{share}"), rest.to_string())
+        }
+        None => match p.split_once('\\') {
+            Some((h, r)) => (h.to_string(), r.to_string()),
+            None => return p.to_string(),
+        },
+    };
+    let parts: Vec<&str> = rest.split('\\').filter(|s| !s.is_empty()).collect();
+    let mut tail: Vec<&str> = Vec::new();
+    let mut len = head.chars().count() + 3;
+    for part in parts.iter().rev() {
+        let n = part.chars().count() + 1;
+        if !tail.is_empty() && len + n > max {
+            break;
+        }
+        len += n;
+        tail.push(part);
+    }
+    if tail.len() == parts.len() {
+        return p.to_string();
+    }
+    tail.reverse();
+    format!("{head}\\\u{2026}\\{}", tail.join("\\"))
+}
+
 /// A time as the user's local "2026-11-17 19:47" (the clock in the taskbar shows the same).
 pub(crate) fn fmt_time(t: std::time::SystemTime) -> String {
     if let Some([y, m, d, h, mi, _]) = sprawl_core::local_parts(t) {
@@ -106,5 +143,24 @@ mod time_tests {
         let shown = super::fmt_time(t);
         assert_eq!(shown, local[..16].replace('/', "-"));
         assert_eq!(super::fmt_utc(std::time::UNIX_EPOCH), "1970-01-01 00:00");
+    }
+}
+
+#[cfg(test)]
+mod mid_path_tests {
+    use super::mid_path;
+
+    #[test]
+    fn a_long_path_keeps_its_drive_and_last_folders() {
+        let p = r"C:\Users\someone\Documents\Craft Anything\wiztree64-2\target\qw\data\media";
+        assert_eq!(mid_path(p, 200), p, "short enough: as it is");
+        let s = mid_path(p, 40);
+        assert!(s.starts_with("C:\\\u{2026}\\") && s.ends_with(r"\qw\data\media"), "{s}");
+        assert!(s.chars().count() <= 40, "{s}");
+        let unc = mid_path(r"\\nas\share\a\b\c\d\e\f\g\last", 24);
+        assert!(unc.starts_with("\\\\nas\\share\\\u{2026}\\") && unc.ends_with(r"\last"), "{unc}");
+        // one very long last folder is still kept whole (the column trims what is left)
+        let one = mid_path(&format!(r"C:\a\b\{}", "x".repeat(50)), 20);
+        assert!(one.ends_with(&"x".repeat(50)), "{one}");
     }
 }

@@ -73,6 +73,16 @@ pub(crate) const FILES_LIKE: &[Col] = &[
     col("Modified", 130.0, true, Key::Modified),
     col("Folder", -3.0, false, Key::Folder),
 ];
+/// The Folder column's width in characters for a table `width` wide: what the fixed columns
+/// leave, its 3 parts of 5, at about 6.5 pixels a character of 12 px text (0: not measured).
+pub(crate) fn folder_chars(width: f64) -> usize {
+    if width <= 0.0 {
+        return 0;
+    }
+    let fixed: f64 = FILES.iter().map(|c| c.width).filter(|w| *w > 0.0).sum::<f64>() + 40.0;
+    (((width - fixed).max(0.0) * 3.0 / 5.0) / 6.5).max(16.0) as usize
+}
+
 pub(crate) const EXTS: &[Col] = &[
     col("", 22.0, false, Key::None),
     col("Extension", 78.0, false, Key::Name),
@@ -94,6 +104,9 @@ pub(crate) enum Which {
 /// Sort order and what part of each table currently exists.
 pub(crate) struct Tables {
     compact_tree: bool,
+    /// About how many characters the Folder column of File view and Search holds (0: not
+    /// measured yet); longer paths are shortened in the middle to it.
+    pub(crate) folder_chars: usize,
     /// (column, descending)
     pub(crate) tree_sort: (usize, bool),
     pub(crate) files_sort: (usize, bool),
@@ -112,6 +125,7 @@ impl Default for Tables {
     fn default() -> Self {
         Tables {
             compact_tree: false,
+            folder_chars: 0,
             tree_sort: (2, true),
             files_sort: (1, true),
             ext_sort: (4, true),
@@ -446,6 +460,14 @@ impl State {
                 return;
             }
         }
+        if which == Which::Main && matches!(self.view, View::Files | View::Search) {
+            let chars = folder_chars(sv.ViewportWidth().unwrap_or(0.0));
+            if chars.abs_diff(self.tables.folder_chars) > 3 {
+                self.tables.folder_chars = chars;
+                self.refresh_rows();
+                return;
+            }
+        }
         let off = sv.VerticalOffset().unwrap_or(0.0);
         let vh = sv.ViewportHeight().unwrap_or(0.0);
         let vh = if vh > 0.0 { vh } else { 900.0 };
@@ -541,7 +563,19 @@ impl State {
         let files = if node.is_dir { thousands(node.files) } else { String::new() };
         let hidden = n != ROOT && (node.is_hidden() || node.is_system());
         let fg = if hidden { "#FF7D8494" } else { "#FFFFFFFF" };
-        let name = if node.is_compressed() { format!("{} · compressed", self.label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", self.label(n)) } else { self.label(n) };
+        let label = |n: usize| {
+            let l = self.label(n);
+            // the scanned folder's own name first: its long path is cut from the end
+            if n != ROOT {
+                return l;
+            }
+            let p = std::path::Path::new(&l);
+            match (p.file_name(), p.parent()) {
+                (Some(base), Some(parent)) if !parent.as_os_str().is_empty() => format!("{}   ·   {}", base.to_string_lossy(), parent.display()),
+                _ => l,
+            }
+        };
+        let name = if node.is_compressed() { format!("{} · compressed", label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", label(n)) } else { label(n) };
         format!(
             r##"<Grid Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="#FF8E97AA"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(self.main_cols().0),
@@ -575,7 +609,8 @@ impl State {
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="13" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{folder}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="13" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = col_defs(FILES),
             fc = self.ext_colour_hex(&node.extension()),
             name = ui::esc(&node.name),
