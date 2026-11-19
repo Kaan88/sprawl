@@ -88,6 +88,17 @@ pub(crate) fn segments(path: &str) -> Vec<String> {
     path.split(['\\', '/']).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()
 }
 
+/// A file's current time against a scan's record, to the whole second. A History or bridge
+/// tree is read from a snapshot, which keeps whole seconds only, so an exact comparison
+/// (1.0) called every such file changed and refused it.
+pub(crate) fn same_time(now: Option<std::time::SystemTime>, scanned: Option<std::time::SystemTime>) -> bool {
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).ok();
+    match (now, scanned) {
+        (Some(a), Some(b)) => secs(a).is_some() && secs(a) == secs(b),
+        _ => false,
+    }
+}
+
 /// Only a live multiple-root scan's direct children may carry absolute names.
 /// Ordinary descendants must remain plain components, even below a synthetic root.
 pub(crate) fn scan_name_ok(tree: &Tree, n: usize) -> bool {

@@ -597,7 +597,7 @@ impl<'a> Tools<'a> {
         }
         let mut opened = sprawl_core::local::file(&path, 256 << 10).map_err(|e| format!("couldn't read a plain local manifest: {e}"))?;
         let meta = opened.file.metadata().map_err(|e| e.to_string())?;
-        if meta.len() != node.size || meta.modified().ok() != node.modified {
+        if meta.len() != node.size || !crate::same_time(meta.modified().ok(), node.modified) {
             return Err("the manifest changed since this scan; scan again before reading it".into());
         }
         let mut buf = Vec::new();
@@ -829,6 +829,12 @@ mod tests {
         let tree2 = sprawl_core::scan(&dir, |_| {}).unwrap();
         let t2 = Tools::new(&tree2, &facts, "m", &[], &Memory::default());
         assert!(t2.read_manifest_for(&json!({"path": dir.join("package.json").display().to_string()}), Some(&dir)).unwrap().contains("\"name\""));
+        // The Claude Code bridge reads the scan back from a snapshot, which keeps whole seconds.
+        let mut saved = Vec::new();
+        crate::snapshot::write(&tree2, std::time::SystemTime::now(), 1, &mut saved).unwrap();
+        let (tree3, _) = crate::snapshot::read(&mut saved.as_slice()).unwrap();
+        let t3 = Tools::new(&tree3, &facts, "m", &[], &Memory::default());
+        assert!(t3.read_manifest_for(&json!({"path": dir.join("package.json").display().to_string()}), Some(&dir)).unwrap().contains("\"name\""));
         assert!(t2.read_manifest(&json!({"path": dir.join("api-key.json").display().to_string()})).is_err(), "nothing that looks private");
         assert!(t2.read_manifest(&json!({"path": dir.join("hosts.yml").display().to_string()})).is_err(), "named manifests only");
         assert!(t2.read_manifest(&json!({"path": cache.join("x").join("a.bin").display().to_string()})).is_err(), "only descriptive files");

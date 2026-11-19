@@ -169,7 +169,7 @@ fn archives_with(tree: &Tree, min: u64, home: Option<&std::path::Path>) -> Vec<F
         attempted += 1;
         let Ok(mut held) = sprawl_core::local::file(&path, u64::MAX) else { continue };
         let Ok(meta) = held.file.metadata() else { continue };
-        if meta.len() != node.size || meta.modified().ok() != node.modified { continue; }
+        if meta.len() != node.size || !crate::same_time(meta.modified().ok(), node.modified) { continue; }
         let Some(files) = zip_index(&mut held.file, &mut reads, &mut entries) else { continue };
         let Some(total) = files.iter().try_fold(0u64, |sum, f| sum.checked_add(f.1)) else { continue };
         if files.is_empty() || total == 0 {
@@ -195,7 +195,7 @@ fn archives_with(tree: &Tree, min: u64, home: Option<&std::path::Path>) -> Vec<F
                 let path = tree.path_of(k);
                 if crate::finding::other_account(&path, home) || crate::exclusions::intersects(&path, &excluded) { return false; }
                 let Ok(pinned) = sprawl_core::local::scope(&path) else { return false; };
-                pinned.metadata().is_ok_and(|m| m.is_file() && m.len() == *s && m.modified().ok() == item.modified)
+                pinned.metadata().is_ok_and(|m| m.is_file() && m.len() == *s && crate::same_time(m.modified().ok(), item.modified))
             })
         }) else { continue };
         let folder = if root == parent { tree.path_of(child(tree, parent, stem).unwrap_or(parent)) } else { tree.path_of(root) };
