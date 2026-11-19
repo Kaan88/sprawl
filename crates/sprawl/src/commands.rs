@@ -845,6 +845,9 @@ impl State {
         std::thread::spawn(move || {
             let (mut results, mut notes) = (Vec::new(), Vec::new());
             let (mut before, mut last) = (0u64, std::time::Instant::now());
+            // every Keep seen during this Delete keeps counting, even if a later read of the
+            // list no longer has it
+            let mut kept_seen: Vec<std::path::PathBuf> = Vec::new();
             for path in paths {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     notes.push(format!("{}: not deleted, the Delete was stopped", path.display()));
@@ -857,16 +860,20 @@ impl State {
                 }
                 // a Keep added after the confirmation must still count: when the list can't be
                 // read now, nothing more is deleted (an empty list would mean "nothing kept")
-                let kept = match sprawl_advisor::memory::Memory::load_checked() {
-                    Ok(memory) => memory.kept_paths(),
+                match sprawl_advisor::memory::Memory::load_checked() {
+                    Ok(memory) => {
+                        for k in memory.kept_paths() {
+                            if !kept_seen.contains(&k) { kept_seen.push(k); }
+                        }
+                    }
                     Err(e) => {
                         notes.push(format!("{}: not deleted, your Keep list could not be read ({e})", path.display()));
                         continue;
                     }
-                };
+                }
                 let mut keep = confirmed.clone();
                 keep.extend(skipped);
-                keep.extend(kept);
+                keep.extend(kept_seen.iter().cloned());
                 let spare = Spare { since: Some(since), keep, scanned: scanned.clone() };
                 let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
                 let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |n| {

@@ -407,6 +407,19 @@ fn parse(text: &str) -> Result<Memory, toml::de::Error> {
     toml::from_str(&fixed)
 }
 
+/// Whether `f` is simply not there yet: nothing at its own name (not even a link that leads
+/// nowhere), and its folder is a plain folder (not a link), or is itself not there yet inside
+/// a folder that is.
+fn no_file_yet(f: &Path) -> bool {
+    let absent = |p: &Path| matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+    let plain_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink() && {
+        use std::os::windows::fs::MetadataExt;
+        m.file_attributes() & 0x400 == 0
+    });
+    let Some(parent) = f.parent() else { return false };
+    absent(f) && (plain_dir(parent) || absent(parent) && parent.parent().is_some_and(|g| std::fs::metadata(g).is_ok_and(|m| m.is_dir())))
+}
+
 impl Memory {
     /// Load without touching the file, even if it doesn't parse.
     pub fn load_readonly() -> Memory {
@@ -418,11 +431,18 @@ impl Memory {
     /// lock) or a file that doesn't parse is an error. A brief sharing conflict is retried.
     pub fn load_checked() -> std::io::Result<Memory> {
         let f = file().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Sprawl's settings folder is unknown (APPDATA is not set)"))?;
+        Self::load_checked_at(&f)
+    }
+
+    fn load_checked_at(f: &Path) -> std::io::Result<Memory> {
         let mut tries = 0;
         let text = loop {
-            match std::fs::read_to_string(&f) {
+            match std::fs::read_to_string(f) {
                 Ok(text) => break text,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Memory::default()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return if no_file_yet(f) { Ok(Memory::default()) }
+                        else { Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the Keep list's file is a link that leads nowhere, or its folder isn't a plain folder")) };
+                }
                 Err(_) if tries < 5 => { tries += 1; std::thread::sleep(std::time::Duration::from_millis(100)); }
                 Err(e) => return Err(e),
             }
@@ -825,6 +845,28 @@ pub fn local_packs() -> Vec<RulePack> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_file_is_an_empty_keep_list() {
+        // Astra 1.0.2 re-review S1 #6: a link that leads nowhere is not "nothing kept"
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-keep-file").unwrap();
+        let dir = owned.path().join("Sprawl");
+        std::fs::create_dir(&dir).unwrap();
+        let f = dir.join("memory.toml");
+        assert!(Memory::load_checked_at(&f).is_ok(), "no file yet");
+        assert!(Memory::load_checked_at(&owned.path().join("NotYet").join("memory.toml")).is_ok(), "no folder yet");
+        if std::os::windows::fs::symlink_file(owned.path().join("gone.toml"), &f).is_ok() {
+            assert!(Memory::load_checked_at(&f).is_err(), "a dangling link");
+            std::fs::remove_file(&f).unwrap();
+        }
+        let junction = owned.path().join("Linked");
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&junction).arg(&dir).output().is_ok_and(|o| o.status.success());
+        if made {
+            assert!(Memory::load_checked_at(&junction.join("memory.toml")).is_err(), "a folder that is a link");
+            std::fs::remove_dir(&junction).unwrap();
+        }
+        drop(owned);
+    }
 
     #[test]
     fn every_keep_is_kept_from_a_clean_up() {
