@@ -564,6 +564,10 @@ struct Frame {
 }
 
 fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result<crate::recycle::Bin, String>>, stop: &AtomicBool, o: &mut Outcome, progress: &mut dyn FnMut(u64)) {
+    if stop.load(Ordering::Relaxed) {
+        o.stopped = true;
+        return;
+    }
     let path_buf = match sprawl_core::local::lexical(path) { Ok(p) => p, Err(e) => return o.problem(path, e) };
     let path = path_buf.as_path();
     let Some(parent) = path.parent() else { return o.problem(path, "a whole drive cannot be cleaned"); };
@@ -617,11 +621,19 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
         }
         return;
     }
+    // a cloud or offline folder is not listed: listing it can download it
+    if info.attrs & crate::dupes::NOT_LOCAL != 0 {
+        return o.problem(path, "left alone: a cloud or offline folder");
+    }
     // to the bin: the whole folder when nothing in it must stay. One move, one record that
     // Explorer can put back; 1.0 recycled every file alone, flushing a record for each and
     // leaving the emptied folders behind.
     if let (Some(b), Action::Remove) = (bin.as_deref_mut(), action) {
-        if let Some((bytes, files)) = whole(path, spare) {
+        if let Some((bytes, files)) = whole(path, spare, stop) {
+            if stop.load(Ordering::Relaxed) {
+                o.stopped = true;
+                return;
+            }
             match recycle_one(path, &h, bytes, files, b, o, progress) {
                 Ok(()) => return,
                 Err(Moved::Held(why)) => return o.problem(path, why),
@@ -692,9 +704,17 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
             continue;
         }
         if info.attrs & DIRECTORY != 0 && info.attrs & REPARSE == 0 {
+            if info.attrs & crate::dupes::NOT_LOCAL != 0 {
+                o.problem(&k, "left alone: a cloud or offline folder");
+                continue;
+            }
             if pattern.is_none() {
                 if let Some(b) = bin.as_deref_mut() {
-                    if let Some((bytes, files)) = whole(&k, spare) {
+                    if let Some((bytes, files)) = whole(&k, spare, stop) {
+                        if stop.load(Ordering::Relaxed) {
+                            o.stopped = true;
+                            return;
+                        }
                         match recycle_one(&k, &h, bytes, files, b, o, progress) {
                             Ok(()) => continue,
                             Err(Moved::Held(why)) => {
@@ -738,35 +758,33 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
     }
 }
 
-/// Everything in folder `p` would go by a Remove: nothing in it is new since the scan, kept,
-/// on the never-list or oddly named, no link, junction, cloud or offline item (those go one
-/// item at a time, or stay), and all of it can be read. Its bytes and files. Moving the folder
-/// is a rename: links inside are moved as links, never followed, and the bin can undo it.
-fn whole(p: &Path, spare: &Spare) -> Option<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let since = spare.since.map(filetime);
+/// Everything in folder `p` would go by a Remove: nothing in it is new since the scan (by the
+/// same handle times as one item at a time, change time included), kept, on the never-list or
+/// oddly named, no link, junction, cloud or offline item (those go one item at a time, or
+/// stay), and all of it can be read. Its bytes and files. `p` itself must be a plain local
+/// folder. None as soon as Stop is pressed. Moving the folder is a rename: links inside are
+/// moved as links, never followed, and the bin can undo it.
+fn whole(p: &Path, spare: &Spare, stop: &AtomicBool) -> Option<(u64, u64)> {
+    let plain = |info: &win::Info| info.attrs & (REPARSE | crate::dupes::NOT_LOCAL) == 0;
+    let own = win::open_attrs(p).ok()?.1;
+    if !plain(&own) || own.attrs & DIRECTORY == 0 || spare.is_new(&own) {
+        return None;
+    }
     let (mut bytes, mut files) = (0u64, 0u64);
     let readable = |p: &Path| list(p).ok().filter(|l| l.1 == 0).map(|l| l.0);
     let mut stack = readable(p)?;
     while let Some(k) = stack.pop() {
-        if odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
+        if stop.load(Ordering::Relaxed) || odd_name(&k) || never().path_hit(&k).is_some() || spare.keeps(&k) {
             return None;
         }
-        let m = std::fs::symlink_metadata(&k).ok()?;
-        let born = m.creation_time() as i64;
-        if attrs(&m) & (REPARSE | crate::dupes::NOT_LOCAL) != 0 {
+        let (_h, info) = win::open_attrs(&k).ok()?;
+        if !plain(&info) || spare.is_new(&info) {
             return None;
         }
-        if m.is_dir() {
-            if since.is_some_and(|s| born > s) {
-                return None;
-            }
+        if info.attrs & DIRECTORY != 0 {
             stack.extend(readable(&k)?);
         } else {
-            if since.is_some_and(|s| born > s || m.last_write_time() as i64 > s) {
-                return None;
-            }
-            bytes += m.len();
+            bytes += info.size;
             files += 1;
         }
     }
@@ -1122,6 +1140,25 @@ mod win {
     /// writing it, but nobody can rename or delete it (or a folder above it) while it is open.
     pub(super) fn open(p: &Path) -> std::io::Result<(Handle, Info)> {
         open_with(p, 0x1 | 0x2)
+    }
+
+    /// The item itself, for its attributes and times only: shared with everyone, links not
+    /// followed, cloud files not downloaded.
+    pub(super) fn open_attrs(p: &Path) -> std::io::Result<(Handle, Info)> {
+        const READ_ATTRIBUTES: u32 = 0x80;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const OPEN_NO_RECALL: u32 = 0x0010_0000;
+        let w = wide(p);
+        let h = unsafe { CreateFileW(w.as_ptr(), READ_ATTRIBUTES | SYNCHRONIZE, 0x1 | 0x2 | 0x4, std::ptr::null_mut(), OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT | OPEN_NO_RECALL, std::ptr::null_mut()) };
+        if h as isize == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let h = Handle(h);
+        let info = info(&h)?;
+        Ok((h, info))
     }
 
     /// The item itself, open for deleting, shared with nobody: fails when any program has it
@@ -2096,6 +2133,46 @@ mod tests {
         }
         out.sort();
         out
+    }
+
+    #[test]
+    fn a_whole_folder_move_spares_what_the_item_check_spares_and_obeys_stop() {
+        let base = std::env::temp_dir().join(format!("sprawl-bin-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cache = base.join("Cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("old.bin"), vec![0u8; 40]).unwrap();
+        std::fs::write(base.join("mine.doc"), vec![0u8; 9]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let scan = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        // an existing file moved in after the scan keeps its birth and write times; only its
+        // change time is new (Astra's case)
+        std::fs::rename(base.join("mine.doc"), cache.join("mine.doc")).unwrap();
+        let spare = Spare { since: Some(scan), keep: Vec::new() };
+        let stop = AtomicBool::new(false);
+        let mut bin = test_bin(&base, 1 << 30);
+        let o = run_with(&cache, &Action::Remove, &spare, Some(&mut bin), &stop, &mut |_| {});
+        assert!(o.problems.is_empty(), "{:?}", o.problems);
+        assert!(cache.join("mine.doc").exists(), "the moved-in file stays, as the item check decides");
+        assert!(!cache.join("old.bin").exists());
+        assert_eq!((o.recycled, o.kept_new), (40, 1));
+        drop(bin);
+        let _ = std::fs::remove_dir_all(base.join("bin"));
+
+        // Stop already pressed: nothing moves, and the outcome says stopped
+        let other = base.join("Other");
+        std::fs::create_dir_all(other.join("sub")).unwrap();
+        std::fs::write(other.join("sub").join("x.bin"), vec![0u8; 10]).unwrap();
+        let stopped = AtomicBool::new(true);
+        let mut bin = test_bin(&base, 1 << 30);
+        let o = run_with(&other, &Action::Remove, &Spare::default(), Some(&mut bin), &stopped, &mut |_| {});
+        assert!(o.stopped);
+        assert_eq!((o.recycled, o.recycled_files), (0, 0));
+        assert!(other.join("sub").join("x.bin").exists());
+        assert!(in_bin(&base).is_empty());
+        drop(bin);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
