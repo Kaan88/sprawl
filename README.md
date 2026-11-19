@@ -153,9 +153,12 @@ docs/               plans, audits, the uninstaller hand-off, screenshots
 
 ```powershell
 cargo build --release -p sprawl-release
-.\target\release\sprawl-release build     # builds Sprawl, signs, makes the installer with Inno Setup 7, fills dist\v<version>
+.\target\release\sprawl-release build     # scan-speed check, then builds Sprawl, signs, makes the installer with Inno Setup 7, fills dist\v<version>
 .\target\release\sprawl-release publish   # creates the GitHub release (needs gh)
 ```
+
+`build` first runs `crates/sprawl-core/tests/speed_guard.rs`: Sprawl's folder inventory against a
+plain listing of deep disposable folders. A slowdown like 1.0's (27x there) stops the release.
 
 The signing key is `%USERPROFILE%\.sprawl-release\signing.key`, made once with
 `sprawl-release keygen`. It never goes in the repository. Its public half is `PUBLIC_KEY` in

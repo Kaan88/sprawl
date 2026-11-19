@@ -120,6 +120,9 @@ fn build() {
         flags.push(format!("--remap-path-prefix={}=user", PathBuf::from(p).display()));
     }
     let flags = flags.join("\u{1f}");
+    // A scan slowdown like 1.0's (15-55x on folder scans) must not ship again: a timing check
+    // on disposable data, in release mode, before anything is built or signed.
+    run(Command::new("cargo").args(["test", "--release", "-p", "sprawl-core", "--test", "speed_guard", "--", "--ignored"]));
     // one cargo at a time
     run(Command::new("cargo").args(["build", "--release", "-p", "sprawl", "--target-dir", "target/dist"]).env("CARGO_ENCODED_RUSTFLAGS", &flags));
     let out = dist(&v);
