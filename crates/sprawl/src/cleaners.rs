@@ -119,13 +119,35 @@ pub(crate) struct Own {
     /// When the read began: anything newer stays, as with a scan.
     pub(crate) began: std::time::SystemTime,
     pub(crate) roots: usize,
-    /// Folders the cleaners look at that this account can't open (Windows\Temp without
-    /// administrator rights): left out of the read and named, rather than failing all of it.
-    pub(crate) unread: Vec<std::path::PathBuf>,
+    /// Folders the cleaners look at that couldn't be opened, with Windows' reason: left out of
+    /// the read and named, rather than failing all of it.
+    pub(crate) unread: Vec<(std::path::PathBuf, String)>,
 }
 
 /// Report generations of the tab's own reads: apart from the scans' own.
 const OWN_GEN: u64 = 1 << 62;
+
+/// What a failed own read drops besides the report: the ticks, a review and a single pick made
+/// in an earlier own read. A scan's ticks stay.
+fn own_failed_drops(c: &mut crate::cleanup::Cleanup) {
+    if c.ticked_for.is_some_and(|g| g >= OWN_GEN) {
+        c.ticked.clear();
+        c.ticked_for = None;
+        c.review = false;
+        c.single = None;
+        c.privacy_ticked.clear();
+        c.privacy_ok = false;
+        c.ai_ticked.clear();
+        c.own_ok = false;
+    }
+}
+
+/// The folders left out of an own read, each with why Windows wouldn't open it: no guess that
+/// administrator rights would help.
+fn unread_line(unread: &[(std::path::PathBuf, String)]) -> String {
+    let names: Vec<String> = unread.iter().map(|(p, why)| format!("{} ({why})", p.display())).collect();
+    format!("Left out, as they couldn't be opened: {}", names.join("; "))
+}
 
 /// Folders no cleaner knows are listed from this size.
 const UNCLAIMED_MIN: u64 = 100 << 20;
@@ -283,7 +305,14 @@ impl State {
                     return Err(OwnFailed::NoFolders);
                 }
                 // one folder this account can't open would fail the whole read: it is left out
-                let (roots, unread): (Vec<_>, Vec<_>) = roots.into_iter().partition(|r| std::fs::read_dir(r).is_ok());
+                let (mut ok, mut unread) = (Vec::new(), Vec::new());
+                for r in roots {
+                    match std::fs::read_dir(&r) {
+                        Ok(_) => ok.push(r),
+                        Err(e) => unread.push((r, e.to_string())),
+                    }
+                }
+                let roots = ok;
                 if roots.is_empty() {
                     return Err(OwnFailed::Unreadable);
                 }
@@ -325,7 +354,12 @@ impl State {
         if let Some(o) = &got {
             if self.advisor.memory.learning.mark_refills(&o.report.refill_observations) { self.save_memory(); }
         }
-        self.advisor.cl.own = got.or(self.advisor.cl.own.take());
+        // A failed read replaces the last one: its report and what was ticked in it go, so
+        // nothing from before can be cleaned up until a read succeeds (Astra 1.0.2 S5 #4).
+        if got.is_none() {
+            own_failed_drops(&mut self.advisor.cleanup);
+        }
+        self.advisor.cl.own = got;
         self.invalidate_chat_if_changed();
         if self.own_active() {
             self.cleanup_defaults();
@@ -1186,8 +1220,7 @@ impl State {
                 let out = self.cleaner_roots_all().1;
                 let mut s = format!("Checked {when}: the {} folders the cleaners look at, read for this tab", o.roots);
                 if !o.unread.is_empty() {
-                    let names: Vec<String> = o.unread.iter().map(|p| p.display().to_string()).collect();
-                    s += &format!(". Not readable without administrator rights: {}", names.join(" and "));
+                    s += &format!(". {}", unread_line(&o.unread));
                 }
                 if !out.is_empty() {
                     let names: Vec<String> = out.iter().map(|p| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())).collect();
@@ -1908,4 +1941,33 @@ fn app_tick_takes(p: &PartRow) -> bool {
 pub(crate) fn presences(tree: &sprawl_core::Tree, catalogue: &[CleanerDef], findings: &[Finding]) -> Vec<Presence> {
     let found: HashSet<&str> = findings.iter().filter_map(|f| if let Source::Rule(id) = &f.source { Some(id.as_str()) } else { None }).collect();
     catalogue.iter().map(|d| sprawl_advisor::cleaners::presence(tree, d, d.parts.iter().any(|p| found.contains(p.rule.as_str())))).collect()
+}
+
+#[cfg(test)]
+mod own_failed_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_read_drops_the_old_reads_ticks_only() {
+        let mut c = crate::cleanup::Cleanup::default();
+        c.ticked.insert("c:/x".into());
+        c.ticked_for = Some(OWN_GEN + 3);
+        c.review = true;
+        c.privacy_ticked.insert("c:/y".into());
+        own_failed_drops(&mut c);
+        assert!(c.ticked.is_empty() && c.ticked_for.is_none() && !c.review && c.privacy_ticked.is_empty());
+        // a scan's ticks aren't the tab's own read's
+        let mut c = crate::cleanup::Cleanup::default();
+        c.ticked.insert("c:/x".into());
+        c.ticked_for = Some(7);
+        own_failed_drops(&mut c);
+        assert_eq!(c.ticked.len(), 1);
+    }
+
+    #[test]
+    fn an_unopened_folder_says_why_without_guessing() {
+        let line = unread_line(&[(std::path::PathBuf::from(r"C:\Windows\Temp"), "Access is denied. (os error 5)".into())]);
+        assert_eq!(line, r"Left out, as they couldn't be opened: C:\Windows\Temp (Access is denied. (os error 5))");
+        assert!(!line.contains("administrator"));
+    }
 }

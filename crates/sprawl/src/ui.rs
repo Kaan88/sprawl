@@ -90,7 +90,11 @@ pub(crate) fn markdown(text: &str, size: u32, colour: &str) -> String {
             while end < lines.len() && lines[end].trim().starts_with('|') {
                 end += 1;
             }
-            out.push_str(&table(lines[i], &lines[i + 2..end], size, colour));
+            match table(lines[i], &lines[i + 2..end], size, colour) {
+                Some(t) => out.push_str(&t),
+                // too wide to lay out: the rows as written, so no cell is lost
+                None => mono(&mut out, &lines[i..end]),
+            }
             i = end;
             continue;
         }
@@ -156,16 +160,28 @@ fn is_table_rule(line: &str) -> bool {
     t.starts_with('|') && t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
 }
 
-/// The cells of a table row, `\|` kept as a bar inside a cell.
+/// The most columns a table is laid out with; a wider one is shown as written.
+const TABLE_COLUMNS: usize = 12;
+
+/// A backslash right after this is part of a path (`C:\Cache\*.log`, `x\|`), not an escape.
+fn path_char(c: Option<&char>) -> bool {
+    c.is_some_and(|c| c.is_alphanumeric() || matches!(c, '\\' | '/' | ':' | '.' | '_' | '-' | '$' | '~' | ')' | ']' | '}' | '*' | '?'))
+}
+
+/// The cells of a table row, `\|` kept as a bar inside a cell (but a path's backslash before a
+/// bar stays, and the bar divides).
 fn cells(row: &str) -> Vec<String> {
     let t = row.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
     let mut out = vec![String::new()];
     let mut chars = t.chars().peekable();
+    let mut prev: Option<char> = None;
     while let Some(c) = chars.next() {
+        let before = prev;
+        prev = Some(c);
         match c {
-            '\\' if chars.peek() == Some(&'|') => {
+            '\\' if chars.peek() == Some(&'|') && !path_char(before.as_ref()) => {
                 out.last_mut().unwrap().push('|');
                 chars.next();
             }
@@ -177,10 +193,14 @@ fn cells(row: &str) -> Vec<String> {
 }
 
 /// A table as a grid: the head in semibold, then its rows; wider than the pane, it scrolls.
-fn table(head: &str, rows: &[&str], size: u32, colour: &str) -> String {
+/// None when it has more columns than are laid out: nothing in it may be dropped.
+fn table(head: &str, rows: &[&str], size: u32, colour: &str) -> Option<String> {
     let head = cells(head);
     let rows: Vec<Vec<String>> = rows.iter().map(|r| cells(r)).collect();
-    let n = rows.iter().map(Vec::len).chain(std::iter::once(head.len())).max().unwrap_or(1).min(12);
+    let n = rows.iter().map(Vec::len).chain(std::iter::once(head.len())).max().unwrap_or(1);
+    if n > TABLE_COLUMNS {
+        return None;
+    }
     let mut x = format!(
         r##"<Border CornerRadius="4" Background="#14FFFFFF" Padding="8,6"><ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Auto" VerticalScrollMode="Disabled"><Grid ColumnSpacing="16" RowSpacing="4"><Grid.ColumnDefinitions>{}</Grid.ColumnDefinitions><Grid.RowDefinitions>{}</Grid.RowDefinitions>"##,
         r##"<ColumnDefinition Width="Auto"/>"##.repeat(n),
@@ -193,13 +213,16 @@ fn table(head: &str, rows: &[&str], size: u32, colour: &str) -> String {
         }
     }
     x += "</Grid></ScrollViewer></Border>";
-    x
+    Some(x)
 }
 
 /// Runs for one line: `**bold**`, `*italic*` (only around a word, so `*.mp4` stays as it is),
-/// `~~struck~~`, `` `code` `` and `[text](target)` (the text, with the target after it when it
-/// says something else). `\*` and `\|` are the characters themselves; other backslashes stay,
-/// as they are Windows paths (`npm-cache\_cacache`).
+/// `~~struck~~` (only at a word's edges, so `a~~b` stays), `` `code` `` (only when it closes on
+/// the line, and not inside a word or path) and `[text](target)` (the text, with the target
+/// after it when it says something else; a target whose brackets don't balance is shown as
+/// written). `\*`, `\|` and `` \` `` are the characters themselves after a space or a mark;
+/// after a name or path the backslash is the path's (`C:\Cache\*.log`, `npm-cache\_cacache`),
+/// and a star right after a path separator is a wildcard (`C:\x\**\*.log`).
 fn inline(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
@@ -230,19 +253,27 @@ fn inline(s: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         let next = chars.get(i + 1);
-        if c == '`' {
+        let prev = i.checked_sub(1).map(|p| &chars[p]);
+        if c == '`' && (code || (!path_char(prev) && chars[i + 1..].contains(&'`'))) {
             emit(&mut out, &mut cur, bold, italic, code, struck);
             code = !code;
         } else if code {
             cur.push(c);
-        } else if c == '\\' && matches!(next, Some('*') | Some('|') | Some('`')) {
+        } else if c == '\\' && matches!(next, Some('*') | Some('|') | Some('`')) && !path_char(prev) {
             cur.push(chars[i + 1]);
             i += 1;
+        } else if c == '*' && matches!(prev, Some('\\') | Some('/')) {
+            // a wildcard in a path: `C:\x\*.log`, `C:\x\**\y`
+            cur.push(c);
+            if next == Some(&'*') {
+                cur.push('*');
+                i += 1;
+            }
         } else if c == '*' && next == Some(&'*') {
             emit(&mut out, &mut cur, bold, italic, code, struck);
             bold = !bold;
             i += 1;
-        } else if c == '~' && next == Some(&'~') && (struck || chars[i + 2..].windows(2).any(|w| w == ['~', '~'])) {
+        } else if c == '~' && next == Some(&'~') && tilde_mark(&chars, i, struck) {
             emit(&mut out, &mut cur, bold, italic, code, struck);
             struck = !struck;
             i += 1;
@@ -266,13 +297,41 @@ fn inline(s: &str) -> String {
     out
 }
 
+/// `~~` at `i` strikes through: opening at a word's start with a closing one later, or closing
+/// at a word's end. Inside a name (`a~~b`) it is two tildes.
+fn tilde_mark(chars: &[char], i: usize, struck: bool) -> bool {
+    let before = i.checked_sub(1).map(|p| chars[p]);
+    let after = chars.get(i + 2).copied();
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '~');
+    let space = |c: Option<char>| c.is_none_or(char::is_whitespace);
+    if struck {
+        !space(before) && !word(after)
+    } else {
+        !word(before) && !space(after) && (i + 2..chars.len().saturating_sub(1)).any(|j| chars[j] == '~' && chars[j + 1] == '~' && tilde_mark(chars, j, true))
+    }
+}
+
 /// `[text](target)` at the start of `s`: its text, its target and how many characters it took.
+/// The target ends at the bracket that balances its own (`(...wiki/Foo_(bar))`); without one
+/// it isn't a link.
 fn link(s: &[char]) -> Option<(String, String, usize)> {
     let close = s.iter().position(|&c| c == ']')?;
     if s.get(close + 1) != Some(&'(') {
         return None;
     }
-    let end = close + 2 + s[close + 2..].iter().position(|&c| c == ')')?;
+    let mut depth = 0usize;
+    let end = close + 2 + s[close + 2..].iter().position(|&c| match c {
+        '(' => {
+            depth += 1;
+            false
+        }
+        ')' if depth == 0 => true,
+        ')' => {
+            depth -= 1;
+            false
+        }
+        _ => false,
+    })?;
     let text: String = s[1..close].iter().collect();
     let target: String = s[close + 2..end].iter().collect();
     (!text.is_empty()).then(|| (text, target.trim().to_string(), end + 1))
@@ -330,6 +389,36 @@ mod esc_tests {
         assert!(n.contains(r#"BorderThickness="2,0,0,0""#) && n.contains(r#"<Border Height="1""#), "{n}");
         // an unclosed fence is still code, line by line
         assert!(super::markdown("```\na\nb", 12, "#FFFFFFFF").contains("a&#10;b"));
+    }
+
+    #[test]
+    fn paths_globs_and_names_stay_as_written() {
+        // Astra 1.0.2 S5 #3: what is shown is the path that was written
+        for p in [r"C:\Cache\*.log", r"C:\x\**\*.tmp", r"\\nas\media\*.iso", r"D:\*", r"C:\Users\*\AppData", r"C:\a~~b~~c.txt", r"C:\odd`name.txt", "x~~y"] {
+            let x = super::inline(&format!("see {p} now"));
+            assert!(x.contains(&super::esc(&format!("see {p} now"))), "{p}: {x}");
+        }
+        // a path still takes bold and code around it
+        assert!(super::inline(r"**C:\Cache\*.log**").contains(r#"<Run Text="C:\Cache\*.log" FontWeight="SemiBold"/>"#));
+        assert!(super::inline(r"`C:\Cache\*.log`").contains(r#"<Run Text="C:\Cache\*.log" FontFamily"#));
+        assert!(super::inline("~~old~~ new").contains(r#"TextDecorations="Strikethrough""#));
+        assert!(super::inline(r"a \* b").contains(r#"<Run Text="a * b"/>"#));
+        // a lone backtick is a backtick
+        assert!(super::inline("it's a ` mark").contains("it&apos;s a ` mark"));
+        // a link's target keeps its own brackets; unbalanced, the link is shown as written
+        let l = super::inline("[Foo](https://en.wikipedia.org/wiki/Foo_(bar)) after");
+        assert!(l.contains(r#"<Run Text=" (https://en.wikipedia.org/wiki/Foo_(bar))""#) && l.contains(r#"<Run Text=" after"/>"#), "{l}");
+        let l = super::inline("[Foo](https://x/(a b");
+        assert!(l.contains("[Foo](https://x/(a b"), "{l}");
+        // a table too wide to lay out is shown row by row, every cell kept
+        let head = (1..=14).map(|n| format!("c{n}")).collect::<Vec<_>>().join(" | ");
+        let row = (1..=14).map(|n| format!("v{n}")).collect::<Vec<_>>().join(" | ");
+        let rule = vec!["---"; 14].join("|");
+        let x = super::markdown(&format!("| {head} |\n|{rule}|\n| {row} |"), 12, "#FFFFFFFF");
+        assert!(!x.contains("<Grid ColumnSpacing") && x.contains("v14") && x.contains("c14"), "{x}");
+        // a table cell ending a path before its bar
+        assert_eq!(super::cells(r"| C:\Cache\| 2 GB |"), vec![r"C:\Cache\".to_string(), "2 GB".to_string()]);
+        assert_eq!(super::cells(r"| x \| y | 1 GB |"), vec!["x | y".to_string(), "1 GB".to_string()]);
     }
 
     #[test]
