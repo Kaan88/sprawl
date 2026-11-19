@@ -7,6 +7,15 @@ in-app updater shows.
 
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
 - History keeps to its size limit (Settings) when many folders have full snapshots: older full snapshots are removed too, never a folder's newest.
+- Safer updating as administrator: Sprawl reopens itself without administrator rights through Windows' own desktop and writes no file while elevated. The old low-space task is removed only when it is really yours.
+- Moving a folder to the Recycle Bin whole now checks every file as carefully as one at a time (a file moved in after the scan stays), and Stop is obeyed before the move.
+- Nothing is ever run on a network folder, including commands such as compressing a game library on a share; the Windows menu is not offered for network rows.
+- Delete in the tree checks the folders to skip and your Keep choices again before each item. It waits for Check again, and closing Sprawl during a Delete stops it after the current item.
+- While scanning with skipped folders, nothing of them shows (names or file types).
+- Folder scans read each folder through a checked handle, so a folder swapped for a link mid-scan is never listed. They run at the same speed.
+- If the list of folders to skip can't be read, network scans stop too. A folder skipped on a mapped drive is also skipped when the share is scanned by its own name.
+- Documents (or another personal folder) on a share served by this PC keeps its protection.
+- Compressed files are measured correctly after compressing; file times before 1970 compare correctly.
 
 ## 1.0.1 — 2026-11-19
 

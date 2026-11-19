@@ -26,7 +26,22 @@ Local on main after v1.0.1, unreleased; review entry in the queue ("1.0.2 (relia
 - 28524a0: the Advisor and AI report no longer list the scanned folder itself as unexplained.
 - b14d612: History's size limit now also removes older full snapshots (never a folder's newest).
 - eaba378: `sprawl-release build` first runs a scan-speed guard; it fails on 1.0.0's code (27x).
-- Still to come: Astra's findings on 1.0.1, and the runtime checks below that need the user.
+- Astra's review of 1.0.1 (changes requested, 5 high, 8 medium, 2 low) is fixed in
+  d164e19..18fd68e, awaiting Astra's re-read (queue: "1.0.2 fixes for Astra's 1.0.1 findings"):
+  - The elevated update hand-off writes no file: it starts Sprawl through the desktop shell
+    with the version as an argument, and the receiving copy checks it is unelevated.
+  - The old alert task is matched by its real principal and deleted only by an unelevated copy.
+  - Whole-folder bin moves use the per-item freshness check (change time) and obey Stop.
+  - Nothing runs on a network path, whatever offered it.
+  - Tree Delete re-reads skip and Keep lists per item. It waits for Check again (and the
+    reverse), and Close or Exit stops it after the current item.
+  - Skipped folders: no names or file types while scanning.
+  - Network roots never get an MFT read.
+  - Inventories list each folder through its own checked handle (same speed).
+  - An unreadable skip list stops network scans too, and skips on mapped drives cover the share.
+  - A known folder on this PC's own share stays protected.
+  - Compressed-file measurement and pre-1970 times are fixed.
+- Still to come: Astra's re-read of these, and the runtime checks below that need the user.
 
 ## 1.0.1 corrections (Claude, 2026-11-19)
 
@@ -122,6 +137,10 @@ None of these has been run; each needs the user's consent (UAC, a real release, 
 - The alert task migration with a real pre-1.0 task (none exists on this PC).
 - The MCP bridge with an elevated app.
 - Full-drive and elevated MFT performance after the 1.0.1 changes.
+- From an elevated Sprawl (1.0.2): the unelevated launch through the desktop shell (Update now,
+  and the old alert task's removal). Tested from an unelevated process only.
+- Tree Delete: Close or File > Exit mid-Delete stops after the current item, then closes.
+- A PC whose Documents (or another known folder) is redirected to a share on itself.
 
 ## Post-release scan regression correction (Codex, before 1.0.1)
 
