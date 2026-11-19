@@ -42,27 +42,65 @@ pub fn system_dir() -> Result<PathBuf, String> {
     String::from_utf16(&buf[..n]).map(PathBuf::from).map_err(|e| e.to_string())
 }
 
+/// Whether the task's execution principal is exactly this account: one `<Principal>` in one
+/// `<Principals>`, with one `<UserId>` equal to `sid` and no `<GroupId>`. A SID named anywhere
+/// else (a logon trigger's `<UserId>`, for one) says nothing about who the task runs as.
 fn legacy_task_owned(xml: &str, sid: &str) -> bool {
-    let Some((_, rest)) = xml.split_once("<UserId>") else { return false; };
-    let Some((owner, rest)) = rest.split_once("</UserId>") else { return false; };
-    owner.trim() == sid && !rest.contains("<UserId>")
+    if xml.matches("<Principals>").count() != 1 { return false; }
+    let Some((_, rest)) = xml.split_once("<Principals>") else { return false; };
+    let Some((principals, _)) = rest.split_once("</Principals>") else { return false; };
+    let opened = principals.matches("<Principal ").count() + principals.matches("<Principal>").count();
+    if opened != 1 || principals.contains("<GroupId") { return false; }
+    let ids: Option<Vec<&str>> = principals.split("<UserId>").skip(1).map(|s| s.split_once("</UserId>").map(|(id, _)| id.trim())).collect();
+    ids.is_some_and(|ids| ids == [sid])
+}
+
+/// The argument that makes `sprawl.exe` retire the former shared task and exit (started by an
+/// elevated Sprawl without administrator rights).
+pub const MIGRATE_ARG: &str = "--migrate-alert-task";
+
+/// Whether the former shared task exists and runs as exactly this account. Read-only.
+fn legacy_task_is_ours() -> bool {
+    use std::os::windows::process::CommandExt;
+    let (Ok(sid), Ok(sys)) = (sprawl_core::identity::account_sid(), system_dir()) else { return false; };
+    let Ok(out) = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
+        .args(["/Query", "/TN", LEGACY_ALERT_TASK, "/XML"]).creation_flags(0x0800_0000).output() else { return false; };
+    if !out.status.success() || out.stdout.len() > 1 << 20 { return false; }
+    let xml = if out.stdout.starts_with(&[0xff, 0xfe]) {
+        String::from_utf16(&out.stdout[2..].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()
+    } else { String::from_utf8(out.stdout).ok() };
+    xml.is_some_and(|xml| legacy_task_owned(&xml, &sid))
 }
 
 /// Delete the former shared task name only after Task Scheduler identifies its principal
 /// as this process's exact SID. Unknown or other-account tasks are always left alone.
-/// An elevated Sprawl may do this too: the principal check is the gate, and requiring an
-/// unelevated process (1.0) left the old task running beside the new one, with no way to
-/// turn it off, wherever Sprawl always runs as administrator.
+/// Elevated, Sprawl only looks: the delete runs in a copy started as the signed-in user without
+/// administrator rights, so it can remove no more than that user could (1.0 never migrated
+/// from an always-elevated Sprawl, which left the old task running).
 pub fn migrate_alert_task() {
+    if !legacy_task_is_ours() { return; }
+    match sprawl_core::elevation() {
+        Ok(false) => delete_legacy_task(),
+        Ok(true) => {
+            let Ok(exe) = std::env::current_exe() else { return; };
+            if let Ok(p) = sprawl_core::identity::launch_unelevated(&exe, &[MIGRATE_ARG]) {
+                let _ = sprawl_core::identity::wait_exit(&p, 30_000);
+            }
+        }
+        Err(_) => {}
+    }
+}
+
+/// For [`MIGRATE_ARG`]: retire the former shared task here, never elevated and never by
+/// starting another copy.
+pub fn migrate_alert_task_unelevated() {
+    if per_user_only().is_ok() && legacy_task_is_ours() { delete_legacy_task(); }
+}
+
+fn delete_legacy_task() {
     use std::os::windows::process::CommandExt;
-    let (Ok(sid), Ok(sys)) = (sprawl_core::identity::account_sid(), system_dir()) else { return; };
-    let Ok(out) = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
-        .args(["/Query", "/TN", LEGACY_ALERT_TASK, "/XML"]).creation_flags(0x0800_0000).output() else { return; };
-    if !out.status.success() || out.stdout.len() > 1 << 20 { return; }
-    let xml = if out.stdout.starts_with(&[0xff, 0xfe]) {
-        String::from_utf16(&out.stdout[2..].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).ok()
-    } else { String::from_utf8(out.stdout).ok() };
-    if !xml.is_some_and(|xml| legacy_task_owned(&xml, &sid)) { return; }
+    if per_user_only().is_err() { return; }
+    let Ok(sys) = system_dir() else { return; };
     let _ = std::process::Command::new(sys.join("schtasks.exe")).current_dir(&sys)
         .args(["/Delete", "/TN", LEGACY_ALERT_TASK, "/F"]).creation_flags(0x0800_0000)
         .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
@@ -409,11 +447,20 @@ mod update_tests {
     #[test]
     fn legacy_task_migration_requires_the_exact_principal() {
         let sid = "S-1-5-21-100-200-300-1001";
-        assert!(legacy_task_owned(&format!("<Task><Principal><UserId>{sid}</UserId></Principal></Task>"), sid));
-        assert!(!legacy_task_owned("<UserId>S-1-5-21-100-200-300-1002</UserId>", sid));
-        assert!(!legacy_task_owned("<UserId>COMPUTER\\sameusername</UserId>", sid));
+        let p = |inner: &str| format!("<Task><Triggers/><Principals><Principal id=\"Author\">{inner}<LogonType>InteractiveToken</LogonType></Principal></Principals></Task>");
+        assert!(legacy_task_owned(&p(&format!("<UserId>{sid}</UserId>")), sid));
+        assert!(!legacy_task_owned(&p("<UserId>S-1-5-21-100-200-300-1002</UserId>"), sid));
+        assert!(!legacy_task_owned(&p(r"<UserId>COMPUTER\sameusername</UserId>"), sid));
         assert!(!legacy_task_owned(&format!("<Author>{sid}</Author>"), sid));
-        assert!(!legacy_task_owned(&format!("<UserId>{sid}</UserId><UserId>other</UserId>"), sid));
+        assert!(!legacy_task_owned(&p(&format!("<UserId>{sid}</UserId><UserId>other</UserId>")), sid));
+        // the SID in a logon trigger while the task runs as a group (Astra's case)
+        let group = format!("<Task><Triggers><LogonTrigger><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Author\"><GroupId>S-1-5-32-545</GroupId></Principal></Principals></Task>");
+        assert!(!legacy_task_owned(&group, sid));
+        let trigger_only = format!("<Task><Triggers><LogonTrigger><UserId>{sid}</UserId></LogonTrigger></Triggers></Task>");
+        assert!(!legacy_task_owned(&trigger_only, sid));
+        let two = format!("<Task><Principals><Principal id=\"A\"><UserId>{sid}</UserId></Principal><Principal id=\"B\"><GroupId>S-1-5-32-545</GroupId></Principal></Principals></Task>");
+        assert!(!legacy_task_owned(&two, sid));
+        assert!(!legacy_task_owned(&format!("{}{}", p(&format!("<UserId>{sid}</UserId>")), p(&format!("<UserId>{sid}</UserId>"))), sid));
         let actual = sprawl_core::identity::account_sid().unwrap();
         assert_eq!(alert_task_name().unwrap(), format!("{LEGACY_ALERT_TASK} {actual}"));
     }

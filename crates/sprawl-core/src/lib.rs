@@ -330,30 +330,8 @@ pub fn is_elevated() -> bool {
 
 /// Checked elevation state. Callers guarding per-user writes must refuse an unknown state.
 pub fn elevation() -> io::Result<bool> {
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    // SAFETY: plain Win32 calls with valid out-pointers; the token handle is closed.
-    unsafe {
-        let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut len = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenElevation,
-            &mut elevation as *mut _ as *mut _,
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut len,
-        );
-        let error = (ok == 0).then(io::Error::last_os_error);
-        CloseHandle(token);
-        if let Some(error) = error { return Err(error); }
-        if len as usize != std::mem::size_of::<TOKEN_ELEVATION>() { return Err(io::Error::other("Windows returned an incomplete elevation state")); }
-        Ok(elevation.TokenIsElevated != 0)
-    }
+    // SAFETY: the pseudo-handle of this process is always valid.
+    unsafe { identity::token_elevated(windows_sys::Win32::System::Threading::GetCurrentProcess()) }
 }
 
 /// The original single-threaded `std::fs` walk (one metadata call per entry). Slow; kept as a

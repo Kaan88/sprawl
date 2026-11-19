@@ -72,16 +72,20 @@ struct Args {
     /// Restarted as administrator from the Advisor: open it again, with these ticks.
     advisor: bool,
     ticks: Vec<PathBuf>,
+    /// Started by an elevated copy to install this version without administrator rights.
+    resume: Option<String>,
 }
 
 fn args() -> Args {
-    let mut a = Args { shot: None, folder: None, advisor: false, ticks: Vec::new() };
+    let mut a = Args { shot: None, folder: None, advisor: false, ticks: Vec::new(), resume: None };
     let mut it = std::env::args_os().skip(1);
     while let Some(x) = it.next() {
         if x == "--screenshot" {
             a.shot = it.next().map(PathBuf::from);
         } else if x == "--advisor" {
             a.advisor = true;
+        } else if x == update::RESUME_ARG {
+            a.resume = Some(it.next().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default());
         } else if x == "--tick" {
             a.ticks.extend(it.next().map(PathBuf::from));
         } else {
@@ -118,9 +122,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     let mut settings = settings::Settings::load();
     settings.keep_old_defaults();
     // An elevated copy handing its update over: this copy stays without administrator rights.
-    let update_resume = if a.shot.is_none() { update::take_handoff() } else { None };
+    let update_resume = if a.shot.is_none() { update::resume_request(a.resume.clone()) } else { None };
     // "Always run as administrator": come back elevated (the UAC prompt shows) and quit this copy.
-    if a.shot.is_none() && update_resume.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() {
+    // Never for a hand-off, valid or not: that would loop back to an elevated copy.
+    if a.shot.is_none() && a.resume.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() {
         let args: Vec<String> = std::env::args_os().skip(1).map(|x| dialogs::quote(std::path::Path::new(&x))).collect();
         if dialogs::restart_elevated(0, &args.join(" ")) {
             std::process::exit(0);
@@ -532,6 +537,11 @@ fn main() {
     // `sprawl --check`: the low-space check a scheduled task runs while the setting is on
     if args.first().map(String::as_str) == Some("--check") {
         alert::check();
+        return;
+    }
+    // started without administrator rights by an elevated Sprawl to retire the old shared task
+    if args.first().map(String::as_str) == Some(sprawl_install::setup::MIGRATE_ARG) {
+        sprawl_install::setup::migrate_alert_task_unelevated();
         return;
     }
     // `sprawl --uninstall`: from Settings > Apps
