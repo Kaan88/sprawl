@@ -18,6 +18,12 @@ const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 use crate::state::Source;
 use crate::{dialogs, paint, win32};
 
+/// F5 repeats the displayed root; the button and auto-scan picker use the chosen drive.
+fn requested_scan(command: &str, current: Option<PathBuf>, selected: Option<&String>) -> Option<PathBuf> {
+    if command == "mScan" { current.or_else(|| selected.map(PathBuf::from)) }
+    else { selected.map(PathBuf::from) }
+}
+
 impl State {
     // ------------------------------------------------------------ commands
 
@@ -101,15 +107,11 @@ impl State {
             // while scanning the button is Stop
             "ScanButton" if self.job.is_some() => self.stop_scan(),
             // F5 and File > Scan: the folder on screen again (the button scans what the box says)
-            "mScan" if self.tree.as_ref().is_some_and(|t| t.method != sprawl_core::ScanMethod::Csv && t.nodes[ROOT].name != sprawl_core::MULTIPLE) => {
-                if let Some(root) = self.tree.as_ref().map(|t| t.path_of(ROOT)) {
-                    self.start_scan(root);
-                }
-            }
-            "mScan" | "ScanButton" => {
+            "mScan" | "ScanButton" | "ScanSelectedDrive" => {
                 let idx = find::<Selector>(&self.root, "DriveBox").and_then(|c| c.SelectedIndex()).unwrap_or(0);
-                if let Some(d) = self.drives.get(idx.max(0) as usize) {
-                    self.start_scan(PathBuf::from(d));
+                let current = self.tree.as_ref().filter(|t| t.method != sprawl_core::ScanMethod::Csv && t.nodes[ROOT].name != sprawl_core::MULTIPLE).map(|t| t.path_of(ROOT));
+                if let Some(path) = requested_scan(name, current, self.drives.get(idx.max(0) as usize)) {
+                    self.start_scan(path);
                 }
             }
             "mSelectFolder" => {
@@ -1028,6 +1030,16 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drive_picker_scans_selected_drive_while_f5_repeats_displayed_root() {
+        let old = PathBuf::from(r"D:\Old scan");
+        let chosen = String::from(r"C:\");
+        assert_eq!(requested_scan("ScanSelectedDrive", Some(old.clone()), Some(&chosen)), Some(PathBuf::from(&chosen)));
+        assert_eq!(requested_scan("ScanButton", Some(old.clone()), Some(&chosen)), Some(PathBuf::from(&chosen)));
+        assert_eq!(requested_scan("mScan", Some(old), Some(&chosen)), Some(PathBuf::from(r"D:\Old scan")));
+        assert_eq!(requested_scan("mScan", None, Some(&chosen)), Some(PathBuf::from(&chosen)));
+    }
 
     #[test]
     fn a_filtered_view_forgets_what_a_clean_up_removed() {

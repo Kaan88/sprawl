@@ -230,7 +230,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         with(|s| {
             let auto = find::<ToggleMenuFlyoutItem>(&s.root, "oAuto").and_then(|t| t.IsChecked()).unwrap_or(false);
             if auto && s.shot.is_none() {
-                s.command("mScan");
+                s.command("ScanSelectedDrive");
             }
         });
     })?);
@@ -480,6 +480,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         units: Units::Dynamic,
         view: View::Tree,
         job: None,
+        pending_scan: None,
         scan_secs: 0.0,
         shot,
         shot_ticks: 0,

@@ -186,6 +186,8 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 /// path is on an NTFS volume, otherwise the multi-threaded folder walk. The method used is in
 /// `progress.snapshot().method` and in [`Tree::method`]. Cancelling via [`Progress::cancel`]
 /// returns `ErrorKind::Interrupted`.
+/// Folder inventories retain listing compression attributes/tags, but do not open every
+/// plain file to discover hidden WOF backing. `walk::walk` provides that detailed check.
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
     let pinned = local::scope(path)?;
     let path = &pinned.path;
@@ -196,7 +198,7 @@ pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
             Err(_) => progress.reset_counts(), // not NTFS, not a folder, no access: walk instead
         }
     }
-    walk::walk(path, progress)
+    walk::inventory(path, progress)
 }
 
 /// "Select Multiple": scan each path and put them under one synthetic root named
@@ -205,14 +207,24 @@ pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
 /// elevated. During the scan, `snapshot().top` lists the paths themselves. A single path is
 /// just [`scan_auto`].
 pub fn scan_many(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
+    scan_many_mode(paths, progress, true)
+}
+
+/// Inventory only the requested folders, without reading a whole volume's MFT for small
+/// Cleaner scopes. Uses the same exclusions, pinned paths and cancellation as a normal scan.
+pub fn scan_many_inventory(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
+    scan_many_mode(paths, progress, false)
+}
+
+fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::Result<Tree> {
     if paths.len() == 1 {
-        return scan_auto(&paths[0], progress);
+        return if use_mft { scan_auto(&paths[0], progress) } else { walk::inventory(&paths[0], progress) };
     }
     let pinned: Vec<_> = paths.iter().map(|p| local::scope(p)).collect::<io::Result<_>>()?;
     let abs: Vec<PathBuf> = pinned.iter().map(|p| p.path.clone()).collect();
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();
-    if is_elevated() && !progress.has_exclusions() {
+    if use_mft && is_elevated() && !progress.has_exclusions() {
         // Group by volume so each MFT is read once.
         let mut groups: Vec<(PathBuf, Vec<usize>)> = Vec::new();
         for (i, p) in abs.iter().enumerate() {
@@ -258,7 +270,7 @@ pub fn scan_many(paths: &[PathBuf], progress: &Progress) -> io::Result<Tree> {
             // Walk the rest; counts keep adding up from the MFT results.
             progress.set_counts(files, folders, bytes);
             progress.pin_top(None, Some(i));
-            let t = walk::walk(&abs[i], progress)?;
+            let t = walk::inventory(&abs[i], progress)?;
             let r = &t.nodes[ROOT];
             files += r.files;
             folders += r.folders;

@@ -229,14 +229,14 @@ impl State {
 
     /// The Cleaners tab is on show and works from its own read, not the scan's report.
     pub(crate) fn own_active(&self) -> bool {
-        self.view == crate::state::View::Advisor && self.advisor.cleaners_tab_on() && !self.scan_covers_cleaners()
+        self.job.is_none() && self.view == crate::state::View::Advisor && self.advisor.cleaners_tab_on() && !self.scan_covers_cleaners()
     }
 
     /// Read the cleaners' folders and check them, off the UI thread (the tab opened, Check
     /// again, or after a clean-up). Every finding passes the same safety checks, against this
     /// read.
     pub(crate) fn own_start(&mut self) {
-        if self.advisor.cl.own_reading.is_some() {
+        if self.job.is_some() || self.advisor.cl.own_reading.is_some() {
             return;
         }
         // the user's decisions (what they keep) apply to this read too
@@ -256,7 +256,8 @@ impl State {
                 if roots.is_empty() {
                     return None;
                 }
-                let tree = Arc::new(sprawl_core::scan_many(&roots, &p2).ok()?);
+                let tree = Arc::new(sprawl_core::scan_many_inventory(&roots, &p2).ok()?);
+                if p2.is_cancelled() { return None; }
                 let measured_at = began.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 let (report, _) = crate::advisor::caught(|| crate::advisor::analyse(&tree, gen, &memory, privacy_on, measured_at))?;
                 Some(Own { tree, report, began, roots: roots.len() })

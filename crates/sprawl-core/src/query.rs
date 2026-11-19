@@ -56,7 +56,7 @@ regex:^log\\d+\\.txt$\ta regular expression on the name (on the full path if it 
 case:README\tmatch upper and lower case exactly
 exact:desktop.ini\tthe whole name, not part of it (also wholename:)
 depth:<=2\tat most two levels below the scanned folder
-compressed:\tfilesystem compression (NTFS or WOF); compressed:no for others
+compressed:\tcompression recorded by this scan; fast folder scans may omit hidden WOF backing (MFT and detailed checks retain it); compressed:no for others
 folder:  file:\tfolders only, files only (folder:cache)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

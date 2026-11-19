@@ -678,6 +678,7 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
 impl State {
     /// The report for the tree on screen, if it is current.
     pub(crate) fn advice(&self) -> Option<&Report> {
+        if self.job.is_some() { return None; }
         // the Cleaners tab with no scan that covers the cleaners: its own read
         if self.own_active() {
             return self.advisor.cl.own.as_ref().map(|o| &o.report);
@@ -705,7 +706,25 @@ impl State {
         }
     }
 
+    /// A newly selected source must not display or accept the preceding scan's analysis.
+    pub(crate) fn advisor_scanning(&mut self) {
+        self.advisor.report = None;
+        self.advisor.rx = None;
+        self.advisor.tx = None;
+        self.advisor.recheck = None;
+        self.advisor.running = true;
+        self.advisor.open = None;
+        self.advisor.in_use = None;
+        self.advisor.ai = Ai::Idle;
+        self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.advisor.dupes_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.advisor.note = Some("Scanning the selected source. Advice will appear when it finishes.");
+        crate::bridge::clear_findings();
+        self.advisor_changed();
+    }
+
     pub(crate) fn advisor_start(&mut self) {
+        if self.job.is_some() { return self.advisor_scanning(); }
         // whatever was shown is for an earlier tree, and earlier jobs' answers are dropped
         self.advisor.report = None;
         self.advisor.rx = None;
@@ -1995,7 +2014,7 @@ impl State {
     fn advisor_xaml(&self) -> String {
         let mut x = format!(r##"<StackPanel {} Spacing="10" Padding="18,14,18,18">"##, ui::NS);
         let Some(r) = self.advice() else {
-            let msg = if self.advisor.running { "Looking for space to win back..." } else { self.advisor.note.unwrap_or("Scan a drive or folder, and the advisor shows what can be won back.") };
+            let msg = if self.job.is_some() { "Scanning the selected source. Advice will appear when it finishes." } else if self.advisor.running { "Looking for space to win back..." } else { self.advisor.note.unwrap_or("Scan a drive or folder, and the advisor shows what can be won back.") };
             x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/>"##, ui::esc(msg));
             if !self.advisor.running && self.tree.is_some() {
                 x += r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again"/>"##;

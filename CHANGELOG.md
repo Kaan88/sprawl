@@ -5,6 +5,20 @@ in-app updater shows.
 
 ## 1.0.0 — 2026-11-19
 
+### Replacement build: scan regressions
+
+- Fix automatic drive selection rescanning the previously displayed root. Rapid source changes stop the old scanner and retain the latest request.
+- Clear old Advisor results while scanning; prevent Advisor/Cleaner refreshes from analyzing the previous tree until the new scan settles. A failed or stopped scan explicitly identifies the retained previous source.
+- Honor Stop even when the worker has already finished scanning and is sorting or waiting for the window to accept its result.
+- Restore fast folder inventories by omitting expensive per-file hidden-WOF probes. Cleaner discovery reads its requested folders instead of choosing a whole-volume MFT read. Detailed storage-operation checks still verify WOF backing.
+- Compression search uses metadata recorded by the scan: fast folder inventories may omit hidden WOF compression. MFT and detailed storage checks retain detection. This limitation avoids slowing every ordinary scan for an optional search attribute.
+
+The 1.0.0 downloads and Setup have been rebuilt in place; this remains version 1.0.0.
+Existing 1.0.0 installations need the replacement Setup or a manual executable replacement;
+the normal version-based updater does not treat the same version as a newer release.
+
+### Original 1.0.0 changes
+
 - Recognise registered MSI packages, likely EXE installers and unregistered Steam library folders, with the evidence and limits shown.
 - Compare cleanup, compression and guided Steam move options for a space goal, including destination capacity and costs.
 - Show prevention advice after successful cleanup.
@@ -20,7 +34,7 @@ in-app updater shows.
 - Require known active/default versions before offering Rust or Node removals, and strengthen installer-source and extracted-ZIP evidence.
 - Credit owner-tool savings only after success and complete comparable measurements. Failed or incomplete results do not teach successful cleanup.
 - Keep a complete previous launch bundle for interrupted updates. Update and restart closes other Sprawl processes from the same account and installation, including lingering MCP servers.
-- Detect WOF compression hidden by Windows directory listings, and reconcile MFT top-folder progress after out-of-order parser results.
+- Detect WOF compression in detailed storage checks and MFT scans, and reconcile MFT top-folder progress after out-of-order parser results. See the replacement-build note for fast folder inventory limits.
 
 The complete review dossier and corrections passed independent Astra review before release.
 

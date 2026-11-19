@@ -52,6 +52,26 @@ pub(crate) enum Source {
     Csv(PathBuf),
 }
 
+/// Cancellation wins even when a worker finished successfully before the UI polled it.
+fn scan_result<T>(result: std::io::Result<T>, cancelled: bool) -> std::io::Result<T> {
+    if cancelled { Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "scan cancelled")) }
+    else { result }
+}
+
+#[cfg(test)]
+mod scan_result_tests {
+    use super::scan_result;
+
+    #[test]
+    fn cancellation_wins_over_a_completed_or_failed_worker() {
+        assert_eq!(scan_result(Ok("new tree"), false).unwrap(), "new tree");
+        assert_eq!(scan_result(Ok("new tree"), true).unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+        let failure = || Err::<(), _>(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "unreadable source"));
+        assert_eq!(scan_result(failure(), false).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(scan_result(failure(), true).unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+    }
+}
+
 pub(crate) struct Job {
     pub(crate) path: PathBuf,
     pub(crate) csv: bool,
@@ -160,6 +180,8 @@ pub(crate) struct State {
     pub(crate) units: Units,
     pub(crate) view: View,
     pub(crate) job: Option<Job>,
+    /// Latest requested source while the current scanner is stopping.
+    pub(crate) pending_scan: Option<Source>,
     pub(crate) scan_secs: f64,
     pub(crate) shot: Option<PathBuf>,
     pub(crate) shot_ticks: u32,
@@ -255,7 +277,10 @@ impl State {
     }
 
     pub(crate) fn start(&mut self, source: Source) {
-        if self.job.is_some() {
+        if let Some(job) = &self.job {
+            self.pending_scan = Some(source);
+            job.progress.cancel();
+            text(&self.root, "StatusText", "Stopping the previous scan before switching source...");
             return;
         }
         // a new scan would replace the tree the clean-up is checking and rescanning
@@ -286,6 +311,8 @@ impl State {
             *r2.lock().unwrap() = Some(tree.map(|t| crate::tables::prepare(t, sorts)));
         });
         self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now() });
+        if let Some((progress, _)) = self.advisor.cl.own_reading.take() { progress.cancel(); }
+        self.advisor_scanning();
         self.scan_button(true);
         // The map shows the scan growing; the header's used space lets the overlay estimate progress.
         self.map.scene.clear();
@@ -299,6 +326,10 @@ impl State {
         if let Ok(p) = find::<ProgressBar>(&self.root, "Progress") {
             let _ = p.SetIsIndeterminate(true);
         }
+        self.scan_title(&path);
+    }
+
+    fn scan_title(&self, path: &std::path::Path) {
         let _ = self.window.SetTitle(&HSTRING::from(format!("[{}] - Sprawl", path.display())));
         text(&self.root, "TitleText", &format!("[{}]  -  Sprawl", path.display()));
     }
@@ -340,7 +371,15 @@ impl State {
             }
             Some(res) => {
                 let job = self.job.take().unwrap();
+                // A drive selected while scanning supersedes this result, even if it finished
+                // just before cancellation. Only the latest requested source is published.
+                if let Some(source) = self.pending_scan.take() {
+                    self.map.live = None;
+                    self.start(source);
+                    return;
+                }
                 self.scan_button(false);
+                let res = scan_result(res, job.progress.is_cancelled());
                 // the first scan that worked: a small offer to set things up (Not now remembers)
                 if res.is_ok() && !job.progress.is_cancelled() && self.shot.is_none() && self.settings.bool("wizard_done") != Some(true) && !self.wizard_offered {
                     self.wizard_offered = true;
@@ -385,6 +424,7 @@ impl State {
                         self.scan_id += 1;
                         self.chat_reset();
                         self.advisor_start();
+                        self.own_on_open();
                         // Settings > Scanning, "After a scan": open the Advisor (not for a
                         // stopped scan, nor in a screenshot run)
                         if self.settings.num("afterScan") == Some(1.0) && !job.progress.is_cancelled() && self.shot.is_none() && self.view != View::Advisor {
@@ -397,8 +437,18 @@ impl State {
                         self.map.scene.clear();
                         self.map.galaxy.clear();
                         self.render_map();
-                        let msg = if e.kind() == std::io::ErrorKind::Interrupted { "Scan stopped.".to_string() } else { format!("Scan failed: {e}") };
+                        let mut msg = if e.kind() == std::io::ErrorKind::Interrupted { "Scan stopped.".to_string() } else { format!("Scan failed: {e}") };
+                        if let Some(root) = self.full_tree.as_ref().or(self.tree.as_ref()).map(|t| t.root_path.clone()) {
+                            self.scan_title(&root);
+                            self.update_header(&root);
+                            msg += &format!(" Showing previous scan: {}.", root.display());
+                        } else {
+                            let _ = self.window.SetTitle(&HSTRING::from("Sprawl"));
+                            text(&self.root, "TitleText", "Sprawl");
+                        }
                         text(&self.root, "StatusText", &msg);
+                        self.advisor_start();
+                        self.own_on_open();
                     }
                 }
             }
@@ -504,6 +554,7 @@ impl State {
             &format!("{} files, {} folders, {} unreadable", thousands(t.nodes[ROOT].files), thousands(t.nodes[ROOT].folders), thousands(t.errors)),
         );
         self.update_header(path);
+        self.scan_title(path);
         // The free-space tile only makes sense when a whole drive was scanned.
         let s = path.display().to_string();
         let drive_root = s.len() <= 3 && s.as_bytes().get(1) == Some(&b':');
@@ -549,6 +600,7 @@ impl State {
     }
 
     pub(crate) fn stop_scan(&mut self) {
+        self.pending_scan = None;
         if let Some(j) = &self.job {
             j.progress.cancel();
             text(&self.root, "StatusText", "Stopping...");

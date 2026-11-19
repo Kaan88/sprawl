@@ -72,6 +72,8 @@ struct Live {
 /// function running on a background thread, and poll [`Progress::snapshot`] from the UI.
 #[derive(Debug, Default)]
 pub struct Progress {
+    #[cfg(test)]
+    pub(crate) wof_probes: AtomicU64,
     excluded: Vec<String>,
     files: AtomicU64,
     folders: AtomicU64,

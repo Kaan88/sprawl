@@ -2,7 +2,8 @@
 //!
 //! * `FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)`: size, attributes and
 //!   modified time come straight from the directory listing. Plain nonempty files also get
-//!   a pinned metadata-only WOF query: Windows can hide compression from that listing.
+//!   an optional pinned metadata-only WOF query: Windows can hide compression from that
+//!   listing. Interactive inventories omit that per-file probe; explicit detailed walks keep it.
 //! * Directories are spread over a pool of worker threads (a shared LIFO work queue, so the walk
 //!   stays roughly depth-first and memory stays low).
 //! * Reparse points (junctions, symbolic links, mount points) are listed as themselves and
@@ -61,6 +62,7 @@ struct Shared<'a> {
     cv: Condvar,
     next_id: AtomicU32,
     progress: &'a Progress,
+    detect_wof: bool,
 }
 
 /// How many threads list folders. Listing is I/O- and kernel-bound; a handful more threads than
@@ -75,8 +77,20 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
     walk_with(path, progress, worker_count())
 }
 
+/// Fast inventory for interactive scans and Cleaner discovery. Directory entries already
+/// contain the size, attributes and time; do not open every plain file just to discover
+/// WOF compression hidden by Windows. Visible compression tags are still recorded.
+/// Use `walk` when an explicit storage operation needs complete WOF metadata.
+pub fn inventory(path: &Path, progress: &Progress) -> io::Result<Tree> {
+    walk_mode(path, progress, worker_count(), false)
+}
+
 /// [`walk`] with an explicit number of worker threads (for benchmarks).
 pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
+    walk_mode(path, progress, threads, true)
+}
+
+fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool) -> io::Result<Tree> {
     let pinned = crate::local::storage(path)?;
     let path = &pinned.path;
     if progress.excludes(path) {
@@ -117,6 +131,7 @@ pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result
         cv: Condvar::new(),
         next_id: AtomicU32::new(1),
         progress,
+        detect_wof,
     };
     let results: Vec<Vec<(u32, Vec<Entry>)>> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads.max(1)).map(|_| s.spawn(|| worker(&shared))).collect();
@@ -264,6 +279,7 @@ fn list_dir(
     let mut top_names: Vec<(String, u64)> = Vec::new();
     let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
     loop {
+        if sh.progress.is_cancelled() { break; }
         let len = find.cFileName.iter().position(|&c| c == 0).unwrap_or(find.cFileName.len());
         let wname = &find.cFileName[..len];
         let dot = wname == [b'.' as u16] || wname == [b'.' as u16, b'.' as u16];
@@ -272,7 +288,9 @@ fn list_dir(
             let name = String::from_utf16_lossy(wname);
             let mut attrs = find.dwFileAttributes | if find.dwFileAttributes & attr::REPARSE_POINT != 0 && find.dwReserved0 == 0x8000_0017 { attr::WOF } else { 0 };
             let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
-            if size > 0 && attrs & (attr::DIRECTORY | attr::REPARSE_POINT | attr::COMPRESSED | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0 {
+            if sh.detect_wof && size > 0 && attrs & (attr::DIRECTORY | attr::REPARSE_POINT | attr::COMPRESSED | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0 {
+                #[cfg(test)]
+                sh.progress.wof_probes.fetch_add(1, Ordering::Relaxed);
                 match pinned.child_externally_backed(&name) {
                     Ok(true) => attrs |= attr::WOF,
                     Ok(false) => {},
@@ -416,6 +434,27 @@ mod tests {
         assert_eq!(round_up(1, 4096), 4096);
         assert_eq!(round_up(0, 4096), 0);
         assert_eq!(round_up(8192, 4096), 8192);
+    }
+
+    #[test]
+    fn interactive_inventory_does_not_probe_every_plain_file() {
+        let dir = temp_dir("inventory-probes");
+        let path = dir.join("busy.bin");
+        fs::write(&path, vec![7u8; 8192]).unwrap();
+        let progress = Progress::new();
+        let fast = inventory(&dir, &progress).unwrap();
+        assert_eq!(fast.nodes[ROOT].size, 8192);
+        assert_eq!(fast.nodes[ROOT].files, 1);
+        assert_eq!(fast.errors, 0, "listing must not probe each ordinary file's WOF backing");
+        assert_eq!(progress.wof_probes.load(Ordering::Relaxed), 0);
+        let detailed_progress = Progress::new();
+        let detailed = walk(&dir, &detailed_progress).unwrap();
+        assert_eq!(detailed.errors, 0);
+        assert_eq!(detailed_progress.wof_probes.load(Ordering::Relaxed), 1, "explicit detailed walks retain WOF discovery");
+        let many = crate::scan_many_inventory(&[dir.clone()], &Progress::new()).unwrap();
+        assert_eq!(many.method, ScanMethod::Walk);
+        assert_eq!(many.errors, 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
