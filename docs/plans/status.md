@@ -13,8 +13,19 @@ reports/cancellation/title state during source changes. Fast inventory may omit 
 markers in compression search; detailed operation checks and MFT retain detection.
 
 The user requested replacing the installed executable and rebuilding the GitHub 1.0.0
-downloads/Setup in place. Verification and publication status must be recorded separately
-from the original release approval below.
+downloads/Setup in place. **Completed:** the installed executable now matches the replacement
+bundle, with its original retained as backup. The rebuilt 1.0.0 release is published as latest;
+all five GitHub asset SHA-256 digests and sizes match the local bundle. Its annotated tag
+resolves to `0d8dc9af14ac6037a2838cb54612827eb7644547`.
+
+One Astra medium verification pass requested additional scan-state fixes and approved them
+after rereading. Debug app: 66 passed / 1 ignored. Release advisor: 200 / 5, core: 60 / 1,
+installer: 16 / 0. Packaged and installed MCP initialize/list/ping each passed with 14 tools
+and exit 0. The manifest signature and bundle hashes were checked. A disposable 2,000-file
+benchmark measured about 127–133 ms wall / 1.1 s process CPU before, versus 12–13 ms wall /
+0–16 ms CPU for inventory; CPU timer granularity applies. Full-drive/elevated MFT performance
+and live UI drive switching remain unmeasured. Existing 1.0.0 users need the replacement Setup
+because a same-version rebuild is not a version-based auto-update.
 
 ## Released and reviewed
 
