@@ -4,7 +4,11 @@
 [Astra's design and product review](design-review-1.0.md) and
 [Codex's alternative roadmap](alternative-roadmap-astra.md).
 
-**Status:** recommendation only. Nothing here is approved, and no UI was changed. One small
+**Decisions, 2026-11-19:** the user agreed to real-app screenshots from a throwaway branch
+instead of mockups (nothing merges before their approval) and to a reliability 1.0.2 before any
+design work. After 1.0.2, the first design release is the small batch in step 2 (agreed).
+
+**Status:** recommendation only. No UI was changed. One small
 Advisor bug found while checking was fixed (28524a0, below).
 
 ## How this was checked

@@ -6,6 +6,7 @@ in-app updater shows.
 ## Unreleased
 
 - The Advisor no longer lists the scanned folder itself under "Folders the rules haven't explained".
+- History keeps to its size limit (Settings) when many folders have full snapshots: older full snapshots are removed too, never a folder's newest.
 
 ## 1.0.1 — 2026-11-19
 

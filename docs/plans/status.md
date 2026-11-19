@@ -15,6 +15,10 @@ dated implementation notes (see the last section).
 - **Next:** the user wants both: review [Astra's alternative roadmap](alternative-roadmap-astra.md)
   together with the backlog below, then choose. UI changes still need approved mockups first.
   Claude's review of it and a proposed order: [roadmap-review-claude.md](roadmap-review-claude.md).
+  Decided 2026-11-19: 1.0.2 is reliability only (Astra's code findings, runtime checks, History
+  cap, a scan-speed check); UI proposals are real screenshots from a throwaway branch, merged
+  only after the user approves. After 1.0.2 the first design release is the small batch
+  (scope lines, Advisor quick wins, Cleaners states).
 
 ## 1.0.1 corrections (Claude, 2026-11-19)
 

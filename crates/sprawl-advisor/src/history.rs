@@ -285,7 +285,6 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
     roots.sort();
     roots.dedup();
     let now_s = secs(now);
-    let mut kept_fo: Vec<&Entry> = Vec::new();
     for root in roots {
         let mine: Vec<&Entry> = entries.iter().filter(|e| &e.root == root).collect();
         // full: newest 3
@@ -307,27 +306,28 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
             };
             match bucket {
                 Some(b) if !seen.insert(b) => kill.push(e.file.clone()),
-                _ => kept_fo.push(e),
+                _ => {}
             }
         }
     }
-    // the cap: oldest folders-only first, but never a root's newest snapshot
-    let mut total: u64 = entries.iter().filter(|e| !kill.contains(&e.file)).map(|e| e.bytes).sum();
+    // The cap: folders-only snapshots first, then full ones, oldest first within each, but
+    // never a root's newest snapshot. Full snapshots were never removed for the cap before
+    // 1.0.2, so three per root could keep History well over it.
+    let kept: Vec<&Entry> = entries.iter().filter(|e| !kill.contains(&e.file)).collect();
+    let mut total: u64 = kept.iter().map(|e| e.bytes).sum();
     if total > cap_bytes {
-        let newest: Vec<(&PathBuf, SystemTime)> = {
-            let mut m: std::collections::HashMap<&PathBuf, SystemTime> = std::collections::HashMap::new();
-            for e in &kept_fo {
-                let t = m.entry(&e.root).or_insert(e.taken);
-                *t = (*t).max(e.taken);
-            }
-            m.into_iter().collect()
-        };
-        kept_fo.sort_by(|a, b| a.taken.cmp(&b.taken));
-        for e in kept_fo {
+        let mut newest: std::collections::HashMap<&PathBuf, SystemTime> = std::collections::HashMap::new();
+        for e in &kept {
+            let t = newest.entry(&e.root).or_insert(e.taken);
+            *t = (*t).max(e.taken);
+        }
+        let mut order = kept;
+        order.sort_by_key(|e| (e.full, e.taken));
+        for e in order {
             if total <= cap_bytes {
                 break;
             }
-            if newest.iter().any(|(r, t)| *r == &e.root && *t == e.taken) {
+            if newest.get(&e.root) == Some(&e.taken) {
                 continue;
             }
             total = total.saturating_sub(e.bytes);
@@ -663,6 +663,17 @@ mod tests {
         let left: Vec<&Entry> = v.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert!(left.iter().any(|x| !x.full && x.taken == now));
         assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 100 || left.iter().filter(|x| !x.full).count() == 1);
+        // Full snapshots count toward the cap too: many roots with three each must not stay over it.
+        let mut many = Vec::new();
+        for r in ["C", "D", "E", "F"] {
+            for d in 1..=3 { many.push(e(r, d, true, 30, now)); }
+        }
+        let kill = doomed(&many, 200, now);
+        let left: Vec<&Entry> = many.iter().filter(|x| !kill.contains(&x.file)).collect();
+        assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 200, "full snapshots are thinned for the cap");
+        for r in ["C", "D", "E", "F"] {
+            assert!(left.iter().any(|x| x.root == Path::new(r) && x.taken == now - Duration::from_secs(DAY)), "each root keeps its newest");
+        }
     }
 
     #[test]
