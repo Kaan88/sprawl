@@ -554,10 +554,13 @@ mod tests {
         let o = clean::run(&f.path, &action, &Spare::default(), &AtomicBool::new(false), &mut |_| {});
         assert_eq!(o.freed, 0);
         // a copy the user keeps, or new since the scan, stays
+        // ("new since the scan" counts from just before this rewrite, not a fixed 5 s before
+        // the last run, which a slow, busy test run could exceed)
+        let rewritten = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
         std::fs::write(&copies[1], &data).unwrap();
         let o = clean::run(&f.path, &action, &Spare { since: None, keep: vec![copies[1].clone()] }, &AtomicBool::new(false), &mut |_| {});
         assert_eq!((o.freed, o.kept_chosen), (0, 1));
-        let o = clean::run(&f.path, &action, &Spare { since: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(5)), keep: vec![] }, &AtomicBool::new(false), &mut |_| {});
+        let o = clean::run(&f.path, &action, &Spare { since: Some(rewritten), keep: vec![] }, &AtomicBool::new(false), &mut |_| {});
         assert_eq!(o.freed, 0, "{:?}", o.problems);
         let _ = std::fs::remove_dir_all(&dir);
     }

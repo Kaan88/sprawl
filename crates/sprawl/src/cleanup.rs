@@ -152,6 +152,8 @@ pub(crate) struct Done {
     /// Privacy sets that went, and the browsers that held one back (open).
     pub privacy_items: usize,
     pub privacy_open: Vec<String>,
+    /// Tools that finished but whose saving couldn't be measured.
+    pub unmeasured: usize,
     /// Left because they were new since the scan, or kept by the user.
     pub kept_new: u64,
     pub kept_chosen: u64,
@@ -208,7 +210,8 @@ fn credit_tool(out: &mut Outcome, before: Option<u64>, after: Option<u64>) {
     if !succeeded(out) { return; }
     match before.zip(after) {
         Some((before, after)) => out.freed = before.saturating_sub(after),
-        None => out.problems.push("The tool finished, but complete comparable before/after sizes were unavailable; no space saving was credited.".into()),
+        // done, but unmeasured: told apart from a failure, still credited nothing (Astra)
+        None => out.saving_unknown = true,
     }
 }
 
@@ -866,7 +869,7 @@ impl State {
     fn cleanup_finish(&mut self) {
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
-        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new(), prevention: Vec::new() };
+        let mut done = Done { freed: 0, items: 0, recycled: 0, recycled_items: 0, privacy_items: 0, privacy_open: Vec::new(), unmeasured: 0, kept_new: 0, kept_chosen: 0, kept_protected: 0, problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), output: Vec::new(), prevention: Vec::new() };
         let learned_at = sprawl_advisor::learning::now();
         for it in &run.items {
             if let (true, Some(rule), ItemState::Done(o)) = (it.learn, &it.rule, &it.state) {
@@ -905,6 +908,7 @@ impl State {
                 }
                 done.freed += o.freed;
                 done.recycled += o.recycled;
+                if o.saving_unknown && succeeded(o) { done.unmeasured += 1; }
                 done.kept_new += o.kept_new;
                 done.kept_chosen += o.kept_chosen;
                 done.kept_protected += o.kept_protected;
@@ -988,6 +992,7 @@ impl State {
                     ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", format!("Removing... {}", self.size(*f))),
                     ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("{} to the Recycle Bin", self.size(o.recycled))),
                     ItemState::Done(o) if it.recycle => ("&#xE7BA;", "#FFF5B342", format!("{} to the Recycle Bin; some couldn't go", self.size(o.recycled))),
+                    ItemState::Done(o) if o.saving_unknown && succeeded(o) => ("&#xE73E;", "#FF4CC38A", "Done; the saving couldn't be measured".to_string()),
                     ItemState::Done(o) if o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("Freed {}", self.size(o.freed))),
                     ItemState::Done(o) => ("&#xE7BA;", "#FFF5B342", format!("Freed {}; some couldn't go", self.size(o.freed))),
                 };
@@ -1000,7 +1005,7 @@ impl State {
             }
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
-            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled + d.privacy_items as u64 > 0;
+            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled + d.privacy_items as u64 + d.unmeasured as u64 > 0;
             let (bg, border, glyph, colour) = if fine { ("#144CC38A", "#554CC38A", "&#xE73E;", "#FF4CC38A") } else { ("#14F5B342", "#55F5B342", "&#xE7BA;", "#FFF5B342") };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = match (d.stopped, d.items) {
@@ -1015,6 +1020,14 @@ impl State {
             let head = match d.recycled {
                 0 => head,
                 r => format!("{head} {} ({binned}) sent to the Recycle Bin.", self.size(r)).trim().to_string(),
+            };
+            let head = match d.unmeasured {
+                0 => head,
+                n => {
+                    let head = if head == "Nothing was freed." { String::new() } else { head };
+                    let what = if n == 1 { "1 tool finished; what it saved couldn't be measured.".to_string() } else { format!("{n} tools finished; what they saved couldn't be measured.") };
+                    format!("{head} {what}").trim().to_string()
+                }
             };
             let head = match d.privacy_items {
                 0 => head,
@@ -1712,7 +1725,9 @@ mod accounting_tests {
             let mut out = Outcome::default();
             credit_tool(&mut out, before, after);
             assert_eq!(out.freed, expected);
-            assert_eq!(succeeded(&out), before.is_some() && after.is_some());
+            // unmeasured is not a failure, and credits nothing
+            assert!(succeeded(&out));
+            assert_eq!(out.saving_unknown, before.is_none() || after.is_none());
         }
         for mut out in [Outcome { problems: vec!["tool failed".into()], ..Default::default() },
             Outcome { stopped: true, ..Default::default() }, Outcome { more_problems: 1, ..Default::default() }] {

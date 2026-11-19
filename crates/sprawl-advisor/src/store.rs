@@ -77,7 +77,11 @@ pub(crate) fn write_atomic(dir: &Path, name: &str, replace: bool, write: impl Fn
 
 pub(crate) fn lock(dir: &Path) -> io::Result<fs::File> {
     use std::os::windows::fs::MetadataExt;
-    for _ in 0..40 {
+    // up to about 10 s: History saves run off the window's thread, and several at once (each
+    // flushing to disk) took longer than 2 s on a busy PC, losing a snapshot
+    let start = std::time::Instant::now();
+    for attempt in 0u64.. {
+        if start.elapsed() > Duration::from_secs(10) { break; }
         match fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).share_mode(0)
             .custom_flags(0x0020_0000 | 0x0010_0000).open(dir.join(".save.lock")) {
             Ok(file) => {
@@ -85,7 +89,7 @@ pub(crate) fn lock(dir: &Path) -> io::Result<fs::File> {
                 if !m.is_file() || m.len() != 0 || m.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 { return Err(bad()); }
                 return Ok(file);
             }
-            Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(10 + 10 * attempt.min(9))),
             Err(e) => return Err(e),
         }
     }

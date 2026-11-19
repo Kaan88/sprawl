@@ -152,6 +152,9 @@ pub struct Outcome {
     /// Bytes sent to the Recycle Bin (freed only when the bin is emptied), and their files.
     pub recycled: u64,
     pub recycled_files: u64,
+    /// A tool finished without a problem, but what it saved couldn't be measured (its folder
+    /// couldn't be read completely before or after): nothing is credited, and it isn't a failure.
+    pub saving_unknown: bool,
 }
 
 /// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
@@ -231,10 +234,16 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     let mut o = Outcome::default();
     // Network shares and mapped network drives are scanned read only: no action of any kind
     // (a tool command, a privacy set, hard links, a delete) runs on one, whatever offered it.
+    // A tool also names its targets inside the command (compact on a folder, a disk image to
+    // shrink): every path written there must be local too, not just the finding's own path.
+    let named: Vec<PathBuf> = match action {
+        Action::Tool { command } => quoted_paths(command),
+        _ => Vec::new(),
+    };
     let targets: Vec<&Path> = match action {
         Action::Set { files, .. } => std::iter::once(path).chain(files.iter().map(PathBuf::as_path)).collect(),
         Action::Link { keep, copies } => std::iter::once(path).chain(std::iter::once(keep.as_path())).chain(copies.iter().map(PathBuf::as_path)).collect(),
-        _ => vec![path],
+        _ => std::iter::once(path).chain(named.iter().map(PathBuf::as_path)).collect(),
     };
     if let Some(e) = targets.iter().find_map(|t| sprawl_core::local::lexical(t).err()) {
         o.problem(path, format!("left alone: {e}"));
@@ -263,6 +272,31 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         o.stopped = true;
     }
     o
+}
+
+/// The paths written in a tool command as PowerShell single-quoted strings (`''` is a quote),
+/// a trailing `\*` taken off: anything spelled like a drive path (`X:\`) or a network or
+/// device path (`\\`). Other quoted text (a message) is not a path.
+fn quoted_paths(command: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\'' { continue; }
+        let mut s = String::new();
+        loop {
+            match chars.next() {
+                Some('\'') if chars.peek() == Some(&'\'') => { chars.next(); s.push('\''); }
+                Some('\'') | None => break,
+                Some(c) => s.push(c),
+            }
+        }
+        let b = s.as_bytes();
+        let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+        if drive || s.starts_with(r"\\") || s.starts_with("//") {
+            out.push(PathBuf::from(s.strip_suffix(r"\*").unwrap_or(&s)));
+        }
+    }
+    out
 }
 
 /// What [`run`] would free on `path` now, by the same tests and without deleting anything: the
@@ -2188,6 +2222,17 @@ mod tests {
         assert!(in_bin(&base).is_empty());
         drop(bin);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_tool_command_naming_a_share_is_refused() {
+        assert_eq!(quoted_paths(r"compact /c /s /a /i /exe:xpress8k 'C:\Games\It''s\*'"), vec![PathBuf::from(r"C:\Games\It's")]);
+        assert_eq!(quoted_paths("throw 'Docker Desktop is running: quit it first'"), Vec::<PathBuf>::new());
+        let stop = AtomicBool::new(false);
+        let local = std::env::temp_dir();
+        let cmd = format!("compact /c /s /a /i /exe:xpress8k {}", crate::rules::ps_quote(r"\\server\share\Games\*"));
+        let o = run(&local, &Action::Tool { command: cmd }, &Spare::default(), &stop, &mut |_| {});
+        assert!(o.problems.iter().any(|p| p.contains("left alone")), "{:?}", o.problems);
     }
 
     #[test]
