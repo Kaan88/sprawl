@@ -37,6 +37,41 @@ pub fn lexical(path: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// A scan root on a network share: a `\\server\share` path or a mapped remote drive. Scans
+/// there only list names (no pins, no WOF probes, no MFT), as before 1.0. Every storage
+/// action still goes through `lexical`, which refuses these, so nothing on a share is changed.
+pub fn remote_scan_root(path: &Path) -> Option<PathBuf> {
+    let raw = path.to_str()?.replace('/', "\\");
+    let share = raw.strip_prefix(r"\\?\UNC\").or_else(|| raw.strip_prefix(r"\\").filter(|r| !r.starts_with(['?', '.'])));
+    let tail = if let Some(rest) = share {
+        let mut parts = rest.split('\\');
+        if parts.next().map_or(true, str::is_empty) || parts.next().map_or(true, str::is_empty) { return None; }
+        rest
+    } else {
+        let s = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+        let b = s.as_bytes();
+        if s.starts_with('\\') || b.len() < 2 || !b[0].is_ascii_alphabetic() || b[1] != b':' { return None; }
+        let root = [b[0] as u16, b':' as u16, b'\\' as u16, 0];
+        if unsafe { GetDriveTypeW(root.as_ptr()) } != 4 { return None; }
+        &s[2..]
+    };
+    if tail.contains([':', '\0', '\r', '\n', '*', '?', '"', '<', '>', '|']) || tail.split('\\').any(|c| c == "..") { return None; }
+    Some(crate::canonical_root(path))
+}
+
+/// The root of a scan: pinned when local, listed as it is when on a network share.
+pub struct ScanRoot {
+    pub path: PathBuf,
+    pub pinned: Option<Directory>,
+}
+
+/// `allow_wof` as in [`storage`]: a WOF file may itself be the root.
+pub fn scan_root(path: &Path, allow_wof: bool) -> io::Result<ScanRoot> {
+    if let Some(path) = remote_scan_root(path) { return Ok(ScanRoot { path, pinned: None }); }
+    let d = pin(path, false, allow_wof)?;
+    Ok(ScanRoot { path: d.path.clone(), pinned: Some(d) })
+}
+
 pub fn final_path(file: &File) -> io::Result<PathBuf> {
     let mut out = vec![0u16; 512];
     loop {
@@ -160,6 +195,9 @@ mod tests {
     #[test]
     fn remote_device_and_stream_paths_are_rejected_before_open() {
         for p in [r"\\server\share\file", r"\\?\UNC\server\share\file", r"\\.\C:\file", r"C:\file:stream"] { assert!(lexical(Path::new(p)).is_err(), "{p}"); }
+        // Shares may be scanned (listed only); device, stream and half-named paths may not.
+        for p in [r"\\server\share", r"\\server\share\dir", r"\\?\UNC\server\share\dir", "//server/share/dir"] { assert!(remote_scan_root(Path::new(p)).is_some(), "{p}"); }
+        for p in [r"\\.\C:\file", r"\\?\C:\file", r"\\server", r"\\server\\", r"\\server\share\f:s", r"\\server\share\..\x", r"\\?\GLOBALROOT\x", r"C:\Windows"] { assert!(remote_scan_root(Path::new(p)).is_none(), "{p}"); }
         let root = std::env::temp_dir().join(format!("sprawl-local-pin-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("manifest"), b"bounded").unwrap();

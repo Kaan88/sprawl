@@ -189,9 +189,9 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 /// Folder inventories retain listing compression attributes/tags, but do not open every
 /// plain file to discover hidden WOF backing. `walk::walk` provides that detailed check.
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
-    let pinned = local::scope(path)?;
-    let path = &pinned.path;
-    if is_elevated() && !progress.has_exclusions() {
+    let root = local::scan_root(path, false)?;
+    let path = &root.path;
+    if root.pinned.is_some() && is_elevated() && !progress.has_exclusions() {
         match mft::scan(path, progress) {
             Ok(tree) => return Ok(tree),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
@@ -220,7 +220,7 @@ fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::
     if paths.len() == 1 {
         return if use_mft { scan_auto(&paths[0], progress) } else { walk::inventory(&paths[0], progress) };
     }
-    let pinned: Vec<_> = paths.iter().map(|p| local::scope(p)).collect::<io::Result<_>>()?;
+    let pinned: Vec<_> = paths.iter().map(|p| local::scan_root(p, false)).collect::<io::Result<_>>()?;
     let abs: Vec<PathBuf> = pinned.iter().map(|p| p.path.clone()).collect();
     progress.pin_top(Some(abs.iter().map(|p| p.display().to_string()).collect()), None);
     let mut trees: Vec<Option<Tree>> = (0..abs.len()).map(|_| None).collect();

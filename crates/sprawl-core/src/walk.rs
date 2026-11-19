@@ -91,8 +91,10 @@ pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result
 }
 
 fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool) -> io::Result<Tree> {
-    let pinned = crate::local::storage(path)?;
-    let path = &pinned.path;
+    let scan = crate::local::scan_root(path, true)?;
+    let path = &scan.path;
+    // WOF is local NTFS: a network share is listed only, never probed.
+    let detect_wof = detect_wof && scan.pinned.is_some();
     if progress.excludes(path) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "This folder is excluded in Settings > Scanning"));
     }
@@ -111,7 +113,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     if !meta.is_dir() {
         let mut errors = 0;
         if root.attributes & attr::COMPRESSED == 0 && meta.len() > 0 {
-            match pinned.externally_backed() {
+            match scan.pinned.as_ref().map_or(Ok(false), |p| p.externally_backed()) {
                 Ok(true) => root.attributes |= attr::WOF,
                 Ok(false) => {},
                 Err(_) => { errors += 1; progress.add_errors(1); }
@@ -244,11 +246,16 @@ fn list_dir(
     batch: &mut LiveBatch,
 ) -> Vec<Entry> {
     let mut entries = Vec::new();
-    // A queued folder may have been replaced since its parent's listing. Pin and validate
-    // the whole live chain before FindFirstFile can follow it anywhere.
-    let pinned = match crate::local::directory(Path::new(&display_path(&job.path))) {
-        Ok(p) => p,
-        Err(_) => { sh.progress.add_errors(1); return entries; }
+    // Only the detailed walk opens files (the WOF probe), so only it pins the folder's whole
+    // chain first. An inventory just lists names: a folder listed as a reparse point is never
+    // queued, and pinning every ancestor of every folder made scans 15-55x slower (1.0).
+    let pinned = if sh.detect_wof {
+        match crate::local::directory(Path::new(&display_path(&job.path))) {
+            Ok(p) => Some(p),
+            Err(_) => { sh.progress.add_errors(1); return entries; }
+        }
+    } else {
+        None
     };
     pattern.clear();
     pattern.extend_from_slice(&job.path);
@@ -288,7 +295,7 @@ fn list_dir(
             let name = String::from_utf16_lossy(wname);
             let mut attrs = find.dwFileAttributes | if find.dwFileAttributes & attr::REPARSE_POINT != 0 && find.dwReserved0 == 0x8000_0017 { attr::WOF } else { 0 };
             let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
-            if sh.detect_wof && size > 0 && attrs & (attr::DIRECTORY | attr::REPARSE_POINT | attr::COMPRESSED | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0 {
+            if let Some(pinned) = pinned.as_ref().filter(|_| size > 0 && attrs & (attr::DIRECTORY | attr::REPARSE_POINT | attr::COMPRESSED | 0x1000 | 0x0004_0000 | 0x0040_0000) == 0) {
                 #[cfg(test)]
                 sh.progress.wof_probes.fetch_add(1, Ordering::Relaxed);
                 match pinned.child_externally_backed(&name) {
