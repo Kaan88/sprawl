@@ -165,19 +165,62 @@ pub struct Spare {
     pub since: Option<SystemTime>,
     /// Folders and files the user chose to keep: they, and everything inside them, stay.
     pub keep: Vec<PathBuf>,
-    /// Whether a folder was in the scan at this path (see [`scanned_in`]). A folder whose own
-    /// times changed after the scan may have been moved in from elsewhere, with old files inside
-    /// that keep their old times: it is only gone through when the scan saw it here. None: no
-    /// such folder is gone through.
+    /// What the scan saw in a folder at this path (see [`scanned_in`]). A folder whose own
+    /// times changed after the scan may have been moved in from elsewhere, or put in place of
+    /// the one reviewed, with old files inside that keep their old times: it is only gone
+    /// through when every old entry in it now is one the scan saw there. None: no such folder
+    /// is gone through.
     pub scanned: Option<Scanned>,
 }
 
-/// See [`Spare::scanned`].
-pub type Scanned = std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+/// One entry the scan saw in a folder: its name (in its own case), whether it is a folder,
+/// and a file's length.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeenEntry {
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+}
 
-/// [`Spare::scanned`] from the tree the clean-up was reviewed on.
+/// See [`Spare::scanned`]: the entries the scan saw in the folder at a path, or None when it
+/// saw no folder there.
+pub type Scanned = std::sync::Arc<dyn Fn(&Path) -> Option<Vec<SeenEntry>> + Send + Sync>;
+
+/// [`Spare::scanned`] from the tree the clean-up was reviewed on, matched with each name's
+/// own case.
 pub fn scanned_in(tree: std::sync::Arc<sprawl_core::Tree>) -> Scanned {
-    std::sync::Arc::new(move |p: &Path| crate::find_path(&tree, p).is_some_and(|n| tree.nodes[n].is_dir))
+    std::sync::Arc::new(move |p: &Path| {
+        let n = crate::history::find_path(&tree, p).filter(|&n| tree.nodes[n].is_dir)?;
+        Some(tree.nodes[n].children.iter().map(|&c| {
+            let k = &tree.nodes[c];
+            SeenEntry { name: k.name.clone(), dir: k.is_dir, size: k.size }
+        }).collect())
+    })
+}
+
+/// Whether every entry of folder `p` that is not new since `ft` (by its write and birth
+/// times) is one the scan saw there: the same name in the same case, a folder for a folder,
+/// a file of the same length for a file. One the scan didn't see, or a listing that fails,
+/// says the folder may not be the one reviewed. (A file moved in keeps its old times, so it
+/// is counted as old here, which holds the folder.)
+fn only_seen_entries(p: &Path, seen: &[SeenEntry], ft: i64) -> bool {
+    let seen: std::collections::HashMap<&str, &SeenEntry> = seen.iter().map(|e| (e.name.as_str(), e)).collect();
+    let Ok(rd) = std::fs::read_dir(p) else { return false };
+    for e in rd {
+        let Ok(e) = e else { return false };
+        let Ok(m) = e.metadata() else { return false };
+        let new = |t: std::io::Result<SystemTime>| t.is_ok_and(|t| filetime(t) > ft);
+        if new(m.created()) || new(m.modified()) {
+            continue;
+        }
+        let name = e.file_name();
+        let Some(was) = name.to_str().and_then(|n| seen.get(n)) else { return false };
+        let dir = attrs(&m) & DIRECTORY != 0;
+        if was.dir != dir || !dir && was.size != m.len() {
+            return false;
+        }
+    }
+    true
 }
 
 impl std::fmt::Debug for Spare {
@@ -202,7 +245,7 @@ impl Spare {
             // what is inside is looked at one by one. But a folder moved in from elsewhere after
             // the scan also has a new change time, while the old files inside keep theirs: a
             // changed folder is only gone through when the scan saw it at this path.
-            info.created > ft || (info.newest > ft && !self.scanned.as_ref().is_some_and(|seen| seen(p)))
+            info.created > ft || (info.newest > ft && !self.scanned.as_ref().and_then(|seen| seen(p)).is_some_and(|kids| only_seen_entries(p, &kids, ft)))
         } else {
             info.created > ft || info.newest > ft
         }
@@ -2148,17 +2191,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// What a scan of `base` taken now would have seen as folders, for [`Spare::scanned`].
+    /// What a scan of `base` taken now would have seen, for [`Spare::scanned`].
     fn scanned_now(base: &Path) -> Option<Scanned> {
-        let mut seen = std::collections::HashSet::new();
-        let mut stack = vec![base.to_path_buf()];
-        while let Some(d) = stack.pop() {
-            seen.insert(lower(&d));
-            for e in std::fs::read_dir(&d).unwrap().flatten() {
-                if e.file_type().unwrap().is_dir() { stack.push(e.path()); }
-            }
-        }
-        Some(std::sync::Arc::new(move |p: &Path| seen.contains(&lower(p))))
+        Some(scanned_in(std::sync::Arc::new(sprawl_core::scan(base, |_| {}).unwrap())))
     }
 
     #[test]
@@ -2178,18 +2213,38 @@ mod tests {
         // a whole old folder moved into the cache: its birth time and the files inside keep
         // their old times; only the folder's change time is new (Astra's 1.0.2 S1 #3)
         std::fs::rename(base.join("mine"), cache.join("mine")).unwrap();
-        // the cache itself changed (an entry came in) but was in the scan, so it is gone through
+        // the cache changed, and holds an old entry the scan didn't see there: it may not be the
+        // folder reviewed, so it is held whole (re-review S1 #3)
         let stop = AtomicBool::new(false);
         for action in [Action::Remove, Action::Clear { days: 0 }] {
             let spare = Spare { since: Some(scan), keep: Vec::new(), scanned: seen.clone() };
             let o = run(&cache, &action, &spare, &stop, &mut |_| {});
             assert!(cache.join("mine").join("deep").join("thesis.doc").exists(), "{action:?} took a moved-in file: {:?}", o.problems);
-            // (the first run takes the old files; Clear then finds nothing old left to take)
-            if matches!(action, Action::Remove) {
-                assert!(!cache.join("old.bin").exists() && o.freed == 50, "didn't go through the scanned cache: {:?}", o.problems);
-            }
+            assert!(cache.join("old.bin").exists() && o.freed == 0, "{action:?}: {:?}", o.problems);
         }
+        // an old folder put in place of the reviewed one, at the same path: held
+        std::fs::rename(&cache, base.join("cache.was")).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::rename(base.join("cache.was").join("mine"), cache.join("mine")).unwrap();
+        std::fs::rename(base.join("cache.was").join("old.bin"), cache.join("other.bin")).unwrap();
+        let spare = Spare { since: Some(scan), keep: Vec::new(), scanned: seen.clone() };
+        let o = run(&cache, &Action::Clear { days: 0 }, &spare, &stop, &mut |_| {});
+        assert!(cache.join("mine").join("deep").join("thesis.doc").exists() && cache.join("other.bin").exists(), "{:?}", o.problems);
+        assert_eq!(o.freed, 0);
+        // a changed folder whose old entries are all ones the scan saw is gone through
+        std::fs::rename(cache.join("mine"), base.join("mine")).unwrap();
+        std::fs::remove_dir_all(&cache).unwrap();
+        std::fs::rename(base.join("cache.was"), &cache).unwrap();
+        std::fs::write(cache.join("old.bin"), vec![0u8; 30]).unwrap();
+        let seen = scanned_now(&base);
+        let scan = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(cache.join("fresh.bin"), b"new").unwrap();
+        let spare = Spare { since: Some(scan), keep: Vec::new(), scanned: seen.clone() };
+        let o = run(&cache, &Action::Clear { days: 0 }, &spare, &stop, &mut |_| {});
+        assert!(!cache.join("old.bin").exists() && cache.join("fresh.bin").exists(), "{:?}", o.problems);
         // without knowing what the scan saw, a changed folder is never gone through
+        std::fs::rename(base.join("mine"), cache.join("mine")).unwrap();
         std::fs::create_dir_all(cache.join("was_here")).unwrap();
         std::fs::write(cache.join("was_here").join("old3.bin"), vec![0u8; 5]).unwrap();
         let blind = Spare { since: Some(scan), keep: Vec::new(), scanned: None };
@@ -2514,9 +2569,10 @@ mod tests {
         let mut bin = test_bin(&base, 1 << 30);
         let o = run_with(&cache, &Action::Remove, &spare, Some(&mut bin), &stop, &mut |_| {});
         assert!(o.problems.is_empty(), "{:?}", o.problems);
-        assert!(cache.join("mine.doc").exists(), "the moved-in file stays, as the item check decides");
-        assert!(!cache.join("old.bin").exists());
-        assert_eq!((o.recycled, o.kept_new), (40, 1));
+        assert!(cache.join("mine.doc").exists(), "the moved-in file stays");
+        // an old entry the scan didn't see there holds the changed folder whole (re-review S1 #3)
+        assert!(cache.join("old.bin").exists());
+        assert_eq!((o.recycled, o.kept_new), (0, 1));
         drop(bin);
         let _ = std::fs::remove_dir_all(base.join("bin"));
 
