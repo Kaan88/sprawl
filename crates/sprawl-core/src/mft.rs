@@ -271,6 +271,30 @@ pub struct Parsed {
     pub name: Option<FileName>,
     /// Unnamed `$DATA`: (size, allocated). Only from the part that starts at VCN 0.
     pub data: Option<(u64, u64)>,
+    /// A WOF-compressed file's `WofCompressedData` stream: what it takes on disk (the unnamed
+    /// stream is sparse then, with nothing allocated). Fable core review P2-3.
+    pub wof: Option<u64>,
+}
+
+/// The name of the stream a WOF-compressed file keeps its data in.
+const WOF_STREAM: &str = "WofCompressedData";
+
+/// An attribute's name, when it has one.
+fn attr_name(a: &[u8]) -> Option<String> {
+    let len = usize::from(attr_name_len(a));
+    let off = usize::from(u16le(a, 0x0A)?);
+    let bytes = a.get(off..off.checked_add(len * 2)?)?;
+    Some(String::from_utf16_lossy(&bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect::<Vec<_>>()))
+}
+
+/// A record that is in use but couldn't be read (its update sequence didn't check out, or
+/// NTFS marked it BAAD): counted as unreadable, not taken for a free record (P2-4).
+pub fn is_damaged(rec: &[u8]) -> bool {
+    match rec.get(0..4) {
+        Some(b"BAAD") => true,
+        Some(b"FILE") => u16le(rec, 0x16).is_some_and(|f| f & REC_IN_USE != 0),
+        _ => false,
+    }
 }
 
 fn name_rank(namespace: u8) -> u8 {
@@ -338,6 +362,16 @@ pub fn parse_record(rec: &mut [u8], frn: u64) -> Option<Parsed> {
                     p.data = Some((size, alloc));
                 }
             }
+            AT_DATA if is_non_resident(a) && u64le(a, 0x10) == Some(0) && attr_name(a).as_deref() == Some(WOF_STREAM) => {
+                let mut alloc = u64le(a, 0x28).unwrap_or(0);
+                let aflags = u16le(a, 0x0C).unwrap_or(0);
+                if aflags & 0x8001 != 0 && a.len() >= 0x48 {
+                    if let Some(c) = u64le(a, 0x40) {
+                        alloc = c;
+                    }
+                }
+                p.wof = Some(alloc);
+            }
             0xC0 if !is_non_resident(a) => {
                 if resident_value(a).and_then(|v| u32le(v, 0)) == Some(0x8000_0017) { p.attrs |= attr::WOF; }
             }
@@ -366,6 +400,8 @@ const F_DIR: u8 = 2;
 struct Rec {
     size: u64,
     alloc: u64,
+    /// What a WOF file's compressed stream takes, on top of `alloc`.
+    wof: u64,
     modified: u64,
     parent: u32,
     attrs: u32,
@@ -378,7 +414,7 @@ struct Rec {
 
 impl Default for Rec {
     fn default() -> Self {
-        Rec { size: 0, alloc: 0, modified: 0, parent: NONE32, attrs: 0, seq: 0, parent_seq: 0, flags: 0, rank: 255 }
+        Rec { size: 0, alloc: 0, wof: 0, modified: 0, parent: NONE32, attrs: 0, seq: 0, parent_seq: 0, flags: 0, rank: 255 }
     }
 }
 
@@ -387,11 +423,13 @@ impl Default for Rec {
 pub struct Index {
     recs: Vec<Rec>,
     names: Vec<String>,
+    /// Records in use that couldn't be read (see [`is_damaged`]).
+    pub damaged: u64,
 }
 
 impl Index {
     pub fn with_capacity(records: usize) -> Self {
-        Index { recs: vec![Rec::default(); records], names: vec![String::new(); records] }
+        Index { recs: vec![Rec::default(); records], names: vec![String::new(); records], damaged: 0 }
     }
 
     /// Fold one parsed record in. Order doesn't matter.
@@ -436,6 +474,20 @@ impl Index {
             r.size = size;
             r.alloc = alloc;
         }
+        if let Some(w) = p.wof {
+            r.wof = w;
+        }
+    }
+
+    /// Named records in use that no tree lists: their folder's record is missing, damaged or
+    /// reused. With [`Index::damaged`], what the scan couldn't read.
+    fn unlisted(&self) -> u64 {
+        (FIRST_USER_FRN as usize..self.recs.len())
+            .filter(|&f| {
+                let r = &self.recs[f];
+                r.flags & F_IN_USE != 0 && r.rank != 255 && r.parent != NONE32 && r.parent as usize != f && !self.listed(f)
+            })
+            .count() as u64
     }
 
     /// Whether `frn` shows up in trees: in use, named, not a metafile, and its parent link is
@@ -489,9 +541,15 @@ impl Index {
     pub fn build_excluding(&mut self, roots: &[(u64, PathBuf)], progress: &Progress) -> Vec<Tree> {
         let (off, kids) = self.link();
         let take = roots.len() == 1;
+        // what couldn't be read is said, not dropped silently: on the first tree (one volume's
+        // records can't be told apart by root)
+        let unreadable = self.damaged + self.unlisted();
         let mut out = Vec::with_capacity(roots.len());
         for (root_frn, path) in roots {
             out.push(self.build_one(*root_frn as usize, path, &off, &kids, take, progress));
+        }
+        if let Some(t) = out.first_mut() {
+            t.errors = t.errors.saturating_add(unreadable);
         }
         out
     }
@@ -504,7 +562,7 @@ impl Index {
             name,
             is_dir,
             size: if is_dir { 0 } else { r.size },
-            allocated: if is_dir { 0 } else { r.alloc },
+            allocated: if is_dir { 0 } else { r.alloc.saturating_add(r.wof) },
             files: u64::from(!is_dir),
             folders: 0,
             modified: filetime_to_system(r.modified),
@@ -939,6 +997,7 @@ struct ChunkResult {
     parsed: Vec<Parsed>,
     batch: LiveBatch,
     bytes: u64,
+    damaged: u64,
 }
 
 /// Read and parse the whole MFT of the volume at `volume` (e.g. `C:\`).
@@ -1029,8 +1088,13 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                 let t = std::time::Instant::now();
                 let mut parsed = Vec::with_capacity(len / rs as usize);
                 let mut batch = LiveBatch::default();
+                let mut damaged = 0u64;
                 for (i, rec) in buf[..len].chunks_exact_mut(rs as usize).enumerate() {
-                    if let Some(p) = parse_record(rec, first + i as u64) {
+                    let p = parse_record(rec, first + i as u64);
+                    if p.is_none() && is_damaged(rec) {
+                        damaged += 1;
+                    }
+                    if let Some(p) = p {
                         if live_types && p.base == 0 && !p.is_dir && p.frn >= FIRST_USER_FRN {
                             if let (Some(n), Some((size, _))) = (&p.name, p.data) {
                                 batch.add_file(&n.name, size);
@@ -1041,7 +1105,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                 }
                 let _ = free_tx.send(buf);
                 parse_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                if res_tx.send(Ok(ChunkResult { parsed, batch, bytes: len as u64 })).is_err() {
+                if res_tx.send(Ok(ChunkResult { parsed, batch, bytes: len as u64, damaged })).is_err() {
                     break;
                 }
             });
@@ -1071,6 +1135,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                 }
             };
             received += 1;
+            index.damaged += chunk_res.damaged;
             let t_merge = std::time::Instant::now();
             let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
             sizes.clear();
@@ -1440,7 +1505,34 @@ mod tests {
             attrs: if name.starts_with('$') { attr::HIDDEN | attr::SYSTEM } else { 0 },
             name: Some(FileName { parent, parent_seq: pseq, rank: 0, name: name.into() }),
             data,
+            wof: None,
         }
+    }
+
+    /// Fable core review P2-3 and P2-4: a WOF file's compressed stream is what it takes on
+    /// disk; an orphan (its folder's record missing) and a damaged record are counted.
+    #[test]
+    fn wof_sizes_and_what_couldnt_be_read() {
+        let mut idx = Index::with_capacity(64);
+        idx.merge(rec(5, 5, 5, 5, ".", true, None));
+        let mut f = rec(30, 1, 5, 5, "packed.dll", false, Some((1 << 20, 0)));
+        f.attrs |= attr::WOF;
+        idx.merge(f);
+        idx.merge(Parsed { frn: 31, base: 30, wof: Some(300 << 10), ..Default::default() });
+        idx.merge(rec(32, 1, 40, 1, "orphan.txt", false, Some((5, 4096))));
+        idx.damaged = 2;
+        let t = idx.build(&[(5, PathBuf::from(r"C:\"))]).remove(0);
+        let n = t.nodes.iter().find(|n| n.name == "packed.dll").unwrap();
+        assert_eq!((n.size, n.allocated), (1 << 20, 300 << 10));
+        assert!(!t.nodes.iter().any(|n| n.name == "orphan.txt"));
+        assert_eq!(t.errors, 3, "two damaged records and one orphan");
+        let mut bad = vec![0u8; 1024];
+        bad[..4].copy_from_slice(b"BAAD");
+        assert!(is_damaged(&bad));
+        bad[..4].copy_from_slice(b"FILE");
+        assert!(!is_damaged(&bad), "not in use: a free record");
+        bad[0x16] = REC_IN_USE as u8;
+        assert!(is_damaged(&bad));
     }
 
     #[test]

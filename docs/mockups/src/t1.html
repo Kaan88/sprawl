@@ -1,0 +1,116 @@
+<article class="m" data-tier="1" data-w="880" data-h="330" data-title="Scan header, before and after"
+data-ctl="Grid, TextBlock, HyperlinkButton, InfoBar (Severity=Success, IsClosable=False), CommandBar (Primary commands, Label Right)"
+data-problem="The header packs what was scanned, how, and the Details link into loose text. Users do not notice that the scan skipped folders."
+data-trade="One more visible chip. When a scan is incomplete the chip turns amber, which adds a little worry, but that is the honest state.">
+<div class="col grow p16 g16">
+ <div class="row g16" style="align-items:flex-start">
+  <div class="card grow col g4"><span class="pill n" style="align-self:flex-start">BEFORE</span>
+   <div class="row"><i data-i="drive"></i><span class="b">Scanned C:\ (Windows) NTFS file table in 4.2 s</span></div>
+   <div class="row sm mut">476 GB, 1.2M files <span class="link">Details</span></div>
+   <div class="row g4 sm" style="margin-top:6px"><span class="btn sm">Rescan</span><span class="btn sm">Stop</span></div></div>
+  <div class="card grow col g4"><span class="pill info" style="align-self:flex-start">AFTER</span>
+   <div class="row g12"><i data-i="drive" class="l"></i><div class="col g2 grow"><span class="h3">C:\ Windows</span><span class="sm mut">Scanned today 14:02 in 4.2 s, read from the NTFS file table</span></div>
+   <span class="pill ok"><i data-i="check"></i>Complete</span></div>
+   <div class="row g4"><span class="btn sm acc"><i data-i="refresh"></i>Rescan</span><span class="btn sm sub"><i data-i="info"></i>Details</span></div></div>
+ </div>
+ <div class="ib warn"><i data-i="warn"></i><div class="t"><div class="b">Scan C:\ is not complete</div><div class="sm">3 folders could not be read (access denied) and 2 are skipped by your settings. The totals below leave them out.</div></div><span class="btn sm">Details</span></div>
+ <div class="ib info"><i data-i="info"></i><div class="t sm">Open as administrator for the fast scan. Without it Sprawl walks folders, which takes minutes instead of seconds.</div><span class="btn sm acc">Restart elevated</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="360" data-title="Tabs become a SelectorBar with icons and counts"
+data-ctl="SelectorBar + SelectorBarItem (Icon, Text), InfoBadge on Advisor, ToolTip with KeyboardAccelerator text (Ctrl+1..5), TreeView"
+data-problem="The tabs are plain buttons made to look selected by colour. Screen readers and keyboards do not know which is current, and Advisor hides how much it found." data-trade="SelectorBar is not a full TabView, so it needs a Frame swap for content. You lose tab reordering, which this app never used.">
+<div class="col grow">
+ <div class="menubar"><span>File</span><span>Options</span><span>Help</span></div>
+ <div class="row p12 g12"><div class="selbar" role="tablist">
+  <div class="sbi sel fo"><i data-i="folder"></i>Tree view</div><div class="sbi"><i data-i="list"></i>Files</div>
+  <div class="sbi"><i data-i="spark"></i>Advisor <span class="pill info">12</span></div><div class="sbi"><i data-i="broom"></i>Cleaners</div><div class="sbi"><i data-i="clock"></i>History</div></div>
+  <span class="grow"></span><div class="asb" style="width:220px"><i data-i="search"></i>Search names</div></div>
+ <div class="tip" style="left:40px;top:92px;--ax:22px;padding:8px 12px">Tree view <span class="kbd">Ctrl+1</span></div>
+ <div class="p12 col g4" style="padding-top:60px">
+  <div class="tvr sel"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">C:\</span><span class="num">476 GB</span></div>
+  <div class="tvr" style="padding-left:22px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Users\Alex</span><span class="num">212 GB</span></div>
+  <div class="tvr" style="padding-left:22px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Program Files</span><span class="num">118 GB</span></div></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="720" data-h="380" data-title="Advisor empty state before a scan"
+data-ctl="Page with StackPanel, FontIcon (Segoe Fluent Icons E9D9), Button (AccentButtonStyle), HyperlinkButton"
+data-problem="Opening Advisor with no scan leaves a blank panel with no clue what it does or how to get findings." data-trade="A little more vertical padding than a bare empty list, and the copy must stay true if the Advisor changes.">
+<div class="col grow" style="align-items:center;justify-content:center;text-align:center;padding:32px;gap:10px">
+ <i data-i="spark" class="xl" style="color:var(--w-acc)"></i>
+ <div class="h2">Nothing to advise yet</div>
+ <div class="mut" style="max-width:400px">Scan a drive and the Advisor lists what can go, why, how risky it is, and what it costs to get back. Nothing is ticked for you.</div>
+ <div class="row g12" style="margin-top:8px"><span class="btn acc"><i data-i="drive"></i>Scan C:</span><span class="btn">Scan a folder...</span></div>
+ <div class="sm dim" style="margin-top:8px">Cleaners works without a scan. <span class="link">Open Cleaners</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="400" data-title="Keyboard focus and contrast pass"
+data-ctl="Focus visuals (FocusVisualPrimaryBrush / SecondaryBrush), ListView, CheckBox, AutomationProperties.Name; theme resources for secondary text"
+data-problem="Secondary text and the focus ring fall short of WCAG 2.2 (4.5:1 for text, 3:1 for focus). A tree you can only drive by mouse is no use to many users." data-trade="Darker secondary text slightly flattens the visual hierarchy. Fix it with weight and size, not by lowering contrast.">
+<div class="col grow p16 g12" style="position:relative">
+ <div class="call" style="right:24px;top:20px">Focus ring: 2 px dark + 1 px light, 3:1 in both themes</div>
+ <div class="li h"><span style="width:20px"></span><span class="grow">Finding</span><span style="width:90px">Risk</span><span style="width:80px" class="num">Size</span></div>
+ <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">npm cache</span><span style="width:90px"><span class="pill ok"><i data-i="check"></i>Low</span></span><span style="width:80px" class="num">6.2 GB</span></div>
+ <div class="li sel fo"><span class="cb"></span><span class="grow">Old installers in Downloads</span><span style="width:90px"><span class="pill warn"><i data-i="warn"></i>Medium</span></span><span style="width:80px" class="num">21 GB</span></div>
+ <div class="li"><span class="cb"></span><span class="grow">harbor-app\target (idle 214 days)</span><span style="width:90px"><span class="pill warn"><i data-i="warn"></i>Medium</span></span><span style="width:80px" class="num">19 GB</span></div>
+ <div class="row g16 sm" style="margin-top:12px">
+  <div class="card grow col g4"><span class="b">Secondary text</span><span style="color:#8E8E8E">Before: 3.3:1 on white (fails)</span><span class="mut">After: 8.5:1 (passes AA)</span></div>
+  <div class="card grow col g4"><span class="b">Keys</span><span><span class="kbd">Space</span> tick &nbsp;<span class="kbd">Enter</span> details &nbsp;<span class="kbd">Alt+R</span> review</span><span class="mut">Narrator reads: "npm cache, Low risk, 6.2 GB, not ticked"</span></div></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="380" data-title="Risk and recovery that do not rely on colour"
+data-ctl="ListView + DataTemplate, FontIcon, Border (pill), ToolTipService; icons: Accept, Warning, StatusCircleBlock; Segoe UI Semibold"
+data-problem="Risk is shown by a coloured dot. Colour-blind users cannot tell medium from high, and 'what it costs to get back' is buried in text." data-trade="Two extra columns narrow the finding name. Hide the recovery column below 700 px and show it in the detail pane.">
+<div class="col grow p16 g4">
+ <div class="gridr li h" style="grid-template-columns:1fr 110px 190px 70px"><span>Finding</span><span>Risk</span><span>If you remove it</span><span class="num">Size</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Windows temp files</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm"><i data-i="refresh"></i> Rebuilt automatically</span><span class="num">9.4 GB</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Docker build cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm"><i data-i="clock"></i> Rebuilds slowly (minutes)</span><span class="num">31 GB</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Old installers (Downloads)</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="sm"><i data-i="cloud"></i> Download again</span><span class="num">21 GB</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Raw clips, untouched 2 years</span><span class="pill err"><i data-i="ban"></i>High</span><span class="sm"><i data-i="lock"></i> Cannot be recreated</span><span class="num">27 GB</span></div>
+ <div class="ib info" style="margin-top:12px"><i data-i="info"></i><div class="t sm">Risk always shows an icon and a word. Colour only reinforces it. "Cannot be recreated" is shown for anything that is your own content.</div></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="400" data-title="Tree rows with size bars and share of parent"
+data-ctl="TreeView with ItemTemplate (Grid: icon, name, bar, %, size), separate header Grid for column titles"
+data-problem="Sizes sit in a column with no visual weight, so the eye must read numbers to find the big folders."
+data-custom="column header is a plain Grid kept in sync with the tree's template widths; TreeView has no built-in columns"
+data-trade="Bars add colour noise on a dense tree. Make the bar a 12% accent tint and let users switch it off in Settings.">
+<div class="col grow p12 g2">
+ <div class="gridr li h" style="grid-template-columns:1fr 150px 56px 80px"><span>Name</span><span>Share of C:\</span><span class="num">%</span><span class="num">Size <i data-i="sort"></i></span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px"><span class="row g4"><i data-i="down"></i><i data-i="folder"></i>Users\Alex</span><span class="pb"><i style="width:45%"></i></span><span class="num">44.5%</span><span class="num b">212 GB</span></div>
+ <div class="gridr tvr sel" style="grid-template-columns:1fr 150px 56px 80px;padding-left:22px"><span class="row g4"><i data-i="down"></i><i data-i="folder"></i>AppData</span><span class="pb"><i style="width:16%"></i></span><span class="num">15.5%</span><span class="num b">74 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px;padding-left:44px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>Docker</span><span class="pb"><i style="width:6.5%"></i></span><span class="num">6.5%</span><span class="num">31 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px;padding-left:22px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>Videos</span><span class="pb"><i style="width:12%"></i></span><span class="num">12.2%</span><span class="num">58 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>Program Files</span><span class="pb"><i style="width:25%"></i></span><span class="num">24.8%</span><span class="num b">118 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>ProgramData</span><span class="pb"><i style="width:13%"></i></span><span class="num">13.4%</span><span class="num b">64 GB</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="380" data-title="Review button wording"
+data-ctl="Button (AccentButtonStyle, plus a danger style via Background override only when something is permanent), ContentDialog PrimaryButtonText"
+data-problem="A generic 'Clean up' or 'Delete' button does not say what will happen. The app already shortens this in 1.0.2; this makes the permanent part impossible to miss."
+data-trade="Longer button labels. At narrow widths the button wraps to two lines or the permanent part moves into the dialog title.">
+<div class="col grow p24 g16">
+ <div class="row g16 wrapf" style="align-items:flex-start">
+  <div class="col g8 grow"><span class="pill n" style="align-self:flex-start">BEFORE</span><span class="btn acc" style="align-self:flex-start">Clean up</span><span class="btn" style="align-self:flex-start">Delete</span></div>
+  <div class="col g8 grow" style="flex:3"><span class="pill info" style="align-self:flex-start">AFTER</span>
+   <div class="row g12 wrapf"><span class="btn acc"><i data-i="eye"></i>Review selection (3 items, 4.8 GB)</span><span class="sm mut">on the Advisor bar, nothing is removed yet</span></div>
+   <div class="row g12 wrapf"><span class="btn dng"><i data-i="trash"></i>Delete 1 for good, recycle 2</span><span class="sm mut">in the review, red only when something is permanent</span></div>
+   <div class="row g12 wrapf"><span class="btn acc"><i data-i="trash"></i>Send 2 to the Recycle Bin</span><span class="sm mut">when nothing is permanent, accent colour</span></div>
+   <div class="row g12 wrapf"><span class="btn"><i data-i="zip"></i>Compress 1 folder (reversible)</span></div></div></div>
+ <div class="sep"></div>
+ <div class="col g4 sm"><span class="b">Copy rules</span><span class="mut">1. A button names the verb and the count. 2. "for good" appears whenever a recycle step is skipped. 3. Sizes use the same unit as the row they came from. 4. No exclamation marks, no "Are you sure?"</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="420" data-title="Drive picker with free-space rings"
+data-ctl="ItemsView + ItemsRepeater (UniformGridLayout), Button cards, ProgressBar, InfoBar (Informational), HyperlinkButton"
+data-problem="The welcome list shows drives as plain rows. Users cannot see which drive is tight, which one is network, or what the fast scan needs." data-trade="Cards use more room than rows. With more than six drives, fall back to a list through the ItemsRepeater layout.">
+<div class="col grow p24 g16">
+ <div><div class="h2">What do you want to scan?</div><div class="mut sm">Sprawl only reads. Nothing is changed by a scan.</div></div>
+ <div class="row g12 wrapf" style="align-items:stretch">
+  <div class="card col g8" style="width:250px"><div class="row"><i data-i="drive" class="l"></i><div class="grow"><div class="b">Windows (C:)</div><div class="xs dim">NTFS, internal SSD</div></div><span class="pill warn"><i data-i="warn"></i>91% full</span></div><div class="pb warn"><i style="width:91%"></i></div><div class="sm mut">42 GB free of 476 GB</div><span class="btn acc" style="justify-content:center">Scan</span></div>
+  <div class="card col g8" style="width:250px"><div class="row"><i data-i="drive" class="l"></i><div class="grow"><div class="b">Data (D:)</div><div class="xs dim">NTFS, internal HDD</div></div></div><div class="pb"><i style="width:48%"></i></div><div class="sm mut">1.0 TB free of 1.9 TB</div><span class="btn" style="justify-content:center">Scan</span></div>
+  <div class="card col g8" style="width:250px"><div class="row"><i data-i="net" class="l"></i><div class="grow"><div class="b">Media (Z:)</div><div class="xs dim">Network share</div></div><span class="pill n"><i data-i="lock"></i>Read only</span></div><div class="pb"><i style="width:73%"></i></div><div class="sm mut">2.1 TB free of 7.8 TB</div><span class="btn" style="justify-content:center">Scan</span></div>
+  <div class="card col g8" style="width:250px;justify-content:center;align-items:center;border-style:dashed"><i data-i="folder" class="l"></i><span class="b">Scan a folder...</span><span class="xs dim">or drop one here</span></div>
+ </div>
+ <div class="ib info"><i data-i="shield"></i><div class="t sm"><span class="b">Faster as administrator.</span> Reading the NTFS file table takes seconds for a whole drive. <span class="link">Restart as administrator</span></div></div>
+</div></article>

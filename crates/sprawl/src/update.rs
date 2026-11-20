@@ -2,6 +2,11 @@
 //! open, or from Help > Check for Updates), shows what changed, and on "Update and restart"
 //! downloads it, checks it and swaps it in. See `sprawl-install` for what is checked.
 //!
+//! A copy installed for all users (Program Files) can't change its own folder: it downloads the
+//! release's Setup instead, checks it against the signed list of files, holds it so it can't
+//! change, and runs it as administrator. A per-user copy can do the same to move to Program
+//! Files (Options > Restart as Administrator offers it).
+//!
 //! What is sent: a plain GET to api.github.com and GitHub's download hosts, with Sprawl's name
 //! as the user agent. Nothing about the PC or its files.
 
@@ -45,6 +50,8 @@ pub(crate) struct Avail {
     pub(crate) version: String,
     pub(crate) notes: String,
     files: Vec<(FileEntry, String)>,
+    /// The release's Setup and where to get it, when its signed list has one.
+    setup: Option<(FileEntry, String)>,
 }
 
 enum Msg {
@@ -53,6 +60,69 @@ enum Msg {
     Failed(String),
     Staged(String, Staged),
     Progress(String),
+    /// Setup, downloaded and checked, held open so it can't change before it runs.
+    SetupReady(PathBuf, std::fs::File),
+}
+
+/// "Always run as administrator" is on but this copy may not elevate: say why at start.
+pub(crate) static ADMIN_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How Setup runs for an update: progress only, Sprawl closed and started again after.
+const SETUP_ARGS: &str = "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTSPRAWL";
+
+/// Where Setup is downloaded: a new folder under `%LOCALAPPDATA%\Sprawl` each time.
+fn setup_parent() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Sprawl"))
+}
+
+/// Download Setup into a new folder of its own, check its size and SHA-256 against the signed
+/// list, then reopen it so no one else can write, rename or delete it, and check it again
+/// from that handle: what runs is what was checked.
+fn fetch_setup(a: &Avail, progress: &dyn Fn(String)) -> Result<(PathBuf, std::fs::File), String> {
+    use std::io::{Seek, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    sprawl_install::setup::per_user_only()?;
+    let (f, url) = a.setup.as_ref().ok_or(format!("this release has no Setup Sprawl can check. Get it from github.com/{REPO}/releases."))?;
+    if f.name != sprawl_install::setup_name(&a.version) { return Err("the release's Setup has the wrong name".into()); }
+    let parent = setup_parent().ok_or("there is no local app data folder")?;
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    let parent = sprawl_core::local::directory(&parent).map_err(|e| e.to_string())?;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = parent.path.join(format!("setup-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&dir).map_err(|e| format!("could not make a folder for Setup ({e})"))?;
+    let _dir = sprawl_core::local::directory(&dir).map_err(|e| e.to_string())?;
+    progress(format!("Downloading Setup ({:.1} MB)...", f.size as f64 / 1048576.0));
+    let bytes = fetch(url, (f.size as usize).saturating_add(1).min(512 << 20))?;
+    if bytes.len() as u64 != f.size || sprawl_install::sha256_hex(&bytes) != f.sha256 {
+        return Err("Setup didn't download intact; nothing was changed".into());
+    }
+    let p = dir.join(&f.name);
+    {
+        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&p).map_err(|e| format!("could not save Setup: {e}"))?;
+        out.write_all(&bytes).and_then(|_| out.sync_all()).map_err(|e| format!("could not save Setup: {e}"))?;
+    }
+    // FILE_SHARE_READ only: others may read and run it, not change it
+    let mut held = std::fs::OpenOptions::new().read(true).share_mode(0x1).open(&p).map_err(|e| format!("could not hold Setup: {e}"))?;
+    if sprawl_install::setup::is_link(&p) { return Err("Setup's file was replaced; nothing was run".into()); }
+    let sha = sprawl_install::setup::hash_file(&mut held).map_err(|e| format!("could not check Setup: {e}"))?;
+    if sha != f.sha256 || held.metadata().map(|m| m.len()).ok() != Some(f.size) {
+        return Err("Setup changed after it downloaded; nothing was run".into());
+    }
+    let _ = held.rewind();
+    Ok((p, held))
+}
+
+/// Setup folders from earlier updates (Setup has finished with them by the next start).
+fn clean_setup_downloads() {
+    let Some(parent) = setup_parent() else { return };
+    let Ok(rd) = std::fs::read_dir(&parent) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with("setup-") && e.file_type().is_ok_and(|t| t.is_dir()) && !sprawl_install::setup::is_link(&p) {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -71,6 +141,11 @@ pub(crate) struct Updater {
     pub(crate) resume: Option<String>,
     /// Why a hand-off from an elevated copy could not be taken (shown at start).
     resume_error: Option<String>,
+    /// Installing for all users from a per-user copy: the check takes the latest release even
+    /// when it is this version, and goes straight to Setup; messages go to the status bar.
+    all_users: bool,
+    /// The user agreed to close the other Sprawl processes for this update.
+    others_ok: bool,
 }
 
 impl Updater {
@@ -131,12 +206,13 @@ fn fetch(url: &str, max: usize) -> Result<Vec<u8>, String> {
     http::download(url, &HOSTS, &[("User-Agent", format!("Sprawl/{}", current()))], max, Duration::from_secs(120))
 }
 
-/// Ask GitHub for the latest release; if it's newer, fetch and check its signed manifest.
-fn check() -> Result<Option<Avail>, String> {
+/// Ask GitHub for the latest release; if it's newer (or `any`), fetch and check its signed
+/// manifest.
+fn check(any: bool) -> Result<Option<Avail>, String> {
     let rel = get_json(&format!("https://api.github.com/repos/{REPO}/releases/latest"))?;
     let tag = rel["tag_name"].as_str().ok_or("the release has no version")?;
     let version = tag.trim_start_matches('v').to_string();
-    if !newer(&version, current()) {
+    if !newer(&version, current()) && !(any && sprawl_install::parse_version(&version).is_some()) {
         return Ok(None);
     }
     let assets: Vec<(String, String)> = rel["assets"]
@@ -151,8 +227,12 @@ fn check() -> Result<Option<Avail>, String> {
         return Err(format!("the release says {version} but its files say {}", m.version));
     }
     let files = m.files.into_iter().map(|f| url(&f.name).map(|u| (f, u))).collect::<Result<Vec<_>, _>>()?;
+    let setup = match m.setup {
+        Some(f) => Some((f.clone(), url(&f.name)?)),
+        None => None,
+    };
     let notes = rel["body"].as_str().unwrap_or("").to_string();
-    Ok(Some(Avail { version, notes, files }))
+    Ok(Some(Avail { version, notes, files, setup }))
 }
 
 /// A downloaded file waiting to be swapped in: name, where it is, its expected SHA-256.
@@ -221,8 +301,9 @@ impl State {
         }
         let (tx, rx) = channel();
         self.update.rx = Some(rx);
+        let any = self.update.all_users;
         std::thread::spawn(move || {
-            let _ = tx.send(match guarded(check) {
+            let _ = tx.send(match guarded(|| check(any)) {
                 Ok(Some(a)) => Msg::Found(a),
                 Ok(None) => Msg::Latest,
                 Err(e) => Msg::Failed(e),
@@ -254,11 +335,15 @@ impl State {
                 remove_old(&dir);
                 clean_stage(&dir);
             }
+            clean_setup_downloads();
             }
             // every start looks (a release since yesterday's look is offered at once)
             self.update.next = Some(std::time::Instant::now() + AGAIN);
             if let Some(e) = self.update.resume_error.take() {
                 text(&self.root, "FootLeft", &e);
+            }
+            if ADMIN_REFUSED.swap(false, std::sync::atomic::Ordering::Relaxed) && self.shot.is_none() {
+                self.offer_all_users();
             }
             if self.update.resume.is_some() && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
                 text(&self.root, "FootLeft", "Installing the update without administrator rights...");
@@ -281,10 +366,20 @@ impl State {
             // the worker is gone without an answer
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Msg::Failed("the check stopped".into()),
         };
+        let status = if self.update.all_users { "FootLeft" } else { "UpdateStatus" };
         match msg {
             Msg::Progress(s) => {
-                text(&self.root, "UpdateStatus", &s);
+                text(&self.root, status, &s);
                 return;
+            }
+            Msg::SetupReady(path, held) => {
+                self.update.rx = None;
+                self.run_setup(&path, held);
+            }
+            Msg::Found(a) if self.update.all_users => {
+                self.update.rx = None;
+                self.update.avail = Some(a.clone());
+                self.start_setup(a);
             }
             Msg::Found(a) => {
                 self.update.rx = None;
@@ -307,6 +402,7 @@ impl State {
             Msg::Latest => {
                 self.update.rx = None;
                 self.update.resume = None;
+                self.update.all_users = false;
                 self.update_checked();
                 if self.update.manual {
                     text(&self.root, "FootLeft", &format!("Sprawl {} is the latest version.", current()));
@@ -316,7 +412,10 @@ impl State {
                 self.update.rx = None;
                 self.update.resume = None;
                 self.update.applying = false;
-                if self.update.avail.is_some() {
+                self.update.others_ok = false;
+                if std::mem::take(&mut self.update.all_users) {
+                    text(&self.root, "FootLeft", &format!("Sprawl couldn't be installed for all users: {e}"));
+                } else if self.update.avail.is_some() {
                     text(&self.root, "UpdateStatus", &format!("The update didn't work: {e}"));
                 } else if self.update.manual {
                     text(&self.root, "FootLeft", &format!("Couldn't look for updates: {e}"));
@@ -370,6 +469,22 @@ impl State {
                     return;
                 }
                 if let Err(e) = sprawl_install::setup::per_user_only() { text(&self.root, "UpdateStatus", &e); return; }
+                // installed for all users: Setup updates it, as administrator (it closes the
+                // other Sprawl windows the polite way, and asks when one won't)
+                if sprawl_install::machine::is_protected_copy() {
+                    return self.start_setup(a);
+                }
+                // the other Sprawl processes are closed for the swap: asked first, since one
+                // may be mid clean-up or serving an AI app
+                let others = sprawl_install::processes::count_other_instances().unwrap_or(0);
+                if others > 0 && !self.update.others_ok {
+                    let text = format!("{others} other Sprawl process{} running: another window, the low-space check, or an AI app connected to Sprawl. Updating closes {} at once; a clean-up running there stops part way.\n\nClose {} first if you can, or let the update close {}.", if others == 1 { " is" } else { "es are" }, if others == 1 { "it" } else { "them" }, if others == 1 { "it" } else { "them" }, if others == 1 { "it" } else { "them" });
+                    self.ask("Close the other Sprawl processes?", &text, "Close and update", true, |s| {
+                        s.update.others_ok = true;
+                        s.update_command("UpdateNow");
+                    });
+                    return;
+                }
                 let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)) else { return };
                 self.update.applying = true;
                 let (tx, rx) = channel();
@@ -391,10 +506,85 @@ impl State {
         }
     }
 
+    /// From a per-user copy (Restart as Administrator, or Always Run as Administrator at
+    /// start): say why it won't elevate, and offer to install for all users.
+    pub(crate) fn offer_all_users(&mut self) {
+        let text = format!("{}\n\nInstall Sprawl for all users to run it as administrator. Sprawl downloads the latest Setup, checks it against the signed release, and runs it; Windows asks for administrator rights. Setup puts Sprawl in Program Files and removes this copy; your settings and scans stay.", sprawl_install::machine::WHY_NOT_ELEVATED);
+        self.ask("Install Sprawl for all users?", &text, "Install for all users", false, |s| s.install_for_all_users());
+    }
+
+    fn install_for_all_users(&mut self) {
+        if self.update.applying || self.update.rx.is_some() { return; }
+        if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.shot.is_some() || sprawl_advisor::offline() {
+            text(&self.root, "FootLeft", "Sprawl can't download Setup in this run.");
+            return;
+        }
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() {
+            text(&self.root, "FootLeft", "A scan or file operation is running. Try again when it has finished.");
+            return;
+        }
+        self.update.all_users = true;
+        self.update.manual = true;
+        text(&self.root, "FootLeft", "Looking for the latest Sprawl Setup...");
+        let (tx, rx) = channel();
+        self.update.rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(match guarded(|| check(true)) {
+                Ok(Some(a)) => Msg::Found(a),
+                Ok(None) => Msg::Failed("there is no release to install".into()),
+                Err(e) => Msg::Failed(e),
+            });
+        });
+    }
+
+    /// Download and check Setup on another thread.
+    fn start_setup(&mut self, a: Avail) {
+        self.update.applying = true;
+        let (tx, rx) = channel();
+        self.update.rx = Some(rx);
+        std::thread::spawn(move || {
+            let ptx = tx.clone();
+            let r = guarded(|| fetch_setup(&a, &move |s| { let _ = ptx.send(Msg::Progress(s)); }));
+            let _ = tx.send(match r {
+                Ok((p, f)) => Msg::SetupReady(p, f),
+                Err(e) => Msg::Failed(e),
+            });
+        });
+    }
+
+    /// Run the checked Setup as administrator (Windows asks), then close: Setup starts the new
+    /// Sprawl when it is done.
+    fn run_setup(&mut self, path: &std::path::Path, held: std::fs::File) {
+        let status = if self.update.all_users { "FootLeft" } else { "UpdateStatus" };
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() {
+            self.update.applying = false;
+            self.update.all_users = false;
+            text(&self.root, status, "A scan or file operation started meanwhile; try again when it's done.");
+            return;
+        }
+        text(&self.root, status, "Starting Setup (Windows asks for administrator rights)...");
+        let started = crate::dialogs::run_elevated(self.hwnd, path, SETUP_ARGS);
+        drop(held);
+        if !started {
+            self.update.applying = false;
+            self.update.all_users = false;
+            text(&self.root, status, "Setup didn't start: administrator rights were not given. Nothing was changed.");
+            return;
+        }
+        if let Some(p) = crate::win32::window_place(self.hwnd) {
+            self.settings.set("window", p);
+        }
+        self.settings.save();
+        if self.window.Close().is_err() {
+            std::process::exit(0);
+        }
+    }
+
     /// Put the checked files in place and start the new version.
     fn update_swap(&mut self, version: &str, staged: &Staged) {
         let fail = |s: &mut Self, msg: String| {
             s.update.applying = false;
+            s.update.others_ok = false;
             text(&s.root, "UpdateStatus", &msg);
         };
         if let Err(e) = sprawl_install::setup::per_user_only() { return fail(self, e); }

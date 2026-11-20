@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.5 — 2026-11-21
 
 - Codex, and Claude Code without Sprawl's server, can propose recognisers and cleaners now. The AI writes its proposals at the end of its answer, and Sprawl checks each one the way it checks any AI proposal. Each one waits in Advisor > Remembered for you to approve; ones Sprawl refused are listed under the answer.
 - When the AI proposes something, a strip under its answer says so. Its "Review and approve" button takes you to Remembered.
@@ -17,10 +17,31 @@ in-app updater shows.
 - Stained Glass no longer slides sideways without end: it settles and stays still.
 - Clean-up:
   - files meant for the Recycle Bin on a network or removable drive, which has no bin, are held with the reason, not left hanging;
-  - Stop ends the run within a few seconds, even when Windows doesn't answer.
+  - after Stop, an item Windows can't stop part way (a big file being compressed) says it is finishing; the run ends when it does, so what it freed and compressed is still recorded;
+  - closing Sprawl during a clean-up stops it after the item in hand, then closes. Close again to close at once;
+  - emptying the Recycle Bin runs first when the same run sends files to the bin, so it never erases them;
+  - a virtual disk shrink (WSL, Docker) that is stopped detaches the disk again, so WSL and Docker can start;
+  - "Tick enough for N GB" never picks the Recycle Bin, Windows.old, git worktrees or old clones; you tick those yourself;
+  - approving a rule holds Review and Clean up until the findings are checked again with it.
 - The AI card's header shortens a long model name instead of cutting off Change.
 - Search no longer moves up a few pixels when you switch to it.
 - The start page (Tree and File view before a scan) has the same background as every other page.
+- Light mode: Settings > General > Theme picks Light, Dark, or Like Windows. The map keeps its dark look.
+- The page tabs are plain text, with a line under the one that is open. Advisor and Cleaners show how many findings and cleaners have something for you.
+- Several custom AIs: name an OpenAI-compatible server in AI setup and it stays in the Provider list. Each server keeps its own key, sent only to that server. A server that needs no key works with the Key box left empty.
+- Sprawl installs for all users, in Program Files. It runs as administrator only from there: a copy in your own folder could be changed by any program running as you, which would then get administrator rights too. A copy in Program Files updates by downloading the new Setup, checking it against the signed release, and running it (Windows asks for administrator rights). The first start after installing removes the older per-user copy; your settings and scans stay. From a per-user copy, Restart as Administrator offers to install for all users.
+- Dev folders:
+  - Sprawl reads each repository's git settings itself first, and leaves a repository alone when they name a program, a filter, a hook or another place. Git is never asked about scanned repositories while Sprawl runs as administrator;
+  - an old clone counts as your own files: it goes to the Recycle Bin, needs "my own files" ticked, and is offered only when its remote is a server, no commit (a detached checkout or a tag included) is missing from it, and no file is hidden from git status.
+- The Advisor's memory: when the file can't be read (a typo, or saved as UTF-16), Sprawl says so, writes nothing over it and holds clean-ups, instead of starting with an empty Keep list. Two Sprawl windows no longer erase each other's Keeps.
+- AI:
+  - a key you typed but didn't save is forgotten when you pick another provider or service, so it is never sent to the wrong one;
+  - Forget key deletes a saved key; removing a custom AI deletes its server's key unless another AI on the list uses it;
+  - README and manifest text the AI reads is marked as data, and notes an AI answer left are kept apart from your own preferences;
+  - a cleaner the AI proposes for folders outside app data counts as your own files;
+  - a proposal with an absurd size no longer stops the memory from saving.
+- Updating asks before it closes other Sprawl windows (or an AI app connected to Sprawl), and an old recovery folder no longer blocks updates.
+- The fast scan (as administrator) counts what WOF-compressed files take on disk, and reports damaged file records instead of leaving them, and what is in them, out without a word.
 - Colours and Tweaks is a Tweaks button in the map bar now, shown while the Treemap is on (it does nothing in the other views); Ctrl+T still opens it.
 
 ## 1.0.4 — 2026-11-20

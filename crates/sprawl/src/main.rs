@@ -32,6 +32,7 @@ mod watch;
 mod treemap;
 mod ui;
 mod look;
+mod theme;
 mod win32;
 mod welcome;
 mod wizard;
@@ -124,9 +125,25 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     settings.keep_old_defaults();
     // An elevated copy handing its update over: this copy stays without administrator rights.
     let update_resume = if a.shot.is_none() { update::resume_request(a.resume.clone()) } else { None };
+    // Installed for all users now: the per-user copy of 1.0.4 and before goes, once, by its own
+    // uninstaller run as the user. "Scan with Sprawl" in Explorer, which it removes, comes back
+    // pointing here.
+    if a.shot.is_none() && !sprawl_core::is_elevated() && sprawl_install::machine::is_protected_copy() && sprawl_install::machine::per_user_install().is_some() {
+        let menu = dialogs::explorer_menu_installed();
+        if let Err(e) = sprawl_install::machine::remove_per_user_install(std::time::Duration::from_secs(60)) {
+            eprintln!("per-user copy: {e}");
+        }
+        if menu {
+            dialogs::set_explorer_menu(true);
+        }
+    }
     // "Always run as administrator": come back elevated (the UAC prompt shows) and quit this copy.
-    // Never for a hand-off, valid or not: that would loop back to an elevated copy.
-    if a.shot.is_none() && a.resume.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() {
+    // Never for a hand-off, valid or not: that would loop back to an elevated copy. Only a copy
+    // installed for all users: this one says why not at start.
+    if a.shot.is_none() && a.resume.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() && !sprawl_install::machine::may_elevate() {
+        update::ADMIN_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if a.shot.is_none() && a.resume.is_none() && settings.bool("oAlwaysAdmin") == Some(true) && !sprawl_core::is_elevated() && sprawl_install::machine::may_elevate() {
         let args: Vec<String> = std::env::args_os().skip(1).map(|x| dialogs::quote(std::path::Path::new(&x))).collect();
         if dialogs::restart_elevated(0, &args.join(" ")) {
             std::process::exit(0);
@@ -148,6 +165,12 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     // dev: SPRAWL_SIZE=1280x800 sets the window's size for a screenshot
     let (w, h) = std::env::var("SPRAWL_SIZE").ok().filter(|_| a.shot.is_some()).and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))).unwrap_or((1680, 1080));
     window.AppWindow()?.Resize(SizeInt32 { Width: w, Height: h })?;
+    // the minimise, maximise and close buttons in the theme's colours
+    {
+        use crate::bindings::Microsoft::UI::Windowing::TitleBarTheme;
+        let theme = if crate::theme::light() { TitleBarTheme::Light } else { TitleBarTheme::Dark };
+        let _ = window.AppWindow().and_then(|a| a.TitleBar()).and_then(|t| t.SetPreferredTheme(theme));
+    }
     // Frosted glass: the desktop shows through the whole window, blurred.
     if let Ok(b) = DesktopAcrylicBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()) {
         window.SetSystemBackdrop(&b)?;
@@ -575,7 +598,8 @@ fn main() {
     }
     let result = Application::Start(&ApplicationInitializationCallback::new(|_| {
         let app = Application::compose(App { provider: OnceLock::new() })?;
-        app.SetRequestedTheme(ApplicationTheme::Dark)?;
+        crate::theme::init(crate::settings::Settings::load().get("theme"));
+        app.SetRequestedTheme(if crate::theme::light() { ApplicationTheme::Light } else { ApplicationTheme::Dark })?;
         let _ = APP.set(app);
         Ok(())
     }));

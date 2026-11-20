@@ -15,6 +15,15 @@ pub struct FileEntry {
 pub struct Manifest {
     pub version: String,
     pub files: Vec<FileEntry>,
+    /// The release's Setup (`Sprawl-Setup-<version>.exe`), signed with the rest: a copy
+    /// installed for all users updates by running it. Not one of the program's files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<FileEntry>,
+}
+
+/// The Setup file name of `version`.
+pub fn setup_name(version: &str) -> String {
+    format!("Sprawl-Setup-{version}.exe")
 }
 
 /// `1.2.3` (a leading `v` is allowed) as numbers.
@@ -78,6 +87,11 @@ pub fn verify(manifest: &[u8], signature: &[u8], keys: &[[u8; 32]]) -> Result<Ma
     if !seen.iter().any(|n| n == "sprawl.exe") {
         return Err("the update has no sprawl.exe".into());
     }
+    if let Some(s) = &m.setup {
+        if s.name != setup_name(&m.version) || s.sha256.len() != 64 || unhex(&s.sha256).is_none() || seen.iter().any(|n| n.eq_ignore_ascii_case(&s.name)) {
+            return Err("the update's Setup entry is not valid".into());
+        }
+    }
     Ok(m)
 }
 
@@ -138,6 +152,20 @@ mod tests {
         let m = GOOD.replace(r#"}]}"#, r#"},{"name":"helper.dll","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1}]}"#);
         let (m, s, k) = signed(&m);
         assert!(verify(&m, &s, &[k]).is_ok());
+    }
+
+    #[test]
+    fn a_setup_entry_must_be_this_versions_setup() {
+        let with = |name: &str| GOOD.replace(r#"}]}"#, &format!(r#"}}],"setup":{{"name":"{name}","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1}}}}"#));
+        let (m, s, k) = signed(&with("Sprawl-Setup-0.2.0.exe"));
+        assert_eq!(verify(&m, &s, &[k]).unwrap().setup.unwrap().name, "Sprawl-Setup-0.2.0.exe");
+        for bad in ["Sprawl-Setup-0.1.0.exe", "sprawl.exe", "Sprawl-Setup-0.2.0.exe.exe"] {
+            let (m, s, k) = signed(&with(bad));
+            assert!(verify(&m, &s, &[k]).is_err(), "{bad}");
+        }
+        // a manifest without one (1.0.4 and before) still reads, and old readers ignore it
+        let (m, s, k) = signed(GOOD);
+        assert!(verify(&m, &s, &[k]).unwrap().setup.is_none());
     }
 
     #[test]

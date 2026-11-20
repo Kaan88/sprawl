@@ -148,7 +148,8 @@ fn build() {
     run(Command::new(&iscc)
         .arg("/Q")
         .arg(format!("/DAppVersion={v}"))
-        .arg(format!("/DSourceDir={}", root.join(&release).display()))
+        // the files just hashed (the copies in the release folder), not the build folder
+        .arg(format!("/DSourceDir={}", root.join(&out).display()))
         .arg(format!("/O{}", root.join(&out).display()))
         .arg(root.join("installer").join("sprawl.iss")));
     let setup = out.join(format!("Sprawl-Setup-{v}.exe"));
@@ -157,7 +158,11 @@ fn build() {
     }
     // a copy next to the builds, for trying it out
     let _ = std::fs::copy(&setup, Path::new("target").join(format!("Sprawl-Setup-{v}.exe")));
-    let manifest = serde_json::to_vec_pretty(&Manifest { version: v.clone(), files }).unwrap();
+    // Setup is signed with the program's files: a copy installed for all users updates by
+    // running it, after checking it against this list
+    let setup_bytes = std::fs::read(&setup).unwrap_or_else(|e| fail(e));
+    let setup_entry = FileEntry { name: sprawl_install::setup_name(&v), sha256: sha256_hex(&setup_bytes), size: setup_bytes.len() as u64 };
+    let manifest = serde_json::to_vec_pretty(&Manifest { version: v.clone(), files, setup: Some(setup_entry) }).unwrap();
     let sig = hex(&key.sign(&manifest).to_bytes());
     // check it the way an installed copy will
     sprawl_install::verify(&manifest, sig.as_bytes(), &sprawl_install::PUBLIC_KEYS).unwrap_or_else(|e| fail(e));

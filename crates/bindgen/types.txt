@@ -17,6 +17,9 @@ Microsoft.UI.Xaml.Window::SystemBackdrop
 Microsoft.UI.Xaml.Window::Close
 Microsoft.UI.Windowing.AppWindow::Resize
 Microsoft.UI.Windowing.AppWindow::Show
+Microsoft.UI.Windowing.AppWindow::TitleBar
+Microsoft.UI.Windowing.AppWindowTitleBar::PreferredTheme
+Microsoft.UI.Windowing.TitleBarTheme
 Microsoft.UI.Xaml.Media.MicaBackdrop::CreateInstance
 Microsoft.UI.Xaml.Controls.XamlControlsResources::CreateInstance
 Microsoft.UI.Xaml.XamlTypeInfo.XamlControlsXamlMetaDataProvider::CreateInstance
@@ -62,6 +65,7 @@ Windows.Foundation.TypedEventHandler
 Microsoft.UI.Xaml.Controls.RowDefinition::Height
 Microsoft.UI.Xaml.Controls.ColumnDefinition::Width
 Microsoft.UI.Xaml.Controls.Control::Background
+Microsoft.UI.Xaml.Controls.Control::BorderBrush
 Microsoft.UI.Xaml.SizeChangedEventHandler
 Microsoft.UI.Xaml.Input.PointerEventHandler
 Microsoft.UI.Xaml.Input.TappedEventHandler

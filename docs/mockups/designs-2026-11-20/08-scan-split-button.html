@@ -1,0 +1,22 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>08 Scan split button</title><link rel="stylesheet" href="kit.css"><style>
+.crumb{display:flex;align-items:center;gap:2px;height:32px;padding:0 6px;border-radius:4px;background:var(--ctl);border:1px solid var(--ctl-line)}
+.crumb span{padding:2px 6px;border-radius:3px}.crumb span:hover{background:var(--hover)}
+.crumb .ic{font-size:9px;color:var(--tx3)}
+.fly{position:absolute;left:12px;top:76px;width:290px;padding:6px;border-radius:8px;z-index:9}
+.fly .it{display:flex;gap:10px;align-items:center;height:36px;padding:0 10px;border-radius:4px}.fly .it:hover{background:var(--hover)}
+.fly .it.on{background:var(--acc-soft)}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const hdr=`<div class="row g12" style="padding:6px 12px 10px">
+ <div class="split">${K.btn('Scan C:\\','E721','acc')}<span class="btn acc">${K.ic('E70D','s')}</span></div>
+ <div class="crumb">${K.ic('EDA2','s')}<span>C:</span>${K.ic('E76C')}<span>Users</span>${K.ic('E76C')}<span>sam</span>${K.ic('E76C')}<span class="semi">AppData</span></div>
+ <span class="cap dim2 num">71.3 GB, 402,118 files</span><span class="sp"></span>
+ <div class="row g8" style="width:330px"><span class="cap dim2 num" style="white-space:nowrap">C: 389 / 476 GB</span><div class="fill">${K.usage(82)}</div></div>
+ ${K.filter(260)}</div>`;
+const fly=`<div class="fly acrylic"><div class="nhead">Drives</div>
+ <div class="it on">${K.ic('EDA2')}<span class="fill">C:\\ Windows</span><span class="cap dim num">86 GB free</span></div>
+ <div class="it">${K.ic('EDA2')}<span class="fill">D:\\ Data</span><span class="cap dim num">1.2 TB free</span></div>
+ <div class="it">${K.ic('EDA2')}<span class="fill">E:\\ Backup</span><span class="cap dim num">310 GB free</span></div><div class="hdiv"></div>
+ <div class="it">${K.ic('E8B7')}<span class="fill">Folder...</span><span class="kbd">Ctrl+O</span></div>
+ <div class="nhead">Recent scans</div><div class="it">${K.ic('E81C')}<span class="fill">D:\\Games</span><span class="cap dim">yesterday</span></div><div class="it">${K.ic('E81C')}<span class="fill">C:\\Users\\sam</span><span class="cap dim">3 days ago</span></div></div>`;
+document.getElementById('w').innerHTML=K.classic({top:'',hdr,nofilter:true,tabs:'pivot',map:'seg',over:'',tbar:K.tb()})+fly;
+K.init('08-scan-split-button')</script></body></html>

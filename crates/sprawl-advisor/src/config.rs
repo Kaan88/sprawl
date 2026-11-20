@@ -85,6 +85,53 @@ pub struct AiConfig {
     /// (see [`crate::llm::effort`]); a model not listed gets Sprawl's or the provider's default.
     #[serde(default)]
     pub efforts: std::collections::BTreeMap<String, String>,
+    /// The custom AI (OpenAI-compatible) in use, by its name in `customs`; empty: unnamed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom: String,
+    /// Named OpenAI-compatible servers, offered in the Provider list. Each one's key is kept
+    /// under its host ([`key_for_host`]), so it is only ever sent there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub customs: Vec<CustomAi>,
+}
+
+/// A named OpenAI-compatible server.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CustomAi {
+    pub name: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+impl AiConfig {
+    /// Keep the custom AI in use (`custom`, with this address and model) in `customs`: a new
+    /// entry, or the one named `was` (renamed) or `custom` brought up to date.
+    pub fn keep_custom(&mut self, was: &str) {
+        let name = self.custom.trim().to_string();
+        if self.provider != Provider::OpenAi || name.is_empty() {
+            return;
+        }
+        if !was.is_empty() && !was.eq_ignore_ascii_case(&name) {
+            self.customs.retain(|c| !c.name.eq_ignore_ascii_case(was));
+        }
+        let entry = CustomAi { name: name.clone(), base_url: self.base_url.clone(), model: self.model.clone() };
+        match self.customs.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&name)) {
+            Some(c) => *c = entry,
+            None => self.customs.push(entry),
+        }
+        self.custom = name;
+    }
+
+    /// Use the custom AI named `name`.
+    pub fn use_custom(&mut self, name: &str) -> bool {
+        let Some(c) = self.customs.iter().find(|c| c.name == name).cloned() else { return false };
+        self.provider = Provider::OpenAi;
+        self.base_url = c.base_url;
+        self.model = c.model;
+        self.custom = c.name;
+        true
+    }
 }
 
 fn dir() -> Option<PathBuf> {
@@ -167,6 +214,28 @@ mod cred {
 /// `base_url` (OpenAI-compatible: the key is only ever sent to that host).
 pub fn set_key(p: Provider, key: &str, base_url: &str) -> bool {
     let key = key.trim();
+    if p == Provider::OpenAi {
+        // one key per server, under its host: several custom AIs keep their own
+        let Some(host) = crate::llm::agent::host_of(base_url) else { return false };
+        let target = host_credential(&host);
+        if key.is_empty() {
+            // and the older single key, when it was this host's: it would be sent in its place
+            if key_host(p).is_some_and(|h| h.eq_ignore_ascii_case(&host)) {
+                cred::delete(p.credential());
+                cred::delete(&format!("{}/host", p.credential()));
+            }
+            return cred::delete(&target) || cred::read(&target).is_none();
+        }
+        if !cred::write(&target, key) {
+            return false;
+        }
+        // the older single key, when it was this host's, is replaced by this one
+        if key_host(p).is_some_and(|h| h.eq_ignore_ascii_case(&host)) {
+            cred::delete(p.credential());
+            cred::delete(&format!("{}/host", p.credential()));
+        }
+        return true;
+    }
     let host_target = format!("{}/host", p.credential());
     if key.is_empty() {
         cred::delete(p.credential());
@@ -175,6 +244,16 @@ pub fn set_key(p: Provider, key: &str, base_url: &str) -> bool {
     }
     let host = crate::llm::agent::host_of(base_url).unwrap_or_default();
     cred::write(p.credential(), key) && cred::write(&host_target, &host)
+}
+
+/// Where an OpenAI-compatible server's key is kept: its host is in the name.
+fn host_credential(host: &str) -> String {
+    format!("Sprawl/openai-compatible@{}", host.to_lowercase())
+}
+
+/// The key saved for the OpenAI-compatible server at `host`.
+pub fn key_for_host(host: &str) -> Option<String> {
+    cred::read(&host_credential(host)).filter(|k| !k.trim().is_empty())
 }
 
 /// The host a provider's key was saved for, when that was recorded.
@@ -339,5 +418,37 @@ mod tests {
         assert_eq!(cred::read(&target).as_deref(), Some("sk-test-123"));
         assert!(cred::delete(&target));
         assert_eq!(cred::read(&target), None);
+    }
+}
+
+#[cfg(test)]
+mod custom_tests {
+    use super::{AiConfig, Provider};
+
+    #[test]
+    fn custom_ais_are_kept_renamed_and_picked() {
+        let mut c = AiConfig { provider: Provider::OpenAi, base_url: "https://api.deepseek.com/v1".into(), model: "deepseek-chat".into(), custom: "DeepSeek".into(), ..Default::default() };
+        c.keep_custom("");
+        c.base_url = "http://localhost:11434/v1".into();
+        c.model = "llama3".into();
+        c.custom = "Ollama".into();
+        c.keep_custom("");
+        assert_eq!(c.customs.len(), 2, "two servers, two entries");
+        // a new name for the one in use renames it
+        assert!(c.use_custom("DeepSeek"));
+        assert_eq!((c.base_url.as_str(), c.model.as_str()), ("https://api.deepseek.com/v1", "deepseek-chat"));
+        c.custom = "DeepSeek work".into();
+        c.keep_custom("DeepSeek");
+        assert!(c.customs.iter().all(|x| x.name != "DeepSeek") && c.customs.iter().any(|x| x.name == "DeepSeek work"));
+        // unnamed, or another provider: nothing kept
+        let mut d = AiConfig { provider: Provider::OpenAi, ..Default::default() };
+        d.keep_custom("");
+        assert!(d.customs.is_empty());
+        // the list survives ai.toml
+        let back: AiConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        // an ai.toml from before has none
+        let old: AiConfig = toml::from_str("provider = \"open-ai\"\nbase_url = \"x\"").unwrap();
+        assert!(old.customs.is_empty() && old.custom.is_empty());
     }
 }

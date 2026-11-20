@@ -188,6 +188,26 @@ pub const SHRINK_RULES: [&str; 2] = ["vm.wsl-disk", "vm.docker-disk"];
 /// (measured by what the file lost on disk, never recorded as compressed).
 pub const SHRINK: &str = "# Sprawl: shrink a virtual disk file (nothing inside it is deleted)\n";
 
+/// How the follow-up to a stopped shrink begins.
+pub const DETACH: &str = "# Sprawl: detach a virtual disk file a stopped shrink left attached\n";
+
+/// After a shrink was stopped (or hit the time limit) diskpart may have been ended between
+/// attaching the file and detaching it, and an attachment outlives diskpart: WSL or Docker then
+/// can't start. This detaches it (no error when it wasn't attached) and fails when the file is
+/// still held.
+pub fn detach_command(path: &Path) -> String {
+    let Some(sys) = crate::clean::system_dir() else { return format!("{DETACH}throw 'The Windows system directory could not be verified.'"); };
+    if path.to_string_lossy().contains(['"', '\r', '\n', '\0']) { return format!("{DETACH}throw 'The virtual disk path cannot be passed safely to diskpart.'"); }
+    let q = ps_quote(&path.display().to_string());
+    let diskpart = ps_quote(&sys.join("diskpart.exe").display().to_string());
+    format!(
+        "{DETACH}$p = {q}\n\
+         \"select vdisk file=`\"$p`\"`ndetach vdisk noerr`nexit\" | & {diskpart} | Out-Null\n\
+         Start-Sleep -Seconds 1\n\
+         try {{ [System.IO.File]::Open($p, 'Open', 'Read', 'None').Close() }} catch {{ throw 'The disk file is still in use.' }}"
+    )
+}
+
 /// The command is one of Sprawl's own shrink commands.
 pub fn is_shrink(a: &Action) -> bool {
     matches!(a, Action::Tool { command } if command.starts_with(SHRINK))

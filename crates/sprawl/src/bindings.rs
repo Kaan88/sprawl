@@ -444,6 +444,16 @@ pub mod Microsoft {
                 windows_core::IInspectable
             );
             impl AppWindow {
+                pub fn TitleBar(&self) -> windows_core::Result<AppWindowTitleBar> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).TitleBar)(
+                            windows_core::Interface::as_raw(self),
+                            &mut result__,
+                        )
+                        .and_then(|| windows_core::imp::Type::from_abi(result__))
+                    }
+                }
                 pub fn Resize(
                     &self,
                     size: super::super::super::Windows::Graphics::SizeInt32,
@@ -480,6 +490,52 @@ pub mod Microsoft {
             }
             unsafe impl Send for AppWindow {}
             unsafe impl Sync for AppWindow {}
+            #[repr(transparent)]
+            #[derive(Clone, Debug, Eq, PartialEq)]
+            pub struct AppWindowTitleBar(windows_core::IUnknown);
+            windows_core::imp::interface_hierarchy!(
+                AppWindowTitleBar,
+                windows_core::IUnknown,
+                windows_core::IInspectable
+            );
+            impl AppWindowTitleBar {
+                pub fn PreferredTheme(&self) -> windows_core::Result<TitleBarTheme> {
+                    let this = &windows_core::Interface::cast::<IAppWindowTitleBar3>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).PreferredTheme)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
+                pub fn SetPreferredTheme(&self, value: TitleBarTheme) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<IAppWindowTitleBar3>(self)?;
+                    unsafe {
+                        (windows_core::Interface::vtable(this).SetPreferredTheme)(
+                            windows_core::Interface::as_raw(this),
+                            value,
+                        )
+                        .ok()
+                    }
+                }
+
+            }
+            impl windows_core::RuntimeType for AppWindowTitleBar {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_class::<Self, IAppWindowTitleBar>();
+            }
+            unsafe impl windows_core::Interface for AppWindowTitleBar {
+                type Vtable = <IAppWindowTitleBar as windows_core::Interface>::Vtable;
+                const IID: windows_core::GUID =
+                    <IAppWindowTitleBar as windows_core::Interface>::IID;
+            }
+            impl windows_core::RuntimeName for AppWindowTitleBar {
+                const NAME: &'static str = "Microsoft.UI.Windowing.AppWindowTitleBar";
+            }
+            unsafe impl Send for AppWindowTitleBar {}
+            unsafe impl Sync for AppWindowTitleBar {}
             windows_core::imp::define_interface!(
                 IAppWindow,
                 IAppWindow_Vtbl,
@@ -506,7 +562,10 @@ pub mod Microsoft {
                 Size: usize,
                 Title: usize,
                 SetTitle: usize,
-                TitleBar: usize,
+                pub TitleBar: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut *mut core::ffi::c_void,
+                ) -> windows_core::HRESULT,
                 Destroy: usize,
                 Hide: usize,
                 Move: usize,
@@ -522,6 +581,72 @@ pub mod Microsoft {
                 SetPresenterByKind: usize,
                 pub Show:
                     unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+            }
+            windows_core::imp::define_interface!(
+                IAppWindowTitleBar,
+                IAppWindowTitleBar_Vtbl,
+                0x5574efa2_c91c_5700_a363_539c71a7aaf4
+            );
+            impl windows_core::RuntimeType for IAppWindowTitleBar {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_interface::<Self>();
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Windowing.IAppWindowTitleBar",
+                    );
+            }
+            #[repr(C)]
+            pub struct IAppWindowTitleBar_Vtbl {
+                pub base__: windows_core::IInspectable_Vtbl,
+            }
+            windows_core::imp::define_interface!(
+                IAppWindowTitleBar3,
+                IAppWindowTitleBar3_Vtbl,
+                0x07146e74_0410_5597_aba7_1af276d2ae07
+            );
+            impl windows_core::RuntimeType for IAppWindowTitleBar3 {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_interface::<Self>();
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Windowing.IAppWindowTitleBar3",
+                    );
+            }
+            #[repr(C)]
+            pub struct IAppWindowTitleBar3_Vtbl {
+                pub base__: windows_core::IInspectable_Vtbl,
+                pub PreferredTheme: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut TitleBarTheme,
+                )
+                    -> windows_core::HRESULT,
+                pub SetPreferredTheme: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    TitleBarTheme,
+                )
+                    -> windows_core::HRESULT,
+            }
+            #[repr(transparent)]
+            #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+            pub struct TitleBarTheme(pub i32);
+            impl TitleBarTheme {
+                pub const Legacy: Self = Self(0);
+                pub const UseDefaultAppMode: Self = Self(1);
+                pub const Light: Self = Self(2);
+                pub const Dark: Self = Self(3);
+            }
+            impl windows_core::imp::TypeKind for TitleBarTheme {
+                type TypeKind = windows_core::imp::CopyType;
+            }
+            impl windows_core::RuntimeType for TitleBarTheme {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"enum(Microsoft.UI.Windowing.TitleBarTheme;i4)",
+                    );
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Windowing.TitleBarTheme",
+                    );
             }
         }
         pub mod Xaml {
@@ -4645,6 +4770,30 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                         let this =
                             &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
@@ -5275,6 +5424,28 @@ pub mod Microsoft {
                     {
                         unsafe {
                             (windows_core::Interface::vtable(self).SetBackground)(
+                                windows_core::Interface::as_raw(self),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(self).BorderBrush)(
+                                windows_core::Interface::as_raw(self),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        unsafe {
+                            (windows_core::Interface::vtable(self).SetBorderBrush)(
                                 windows_core::Interface::as_raw(self),
                                 value.param().abi(),
                             )
@@ -7277,6 +7448,20 @@ pub mod Microsoft {
                     )
                         -> windows_core::HRESULT,
                     pub SetBackground: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut core::ffi::c_void,
+                    )
+                        -> windows_core::HRESULT,
+                    BackgroundSizing: usize,
+                    SetBackgroundSizing: usize,
+                    BorderThickness: usize,
+                    SetBorderThickness: usize,
+                    pub BorderBrush: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut *mut core::ffi::c_void,
+                    )
+                        -> windows_core::HRESULT,
+                    pub SetBorderBrush: unsafe extern "system" fn(
                         *mut core::ffi::c_void,
                         *mut core::ffi::c_void,
                     )
@@ -9378,6 +9563,30 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                         let this =
                             &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
@@ -10092,6 +10301,30 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                         let this =
                             &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
@@ -10759,6 +10992,30 @@ pub mod Microsoft {
                         let this = &windows_core::Interface::cast::<IControl>(self)?;
                         unsafe {
                             (windows_core::Interface::vtable(this).SetBackground)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
                                 windows_core::Interface::as_raw(this),
                                 value.param().abi(),
                             )
@@ -12015,6 +12272,30 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                         let this =
                             &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
@@ -12695,6 +12976,30 @@ pub mod Microsoft {
                         let this = &windows_core::Interface::cast::<IControl>(self)?;
                         unsafe {
                             (windows_core::Interface::vtable(this).SetBackground)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
                                 windows_core::Interface::as_raw(this),
                                 value.param().abi(),
                             )
@@ -13530,6 +13835,30 @@ pub mod Microsoft {
                         let this = &windows_core::Interface::cast::<IControl>(self)?;
                         unsafe {
                             (windows_core::Interface::vtable(this).SetBackground)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
                                 windows_core::Interface::as_raw(this),
                                 value.param().abi(),
                             )
@@ -15752,6 +16081,30 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                         let this =
                             &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
@@ -16605,6 +16958,30 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
                     pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                         let this =
                             &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
@@ -17307,6 +17684,30 @@ pub mod Microsoft {
                         let this = &windows_core::Interface::cast::<IControl>(self)?;
                         unsafe {
                             (windows_core::Interface::vtable(this).SetBackground)(
+                                windows_core::Interface::as_raw(this),
+                                value.param().abi(),
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn BorderBrush(&self) -> windows_core::Result<super::Media::Brush> {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).BorderBrush)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        }
+                    }
+                    pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                    where
+                        P0: windows_core::Param<super::Media::Brush>,
+                    {
+                        let this = &windows_core::Interface::cast::<IControl>(self)?;
+                        unsafe {
+                            (windows_core::Interface::vtable(this).SetBorderBrush)(
                                 windows_core::Interface::as_raw(this),
                                 value.param().abi(),
                             )
@@ -18171,6 +18572,33 @@ pub mod Microsoft {
                             let this = &windows_core::Interface::cast::<super::IControl>(self)?;
                             unsafe {
                                 (windows_core::Interface::vtable(this).SetBackground)(
+                                    windows_core::Interface::as_raw(this),
+                                    value.param().abi(),
+                                )
+                                .ok()
+                            }
+                        }
+                        pub fn BorderBrush(
+                            &self,
+                        ) -> windows_core::Result<super::super::Media::Brush>
+                        {
+                            let this = &windows_core::Interface::cast::<super::IControl>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).BorderBrush)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .and_then(|| windows_core::imp::Type::from_abi(result__))
+                            }
+                        }
+                        pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                        where
+                            P0: windows_core::Param<super::super::Media::Brush>,
+                        {
+                            let this = &windows_core::Interface::cast::<super::IControl>(self)?;
+                            unsafe {
+                                (windows_core::Interface::vtable(this).SetBorderBrush)(
                                     windows_core::Interface::as_raw(this),
                                     value.param().abi(),
                                 )
@@ -19319,6 +19747,33 @@ pub mod Microsoft {
                                 .ok()
                             }
                         }
+                        pub fn BorderBrush(
+                            &self,
+                        ) -> windows_core::Result<super::super::Media::Brush>
+                        {
+                            let this = &windows_core::Interface::cast::<super::IControl>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).BorderBrush)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .and_then(|| windows_core::imp::Type::from_abi(result__))
+                            }
+                        }
+                        pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                        where
+                            P0: windows_core::Param<super::super::Media::Brush>,
+                        {
+                            let this = &windows_core::Interface::cast::<super::IControl>(self)?;
+                            unsafe {
+                                (windows_core::Interface::vtable(this).SetBorderBrush)(
+                                    windows_core::Interface::as_raw(this),
+                                    value.param().abi(),
+                                )
+                                .ok()
+                            }
+                        }
                         pub fn ActualWidth(&self) -> windows_core::Result<f64> {
                             let this = &windows_core::Interface::cast::<
                                 super::super::IFrameworkElement,
@@ -20235,6 +20690,33 @@ pub mod Microsoft {
                             let this = &windows_core::Interface::cast::<super::IControl>(self)?;
                             unsafe {
                                 (windows_core::Interface::vtable(this).SetBackground)(
+                                    windows_core::Interface::as_raw(this),
+                                    value.param().abi(),
+                                )
+                                .ok()
+                            }
+                        }
+                        pub fn BorderBrush(
+                            &self,
+                        ) -> windows_core::Result<super::super::Media::Brush>
+                        {
+                            let this = &windows_core::Interface::cast::<super::IControl>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).BorderBrush)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .and_then(|| windows_core::imp::Type::from_abi(result__))
+                            }
+                        }
+                        pub fn SetBorderBrush<P0>(&self, value: P0) -> windows_core::Result<()>
+                        where
+                            P0: windows_core::Param<super::super::Media::Brush>,
+                        {
+                            let this = &windows_core::Interface::cast::<super::IControl>(self)?;
+                            unsafe {
+                                (windows_core::Interface::vtable(this).SetBorderBrush)(
                                     windows_core::Interface::as_raw(this),
                                     value.param().abi(),
                                 )

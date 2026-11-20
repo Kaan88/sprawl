@@ -106,9 +106,10 @@ pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 60] = [
+pub static PREFS: [Pref; 61] = [
     // General
     p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons, for example D:\\Games; C:\\Work\\Private. New app, Search, Cleaners and MCP scans omit them. Fast MFT scans still work: skipped folders are left out as the tree is built. Cleanup actions covering a skipped folder are refused. Existing History and CSV imports remain unchanged; rescan to replace old results.", Kind::Text("D:\\Games; C:\\Work\\Private")),
+    p("theme", Sec::General, "Theme", "Light or dark. Like Windows follows Settings > Personalisation > Colours. A change shows when Sprawl starts next.", Kind::Choice(&crate::theme::CHOICES, 0)),
     p("units", Sec::General, "Sizes in", "Best fit or a fixed unit. The base below determines GB versus GiB. Search sizes, goals and alert thresholds keep their stated binary meaning.", Kind::Choice(&UNITS, 0)),
     p("decimal", Sec::General, "Use decimal sizes (GB)", "Off: binary sizes, 1 GiB = 1,024 MiB. On: decimal sizes, 1 GB = 1,000 MB. Changes size displays, not byte counts or search and cleanup thresholds.", Kind::Switch(false)),
     p(
@@ -297,6 +298,7 @@ mod tests {
             ("decimal", "0"),
             ("scanExclude", ""),
             ("startTab", "0"),
+            ("theme", "0"),
             ("aiWebLookup", "0"),
             ("oUpdates", "1"),
             ("communityFetch", "0"),

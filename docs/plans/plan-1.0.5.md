@@ -11,7 +11,8 @@ builds and tests.
   - items meant for the Recycle Bin on a drive that has none (network, removable, UNC) are
     **held** with the reason, not deleted for good after a yes. That keeps the rule that an item
     meant for the bin is never deleted for good;
-  - Stop gives up waiting after 5 s. The hang itself was not reproduced.
+  - Stop gives up waiting after 5 s. The hang itself was not reproduced. (Changed 2026-11-21 after
+    Fable's P2-1: the run is no longer ended while its worker acts; the item says it is finishing.)
 - **G4:** a likely cause, fixed but not seen: the filter row lost its height in Search, where the
   filter box is hidden. Now it has MinHeight 32.
 - **G5:** done:
@@ -27,6 +28,16 @@ builds and tests.
   - out of the Options menu, at the user's word (it acts on the treemap alone);
   - now a Tweaks button in the map bar beside Colour, shown only while the Treemap is on;
   - Ctrl+T still works.
+
+- **J. Fable's four reports (2026-11-21):** every P1 and P2 fixed, with tests, except where the
+  queue entry "Fixes for the four Fable reports" says not done (the update preflight before
+  closing other processes; marking an AI's label in the Owner column). P3s are open.
+  - The admin P1: Sprawl installs for all users in Program Files and runs elevated only from
+    there; a Program Files copy updates by running the signed Setup. **Not run on a PC yet**
+    (it would install into Program Files): test it on a spare PC or VM before the release.
+  - Before release, also check: a release build (`cargo build --release`), the new dialogs
+    ("Install for all users?", "Close the other Sprawl processes?", "Stop and close"), and
+    Forget key in AI setup, with screenshots.
 
 ## A. Astra's review of 1.0.4
 
@@ -211,7 +222,25 @@ this from the start and was never reported.
 
    Screenshot both at narrow and wide widths (the UI rule: nothing clipped).
 
-## H. Light mode (the user's request, 2026-11-20)
+## H. Light mode (the user's request, 2026-11-20): done, first version
+
+- Built differently from the plan below, smaller:
+  - `theme.rs` rewrites each XAML string in `state::load` when the theme is light;
+  - greys and dark tints flip their lightness, coloured text is darkened, coloured fills stay;
+  - the root gets a near-opaque light ground;
+  - the caption buttons follow the theme (`AppWindowTitleBar.PreferredTheme`, new in the
+    bindings);
+  - the setting is Settings > General > Theme (Like Windows, Light, Dark), applied at the next
+    start;
+  - the map keeps its dark look.
+- Checked on screenshots of the Tree view, the Advisor and the AI setup. The other pages were not
+  looked at in light yet.
+- The user also liked mockup 03 (underline tabs with counts) from
+  `docs/mockups/designs-2026-11-20/`. It is built:
+  - the page tabs are plain text with a 3 px accent underline (`look::Pick::Page`, style
+    SprawlPage);
+  - Advisor and Cleaners get count badges (`tab_counts`). The badges weren't seen on screen: the
+    fixtures have no findings.
 
 - The UI is dark only:
   - `RequestedTheme="Dark"` on Root;
@@ -227,7 +256,14 @@ this from the start and was never reported.
 - Check: screenshots of every tab in both themes, closed and open (the UI rule: nothing clipped,
   text readable).
 
-## I. More than one custom AI (the user's request, 2026-11-20)
+## I. More than one custom AI (the user's request, 2026-11-20): done
+
+- Built:
+  - a key per host in Credential Manager;
+  - named entries in `ai.toml`, listed in the Provider dropdown as "<name> (custom)";
+  - a Name row and a Remove button in AI setup;
+  - Save keeps or renames the entry.
+- It is in the review queue as item 7 of the 1.0.5 entry.
 
 - Today there is one OpenAI-compatible setup:
   - one `base_url` and model;

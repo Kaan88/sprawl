@@ -183,7 +183,9 @@ fn settle_overlaps(volumes: &mut [(PathBuf, u64)]) {
 /// how long since `since`. Off (one env lookup, cached) otherwise.
 pub fn timing(what: &str, since: std::time::Instant) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("SPRAWL_TIMING").is_some()) {
+    // never as administrator: TEMP and the switch are the user's, so an elevated write there
+    // could be sent anywhere (Fable core review P2-1)
+    if !*ON.get_or_init(|| std::env::var_os("SPRAWL_TIMING").is_some() && elevation().ok() == Some(false)) {
         return;
     }
     use std::io::Write;

@@ -1,0 +1,12 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>13 Nav rail</title><link rel="stylesheet" href="kit.css"><style>
+.win{background:var(--mica)}
+.crumb{display:flex;align-items:center;gap:2px}.crumb span{padding:2px 6px;border-radius:3px}.crumb .ic{font-size:9px;color:var(--tx3)}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const main=`<div class="col fill" style="min-width:0;padding:0 12px 0 0">
+ <div class="row g12" style="height:56px"><div class="h2">Tree View</div><div class="crumb dim2">${K.ic('EDA2','s')}<span>C:</span>${K.ic('E76C')}<span>Users</span>${K.ic('E76C')}<span>sam</span></div><span class="sp"></span>${K.filter(300)}
+  <div class="split">${K.btn('Scan','E721','acc')}<span class="btn acc">${K.ic('E70D','s')}</span></div></div>
+ <div class="card pad row g16" style="margin-bottom:10px"><span class="semi">C: Windows</span><div class="fill">${K.usage(82)}</div><span class="cap dim2 num">389.4 of 476 GB used, 86.6 GB free</span><span class="divider"></span><span class="cap dim2">Scanned 8.4 s ago, 1,418,206 items</span><span style="color:var(--acc)" class="cap">Details</span></div>
+ <div class="row g12" style="height:250px;padding-bottom:10px"><div class="card col" style="flex:1.4;min-width:0">${K.tree({sel:3})}</div><div class="card col" style="flex:1;min-width:0">${K.types({})}</div></div>
+ ${K.mapbar('seg').replace('padding:0 12px 8px','padding:0 0 8px')}<div class="fill" style="padding-bottom:10px">${K.tm({aspect:3.7,hot:'Docker'})}</div></div>`;
+document.getElementById('w').innerHTML=K.tb()+`<div class="row fill" style="align-items:stretch;min-height:0">${K.rail(1)}${main}</div>`+K.status();
+K.init('13-nav-rail')</script></body></html>

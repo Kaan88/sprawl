@@ -1,0 +1,898 @@
+<title>Sprawl Design Gallery</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky top bar with theme toggle and tier links; one section per scale of change; each mockup is a card with a scrollable stage so wide windows survive phones. */
+:root{
+--bg:#E9ECEE;--fg:#15191C;--mut:#535B61;--line:#CBD1D5;--card:#F7F8F9;--acc:#0B6E69;--accfg:#FFFFFF;--stage:#D5DADD;
+--f-d:"Bricolage Grotesque","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+--f-b:Inter,"Segoe UI",system-ui,sans-serif;--f-m:"JetBrains Mono",Consolas,monospace;
+--w-bg:#F3F3F3;--w-card:#FFFFFF;--w-ctl:#FFFFFF;--w-stroke:#E0E0E0;--w-stroke-b:#BDBDBD;--w-stroke2:#CFCFCF;
+--w-fg:#1A1A1A;--w-fg2:#4D4D4D;--w-fg3:#666666;--w-acc:#2F6FE0;--w-onacc:#FFFFFF;--w-acc-t:#1F58C0;
+--w-sel:#E3EAF7;--w-hover:#EAEAEA;--w-dlg:#FFFFFF;--w-ok:#0E700E;--w-okbg:#DFF6DD;--w-warn:#7A4300;--w-warnbg:#FFF4CE;
+--w-err:#A8231B;--w-errbg:#FDE7E9;--w-info:#1F58C0;--w-infobg:#E8F0FD;--w-solid-err:#C42B1C;
+--w-shadow:0 8px 32px rgba(0,0,0,.20);--w-scrim:rgba(0,0,0,.35);
+--c1:#3B6FB6;--c2:#2A8579;--c3:#A9672A;--c4:#8453AB;--c5:#A8435C;--c6:#667A26;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--bg:#111416;--fg:#ECEFF1;--mut:#9AA3A9;--line:#2B3135;--card:#191D20;--acc:#4CC1B8;--accfg:#06201E;--stage:#0B0D0F;color-scheme:dark;
+--w-bg:#202020;--w-card:#2B2B2B;--w-ctl:#373737;--w-stroke:#3C3C3C;--w-stroke-b:#4C4C4C;--w-stroke2:#454545;
+--w-fg:#FFFFFF;--w-fg2:#CFCFCF;--w-fg3:#A0A0A0;--w-acc:#6AA2FF;--w-onacc:#0B1B33;--w-acc-t:#8DB8FF;
+--w-sel:#2E3541;--w-hover:#333333;--w-dlg:#2B2B2B;--w-ok:#6CCB5F;--w-okbg:#2A3B28;--w-warn:#FCD36B;--w-warnbg:#433519;
+--w-err:#FF99A4;--w-errbg:#442726;--w-info:#8DB8FF;--w-infobg:#1F2F49;--w-solid-err:#C42B1C;
+--w-shadow:0 8px 32px rgba(0,0,0,.55);--w-scrim:rgba(0,0,0,.55);
+--c1:#4F86CC;--c2:#3AA596;--c3:#C98840;--c4:#9D72C4;--c5:#C45E78;--c6:#8A9E3E;
+}}
+:root[data-theme="dark"]{
+--bg:#111416;--fg:#ECEFF1;--mut:#9AA3A9;--line:#2B3135;--card:#191D20;--acc:#4CC1B8;--accfg:#06201E;--stage:#0B0D0F;color-scheme:dark;
+--w-bg:#202020;--w-card:#2B2B2B;--w-ctl:#373737;--w-stroke:#3C3C3C;--w-stroke-b:#4C4C4C;--w-stroke2:#454545;
+--w-fg:#FFFFFF;--w-fg2:#CFCFCF;--w-fg3:#A0A0A0;--w-acc:#6AA2FF;--w-onacc:#0B1B33;--w-acc-t:#8DB8FF;
+--w-sel:#2E3541;--w-hover:#333333;--w-dlg:#2B2B2B;--w-ok:#6CCB5F;--w-okbg:#2A3B28;--w-warn:#FCD36B;--w-warnbg:#433519;
+--w-err:#FF99A4;--w-errbg:#442726;--w-info:#8DB8FF;--w-infobg:#1F2F49;--w-solid-err:#C42B1C;
+--w-shadow:0 8px 32px rgba(0,0,0,.55);--w-scrim:rgba(0,0,0,.55);
+--c1:#4F86CC;--c2:#3AA596;--c3:#C98840;--c4:#9D72C4;--c5:#C45E78;--c6:#8A9E3E;
+}
+:root[data-theme="light"]{color-scheme:light}
+.mock[data-mt="light"]{--w-bg:#F3F3F3;--w-card:#FFFFFF;--w-ctl:#FFFFFF;--w-stroke:#E0E0E0;--w-stroke-b:#BDBDBD;--w-stroke2:#CFCFCF;
+--w-fg:#1A1A1A;--w-fg2:#4D4D4D;--w-fg3:#666666;--w-acc:#2F6FE0;--w-onacc:#FFFFFF;--w-acc-t:#1F58C0;
+--w-sel:#E3EAF7;--w-hover:#EAEAEA;--w-dlg:#FFFFFF;--w-ok:#0E700E;--w-okbg:#DFF6DD;--w-warn:#7A4300;--w-warnbg:#FFF4CE;
+--w-err:#A8231B;--w-errbg:#FDE7E9;--w-info:#1F58C0;--w-infobg:#E8F0FD;--w-solid-err:#C42B1C;
+--w-shadow:0 8px 32px rgba(0,0,0,.20);--w-scrim:rgba(0,0,0,.35);
+--c1:#3B6FB6;--c2:#2A8579;--c3:#A9672A;--c4:#8453AB;--c5:#A8435C;--c6:#667A26;}
+.mock[data-mt="dark"]{--w-bg:#202020;--w-card:#2B2B2B;--w-ctl:#373737;--w-stroke:#3C3C3C;--w-stroke-b:#4C4C4C;--w-stroke2:#454545;
+--w-fg:#FFFFFF;--w-fg2:#CFCFCF;--w-fg3:#A0A0A0;--w-acc:#6AA2FF;--w-onacc:#0B1B33;--w-acc-t:#8DB8FF;
+--w-sel:#2E3541;--w-hover:#333333;--w-dlg:#2B2B2B;--w-ok:#6CCB5F;--w-okbg:#2A3B28;--w-warn:#FCD36B;--w-warnbg:#433519;
+--w-err:#FF99A4;--w-errbg:#442726;--w-info:#8DB8FF;--w-infobg:#1F2F49;--w-solid-err:#C42B1C;
+--w-shadow:0 8px 32px rgba(0,0,0,.55);--w-scrim:rgba(0,0,0,.55);
+--c1:#4F86CC;--c2:#3AA596;--c3:#C98840;--c4:#9D72C4;--c5:#C45E78;--c6:#8A9E3E;}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 var(--f-b);margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+header.top{padding-block:40px 20px;display:grid;gap:12px}
+header.top h1{font:700 clamp(32px,6vw,56px)/1.02 var(--f-d);margin:0;letter-spacing:-.02em;text-wrap:balance}
+header.top p{margin:0;max-width:68ch;color:var(--mut)}
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--bg);border-block:1px solid var(--line);display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;padding-block:10px}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:30;background:var(--bg)}
+.bar nav{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px}
+.bar a{color:var(--fg);text-decoration:none;border-bottom:2px solid transparent;padding-block:2px}
+.bar a:hover{border-color:var(--acc)}
+a:focus-visible,button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{font:500 13px var(--f-b);background:transparent;color:var(--fg);border:0;padding:6px 12px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--acc);color:var(--accfg)}
+section.tier{padding-top:48px;scroll-margin-top:60px}
+section.tier>h2{font:700 clamp(24px,4vw,36px)/1.1 var(--f-d);margin:0 0 6px;letter-spacing:-.01em}
+section.tier>p.lede{margin:0 0 24px;color:var(--mut);max-width:70ch}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:28px;min-width:0}
+.card h3{font:600 19px/1.25 var(--f-d);margin:0;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.card h3 .id{font:500 12px var(--f-m);color:var(--mut)}
+.chead{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.flip{font:500 12px var(--f-b);border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:6px;padding:4px 10px;cursor:pointer}
+.ctl{font:400 12px/1.5 var(--f-m);color:var(--mut);margin:6px 0 12px;overflow-wrap:anywhere}
+.stage{overflow-x:auto;background:var(--stage);border-radius:8px;padding:16px;min-width:0}
+.why{display:grid;gap:6px;margin:14px 0 0;font-size:14px;max-width:90ch}
+.why p{margin:0}.why b{font:600 11px var(--f-b);letter-spacing:.08em;text-transform:uppercase;color:var(--acc);margin-right:6px}
+.tt{font:600 11px var(--f-b);letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--mut)}
+.src{display:none}
+/* ---- mock: Fluent-style surface ---- */
+.mock{position:relative;font:13px/1.38 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--w-fg);background:var(--w-bg);border:1px solid var(--w-stroke2);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;flex:none;text-align:left}
+.mock *{box-sizing:border-box}
+.mock .body{flex:1;min-height:0;display:flex;position:relative}
+.mock .tb{height:32px;display:flex;align-items:center;gap:8px;padding:0 0 0 12px;font-size:12px;color:var(--w-fg2);flex:none}
+.mock .tb .wc{letter-spacing:.3em;padding-right:14px;color:var(--w-fg2)}
+.mock .row{display:flex;align-items:center;gap:8px}.mock .col{display:flex;flex-direction:column;gap:8px}
+.mock .grow{flex:1;min-width:0}.mock .wrapf{flex-wrap:wrap}.mock .tr-r{margin-left:auto}
+.mock .g4{gap:4px}.mock .g12{gap:12px}.mock .g16{gap:16px}.mock .g2{gap:2px}
+.mock .p8{padding:8px}.mock .p12{padding:12px}.mock .p16{padding:16px}.mock .p24{padding:24px}.mock .ph16{padding-inline:16px}
+.mock .mut{color:var(--w-fg2)}.mock .dim{color:var(--w-fg3)}.mock .sm{font-size:12px}.mock .xs{font-size:11px}.mock .b{font-weight:600}
+.mock .h1{font:600 28px/1.15 "Segoe UI Variable Display","Segoe UI",sans-serif}.mock .h2{font:600 20px/1.2 "Segoe UI Variable Display","Segoe UI",sans-serif}.mock .h3{font-weight:600;font-size:14px;line-height:1.3}
+.mock .num{font-variant-numeric:tabular-nums;text-align:right}.mock .mono{font-family:Consolas,"Cascadia Mono",monospace;font-size:12px}
+.mock .ellip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.mock .ic{display:inline-flex;flex:none}.mock .ic svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
+.mock .ic.l svg{width:24px;height:24px}.mock .ic.xl svg{width:40px;height:40px;stroke-width:1}
+.mock .btn{height:32px;padding:0 12px;border:1px solid var(--w-stroke);border-bottom-color:var(--w-stroke-b);border-radius:4px;background:var(--w-ctl);color:var(--w-fg);font:inherit;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.mock .btn.acc{background:var(--w-acc);color:var(--w-onacc);border-color:var(--w-acc)}
+.mock .btn.dng{background:var(--w-solid-err);color:#fff;border-color:var(--w-solid-err)}
+.mock .btn.sub{background:transparent;border-color:transparent}.mock .btn.sm{height:28px;padding:0 8px;font-size:12px}
+.mock .btn.ico{width:32px;padding:0;justify-content:center}.mock .link{color:var(--w-acc-t);text-decoration:underline;text-underline-offset:2px}
+.mock .fo{box-shadow:0 0 0 1px var(--w-bg),0 0 0 3px var(--w-fg)}
+.mock .pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap}
+.mock .pill.ok{background:var(--w-okbg);color:var(--w-ok)}.mock .pill.warn{background:var(--w-warnbg);color:var(--w-warn)}
+.mock .pill.err{background:var(--w-errbg);color:var(--w-err)}.mock .pill.info{background:var(--w-infobg);color:var(--w-info)}
+.mock .pill.n{background:var(--w-hover);color:var(--w-fg2)}.mock .pill .ic svg{width:12px;height:12px}
+.mock .ib{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:4px;border:1px solid var(--w-stroke);background:var(--w-card)}
+.mock .ib.ok{background:var(--w-okbg)}.mock .ib.warn{background:var(--w-warnbg)}.mock .ib.err{background:var(--w-errbg)}.mock .ib.info{background:var(--w-infobg)}
+.mock .ib.ok>.ic{color:var(--w-ok)}.mock .ib.warn>.ic{color:var(--w-warn)}.mock .ib.err>.ic{color:var(--w-err)}.mock .ib.info>.ic{color:var(--w-info)}
+.mock .ib>.t{flex:1;min-width:0}
+.mock .card{background:var(--w-card);border:1px solid var(--w-stroke);border-radius:8px;padding:12px 16px;margin:0;min-width:0}
+.mock .menubar{display:flex;gap:2px;padding:0 6px;height:28px;align-items:center;font-size:12px;flex:none}.mock .menubar span{padding:3px 9px;border-radius:4px}
+.mock .nav{flex:none;width:260px;display:flex;flex-direction:column;gap:2px;padding:4px}
+.mock .nav.c{width:48px}
+.mock .ni{height:36px;display:flex;align-items:center;gap:12px;padding:0 12px;border-radius:4px;position:relative;white-space:nowrap}
+.mock .ni.sel{background:var(--w-sel)}.mock .ni.sel::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:2px;background:var(--w-acc)}
+.mock .ni .bd{margin-left:auto;background:var(--w-acc);color:var(--w-onacc);border-radius:9px;min-width:18px;height:18px;padding:0 5px;font-size:11px;font-weight:600;display:grid;place-items:center}
+.mock .nsep{height:1px;background:var(--w-stroke);margin:4px 8px}.mock .nh{font-size:12px;color:var(--w-fg3);padding:8px 12px 2px}
+.mock .content{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--w-card);border:1px solid var(--w-stroke);border-radius:8px 0 0 0;border-right:0;border-bottom:0;margin-top:2px}
+.mock .content.full{border-radius:8px;margin:0 4px 4px 0;border:1px solid var(--w-stroke)}
+.mock .selbar{display:flex;gap:4px}.mock .sbi{padding:6px 12px;position:relative;display:flex;gap:6px;align-items:center;border-radius:4px;color:var(--w-fg2)}
+.mock .sbi.sel{color:var(--w-fg);font-weight:600}.mock .sbi.sel::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:3px;border-radius:2px;background:var(--w-acc)}
+.mock .asb{height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--w-stroke);border-bottom:1px solid var(--w-stroke-b);border-radius:4px;background:var(--w-ctl);color:var(--w-fg2);min-width:0}
+.mock .asb.f{border-bottom:2px solid var(--w-acc)}
+.mock .crumb{display:flex;align-items:center;gap:2px;font-size:13px}.mock .crumb .ic svg{width:10px;height:10px;opacity:.6}
+.mock .li{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 12px;border-radius:4px;position:relative;min-width:0}
+.mock .li.sel{background:var(--w-sel)}.mock .li.sel::before{content:"";position:absolute;left:0;top:11px;bottom:11px;width:3px;border-radius:2px;background:var(--w-acc)}
+.mock .li.h{min-height:32px;font-size:12px;color:var(--w-fg3);font-weight:600}
+.mock .cb{width:20px;height:20px;border:1px solid var(--w-stroke-b);border-radius:4px;display:grid;place-items:center;flex:none;background:var(--w-ctl)}
+.mock .cb.on{background:var(--w-acc);border-color:var(--w-acc);color:var(--w-onacc)}.mock .cb .ic svg{width:14px;height:14px;stroke-width:1.8}
+.mock .cb.mix{background:var(--w-acc);border-color:var(--w-acc)}.mock .cb.mix::after{content:"";width:10px;height:2px;background:var(--w-onacc)}
+.mock .rd{width:20px;height:20px;border:1px solid var(--w-stroke-b);border-radius:50%;flex:none;background:var(--w-ctl)}
+.mock .rd.on{border:6px solid var(--w-acc);background:var(--w-onacc)}
+.mock .tg{width:40px;height:20px;border:1px solid var(--w-stroke-b);border-radius:10px;position:relative;flex:none}.mock .tg::after{content:"";position:absolute;top:3px;left:4px;width:12px;height:12px;border-radius:50%;background:var(--w-fg2)}
+.mock .tg.on{background:var(--w-acc);border-color:var(--w-acc)}.mock .tg.on::after{left:23px;background:var(--w-onacc)}
+.mock .pb{height:4px;border-radius:2px;background:var(--w-stroke);overflow:hidden;min-width:0;flex:1}.mock .pb i{display:block;height:100%;background:var(--w-acc);border-radius:2px}
+.mock .pb.ok i{background:var(--w-ok)}.mock .pb.warn i{background:#C98A00}.mock .pb.err i{background:var(--w-solid-err)}
+.mock .stack{display:flex;height:12px;border-radius:3px;overflow:hidden;gap:2px;min-width:0}.mock .stack i{display:block;height:100%}
+.mock .dlgwrap{position:absolute;inset:0;background:var(--w-scrim);display:grid;place-items:center;padding:12px;z-index:5}
+.mock .dlg{background:var(--w-dlg);border:1px solid var(--w-stroke2);border-radius:8px;box-shadow:var(--w-shadow);display:flex;flex-direction:column;max-height:100%;overflow:hidden}
+.mock .dlg .dh{padding:24px 24px 0;font:600 20px "Segoe UI Variable Display","Segoe UI",sans-serif}.mock .dlg .db{padding:12px 24px 24px;min-height:0;flex:1;overflow:hidden}
+.mock .dlg .df{display:flex;gap:8px;padding:24px;background:var(--w-bg);border-top:1px solid var(--w-stroke)}.mock .dlg .df .btn{flex:1;justify-content:center}
+.mock .tip{position:absolute;background:var(--w-card);border:1px solid var(--w-stroke2);border-radius:8px;box-shadow:var(--w-shadow);padding:16px;z-index:6;font-size:13px}
+.mock .tip::before{content:"";position:absolute;width:12px;height:12px;background:var(--w-card);border:1px solid var(--w-stroke2);border-right:0;border-bottom:0;transform:rotate(45deg);left:var(--ax,24px);top:-7px}
+.mock .tip.up::before{top:auto;bottom:-7px;transform:rotate(225deg)}
+.mock .tip.lt::before{left:-7px;top:var(--ay,24px);transform:rotate(-45deg)}
+.mock .exp{border:1px solid var(--w-stroke);border-radius:4px;background:var(--w-card);min-width:0}.mock .exp>.eh{display:flex;align-items:center;gap:10px;min-height:48px;padding:0 16px}.mock .exp>.eb{border-top:1px solid var(--w-stroke);padding:12px 16px;background:var(--w-bg)}
+.mock .tvr{display:flex;align-items:center;gap:6px;height:28px;padding-right:12px;border-radius:4px;position:relative;min-width:0}
+.mock .tvr.sel{background:var(--w-sel)}.mock .tvr .ic svg{width:14px;height:14px}
+.mock .db1{position:absolute;left:0;top:3px;bottom:3px;border-radius:2px;opacity:.18;background:var(--w-acc)}
+.mock .tm{position:relative;overflow:hidden;border-radius:4px;background:var(--w-bg)}
+.mock .tm .t{position:absolute;overflow:hidden;padding:4px 6px;color:#fff;font-size:11px;line-height:1.25;border:1px solid var(--w-bg);text-shadow:0 1px 2px rgba(0,0,0,.5);min-width:0}
+.mock .tm .t b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mock .tm .t.hd{padding:2px 5px;font-weight:600}
+.mock .tm.cush .t{box-shadow:inset 0 0 22px rgba(0,0,0,.28),inset 2px 2px 8px rgba(255,255,255,.22)}
+.mock .tm .t.hi{outline:2px solid var(--w-fg);outline-offset:-2px;z-index:2}
+.mock .sun{display:block}.mock .sun text{font:11px "Segoe UI",sans-serif;fill:#fff}
+.mock .call{position:absolute;z-index:7;background:var(--w-fg);color:var(--w-bg);font-size:11px;padding:3px 8px;border-radius:99px;white-space:nowrap}
+.mock .gridr{display:grid;align-items:center;column-gap:12px}
+.mock .sep{height:1px;background:var(--w-stroke);flex:none}.mock .vsep{width:1px;background:var(--w-stroke);align-self:stretch;flex:none}
+.mock .dot{width:10px;height:10px;border-radius:2px;flex:none}
+.mock .kbd{font:11px Consolas,monospace;border:1px solid var(--w-stroke-b);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--w-fg2)}
+.mock .ring{width:var(--s,72px);height:var(--s,72px);border-radius:50%;background:conic-gradient(var(--w-acc) calc(var(--p)*1%),var(--w-stroke) 0);display:grid;place-items:center;flex:none}
+.mock .ring>span{width:calc(100% - 12px);height:calc(100% - 12px);border-radius:50%;background:var(--w-card);display:grid;place-items:center;font-weight:600}
+.mock .tile{border:1px solid var(--w-stroke);background:var(--w-card);border-radius:8px}
+.mock .scrim{position:absolute;inset:0;background:var(--w-scrim)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+<div class="wrap">
+<header class="top">
+<h1>Sprawl design gallery</h1>
+<p>Thirty-six mockups for Sprawl, a Windows disk-space analyser: from small polish edits up to new branding. Each is drawn with WinUI 3 controls and Fluent 2 spacing (4 and 8 px radii, 32 px controls, Segoe UI Variable). Sample data is invented. Where a piece is not a stock WinUI control it is marked custom, with a note on how to build it. Every deletion path keeps the review step and says what is permanent.</p>
+</header>
+<div class="bar">
+<nav aria-label="Tiers"><a href="#t1">1 Small edits</a><a href="#t2">2 Restructured screens</a><a href="#t3">3 New workflows</a><a href="#t4">4 Drastic redesigns</a><a href="#t5">5 Branding</a></nav>
+<div class="seg" role="group" aria-label="Theme"><button id="th-sys" aria-pressed="true">System</button><button id="th-light" aria-pressed="false">Light</button><button id="th-dark" aria-pressed="false">Dark</button></div>
+</div>
+<div id="tiers"></div>
+</div>
+<div id="srcs" class="src">
+<article class="m" data-tier="1" data-w="880" data-h="330" data-title="Scan header, before and after"
+data-ctl="Grid, TextBlock, HyperlinkButton, InfoBar (Severity=Success, IsClosable=False), CommandBar (Primary commands, Label Right)"
+data-problem="The header packs what was scanned, how, and the Details link into loose text. Users do not notice that the scan skipped folders."
+data-trade="One more visible chip. When a scan is incomplete the chip turns amber, which adds a little worry, but that is the honest state.">
+<div class="col grow p16 g16">
+ <div class="row g16" style="align-items:flex-start">
+  <div class="card grow col g4"><span class="pill n" style="align-self:flex-start">BEFORE</span>
+   <div class="row"><i data-i="drive"></i><span class="b">Scanned C:\ (Windows) NTFS file table in 4.2 s</span></div>
+   <div class="row sm mut">476 GB, 1.2M files <span class="link">Details</span></div>
+   <div class="row g4 sm" style="margin-top:6px"><span class="btn sm">Rescan</span><span class="btn sm">Stop</span></div></div>
+  <div class="card grow col g4"><span class="pill info" style="align-self:flex-start">AFTER</span>
+   <div class="row g12"><i data-i="drive" class="l"></i><div class="col g2 grow"><span class="h3">C:\ Windows</span><span class="sm mut">Scanned today 14:02 in 4.2 s, read from the NTFS file table</span></div>
+   <span class="pill ok"><i data-i="check"></i>Complete</span></div>
+   <div class="row g4"><span class="btn sm acc"><i data-i="refresh"></i>Rescan</span><span class="btn sm sub"><i data-i="info"></i>Details</span></div></div>
+ </div>
+ <div class="ib warn"><i data-i="warn"></i><div class="t"><div class="b">Scan C:\ is not complete</div><div class="sm">3 folders could not be read (access denied) and 2 are skipped by your settings. The totals below leave them out.</div></div><span class="btn sm">Details</span></div>
+ <div class="ib info"><i data-i="info"></i><div class="t sm">Open as administrator for the fast scan. Without it Sprawl walks folders, which takes minutes instead of seconds.</div><span class="btn sm acc">Restart elevated</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="360" data-title="Tabs become a SelectorBar with icons and counts"
+data-ctl="SelectorBar + SelectorBarItem (Icon, Text), InfoBadge on Advisor, ToolTip with KeyboardAccelerator text (Ctrl+1..5), TreeView"
+data-problem="The tabs are plain buttons made to look selected by colour. Screen readers and keyboards do not know which is current, and Advisor hides how much it found." data-trade="SelectorBar is not a full TabView, so it needs a Frame swap for content. You lose tab reordering, which this app never used.">
+<div class="col grow">
+ <div class="menubar"><span>File</span><span>Options</span><span>Help</span></div>
+ <div class="row p12 g12"><div class="selbar" role="tablist">
+  <div class="sbi sel fo"><i data-i="folder"></i>Tree view</div><div class="sbi"><i data-i="list"></i>Files</div>
+  <div class="sbi"><i data-i="spark"></i>Advisor <span class="pill info">12</span></div><div class="sbi"><i data-i="broom"></i>Cleaners</div><div class="sbi"><i data-i="clock"></i>History</div></div>
+  <span class="grow"></span><div class="asb" style="width:220px"><i data-i="search"></i>Search names</div></div>
+ <div class="tip" style="left:40px;top:92px;--ax:22px;padding:8px 12px">Tree view <span class="kbd">Ctrl+1</span></div>
+ <div class="p12 col g4" style="padding-top:60px">
+  <div class="tvr sel"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">C:\</span><span class="num">476 GB</span></div>
+  <div class="tvr" style="padding-left:22px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Users\Alex</span><span class="num">212 GB</span></div>
+  <div class="tvr" style="padding-left:22px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Program Files</span><span class="num">118 GB</span></div></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="720" data-h="380" data-title="Advisor empty state before a scan"
+data-ctl="Page with StackPanel, FontIcon (Segoe Fluent Icons E9D9), Button (AccentButtonStyle), HyperlinkButton"
+data-problem="Opening Advisor with no scan leaves a blank panel with no clue what it does or how to get findings." data-trade="A little more vertical padding than a bare empty list, and the copy must stay true if the Advisor changes.">
+<div class="col grow" style="align-items:center;justify-content:center;text-align:center;padding:32px;gap:10px">
+ <i data-i="spark" class="xl" style="color:var(--w-acc)"></i>
+ <div class="h2">Nothing to advise yet</div>
+ <div class="mut" style="max-width:400px">Scan a drive and the Advisor lists what can go, why, how risky it is, and what it costs to get back. Nothing is ticked for you.</div>
+ <div class="row g12" style="margin-top:8px"><span class="btn acc"><i data-i="drive"></i>Scan C:</span><span class="btn">Scan a folder...</span></div>
+ <div class="sm dim" style="margin-top:8px">Cleaners works without a scan. <span class="link">Open Cleaners</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="400" data-title="Keyboard focus and contrast pass"
+data-ctl="Focus visuals (FocusVisualPrimaryBrush / SecondaryBrush), ListView, CheckBox, AutomationProperties.Name; theme resources for secondary text"
+data-problem="Secondary text and the focus ring fall short of WCAG 2.2 (4.5:1 for text, 3:1 for focus). A tree you can only drive by mouse is no use to many users." data-trade="Darker secondary text slightly flattens the visual hierarchy. Fix it with weight and size, not by lowering contrast.">
+<div class="col grow p16 g12" style="position:relative">
+ <div class="call" style="right:24px;top:20px">Focus ring: 2 px dark + 1 px light, 3:1 in both themes</div>
+ <div class="li h"><span style="width:20px"></span><span class="grow">Finding</span><span style="width:90px">Risk</span><span style="width:80px" class="num">Size</span></div>
+ <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">npm cache</span><span style="width:90px"><span class="pill ok"><i data-i="check"></i>Low</span></span><span style="width:80px" class="num">6.2 GB</span></div>
+ <div class="li sel fo"><span class="cb"></span><span class="grow">Old installers in Downloads</span><span style="width:90px"><span class="pill warn"><i data-i="warn"></i>Medium</span></span><span style="width:80px" class="num">21 GB</span></div>
+ <div class="li"><span class="cb"></span><span class="grow">harbor-app\target (idle 214 days)</span><span style="width:90px"><span class="pill warn"><i data-i="warn"></i>Medium</span></span><span style="width:80px" class="num">19 GB</span></div>
+ <div class="row g16 sm" style="margin-top:12px">
+  <div class="card grow col g4"><span class="b">Secondary text</span><span style="color:#8E8E8E">Before: 3.3:1 on white (fails)</span><span class="mut">After: 8.5:1 (passes AA)</span></div>
+  <div class="card grow col g4"><span class="b">Keys</span><span><span class="kbd">Space</span> tick &nbsp;<span class="kbd">Enter</span> details &nbsp;<span class="kbd">Alt+R</span> review</span><span class="mut">Narrator reads: "npm cache, Low risk, 6.2 GB, not ticked"</span></div></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="380" data-title="Risk and recovery that do not rely on colour"
+data-ctl="ListView + DataTemplate, FontIcon, Border (pill), ToolTipService; icons: Accept, Warning, StatusCircleBlock; Segoe UI Semibold"
+data-problem="Risk is shown by a coloured dot. Colour-blind users cannot tell medium from high, and 'what it costs to get back' is buried in text." data-trade="Two extra columns narrow the finding name. Hide the recovery column below 700 px and show it in the detail pane.">
+<div class="col grow p16 g4">
+ <div class="gridr li h" style="grid-template-columns:1fr 110px 190px 70px"><span>Finding</span><span>Risk</span><span>If you remove it</span><span class="num">Size</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Windows temp files</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm"><i data-i="refresh"></i> Rebuilt automatically</span><span class="num">9.4 GB</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Docker build cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm"><i data-i="clock"></i> Rebuilds slowly (minutes)</span><span class="num">31 GB</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Old installers (Downloads)</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="sm"><i data-i="cloud"></i> Download again</span><span class="num">21 GB</span></div>
+ <div class="gridr li" style="grid-template-columns:1fr 110px 190px 70px"><span>Raw clips, untouched 2 years</span><span class="pill err"><i data-i="ban"></i>High</span><span class="sm"><i data-i="lock"></i> Cannot be recreated</span><span class="num">27 GB</span></div>
+ <div class="ib info" style="margin-top:12px"><i data-i="info"></i><div class="t sm">Risk always shows an icon and a word. Colour only reinforces it. "Cannot be recreated" is shown for anything that is your own content.</div></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="400" data-title="Tree rows with size bars and share of parent"
+data-ctl="TreeView with ItemTemplate (Grid: icon, name, bar, %, size), separate header Grid for column titles"
+data-problem="Sizes sit in a column with no visual weight, so the eye must read numbers to find the big folders."
+data-custom="column header is a plain Grid kept in sync with the tree's template widths; TreeView has no built-in columns"
+data-trade="Bars add colour noise on a dense tree. Make the bar a 12% accent tint and let users switch it off in Settings.">
+<div class="col grow p12 g2">
+ <div class="gridr li h" style="grid-template-columns:1fr 150px 56px 80px"><span>Name</span><span>Share of C:\</span><span class="num">%</span><span class="num">Size <i data-i="sort"></i></span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px"><span class="row g4"><i data-i="down"></i><i data-i="folder"></i>Users\Alex</span><span class="pb"><i style="width:45%"></i></span><span class="num">44.5%</span><span class="num b">212 GB</span></div>
+ <div class="gridr tvr sel" style="grid-template-columns:1fr 150px 56px 80px;padding-left:22px"><span class="row g4"><i data-i="down"></i><i data-i="folder"></i>AppData</span><span class="pb"><i style="width:16%"></i></span><span class="num">15.5%</span><span class="num b">74 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px;padding-left:44px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>Docker</span><span class="pb"><i style="width:6.5%"></i></span><span class="num">6.5%</span><span class="num">31 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px;padding-left:22px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>Videos</span><span class="pb"><i style="width:12%"></i></span><span class="num">12.2%</span><span class="num">58 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>Program Files</span><span class="pb"><i style="width:25%"></i></span><span class="num">24.8%</span><span class="num b">118 GB</span></div>
+ <div class="gridr tvr" style="grid-template-columns:1fr 150px 56px 80px"><span class="row g4"><i data-i="chev"></i><i data-i="folder"></i>ProgramData</span><span class="pb"><i style="width:13%"></i></span><span class="num">13.4%</span><span class="num b">64 GB</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="380" data-title="Review button wording"
+data-ctl="Button (AccentButtonStyle, plus a danger style via Background override only when something is permanent), ContentDialog PrimaryButtonText"
+data-problem="A generic 'Clean up' or 'Delete' button does not say what will happen. The app already shortens this in 1.0.2; this makes the permanent part impossible to miss."
+data-trade="Longer button labels. At narrow widths the button wraps to two lines or the permanent part moves into the dialog title.">
+<div class="col grow p24 g16">
+ <div class="row g16 wrapf" style="align-items:flex-start">
+  <div class="col g8 grow"><span class="pill n" style="align-self:flex-start">BEFORE</span><span class="btn acc" style="align-self:flex-start">Clean up</span><span class="btn" style="align-self:flex-start">Delete</span></div>
+  <div class="col g8 grow" style="flex:3"><span class="pill info" style="align-self:flex-start">AFTER</span>
+   <div class="row g12 wrapf"><span class="btn acc"><i data-i="eye"></i>Review selection (3 items, 4.8 GB)</span><span class="sm mut">on the Advisor bar, nothing is removed yet</span></div>
+   <div class="row g12 wrapf"><span class="btn dng"><i data-i="trash"></i>Delete 1 for good, recycle 2</span><span class="sm mut">in the review, red only when something is permanent</span></div>
+   <div class="row g12 wrapf"><span class="btn acc"><i data-i="trash"></i>Send 2 to the Recycle Bin</span><span class="sm mut">when nothing is permanent, accent colour</span></div>
+   <div class="row g12 wrapf"><span class="btn"><i data-i="zip"></i>Compress 1 folder (reversible)</span></div></div></div>
+ <div class="sep"></div>
+ <div class="col g4 sm"><span class="b">Copy rules</span><span class="mut">1. A button names the verb and the count. 2. "for good" appears whenever a recycle step is skipped. 3. Sizes use the same unit as the row they came from. 4. No exclamation marks, no "Are you sure?"</span></div>
+</div></article>
+
+<article class="m" data-tier="1" data-w="880" data-h="420" data-title="Drive picker with free-space rings"
+data-ctl="ItemsView + ItemsRepeater (UniformGridLayout), Button cards, ProgressBar, InfoBar (Informational), HyperlinkButton"
+data-problem="The welcome list shows drives as plain rows. Users cannot see which drive is tight, which one is network, or what the fast scan needs." data-trade="Cards use more room than rows. With more than six drives, fall back to a list through the ItemsRepeater layout.">
+<div class="col grow p24 g16">
+ <div><div class="h2">What do you want to scan?</div><div class="mut sm">Sprawl only reads. Nothing is changed by a scan.</div></div>
+ <div class="row g12 wrapf" style="align-items:stretch">
+  <div class="card col g8" style="width:250px"><div class="row"><i data-i="drive" class="l"></i><div class="grow"><div class="b">Windows (C:)</div><div class="xs dim">NTFS, internal SSD</div></div><span class="pill warn"><i data-i="warn"></i>91% full</span></div><div class="pb warn"><i style="width:91%"></i></div><div class="sm mut">42 GB free of 476 GB</div><span class="btn acc" style="justify-content:center">Scan</span></div>
+  <div class="card col g8" style="width:250px"><div class="row"><i data-i="drive" class="l"></i><div class="grow"><div class="b">Data (D:)</div><div class="xs dim">NTFS, internal HDD</div></div></div><div class="pb"><i style="width:48%"></i></div><div class="sm mut">1.0 TB free of 1.9 TB</div><span class="btn" style="justify-content:center">Scan</span></div>
+  <div class="card col g8" style="width:250px"><div class="row"><i data-i="net" class="l"></i><div class="grow"><div class="b">Media (Z:)</div><div class="xs dim">Network share</div></div><span class="pill n"><i data-i="lock"></i>Read only</span></div><div class="pb"><i style="width:73%"></i></div><div class="sm mut">2.1 TB free of 7.8 TB</div><span class="btn" style="justify-content:center">Scan</span></div>
+  <div class="card col g8" style="width:250px;justify-content:center;align-items:center;border-style:dashed"><i data-i="folder" class="l"></i><span class="b">Scan a folder...</span><span class="xs dim">or drop one here</span></div>
+ </div>
+ <div class="ib info"><i data-i="shield"></i><div class="t sm"><span class="b">Faster as administrator.</span> Reading the NTFS file table takes seconds for a whole drive. <span class="link">Restart as administrator</span></div></div>
+</div></article>
+<article class="m" data-tier="2" data-w="940" data-h="520" data-title="Left NavigationView replaces menu bar and tab buttons"
+data-ctl="NavigationView (PaneDisplayMode=Auto, IsBackButtonVisible=False), NavigationViewItem + InfoBadge, AutoSuggestBox in PaneFooter, CommandBar, BreadcrumbBar, Mica backdrop"
+data-problem="A menu bar, five tab buttons and a search box compete for the top 120 px. New users do not find History or Cleaners, and the window loses vertical room to chrome."
+data-trade="Costs 48 px (compact) or 240 px (open) horizontally. File and Options menus move into the pane footer and a CommandBar, which changes muscle memory for existing users.">
+<div class="nav"><div class="ni"><i data-i="list"></i></div>
+ <div class="asb" style="margin:4px 0"><i data-i="search"></i><span>Search files</span></div>
+ <div class="ni sel"><i data-i="folder"></i>Explore</div><div class="ni"><i data-i="spark"></i>Advisor<span class="bd">12</span></div><div class="ni"><i data-i="broom"></i>Cleaners</div><div class="ni"><i data-i="clock"></i>History</div>
+ <div class="nsep"></div><div class="nh">Drives</div><div class="ni"><i data-i="drive"></i>C: Windows</div><div class="ni"><i data-i="drive"></i>D: Data</div>
+ <span class="grow"></span><div class="ni"><i data-i="gear"></i>Settings</div></div>
+<div class="content">
+ <div class="row p12 g12"><div class="crumb"><b>C:\</b><i data-i="chev"></i>Users<i data-i="chev"></i>Alex<i data-i="chev"></i><span class="dim">AppData</span></div><span class="grow"></span>
+  <span class="btn sm sub"><i data-i="refresh"></i>Rescan</span><span class="btn sm sub"><i data-i="export"></i>Export</span><span class="btn sm sub"><i data-i="info"></i>Details</span></div>
+ <div class="sep"></div>
+ <div class="row grow g12 p12" style="align-items:stretch;min-height:0">
+  <div class="col g2" style="width:300px">
+   <div class="tvr sel"><i data-i="down"></i><i data-i="folder"></i><span class="grow">Alex</span><span class="num">212 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">AppData</span><span class="num">74 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Videos</span><span class="num">58 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Projects</span><span class="num">46 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Downloads</span><span class="num">34 GB</span></div></div>
+  <div class="tm" data-w="520" data-h="360" data-root="u" data-mode="nest"></div>
+ </div></div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="560" data-title="Clean-up review: groups left, evidence right"
+data-ctl="Window or full-page overlay (ContentDialog is capped near 548 px; raise ContentDialogMaxWidth to ~900 or use a modal Window), ListView with grouping (CollectionViewSource IsSourceGrouped), Expander, InfoBar, Button"
+data-problem="The review is one long list. Permanent deletions are mixed in with Recycle Bin items, and the evidence for an item (why it is safe, when it was re-checked) is far from the item."
+data-trade="A two-pane dialog needs a width most small laptops can give, but not a ContentDialog's default. It should collapse to one pane under 700 px with Back navigation.">
+<div class="dlgwrap"><div class="dlg" style="width:880px;height:510px">
+ <div class="dh">Review before anything is removed</div>
+ <div class="body" style="padding:12px 24px 0;gap:16px;min-height:0">
+  <div class="col g8" style="width:360px;overflow:hidden">
+   <div class="ib err"><i data-i="lock"></i><div class="t"><div class="b">Deleted for good: 6.1 GB</div><div class="sm">These skip the Recycle Bin. They cannot be restored.</div></div></div>
+   <div class="li sel"><span class="grow">Windows temp files</span><span class="sm">3.9 GB</span></div>
+   <div class="li"><span class="grow">npm cache</span><span class="sm">2.2 GB</span></div>
+   <div class="ib info" style="margin-top:6px"><i data-i="trash"></i><div class="t"><div class="b">To the Recycle Bin: 14.2 GB</div><div class="sm">Explorer can restore these. Space is freed when you empty the bin.</div></div></div>
+   <div class="li"><span class="grow">Old installers (6 files)</span><span class="sm">14.2 GB</span></div>
+   <div class="row sm mut p8"><i data-i="zip"></i>Compress: 1 folder<span class="tr-r">+ Hard-link 2 duplicates</span></div>
+   <div class="row sm mut p8"><i data-i="eye"></i>Held back: 1 (program is open)</div></div>
+  <div class="vsep"></div>
+  <div class="col g12 grow">
+   <div class="h3">Windows temp files <span class="pill err"><i data-i="lock"></i>Deleted for good</span></div>
+   <div class="mono dim">C:\Users\Alex\AppData\Local\Temp</div>
+   <div class="row g16 sm"><div><div class="dim">Size</div><div class="b">3.9 GB in 4,820 files</div></div><div><div class="dim">Last changed</div><div class="b">Before the scan, 9 days ago</div></div><div><div class="dim">If removed</div><div class="b">Rebuilt by Windows as needed</div></div></div>
+   <div class="card col g4"><span class="b sm">Why Sprawl thinks this is safe</span><span class="sm mut">Matches the Windows temp pattern. Nothing in it is newer than the scan. Not on the never-list.</span></div>
+   <div class="card col g4"><span class="b sm">Checked again at the moment of deletion</span><span class="sm mut">Anything created or changed since the scan stays. Links are removed as links.</span></div>
+   <div class="row g8"><span class="btn sm"><i data-i="folder"></i>Show in Explorer</span><span class="btn sm"><i data-i="ban"></i>Keep this one</span></div></div></div>
+ <div class="df" style="margin-top:12px"><span class="btn" style="flex:0 0 120px">Cancel</span><span class="grow sm mut" style="align-self:center;padding-left:8px">6.1 GB cannot be restored. 14.2 GB can.</span><span class="btn dng" style="flex:0 0 280px"><i data-i="trash"></i>Delete 2 for good, recycle 6</span></div>
+</div></div></article>
+
+<article class="m" data-tier="2" data-w="760" data-h="480" data-title="Review summary with a ledger bar"
+data-ctl="ContentDialog, Grid of three Border cards, custom stacked bar built from a Grid with proportional ColumnDefinitions (star sizing), InfoBar"
+data-problem="Users cannot tell how much space a clean-up really frees now. Recycle Bin items free nothing until the bin is emptied."
+data-custom="the stacked bar is a Grid whose star widths come from the byte counts, with AutomationProperties.Name reading the numbers"
+data-trade="One more concept (free now versus later) in an already dense dialog. It replaces a wall of numbers, which most users do not read.">
+<div class="dlgwrap"><div class="dlg" style="width:660px">
+ <div class="dh">What this clean-up does</div>
+ <div class="db col g16">
+  <div class="stack" style="height:18px"><i style="flex:6.1;background:var(--w-solid-err)"></i><i style="flex:14.2;background:var(--c3)"></i><i style="flex:3;background:var(--c2)"></i></div>
+  <div class="row g12 wrapf" style="align-items:stretch">
+   <div class="card grow col g4"><span class="row g4 sm"><span class="dot" style="background:var(--w-solid-err)"></span>Deleted for good</span><span class="h2">6.1 GB</span><span class="xs mut">Free now. Cannot be restored.</span></div>
+   <div class="card grow col g4"><span class="row g4 sm"><span class="dot" style="background:var(--c3)"></span>To the Recycle Bin</span><span class="h2">14.2 GB</span><span class="xs mut">Free after you empty the bin.</span></div>
+   <div class="card grow col g4"><span class="row g4 sm"><span class="dot" style="background:var(--c2)"></span>Compressed in place</span><span class="h2">3.0 GB</span><span class="xs mut">Free now. Reversible.</span></div></div>
+  <div class="ib info"><i data-i="info"></i><div class="t sm">Free space on C: goes from <b>42 GB</b> to <b>51 GB</b> now, and to <b>65 GB</b> once the Recycle Bin is emptied.</div></div>
+  <div class="row g8 sm mut"><span class="cb"></span>Show every item before I continue</div></div>
+ <div class="df"><span class="btn">Cancel</span><span class="btn dng">Delete 2 for good, recycle 6</span></div>
+</div></div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="520" data-title="Advisor as master and detail"
+data-ctl="SplitView (DisplayMode=Inline, PanePlacement=Right), ListView with grouped headers and CheckBox, CommandBar docked at bottom, InfoBar, Expander for evidence"
+data-problem="Findings, evidence and the AI column share one wide table, so evidence is cramped and the AI column is mostly empty when AI is off."
+data-trade="Fewer findings visible at once, because the detail pane uses 40% of the width. Collapse the pane (it is a SplitView) to get the dense list back.">
+<div class="nav c"><div class="ni"><i data-i="list"></i></div><div class="ni"><i data-i="folder"></i></div><div class="ni sel"><i data-i="spark"></i></div><div class="ni"><i data-i="broom"></i></div><div class="ni"><i data-i="clock"></i></div></div>
+<div class="content"><div class="row p12 g12"><span class="h2">Advisor</span><span class="pill info">12 findings, 41 GB</span><span class="grow"></span><span class="btn sm sub"><i data-i="filter"></i>Risk: all</span><span class="pill n"><i data-i="eye"></i>AI off</span></div>
+ <div class="row grow" style="min-height:0;align-items:stretch">
+  <div class="col g2 p8 grow" style="overflow:hidden">
+   <div class="li h">Caches and temp (4)</div>
+   <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">Windows temp</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="num sm" style="width:60px">9.4 GB</span></div>
+   <div class="li sel"><span class="cb"></span><span class="grow">Docker build cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="num sm" style="width:60px">31 GB</span></div>
+   <div class="li h">Build outputs of idle projects (2)</div>
+   <div class="li"><span class="cb"></span><span class="grow">harbor-app\target</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="num sm" style="width:60px">19 GB</span></div>
+   <div class="li h">Left behind by removed apps (3)</div>
+   <div class="li"><span class="cb"></span><span class="grow">ProgramData\OldTool</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="num sm" style="width:60px">1.8 GB</span></div>
+   <div class="li h">Big and untouched for a year (information only)</div>
+   <div class="li"><span class="cb" style="opacity:.4"></span><span class="grow dim">Trip 2024 raw clips</span><span class="pill n">Yours</span><span class="num sm" style="width:60px">27 GB</span></div></div>
+  <div class="vsep"></div>
+  <div class="col g12 p16" style="width:340px">
+   <div class="h3">Docker build cache</div><div class="mono dim">C:\ProgramData\Docker\buildkit</div>
+   <div class="row g4"><span class="pill ok"><i data-i="check"></i>Low risk</span><span class="pill n"><i data-i="clock"></i>Rebuilds in minutes</span></div>
+   <div class="exp"><div class="eh b"><span class="grow">Evidence</span><i data-i="down"></i></div><div class="eb sm mut">Docker is installed. Last image build 3 days ago. This folder holds layers Docker can regenerate.</div></div>
+   <div class="exp"><div class="eh b"><span class="grow">Not ticked until you tick it</span><i data-i="chev"></i></div></div>
+   <span class="grow"></span><span class="btn acc" style="justify-content:center">Tick this finding</span></div></div>
+ <div class="row p12 g12" style="border-top:1px solid var(--w-stroke)"><span class="sm">1 ticked, 9.4 GB</span><span class="grow"></span><span class="btn acc"><i data-i="eye"></i>Review selection...</span></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="900" data-h="500" data-title="AI setup says what leaves the PC"
+data-ctl="RadioButtons (or ItemsView with SingleSelection) with card templates, ToggleSwitch (Work offline), Expander with a read-only TextBox in a monospace face, PasswordBox for API key, InfoBar"
+data-problem="Choosing between Claude Code, Codex, an API key and a local model is a technical choice, and the privacy difference between them is hidden."
+data-trade="More text per option. The 'exact payload' preview needs the real report builder wired in, but it is also the best trust feature the page could have.">
+<div class="col grow p24 g12">
+ <div class="row"><span class="h2 grow">Advisor AI</span><span class="row g8 sm">Work offline <span class="tg"></span></span></div>
+ <div class="mut sm">Off by default. AI names folders the rules do not know. It never ticks or deletes anything.</div>
+ <div class="row g12 wrapf" style="align-items:stretch">
+  <div class="card col g4 grow" style="min-width:150px;outline:2px solid var(--w-acc)"><div class="row"><span class="rd on"></span><span class="b">Off</span></div><div class="sm mut">Rules only.</div><span class="pill ok"><i data-i="lock"></i>Nothing leaves</span></div>
+  <div class="card col g4 grow" style="min-width:150px"><div class="row"><span class="rd"></span><span class="b">Local model</span></div><div class="sm mut">Your own server, e.g. localhost:1234.</div><span class="pill ok"><i data-i="lock"></i>Stays on this PC</span></div>
+  <div class="card col g4 grow" style="min-width:150px"><div class="row"><span class="rd"></span><span class="b">Claude Code / Codex</span></div><div class="sm mut">Uses your own sign-in.</div><span class="pill warn"><i data-i="cloud"></i>Sent to the provider</span></div>
+  <div class="card col g4 grow" style="min-width:150px"><div class="row"><span class="rd"></span><span class="b">API key</span></div><div class="sm mut">Claude or compatible.</div><span class="pill warn"><i data-i="cloud"></i>Sent to the provider</span></div></div>
+ <div class="exp"><div class="eh b"><span class="grow">Exactly what would be sent for the current scan</span><span class="sm dim">Preview, nothing sent</span><i data-i="down"></i></div>
+  <div class="eb mono" style="line-height:1.5">scan: C:\ (476 GB)<br>top folders by size, names and byte counts only<br>  Users\Alex\AppData\Local\Docker  31 GB<br>  Users\Alex\Projects\harbor-app\target  19 GB<br>no file contents, no file names under 1 GB, no user name replaced: C:\Users\&lt;user&gt;</div></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="900" data-h="480" data-title="Scan details as a side panel"
+data-ctl="SplitView (DisplayMode=Overlay, PanePlacement=Right, OpenPaneLength=360), Expander list, custom segmented coverage bar (Grid), HyperlinkButton, InfoBar (Warning)"
+data-problem="Scan Details is a text dump. Users want one answer first: how much of the drive does the number below actually cover?"
+data-custom="coverage bar is a Grid with star-sized Borders (read / skipped by settings / unreadable)"
+data-trade="A fourth place to look for numbers. Keep Details closed by default, and show the amber chip in the header only when coverage drops under 99%.">
+<div class="col grow" style="padding:16px;opacity:.5"><div class="h2">C:\ (Windows)</div><div class="tm" data-w="420" data-h="340" data-root="c" data-mode="top" style="margin-top:12px"></div></div>
+<div class="col g12 p16" style="width:420px;background:var(--w-card);border-left:1px solid var(--w-stroke2)">
+ <div class="row"><span class="h2 grow">Scan details</span><span class="btn sm sub ico"><i data-i="close"></i></span></div>
+ <div><div class="row sm"><span class="b">98.4% read</span><span class="tr-r mut">1.2M files, 4.2 s</span></div>
+  <div class="stack" style="height:10px;margin-top:6px"><i style="flex:98.4;background:var(--w-ok)"></i><i style="flex:1.1;background:#C98A00"></i><i style="flex:.5;background:var(--w-solid-err)"></i></div>
+  <div class="row g12 xs mut" style="margin-top:6px"><span class="row g4"><span class="dot" style="background:var(--w-ok)"></span>Read</span><span class="row g4"><span class="dot" style="background:#C98A00"></span>Skipped by you</span><span class="row g4"><span class="dot" style="background:var(--w-solid-err)"></span>Could not read</span></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">How it was read</span><span class="sm dim">NTFS file table</span><i data-i="chev"></i></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">Could not read (3)</span><span class="pill warn">0.5%</span><i data-i="down"></i></div>
+  <div class="eb sm col g4"><span class="mono">C:\System Volume Information</span><span class="dim">Access denied. Needs SYSTEM rights.</span><span class="mono">C:\Users\Alex\AppData\Local\Packages\...</span><span class="dim">In use by Windows.</span></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">Skipped by your settings (2)</span><i data-i="chev"></i></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">Not in this scan</span><span class="sm dim">D:, Z: (network)</span><i data-i="chev"></i></div></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="480" data-title="Search with filter chips and a preview pane"
+data-ctl="AutoSuggestBox (QueryIcon, query as plain text), DropDownButton + MenuFlyout for filters, ItemsView or ListView results, SplitView preview, InfoBar-style status line (TextBlock)"
+data-problem="Search has its own query language but users must remember it; results show a path but not why they matched."
+data-trade="Chips and the query box both edit the same text. The chips must write the query exactly as a user would, or users cannot learn the language from them.">
+<div class="col grow">
+ <div class="row p12 g8"><div class="asb f grow"><i data-i="search"></i><span style="color:var(--w-fg)"><span style="color:var(--w-acc-t)">ext:</span>iso <span style="color:var(--w-acc-t)">size:</span>&gt;1gb <span style="color:var(--w-acc-t)">dm:</span>lastmonth</span></div><span class="btn">Search in: C:</span><span class="btn sub ico"><i data-i="info"></i></span></div>
+ <div class="row p12 g8" style="padding-top:0"><span class="btn sm"><i data-i="file"></i>Type: .iso <i data-i="down"></i></span><span class="btn sm"><i data-i="chart"></i>Size: over 1 GB <i data-i="down"></i></span><span class="btn sm"><i data-i="cal"></i>Changed: last month <i data-i="down"></i></span><span class="btn sm sub"><i data-i="plus"></i>Add filter</span><span class="grow"></span><span class="btn sm sub">Save search</span></div>
+ <div class="row grow" style="min-height:0;align-items:stretch;border-top:1px solid var(--w-stroke)">
+  <div class="col grow p8 g2" style="min-width:0">
+   <div class="gridr li h" style="grid-template-columns:1fr 90px 100px"><span>Name and folder</span><span class="num">Size</span><span class="num">Changed</span></div>
+   <div class="gridr li sel" style="grid-template-columns:1fr 90px 100px"><span class="col g2"><span class="b ellip">win11-install.<mark style="background:var(--w-warnbg);color:var(--w-warn)">iso</mark></span><span class="xs dim ellip">C:\Users\Alex\Downloads</span></span><span class="num">5.4 GB</span><span class="num sm">3 Nov</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 90px 100px"><span class="col g2"><span class="ellip">linux-mint-22.<mark style="background:var(--w-warnbg);color:var(--w-warn)">iso</mark></span><span class="xs dim ellip">C:\Users\Alex\Downloads</span></span><span class="num">2.9 GB</span><span class="num sm">12 Nov</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 90px 100px"><span class="col g2"><span class="ellip">game-disc-backup.<mark style="background:var(--w-warnbg);color:var(--w-warn)">iso</mark></span><span class="xs dim ellip">C:\Backups\old</span></span><span class="num">7.8 GB</span><span class="num sm">28 Oct</span></div>
+   <div class="sm dim p8">3 of 1,284,310 names match. Searched C: in 0.04 s.</div></div>
+  <div class="vsep"></div>
+  <div class="col g8 p16" style="width:260px"><i data-i="disk" class="xl" style="color:var(--w-fg3)"></i><div class="b">win11-install.iso</div><div class="mono dim" style="word-break:break-all">C:\Users\Alex\Downloads\win11-install.iso</div><div class="sm mut">5.4 GB, changed 3 Nov, never opened</div><div class="row g4"><span class="btn sm">Show in Explorer</span></div><div class="sm dim">Delete only through the review (Select, then Review).</div></div></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="500" data-title="Cleaners as an app list with per-part switches"
+data-ctl="ListView with tri-state CheckBox, ToggleSwitch per part, Expander for Privacy group, InfoBar (Warning: close Edge first), CommandBar with Preview"
+data-problem="Cleaners mixes space cleaning and privacy items on one page. Users cannot see at a glance what is on and what is held back."
+data-trade="Privacy cleaners sit on their own subpage, one click further away. That is deliberate: they are off until switched on and never mixed with space cleaning.">
+<div class="col grow">
+ <div class="row p12 g12"><span class="h2">Cleaners</span><span class="pill n">Works without a scan</span><span class="grow"></span><span class="btn sm"><i data-i="eye"></i>Preview 5.8 GB</span></div>
+ <div class="row grow" style="min-height:0;align-items:stretch;border-top:1px solid var(--w-stroke)">
+  <div class="col g2 p8" style="width:280px">
+   <div class="li"><span class="cb mix"></span><i data-i="app"></i><span class="grow">Windows</span><span class="sm dim">4.1 GB</span></div>
+   <div class="li sel"><span class="cb mix"></span><i data-i="app"></i><span class="grow">Visual Studio Code</span><span class="sm dim">1.2 GB</span></div>
+   <div class="li"><span class="cb"></span><i data-i="app"></i><span class="grow">Discord</span><span class="sm dim">620 MB</span></div>
+   <div class="li"><span class="cb"></span><i data-i="app"></i><span class="grow">Steam</span><span class="sm dim">340 MB</span></div>
+   <div class="nsep"></div>
+   <div class="li"><i data-i="lock"></i><span class="grow">Privacy</span><span class="pill n">Off</span></div></div>
+  <div class="vsep"></div>
+  <div class="col g8 p16 grow">
+   <div class="row"><span class="h3 grow">Visual Studio Code</span><span class="pill ok"><i data-i="check"></i>Closed, safe to clean</span></div>
+   <div class="card row"><span class="grow">Cached data<div class="xs dim">Rebuilt when the editor needs it</div></span><span class="sm">980 MB</span><span class="tg on"></span></div>
+   <div class="card row"><span class="grow">Logs<div class="xs dim">Older than 7 days</div></span><span class="sm">180 MB</span><span class="tg on"></span></div>
+   <div class="card row"><span class="grow">Crash dumps</span><span class="sm">40 MB</span><span class="tg"></span></div>
+   <div class="ib warn" style="margin-top:8px"><i data-i="shield"></i><div class="t sm"><span class="b">Privacy items are separate.</span> Browser cookies and history are listed under Privacy, off until you switch them on, and are never counted in this total.</div></div></div></div>
+</div></article>
+<article class="m" data-tier="3" data-w="880" data-h="470" data-title="Free X GB, step 1: choose the target and the comfort level"
+data-ctl="NumberBox (SpinButtonPlacementMode=Inline), Slider (TickPlacement), ToggleButton row for presets, RadioButtons, Button (Accent), ProgressBar"
+data-problem="Most people open a disk tool because they need room for something: a game, an update, a project. Today they must read the whole tree and decide for themselves."
+data-custom="step indicator at the top is an ItemsRepeater of numbered circles (WinUI has no stepper); use a plain TextBlock 'Step 1 of 3' if you want stock-only"
+data-trade="A guided path hides the map. Keep an 'Explore everything instead' link on every step so power users are not trapped.">
+<div class="col grow p24 g16" style="max-width:620px;margin:0 auto">
+ <div class="row g8 sm"><span class="pill info">Step 1 of 3</span><span class="dim">Target</span><span class="dim">&rarr; Plan</span><span class="dim">&rarr; Review</span></div>
+ <div><div class="h1">Free up how much?</div><div class="mut" style="margin-top:4px">C: has <b>42 GB</b> free of 476 GB.</div></div>
+ <div class="row g12"><div class="asb" style="width:130px;color:var(--w-fg);border-bottom:2px solid var(--w-acc)"><b>50</b><span class="dim">GB</span></div><div class="row g4"><span class="btn sm">10</span><span class="btn sm">25</span><span class="btn sm acc">50</span><span class="btn sm">100</span></div><span class="sm mut">Needs 92 GB free in total</span></div>
+ <div class="pb" style="height:6px"><i style="width:30%"></i></div>
+ <div class="col g8"><span class="b">How far should Sprawl look?</span>
+  <div class="card row g12"><span class="rd on"></span><div class="grow"><div class="b">Only what comes back by itself</div><div class="sm mut">Caches, temp files, build outputs. Typically 18 to 40 GB.</div></div><span class="pill ok">Safest</span></div>
+  <div class="card row g12"><span class="rd"></span><div class="grow"><div class="b">Also things I can download again</div><div class="sm mut">Installers, game files, old projects.</div></div></div>
+  <div class="card row g12"><span class="rd"></span><div class="grow"><div class="b">Include my own files, and I will choose</div><div class="sm mut">Big files nothing has touched for a year. Nothing is picked for you.</div></div></div></div>
+ <div class="row g12"><span class="btn acc">Find 50 GB<i data-i="chev"></i></span><span class="link">Explore everything instead</span></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="880" data-h="500" data-title="Free X GB, step 2: a plan you can edit"
+data-ctl="ListView with CheckBox, Expander, ProgressRing (determinate) beside a summary, InfoBar, Button (Accent) leading to the existing review ContentDialog"
+data-problem="A plan built from findings can silently reach the target by picking risky items. Users need to see what each step costs in safety."
+data-trade="The plan is only a pre-ticked selection, and the existing review still follows. That is one more click, and it is the point: this flow never deletes by itself.">
+<div class="col grow p24 g12">
+ <div class="row g8 sm"><span class="pill info">Step 2 of 3</span><span class="dim">Target &rarr; Plan &rarr; Review</span></div>
+ <div class="row g16"><div class="ring" style="--p:76;--s:84px"><span>38 GB</span></div><div class="col g2 grow"><div class="h2">A plan for 50 GB</div><div class="mut">The safest items reach 38 GB. The last 12 GB need your OK on 2 items.</div></div></div>
+ <div class="li h">Safe, comes back by itself (38 GB)</div>
+ <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">Docker build cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm" style="width:60px;text-align:right">31 GB</span></div>
+ <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">Windows temp, npm cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm" style="width:60px;text-align:right">7 GB</span></div>
+ <div class="li h">Needs your OK (12 GB)</div>
+ <div class="li"><span class="cb"></span><span class="grow">harbor-app\target, idle 214 days</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="sm" style="width:60px;text-align:right">19 GB</span></div>
+ <div class="li"><span class="cb"></span><span class="grow">Old installers (6 files)</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="sm" style="width:60px;text-align:right">14 GB</span></div>
+ <div class="ib info"><i data-i="info"></i><div class="t sm">Ticking both reaches 52 GB. Installers go to the Recycle Bin, so their 14 GB is free only after you empty it.</div></div>
+ <div class="row g12"><span class="btn">Back</span><span class="btn acc"><i data-i="eye"></i>Review this plan...</span></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="900" data-h="470" data-title="Scheduled check with a toast"
+data-ctl="ToggleSwitch, CalendarDatePicker / ComboBox for weekday, TimePicker, Slider, InfoBar; notification via AppNotificationBuilder (Windows App SDK); schedule via Windows Task Scheduler running sprawl.exe --check"
+data-problem="Disks fill quietly. People only look after Windows complains."
+data-custom="background run is a Task Scheduler entry (WinUI has no scheduler); the toast is a Windows notification, not a WinUI control"
+data-trade="A scheduled scan costs disk reads on a machine the user is not watching. Offer a low-priority mode, and keep the toast a pure notice: it opens Sprawl and never cleans.">
+<div class="row grow p24 g24" style="gap:24px;align-items:flex-start">
+ <div class="col g12 grow">
+  <div class="h2">Weekly check</div>
+  <div class="card row"><div class="grow"><div class="b">Check my drives on a schedule</div><div class="sm mut">Scans in the background at low priority. It never deletes.</div></div><span class="tg on"></span></div>
+  <div class="card row g12 wrapf"><span class="grow">Every</span><span class="btn">Sunday <i data-i="down"></i></span><span>at</span><span class="btn">09:00 <i data-i="down"></i></span></div>
+  <div class="card col g8"><span class="b">Tell me when</span>
+   <div class="row g8"><span class="cb on"><i data-i="check"></i></span>Free space is under <span class="btn sm">15% <i data-i="down"></i></span></div>
+   <div class="row g8"><span class="cb on"><i data-i="check"></i></span>A folder grows by more than <span class="btn sm">10 GB <i data-i="down"></i></span></div>
+   <div class="row g8"><span class="cb"></span>I have not cleaned in 90 days</div></div>
+  <div class="ib info"><i data-i="lock"></i><div class="t sm">The check only reads. It never changes files, and nothing leaves this PC.</div></div></div>
+ <div class="col g8" style="width:330px"><div class="sm dim">Preview of the notification</div>
+  <div class="card col g8" style="box-shadow:var(--w-shadow)">
+   <div class="row g8 xs dim"><i data-i="disk"></i>Sprawl<span class="tr-r">Sunday 09:00</span></div>
+   <div class="b">C: is 91% full</div><div class="sm mut">3 folders grew by 22 GB this week. Docker grew the most (+14 GB).</div>
+   <div class="row g8"><span class="btn sm acc" style="flex:1;justify-content:center">Open Sprawl</span><span class="btn sm" style="flex:1;justify-content:center">Remind me later</span></div></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="940" data-h="520" data-title="Compare two scans"
+data-ctl="ComboBox x2 (scan A, scan B), ListView with delta bars, SelectorBar (List / Map), InfoBar; delta map is a treemap drawn in Win2D or the existing treemap"
+data-problem="History shows totals over time, but not where the growth came from between two moments."
+data-custom="the delta treemap is the existing treemap renderer with a diverging colour scale (grew / shrank)"
+data-trade="Needs two saved scans of the same root, so the history store must keep tree detail, not only totals. It is the reason delta snapshots matter.">
+<div class="col grow">
+ <div class="row p12 g12 wrapf"><span class="h2">Compare</span><span class="btn">12 Nov 14:02 <i data-i="down"></i></span><i data-i="compare"></i><span class="btn">19 Nov 14:02 <i data-i="down"></i></span><span class="grow"></span><span class="pill warn"><i data-i="warn"></i>+22.4 GB used</span><div class="selbar"><div class="sbi sel">List</div><div class="sbi">Map</div></div></div>
+ <div class="row grow g16 p12" style="align-items:stretch;min-height:0;border-top:1px solid var(--w-stroke)">
+  <div class="col g2 grow">
+   <div class="gridr li h" style="grid-template-columns:1fr 150px 80px"><span>Folder</span><span>Change</span><span class="num">Delta</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">AppData\Docker</span><span class="row g4"><span class="pb warn"><i style="width:90%"></i></span></span><span class="num b" style="color:var(--w-warn)">+14.0 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">Projects\harbor-app\target</span><span class="pb warn"><i style="width:45%"></i></span><span class="num b" style="color:var(--w-warn)">+6.3 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">Downloads</span><span class="pb warn"><i style="width:18%"></i></span><span class="num b" style="color:var(--w-warn)">+2.8 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">Windows\SoftwareDistribution</span><span class="pb ok"><i style="width:30%"></i></span><span class="num b" style="color:var(--w-ok)">-4.1 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">AppData\Temp</span><span class="pb ok"><i style="width:22%"></i></span><span class="num b" style="color:var(--w-ok)">-3.0 GB</span></div>
+   <div class="sm dim p8">Direction is shown by sign and word as well as colour: grew (+) or shrank (-).</div></div>
+  <div class="tm" data-w="340" data-h="360" data-root="u" data-mode="top" data-hi="AppData"></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="880" data-h="500" data-title="Clean-up timeline and undo centre"
+data-ctl="SelectorBar (All / Can restore / Permanent), ListView with group headers by day, Expander per clean-up, Button (Restore), InfoBar"
+data-problem="After a clean-up the only record is a one-line result. If something is missed later, users cannot see what went where or what can still come back."
+data-trade="Needs a persisted log of every clean-up (paths, sizes, method). The log must never claim an undo that is not real: permanent items say so and have no button.">
+<div class="col grow">
+ <div class="row p12 g12"><span class="h2">Clean-up history</span><span class="grow"></span><div class="selbar"><div class="sbi sel">All</div><div class="sbi">Can restore</div><div class="sbi">Permanent</div></div></div>
+ <div class="col p12 g8" style="border-top:1px solid var(--w-stroke);min-height:0">
+  <div class="li h">Today</div>
+  <div class="exp"><div class="eh"><i data-i="broom"></i><div class="grow"><div class="b">Cleaned 20.3 GB at 14:31</div><div class="xs dim">Advisor, 8 items</div></div><span class="pill ok">14.2 GB in Recycle Bin</span><i data-i="down"></i></div>
+   <div class="eb col g4 sm">
+    <div class="row g8"><i data-i="trash"></i><span class="grow">Old installers, 6 files, 14.2 GB</span><span class="pill n">In the Recycle Bin</span><span class="btn sm"><i data-i="undo"></i>Restore</span></div>
+    <div class="row g8"><i data-i="lock"></i><span class="grow">Windows temp files, 3.9 GB</span><span class="pill err"><i data-i="lock"></i>Deleted for good</span><span class="btn sm" style="visibility:hidden">Restore</span></div>
+    <div class="row g8"><i data-i="zip"></i><span class="grow">Projects\old-site compressed, saved 3.0 GB</span><span class="pill info">Reversible</span><span class="btn sm"><i data-i="undo"></i>Decompress</span></div></div></div>
+  <div class="li h">Yesterday</div>
+  <div class="exp"><div class="eh"><i data-i="link"></i><div class="grow"><div class="b">Hard-linked 2 duplicate sets, saved 4.4 GB</div><div class="xs dim">Duplicates</div></div><span class="btn sm"><i data-i="undo"></i>Make real copies</span><i data-i="chev"></i></div></div>
+  <div class="ib info"><i data-i="info"></i><div class="t sm">Restore reads the Recycle Bin. If you emptied it in Explorer, the entry says so and the button goes away.</div></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="460" data-h="560" tb="none" data-tb="none" data-title="Quick clean from the tray"
+data-ctl="Secondary WinUI Window (SystemBackdrop = Acrylic, no title bar, positioned above the taskbar), ListView with CheckBox, ProgressRing; tray icon through Shell_NotifyIcon (no stock WinUI control)"
+data-problem="Sprawl has no light entry point. To clear a cache you launch the app, wait for a scan, and open the Advisor."
+data-custom="tray icon and flyout positioning use Win32 (Shell_NotifyIcon, GetCursorPos); WinUI draws only the flyout window"
+data-trade="Needs a resident process, which a cleaning tool should be careful about. Keep it opt-in, and quick clean lists only low-risk caches; it never ticks anything on its own.">
+<div class="col grow" style="justify-content:flex-end;background:linear-gradient(160deg,var(--c1),var(--c4));padding:12px">
+ <div class="card col g12" style="box-shadow:var(--w-shadow)">
+  <div class="row g12"><div class="ring" style="--p:91;--s:56px"><span class="sm">91%</span></div><div class="col g2 grow"><div class="b">C: is almost full</div><div class="sm mut">42 GB free of 476 GB</div></div><span class="btn sm sub ico"><i data-i="gear"></i></span></div>
+  <div class="sep"></div>
+  <div class="sm b">Safe to clear now: 6.4 GB</div>
+  <div class="li"><span class="cb"></span><span class="grow">Windows temp</span><span class="sm">3.9 GB</span></div>
+  <div class="li"><span class="cb"></span><span class="grow">npm cache</span><span class="sm">2.2 GB</span></div>
+  <div class="li"><span class="cb"></span><span class="grow">Thumbnail cache</span><span class="sm">310 MB</span></div>
+  <div class="xs dim">Nothing is ticked. Review shows exactly what goes and how.</div>
+  <div class="row g8"><span class="btn acc grow" style="justify-content:center"><i data-i="eye"></i>Review...</span><span class="btn grow" style="justify-content:center">Open Sprawl</span></div></div>
+ <div class="row g12 p8 xs" style="background:var(--w-card);margin:8px -12px -12px;padding:8px 14px"><i data-i="app"></i><span class="grow">Taskbar</span><i data-i="disk"></i><span>14:42</span></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="860" data-h="520" data-title="Explorer context menu and a mini result window"
+data-ctl="Windows 11 modern context menu via IExplorerCommand in a sparse MSIX package; small WinUI Window with ListView, InfoBar, Button; no stock WinUI control draws Explorer's own menu"
+data-problem="A user in Explorer wonders why one folder is huge. Today they must start Sprawl and scan to the right place."
+data-custom="Explorer's menu is shell UI. WinUI only draws the result window; the CHANGELOG notes the app already has Windows-menu commands"
+data-trade="Shell extensions run inside Explorer, so a crash there is felt system-wide. Keep the entry a thin launcher that starts Sprawl with a path.">
+<div class="row grow g16 p16" style="align-items:flex-start;background:linear-gradient(135deg,var(--c1),var(--c2))">
+ <div class="card col g2" style="width:250px;padding:6px;box-shadow:var(--w-shadow)">
+  <div class="li sm"><i data-i="folder"></i>Open</div><div class="li sm"><i data-i="plus"></i>Open in new tab</div><div class="sep"></div>
+  <div class="li sm sel" style="outline:2px solid var(--w-acc);outline-offset:-2px"><i data-i="disk" style="color:var(--w-acc)"></i>What is using space here?</div>
+  <div class="li sm"><i data-i="copy"></i>Copy as path</div><div class="li sm"><i data-i="trash"></i>Delete</div></div>
+ <div class="col grow g8" style="min-width:0">
+  <div class="card col g8" style="box-shadow:var(--w-shadow)">
+   <div class="row"><i data-i="disk"></i><span class="b grow">harbor-app</span><span class="sm dim">scanned in 0.8 s</span><span class="btn sm sub ico"><i data-i="close"></i></span></div>
+   <div class="mono dim">C:\Users\Alex\Projects\harbor-app</div><div class="h1">46 GB</div>
+   <div class="gridr li" style="grid-template-columns:1fr 60px 90px"><span>target</span><span class="num">19 GB</span><span class="pill warn">Rebuildable</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 60px 90px"><span>node_modules</span><span class="num">12 GB</span><span class="pill ok">Reinstallable</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 60px 90px"><span>src</span><span class="num">15 GB</span><span class="pill n">Yours</span></div>
+   <div class="row g8"><span class="btn sm acc">Open in Sprawl</span><span class="btn sm">Review the rebuildable parts...</span></div></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="940" data-h="480" data-title="History with annotated events"
+data-ctl="Page with SelectorBar (30 days, 90 days, 1 year), chart drawn in Win2D CanvasControl or LiveCharts2 for WinUI, ListView with inline sparklines, TeachingTip for event details"
+data-problem="The growth chart is a line with no explanation. Users see a cliff but not that it was their own clean-up, or a spike but not the installer behind it."
+data-custom="the chart and event markers are drawn with Win2D; WinUI has no chart control"
+data-trade="Event markers need the clean-up log (see the undo centre). Without it, show only the line and the fastest-growing folders.">
+<div class="col grow p16 g12">
+ <div class="row"><span class="h2 grow">C: over 90 days</span><div class="selbar"><div class="sbi">30 days</div><div class="sbi sel">90 days</div><div class="sbi">1 year</div></div></div>
+ <div class="row g16 grow" style="align-items:stretch;min-height:0">
+  <div class="card grow" style="padding:8px">
+   <svg viewBox="0 0 560 280" width="100%" height="100%" role="img" aria-label="Used space on C over 90 days, rising from 380 GB to 434 GB with two drops after clean-ups">
+    <g stroke="var(--w-stroke)" stroke-width="1"><path d="M40 40H540M40 100H540M40 160H540M40 220H540"/></g>
+    <g fill="var(--w-fg3)" font-size="11"><text x="4" y="44">450</text><text x="4" y="104">420</text><text x="4" y="164">390</text><text x="4" y="224">360 GB</text><text x="40" y="250">Aug 21</text><text x="280" y="250">Oct 5</text><text x="490" y="250">Nov 19</text></g>
+    <path d="M40 200L120 188L190 176L250 150L270 112L330 104L380 86L400 130L450 112L500 70L540 62V220H40Z" fill="var(--w-acc)" opacity=".15"/>
+    <path d="M40 200L120 188L190 176L250 150L270 112L330 104L380 86L400 130L450 112L500 70L540 62" fill="none" stroke="var(--w-acc)" stroke-width="2.2"/>
+    <circle cx="540" cy="62" r="4" fill="var(--w-acc)"/>
+    <g font-size="11" fill="var(--w-fg)"><circle cx="400" cy="130" r="5" fill="var(--w-ok)"/><text x="330" y="156">Clean-up: -22 GB</text><circle cx="250" cy="150" r="5" fill="var(--w-warn)"/><text x="130" y="140">Game installed +28 GB</text></g></svg></div>
+  <div class="col g2" style="width:270px"><div class="b sm" style="padding:6px 12px">Grew the most</div>
+   <div class="li"><span class="grow ellip">AppData\Docker</span><svg width="56" height="18" viewBox="0 0 56 18"><path d="M1 16L14 14L26 12L38 7L55 2" fill="none" stroke="var(--w-acc)" stroke-width="1.6"/></svg><span class="sm b" style="color:var(--w-warn)">+14 GB</span></div>
+   <div class="li"><span class="grow ellip">Steam\Cyberdyne</span><svg width="56" height="18" viewBox="0 0 56 18"><path d="M1 16H24L26 4H55" fill="none" stroke="var(--w-acc)" stroke-width="1.6"/></svg><span class="sm b" style="color:var(--w-warn)">+28 GB</span></div>
+   <div class="li"><span class="grow ellip">Downloads</span><svg width="56" height="18" viewBox="0 0 56 18"><path d="M1 10L20 8L30 12L55 11" fill="none" stroke="var(--w-acc)" stroke-width="1.6"/></svg><span class="sm b">+2.8 GB</span></div></div></div>
+</div></article>
+<article class="m" data-tier="4" data-w="940" data-h="560" data-title="Sunburst-first Explore"
+data-ctl="Frame hosting a Win2D CanvasControl, BreadcrumbBar above it, ListView (top items of the selected ring) in a SplitView pane, TeachingTip on first run"
+data-problem="Treemaps hide hierarchy: you cannot see that a big box is deep inside three folders. A sunburst shows depth as rings."
+data-custom="the sunburst is drawn with Win2D (arcs) with hit-testing and keyboard focus per arc; WinUI has no radial chart"
+data-trade="Arcs are harder to compare by area than rectangles, and small items vanish. Pair it with a ranked list (right), and keep the treemap as one click away.">
+<div class="col grow p16 g12" style="min-width:0">
+ <div class="row g12"><div class="crumb"><b>C:\</b><i data-i="chev"></i><b>Users\Alex</b><i data-i="chev"></i><span class="dim">All</span></div><span class="grow"></span><div class="selbar"><div class="sbi sel">Rings</div><div class="sbi">Map</div><div class="sbi">Bars</div></div></div>
+ <div class="row g16 grow" style="align-items:center;min-height:0">
+  <div style="position:relative;width:430px;height:430px;flex:none"><div data-viz="sun" data-size="430" data-hole="70" data-root="c"></div>
+   <div class="col g2" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;width:120px"><span class="h2">476 GB</span><span class="xs dim">C:\ (Windows)</span></div></div>
+  <div class="col g4 grow"><div class="b" style="padding:0 12px">Largest here</div>
+   <div class="li sel"><span class="dot" style="background:var(--c1)"></span><span class="grow">Users\Alex</span><span class="b sm">212 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c2)"></span><span class="grow">Program Files</span><span class="b sm">118 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c3)"></span><span class="grow">ProgramData</span><span class="b sm">64 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c4)"></span><span class="grow">Windows</span><span class="b sm">38 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c5)"></span><span class="grow">hiberfil.sys</span><span class="b sm">24 GB</span></div>
+   <div class="xs dim p12">Click an arc to make it the centre. Press Backspace to go up.</div></div></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="500" data-title="Icicle view with a breadcrumb spine"
+data-ctl="BreadcrumbBar, ItemsRepeater with a custom Layout (rows by depth, widths by size) or Win2D, ScrollViewer, ToolTip per cell, ListView for details"
+data-problem="The path and the picture are separate: you zoom a map and lose where you are. In an icicle every row is a depth, so the breadcrumb is part of the picture."
+data-custom="the icicle layout is a custom VirtualizingLayout for ItemsRepeater; or draw rows as Rectangles in a Canvas for under about 2,000 cells"
+data-trade="Horizontal space limits depth; very small cells are unreadable. A minimum width collapses them into a '+14 more' cell.">
+<div class="col grow p16 g12">
+ <div class="row"><div class="crumb"><i data-i="home"></i><b>C:\</b><i data-i="chev"></i><b>Users</b><i data-i="chev"></i>Alex</div><span class="grow"></span><span class="sm dim">Depth 4 of 9</span></div>
+ <div data-viz="ice" data-w="900" data-h="260" data-root="c" style="margin-inline:auto"></div>
+ <div class="row g12 sm"><span class="pill info">Rows are folder depth. Width is size.</span><span class="grow"></span><span class="btn sm">Zoom to selection</span><span class="btn sm sub">Up one level</span></div>
+ <div class="card col g4"><span class="b">Users\Alex\AppData\Docker</span><span class="sm mut">31 GB, 6.5% of C:\, 9 folders, last changed yesterday</span></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="560" data-title="Treemap with folder headers and soft shading"
+data-ctl="Win2D CanvasControl (or the current GPU treemap), headers as drawn text, hover Popup / ToolTip, ContextFlyout (MenuFlyout) per tile"
+data-problem="A flat treemap cannot tell you which tiles belong together. Nested headers name the group and give each a size, and the shading makes tile edges easy to see."
+data-custom="nested layout with headers is a squarified layout drawn in Win2D; the shading is a radial gradient overlay"
+data-trade="Headers cost 18 px per level, which wastes room on small tiles. Show them only above a minimum tile height, as here.">
+<div class="col grow p16 g12">
+ <div class="row g12"><div class="crumb"><b>C:\</b><i data-i="chev"></i>Users<i data-i="chev"></i>Alex</div><span class="grow"></span><span class="sm mut">Colour by folder</span><div class="asb" style="width:140px">Colour: <b style="color:var(--w-fg)">folder</b><i data-i="down"></i></div></div>
+ <div class="tm" data-w="900" data-h="420" data-root="u" data-mode="nest" data-cush="1" style="margin-inline:auto" data-hi="npm-cache"></div>
+ <div class="row sm"><span class="dim">Hover: <b style="color:var(--w-fg)">npm-cache</b> 6.2 GB, 3 days old, caches are deleted for good</span></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="520" data-title="Space ledger: a list first, the map second"
+data-ctl="NavigationView (Top), TreeView with column Grid, ProgressBar, InfoBar, CommandBar; map demoted to a Button that opens a Flyout"
+data-problem="Some people want numbers they can scan and sort, like an account statement, not a picture. The current layout makes the map the hero."
+data-trade="Less visual wow on first scan, and the map is easy to miss. For users who live in tables (admins, people over RDP) it is faster.">
+<div class="col grow">
+ <div class="row p12 g16"><div class="selbar"><div class="sbi sel">Ledger</div><div class="sbi">Advisor</div><div class="sbi">Cleaners</div><div class="sbi">History</div></div><span class="grow"></span><span class="btn sm"><i data-i="chart"></i>Map</span></div>
+ <div class="row g12 p16" style="align-items:stretch;border-top:1px solid var(--w-stroke)">
+  <div class="card grow col g2"><span class="xs dim">USED</span><span class="h2">434 GB</span><span class="xs mut">of 476 GB</span></div>
+  <div class="card grow col g2"><span class="xs dim">FREE</span><span class="h2">42 GB</span><span class="xs" style="color:var(--w-warn)">9% free</span></div>
+  <div class="card grow col g2"><span class="xs dim">COULD GO (ADVISOR)</span><span class="h2">41 GB</span><span class="xs mut">12 findings</span></div>
+  <div class="card grow col g2"><span class="xs dim">NOT COVERED</span><span class="h2">0.5%</span><span class="xs link">Details</span></div></div>
+ <div class="col p16 g2" style="padding-top:0">
+  <div class="gridr li h" style="grid-template-columns:1fr 70px 70px 200px 80px"><span>Where it is</span><span class="num">Files</span><span class="num">Share</span><span>Bar</span><span class="num">Size</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">Users\Alex</span><span class="num">412k</span><span class="num">44.5%</span><span class="pb"><i style="width:45%"></i></span><span class="num b">212 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">Program Files</span><span class="num">188k</span><span class="num">24.8%</span><span class="pb"><i style="width:25%"></i></span><span class="num b">118 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">ProgramData</span><span class="num">96k</span><span class="num">13.4%</span><span class="pb"><i style="width:13%"></i></span><span class="num b">64 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">Windows</span><span class="num">211k</span><span class="num">8.0%</span><span class="pb"><i style="width:8%"></i></span><span class="num b">38 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px;border-top:1px solid var(--w-stroke-b)"><span class="b">Total</span><span class="num">1.21M</span><span class="num">100%</span><span></span><span class="num b">476 GB</span></div></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="540" data-title="Home dashboard: storage health"
+data-ctl="NavigationView (Left), ItemsRepeater of cards (UniformGridLayout), ProgressRing, InfoBar, HyperlinkButton, ListView for recent activity"
+data-problem="The app opens on a drive list. It does not answer the first question: am I fine, or do I need to act?"
+data-trade="A dashboard needs the last scan to exist, so it is stale-by-default until a scan finishes. Show the age of each number ('as of Tuesday') on every card.">
+<div class="nav c"><div class="ni sel"><i data-i="home"></i></div><div class="ni"><i data-i="folder"></i></div><div class="ni"><i data-i="spark"></i></div><div class="ni"><i data-i="broom"></i></div><div class="ni"><i data-i="clock"></i></div></div>
+<div class="content"><div class="col p24 g16 grow">
+ <div><div class="h1">Good morning, Alex</div><div class="mut">C: needs attention. D: is fine.</div></div>
+ <div class="row g12" style="align-items:stretch">
+  <div class="card grow col g8" style="outline:2px solid var(--w-warn);outline-offset:-2px"><div class="row"><div class="ring" style="--p:91;--s:68px"><span>91%</span></div><div class="col g2 grow"><span class="b">Windows (C:)</span><span class="sm mut">42 GB free</span><span class="xs dim">scanned Tuesday</span></div></div><div class="ib warn"><i data-i="warn"></i><div class="t sm">12 things could free 41 GB</div></div><span class="btn acc" style="justify-content:center">Free up space...</span></div>
+  <div class="card grow col g8"><div class="row"><div class="ring" style="--p:52;--s:68px"><span>52%</span></div><div class="col g2 grow"><span class="b">Data (D:)</span><span class="sm mut">1.0 TB free</span><span class="xs dim">scanned 2 weeks ago</span></div></div><div class="ib ok"><i data-i="check"></i><div class="t sm">Nothing to do</div></div><span class="btn" style="justify-content:center">Scan again</span></div>
+  <div class="card grow col g8"><div class="b">Next check</div><div class="row g8 sm"><i data-i="cal"></i>Sunday 09:00</div><div class="sep"></div><div class="b">Grew this week</div><div class="sm">Docker +14 GB<br>Steam +28 GB</div><span class="link sm">See history</span></div></div>
+ <div class="card col g4"><span class="b">Recent clean-ups</span><div class="row sm"><i data-i="broom"></i><span class="grow">20.3 GB on Tuesday</span><span class="pill ok">14.2 GB restorable</span><span class="link">Open</span></div></div>
+</div></div></article>
+
+<article class="m" data-tier="4" data-w="900" data-h="540" data-title="Ask Sprawl: the Advisor as a conversation"
+data-ctl="TextBox / AutoSuggestBox as prompt, ItemsRepeater of message cards, inline ListView findings with CheckBox, InfoBar (what is shared), SplitView with the map beside"
+data-problem="Findings are a table to interpret. Many users just want to ask 'why is C: full?' and get an answer with the evidence attached."
+data-trade="AI is optional in Sprawl. With AI off, the same box answers from rules only ('largest', 'caches', 'idle projects'), so it must not promise more than it does.">
+<div class="col grow p16 g12" style="min-width:0">
+ <div class="row"><i data-i="spark" style="color:var(--w-acc)"></i><span class="h3 grow">Ask Sprawl about this scan</span><span class="pill ok"><i data-i="lock"></i>Local model, nothing sent</span></div>
+ <div class="card" style="align-self:flex-end;background:var(--w-sel);max-width:60%">Why is C: nearly full?</div>
+ <div class="card col g8">
+  <span>Three things hold 64 GB of the 434 GB used. Two come back by themselves.</span>
+  <div class="li"><span class="cb"></span><span class="grow">Docker build cache <span class="xs dim">31 GB</span></span><span class="pill ok"><i data-i="check"></i>Low</span></div>
+  <div class="li"><span class="cb"></span><span class="grow">harbor-app\target <span class="xs dim">19 GB, idle 214 days</span></span><span class="pill warn"><i data-i="warn"></i>Medium</span></div>
+  <div class="li"><span class="cb" style="opacity:.4"></span><span class="grow dim">Trip 2024 raw clips <span class="xs">27 GB, yours</span></span><span class="pill n">Information only</span></div>
+  <div class="row g8"><span class="btn sm acc"><i data-i="eye"></i>Review ticked (0)...</span><span class="xs dim">The answer was checked against the scan. I cannot tick or delete anything.</span></div></div>
+ <span class="grow"></span>
+ <div class="asb f"><span style="color:var(--w-fg3)">Ask about a folder, a file type, or what grew...</span><span class="tr-r"><i data-i="play"></i></span></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="420" data-h="600" data-title="Narrow window and snap layouts"
+data-ctl="NavigationView (PaneDisplayMode=Top or LeftMinimal via AdaptiveTrigger, MinWindowWidth=0), VisualStateManager, TreeView, ProgressBar, bottom CommandBar"
+data-problem="Sprawl is a big-window app, but people snap it to a third of the screen beside Explorer to clean as they browse."
+data-trade="Drops the map below 520 px and shows a ranked list with bars instead. Less to see, but it stays useful and keyboard-first.">
+<div class="col grow">
+ <div class="row p8 g8"><span class="btn sub ico"><i data-i="list"></i></span><b class="grow">Explore</b><span class="pill warn">91%</span><span class="btn sub ico"><i data-i="search"></i></span></div>
+ <div class="col p8 g2" style="border-top:1px solid var(--w-stroke)">
+  <div class="crumb sm p8"><b>C:\</b><i data-i="chev"></i>Users<i data-i="chev"></i>Alex</div>
+  <div class="tvr sel"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">AppData</span><span class="num">74 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:35%"></i></div>
+  <div class="tvr"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Videos</span><span class="num">58 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:27%"></i></div>
+  <div class="tvr"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Projects</span><span class="num">46 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:22%"></i></div>
+  <div class="tvr"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Downloads</span><span class="num">34 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:16%"></i></div></div>
+ <span class="grow"></span>
+ <div class="row p8 g4" style="border-top:1px solid var(--w-stroke);justify-content:space-around"><div class="col g2 sm" style="align-items:center"><i data-i="folder"></i>Explore</div><div class="col g2 sm" style="align-items:center"><i data-i="spark"></i>Advisor</div><div class="col g2 sm" style="align-items:center"><i data-i="broom"></i>Cleaners</div><div class="col g2 sm" style="align-items:center"><i data-i="clock"></i>History</div></div>
+</div></article>
+<article class="m" data-tier="5" data-w="940" data-h="420" data-tb="none" data-title="Three logo directions"
+data-ctl="SVG (Path, Rectangle), exported to .ico and MSIX assets; shown at 96, 32 and 16 px on light and dark"
+data-problem="The current mark is a placeholder. A disk tool's mark should read at 16 px in the title bar and still say 'space, divided up'."
+data-trade="A. Tessera is the most literal and easiest to read small. B. Rings reads as a generic chart and clashes with the Photos-style icons. C. Spill is the most ownable and the hardest at 16 px.">
+<div class="row grow g16 p24" style="align-items:stretch">
+ <div class="card col g12 grow" style="align-items:center;text-align:center"><span class="pill info">A  Tessera</span>
+  <svg width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Tessera mark"><rect x="4" y="4" width="34" height="56" rx="4" fill="var(--c1)"/><rect x="42" y="4" width="18" height="28" rx="4" fill="var(--c2)"/><rect x="42" y="36" width="18" height="12" rx="3" fill="var(--c3)"/><rect x="42" y="52" width="8" height="8" rx="2" fill="var(--c5)"/><rect x="54" y="52" width="6" height="6" rx="1.5" fill="var(--w-fg3)" transform="translate(2 2)"/></svg>
+  <div class="row g16"><svg width="32" height="32" viewBox="0 0 64 64"><rect x="4" y="4" width="34" height="56" rx="4" fill="var(--c1)"/><rect x="42" y="4" width="18" height="28" rx="4" fill="var(--c2)"/><rect x="42" y="36" width="18" height="24" rx="3" fill="var(--c3)"/></svg><svg width="16" height="16" viewBox="0 0 64 64"><rect x="4" y="4" width="34" height="56" rx="4" fill="var(--c1)"/><rect x="42" y="4" width="18" height="56" rx="4" fill="var(--c2)"/></svg></div>
+  <div class="sm mut">A disk cut into unequal pieces, with one piece spilling out.</div></div>
+ <div class="card col g12 grow" style="align-items:center;text-align:center"><span class="pill info">B  Rings</span>
+  <svg width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Rings mark" fill="none"><circle cx="32" cy="32" r="9" fill="var(--c1)"/><circle cx="32" cy="32" r="17" stroke="var(--c2)" stroke-width="8" stroke-dasharray="70 40" transform="rotate(-90 32 32)"/><circle cx="32" cy="32" r="26" stroke="var(--c3)" stroke-width="6" stroke-dasharray="90 74" transform="rotate(-20 32 32)"/></svg>
+  <div class="row g16"><svg width="32" height="32" viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="9" fill="var(--c1)"/><circle cx="32" cy="32" r="19" stroke="var(--c2)" stroke-width="9" stroke-dasharray="80 40" transform="rotate(-90 32 32)"/></svg><svg width="16" height="16" viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="14" stroke="var(--c1)" stroke-width="16" stroke-dasharray="60 30"/></svg></div>
+  <div class="sm mut">A sunburst slice: depth as rings.</div></div>
+ <div class="card col g12 grow" style="align-items:center;text-align:center"><span class="pill info">C  Spill</span>
+  <svg width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Spill mark"><rect x="4" y="4" width="32" height="32" rx="5" fill="var(--c1)"/><rect x="40" y="14" width="18" height="18" rx="4" fill="var(--c1)" opacity=".75"/><rect x="26" y="40" width="12" height="12" rx="3" fill="var(--c1)" opacity=".6"/><rect x="44" y="38" width="8" height="8" rx="2" fill="var(--c1)" opacity=".45"/><rect x="42" y="52" width="5" height="5" rx="1.5" fill="var(--c1)" opacity=".3"/><rect x="12" y="44" width="7" height="7" rx="2" fill="var(--c1)" opacity=".5"/></svg>
+  <div class="row g16"><svg width="32" height="32" viewBox="0 0 64 64"><rect x="4" y="4" width="36" height="36" rx="5" fill="var(--c1)"/><rect x="44" y="20" width="16" height="16" rx="4" fill="var(--c1)" opacity=".7"/><rect x="26" y="44" width="14" height="14" rx="3" fill="var(--c1)" opacity=".5"/></svg><svg width="16" height="16" viewBox="0 0 64 64"><rect x="4" y="4" width="40" height="40" rx="6" fill="var(--c1)"/><rect x="40" y="36" width="20" height="20" rx="5" fill="var(--c1)" opacity=".6"/></svg></div>
+  <div class="sm mut">One square, and the sprawl spreading from it.</div></div>
+</div></article>
+
+<article class="m" data-tier="5" data-w="940" data-h="460" data-tb="none" data-title="Wordmark and palette"
+data-ctl="SVG text converted to paths for the wordmark; palette as ThemeDictionary entries (AccentFillColor override, SystemFillColorSuccess / Caution / Critical overrides); Segoe UI Variable Display"
+data-problem="Meaning is spread across arbitrary colours. Four of them carry safety information (freed, caution, permanent, yours) and should be one family."
+data-trade="Overriding system accent colours fights users who pick their own Windows accent. Use the brand colour for the mark and charts, and leave buttons on the system accent.">
+<div class="col grow p24 g16">
+ <div class="row g16 wrapf" style="align-items:flex-end"><span style="font:700 72px/1 'Segoe UI Variable Display','Segoe UI',sans-serif;letter-spacing:-.04em;color:var(--w-fg)">sprawl</span>
+  <svg width="64" height="64" viewBox="0 0 64 64" style="margin-bottom:6px"><rect x="4" y="4" width="34" height="56" rx="4" fill="var(--c1)"/><rect x="42" y="4" width="18" height="28" rx="4" fill="var(--c2)"/><rect x="42" y="36" width="18" height="12" rx="3" fill="var(--c3)"/></svg>
+  <div class="col g2 sm mut" style="margin-left:auto"><span>Lowercase, tight, weight 700.</span><span>Tagline: See what fills your disk, then clear it safely.</span></div></div>
+ <div class="row g8 wrapf" style="align-items:stretch">
+  <div class="card col g4 grow" style="padding:0;overflow:hidden"><div style="height:64px;background:#14202B"></div><div class="p8 sm"><b>Ink</b> #14202B<div class="xs dim">Text, title bar</div></div></div>
+  <div class="card col g4 grow" style="padding:0;overflow:hidden"><div style="height:64px;background:#2F6FE0"></div><div class="p8 sm"><b>Sprawl Blue</b> #2F6FE0<div class="xs dim">Brand, 4.7:1 with white</div></div></div>
+  <div class="card col g4 grow" style="padding:0;overflow:hidden"><div style="height:64px;background:#1E9E8B"></div><div class="p8 sm"><b>Reef</b> #1E9E8B<div class="xs dim">Space freed, safe</div></div></div>
+  <div class="card col g4 grow" style="padding:0;overflow:hidden"><div style="height:64px;background:#E0A21B"></div><div class="p8 sm"><b>Amber</b> #E0A21B<div class="xs dim">Caution, held back</div></div></div>
+  <div class="card col g4 grow" style="padding:0;overflow:hidden"><div style="height:64px;background:#C2412D"></div><div class="p8 sm"><b>Brick</b> #C2412D<div class="xs dim">Permanent, deleted for good</div></div></div>
+  <div class="card col g4 grow" style="padding:0;overflow:hidden"><div style="height:64px;background:#EEF1F4;border-bottom:1px solid var(--w-stroke)"></div><div class="p8 sm"><b>Fog</b> #EEF1F4<div class="xs dim">Surfaces</div></div></div></div>
+ <div class="ib info"><i data-i="info"></i><div class="t sm"><b>Optional alternative names</b> if Sprawl is ever dropped: Tally (counts and totals), Basin (where things settle). The rest of the gallery keeps Sprawl.</div></div>
+</div></article>
+
+<article class="m" data-tier="5" data-w="860" data-h="420" data-tb="none" data-title="App icon, Start tile and taskbar"
+data-ctl="Assets for MSIX: Square44x44Logo (scale 100-400), Square150x150Logo, Wide310x150Logo, Square310x310Logo, StoreLogo, .ico with 16 to 256 px layers; plated and unplated taskbar variants"
+data-problem="One icon must work at 16 px in a title bar, 44 px on the taskbar and 150 by 310 px on Start, in light and dark."
+data-trade="Unplated taskbar icons look cleaner, but they can vanish on some wallpapers, so the plated version stays the default.">
+<div class="col grow p24 g16">
+ <div class="row g16 wrapf" style="align-items:flex-end">
+  <div class="col g4" style="align-items:center"><svg width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#14202B"/><g transform="translate(24 24) scale(1.25)"><rect x="4" y="4" width="34" height="56" rx="4" fill="#3B6FB6"/><rect x="42" y="4" width="18" height="28" rx="4" fill="#2A8579"/><rect x="42" y="36" width="18" height="12" rx="3" fill="#A9672A"/></g></svg><span class="xs dim">256 px</span></div>
+  <div class="col g4" style="align-items:center"><svg width="48" height="48" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#14202B"/><g transform="translate(24 24) scale(1.25)"><rect x="4" y="4" width="34" height="56" rx="4" fill="#3B6FB6"/><rect x="42" y="4" width="18" height="56" rx="4" fill="#2A8579"/></g></svg><span class="xs dim">48 px</span></div>
+  <div class="col g4" style="align-items:center"><svg width="24" height="24" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#14202B"/><g transform="translate(24 24) scale(1.25)"><rect x="4" y="4" width="34" height="56" rx="4" fill="#3B6FB6"/><rect x="42" y="4" width="18" height="56" rx="4" fill="#2A8579"/></g></svg><span class="xs dim">24 px</span></div>
+  <div class="col g4" style="align-items:center"><svg width="16" height="16" viewBox="0 0 128 128"><rect width="128" height="128" rx="20" fill="#14202B"/><rect x="26" y="26" width="42" height="76" rx="6" fill="#3B6FB6"/><rect x="74" y="26" width="28" height="76" rx="6" fill="#2A8579"/></svg><span class="xs dim">16 px</span></div>
+  <div style="width:310px;height:150px;border-radius:8px;background:linear-gradient(120deg,#14202B,#1d3a5c);position:relative;flex:none;margin-left:auto"><svg width="64" height="64" viewBox="0 0 128 128" style="position:absolute;left:16px;top:16px"><g transform="translate(8 8) scale(1.7)"><rect x="4" y="4" width="34" height="56" rx="4" fill="#3B6FB6"/><rect x="42" y="4" width="18" height="28" rx="4" fill="#2A8579"/><rect x="42" y="36" width="18" height="12" rx="3" fill="#A9672A"/></g></svg><span style="position:absolute;left:16px;bottom:12px;color:#fff;font-weight:600">Sprawl</span><span style="position:absolute;right:14px;bottom:12px;color:#B9C7D6;font-size:12px">C: 91% full</span></div></div>
+ <div class="card row g12" style="background:var(--w-bg)"><span class="xs dim">Taskbar</span><svg width="28" height="28" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#14202B"/><g transform="translate(24 24) scale(1.25)"><rect x="4" y="4" width="34" height="56" rx="4" fill="#3B6FB6"/><rect x="42" y="4" width="18" height="56" rx="4" fill="#2A8579"/></g></svg><span style="width:18px;height:3px;border-radius:2px;background:var(--w-acc);margin-left:-20px;margin-top:30px"></span><span class="grow"></span><span class="sm dim">Progress overlay shows scan percent on the icon (ITaskbarList3)</span></div>
+</div></article>
+
+<article class="m" data-tier="5" data-w="720" data-h="420" data-tb="none" data-title="Splash screen"
+data-ctl="Extended splash Window (no title bar, SystemBackdrop=Mica), Image, ProgressRing (IsIndeterminate), TextBlock; shown only if startup takes over 400 ms"
+data-problem="The app is blank while the engine and the drive list load, which feels like a hang."
+data-trade="A splash that appears for less than a second is annoying, so show it only when startup is slow.">
+<div class="col grow" style="align-items:center;justify-content:center;gap:14px;background:linear-gradient(160deg,#14202B,#1d3a5c);color:#fff;text-align:center">
+ <svg width="88" height="88" viewBox="0 0 64 64"><rect x="4" y="4" width="34" height="56" rx="4" fill="#4F86CC"/><rect x="42" y="4" width="18" height="28" rx="4" fill="#3AA596"/><rect x="42" y="36" width="18" height="12" rx="3" fill="#C98840"/><rect x="42" y="52" width="8" height="8" rx="2" fill="#C45E78"/></svg>
+ <span style="font:700 34px 'Segoe UI Variable Display','Segoe UI',sans-serif;letter-spacing:-.03em">sprawl</span>
+ <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="11" stroke="#ffffff33" stroke-width="3"/><path d="M14 3a11 11 0 0111 11" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
+ <span style="font-size:13px;color:#C7D3DF">Looking at your drives. Nothing is changed.</span>
+</div></article>
+
+<article class="m" data-tier="5" data-w="940" data-h="500" data-title="Onboarding tone with three teaching tips"
+data-ctl="TeachingTip x3 (Target, PreferredPlacement, IsLightDismissEnabled=False, ActionButton / CloseButton), shown once after the first scan; setting 'Show tips' in Settings"
+data-problem="Sprawl's safety rules are its best feature and nobody learns them. The first scan is when people are paying attention."
+data-trade="Tips are interruptions. Keep three, skippable with one click, and never block the scan results behind them.">
+<div class="nav c"><div class="ni sel"><i data-i="folder"></i></div><div class="ni"><i data-i="spark"></i></div><div class="ni"><i data-i="broom"></i></div><div class="ni"><i data-i="clock"></i></div></div>
+<div class="content"><div class="row p16 g16 grow" style="align-items:stretch;min-height:0">
+  <div class="col g2" style="width:280px"><div class="tvr sel"><i data-i="down"></i><i data-i="folder"></i><span class="grow">Alex</span><span class="num">212 GB</span></div><div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">AppData</span><span class="num">74 GB</span></div><div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Videos</span><span class="num">58 GB</span></div></div>
+  <div class="tm grow" data-w="420" data-h="340" data-root="u" data-mode="nest"></div></div></div>
+<div class="tip" style="left:70px;top:150px;width:240px;--ax:24px;outline:2px solid var(--w-acc)"><div class="b">The tree shows where it went</div><div class="sm mut" style="margin:4px 0 10px">Biggest folders first. Click one and the map shows its insides.</div><div class="row g8"><span class="btn sm acc">Next</span><span class="btn sm sub">Skip tips</span><span class="grow"></span><span class="xs dim">1 of 3</span></div></div>
+<div class="tip lt" style="left:520px;top:290px;width:270px;--ay:22px"><div class="b">Nothing is deleted without a review</div><div class="sm mut" style="margin-top:4px">The Advisor suggests. You tick. A review lists what is deleted for good and what goes to the Recycle Bin, before anything moves.</div></div>
+<div class="tip" style="left:64px;top:380px;width:360px;font-size:12px;opacity:.95"><div class="b">Voice</div><div class="mut" style="margin-top:2px">Say what happens, with a size. Plain words, no exclamation marks. Never "Are you sure?". Never "cleanup" when you mean "delete".</div></div>
+</article>
+</div>
+<script>
+(function(){
+var TIERS=[
+{id:'t1',h:'1  Small edits',l:'Spacing, hierarchy, wording, empty states and accessibility. Each one is a short change to a screen that already exists.'},
+{id:'t2',h:'2  Restructured screens',l:'Same features, rearranged: navigation, the clean-up review, the Advisor, scan Details, search and Cleaners.'},
+{id:'t3',h:'3  New workflows',l:'Things Sprawl does not do yet: a guided free-up flow, scheduled checks, comparing scans, an undo centre, tray and Explorer entry points.'},
+{id:'t4',h:'4  Drastic redesigns',l:'Different overall concepts and different ways to draw where the space went.'},
+{id:'t5',h:'5  New branding',l:'Mark, wordmark, palette, app icon, splash and the voice of onboarding. The name stays Sprawl; alternatives are marked optional.'}];
+function c(cx,cy,r){return 'M'+(cx-r)+' '+cy+'a'+r+' '+r+' 0 1 0 '+(2*r)+' 0a'+r+' '+r+' 0 1 0 '+(-2*r)+' 0';}
+var IC={
+folder:'M2 4.5h4l1.5 1.5H14v6.5H2z',drive:'M2 8.5h12v4.5H2z M3 8.5l1.5-4.5h7L13 8.5 M11 10.8v.2',
+search:c(7,7,4)+'M10 10l4 4',trash:'M3 4.5h10 M6 4.5V3h4v1.5 M4.5 4.5l.5 9h6l.5-9',
+shield:'M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z',clock:c(8,8,6)+'M8 4.5V8l2.5 1.5',
+gear:c(8,8,2)+c(8,8,5.2),spark:'M8 2l1.3 3.7L13 7l-3.7 1.3L8 12 6.7 8.3 3 7l3.7-1.3z',
+broom:'M9 2l3 3-4 4-3-3z M5 9L3 14h6',chart:'M3 13V3 M3 13h10 M6 11V8 M9 11V5 M12 11V7',
+file:'M4 2h5l3 3v9H4z M9 2v3h3',check:'M3 8.5l3 3 7-7',warn:'M8 2l6.5 11.5h-13z M8 6.5v3 M8 11.5v.1',
+info:c(8,8,6)+'M8 7v4 M8 5v.1',chev:'M6 4l4 4-4 4',down:'M4 6l4 4 4-4',undo:'M5 6h5a3 3 0 010 6H6 M5 6l2-2 M5 6l2 2',
+bell:'M4 11V7a4 4 0 018 0v4l1 1.5H3z M6.5 14h3',play:'M5 3l8 5-8 5z',plus:'M8 3v10 M3 8h10',list:'M3 4h10 M3 8h10 M3 12h10',
+home:'M2 8l6-5 6 5 M4 7.5V13h8V7.5',cal:'M2.5 3.5h11v10h-11z M2.5 6.5h11 M5.5 2v3 M10.5 2v3',
+lock:'M3.5 7h9v6.5h-9z M5.5 7V5a2.5 2.5 0 015 0v2',link:'M6.5 9.5l3-3 M7 5l1-1a2.5 2.5 0 013.5 3.5l-1 1 M9 11l-1 1A2.5 2.5 0 014.5 8.5l1-1',
+close:'M4 4l8 8M12 4l-8 8',more:c(3,8,.6)+c(8,8,.6)+c(13,8,.6),compare:'M3 5h10 M3 11h10 M10 3l3 2-3 2 M6 9l-3 2 3 2',
+disk:c(8,8,6)+c(8,8,1.5),stop:'M4 4h8v8H4z',refresh:'M13 8a5 5 0 10-1.5 3.5 M13 3v4h-4',export:'M8 10V2 M5 5l3-3 3 3 M3 9v5h10V9',
+filter:'M2 3h12l-4.5 5.5V13l-3 1V8.5z',eye:'M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z'+c(8,8,2),
+sort:'M5 3v10 M2.5 10.5L5 13l2.5-2.5 M11 13V3 M8.5 5.5L11 3l2.5 2.5',pin:'M6 2h4l-.5 4 2 2.5H4.5L6.5 6z M8 8.5V14',
+ban:c(8,8,6)+'M4 12L12 4',key:c(5,8,2.5)+'M7.5 8H14 M12 8v2.5',copy:'M5.5 5.5h7v8h-7z M3.5 10.5v-8h7',cpu:'M4.5 4.5h7v7h-7z M7 2v2.5 M9 2v2.5 M7 11.5V14 M9 11.5V14 M2 7h2.5 M2 9h2.5 M11.5 7H14 M11.5 9H14',
+cloud:'M4.5 12.5a3 3 0 01-.3-6 4 4 0 017.6 1A2.5 2.5 0 0111.5 12.5z',user:c(8,5.5,2.5)+'M3 14c.5-3 2.5-4 5-4s4.5 1 5 4',
+db:'M3 4c0-1 2.2-1.8 5-1.8S13 3 13 4v8c0 1-2.2 1.8-5 1.8S3 13 3 12z M3 4c0 1 2.2 1.8 5 1.8S13 5 13 4 M3 8c0 1 2.2 1.8 5 1.8S13 9 13 8',
+app:'M3 3h4v4H3z M9 3h4v4H9z M3 9h4v4H3z M9 9h4v4H9z',zip:'M5 2h6v12H5z M8 3.5v1 M8 6v1 M8 8.5v1',dup:'M5.5 5.5h7v8h-7z M3.5 10.5v-8h7',
+mail:'M2 4h12v8H2z M2 4.5l6 4.5 6-4.5',net:c(8,8,6)+'M2 8h12 M8 2c-3 3-3 9 0 12 M8 2c3 3 3 9 0 12',
+tray:'M2 9l2-5h8l2 5v4H2z M2 9h4l.5 1.5h3L10 9h4',pause:'M5 3v10 M11 3v10',usb:'M8 2v10 M6 4l2-2 2 2 M5 8H3v2 M11 7h2v2'};
+function ico(root){(root||document).querySelectorAll('i[data-i]').forEach(function(e){if(e.dataset.d)return;e.dataset.d=1;e.classList.add('ic');var d=IC[e.dataset.i]||IC.info;e.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="'+d+'"/></svg>';});}
+var TREE={n:'C:\\',v:476,c:[
+{n:'Users\\Alex',v:212,c:[{n:'AppData',v:74,c:[{n:'Docker',v:31},{n:'Temp',v:9.4},{n:'npm-cache',v:6.2},{n:'Other',v:27.4}]},{n:'Videos',v:58,c:[{n:'Trip 2024',v:31},{n:'Raw clips',v:27}]},{n:'Projects',v:46,c:[{n:'harbor-app\\target',v:19},{n:'node_modules',v:12},{n:'src',v:15}]},{n:'Downloads',v:34,c:[{n:'Installers',v:21},{n:'Other',v:13}]}]},
+{n:'Program Files',v:118,c:[{n:'Steam',v:71},{n:'Creative suite',v:22},{n:'Other',v:25}]},
+{n:'ProgramData',v:64,c:[{n:'Docker',v:22},{n:'Package Cache',v:18},{n:'Other',v:24}]},
+{n:'Windows',v:38,c:[{n:'WinSxS',v:9},{n:'System32',v:12},{n:'Other',v:17}]},
+{n:'hiberfil.sys',v:24},{n:'pagefile.sys',v:20}]};
+function fmt(v){return (v>=100?Math.round(v):v>=10?v.toFixed(0):v.toFixed(1))+' GB';}
+function lay(items,x,y,w,h,out){
+ if(!items.length)return;
+ if(items.length==1){out.push({it:items[0],x:x,y:y,w:w,h:h});return;}
+ var tot=items.reduce(function(s,i){return s+i.v},0),acc=0,k=0;
+ while(k<items.length-1&&acc+items[k].v/2<tot/2){acc+=items[k].v;k++;}
+ if(k<1)k=1;var a=items.slice(0,k),b=items.slice(k),sa=a.reduce(function(s,i){return s+i.v},0);
+ if(w>=h){var wa=w*sa/tot;lay(a,x,y,wa,h,out);lay(b,x+wa,y,w-wa,h,out);}
+ else{var ha=h*sa/tot;lay(a,x,y,w,ha,out);lay(b,x,y+ha,w,h-ha,out);}
+}
+function tile(r,col,k,cls){var d=document.createElement('div');d.className='t'+(cls||'');d.style.cssText='left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;background:color-mix(in srgb,var(--c'+col+') '+(100-k*9)+'%,#fff)';
+ if(r.w>56&&r.h>20)d.innerHTML='<b>'+r.it.n+'</b>'+(r.h>38?fmt(r.it.v):'');return d;}
+function pickRoot(k){return k==='u'?TREE.c[0]:TREE;}
+function tm(el){var w=+el.dataset.w,h=+el.dataset.h,root=pickRoot(el.dataset.root),mode=el.dataset.mode||'flat';
+ el.style.width=w+'px';el.style.height=h+'px';el.classList.add('tm');if(mode==='cush'||el.dataset.cush)el.classList.add('cush');
+ var tops=root.c.slice().sort(function(a,b){return b.v-a.v}),out=[];lay(tops,0,0,w,h,out);
+ out.forEach(function(r,ti){var col=(root.c.indexOf(r.it))%6+1;
+  if(mode==='nest'&&r.it.c&&r.w>60&&r.h>40){var hd=tile({x:r.x,y:r.y,w:r.w,h:18,it:r.it},col,0,' hd');hd.style.background='var(--c'+col+')';hd.innerHTML='<b>'+r.it.n+' · '+fmt(r.it.v)+'</b>';el.appendChild(hd);
+   var o2=[];lay(r.it.c.slice().sort(function(a,b){return b.v-a.v}),r.x,r.y+18,r.w,r.h-18,o2);o2.forEach(function(q,qi){var t=tile(q,col,qi%3+1);if(el.dataset.hi===q.it.n)t.classList.add('hi');el.appendChild(t);});}
+  else if(mode!=='top'&&mode!=='nest'&&r.it.c&&r.w>40&&r.h>30){var o2=[];lay(r.it.c.slice().sort(function(a,b){return b.v-a.v}),r.x,r.y,r.w,r.h,o2);o2.forEach(function(q,qi){var t=tile(q,col,qi%3+1);if(el.dataset.hi===q.it.n)t.classList.add('hi');el.appendChild(t);});}
+  else{var t=tile(r,col,0);if(el.dataset.hi===r.it.n)t.classList.add('hi');el.appendChild(t);}});
+}
+function arc(cx,cy,a0,a1,r0,r1){var p=function(a,r){return (cx+r*Math.cos(a)).toFixed(1)+' '+(cy+r*Math.sin(a)).toFixed(1)};var l=a1-a0>Math.PI?1:0;
+ return 'M'+p(a0,r1)+'A'+r1+' '+r1+' 0 '+l+' 1 '+p(a1,r1)+'L'+p(a1,r0)+'A'+r0+' '+r0+' 0 '+l+' 0 '+p(a0,r0)+'Z';}
+function sun(el){var S=+el.dataset.size,cx=S/2,cy=S/2,hole=+(el.dataset.hole||60),ring=(S/2-hole-4)/3,root=pickRoot(el.dataset.root),
+ s='<svg class="sun" width="'+S+'" height="'+S+'" viewBox="0 0 '+S+' '+S+'" role="img" aria-label="Sunburst of folder sizes">';
+ function go(n,a0,a1,lvl,col){if(lvl>3)return;var tot=n.v,a=a0;var kids=(n.c||[]).slice().sort(function(x,y){return y.v-x.v});
+  kids.forEach(function(k,i){var span=(a1-a0)*k.v/(lvl===1?root.v:n.v);var cc=lvl===1?(root.c.indexOf(k))%6+1:col;
+   var r0=hole+(lvl-1)*ring,r1=r0+ring-1;s+='<path d="'+arc(cx,cy,a,a+span-0.004,r0,r1)+'" fill="color-mix(in srgb,var(--c'+cc+') '+(100-(lvl-1)*14)+'%,#fff)" stroke="var(--w-card)" stroke-width="1"/>';
+   if(span>.38&&lvl<3){var m=a+span/2,rr=(r0+r1)/2;s+='<text x="'+(cx+rr*Math.cos(m)).toFixed(0)+'" y="'+(cy+rr*Math.sin(m)+4).toFixed(0)+'" text-anchor="middle">'+k.n.split('\\').pop().slice(0,11)+'</text>';}
+   go(k,a,a+span,lvl+1,cc);a+=span;});}
+ go(root,-Math.PI/2,1.5*Math.PI,1,1);el.innerHTML=s+'</svg>';}
+function ice(el){var w=+el.dataset.w,h=+el.dataset.h,root=pickRoot(el.dataset.root),L=4,rh=h/L;el.style.cssText='position:relative;width:'+w+'px;height:'+h+'px';
+ function go(n,x,ww,lvl,col){var kids=(n.c||[]).slice().sort(function(a,b){return b.v-a.v});var xx=x;
+  kids.forEach(function(k){var kw=ww*k.v/(lvl===1?root.v:n.v);var cc=lvl===1?(root.c.indexOf(k))%6+1:col;
+   var d=document.createElement('div');d.style.cssText='position:absolute;left:'+xx+'px;top:'+(lvl*rh)+'px;width:'+(kw-1)+'px;height:'+(rh-2)+'px;background:color-mix(in srgb,var(--c'+cc+') '+(100-lvl*10)+'%,#fff);color:#fff;font-size:11px;padding:3px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-radius:2px;text-shadow:0 1px 2px rgba(0,0,0,.5)';
+   if(kw>50)d.textContent=k.n.split('\\').pop()+(kw>90?' '+fmt(k.v):'');el.appendChild(d);if(lvl<L-1)go(k,xx,kw,lvl+1,cc);xx+=kw;});}
+ var r=document.createElement('div');r.style.cssText='position:absolute;left:0;top:0;width:'+(w-1)+'px;height:'+(rh-2)+'px;background:var(--w-fg2);color:var(--w-bg);font-size:12px;font-weight:600;padding:3px 8px;border-radius:2px';r.textContent=root.n+'  '+fmt(root.v);el.appendChild(r);go(root,0,w,1,1);}
+var tiersEl=document.getElementById('tiers'),counts={};
+TIERS.forEach(function(t){var s=document.createElement('section');s.className='tier';s.id=t.id;s.innerHTML='<h2>'+t.h+'</h2><p class="lede">'+t.l+'</p>';s.dataset.n=0;tiersEl.appendChild(s);});
+function effDark(){var d=document.documentElement.dataset.theme;return d?d==='dark':matchMedia('(prefers-color-scheme: dark)').matches;}
+Array.prototype.slice.call(document.querySelectorAll('#srcs article.m')).forEach(function(a){
+ var ti=+a.dataset.tier,sec=document.getElementById('t'+ti);counts[ti]=(counts[ti]||0)+1;
+ var card=document.createElement('article');card.className='card';
+ var raw=a.innerHTML;var tb=a.dataset.tb!=='none';
+ card.innerHTML='<div class="chead"><h3><span class="id">'+ti+'.'+counts[ti]+'</span>'+a.dataset.title+'</h3><div><button class="flip" type="button">Flip theme</button></div></div>'
+ +'<p class="ctl">'+a.dataset.ctl+(a.dataset.custom?'  |  CUSTOM: '+a.dataset.custom:'')+'</p>'
+ +'<div class="stage"><div class="mock" style="width:'+a.dataset.w+'px;height:'+a.dataset.h+'px">'+(tb?'<div class="tb"><i data-i="disk"></i><span>'+(a.dataset.tb||'Sprawl')+'</span><span class="grow"></span><span class="wc">&minus; &#9633; &times;</span></div>':'')+'<div class="body">'+raw+'</div></div></div>'
+ +'<div class="why"><p><b>Problem</b>'+a.dataset.problem+'</p><p><b>Trade-off</b>'+a.dataset.trade+'</p></div>';
+ card.querySelector('.flip').addEventListener('click',function(){var m=card.querySelector('.mock');var cur=m.dataset.mt||(effDark()?'dark':'light');m.dataset.mt=cur==='dark'?'light':'dark';});
+ sec.appendChild(card);});
+ico(tiersEl);
+document.querySelectorAll('.tm[data-w]').forEach(tm);document.querySelectorAll('[data-viz="sun"]').forEach(sun);document.querySelectorAll('[data-viz="ice"]').forEach(ice);
+document.querySelectorAll('.bar nav a').forEach(function(a,i){a.textContent=a.textContent+' ('+(counts[i+1]||0)+')';});
+var total=0;for(var k in counts)total+=counts[k];document.querySelector('header.top h1').setAttribute('data-n',total);
+var B={sys:document.getElementById('th-sys'),light:document.getElementById('th-light'),dark:document.getElementById('th-dark')};
+function setT(t){var r=document.documentElement;if(t==='sys')r.removeAttribute('data-theme');else r.dataset.theme=t;for(var k in B)B[k].setAttribute('aria-pressed',String(k===t));try{localStorage.setItem('sprawl-gal-theme',t)}catch(e){}
+ document.querySelectorAll('.mock[data-mt]').forEach(function(m){m.removeAttribute('data-mt')});}
+for(var k in B)(function(k){B[k].addEventListener('click',function(){setT(k)})})(k);
+try{var s=localStorage.getItem('sprawl-gal-theme');if(s&&B[s])setT(s);}catch(e){}
+})();
+</script>

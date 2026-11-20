@@ -64,7 +64,27 @@ fn stop_candidates(expected: &[u16], account: &str, current: u32, candidates: &[
     Ok(stopped)
 }
 
+/// How many other processes of this installation, for this account, are running (windows, the
+/// low-space check, an AI app's `--mcp` connection). The update asks before it stops them
+/// (Fable core review P2-5).
+pub fn count_other_instances() -> Result<usize, String> {
+    let (image, account, candidates) = list()?;
+    let current = std::process::id();
+    Ok(candidates.iter().filter(|&&pid| pid != current).filter(|&&pid| {
+        let query = unsafe { OpenProcess(0x1000 | 0x0010_0000, 0, pid) };
+        if query == 0 { return false; }
+        let h = Handle(query);
+        matches(&h, &image, &account) && unsafe { WaitForSingleObject(h.0, 0) } != 0
+    }).count())
+}
+
 pub fn stop_other_instances() -> Result<usize, String> {
+    let (image, account, candidates) = list()?;
+    stop_candidates(&image, &account, std::process::id(), &candidates)
+}
+
+/// This exe's image, the account, and the processes with its file name.
+fn list() -> Result<(Vec<u16>, String, Vec<u32>), String> {
     crate::setup::per_user_only()?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let _directory = sprawl_core::local::directory(exe.parent().ok_or("No installation folder")?).map_err(|e| e.to_string())?;
@@ -85,7 +105,7 @@ pub fn stop_other_instances() -> Result<usize, String> {
         more = unsafe { Process32NextW(snapshot.0, &mut entry) };
     }
     if std::io::Error::last_os_error().raw_os_error() != Some(18) { return Err("Windows could not finish listing processes; try Update again.".into()); }
-    stop_candidates(&image, &account, std::process::id(), &candidates)
+    Ok((image, account, candidates))
 }
 
 #[cfg(test)]

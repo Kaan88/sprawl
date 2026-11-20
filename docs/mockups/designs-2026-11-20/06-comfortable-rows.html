@@ -1,0 +1,7 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>06 Comfortable rows</title><link rel="stylesheet" href="kit.css"><style>
+.fl{position:absolute;left:50%;transform:translateX(-50%);bottom:44px;z-index:5}
+.t-tree .tr{margin:0 6px}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const bar=`<div class="selbar acrylic fl" style="border-radius:8px"><span class="cbx on">&#xE73E;</span><b>3 selected</b><span class="dim2 num">12.4 GB</span><span class="divider"></span>${K.btn('Show on map','E80F','sm')}${K.btn('Clean','EA99','sm')}${K.btn('Delete','E74D','sm danger')}${K.ibtn('E711')}</div>`;
+document.getElementById('w').innerHTML=K.classic({tabs:'fill',rowh:36,panesH:300,aspect:4.6,over:bar,map:'seg'});
+K.init('06-comfortable-rows')</script></body></html>

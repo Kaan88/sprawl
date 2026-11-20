@@ -67,6 +67,12 @@ pub(crate) fn prepare(dir: &Path, version: &str, replacements: Vec<FileEntry>) -
     let record = Record { schema: 1, old_version: env!("CARGO_PKG_VERSION").into(), new_version: version.into(), old_files, new_files };
     if !valid(&record) { return Err("Invalid recovery manifest".into()); }
     let path = root.path.join(DIRECTORY);
+    // one from an earlier update that couldn't be retired (a reinstall with another version, a
+    // record cut short): this copy runs from the main folder, so it is set aside, kept, rather
+    // than blocking every update (Fable core review P2-2)
+    if std::fs::symlink_metadata(&path).is_ok() {
+        set_aside(&root.path, &path)?;
+    }
     std::fs::create_dir(&path).map_err(|e| format!("The recovery folder could not be prepared ({e}). Keep {}\\sprawl.exe if restoring an interrupted update, or reinstall with Sprawl Setup.", path.display()))?;
     let directory = sprawl_core::local::directory(&path).map_err(|e| e.to_string())?;
     let mut files = vec![text_file(&path.join(RECORD), &serde_json::to_vec(&record).map_err(|e| e.to_string())?)?];
@@ -81,6 +87,20 @@ pub(crate) fn prepare(dir: &Path, version: &str, replacements: Vec<FileEntry>) -
     files.push(text_file(&path.join(README), b"Sprawl update recovery\r\n\r\nIf the update was interrupted, open sprawl.exe in this folder. All files of the previous launch bundle are kept together here. Reinstall Sprawl with its Setup to restore the main installation. Do not move just the EXE: it needs the accompanying DLL. This copy never updates itself or retargets your scheduled alert task.\r\n")?);
     files.push(text_file(&path.join(READY), b"Complete previous launch bundle\r\n")?);
     Ok(Prepared { _directory: directory, _files: files })
+}
+
+/// Rename an old recovery folder to the first free `.sprawl-recovery.<n>`: never a link, never
+/// over another folder.
+fn set_aside(dir: &Path, path: &Path) -> Result<(), String> {
+    if setup::is_link(path) || !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(format!("{} is not a plain folder; remove it, then update again.", path.display()));
+    }
+    for n in 1..100 {
+        let to = dir.join(format!("{DIRECTORY}.{n}"));
+        if std::fs::symlink_metadata(&to).is_ok() { continue; }
+        return std::fs::rename(path, &to).map_err(|e| format!("An old recovery folder ({}) couldn't be set aside ({e}). Remove it, then update again.", path.display()));
+    }
+    Err(format!("Too many old recovery folders in {}; remove them, then update again.", dir.display()))
 }
 
 fn valid_files(files: &[FileEntry]) -> bool {

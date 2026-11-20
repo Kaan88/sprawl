@@ -100,7 +100,27 @@ impl State {
         let cl = self.cleaners_tab();
         for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabSearch", View::Search), ("TabAdvisor", View::Advisor), ("TabCleaners", View::Advisor), ("TabAbout", View::About)] {
             let on = me == v && (me != View::Advisor || (name == "TabCleaners") == cl);
-            crate::look::paint(&self.root, name, crate::look::Pick::Tab, on);
+            crate::look::paint(&self.root, name, crate::look::Pick::Page, on);
+        }
+        self.tab_counts();
+    }
+
+    /// The counts on the Advisor and Cleaners tabs: the findings listed, and the cleaners with
+    /// something to clean. Hidden with no report, or nothing to count.
+    pub(crate) fn tab_counts(&self) {
+        use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
+        let (findings, cleaners) = match self.advice() {
+            Some(r) if !self.advisor.running => (
+                (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project()).count(),
+                self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count(),
+            ),
+            _ => (0, 0),
+        };
+        for (name, n) in [("TabAdvisorCount", findings), ("TabCleanersCount", cleaners)] {
+            crate::state::text(&self.root, &format!("{name}Text"), &n.to_string());
+            if let Ok(e) = crate::state::find::<UIElement>(&self.root, name) {
+                let _ = e.SetVisibility(if n > 0 { Visibility::Visible } else { Visibility::Collapsed });
+            }
         }
     }
 
@@ -198,6 +218,8 @@ impl State {
                 }
                 if sprawl_core::is_elevated() {
                     text(&self.root, "FootLeft", "Sprawl is already running as administrator.");
+                } else if !sprawl_install::machine::may_elevate() {
+                    self.offer_all_users();
                 } else if dialogs::restart_elevated(self.hwnd, &arg) {
                     std::process::exit(0);
                 }
@@ -759,12 +781,31 @@ impl State {
             );
             return;
         }
+        // first: stop after the item in hand (a link half made, a disk mid-shrink, a compress
+        // not yet recorded would be left so), then close; asked again, close at once
+        if self.advisor.close_after_cleanup {
+            self.ask(
+                "Close Sprawl now?",
+                "The clean-up is still finishing the item it is on. Closing now can leave that item part done (a virtual disk still attached, a file under its .sprawl-original name).",
+                "Close anyway",
+                true,
+                |s| s.exit_now(),
+            );
+            return;
+        }
         self.ask(
             "Close Sprawl?",
-            "A clean-up is still running.\n\nWhat is already deleted stays deleted; the rest is left as it was.",
-            "Close anyway",
+            "A clean-up is still running.\n\nSprawl stops it after the item it is on, then closes. What is already deleted stays deleted; the rest is left as it was.",
+            "Stop and close",
             false,
-            |s| s.exit_now(),
+            |s| {
+                if let Some(r) = &mut s.advisor.cleanup.running {
+                    r.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    r.stop_at.get_or_insert_with(std::time::Instant::now);
+                }
+                s.advisor.close_after_cleanup = true;
+                crate::state::text(&s.root, "FootLeft", "Stopping the clean-up after this item, then closing...");
+            },
         );
     }
 

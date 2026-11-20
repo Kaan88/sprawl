@@ -359,6 +359,24 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         // the folder that was reviewed. So it is told that folder (a flag, or the variable it
         // reads before its settings files), asked with the very same binding where it would
         // clear, and run only when its whole answer is that folder, held meanwhile.
+        // a virtual disk shrink: when stopped (or past the time limit) diskpart may have been
+        // ended with the file attached, so it is detached (Fable re-review backlog 4)
+        Action::Tool { command } if crate::remedies::is_shrink(action) => {
+            tool(command, stop, &mut o);
+            if o.stopped {
+                let mut d = Outcome::default();
+                tool(&crate::remedies::detach_command(path), &AtomicBool::new(false), &mut d);
+                if !d.problems.is_empty() {
+                    o.problem(path, "the disk file may still be attached after the stop: restart Windows, or detach it in Disk Management (Action > Detach VHD), before starting WSL or Docker");
+                }
+            }
+        }
+        // git's clean-ups: the repository's config checked again, and the command exactly the
+        // one Sprawl builds for this folder (Fable 1.0.4-1.0.5 P1-2)
+        Action::Tool { command } if crate::devgit::is_git_command(command) => match crate::devgit::recheck(path, command) {
+            Ok(()) => tool(command, stop, &mut o),
+            Err(why) => o.problem(path, format!("left alone: {why}")),
+        },
         Action::Tool { command } => match package_tool(command) {
             None => tool(command, stop, &mut o),
             Some(Err(why)) => o.problem(path, format!("left alone: {why}")),
@@ -1859,6 +1877,15 @@ pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<P
         }
         Ok(())
     };
+    if command.starts_with(crate::remedies::DETACH) {
+        let line = command.lines().find_map(|l| l.strip_prefix("$p = ")).ok_or("not run as administrator: unverified multi-step command")?;
+        let (path, _) = quoted(line).ok_or("not run as administrator: malformed disk path")?;
+        if crate::remedies::detach_command(Path::new(&path)) != command {
+            return Err("not run as administrator: detach command differs from the generated form".into());
+        }
+        let sys = system_dir().ok_or("Windows' system directory is unknown")?;
+        return program_ok(&sys.join("diskpart.exe").display().to_string());
+    }
     if command.starts_with(crate::remedies::SHRINK) {
         let line = command.lines().find_map(|l| l.strip_prefix("$p = ")).ok_or("not run as administrator: unverified multi-step command")?;
         let (path, rest) = quoted(line).ok_or("not run as administrator: malformed shrink path")?;

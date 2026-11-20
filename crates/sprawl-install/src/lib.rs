@@ -17,8 +17,9 @@ pub mod manifest;
 pub mod setup;
 pub mod recovery;
 pub mod processes;
+pub mod machine;
 
-pub use manifest::{newer, parse_version, sha256_hex, valid_name, verify, FileEntry, Manifest};
+pub use manifest::{newer, parse_version, setup_name, sha256_hex, valid_name, verify, FileEntry, Manifest};
 
 /// The GitHub repository releases come from.
 pub const REPO: &str = "Kaan88/sprawl";

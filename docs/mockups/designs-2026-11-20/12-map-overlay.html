@@ -1,0 +1,10 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>12 Map overlay</title><link rel="stylesheet" href="kit.css"><style>
+.pillbar{position:absolute;left:50%;transform:translateX(-50%);top:14px;display:flex;align-items:center;gap:4px;padding:4px;border-radius:24px;z-index:5}
+.pillbar .btn{border-radius:18px}
+.leg{position:absolute;left:24px;bottom:18px;padding:6px 10px;border-radius:8px;display:flex;gap:12px;font-size:12px;z-index:5}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const over=`<div class="pillbar acrylic"><div class="seg" style="border:0;background:transparent">${K.btn('Treemap','F0E2','on sm')}${K.btn('City','E80F','sm')}${K.btn('Galaxy','E7FC','sm')}</div><span class="divider"></span>${K.ibtn('E8A3')}${K.ibtn('E71F')}${K.ibtn('E790')}${K.ibtn('E713')}${K.ibtn('E81C')}${K.ibtn('E712')}</div>
+<div class="leg acrylic"><span><i class="sw" style="background:#e8708a"></i> video</span><span><i class="sw" style="background:#6aa9ff"></i> system</span><span><i class="sw" style="background:#b58cff"></i> disk images</span><span><i class="sw" style="background:#f6b042"></i> archives</span></div>`;
+const status=`<div class="status"><span>${K.ic('E7C3')} 1,418,206 items</span><span>${K.ic('E916')} 8.4 s</span><span class="semi" style="color:var(--tx)">Docker  21.6 GB  (5.5 %)</span><span class="ell dim">C:\\Users\\sam\\AppData\\Local\\Docker</span><div class="sp"></div><span>3 selected: 12.4 GB</span><span class="chip on" style="height:20px;font-size:11px">Colour: file type</span></div>`;
+document.getElementById('w').innerHTML=K.classic({tabs:'pivot',map:'none',aspect:3.4,over,status,panesH:210});
+K.init('12-map-overlay')</script></body></html>

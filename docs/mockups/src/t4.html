@@ -1,0 +1,112 @@
+<article class="m" data-tier="4" data-w="940" data-h="560" data-title="Sunburst-first Explore"
+data-ctl="Frame hosting a Win2D CanvasControl, BreadcrumbBar above it, ListView (top items of the selected ring) in a SplitView pane, TeachingTip on first run"
+data-problem="Treemaps hide hierarchy: you cannot see that a big box is deep inside three folders. A sunburst shows depth as rings."
+data-custom="the sunburst is drawn with Win2D (arcs) with hit-testing and keyboard focus per arc; WinUI has no radial chart"
+data-trade="Arcs are harder to compare by area than rectangles, and small items vanish. Pair it with a ranked list (right), and keep the treemap as one click away.">
+<div class="col grow p16 g12" style="min-width:0">
+ <div class="row g12"><div class="crumb"><b>C:\</b><i data-i="chev"></i><b>Users\Alex</b><i data-i="chev"></i><span class="dim">All</span></div><span class="grow"></span><div class="selbar"><div class="sbi sel">Rings</div><div class="sbi">Map</div><div class="sbi">Bars</div></div></div>
+ <div class="row g16 grow" style="align-items:center;min-height:0">
+  <div style="position:relative;width:430px;height:430px;flex:none"><div data-viz="sun" data-size="430" data-hole="70" data-root="c"></div>
+   <div class="col g2" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;width:120px"><span class="h2">476 GB</span><span class="xs dim">C:\ (Windows)</span></div></div>
+  <div class="col g4 grow"><div class="b" style="padding:0 12px">Largest here</div>
+   <div class="li sel"><span class="dot" style="background:var(--c1)"></span><span class="grow">Users\Alex</span><span class="b sm">212 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c2)"></span><span class="grow">Program Files</span><span class="b sm">118 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c3)"></span><span class="grow">ProgramData</span><span class="b sm">64 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c4)"></span><span class="grow">Windows</span><span class="b sm">38 GB</span></div>
+   <div class="li"><span class="dot" style="background:var(--c5)"></span><span class="grow">hiberfil.sys</span><span class="b sm">24 GB</span></div>
+   <div class="xs dim p12">Click an arc to make it the centre. Press Backspace to go up.</div></div></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="500" data-title="Icicle view with a breadcrumb spine"
+data-ctl="BreadcrumbBar, ItemsRepeater with a custom Layout (rows by depth, widths by size) or Win2D, ScrollViewer, ToolTip per cell, ListView for details"
+data-problem="The path and the picture are separate: you zoom a map and lose where you are. In an icicle every row is a depth, so the breadcrumb is part of the picture."
+data-custom="the icicle layout is a custom VirtualizingLayout for ItemsRepeater; or draw rows as Rectangles in a Canvas for under about 2,000 cells"
+data-trade="Horizontal space limits depth; very small cells are unreadable. A minimum width collapses them into a '+14 more' cell.">
+<div class="col grow p16 g12">
+ <div class="row"><div class="crumb"><i data-i="home"></i><b>C:\</b><i data-i="chev"></i><b>Users</b><i data-i="chev"></i>Alex</div><span class="grow"></span><span class="sm dim">Depth 4 of 9</span></div>
+ <div data-viz="ice" data-w="900" data-h="260" data-root="c" style="margin-inline:auto"></div>
+ <div class="row g12 sm"><span class="pill info">Rows are folder depth. Width is size.</span><span class="grow"></span><span class="btn sm">Zoom to selection</span><span class="btn sm sub">Up one level</span></div>
+ <div class="card col g4"><span class="b">Users\Alex\AppData\Docker</span><span class="sm mut">31 GB, 6.5% of C:\, 9 folders, last changed yesterday</span></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="560" data-title="Treemap with folder headers and soft shading"
+data-ctl="Win2D CanvasControl (or the current GPU treemap), headers as drawn text, hover Popup / ToolTip, ContextFlyout (MenuFlyout) per tile"
+data-problem="A flat treemap cannot tell you which tiles belong together. Nested headers name the group and give each a size, and the shading makes tile edges easy to see."
+data-custom="nested layout with headers is a squarified layout drawn in Win2D; the shading is a radial gradient overlay"
+data-trade="Headers cost 18 px per level, which wastes room on small tiles. Show them only above a minimum tile height, as here.">
+<div class="col grow p16 g12">
+ <div class="row g12"><div class="crumb"><b>C:\</b><i data-i="chev"></i>Users<i data-i="chev"></i>Alex</div><span class="grow"></span><span class="sm mut">Colour by folder</span><div class="asb" style="width:140px">Colour: <b style="color:var(--w-fg)">folder</b><i data-i="down"></i></div></div>
+ <div class="tm" data-w="900" data-h="420" data-root="u" data-mode="nest" data-cush="1" style="margin-inline:auto" data-hi="npm-cache"></div>
+ <div class="row sm"><span class="dim">Hover: <b style="color:var(--w-fg)">npm-cache</b> 6.2 GB, 3 days old, caches are deleted for good</span></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="520" data-title="Space ledger: a list first, the map second"
+data-ctl="NavigationView (Top), TreeView with column Grid, ProgressBar, InfoBar, CommandBar; map demoted to a Button that opens a Flyout"
+data-problem="Some people want numbers they can scan and sort, like an account statement, not a picture. The current layout makes the map the hero."
+data-trade="Less visual wow on first scan, and the map is easy to miss. For users who live in tables (admins, people over RDP) it is faster.">
+<div class="col grow">
+ <div class="row p12 g16"><div class="selbar"><div class="sbi sel">Ledger</div><div class="sbi">Advisor</div><div class="sbi">Cleaners</div><div class="sbi">History</div></div><span class="grow"></span><span class="btn sm"><i data-i="chart"></i>Map</span></div>
+ <div class="row g12 p16" style="align-items:stretch;border-top:1px solid var(--w-stroke)">
+  <div class="card grow col g2"><span class="xs dim">USED</span><span class="h2">434 GB</span><span class="xs mut">of 476 GB</span></div>
+  <div class="card grow col g2"><span class="xs dim">FREE</span><span class="h2">42 GB</span><span class="xs" style="color:var(--w-warn)">9% free</span></div>
+  <div class="card grow col g2"><span class="xs dim">COULD GO (ADVISOR)</span><span class="h2">41 GB</span><span class="xs mut">12 findings</span></div>
+  <div class="card grow col g2"><span class="xs dim">NOT COVERED</span><span class="h2">0.5%</span><span class="xs link">Details</span></div></div>
+ <div class="col p16 g2" style="padding-top:0">
+  <div class="gridr li h" style="grid-template-columns:1fr 70px 70px 200px 80px"><span>Where it is</span><span class="num">Files</span><span class="num">Share</span><span>Bar</span><span class="num">Size</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">Users\Alex</span><span class="num">412k</span><span class="num">44.5%</span><span class="pb"><i style="width:45%"></i></span><span class="num b">212 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">Program Files</span><span class="num">188k</span><span class="num">24.8%</span><span class="pb"><i style="width:25%"></i></span><span class="num b">118 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">ProgramData</span><span class="num">96k</span><span class="num">13.4%</span><span class="pb"><i style="width:13%"></i></span><span class="num b">64 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px"><span class="b">Windows</span><span class="num">211k</span><span class="num">8.0%</span><span class="pb"><i style="width:8%"></i></span><span class="num b">38 GB</span></div>
+  <div class="gridr li" style="grid-template-columns:1fr 70px 70px 200px 80px;border-top:1px solid var(--w-stroke-b)"><span class="b">Total</span><span class="num">1.21M</span><span class="num">100%</span><span></span><span class="num b">476 GB</span></div></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="940" data-h="540" data-title="Home dashboard: storage health"
+data-ctl="NavigationView (Left), ItemsRepeater of cards (UniformGridLayout), ProgressRing, InfoBar, HyperlinkButton, ListView for recent activity"
+data-problem="The app opens on a drive list. It does not answer the first question: am I fine, or do I need to act?"
+data-trade="A dashboard needs the last scan to exist, so it is stale-by-default until a scan finishes. Show the age of each number ('as of Tuesday') on every card.">
+<div class="nav c"><div class="ni sel"><i data-i="home"></i></div><div class="ni"><i data-i="folder"></i></div><div class="ni"><i data-i="spark"></i></div><div class="ni"><i data-i="broom"></i></div><div class="ni"><i data-i="clock"></i></div></div>
+<div class="content"><div class="col p24 g16 grow">
+ <div><div class="h1">Good morning, Alex</div><div class="mut">C: needs attention. D: is fine.</div></div>
+ <div class="row g12" style="align-items:stretch">
+  <div class="card grow col g8" style="outline:2px solid var(--w-warn);outline-offset:-2px"><div class="row"><div class="ring" style="--p:91;--s:68px"><span>91%</span></div><div class="col g2 grow"><span class="b">Windows (C:)</span><span class="sm mut">42 GB free</span><span class="xs dim">scanned Tuesday</span></div></div><div class="ib warn"><i data-i="warn"></i><div class="t sm">12 things could free 41 GB</div></div><span class="btn acc" style="justify-content:center">Free up space...</span></div>
+  <div class="card grow col g8"><div class="row"><div class="ring" style="--p:52;--s:68px"><span>52%</span></div><div class="col g2 grow"><span class="b">Data (D:)</span><span class="sm mut">1.0 TB free</span><span class="xs dim">scanned 2 weeks ago</span></div></div><div class="ib ok"><i data-i="check"></i><div class="t sm">Nothing to do</div></div><span class="btn" style="justify-content:center">Scan again</span></div>
+  <div class="card grow col g8"><div class="b">Next check</div><div class="row g8 sm"><i data-i="cal"></i>Sunday 09:00</div><div class="sep"></div><div class="b">Grew this week</div><div class="sm">Docker +14 GB<br>Steam +28 GB</div><span class="link sm">See history</span></div></div>
+ <div class="card col g4"><span class="b">Recent clean-ups</span><div class="row sm"><i data-i="broom"></i><span class="grow">20.3 GB on Tuesday</span><span class="pill ok">14.2 GB restorable</span><span class="link">Open</span></div></div>
+</div></div></article>
+
+<article class="m" data-tier="4" data-w="900" data-h="540" data-title="Ask Sprawl: the Advisor as a conversation"
+data-ctl="TextBox / AutoSuggestBox as prompt, ItemsRepeater of message cards, inline ListView findings with CheckBox, InfoBar (what is shared), SplitView with the map beside"
+data-problem="Findings are a table to interpret. Many users just want to ask 'why is C: full?' and get an answer with the evidence attached."
+data-trade="AI is optional in Sprawl. With AI off, the same box answers from rules only ('largest', 'caches', 'idle projects'), so it must not promise more than it does.">
+<div class="col grow p16 g12" style="min-width:0">
+ <div class="row"><i data-i="spark" style="color:var(--w-acc)"></i><span class="h3 grow">Ask Sprawl about this scan</span><span class="pill ok"><i data-i="lock"></i>Local model, nothing sent</span></div>
+ <div class="card" style="align-self:flex-end;background:var(--w-sel);max-width:60%">Why is C: nearly full?</div>
+ <div class="card col g8">
+  <span>Three things hold 64 GB of the 434 GB used. Two come back by themselves.</span>
+  <div class="li"><span class="cb"></span><span class="grow">Docker build cache <span class="xs dim">31 GB</span></span><span class="pill ok"><i data-i="check"></i>Low</span></div>
+  <div class="li"><span class="cb"></span><span class="grow">harbor-app\target <span class="xs dim">19 GB, idle 214 days</span></span><span class="pill warn"><i data-i="warn"></i>Medium</span></div>
+  <div class="li"><span class="cb" style="opacity:.4"></span><span class="grow dim">Trip 2024 raw clips <span class="xs">27 GB, yours</span></span><span class="pill n">Information only</span></div>
+  <div class="row g8"><span class="btn sm acc"><i data-i="eye"></i>Review ticked (0)...</span><span class="xs dim">The answer was checked against the scan. I cannot tick or delete anything.</span></div></div>
+ <span class="grow"></span>
+ <div class="asb f"><span style="color:var(--w-fg3)">Ask about a folder, a file type, or what grew...</span><span class="tr-r"><i data-i="play"></i></span></div>
+</div></article>
+
+<article class="m" data-tier="4" data-w="420" data-h="600" data-title="Narrow window and snap layouts"
+data-ctl="NavigationView (PaneDisplayMode=Top or LeftMinimal via AdaptiveTrigger, MinWindowWidth=0), VisualStateManager, TreeView, ProgressBar, bottom CommandBar"
+data-problem="Sprawl is a big-window app, but people snap it to a third of the screen beside Explorer to clean as they browse."
+data-trade="Drops the map below 520 px and shows a ranked list with bars instead. Less to see, but it stays useful and keyboard-first.">
+<div class="col grow">
+ <div class="row p8 g8"><span class="btn sub ico"><i data-i="list"></i></span><b class="grow">Explore</b><span class="pill warn">91%</span><span class="btn sub ico"><i data-i="search"></i></span></div>
+ <div class="col p8 g2" style="border-top:1px solid var(--w-stroke)">
+  <div class="crumb sm p8"><b>C:\</b><i data-i="chev"></i>Users<i data-i="chev"></i>Alex</div>
+  <div class="tvr sel"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">AppData</span><span class="num">74 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:35%"></i></div>
+  <div class="tvr"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Videos</span><span class="num">58 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:27%"></i></div>
+  <div class="tvr"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Projects</span><span class="num">46 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:22%"></i></div>
+  <div class="tvr"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Downloads</span><span class="num">34 GB</span></div>
+  <div class="pb" style="margin:2px 8px 6px"><i style="width:16%"></i></div></div>
+ <span class="grow"></span>
+ <div class="row p8 g4" style="border-top:1px solid var(--w-stroke);justify-content:space-around"><div class="col g2 sm" style="align-items:center"><i data-i="folder"></i>Explore</div><div class="col g2 sm" style="align-items:center"><i data-i="spark"></i>Advisor</div><div class="col g2 sm" style="align-items:center"><i data-i="broom"></i>Cleaners</div><div class="col g2 sm" style="align-items:center"><i data-i="clock"></i>History</div></div>
+</div></article>

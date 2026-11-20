@@ -76,7 +76,7 @@ fn here() -> Option<PathBuf> {
 }
 
 /// A text value of `HKCU\<key>`.
-fn reg_str(key: &str, name: &str) -> Option<String> {
+pub(crate) fn reg_str(key: &str, name: &str) -> Option<String> {
     let mut k = HKEY::default();
     unsafe {
         if RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(key), None, KEY_READ, &mut k) != ERROR_SUCCESS {
@@ -150,7 +150,7 @@ pub fn is_link(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink() || m.file_attributes() & 0x400 != 0)
 }
 
-pub(crate) fn hash_file(file: &mut std::fs::File) -> Result<String, String> {
+pub fn hash_file(file: &mut std::fs::File) -> Result<String, String> {
     use std::io::Read;
     use sha2::{Digest, Sha256};
     let len = file.metadata().map_err(|e| e.to_string())?.len();

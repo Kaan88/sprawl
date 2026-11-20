@@ -1,0 +1,13 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>20 Cleaners grid</title><link rel="stylesheet" href="kit.css"><style>
+.grid{align-content:start;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.cl{padding:14px;display:flex;flex-direction:column;gap:10px}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const C=[['Windows Update cache','E895','g',3.2,1],['Temp files','E74D','g',4.1,1],['Thumbnail cache','E91B','g',0.4,1],['Browser caches','E774','g',2.9,1],['Recycle Bin','E74D','a',3.1,0],['Delivery Optimisation','E896','g',1.2,1],['Windows error reports','E7BA','g',0.6,1],['Old Windows installs','E895','o',8.4,0],['Privacy: recent files','E72E','a',0.1,0]];
+const col={g:'ok',a:'warn',o:'orange'};
+const cards=C.map((c,i)=>`<div class="card cl"><div class="row g12"><span class="tileicon">${K.ic(c[1],'l')}</span><div class="fill"><div class="semi">${c[0]}</div><div class="cap dim row g4"><span class="dot ${c[2]}" style="width:8px;height:8px"></span>${{g:'Safe',a:'Check first',o:'Look first'}[c[2]]}</div></div><span class="tgl ${c[4]?'on':''}"></span></div><div class="row"><span class="h3 num">${c[3].toFixed(1)} GB</span><span class="sp"></span><span class="cap" style="color:var(--acc)">What is this? ${K.ic('E70D','s')}</span></div></div>`).join('');
+const main=`<div class="col fill" style="min-width:0;padding:0 12px 0 0"><div class="row" style="height:64px"><div><div class="h2">Cleaners</div><div class="cap dim2">Windows' own clean-ups, run from here. Nothing is deleted until you press Clean.</div></div><span class="sp"></span><div class="chip on">Windows</div><div class="chip">Privacy</div><div class="chip">Developer</div></div>
+ <div class="ib i" style="margin-bottom:12px">${K.ic('E946')}<span class="m fill">Privacy cleaners are hidden by default. <b>Show privacy cleaners</b> in Options if you want them here.</span>${K.ibtn('E711')}</div>
+ <div class="grid fill">${cards}</div>
+ <div class="acrylic row g12" style="margin:12px 0 12px;padding:10px 14px;border-radius:8px"><span class="cbx on">&#xE73E;</span><span><b>6 cleaners on</b>, about <b class="num">12.4 GB</b></span><span class="sp"></span>${K.btn('Select safe','E762')}${K.btn('Clean 12.4 GB','EA99','acc')}</div></div>`;
+document.getElementById('w').innerHTML=K.tb()+`<div class="row fill" style="align-items:stretch;min-height:0">${K.rail(4)}${main}</div>`+K.status();
+K.init('20-cleaners-grid')</script></body></html>

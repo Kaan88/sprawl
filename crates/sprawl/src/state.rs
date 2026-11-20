@@ -265,7 +265,7 @@ pub(crate) fn timing(what: &str, since: Instant) {
 }
 
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
-    XamlReader::Load(&HSTRING::from(xaml))?.cast()
+    XamlReader::Load(&HSTRING::from(&*crate::theme::themed(xaml)))?.cast()
 }
 
 impl State {

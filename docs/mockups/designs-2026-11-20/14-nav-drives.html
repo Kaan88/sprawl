@@ -1,0 +1,8 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>14 Nav drives</title><link rel="stylesheet" href="kit.css"><style></style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const main=`<div class="col fill" style="min-width:0;padding:0 12px 0 0">
+ <div class="row g16" style="height:72px"><div><div class="h2">C: Windows</div><div class="cap dim2">86.6 GB free of 476 GB, scanned 8.4 s ago</div></div><span class="sp"></span>${K.filter(280)}${K.btn('Rescan','E72C','')}${K.btn('Scan folder...','E8B7','acc')}</div>
+ <div class="row g12" style="margin-bottom:10px"><div class="card pad fill"><div class="lbl">Used</div><div class="h2 num">389.4 GB</div></div><div class="card pad fill"><div class="lbl">Biggest folder</div><div class="h2">Users, 148 GB</div></div><div class="card pad fill"><div class="lbl">Grew in 7 days</div><div class="h2" style="color:var(--orange)">+11.2 GB</div></div><div class="card pad fill"><div class="lbl">Advisor</div><div class="h2" style="color:var(--ok)">46 GB to free</div></div></div>
+ <div class="row g12" style="height:248px;padding-bottom:10px"><div class="card col" style="flex:1.4;min-width:0">${K.tree({sel:3})}</div><div class="card col" style="flex:1;min-width:0">${K.types({})}</div></div>
+ <div class="fill" style="padding-bottom:10px">${K.tm({aspect:3.6,hot:'Docker'})}</div></div>`;
+document.getElementById('w').innerHTML=K.tb()+`<div class="row fill" style="align-items:stretch;min-height:0">${K.navfull(1)}${main}</div>`+K.status();
+K.init('14-nav-drives')</script></body></html>

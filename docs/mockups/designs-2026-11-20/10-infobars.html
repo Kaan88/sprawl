@@ -1,0 +1,10 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>10 InfoBars</title><link rel="stylesheet" href="kit.css"><style></style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const ib=(c,i,t,m,a)=>`<div class="ib ${c}">${K.ic(i)}<div class="fill"><span class="t">${t}</span> <span class="m">${m}</span></div>${a?K.btn(a,'','sm'):''}${K.ibtn('E711','')}</div>`;
+const infos=`<div class="col g4" style="padding:0 12px 8px">
+ ${ib('i','E946','Sprawl 1.0.5 is available.','Adds approve-then-check cleaning and AI setup presets.','Update and restart')}
+ ${ib('w','E7BA','Some folders were skipped.','4 folders need administrator rights, so 6.1 GB may be missing.','Restart as admin')}
+ ${ib('s','E73E','Scan finished.','Advisor found 46.2 GB you can free.','Open Advisor')}</div>`;
+const tip=`<div class="tip up" id="tip"><div class="semi" style="margin-bottom:4px">Advisor found something</div><div class="dim2 cap" style="margin-bottom:12px">16.2 GB is marked safe to delete. Open Advisor to review and tick it.</div><div class="row">${K.btn('Show me','','sm acc')}${K.btn('Later','','sm sub')}</div></div>`;
+document.getElementById('w').innerHTML=K.classic({infos,tabs:'pivot',tabItems:[['Tree View'],['File View'],['Advisor','','9'],['Cleaners'],['Search','E721']],map:'seg',panesH:170,aspect:5})+tip;
+{const w=document.getElementById('w'),t=document.getElementById('tip'),a=w.querySelectorAll('.tab')[2],wr=w.getBoundingClientRect(),ar=a.getBoundingClientRect(),s=wr.width/w.offsetWidth;t.style.left=((ar.left-wr.left)/s)+'px';t.style.top=((ar.bottom-wr.top)/s+10)+'px';t.style.setProperty('--ax',(ar.width/s/2-6)+'px')}
+K.init('10-infobars')</script></body></html>

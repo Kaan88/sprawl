@@ -1,0 +1,19 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>11 Details panel</title><link rel="stylesheet" href="kit.css"><style>
+.kv{display:grid;grid-template-columns:96px 1fr;row-gap:6px;font-size:13px}.kv div:nth-child(odd){color:var(--tx3)}
+.stack{display:flex;height:10px;border-radius:5px;overflow:hidden;gap:1px}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const insp=`<div class="card col g12 pad16" style="width:330px;flex:none;overflow:hidden">
+ <div class="row g12"><span class="tileicon">${K.ic('E8B7','l')}</span><div class="fill"><div class="h3 ell">Docker</div><div class="cap dim ell">C:\\Users\\sam\\AppData\\Local\\Docker</div></div>${K.ibtn('E711')}</div>
+ <div><div class="big-num num">21.6 GB</div><div class="cap dim2">5.5 % of the drive, 1,204 files</div></div>
+ <div style="height:96px">${K.tm({aspect:3.4,only:['Users'],labels:false})}</div>
+ <div><div class="lbl" style="margin-bottom:6px">Made of</div><div class="stack"><i style="flex:70;background:#b58cff"></i><i style="flex:14;background:#6aa9ff"></i><i style="flex:9;background:#f6b042"></i><i style="flex:7;background:#8893a6"></i></div>
+ <div class="cap dim2" style="margin-top:6px">.vhdx 15.1 GB, .dll 3.0 GB, .zip 1.9 GB, other 1.6 GB</div></div>
+ <div class="kv"><div>Modified</div><div>today, 09:12</div><div>Owner</div><div>sam</div><div>Grew</div><div style="color:var(--orange)">+3.4 GB in 7 days</div></div>
+ <div class="ib w" style="min-height:0;padding:8px 10px">${K.ic('E7BA')}<span class="cap">Advisor: takes time to get back.</span></div>
+ <div class="sp"></div>
+ <div class="col g8">${K.btn('Show in Explorer','E838','')}${K.btn('Show on map','E80F','')}${K.btn('Ask Advisor','EA80','acc')}${K.btn('Delete...','E74D','danger')}</div></div>`;
+const left=`<div class="col fill" style="min-width:0"><div class="row g12" style="padding:0 0 6px;min-height:36px">${K.tabs("fill")}<span class="sp"></span>${K.filter(190)}</div>
+ <div class="row g12" style="height:250px;padding-bottom:8px"><div class="card col" style="flex:1.4;min-width:0">${K.tree({sel:5})}</div><div class="card col" style="flex:1;min-width:0">${K.types({})}</div></div>
+ ${K.mapbar('seg').replace('padding:0 12px 8px','padding:0 0 8px')}<div class="fill" style="padding-bottom:0">${K.tm({aspect:3.1,hot:'Docker'})}</div></div>`;
+document.getElementById('w').innerHTML=K.tb()+K.menu+K.hdr()+`<div class="row g12 fill" style="padding:0 12px 8px;align-items:stretch">${left}${insp}</div>`+K.status();
+K.init('11-details-panel')</script></body></html>

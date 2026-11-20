@@ -1,0 +1,152 @@
+<article class="m" data-tier="3" data-w="880" data-h="470" data-title="Free X GB, step 1: choose the target and the comfort level"
+data-ctl="NumberBox (SpinButtonPlacementMode=Inline), Slider (TickPlacement), ToggleButton row for presets, RadioButtons, Button (Accent), ProgressBar"
+data-problem="Most people open a disk tool because they need room for something: a game, an update, a project. Today they must read the whole tree and decide for themselves."
+data-custom="step indicator at the top is an ItemsRepeater of numbered circles (WinUI has no stepper); use a plain TextBlock 'Step 1 of 3' if you want stock-only"
+data-trade="A guided path hides the map. Keep an 'Explore everything instead' link on every step so power users are not trapped.">
+<div class="col grow p24 g16" style="max-width:620px;margin:0 auto">
+ <div class="row g8 sm"><span class="pill info">Step 1 of 3</span><span class="dim">Target</span><span class="dim">&rarr; Plan</span><span class="dim">&rarr; Review</span></div>
+ <div><div class="h1">Free up how much?</div><div class="mut" style="margin-top:4px">C: has <b>42 GB</b> free of 476 GB.</div></div>
+ <div class="row g12"><div class="asb" style="width:130px;color:var(--w-fg);border-bottom:2px solid var(--w-acc)"><b>50</b><span class="dim">GB</span></div><div class="row g4"><span class="btn sm">10</span><span class="btn sm">25</span><span class="btn sm acc">50</span><span class="btn sm">100</span></div><span class="sm mut">Needs 92 GB free in total</span></div>
+ <div class="pb" style="height:6px"><i style="width:30%"></i></div>
+ <div class="col g8"><span class="b">How far should Sprawl look?</span>
+  <div class="card row g12"><span class="rd on"></span><div class="grow"><div class="b">Only what comes back by itself</div><div class="sm mut">Caches, temp files, build outputs. Typically 18 to 40 GB.</div></div><span class="pill ok">Safest</span></div>
+  <div class="card row g12"><span class="rd"></span><div class="grow"><div class="b">Also things I can download again</div><div class="sm mut">Installers, game files, old projects.</div></div></div>
+  <div class="card row g12"><span class="rd"></span><div class="grow"><div class="b">Include my own files, and I will choose</div><div class="sm mut">Big files nothing has touched for a year. Nothing is picked for you.</div></div></div></div>
+ <div class="row g12"><span class="btn acc">Find 50 GB<i data-i="chev"></i></span><span class="link">Explore everything instead</span></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="880" data-h="500" data-title="Free X GB, step 2: a plan you can edit"
+data-ctl="ListView with CheckBox, Expander, ProgressRing (determinate) beside a summary, InfoBar, Button (Accent) leading to the existing review ContentDialog"
+data-problem="A plan built from findings can silently reach the target by picking risky items. Users need to see what each step costs in safety."
+data-trade="The plan is only a pre-ticked selection, and the existing review still follows. That is one more click, and it is the point: this flow never deletes by itself.">
+<div class="col grow p24 g12">
+ <div class="row g8 sm"><span class="pill info">Step 2 of 3</span><span class="dim">Target &rarr; Plan &rarr; Review</span></div>
+ <div class="row g16"><div class="ring" style="--p:76;--s:84px"><span>38 GB</span></div><div class="col g2 grow"><div class="h2">A plan for 50 GB</div><div class="mut">The safest items reach 38 GB. The last 12 GB need your OK on 2 items.</div></div></div>
+ <div class="li h">Safe, comes back by itself (38 GB)</div>
+ <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">Docker build cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm" style="width:60px;text-align:right">31 GB</span></div>
+ <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">Windows temp, npm cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="sm" style="width:60px;text-align:right">7 GB</span></div>
+ <div class="li h">Needs your OK (12 GB)</div>
+ <div class="li"><span class="cb"></span><span class="grow">harbor-app\target, idle 214 days</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="sm" style="width:60px;text-align:right">19 GB</span></div>
+ <div class="li"><span class="cb"></span><span class="grow">Old installers (6 files)</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="sm" style="width:60px;text-align:right">14 GB</span></div>
+ <div class="ib info"><i data-i="info"></i><div class="t sm">Ticking both reaches 52 GB. Installers go to the Recycle Bin, so their 14 GB is free only after you empty it.</div></div>
+ <div class="row g12"><span class="btn">Back</span><span class="btn acc"><i data-i="eye"></i>Review this plan...</span></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="900" data-h="470" data-title="Scheduled check with a toast"
+data-ctl="ToggleSwitch, CalendarDatePicker / ComboBox for weekday, TimePicker, Slider, InfoBar; notification via AppNotificationBuilder (Windows App SDK); schedule via Windows Task Scheduler running sprawl.exe --check"
+data-problem="Disks fill quietly. People only look after Windows complains."
+data-custom="background run is a Task Scheduler entry (WinUI has no scheduler); the toast is a Windows notification, not a WinUI control"
+data-trade="A scheduled scan costs disk reads on a machine the user is not watching. Offer a low-priority mode, and keep the toast a pure notice: it opens Sprawl and never cleans.">
+<div class="row grow p24 g24" style="gap:24px;align-items:flex-start">
+ <div class="col g12 grow">
+  <div class="h2">Weekly check</div>
+  <div class="card row"><div class="grow"><div class="b">Check my drives on a schedule</div><div class="sm mut">Scans in the background at low priority. It never deletes.</div></div><span class="tg on"></span></div>
+  <div class="card row g12 wrapf"><span class="grow">Every</span><span class="btn">Sunday <i data-i="down"></i></span><span>at</span><span class="btn">09:00 <i data-i="down"></i></span></div>
+  <div class="card col g8"><span class="b">Tell me when</span>
+   <div class="row g8"><span class="cb on"><i data-i="check"></i></span>Free space is under <span class="btn sm">15% <i data-i="down"></i></span></div>
+   <div class="row g8"><span class="cb on"><i data-i="check"></i></span>A folder grows by more than <span class="btn sm">10 GB <i data-i="down"></i></span></div>
+   <div class="row g8"><span class="cb"></span>I have not cleaned in 90 days</div></div>
+  <div class="ib info"><i data-i="lock"></i><div class="t sm">The check only reads. It never changes files, and nothing leaves this PC.</div></div></div>
+ <div class="col g8" style="width:330px"><div class="sm dim">Preview of the notification</div>
+  <div class="card col g8" style="box-shadow:var(--w-shadow)">
+   <div class="row g8 xs dim"><i data-i="disk"></i>Sprawl<span class="tr-r">Sunday 09:00</span></div>
+   <div class="b">C: is 91% full</div><div class="sm mut">3 folders grew by 22 GB this week. Docker grew the most (+14 GB).</div>
+   <div class="row g8"><span class="btn sm acc" style="flex:1;justify-content:center">Open Sprawl</span><span class="btn sm" style="flex:1;justify-content:center">Remind me later</span></div></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="940" data-h="520" data-title="Compare two scans"
+data-ctl="ComboBox x2 (scan A, scan B), ListView with delta bars, SelectorBar (List / Map), InfoBar; delta map is a treemap drawn in Win2D or the existing treemap"
+data-problem="History shows totals over time, but not where the growth came from between two moments."
+data-custom="the delta treemap is the existing treemap renderer with a diverging colour scale (grew / shrank)"
+data-trade="Needs two saved scans of the same root, so the history store must keep tree detail, not only totals. It is the reason delta snapshots matter.">
+<div class="col grow">
+ <div class="row p12 g12 wrapf"><span class="h2">Compare</span><span class="btn">12 Nov 14:02 <i data-i="down"></i></span><i data-i="compare"></i><span class="btn">19 Nov 14:02 <i data-i="down"></i></span><span class="grow"></span><span class="pill warn"><i data-i="warn"></i>+22.4 GB used</span><div class="selbar"><div class="sbi sel">List</div><div class="sbi">Map</div></div></div>
+ <div class="row grow g16 p12" style="align-items:stretch;min-height:0;border-top:1px solid var(--w-stroke)">
+  <div class="col g2 grow">
+   <div class="gridr li h" style="grid-template-columns:1fr 150px 80px"><span>Folder</span><span>Change</span><span class="num">Delta</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">AppData\Docker</span><span class="row g4"><span class="pb warn"><i style="width:90%"></i></span></span><span class="num b" style="color:var(--w-warn)">+14.0 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">Projects\harbor-app\target</span><span class="pb warn"><i style="width:45%"></i></span><span class="num b" style="color:var(--w-warn)">+6.3 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">Downloads</span><span class="pb warn"><i style="width:18%"></i></span><span class="num b" style="color:var(--w-warn)">+2.8 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">Windows\SoftwareDistribution</span><span class="pb ok"><i style="width:30%"></i></span><span class="num b" style="color:var(--w-ok)">-4.1 GB</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 150px 80px"><span class="ellip">AppData\Temp</span><span class="pb ok"><i style="width:22%"></i></span><span class="num b" style="color:var(--w-ok)">-3.0 GB</span></div>
+   <div class="sm dim p8">Direction is shown by sign and word as well as colour: grew (+) or shrank (-).</div></div>
+  <div class="tm" data-w="340" data-h="360" data-root="u" data-mode="top" data-hi="AppData"></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="880" data-h="500" data-title="Clean-up timeline and undo centre"
+data-ctl="SelectorBar (All / Can restore / Permanent), ListView with group headers by day, Expander per clean-up, Button (Restore), InfoBar"
+data-problem="After a clean-up the only record is a one-line result. If something is missed later, users cannot see what went where or what can still come back."
+data-trade="Needs a persisted log of every clean-up (paths, sizes, method). The log must never claim an undo that is not real: permanent items say so and have no button.">
+<div class="col grow">
+ <div class="row p12 g12"><span class="h2">Clean-up history</span><span class="grow"></span><div class="selbar"><div class="sbi sel">All</div><div class="sbi">Can restore</div><div class="sbi">Permanent</div></div></div>
+ <div class="col p12 g8" style="border-top:1px solid var(--w-stroke);min-height:0">
+  <div class="li h">Today</div>
+  <div class="exp"><div class="eh"><i data-i="broom"></i><div class="grow"><div class="b">Cleaned 20.3 GB at 14:31</div><div class="xs dim">Advisor, 8 items</div></div><span class="pill ok">14.2 GB in Recycle Bin</span><i data-i="down"></i></div>
+   <div class="eb col g4 sm">
+    <div class="row g8"><i data-i="trash"></i><span class="grow">Old installers, 6 files, 14.2 GB</span><span class="pill n">In the Recycle Bin</span><span class="btn sm"><i data-i="undo"></i>Restore</span></div>
+    <div class="row g8"><i data-i="lock"></i><span class="grow">Windows temp files, 3.9 GB</span><span class="pill err"><i data-i="lock"></i>Deleted for good</span><span class="btn sm" style="visibility:hidden">Restore</span></div>
+    <div class="row g8"><i data-i="zip"></i><span class="grow">Projects\old-site compressed, saved 3.0 GB</span><span class="pill info">Reversible</span><span class="btn sm"><i data-i="undo"></i>Decompress</span></div></div></div>
+  <div class="li h">Yesterday</div>
+  <div class="exp"><div class="eh"><i data-i="link"></i><div class="grow"><div class="b">Hard-linked 2 duplicate sets, saved 4.4 GB</div><div class="xs dim">Duplicates</div></div><span class="btn sm"><i data-i="undo"></i>Make real copies</span><i data-i="chev"></i></div></div>
+  <div class="ib info"><i data-i="info"></i><div class="t sm">Restore reads the Recycle Bin. If you emptied it in Explorer, the entry says so and the button goes away.</div></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="460" data-h="560" tb="none" data-tb="none" data-title="Quick clean from the tray"
+data-ctl="Secondary WinUI Window (SystemBackdrop = Acrylic, no title bar, positioned above the taskbar), ListView with CheckBox, ProgressRing; tray icon through Shell_NotifyIcon (no stock WinUI control)"
+data-problem="Sprawl has no light entry point. To clear a cache you launch the app, wait for a scan, and open the Advisor."
+data-custom="tray icon and flyout positioning use Win32 (Shell_NotifyIcon, GetCursorPos); WinUI draws only the flyout window"
+data-trade="Needs a resident process, which a cleaning tool should be careful about. Keep it opt-in, and quick clean lists only low-risk caches; it never ticks anything on its own.">
+<div class="col grow" style="justify-content:flex-end;background:linear-gradient(160deg,var(--c1),var(--c4));padding:12px">
+ <div class="card col g12" style="box-shadow:var(--w-shadow)">
+  <div class="row g12"><div class="ring" style="--p:91;--s:56px"><span class="sm">91%</span></div><div class="col g2 grow"><div class="b">C: is almost full</div><div class="sm mut">42 GB free of 476 GB</div></div><span class="btn sm sub ico"><i data-i="gear"></i></span></div>
+  <div class="sep"></div>
+  <div class="sm b">Safe to clear now: 6.4 GB</div>
+  <div class="li"><span class="cb"></span><span class="grow">Windows temp</span><span class="sm">3.9 GB</span></div>
+  <div class="li"><span class="cb"></span><span class="grow">npm cache</span><span class="sm">2.2 GB</span></div>
+  <div class="li"><span class="cb"></span><span class="grow">Thumbnail cache</span><span class="sm">310 MB</span></div>
+  <div class="xs dim">Nothing is ticked. Review shows exactly what goes and how.</div>
+  <div class="row g8"><span class="btn acc grow" style="justify-content:center"><i data-i="eye"></i>Review...</span><span class="btn grow" style="justify-content:center">Open Sprawl</span></div></div>
+ <div class="row g12 p8 xs" style="background:var(--w-card);margin:8px -12px -12px;padding:8px 14px"><i data-i="app"></i><span class="grow">Taskbar</span><i data-i="disk"></i><span>14:42</span></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="860" data-h="520" data-title="Explorer context menu and a mini result window"
+data-ctl="Windows 11 modern context menu via IExplorerCommand in a sparse MSIX package; small WinUI Window with ListView, InfoBar, Button; no stock WinUI control draws Explorer's own menu"
+data-problem="A user in Explorer wonders why one folder is huge. Today they must start Sprawl and scan to the right place."
+data-custom="Explorer's menu is shell UI. WinUI only draws the result window; the CHANGELOG notes the app already has Windows-menu commands"
+data-trade="Shell extensions run inside Explorer, so a crash there is felt system-wide. Keep the entry a thin launcher that starts Sprawl with a path.">
+<div class="row grow g16 p16" style="align-items:flex-start;background:linear-gradient(135deg,var(--c1),var(--c2))">
+ <div class="card col g2" style="width:250px;padding:6px;box-shadow:var(--w-shadow)">
+  <div class="li sm"><i data-i="folder"></i>Open</div><div class="li sm"><i data-i="plus"></i>Open in new tab</div><div class="sep"></div>
+  <div class="li sm sel" style="outline:2px solid var(--w-acc);outline-offset:-2px"><i data-i="disk" style="color:var(--w-acc)"></i>What is using space here?</div>
+  <div class="li sm"><i data-i="copy"></i>Copy as path</div><div class="li sm"><i data-i="trash"></i>Delete</div></div>
+ <div class="col grow g8" style="min-width:0">
+  <div class="card col g8" style="box-shadow:var(--w-shadow)">
+   <div class="row"><i data-i="disk"></i><span class="b grow">harbor-app</span><span class="sm dim">scanned in 0.8 s</span><span class="btn sm sub ico"><i data-i="close"></i></span></div>
+   <div class="mono dim">C:\Users\Alex\Projects\harbor-app</div><div class="h1">46 GB</div>
+   <div class="gridr li" style="grid-template-columns:1fr 60px 90px"><span>target</span><span class="num">19 GB</span><span class="pill warn">Rebuildable</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 60px 90px"><span>node_modules</span><span class="num">12 GB</span><span class="pill ok">Reinstallable</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 60px 90px"><span>src</span><span class="num">15 GB</span><span class="pill n">Yours</span></div>
+   <div class="row g8"><span class="btn sm acc">Open in Sprawl</span><span class="btn sm">Review the rebuildable parts...</span></div></div></div>
+</div></article>
+
+<article class="m" data-tier="3" data-w="940" data-h="480" data-title="History with annotated events"
+data-ctl="Page with SelectorBar (30 days, 90 days, 1 year), chart drawn in Win2D CanvasControl or LiveCharts2 for WinUI, ListView with inline sparklines, TeachingTip for event details"
+data-problem="The growth chart is a line with no explanation. Users see a cliff but not that it was their own clean-up, or a spike but not the installer behind it."
+data-custom="the chart and event markers are drawn with Win2D; WinUI has no chart control"
+data-trade="Event markers need the clean-up log (see the undo centre). Without it, show only the line and the fastest-growing folders.">
+<div class="col grow p16 g12">
+ <div class="row"><span class="h2 grow">C: over 90 days</span><div class="selbar"><div class="sbi">30 days</div><div class="sbi sel">90 days</div><div class="sbi">1 year</div></div></div>
+ <div class="row g16 grow" style="align-items:stretch;min-height:0">
+  <div class="card grow" style="padding:8px">
+   <svg viewBox="0 0 560 280" width="100%" height="100%" role="img" aria-label="Used space on C over 90 days, rising from 380 GB to 434 GB with two drops after clean-ups">
+    <g stroke="var(--w-stroke)" stroke-width="1"><path d="M40 40H540M40 100H540M40 160H540M40 220H540"/></g>
+    <g fill="var(--w-fg3)" font-size="11"><text x="4" y="44">450</text><text x="4" y="104">420</text><text x="4" y="164">390</text><text x="4" y="224">360 GB</text><text x="40" y="250">Aug 21</text><text x="280" y="250">Oct 5</text><text x="490" y="250">Nov 19</text></g>
+    <path d="M40 200L120 188L190 176L250 150L270 112L330 104L380 86L400 130L450 112L500 70L540 62V220H40Z" fill="var(--w-acc)" opacity=".15"/>
+    <path d="M40 200L120 188L190 176L250 150L270 112L330 104L380 86L400 130L450 112L500 70L540 62" fill="none" stroke="var(--w-acc)" stroke-width="2.2"/>
+    <circle cx="540" cy="62" r="4" fill="var(--w-acc)"/>
+    <g font-size="11" fill="var(--w-fg)"><circle cx="400" cy="130" r="5" fill="var(--w-ok)"/><text x="330" y="156">Clean-up: -22 GB</text><circle cx="250" cy="150" r="5" fill="var(--w-warn)"/><text x="130" y="140">Game installed +28 GB</text></g></svg></div>
+  <div class="col g2" style="width:270px"><div class="b sm" style="padding:6px 12px">Grew the most</div>
+   <div class="li"><span class="grow ellip">AppData\Docker</span><svg width="56" height="18" viewBox="0 0 56 18"><path d="M1 16L14 14L26 12L38 7L55 2" fill="none" stroke="var(--w-acc)" stroke-width="1.6"/></svg><span class="sm b" style="color:var(--w-warn)">+14 GB</span></div>
+   <div class="li"><span class="grow ellip">Steam\Cyberdyne</span><svg width="56" height="18" viewBox="0 0 56 18"><path d="M1 16H24L26 4H55" fill="none" stroke="var(--w-acc)" stroke-width="1.6"/></svg><span class="sm b" style="color:var(--w-warn)">+28 GB</span></div>
+   <div class="li"><span class="grow ellip">Downloads</span><svg width="56" height="18" viewBox="0 0 56 18"><path d="M1 10L20 8L30 12L55 11" fill="none" stroke="var(--w-acc)" stroke-width="1.6"/></svg><span class="sm b">+2.8 GB</span></div></div></div>
+</div></article>

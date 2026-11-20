@@ -688,7 +688,10 @@ fn hud() -> String {
 pub fn page(drives: &[String]) -> String {
     let num = crate::look::NUM;
     use crate::look::{pick, pick_drop, Pick};
-    let (tab_on, tab_off) = (pick(Pick::Tab, true), pick(Pick::Tab, false));
+    let (tab_on, tab_off) = (pick(Pick::Page, true), pick(Pick::Page, false));
+    // a small count beside a tab's name, hidden while there is nothing to count
+    let badge = |name: &str| format!(r##"<Border x:Name="{name}" Visibility="Collapsed" Padding="6,0,6,1" MinWidth="20" CornerRadius="9" Background="#334CC2FF" VerticalAlignment="Center"><TextBlock x:Name="{name}Text" Text="" FontSize="11" HorizontalAlignment="Center" Foreground="#FFD5DBE8"/></Border>"##);
+    let (adv_badge, cl_badge) = (badge("TabAdvisorCount"), badge("TabCleanersCount"));
     // the activity indicator: the selectable look on its own blue
     let busy_style = r##"Style="{StaticResource SprawlPick}" Background="#332F6BFF""##;
     let (mode_on, mode_off, drop_off) = (pick(Pick::Mode, true), pick(Pick::Mode, false), pick_drop(Pick::Mode, false));
@@ -944,12 +947,12 @@ pub fn page(drives: &[String]) -> String {
   </Button>
   <TextBox x:Name="FilterBox" HorizontalAlignment="Right" Width="340" Height="32" PlaceholderText="Filter: *.mp4;  node_modules;  *\cache\*" FontSize="12"/>
   <StackPanel Orientation="Horizontal" Spacing="4">
-    <Button x:Name="TabTree" Content="Tree View" {tab_on} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabFiles" Content="File View" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number2" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabAdvisor" Content="Advisor" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number3" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabCleaners" Content="Cleaners" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number5" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-    <Button x:Name="TabSearch" {tab_off} Padding="14,4" FontSize="14"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE721;" FontSize="12"/><TextBlock Text="Search"/></StackPanel></Button>
-    <Button x:Name="TabAbout" Visibility="Collapsed" Content="About" {tab_off} Padding="14,4" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabTree" Content="Tree View" {tab_on} Padding="14,4,14,7" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabFiles" Content="File View" {tab_off} Padding="14,4,14,7" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number2" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabAdvisor" {tab_off} Padding="14,4,14,7" FontSize="14"><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Advisor"/>{adv_badge}</StackPanel><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number3" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabCleaners" {tab_off} Padding="14,4,14,7" FontSize="14"><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Cleaners"/>{cl_badge}</StackPanel><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number5" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+    <Button x:Name="TabSearch" {tab_off} Padding="14,4,14,7" FontSize="14"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE721;" FontSize="12"/><TextBlock Text="Search"/></StackPanel></Button>
+    <Button x:Name="TabAbout" Visibility="Collapsed" Content="About" {tab_off} Padding="14,4,14,7" FontSize="14"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
   </StackPanel>
   </Grid>
 

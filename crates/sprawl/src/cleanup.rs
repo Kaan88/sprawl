@@ -156,12 +156,16 @@ pub(crate) struct Running {
     rescans: Vec<(PathBuf, Option<Tree>)>,
     /// Ticked items that didn't pass the checks again, and why.
     held: Vec<String>,
-    /// When Stop was pressed: an item that doesn't come back (a network drive that stopped
-    /// answering) isn't waited for past [`STOP_WAIT`].
+    /// When Stop was pressed: past [`STOP_WAIT`] the item in hand says it is finishing.
     pub stop_at: Option<Instant>,
+    /// That was said.
+    told_wait: bool,
 }
 
-/// How long Stop waits for the item in hand before the run is ended without it.
+/// How long Stop waits for the item in hand before saying it can't be stopped part way. The
+/// run is never ended while its worker still acts: its result (what was freed, a compress to
+/// record, the rescan) would be lost, and the guards that read `running` would stop guarding
+/// (Fable 1.0.4-1.0.5 P2-1). "Close anyway" stays the way out.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Default)]
@@ -477,6 +481,29 @@ pub(crate) fn goes_to_bin(f: &Finding, on: bool) -> bool {
     on && f.risk >= Risk::Orange && !f.privacy() && !f.links() && !matches!(clean::action(f), Some((Action::Tool { .. }, _)))
 }
 
+/// Whether "Tick enough for N GB" may pick `f`: not what can't be undone, nor git's removals.
+pub(crate) fn goal_may_pick(f: &Finding) -> bool {
+    !crate::advisor::gone_for_good(f) && !matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::devgit::WORKTREE || id == sprawl_advisor::devgit::CLONE)
+}
+
+/// The built-in rule that empties the Recycle Bin.
+pub(crate) const EMPTY_BIN: &str = "win.recycle-bin";
+
+/// When a run sends anything to the Recycle Bin, emptying the bin goes first: after, it would
+/// erase for good what the run just sent there (Fable 1.0.4-1.0.5 P1-1). `key`: whether an
+/// item empties the bin, and whether it goes to the bin.
+pub(crate) fn empty_bin_first<A, B>(work: &mut Vec<A>, items: &mut Vec<B>, key: impl Fn(&B) -> (bool, bool)) {
+    if !items.iter().any(|i| key(i).1) {
+        return;
+    }
+    if let Some(k) = items.iter().position(|i| key(i).0).filter(|&k| k > 0 && k < work.len()) {
+        let w = work.remove(k);
+        work.insert(0, w);
+        let it = items.remove(k);
+        items.insert(0, it);
+    }
+}
+
 /// Whether `f` may be in a sum of space, a tick Sprawl makes, the usual set or a suggestion:
 /// never a privacy part. The report keeps those apart already; this holds every such place to it.
 pub(crate) fn counts_as_space(f: &Finding) -> bool {
@@ -739,7 +766,9 @@ impl State {
     /// Tick enough for `need` bytes: the plan's choice (green first, then amber).
     pub(crate) fn cleanup_select_enough(&mut self, need: u64) -> Option<u64> {
         let r = self.advice()?;
-        let allowed: Vec<bool> = r.findings.iter().zip(&r.counted).map(|(f, &c)| c && !r.quiet.contains(&key(&f.path))).collect();
+        // never what can't be undone (emptying the bin, Windows.old) or git's removals: the user
+        // ticks those by hand (Fable 1.0.4-1.0.5 P2-5)
+        let allowed: Vec<bool> = r.findings.iter().zip(&r.counted).map(|(f, &c)| c && !r.quiet.contains(&key(&f.path)) && goal_may_pick(f)).collect();
         let plan = sprawl_advisor::plan::plan(&r.findings, &allowed, need);
         let ticked: HashSet<String> = plan.picked.iter().filter(|&&i| !sprawl_advisor::remedies::compresses(&r.findings[i]) && !sprawl_advisor::remedies::shrinks(&r.findings[i]) && counts_as_space(&r.findings[i]) && untickable(&r.findings[i], r.counted[i]).is_none() && held_in_app(&r.findings[i]).is_none()).map(|&i| key(&r.findings[i].path)).collect();
         let bytes = r.findings.iter().filter(|f| ticked.contains(&key(&f.path))).map(|f| f.bytes).sum();
@@ -758,6 +787,11 @@ impl State {
             self.render_advisor();
             return;
         }
+        // approved rules since the review: the findings may be classed differently now
+        if self.owed_before_cleaning() {
+            self.advisor.cleanup.review = false;
+            return;
+        }
         // checked against the whole scan, not a filtered view of it
         let Some(t) = self.active_tree() else { return };
         let picked = self.ticked_findings();
@@ -769,6 +803,19 @@ impl State {
             self.adv_say("Tick \"I understand what each of these removes\" first, or untick the privacy items.");
             return;
         }
+        // the Keep list must be known: not read, nothing is cleaned; and what is on disk now
+        // counts too (another Sprawl window may have kept something since)
+        if let Some(e) = self.advisor.memory_error.clone() {
+            self.adv_say(&format!("Nothing was cleaned. {}", crate::advisor::memory_unreadable(&e)));
+            return;
+        }
+        let kept_on_disk = match sprawl_advisor::memory::Memory::load_checked() {
+            Ok(m) => m.kept_paths(),
+            Err(e) => {
+                self.adv_say(&format!("Nothing was cleaned: your Keep list couldn't be read just now ({e}). Try again."));
+                return;
+            }
+        };
         let needs_ok = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         if needs_ok && !self.advisor.cleanup.own_ok {
             self.adv_say("Tick \"These are my own files and I want them gone\" first, or untick your own files.");
@@ -784,7 +831,8 @@ impl State {
         }
         let never = sprawl_advisor::safety::Never::default_list();
         // what the run leaves: anything new since the scan began, and what the user keeps
-        let spare = self.spare();
+        let mut spare = self.spare();
+        spare.keep.extend(kept_on_disk);
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let bin_on = self.recycle_on();
@@ -847,6 +895,7 @@ impl State {
                 fate: outcome(&f, bin_on),
             });
         }
+        empty_bin_first(&mut work, &mut items, |i: &Item| (i.rule.as_deref() == Some(EMPTY_BIN), i.recycle));
         if items.is_empty() {
             if held.is_empty() {
                 self.adv_say("Nothing was cleaned: the items no longer pass the safety checks. Scan again.");
@@ -915,7 +964,7 @@ impl State {
         c.review = false;
         c.single = None;
         c.done = None;
-        c.running = Some(Running { items, rx, stop, rescans: Vec::new(), held, stop_at: None });
+        c.running = Some(Running { items, rx, stop, rescans: Vec::new(), held, stop_at: None, told_wait: false });
         self.advisor_redraw();
     }
 
@@ -1025,18 +1074,18 @@ impl State {
                 Msg::End => ended = true,
             }
         }
-        // Stop pressed and the item in hand still not back: Windows may be waiting on a network
-        // drive that stopped answering. The run ends here; that item may still finish later,
-        // and nothing after it starts (the thread sees Stop)
-        if !ended && run.stop_at.is_some_and(|t| t.elapsed() >= STOP_WAIT) {
-            for it in &mut run.items {
+        // Stop pressed and the item in hand still not back (a big file being compressed, a
+        // rescan of a large folder, a slow drive): nothing after it starts, and the run ends
+        // when it does
+        if !ended && !run.told_wait && run.stop_at.is_some_and(|t| t.elapsed() >= STOP_WAIT) {
+            run.told_wait = true;
+            for (i, it) in run.items.iter().enumerate() {
                 if matches!(it.state, ItemState::Running(_)) {
-                    let mut o = Outcome { stopped: true, ..Outcome::default() };
-                    o.problems.push("Stop didn't come back from Windows in time (a network drive that stopped answering?). Sprawl stopped waiting; this item may still finish on its own. Scan again to see what is left".into());
-                    it.state = ItemState::Done(o);
+                    if let Some(p) = &self.advisor.foot {
+                        crate::state::text(p, &format!("AdvCS{i}"), "Finishing this item: Windows can't stop it part way. Nothing after it starts.");
+                    }
                 }
             }
-            ended = true;
         }
         if ended {
             self.cleanup_finish();
@@ -1046,6 +1095,13 @@ impl State {
     }
 
     fn cleanup_finish(&mut self) {
+        if std::mem::take(&mut self.advisor.close_after_cleanup) {
+            // "Stop and close": the run is recorded as usual (what was freed, a compress to
+            // undo later), memory saved, then Sprawl closes
+            self.cleanup_finish();
+            self.save_memory();
+            return self.exit_now();
+        }
         let Some(run) = self.advisor.cleanup.running.take() else { return };
         log_run(&run.items, &run.held, run.stop.load(Ordering::Relaxed));
         let mut done = Done { problems: run.held.clone(), stopped: run.stop.load(Ordering::Relaxed), ..Done::default() };
@@ -1892,6 +1948,23 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
 mod admin_tests {
     use super::*;
     use sprawl_advisor::finding::Source;
+
+    #[test]
+    fn emptying_the_bin_goes_before_anything_sent_to_it() {
+        // (name, empties the bin, goes to the bin)
+        let run = |list: &[(&'static str, bool, bool)]| {
+            let mut work: Vec<&str> = list.iter().map(|x| x.0).collect();
+            let mut items = list.to_vec();
+            empty_bin_first(&mut work, &mut items, |i| (i.1, i.2));
+            assert_eq!(work, items.iter().map(|x| x.0).collect::<Vec<_>>());
+            work
+        };
+        assert_eq!(run(&[("own", false, true), ("cache", false, false), ("bin", true, false)]), ["bin", "own", "cache"]);
+        // nothing sent to the bin: the order stays
+        assert_eq!(run(&[("cache", false, false), ("bin", true, false)]), ["cache", "bin"]);
+        assert_eq!(run(&[("bin", true, false), ("own", false, true)]), ["bin", "own"]);
+        assert_eq!(run(&[("own", false, true)]), ["own"]);
+    }
 
     /// A privacy part as the engine makes one (cookies of a Chrome profile).
     fn privacy_finding(risk: Risk) -> Finding {

@@ -1,0 +1,33 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sprawl design mockups, 2026-11-20</title>
+<style>
+:root{--bg:#0e0f12;--card:#17181d;--line:#ffffff1f;--tx:#eceef3;--dim:#9aa1b0;--acc:#60cdff}
+:root[data-theme=light]{--bg:#e6e8ee;--card:#fff;--line:#0000001f;--tx:#1a1a1a;--dim:#5b6070;--acc:#0067c0}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+header{padding:32px 32px 8px;max-width:1500px;margin:0 auto}
+h1{font-size:30px;margin:0 0 6px}p.lead{color:var(--dim);max-width:900px;margin:0 0 12px}
+.bar{display:flex;gap:10px;align-items:center;margin:14px 0 0}
+button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 14px;cursor:pointer}
+h2{max-width:1500px;margin:34px auto 4px;padding:0 32px;font-size:20px}h2 small{font-weight:400;color:var(--dim);font-size:14px;margin-left:8px}
+.grid{max-width:1500px;margin:0 auto;padding:12px 32px;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px}
+a.c{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;color:inherit;text-decoration:none;transition:transform .12s,border-color .12s}
+a.c:hover{transform:translateY(-2px);border-color:var(--acc)}
+.th{width:100%;aspect-ratio:1360/800;position:relative;overflow:hidden;background:#000;border-bottom:1px solid var(--line)}
+.th iframe{position:absolute;left:0;top:0;width:1360px;height:800px;border:0;transform-origin:0 0;pointer-events:none}
+.tx{padding:12px 16px 16px}.tx b{display:block;font-size:16px}.tx span{color:var(--dim);font-size:13.5px}.tx i{font-style:normal;color:var(--acc);font-size:12px;margin-right:6px}
+footer{max-width:1500px;margin:30px auto;padding:0 32px 40px;color:var(--dim);font-size:13px}
+</style></head><body>
+<header><h1>Sprawl main window: design alternatives</h1>
+<p class="lead">22 WinUI 3 / Fluent 2 mockups of the main window, from slight tweaks to a new layout. All are HTML with realistic data (C: D: E:, a folder tree, file types, a treemap, Advisor findings). Each has a dark and a light version; use the toggle. Notes on each page say what changed and why it helps.</p>
+<div class="bar"><button id="t">Light / dark</button><span style="color:var(--dim)">Applies to the thumbnails and to every page you open from here.</span></div></header>
+<div id="g"></div>
+<footer>Fluent look: Mica backgrounds, 4/8 px radii, Segoe UI Variable, Segoe Fluent Icons (shown on Windows). Treemap and numbers are sample data. Made 2026-11-20; nothing here touches the app.</footer>
+<script src="kit.js"></script><script>
+const G={A:['Slight adjustments','colours, contrast, spacing, tabs, buttons, rows'],B:['Small redesigns','moving pieces: CommandBar, split button, title-bar search, InfoBars, inspector, overlays'],C:['Bigger redesigns','NavigationView, new layouts, home page, Advisor, Cleaners, Search, Scanning']};
+let theme=null;const tq=()=>theme?'&theme='+theme:'';
+function render(){const g=document.getElementById('g');g.innerHTML=Object.keys(G).map(k=>`<h2>${G[k][0]}<small>${G[k][1]}</small></h2><div class="grid">`+PAGES.filter(p=>p[0]===k).map(p=>`<a class="c" href="${p[1]}.html?x=1${tq()}"><div class="th"><iframe tabindex="-1" src="${p[1]}.html?thumb${tq()}"></iframe></div><div class="tx"><b><i>${p[1].slice(0,2)}</i>${p[2]}</b><span>${p[3]}</span></div></a>`).join('')+'</div>').join('');
+ requestAnimationFrame(fit)}
+function fit(){document.querySelectorAll('.th').forEach(t=>{t.querySelector('iframe').style.transform='scale('+(t.clientWidth/1360)+')'})}
+addEventListener('resize',fit);
+document.getElementById('t').onclick=()=>{theme=(theme||'dark')==='dark'?'light':'dark';document.documentElement.dataset.theme=theme;render()};
+render();
+</script></body></html>

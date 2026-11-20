@@ -1,7 +1,9 @@
 ; Sprawl's installer, built with Inno Setup 7 by `sprawl-release build`:
 ;   ISCC /DAppVersion=<x.y.z> /DSourceDir=<folder with sprawl.exe> /O<out> sprawl.iss
-; Per user, no administrator rights. Updates after that come from Sprawl itself (signed, swapped
-; in place); this installer is for the first install and for reinstalling.
+; For all users, in Program Files: only administrators can change Sprawl's files there, so an
+; elevated Sprawl can't be changed by other programs running as the user (until 1.0.4 Sprawl
+; installed per user, in %LOCALAPPDATA%\Programs). Updates run this Setup silently, after Sprawl
+; has checked it against the release's signed manifest; the copy it starts runs as the user.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z
@@ -20,11 +22,13 @@ AppPublisherURL=https://github.com/Kaan88/sprawl
 AppSupportURL=https://github.com/Kaan88/sprawl/issues
 AppUpdatesURL=https://github.com/Kaan88/sprawl/releases
 VersionInfoVersion={#AppVersion}
-DefaultDirName={localappdata}\Programs\Sprawl
+DefaultDirName={autopf}\Sprawl
+; always Program Files: a per-user folder from before must not be picked up again
+UsePreviousAppDir=no
+DisableDirPage=yes
 DefaultGroupName=Sprawl
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=Sprawl-Setup-{#AppVersion}
@@ -43,8 +47,8 @@ Source: "{#SourceDir}\sprawl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\Microsoft.WindowsAppRuntime.Bootstrap.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{userprograms}\Sprawl"; Filename: "{app}\sprawl.exe"; Comment: "Disk space analyser"
-Name: "{userdesktop}\Sprawl"; Filename: "{app}\sprawl.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Sprawl"; Filename: "{app}\sprawl.exe"; Comment: "Disk space analyser"
+Name: "{autodesktop}\Sprawl"; Filename: "{app}\sprawl.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
@@ -71,12 +75,20 @@ Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.d
 Type: dirifempty; Name: "{app}\.sprawl-update"; Check: CanCleanStage
 
 [Run]
-Filename: "{app}\sprawl.exe"; Description: "Start Sprawl"; Flags: nowait postinstall skipifsilent
+; as the user who started Setup, never with Setup's administrator rights
+Filename: "{app}\sprawl.exe"; Description: "Start Sprawl"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; an update from Sprawl (silent, /RESTARTSPRAWL): Sprawl opens again
+Filename: "{app}\sprawl.exe"; Flags: nowait runasoriginaluser; Check: RestartWanted
 
 [Messages]
-WelcomeLabel2=This installs Sprawl {#AppVersion}, a disk space analyser, for you only. No administrator rights are needed.%n%nSprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the first time Sprawl starts.%n%nYour settings and scan history are kept.
+WelcomeLabel2=This installs Sprawl {#AppVersion}, a disk space analyser, for all users of this PC, in Program Files. Windows asks for administrator rights.%n%nA copy of Sprawl installed only for you (1.0.4 and before) is removed the first time the new one starts.%n%nSprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the first time Sprawl starts.%n%nYour settings and scan history are kept.
 
 [Code]
+function RestartWanted: Boolean;
+begin
+  Result := WizardSilent and (Pos('/RESTARTSPRAWL', Uppercase(GetCmdTail)) > 0);
+end;
+
 function GetFileAttributesW(Name: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
 

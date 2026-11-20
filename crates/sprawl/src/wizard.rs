@@ -725,6 +725,13 @@ impl State {
     /// The provider list changed: show the fields that provider needs.
     pub(crate) fn wizard_provider(&mut self) {
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+        // a key typed for one provider never goes to another (Fable 1.0.4-1.0.5 P2-4)
+        thread_local! { static TYPED_FOR: std::cell::Cell<Option<Provider>> = const { std::cell::Cell::new(None) }; }
+        if TYPED_FOR.with(|t| t.replace(Some(p))).is_some_and(|q| q != p) {
+            if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
+                let _ = k.SetPassword(&"".into());
+            }
+        }
         shown(self, "WizKeyRow", p.needs_key());
         shown(self, "WizUrlRow", p == Provider::OpenAi);
         shown(self, "WizLoadModels", matches!(p, Provider::OpenAi | Provider::Anthropic));
@@ -836,7 +843,12 @@ impl State {
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
         // the effort picked per model is set in the Advisor's AI settings, and kept here
-        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: web, efforts: AiConfig::load().efforts };
+        let old = AiConfig::load();
+        let base_url = field(self, "WizUrl").trim().to_string();
+        // the custom AIs are named in the Advisor's AI settings; the one in use keeps its name
+        // while its address stays
+        let custom = if p == Provider::OpenAi && base_url == old.base_url { old.custom.clone() } else { String::new() };
+        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url, web_lookup: web, efforts: old.efforts.clone(), custom, customs: old.customs.clone() };
         // a chat under way was started with the old AI settings (provider, model, web lookup):
         // the next question starts a new one, so a change takes effect at once, without a restart
         let ai_changed = AiConfig::load() != ai;

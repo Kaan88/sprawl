@@ -75,10 +75,21 @@ pub fn pick_csv(owner: isize) -> Option<PathBuf> {
 /// Start this program again elevated (the UAC prompt appears) with `args`. False when the
 /// user declined or it failed.
 pub fn restart_elevated(owner: isize, args: &str) -> bool {
+    // a copy other programs running as the user can change is never started elevated
+    if !sprawl_install::machine::may_elevate() {
+        return false;
+    }
     let Ok(exe) = std::env::current_exe() else { return false };
     let r = unsafe {
         ShellExecuteW(Some(hwnd(owner)), w!("runas"), &HSTRING::from(exe.as_os_str()), &HSTRING::from(args), PCWSTR::null(), SW_SHOWNORMAL)
     };
+    r.0 as isize > 32
+}
+
+/// Start `exe` as administrator (the UAC prompt appears). False when the user declined or it
+/// failed. The caller holds the file open so it can't change until this returns.
+pub fn run_elevated(owner: isize, exe: &std::path::Path, args: &str) -> bool {
+    let r = unsafe { ShellExecuteW(Some(hwnd(owner)), w!("runas"), &HSTRING::from(exe.as_os_str()), &HSTRING::from(args), PCWSTR::null(), SW_SHOWNORMAL) };
     r.0 as isize > 32
 }
 

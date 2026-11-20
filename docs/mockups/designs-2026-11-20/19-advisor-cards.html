@@ -1,0 +1,14 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>19 Advisor cards</title><link rel="stylesheet" href="kit.css"><style>
+.rb{display:flex;height:14px;border-radius:7px;overflow:hidden;gap:2px}
+.rb i{display:block}
+.fx{margin-bottom:6px}
+</style></head><body><div class="stage"><div class="win" id="w"></div></div><script src="kit.js"></script><script>
+const names={g:'Safe to delete',a:'Takes time to get back',o:'Look first',r:'Careful'};
+const cards=K.FIND.map((f,i)=>`<div class="expander fx"><div class="eh"><span class="cbx ${f[4]?'on':''}">${f[4]?'&#xE73E;':''}</span><span class="dot ${f[0]}"></span><div class="fill"><div class="semi">${f[1]}</div><div class="cap dim">${f[2]}</div></div><span class="num semi" style="width:80px;text-align:right">${f[3].toFixed(1)} GB</span>${K.ic(i===0?'E70E':'E70D','s')}</div>${i===0?`<div class="eb"><div class="dim2" style="margin-bottom:10px">Packages npm downloaded earlier. npm fetches them again when a project needs them; nothing you wrote is in here.</div><div class="row g8">${K.btn('Show in tree','E8B7','sm')}${K.btn('Show the command','E756','sm')}${K.btn('Keep it','E73A','sm')}<span class="sp"></span><span class="cap dim">C:\\Users\\sam\\AppData\\Local\\npm-cache</span></div></div>`:''}</div>`).join('');
+const main=`<div class="col fill" style="min-width:0;padding:0 12px 0 0;overflow:hidden"><div class="row" style="height:48px"><div class="h2">Advisor</div><span class="sp"></span>${K.btn('Check again','E72C')}${K.btn('Ask your disk','E8BD')}</div>
+ <div class="card pad16 col g12" style="margin-bottom:12px"><div class="row g16"><div><div class="lbl">You can free</div><div class="big-num num" style="font-size:44px;line-height:52px">46.2 GB</div></div><div class="fill"><div class="cap dim2" style="margin-bottom:6px"><b style="color:var(--ok)">16.2 GB</b> is safe to delete. 27.9 GB needs a look first.</div>
+ <div class="rb"><i style="flex:16.2;background:var(--ok)"></i><i style="flex:27.9;background:var(--warn)"></i><i style="flex:20.4;background:var(--orange)"></i><i style="flex:21.7;background:var(--bad)"></i></div></div>${K.btn('Review safe items','E73E','acc lg')}</div>
+ <div class="row g8"><span class="chip on"><span class="dot g"></span>Safe 3</span><span class="chip"><span class="dot a"></span>Takes time 2</span><span class="chip"><span class="dot o"></span>Look first 2</span><span class="chip"><span class="dot r"></span>Careful 2</span><span class="sp"></span><span class="cap dim">Sort: size</span></div></div>
+ <div class="fill" style="overflow:hidden">${cards}</div></div>`;
+document.getElementById('w').innerHTML=K.tb()+`<div class="row fill" style="align-items:stretch;min-height:0">${K.rail(3)}${main}</div>`+K.status();
+K.init('19-advisor-cards')</script></body></html>

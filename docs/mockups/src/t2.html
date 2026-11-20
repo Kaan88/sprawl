@@ -1,0 +1,168 @@
+<article class="m" data-tier="2" data-w="940" data-h="520" data-title="Left NavigationView replaces menu bar and tab buttons"
+data-ctl="NavigationView (PaneDisplayMode=Auto, IsBackButtonVisible=False), NavigationViewItem + InfoBadge, AutoSuggestBox in PaneFooter, CommandBar, BreadcrumbBar, Mica backdrop"
+data-problem="A menu bar, five tab buttons and a search box compete for the top 120 px. New users do not find History or Cleaners, and the window loses vertical room to chrome."
+data-trade="Costs 48 px (compact) or 240 px (open) horizontally. File and Options menus move into the pane footer and a CommandBar, which changes muscle memory for existing users.">
+<div class="nav"><div class="ni"><i data-i="list"></i></div>
+ <div class="asb" style="margin:4px 0"><i data-i="search"></i><span>Search files</span></div>
+ <div class="ni sel"><i data-i="folder"></i>Explore</div><div class="ni"><i data-i="spark"></i>Advisor<span class="bd">12</span></div><div class="ni"><i data-i="broom"></i>Cleaners</div><div class="ni"><i data-i="clock"></i>History</div>
+ <div class="nsep"></div><div class="nh">Drives</div><div class="ni"><i data-i="drive"></i>C: Windows</div><div class="ni"><i data-i="drive"></i>D: Data</div>
+ <span class="grow"></span><div class="ni"><i data-i="gear"></i>Settings</div></div>
+<div class="content">
+ <div class="row p12 g12"><div class="crumb"><b>C:\</b><i data-i="chev"></i>Users<i data-i="chev"></i>Alex<i data-i="chev"></i><span class="dim">AppData</span></div><span class="grow"></span>
+  <span class="btn sm sub"><i data-i="refresh"></i>Rescan</span><span class="btn sm sub"><i data-i="export"></i>Export</span><span class="btn sm sub"><i data-i="info"></i>Details</span></div>
+ <div class="sep"></div>
+ <div class="row grow g12 p12" style="align-items:stretch;min-height:0">
+  <div class="col g2" style="width:300px">
+   <div class="tvr sel"><i data-i="down"></i><i data-i="folder"></i><span class="grow">Alex</span><span class="num">212 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">AppData</span><span class="num">74 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Videos</span><span class="num">58 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Projects</span><span class="num">46 GB</span></div>
+   <div class="tvr" style="padding-left:20px"><i data-i="chev"></i><i data-i="folder"></i><span class="grow">Downloads</span><span class="num">34 GB</span></div></div>
+  <div class="tm" data-w="520" data-h="360" data-root="u" data-mode="nest"></div>
+ </div></div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="560" data-title="Clean-up review: groups left, evidence right"
+data-ctl="Window or full-page overlay (ContentDialog is capped near 548 px; raise ContentDialogMaxWidth to ~900 or use a modal Window), ListView with grouping (CollectionViewSource IsSourceGrouped), Expander, InfoBar, Button"
+data-problem="The review is one long list. Permanent deletions are mixed in with Recycle Bin items, and the evidence for an item (why it is safe, when it was re-checked) is far from the item."
+data-trade="A two-pane dialog needs a width most small laptops can give, but not a ContentDialog's default. It should collapse to one pane under 700 px with Back navigation.">
+<div class="dlgwrap"><div class="dlg" style="width:880px;height:510px">
+ <div class="dh">Review before anything is removed</div>
+ <div class="body" style="padding:12px 24px 0;gap:16px;min-height:0">
+  <div class="col g8" style="width:360px;overflow:hidden">
+   <div class="ib err"><i data-i="lock"></i><div class="t"><div class="b">Deleted for good: 6.1 GB</div><div class="sm">These skip the Recycle Bin. They cannot be restored.</div></div></div>
+   <div class="li sel"><span class="grow">Windows temp files</span><span class="sm">3.9 GB</span></div>
+   <div class="li"><span class="grow">npm cache</span><span class="sm">2.2 GB</span></div>
+   <div class="ib info" style="margin-top:6px"><i data-i="trash"></i><div class="t"><div class="b">To the Recycle Bin: 14.2 GB</div><div class="sm">Explorer can restore these. Space is freed when you empty the bin.</div></div></div>
+   <div class="li"><span class="grow">Old installers (6 files)</span><span class="sm">14.2 GB</span></div>
+   <div class="row sm mut p8"><i data-i="zip"></i>Compress: 1 folder<span class="tr-r">+ Hard-link 2 duplicates</span></div>
+   <div class="row sm mut p8"><i data-i="eye"></i>Held back: 1 (program is open)</div></div>
+  <div class="vsep"></div>
+  <div class="col g12 grow">
+   <div class="h3">Windows temp files <span class="pill err"><i data-i="lock"></i>Deleted for good</span></div>
+   <div class="mono dim">C:\Users\Alex\AppData\Local\Temp</div>
+   <div class="row g16 sm"><div><div class="dim">Size</div><div class="b">3.9 GB in 4,820 files</div></div><div><div class="dim">Last changed</div><div class="b">Before the scan, 9 days ago</div></div><div><div class="dim">If removed</div><div class="b">Rebuilt by Windows as needed</div></div></div>
+   <div class="card col g4"><span class="b sm">Why Sprawl thinks this is safe</span><span class="sm mut">Matches the Windows temp pattern. Nothing in it is newer than the scan. Not on the never-list.</span></div>
+   <div class="card col g4"><span class="b sm">Checked again at the moment of deletion</span><span class="sm mut">Anything created or changed since the scan stays. Links are removed as links.</span></div>
+   <div class="row g8"><span class="btn sm"><i data-i="folder"></i>Show in Explorer</span><span class="btn sm"><i data-i="ban"></i>Keep this one</span></div></div></div>
+ <div class="df" style="margin-top:12px"><span class="btn" style="flex:0 0 120px">Cancel</span><span class="grow sm mut" style="align-self:center;padding-left:8px">6.1 GB cannot be restored. 14.2 GB can.</span><span class="btn dng" style="flex:0 0 280px"><i data-i="trash"></i>Delete 2 for good, recycle 6</span></div>
+</div></div></article>
+
+<article class="m" data-tier="2" data-w="760" data-h="480" data-title="Review summary with a ledger bar"
+data-ctl="ContentDialog, Grid of three Border cards, custom stacked bar built from a Grid with proportional ColumnDefinitions (star sizing), InfoBar"
+data-problem="Users cannot tell how much space a clean-up really frees now. Recycle Bin items free nothing until the bin is emptied."
+data-custom="the stacked bar is a Grid whose star widths come from the byte counts, with AutomationProperties.Name reading the numbers"
+data-trade="One more concept (free now versus later) in an already dense dialog. It replaces a wall of numbers, which most users do not read.">
+<div class="dlgwrap"><div class="dlg" style="width:660px">
+ <div class="dh">What this clean-up does</div>
+ <div class="db col g16">
+  <div class="stack" style="height:18px"><i style="flex:6.1;background:var(--w-solid-err)"></i><i style="flex:14.2;background:var(--c3)"></i><i style="flex:3;background:var(--c2)"></i></div>
+  <div class="row g12 wrapf" style="align-items:stretch">
+   <div class="card grow col g4"><span class="row g4 sm"><span class="dot" style="background:var(--w-solid-err)"></span>Deleted for good</span><span class="h2">6.1 GB</span><span class="xs mut">Free now. Cannot be restored.</span></div>
+   <div class="card grow col g4"><span class="row g4 sm"><span class="dot" style="background:var(--c3)"></span>To the Recycle Bin</span><span class="h2">14.2 GB</span><span class="xs mut">Free after you empty the bin.</span></div>
+   <div class="card grow col g4"><span class="row g4 sm"><span class="dot" style="background:var(--c2)"></span>Compressed in place</span><span class="h2">3.0 GB</span><span class="xs mut">Free now. Reversible.</span></div></div>
+  <div class="ib info"><i data-i="info"></i><div class="t sm">Free space on C: goes from <b>42 GB</b> to <b>51 GB</b> now, and to <b>65 GB</b> once the Recycle Bin is emptied.</div></div>
+  <div class="row g8 sm mut"><span class="cb"></span>Show every item before I continue</div></div>
+ <div class="df"><span class="btn">Cancel</span><span class="btn dng">Delete 2 for good, recycle 6</span></div>
+</div></div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="520" data-title="Advisor as master and detail"
+data-ctl="SplitView (DisplayMode=Inline, PanePlacement=Right), ListView with grouped headers and CheckBox, CommandBar docked at bottom, InfoBar, Expander for evidence"
+data-problem="Findings, evidence and the AI column share one wide table, so evidence is cramped and the AI column is mostly empty when AI is off."
+data-trade="Fewer findings visible at once, because the detail pane uses 40% of the width. Collapse the pane (it is a SplitView) to get the dense list back.">
+<div class="nav c"><div class="ni"><i data-i="list"></i></div><div class="ni"><i data-i="folder"></i></div><div class="ni sel"><i data-i="spark"></i></div><div class="ni"><i data-i="broom"></i></div><div class="ni"><i data-i="clock"></i></div></div>
+<div class="content"><div class="row p12 g12"><span class="h2">Advisor</span><span class="pill info">12 findings, 41 GB</span><span class="grow"></span><span class="btn sm sub"><i data-i="filter"></i>Risk: all</span><span class="pill n"><i data-i="eye"></i>AI off</span></div>
+ <div class="row grow" style="min-height:0;align-items:stretch">
+  <div class="col g2 p8 grow" style="overflow:hidden">
+   <div class="li h">Caches and temp (4)</div>
+   <div class="li"><span class="cb on"><i data-i="check"></i></span><span class="grow">Windows temp</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="num sm" style="width:60px">9.4 GB</span></div>
+   <div class="li sel"><span class="cb"></span><span class="grow">Docker build cache</span><span class="pill ok"><i data-i="check"></i>Low</span><span class="num sm" style="width:60px">31 GB</span></div>
+   <div class="li h">Build outputs of idle projects (2)</div>
+   <div class="li"><span class="cb"></span><span class="grow">harbor-app\target</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="num sm" style="width:60px">19 GB</span></div>
+   <div class="li h">Left behind by removed apps (3)</div>
+   <div class="li"><span class="cb"></span><span class="grow">ProgramData\OldTool</span><span class="pill warn"><i data-i="warn"></i>Medium</span><span class="num sm" style="width:60px">1.8 GB</span></div>
+   <div class="li h">Big and untouched for a year (information only)</div>
+   <div class="li"><span class="cb" style="opacity:.4"></span><span class="grow dim">Trip 2024 raw clips</span><span class="pill n">Yours</span><span class="num sm" style="width:60px">27 GB</span></div></div>
+  <div class="vsep"></div>
+  <div class="col g12 p16" style="width:340px">
+   <div class="h3">Docker build cache</div><div class="mono dim">C:\ProgramData\Docker\buildkit</div>
+   <div class="row g4"><span class="pill ok"><i data-i="check"></i>Low risk</span><span class="pill n"><i data-i="clock"></i>Rebuilds in minutes</span></div>
+   <div class="exp"><div class="eh b"><span class="grow">Evidence</span><i data-i="down"></i></div><div class="eb sm mut">Docker is installed. Last image build 3 days ago. This folder holds layers Docker can regenerate.</div></div>
+   <div class="exp"><div class="eh b"><span class="grow">Not ticked until you tick it</span><i data-i="chev"></i></div></div>
+   <span class="grow"></span><span class="btn acc" style="justify-content:center">Tick this finding</span></div></div>
+ <div class="row p12 g12" style="border-top:1px solid var(--w-stroke)"><span class="sm">1 ticked, 9.4 GB</span><span class="grow"></span><span class="btn acc"><i data-i="eye"></i>Review selection...</span></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="900" data-h="500" data-title="AI setup says what leaves the PC"
+data-ctl="RadioButtons (or ItemsView with SingleSelection) with card templates, ToggleSwitch (Work offline), Expander with a read-only TextBox in a monospace face, PasswordBox for API key, InfoBar"
+data-problem="Choosing between Claude Code, Codex, an API key and a local model is a technical choice, and the privacy difference between them is hidden."
+data-trade="More text per option. The 'exact payload' preview needs the real report builder wired in, but it is also the best trust feature the page could have.">
+<div class="col grow p24 g12">
+ <div class="row"><span class="h2 grow">Advisor AI</span><span class="row g8 sm">Work offline <span class="tg"></span></span></div>
+ <div class="mut sm">Off by default. AI names folders the rules do not know. It never ticks or deletes anything.</div>
+ <div class="row g12 wrapf" style="align-items:stretch">
+  <div class="card col g4 grow" style="min-width:150px;outline:2px solid var(--w-acc)"><div class="row"><span class="rd on"></span><span class="b">Off</span></div><div class="sm mut">Rules only.</div><span class="pill ok"><i data-i="lock"></i>Nothing leaves</span></div>
+  <div class="card col g4 grow" style="min-width:150px"><div class="row"><span class="rd"></span><span class="b">Local model</span></div><div class="sm mut">Your own server, e.g. localhost:1234.</div><span class="pill ok"><i data-i="lock"></i>Stays on this PC</span></div>
+  <div class="card col g4 grow" style="min-width:150px"><div class="row"><span class="rd"></span><span class="b">Claude Code / Codex</span></div><div class="sm mut">Uses your own sign-in.</div><span class="pill warn"><i data-i="cloud"></i>Sent to the provider</span></div>
+  <div class="card col g4 grow" style="min-width:150px"><div class="row"><span class="rd"></span><span class="b">API key</span></div><div class="sm mut">Claude or compatible.</div><span class="pill warn"><i data-i="cloud"></i>Sent to the provider</span></div></div>
+ <div class="exp"><div class="eh b"><span class="grow">Exactly what would be sent for the current scan</span><span class="sm dim">Preview, nothing sent</span><i data-i="down"></i></div>
+  <div class="eb mono" style="line-height:1.5">scan: C:\ (476 GB)<br>top folders by size, names and byte counts only<br>  Users\Alex\AppData\Local\Docker  31 GB<br>  Users\Alex\Projects\harbor-app\target  19 GB<br>no file contents, no file names under 1 GB, no user name replaced: C:\Users\&lt;user&gt;</div></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="900" data-h="480" data-title="Scan details as a side panel"
+data-ctl="SplitView (DisplayMode=Overlay, PanePlacement=Right, OpenPaneLength=360), Expander list, custom segmented coverage bar (Grid), HyperlinkButton, InfoBar (Warning)"
+data-problem="Scan Details is a text dump. Users want one answer first: how much of the drive does the number below actually cover?"
+data-custom="coverage bar is a Grid with star-sized Borders (read / skipped by settings / unreadable)"
+data-trade="A fourth place to look for numbers. Keep Details closed by default, and show the amber chip in the header only when coverage drops under 99%.">
+<div class="col grow" style="padding:16px;opacity:.5"><div class="h2">C:\ (Windows)</div><div class="tm" data-w="420" data-h="340" data-root="c" data-mode="top" style="margin-top:12px"></div></div>
+<div class="col g12 p16" style="width:420px;background:var(--w-card);border-left:1px solid var(--w-stroke2)">
+ <div class="row"><span class="h2 grow">Scan details</span><span class="btn sm sub ico"><i data-i="close"></i></span></div>
+ <div><div class="row sm"><span class="b">98.4% read</span><span class="tr-r mut">1.2M files, 4.2 s</span></div>
+  <div class="stack" style="height:10px;margin-top:6px"><i style="flex:98.4;background:var(--w-ok)"></i><i style="flex:1.1;background:#C98A00"></i><i style="flex:.5;background:var(--w-solid-err)"></i></div>
+  <div class="row g12 xs mut" style="margin-top:6px"><span class="row g4"><span class="dot" style="background:var(--w-ok)"></span>Read</span><span class="row g4"><span class="dot" style="background:#C98A00"></span>Skipped by you</span><span class="row g4"><span class="dot" style="background:var(--w-solid-err)"></span>Could not read</span></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">How it was read</span><span class="sm dim">NTFS file table</span><i data-i="chev"></i></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">Could not read (3)</span><span class="pill warn">0.5%</span><i data-i="down"></i></div>
+  <div class="eb sm col g4"><span class="mono">C:\System Volume Information</span><span class="dim">Access denied. Needs SYSTEM rights.</span><span class="mono">C:\Users\Alex\AppData\Local\Packages\...</span><span class="dim">In use by Windows.</span></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">Skipped by your settings (2)</span><i data-i="chev"></i></div></div>
+ <div class="exp"><div class="eh"><span class="grow b">Not in this scan</span><span class="sm dim">D:, Z: (network)</span><i data-i="chev"></i></div></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="480" data-title="Search with filter chips and a preview pane"
+data-ctl="AutoSuggestBox (QueryIcon, query as plain text), DropDownButton + MenuFlyout for filters, ItemsView or ListView results, SplitView preview, InfoBar-style status line (TextBlock)"
+data-problem="Search has its own query language but users must remember it; results show a path but not why they matched."
+data-trade="Chips and the query box both edit the same text. The chips must write the query exactly as a user would, or users cannot learn the language from them.">
+<div class="col grow">
+ <div class="row p12 g8"><div class="asb f grow"><i data-i="search"></i><span style="color:var(--w-fg)"><span style="color:var(--w-acc-t)">ext:</span>iso <span style="color:var(--w-acc-t)">size:</span>&gt;1gb <span style="color:var(--w-acc-t)">dm:</span>lastmonth</span></div><span class="btn">Search in: C:</span><span class="btn sub ico"><i data-i="info"></i></span></div>
+ <div class="row p12 g8" style="padding-top:0"><span class="btn sm"><i data-i="file"></i>Type: .iso <i data-i="down"></i></span><span class="btn sm"><i data-i="chart"></i>Size: over 1 GB <i data-i="down"></i></span><span class="btn sm"><i data-i="cal"></i>Changed: last month <i data-i="down"></i></span><span class="btn sm sub"><i data-i="plus"></i>Add filter</span><span class="grow"></span><span class="btn sm sub">Save search</span></div>
+ <div class="row grow" style="min-height:0;align-items:stretch;border-top:1px solid var(--w-stroke)">
+  <div class="col grow p8 g2" style="min-width:0">
+   <div class="gridr li h" style="grid-template-columns:1fr 90px 100px"><span>Name and folder</span><span class="num">Size</span><span class="num">Changed</span></div>
+   <div class="gridr li sel" style="grid-template-columns:1fr 90px 100px"><span class="col g2"><span class="b ellip">win11-install.<mark style="background:var(--w-warnbg);color:var(--w-warn)">iso</mark></span><span class="xs dim ellip">C:\Users\Alex\Downloads</span></span><span class="num">5.4 GB</span><span class="num sm">3 Nov</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 90px 100px"><span class="col g2"><span class="ellip">linux-mint-22.<mark style="background:var(--w-warnbg);color:var(--w-warn)">iso</mark></span><span class="xs dim ellip">C:\Users\Alex\Downloads</span></span><span class="num">2.9 GB</span><span class="num sm">12 Nov</span></div>
+   <div class="gridr li" style="grid-template-columns:1fr 90px 100px"><span class="col g2"><span class="ellip">game-disc-backup.<mark style="background:var(--w-warnbg);color:var(--w-warn)">iso</mark></span><span class="xs dim ellip">C:\Backups\old</span></span><span class="num">7.8 GB</span><span class="num sm">28 Oct</span></div>
+   <div class="sm dim p8">3 of 1,284,310 names match. Searched C: in 0.04 s.</div></div>
+  <div class="vsep"></div>
+  <div class="col g8 p16" style="width:260px"><i data-i="disk" class="xl" style="color:var(--w-fg3)"></i><div class="b">win11-install.iso</div><div class="mono dim" style="word-break:break-all">C:\Users\Alex\Downloads\win11-install.iso</div><div class="sm mut">5.4 GB, changed 3 Nov, never opened</div><div class="row g4"><span class="btn sm">Show in Explorer</span></div><div class="sm dim">Delete only through the review (Select, then Review).</div></div></div>
+</div></article>
+
+<article class="m" data-tier="2" data-w="940" data-h="500" data-title="Cleaners as an app list with per-part switches"
+data-ctl="ListView with tri-state CheckBox, ToggleSwitch per part, Expander for Privacy group, InfoBar (Warning: close Edge first), CommandBar with Preview"
+data-problem="Cleaners mixes space cleaning and privacy items on one page. Users cannot see at a glance what is on and what is held back."
+data-trade="Privacy cleaners sit on their own subpage, one click further away. That is deliberate: they are off until switched on and never mixed with space cleaning.">
+<div class="col grow">
+ <div class="row p12 g12"><span class="h2">Cleaners</span><span class="pill n">Works without a scan</span><span class="grow"></span><span class="btn sm"><i data-i="eye"></i>Preview 5.8 GB</span></div>
+ <div class="row grow" style="min-height:0;align-items:stretch;border-top:1px solid var(--w-stroke)">
+  <div class="col g2 p8" style="width:280px">
+   <div class="li"><span class="cb mix"></span><i data-i="app"></i><span class="grow">Windows</span><span class="sm dim">4.1 GB</span></div>
+   <div class="li sel"><span class="cb mix"></span><i data-i="app"></i><span class="grow">Visual Studio Code</span><span class="sm dim">1.2 GB</span></div>
+   <div class="li"><span class="cb"></span><i data-i="app"></i><span class="grow">Discord</span><span class="sm dim">620 MB</span></div>
+   <div class="li"><span class="cb"></span><i data-i="app"></i><span class="grow">Steam</span><span class="sm dim">340 MB</span></div>
+   <div class="nsep"></div>
+   <div class="li"><i data-i="lock"></i><span class="grow">Privacy</span><span class="pill n">Off</span></div></div>
+  <div class="vsep"></div>
+  <div class="col g8 p16 grow">
+   <div class="row"><span class="h3 grow">Visual Studio Code</span><span class="pill ok"><i data-i="check"></i>Closed, safe to clean</span></div>
+   <div class="card row"><span class="grow">Cached data<div class="xs dim">Rebuilt when the editor needs it</div></span><span class="sm">980 MB</span><span class="tg on"></span></div>
+   <div class="card row"><span class="grow">Logs<div class="xs dim">Older than 7 days</div></span><span class="sm">180 MB</span><span class="tg on"></span></div>
+   <div class="card row"><span class="grow">Crash dumps</span><span class="sm">40 MB</span><span class="tg"></span></div>
+   <div class="ib warn" style="margin-top:8px"><i data-i="shield"></i><div class="t sm"><span class="b">Privacy items are separate.</span> Browser cookies and history are listed under Privacy, off until you switch them on, and are never counted in this total.</div></div></div></div>
+</div></article>
