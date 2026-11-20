@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Update and restart from a Sprawl running as administrator works with one click: the copy that reopens without administrator rights waits for the administrator one to close, instead of stopping with "could not be closed" until you click again.
+- After Setup (an update, or Install for all users), Sprawl opens without administrator rights unless Always Run as Administrator is on, and the older per-user copy is removed even when Sprawl opens as administrator.
+
 ## 1.0.5 — 2026-11-21
 
 - Codex, and Claude Code without Sprawl's server, can propose recognisers and cleaners now. The AI writes its proposals at the end of its answer, and Sprawl checks each one the way it checks any AI proposal. Each one waits in Advisor > Remembered for you to approve; ones Sprawl refused are listed under the answer.

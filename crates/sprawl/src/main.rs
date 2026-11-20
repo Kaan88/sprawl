@@ -76,10 +76,19 @@ struct Args {
     ticks: Vec<PathBuf>,
     /// Started by an elevated copy to install this version without administrator rights.
     resume: Option<String>,
+    /// Started by Setup when it finishes (Setup runs as administrator).
+    from_setup: bool,
+    /// Started by an elevated copy in Program Files, as the user, only to remove the per-user copy.
+    remove_per_user: bool,
 }
 
+/// Setup's [Run] entries pass this (installer/sprawl.iss).
+const FROM_SETUP_ARG: &str = "--from-setup";
+/// The helper an elevated copy starts without administrator rights to remove the per-user copy.
+const REMOVE_PER_USER_ARG: &str = "--remove-per-user";
+
 fn args() -> Args {
-    let mut a = Args { shot: None, folder: None, advisor: false, ticks: Vec::new(), resume: None };
+    let mut a = Args { shot: None, folder: None, advisor: false, ticks: Vec::new(), resume: None, from_setup: false, remove_per_user: false };
     let mut it = std::env::args_os().skip(1);
     while let Some(x) = it.next() {
         if x == "--screenshot" {
@@ -90,6 +99,10 @@ fn args() -> Args {
             a.resume = Some(it.next().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default());
         } else if x == "--tick" {
             a.ticks.extend(it.next().map(PathBuf::from));
+        } else if x == FROM_SETUP_ARG {
+            a.from_setup = true;
+        } else if x == REMOVE_PER_USER_ARG {
+            a.remove_per_user = true;
         } else {
             a.folder = Some(PathBuf::from(x));
         }
@@ -119,22 +132,54 @@ const ROW_MENU: &[(&str, &str)] = &[
     ("cShell", "mShell"),
 ];
 
+/// Installed for all users now: the per-user copy of 1.0.4 and before goes, once, by its own
+/// uninstaller run as the user. "Scan with Sprawl" in Explorer, which it removes, comes back
+/// pointing here.
+fn remove_per_user_copy() {
+    let menu = dialogs::explorer_menu_installed();
+    if let Err(e) = sprawl_install::machine::remove_per_user_install(std::time::Duration::from_secs(60)) {
+        eprintln!("per-user copy: {e}");
+    }
+    if menu {
+        dialogs::set_explorer_menu(true);
+    }
+}
+
 pub(crate) fn launch() -> windows_core::Result<()> {
     let a = args();
+    // The helper: remove the per-user copy as the user, then end, with no window. Only from the
+    // copy in Program Files, and only without administrator rights (the per-user uninstaller is
+    // in a folder the user can change, so it never runs elevated).
+    if a.remove_per_user {
+        if a.shot.is_none() && sprawl_core::elevation().ok() == Some(false) && sprawl_install::machine::is_protected_copy() {
+            remove_per_user_copy();
+        }
+        std::process::exit(0);
+    }
     let mut settings = settings::Settings::load();
     settings.keep_old_defaults();
+    // Setup runs as administrator, and when Sprawl itself started it (an update, or Install for
+    // all users), Setup has no other user to start the new Sprawl as: it comes up elevated. Open
+    // again as the user, unless "Always run as administrator" is on.
+    if a.from_setup && a.shot.is_none() && sprawl_core::is_elevated() && settings.bool("oAlwaysAdmin") != Some(true) {
+        if let Ok(exe) = std::env::current_exe() {
+            if sprawl_core::identity::launch_unelevated(&exe, &[]).is_ok() {
+                std::process::exit(0);
+            }
+        }
+    }
     // An elevated copy handing its update over: this copy stays without administrator rights.
     let update_resume = if a.shot.is_none() { update::resume_request(a.resume.clone()) } else { None };
-    // Installed for all users now: the per-user copy of 1.0.4 and before goes, once, by its own
-    // uninstaller run as the user. "Scan with Sprawl" in Explorer, which it removes, comes back
-    // pointing here.
-    if a.shot.is_none() && !sprawl_core::is_elevated() && sprawl_install::machine::is_protected_copy() && sprawl_install::machine::per_user_install().is_some() {
-        let menu = dialogs::explorer_menu_installed();
-        if let Err(e) = sprawl_install::machine::remove_per_user_install(std::time::Duration::from_secs(60)) {
-            eprintln!("per-user copy: {e}");
-        }
-        if menu {
-            dialogs::set_explorer_menu(true);
+    // Installed for all users now: remove the per-user copy. Elevated (started by Setup, or with
+    // "Always run as administrator" on), a helper started as the user does it, so this copy never
+    // runs the per-user uninstaller with administrator rights.
+    if a.shot.is_none() && sprawl_install::machine::is_protected_copy() && sprawl_install::machine::per_user_install().is_some() {
+        if !sprawl_core::is_elevated() {
+            remove_per_user_copy();
+        } else if let Ok(exe) = std::env::current_exe() {
+            if let Err(e) = sprawl_core::identity::launch_unelevated(&exe, &[REMOVE_PER_USER_ARG]) {
+                eprintln!("per-user copy: {e}");
+            }
         }
     }
     // "Always run as administrator": come back elevated (the UAC prompt shows) and quit this copy.

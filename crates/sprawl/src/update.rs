@@ -62,6 +62,9 @@ enum Msg {
     Progress(String),
     /// Setup, downloaded and checked, held open so it can't change before it runs.
     SetupReady(PathBuf, std::fs::File),
+    /// A handed-over update: the elevated copy that handed it over has closed (or the wait
+    /// ended), so its Update can carry on here.
+    Resume,
 }
 
 /// "Always run as administrator" is on but this copy may not elevate: say why at start.
@@ -394,10 +397,23 @@ impl State {
                 let resume = self.update.resume.take().is_some_and(|v| v == a.version);
                 self.update.avail = Some(a);
                 self.update_card(true);
-                // handed over by the elevated copy that just closed: carry on with its Update
+                // handed over by the elevated copy that is closing: wait for it to be gone first.
+                // This copy can't stop an elevated one, so swapping files or asking to close
+                // "other Sprawl processes" while it closes would fail or ask about it.
                 if resume {
-                    self.update_command("UpdateNow");
+                    text(&self.root, "UpdateStatus", "Waiting for the administrator copy of Sprawl to close...");
+                    let (tx, rx) = channel();
+                    self.update.rx = Some(rx);
+                    std::thread::spawn(move || {
+                        let _ = guarded(|| sprawl_install::processes::wait_for_unstoppable(Duration::from_secs(20)));
+                        let _ = tx.send(Msg::Resume);
+                    });
                 }
+            }
+            Msg::Resume => {
+                self.update.rx = None;
+                text(&self.root, "UpdateStatus", "");
+                self.update_command("UpdateNow");
             }
             Msg::Latest => {
                 self.update.rx = None;

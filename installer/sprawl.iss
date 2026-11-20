@@ -76,9 +76,11 @@ Type: dirifempty; Name: "{app}\.sprawl-update"; Check: CanCleanStage
 
 [Run]
 ; as the user who started Setup, never with Setup's administrator rights
-Filename: "{app}\sprawl.exe"; Description: "Start Sprawl"; Flags: nowait postinstall skipifsilent runasoriginaluser
-; an update from Sprawl (silent, /RESTARTSPRAWL): Sprawl opens again
-Filename: "{app}\sprawl.exe"; Flags: nowait runasoriginaluser; Check: RestartWanted
+Filename: "{app}\sprawl.exe"; Parameters: "--from-setup"; Description: "Start Sprawl"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; an update from Sprawl (silent, /RESTARTSPRAWL): Sprawl opens again. Sprawl started this Setup
+; already elevated, so there is no original user here: Sprawl, seeing --from-setup, opens again
+; as the user itself
+Filename: "{app}\sprawl.exe"; Parameters: "--from-setup"; Flags: nowait runasoriginaluser; Check: RestartWanted
 
 [Messages]
 WelcomeLabel2=This installs Sprawl {#AppVersion}, a disk space analyser, for all users of this PC, in Program Files. Windows asks for administrator rights.%n%nA copy of Sprawl installed only for you (1.0.4 and before) is removed the first time the new one starts.%n%nSprawl needs the Windows App Runtime 1.8; if it's missing, Windows offers to install it the first time Sprawl starts.%n%nYour settings and scan history are kept.
