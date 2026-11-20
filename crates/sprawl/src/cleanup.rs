@@ -1431,7 +1431,10 @@ impl State {
         let bin_on = self.recycle_on();
         let mut x = format!(
             r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="{}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" Foreground="#FFF5B342" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
-            {
+            // all three escaped: the lead line quotes a group's name ("Deleted for good"), and
+            // a quote left in would end the attribute, fail the whole review, and leave the bar
+            // on screen as if Review did nothing
+            ui::esc(&{
                 // the privacy items: by number, never in the space
                 // a shrink's win is known only after it ran (F3)
                 let unknown = picked.iter().any(|(_, f)| sprawl_advisor::remedies::shrinks(f));
@@ -1458,10 +1461,10 @@ impl State {
                     (true, n) => format!("Clean up {}?", privacy_count(n)),
                     (false, n) => format!("Clean up {space}, and {}?", privacy_count(n)),
                 }
-            },
+            }),
             // the same outcome list as the groups and the button
-            lead_line(&picked.iter().map(|(_, f)| outcome(f, bin_on)).collect::<Vec<_>>(), privacy.len()),
-            {
+            ui::esc(&lead_line(&picked.iter().map(|(_, f)| outcome(f, bin_on)).collect::<Vec<_>>(), privacy.len())),
+            ui::esc(&{
                 let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
                 let own = format!(
                     "Sprawl removes them itself. Links inside are never followed: deleted for good, a link is removed as a link; with the Recycle Bin it stays where it is (what it points to stays either way). Files a program has locked are skipped, and anything created or changed since the scan began ({}) is left alone, as is anything you chose to keep.",
@@ -1477,7 +1480,7 @@ impl State {
                 } else {
                     own
                 }
-            }
+            })
         );
         // only privacy items: no space lines, no space list
         if picked.is_empty() {
@@ -2376,6 +2379,13 @@ mod review_tests {
         assert!(!lead_line(&[Fate::Compress], 0).contains("Deleted for good"));
         assert!(!lead_line(&[Fate::Shrink], 0).contains("Deleted for good"));
         assert!(lead_line(&[Fate::Tool], 0).contains("usually for good"));
+        // it quotes a group's name: escaped, it can sit in a XAML attribute (left raw, the quote
+        // ended the attribute and the whole review failed to load, so Review did nothing)
+        for o in [&[Fate::Gone, Fate::Tool][..], &[Fate::Gone, Fate::Bin], &[Fate::Bin, Fate::Tool]] {
+            let l = lead_line(o, 1);
+            assert!(l.contains('"'), "{o:?}: the case this guards");
+            assert!(!crate::ui::esc(&l).contains('"'), "{o:?}");
+        }
         assert!(lead_line(&[Fate::Bin, Fate::Bin], 0).starts_with("Sent to the Recycle Bin"), "the bin alone: plainly");
         // anything else beside the bin (a tool, compression...): the bin group is named, so its
         // sentence isn't read as the whole review's fate (round 3, S4 #3)

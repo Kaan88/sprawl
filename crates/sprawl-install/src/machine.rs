@@ -45,6 +45,24 @@ pub fn may_elevate() -> bool {
     cfg!(debug_assertions) || is_protected_copy()
 }
 
+/// Sprawl installed for all users, seen from the per-user install (the one Setup put in the
+/// user's folder, not a build or a copy elsewhere): the exe in Program Files, when it is there.
+/// Only administrators can put it there.
+pub fn all_users_copy() -> Option<PathBuf> {
+    if is_protected_copy() || !crate::setup::is_installed_copy() {
+        return None;
+    }
+    let pf = program_files()?;
+    all_users_exe(&pf.join("Sprawl"), &pf)
+}
+
+/// `dir`'s sprawl.exe when `dir` is a folder right inside `program_files` (not a link) that has
+/// one (not a link either).
+fn all_users_exe(dir: &Path, program_files: &Path) -> Option<PathBuf> {
+    let exe = dir.join("sprawl.exe");
+    (is_protected_dir(dir, program_files) && exe.is_file() && !crate::setup::is_link(&exe)).then_some(exe)
+}
+
 /// Why this copy won't start as administrator, for the user.
 pub const WHY_NOT_ELEVATED: &str = "Sprawl runs as administrator only when it is installed for all users, in Program Files. This copy is in your own folder, where any program running as you could change it, and that program would then get administrator rights too.";
 
@@ -90,6 +108,21 @@ pub fn remove_per_user_install(wait: std::time::Duration) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_all_users_copy_is_a_real_exe_right_inside_program_files() {
+        let t = std::env::temp_dir().join(format!("sprawl-allusers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let pf = t.join("Program Files");
+        std::fs::create_dir_all(pf.join("Sprawl")).unwrap();
+        assert_eq!(all_users_exe(&pf.join("Sprawl"), &pf), None, "no exe there yet");
+        std::fs::write(pf.join("Sprawl").join("sprawl.exe"), b"x").unwrap();
+        assert_eq!(all_users_exe(&pf.join("Sprawl"), &pf), Some(pf.join("Sprawl").join("sprawl.exe")));
+        std::fs::create_dir_all(pf.join("Deep").join("Sprawl")).unwrap();
+        std::fs::write(pf.join("Deep").join("Sprawl").join("sprawl.exe"), b"x").unwrap();
+        assert_eq!(all_users_exe(&pf.join("Deep").join("Sprawl"), &pf), None, "not right inside Program Files");
+        let _ = std::fs::remove_dir_all(&t);
+    }
 
     #[test]
     fn only_a_folder_right_in_program_files_is_protected() {

@@ -1993,7 +1993,16 @@ impl State {
         self.advisor.panel = Some(fe.clone());
         // the foot, pinned under the list
         let foot = find::<Border>(&self.root, "AdvFoot").ok().and_then(|b| {
-            let el = load::<UIElement>(&self.advisor_foot_xaml()).map_err(|_| eprintln!("advisor foot failed to load")).ok()?;
+            let xaml = self.advisor_foot_xaml();
+            let el = load::<UIElement>(&xaml).map_err(|e| {
+                eprintln!("advisor foot failed to load: {}", e.message());
+                // never silently: the old bar stays, and a press would look like it did nothing
+                crate::state::text(&self.root, "StatusText", &format!("Sprawl couldn't draw this part of the Advisor (a bug inside Sprawl: {}). Nothing was changed.", e.message()));
+                // dev: a screenshot run keeps what failed, to find the piece
+                if self.shot.is_some() {
+                    let _ = std::fs::write(std::env::temp_dir().join("sprawl-foot-failed.xaml"), &xaml);
+                }
+            }).ok()?;
             let _ = b.SetChild(&el);
             el.cast::<FrameworkElement>().ok()
         });

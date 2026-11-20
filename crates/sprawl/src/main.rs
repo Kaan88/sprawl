@@ -156,6 +156,22 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
         std::process::exit(0);
     }
+    // The per-user copy, once Sprawl is installed for all users (its old shortcut, or "Scan with
+    // Sprawl" still pointing here): open the copy in Program Files instead, which removes this
+    // one as it starts. Offering to install for all users again would only repeat the install.
+    if a.shot.is_none() && a.resume.is_none() {
+        if let Some(exe) = sprawl_install::machine::all_users_copy() {
+            let started = if sprawl_core::is_elevated() {
+                // never hand administrator rights on from this copy
+                sprawl_core::identity::launch_unelevated(&exe, &[]).map(drop)
+            } else {
+                std::process::Command::new(&exe).args(std::env::args_os().skip(1)).spawn().map(drop)
+            };
+            if started.is_ok() {
+                std::process::exit(0);
+            }
+        }
+    }
     let mut settings = settings::Settings::load();
     settings.keep_old_defaults();
     // Setup runs as administrator, and when Sprawl itself started it (an update, or Install for

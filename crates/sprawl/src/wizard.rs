@@ -255,6 +255,7 @@ impl State {
             "animate" => b(self.map.scene.animate),
             "aiWebLookup" => b(AiConfig::load().web_lookup),
             "afterScan" => self.settings.num("afterScan").unwrap_or(0.0).clamp(0.0, 1.0).to_string(),
+            "theme" => (self.settings.num("theme").unwrap_or(0.0).clamp(0.0, (crate::theme::CHOICES.len() - 1) as f64) as usize).to_string(),
             "alertFreeGb" | "alertGrowGb" => self.settings.num(p.key).unwrap_or(1.0).clamp(0.0, 3.0).to_string(),
             "startTab" => crate::look::start_choice(self.settings.num("startTab")).to_string(),
             "snapshot_cap_mb" => {
@@ -312,6 +313,8 @@ impl State {
                 let _ = c.save();
             }
             "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
+            // read once at start (the XAML is rewritten as it loads): it shows at the next start
+            "theme" => self.settings.set("theme", idx(crate::theme::CHOICES.len())),
             "decimal" => {
                 self.settings.set_bool("decimal", yes);
                 crate::format::DECIMAL.store(yes, std::sync::atomic::Ordering::Relaxed);

@@ -25,6 +25,21 @@ fn auto_takes(r: &Report, i: usize) -> bool {
     auto_finding(&r.findings[i], r.counted[i], r.quiet.contains(&key(&r.findings[i].path)))
 }
 
+/// What an application's box takes, both as the box is drawn and as a press on it ticks:
+/// the user's press, so the user's own files too (Orange: the review asks "my own files"), but
+/// never a privacy part (ticked one by one), another account's files, or what can't be ticked.
+/// The box was drawn from the part's risk while the press took only Green and Amber findings, so
+/// an Amber part over the user's own folder (a cleaner for a project in Documents) showed a box
+/// that a press left empty.
+fn box_finding(f: &Finding, counted: bool, quiet: bool) -> bool {
+    f.risk <= Risk::Orange && !f.other_account() && !quiet && !f.privacy()
+        && untickable(f, counted).is_none() && crate::cleanup::held_in_app(f).is_none()
+}
+
+fn box_takes(r: &Report, i: usize) -> bool {
+    box_finding(&r.findings[i], r.counted[i], r.quiet.contains(&key(&r.findings[i].path)))
+}
+
 /// What the Cleaners section has open.
 #[derive(Default)]
 pub(crate) struct ClState {
@@ -730,7 +745,7 @@ impl State {
             }
             "AdvClA" => {
                 let Some(c) = rows.get(i) else { return };
-                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).filter(|&k| auto_takes(r, k)).map(|k| key(&r.findings[k].path))).collect();
+                let keys: Vec<String> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r).filter(|&k| box_takes(r, k)).map(|k| key(&r.findings[k].path))).collect();
                 // partly ticked: the first press unticks the app, as a box that shows a mark
                 let any = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&k| self.advisor.cleanup.ticked.contains(&key(&r.findings[k].path)));
                 let all = !keys.is_empty() && keys.iter().all(|k| self.advisor.cleanup.ticked.contains(k));
@@ -1308,7 +1323,7 @@ impl State {
             }
             let open = self.advisor.cl.open.contains(&c.id);
             let bytes: u64 = c.parts.iter().filter(|p| !p.info).map(|p| self.part_true(r, p).0).sum();
-            let app_tickable: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).collect();
+            let app_tickable: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).filter(|&i| box_takes(r, i)).collect();
             let n_ticked = c.parts.iter().filter(|p| p.findings.iter().any(|&i| ticked(i))).count();
             let community = sprawl_advisor::community::is_community(&c.id);
             let turned_on = community && self.community_on(r, c);
@@ -1823,7 +1838,7 @@ impl State {
         x += r##"<StackPanel Spacing="2" Margin="10,0,0,0">"##;
         for &(ci, b) in apps.iter().take(GROUP_APPS) {
             let c = &rows[ci];
-            let takes: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).filter(|i| mine.contains(i)).collect();
+            let takes: Vec<usize> = c.parts.iter().filter(|p| app_tick_takes(p)).flat_map(|p| p.tickable(r)).filter(|&i| box_takes(r, i) && mine.contains(&i)).collect();
             let some = c.parts.iter().flat_map(|p| p.findings.iter()).any(|&i| ticked(i));
             let state = if takes.is_empty() {
                 None

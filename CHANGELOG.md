@@ -7,6 +7,10 @@ in-app updater shows.
 
 - Update and restart from a Sprawl running as administrator works with one click: the copy that reopens without administrator rights waits for the administrator one to close, instead of stopping with "could not be closed" until you click again.
 - After Setup (an update, or Install for all users), Sprawl opens without administrator rights unless Always Run as Administrator is on, and the older per-user copy is removed even when Sprawl opens as administrator.
+- The older per-user copy, started from its old shortcut after installing for all users, opens the copy in Program Files instead of offering to install again.
+- Review selection opens again when the ticked items mix ones deleted for good with a program's own clean-up (or the Recycle Bin): the review's first line quotes "Deleted for good", and that quote stopped the whole review from being drawn, so the button seemed to do nothing. If part of the Advisor ever can't be drawn, Sprawl now says so.
+- Settings > General > Theme is saved now (it always went back to Like Windows). A change shows when Sprawl starts next.
+- An application's tick in Cleaners and in the Advisor ticks what its box shows, your own files included (the review asks for "my own files"): a cleaner for a project in Documents showed a box that ticked nothing.
 
 ## 1.0.5 — 2026-11-21
 

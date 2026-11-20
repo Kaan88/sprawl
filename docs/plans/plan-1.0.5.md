@@ -19,7 +19,10 @@ builds and tests.
   - the AI card header shortens the model name with an ellipsis and a tooltip;
   - the findings columns have minimum widths;
   - the AI setup rows fill the column with nothing cut off (screenshot checked).
-- **G1:** open.
+- **G1:** found and fixed after 1.0.5 (2026-11-21): the review's lead line quotes a group's name
+  ("Deleted for good") and went into its XAML attribute unescaped. With items deleted for good
+  beside a tool's clean-up or the Recycle Bin, the review failed to load and the bar stayed, so
+  Review seemed to do nothing. Reproduced on a read-only run over AppData\Local, fixed, seen open.
 - **G3:** done:
   - the user's screenshot showed it: the start page (no scan) darkened its card with `#38000000`,
     while the panes and Search lighten with `#0DFFFFFF`;
