@@ -6,6 +6,8 @@ relative to the repository root.
 ## What to do
 
 1.0.4 was released from tag `v1.0.4` on the user's word, without waiting for this review.
+It was then replaced the same day by a build that also has the effort work (section 7); the
+tag now points at the merge.
 Anything you find now goes into 1.0.5.
 
 Please review `git diff 7430449..v1.0.4 -- crates` (the `docs` changes are notes). It holds:
@@ -17,6 +19,7 @@ Please review `git diff 7430449..v1.0.4 -- crates` (the `docs` changes are notes
 | `e105a81` | The user's UI reports, compression choice, Windows' clean-ups in the app (sections 3-5) |
 | `9805add` | Dev folders: worktrees, git gc, re-cloneable clones (section 6) |
 | `bff1661` | Delete card position (UI only) |
+| `79a873a` (merged in `c6ebade`) | Reasoning effort per model, Provider dropdown (section 7) |
 
 For each section: say whether the change is correct, report any problem it introduces (file
 and line, a concrete failure), and give the smallest acceptable fix. End with one verdict per
@@ -27,8 +30,8 @@ commands outside temporary fixtures.
 
 ## Checks already run
 
-- `cargo test -j 1 --workspace` on the release commit, in a **non-administrator** shell:
-  all passed (app 87, advisor 232, core 79, install 16; ignored tests as before).
+- `cargo test -j 1 --workspace` on the release commit (the merge), in a **non-administrator** shell:
+  all passed (app 87, advisor 240, core 79, install 16; ignored tests as before).
   - The real-git worktree test (`devgit::tests::a_real_worktree`) ran its real branch: git was
     present and the shell wasn't elevated.
 - A C: scan as administrator, timed with `SPRAWL_TIMING=1`: 16.9 s before `c42c897`, 7.6 s after
@@ -172,7 +175,41 @@ Called from `advise_all` before the build outputs.
     .env, aren't on the remote).
   - Note that "tick enough for N GB" can pick it like any amber item.
 
+## Section 7: reasoning effort per model, Provider dropdown (`79a873a`)
+
+New module `crates/sprawl-advisor/src/llm/effort.rs`: `levels(provider, base_url, model)` lists
+the levels a model really takes, and `pick(cfg, model)` returns the saved level only when it is
+in that list (an empty list means no control, nothing sent). Levels are saved per model in
+`ai.toml` (`AiConfig.efforts`, serde default).
+
+- Where the levels come from:
+  - Anthropic API: `capabilities.effort` from `/v1/models` (`effort::remember_anthropic`, called
+    from `models::list`), else a table from the docs. A fetched entry wins, also when it says none.
+  - Claude Code: the same table, intersected with what `claude --help` lists for `--effort`.
+  - Codex: `supported_reasoning_levels` from `%USERPROFILE%\.codex\models_cache*.json`
+    (`codex::efforts`); `ultra` is always left out (automatic task delegation; Sprawl keeps
+    `multi_agent` off).
+  - OpenAI-compatible: a table for four models, only when the address is empty or
+    `https://api.openai.com`.
+- How it is sent: Anthropic `output_config.effort`; Chat Completions `reasoning_effort`; Claude
+  Code `--effort <level>`; Codex `-c model_reasoning_effort="<level>"`, on the run and on its
+  three checks (`mcp list`, `features list`, `debug prompt-input`), so the checked configuration
+  is the one that runs.
+- Behaviour change: Anthropic used to send `effort: "high"` always; now the user's level, else
+  `high` only where the model takes it, else nothing.
+- Settings UI (`crates/sprawl/src/advisor.rs`): a Provider dropdown replaces the clipped buttons;
+  an Effort dropdown per model, written by `read_ai_fields` only when it was drawn for the same
+  model (`effort_drawn`).
+- Please check:
+  - Codex (safety): can `model_reasoning_effort` at any listed level (`max` included) change the
+    tools Codex offers? Is leaving out `ultra` enough?
+  - Injection: a level reaches a command line and a TOML `-c` value. Claude Code and Codex take
+    lowercase ASCII only (Codex never `ultra`); `effort::plain` filters fetched levels. Enough
+    when `ai.toml` is edited by hand?
+  - UI race: could a level be saved against the wrong model? (`pick` would still refuse a level
+    the model doesn't offer.)
+
 ## Verdicts wanted
 
 One per section: 1 MFT read, 2 your 1.0.3-fix findings, 3 compression choice, 4 Windows'
-clean-ups, 5 UI, 6 dev folders.
+clean-ups, 5 UI, 6 dev folders, 7 reasoning effort.
