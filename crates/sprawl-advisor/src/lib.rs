@@ -20,6 +20,7 @@ pub mod cleaners;
 pub mod community;
 pub mod config;
 pub mod confidence;
+pub mod devgit;
 pub mod dupes;
 pub mod export;
 pub mod exclusions;
@@ -256,6 +257,9 @@ pub fn advise_all(tree: &Tree, packs: &[RulePack], facts: &facts::Facts) -> (Vec
     let projects = projects::find(tree);
     let extra = facts::unused_apps(tree, facts, tuning::get(&tuning::UNUSED_APP_DAYS), 1 << 30)
         .into_iter()
+        // D: old worktrees, git history to pack, clones to download again (before the build
+        // outputs inside them)
+        .chain(devgit::find(tree, &projects, tuning::get(&tuning::PROJECT_IDLE_DAYS)))
         .chain(projects::build_outputs(tree, &projects, facts, tuning::get(&tuning::PROJECT_IDLE_DAYS), 100 << 20))
         .chain(anomaly::find(tree))
         .chain(versions::find(tree, &projects, &facts.apps))

@@ -364,7 +364,9 @@ fn still_open(path: &std::path::Path, app: &str, exes: &[String]) -> Option<Stri
 pub(crate) const MACHINE_WIDE: &[&str] = &["win.component-store", "win.recycle-bin", "win.windows-old"];
 
 pub(crate) fn machine_wide(f: &Finding) -> bool {
-    f.builtin && f.trusted && matches!(&f.source, Source::Rule(id) if MACHINE_WIDE.contains(&id.as_str()))
+    // (and git's own clean-ups of a repository, D: git acts on the folder it is named)
+    f.builtin && f.trusted && matches!(&f.source, Source::Rule(id) if MACHINE_WIDE.contains(&id.as_str())
+        || id == sprawl_advisor::devgit::WORKTREE || id == sprawl_advisor::devgit::GIT_GC)
 }
 
 /// Why a finding can't be ticked, or None when it can.
@@ -2185,6 +2187,8 @@ mod machine_wide_tests {
         assert_eq!(untickable(&dism(true, "win.component-store"), true), None);
         assert_eq!(untickable(&dism(false, "win.component-store"), true), Some(""), "not the built-in pack: no action at all");
         assert_eq!(untickable(&dism(true, "user.dism"), true), Some("Another account's"));
+        // git's own clean-ups of a repository act on the folder named, too
+        assert_eq!(untickable(&dism(true, sprawl_advisor::devgit::WORKTREE), true), None);
     }
 }
 

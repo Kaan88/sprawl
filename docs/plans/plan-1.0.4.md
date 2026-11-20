@@ -34,15 +34,15 @@ failure, the fallback for trees without volumes. S4 #5 remains an accepted risk.
 
 | # | What | Plan |
 |---|------|------|
-| B1 | **No choice of compression type.** | Add an algorithm choice (XPRESS4K / 8K / 16K, LZX) to the compress action, with a sensible default. Mockup first. |
-| B2 | **No real vs expected size** in the selection section. | Show the size on disk now and the expected size after the action (per row and total). Mockup first. |
-| B3 | **Orange/grey rows jump vertically on the first click.** | Reproduce, find which element changes height on first selection, fix. |
-| B4 | **Codex is told "Use Ask Claude".** `sprawl-advisor/src/llm/agent.rs:44` hard-codes the name. | Use the active provider's button name (or a neutral wording). |
-| B5 | **Deleting shows only small footer text.** | A visible progress bar (items, bytes) that doesn't block using the tree view. |
-| B6 | **The review button is far from the tick buttons; the bar is confusing.** | Redesign the bar so ticking and reviewing sit together. Mockup first. |
-| B7 | **Cleaners is confusing.** It reads this account's folders on C: whatever drive is scanned, and any scan start clears its results. | Keep Cleaners' results across drive scans until Cleaners is run again; say plainly that it looks at this account and Windows, not the scanned drive. |
+| B1 | **Done.** **No choice of compression type.** | Add an algorithm choice (XPRESS4K / 8K / 16K, LZX) to the compress action, with a sensible default. Mockup first. |
+| B2 | **Done.** **No real vs expected size** in the selection section. | Show the size on disk now and the expected size after the action (per row and total). Mockup first. |
+| B3 | **Done.** **Orange/grey rows jump vertically on the first click.** | Reproduce, find which element changes height on first selection, fix. |
+| B4 | **Done.** **Codex is told "Use Ask Claude".** `sprawl-advisor/src/llm/agent.rs:44` hard-codes the name. | Use the active provider's button name (or a neutral wording). |
+| B5 | **Done.** **Deleting shows only small footer text.** | A visible progress bar (items, bytes) that doesn't block using the tree view. |
+| B6 | **Done.** **The review button is far from the tick buttons; the bar is confusing.** | Redesign the bar so ticking and reviewing sit together. Mockup first. |
+| B7 | **Done.** **Cleaners is confusing.** It reads this account's folders on C: whatever drive is scanned, and any scan start clears its results. | Keep Cleaners' results across drive scans until Cleaners is run again; say plainly that it looks at this account and Windows, not the scanned drive. |
 
-## C. Run commands in the app (DISM and friends)
+## C. Run commands in the app (DISM and friends) — done
 
 The built-in rules `win.component-store` (DISM), `win.recycle-bin` and `win.windows-old`
 (cleanmgr) currently only show a command. Plan:
@@ -54,7 +54,7 @@ The built-in rules `win.component-store` (DISM), `win.recycle-bin` and `win.wind
   user-made or AI-proposed ones.
 - Safety code: outside review.
 
-## D. Dev folders (new feature)
+## D. Dev folders (new feature) — done (`crates/sprawl-advisor/src/devgit.rs`)
 
 Today `projects.rs` finds projects by marker files and suggests their build outputs once the
 project has been idle; active outputs get their own never-ticked group. It skips `.git`
