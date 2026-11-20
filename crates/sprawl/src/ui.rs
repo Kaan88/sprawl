@@ -1067,7 +1067,7 @@ pub fn page(drives: &[String]) -> String {
     <TextBlock x:Name="FootLeft" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
     <TextBlock x:Name="FootRight" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" HorizontalAlignment="Right"/>
   </Grid>
-  <Border x:Name="DeleteCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="20,0,0,36" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#55FF7A45" BorderThickness="1" Width="400">
+  <Border x:Name="DeleteCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#55FF7A45" BorderThickness="1" Width="400">
     <StackPanel Spacing="8"><TextBlock x:Name="DeleteTitle" Text="Deleting..." FontSize="14" FontWeight="SemiBold"/>
       <Border Height="6" CornerRadius="3" Background="#22FFFFFF" Width="372" HorizontalAlignment="Left"><Border x:Name="DeleteBar" Width="0" HorizontalAlignment="Left" CornerRadius="3" Background="#FFFF7A45"/></Border>
       <Grid><TextBlock x:Name="DeleteSub" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,80,0"/><Button x:Name="DeleteStop" Content="Stop" HorizontalAlignment="Right" Padding="12,3" FontSize="12" CornerRadius="5"/></Grid>
