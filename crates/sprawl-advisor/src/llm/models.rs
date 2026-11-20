@@ -38,6 +38,10 @@ pub fn list(provider: Provider, base_url: &str) -> Result<Vec<String>, String> {
         s => return Err(format!("the server answered {s}")),
     }
     let ids = parse(&r.body)?;
+    // what each Claude model says about effort comes with the list
+    if provider == Provider::Anthropic {
+        super::effort::remember_anthropic(&r.body);
+    }
     Ok(if sort {
         let mut ids = ids;
         ids.sort_by_key(|a| a.to_lowercase());

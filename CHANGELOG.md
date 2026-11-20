@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- AI setup has an Effort setting for each model: how hard the model thinks before it answers. It lists only the levels that model offers: read from Anthropic's model list and from Codex's own model list, or taken from the providers' documentation otherwise. A model without effort levels, or one Sprawl doesn't know, shows no Effort setting, and its provider's own default applies.
+- AI setup picks the provider from a dropdown, like the model, instead of a row of buttons that didn't fit: "Off" was cut off. With no Anthropic key saved yet, the Model dropdown lists the usual Claude models.
+
 ## 1.0.3 — 2026-11-19
 
 - Compressing a folder is much faster: Sprawl compresses the files itself, several at a time, instead of running compact.exe on them in batches. While it runs, the item and the header show how far through it is ("Compressing... 40%, 1.2 GiB of 3.2 GiB"); Stop ends it after the files being compressed at that moment.

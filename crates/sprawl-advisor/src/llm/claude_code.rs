@@ -23,13 +23,16 @@ pub struct ClaudeCode {
     stop: Option<super::Stop>,
     /// Text as it is written (`--output-format stream-json`).
     sink: Option<super::Sink>,
+    /// `--effort`, when the model takes one ([`super::effort::pick`]).
+    effort: Option<String>,
 }
 
 /// Arguments for `claude`: print mode, JSON out, and nothing it could act with. No built-in tools,
 /// no MCP servers, the user's and project's settings files (their hooks and allow rules) not
 /// loaded, and anything that would ask for permission denied. It reads the prompt and answers.
 /// With `mcp`, only Sprawl's own server (read-only tools) is loaded and allowed.
-pub(crate) fn args(model: &str, mcp: Option<&Path>) -> Vec<String> {
+/// With `effort`, `--effort <level>` (a plain lowercase word only).
+pub(crate) fn args(model: &str, mcp: Option<&Path>, effort: Option<&str>) -> Vec<String> {
     // no transcript of the scan saved under ~/.claude, no slash commands or skills
     let mut a: Vec<String> = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--restricted", "--permission-prompts", "none", "--no-session-persistence", "--disable-slash-commands"]
         .iter()
@@ -45,6 +48,10 @@ pub(crate) fn args(model: &str, mcp: Option<&Path>) -> Vec<String> {
         a.push("--model".into());
         a.push(model.into());
     }
+    if let Some(e) = effort.filter(|e| !e.is_empty() && e.bytes().all(|b| b.is_ascii_lowercase())) {
+        a.push("--effort".into());
+        a.push(e.into());
+    }
     a
 }
 
@@ -57,7 +64,13 @@ fn workdir() -> PathBuf {
 
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
-        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true, stop: None, sink: None }
+        ClaudeCode { exe: exe.to_path_buf(), model: model.trim().to_string(), mcp: None, prompt: format!("{system}\n\n{first}"), pending: true, stop: None, sink: None, effort: None }
+    }
+
+    /// Run with `--effort <level>`; None passes none (Claude Code's own default).
+    pub fn with_effort(mut self, effort: Option<String>) -> ClaudeCode {
+        self.effort = effort;
+        self
     }
 
     /// End the run when `stop` is set.
@@ -117,7 +130,7 @@ impl ClaudeCode {
         log_request(&format!("claude -p ({})", self.exe.display()), &self.prompt);
         // Rust escapes arguments for a .cmd shim itself; the prompt goes on stdin
         let mut cmd = Command::new(&self.exe);
-        let mut a = args(&self.model, self.mcp.as_deref());
+        let mut a = args(&self.model, self.mcp.as_deref(), self.effort.as_deref());
         let streaming = self.sink.is_some();
         if streaming {
             // the same run, its events line by line: text arrives as it is written
@@ -253,9 +266,9 @@ mod tests {
 
     #[test]
     fn nothing_to_act_with() {
-        let a = super::args("claude-opus-5-5", None);
+        let a = super::args("claude-opus-5-5", None, None);
         assert!(!a.contains(&"--mcp-config".to_string()));
-        let m = super::args("claude-opus-5-5", Some(std::path::Path::new(r"C:\x\mcp.json")));
+        let m = super::args("claude-opus-5-5", Some(std::path::Path::new(r"C:\x\mcp.json")), None);
         assert_eq!(m[m.iter().position(|x| x == "--allowedTools").unwrap() + 1], "mcp__sprawl", "only Sprawl's tools");
         assert!(m.contains(&"--strict-mcp-config".to_string()));
         let i = a.iter().position(|x| x == "--tools").unwrap();
@@ -264,7 +277,21 @@ mod tests {
             assert!(a.contains(&flag.to_string()), "{flag}");
         }
         assert_eq!(a[a.iter().position(|x| x == "--permission-prompts").unwrap() + 1], "none");
-        assert!(!super::args("--dangerously-skip-permissions", None).contains(&"--model".to_string()), "a model name can't be a flag");
+        assert!(!super::args("--dangerously-skip-permissions", None, None).contains(&"--model".to_string()), "a model name can't be a flag");
+    }
+
+    /// `--effort <level>` (as `claude --help` documents it), only for a level the model takes.
+    #[test]
+    fn effort_flag() {
+        use crate::config::{AiConfig, Provider};
+        let mut cfg = AiConfig { provider: Provider::ClaudeCode, ..AiConfig::default() };
+        assert!(!super::args("claude-haiku-5-5", None, crate::llm::effort::pick(&cfg, "claude-haiku-5-5").as_deref()).contains(&"--effort".to_string()), "nothing picked: Claude Code's default");
+        cfg.efforts.insert("claude-haiku-5-5".into(), "low".into());
+        let a = super::args("claude-haiku-5-5", None, crate::llm::effort::pick(&cfg, "claude-haiku-5-5").as_deref());
+        assert_eq!(a[a.iter().position(|x| x == "--effort").unwrap() + 1], "low");
+        cfg.efforts.insert("claude-sonnet-4-6".into(), "xhigh".into());
+        assert!(!super::args("claude-sonnet-4-6", None, crate::llm::effort::pick(&cfg, "claude-sonnet-4-6").as_deref()).contains(&"--effort".to_string()), "Sonnet 4.6 has no xhigh");
+        assert!(!super::args("m", None, Some("--x")).contains(&"--effort".to_string()), "a level can't be a flag");
     }
 
     #[test]

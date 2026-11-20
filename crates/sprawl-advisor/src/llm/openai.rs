@@ -13,6 +13,8 @@ pub struct OpenAi {
     model: String,
     tools: Value,
     messages: Vec<Value>,
+    /// `reasoning_effort`, when the model takes one ([`super::effort::pick`]).
+    effort: Option<String>,
 }
 
 impl OpenAi {
@@ -30,11 +32,21 @@ impl OpenAi {
             model: model.trim().to_string(),
             tools,
             messages: vec![json!({"role": "system", "content": system}), json!({"role": "user", "content": first})],
+            effort: None,
         }
+    }
+
+    /// Send `reasoning_effort` (Chat Completions' name for it) with this level; None sends none.
+    pub fn with_effort(mut self, effort: Option<String>) -> OpenAi {
+        self.effort = effort;
+        self
     }
 
     pub(crate) fn body(&self) -> Value {
         let mut body = json!({"model": self.model, "messages": self.messages});
+        if let Some(e) = &self.effort {
+            body["reasoning_effort"] = json!(e);
+        }
         if self.tools.as_array().is_some_and(|t| !t.is_empty()) {
             body["tools"] = self.tools.clone();
         }
@@ -201,5 +213,23 @@ mod tests {
         o.answer(vec![("c1".into(), "ok".into(), false)]);
         assert_eq!(o.messages.last().unwrap()["tool_call_id"], "c1");
         assert!(o.take(&json!({"error": "x"})).is_err());
+    }
+
+    /// `reasoning_effort` at the top of the body, only for a model OpenAI lists levels for,
+    /// on OpenAI's own API.
+    #[test]
+    fn effort_in_the_body() {
+        use crate::config::{AiConfig, Provider};
+        let mut cfg = AiConfig { provider: Provider::OpenAi, ..AiConfig::default() };
+        cfg.efforts.insert("gpt-6.2-sol".into(), "xhigh".into());
+        let o = OpenAi::new("", None, "gpt-6.2-sol", "s".into(), "r".into(), &[]).with_effort(super::super::effort::pick(&cfg, "gpt-6.2-sol"));
+        assert_eq!(o.body()["reasoning_effort"], "xhigh");
+        // "none" is a level gpt-6.2-sol doesn't take
+        cfg.efforts.insert("gpt-6.2-sol".into(), "none".into());
+        assert_eq!(super::super::effort::pick(&cfg, "gpt-6.2-sol"), None);
+        cfg.base_url = "http://localhost:11434/v1".into();
+        cfg.efforts.insert("llama3".into(), "high".into());
+        let local = OpenAi::new(&cfg.base_url, None, "llama3", "s".into(), "r".into(), &[]).with_effort(super::super::effort::pick(&cfg, "llama3"));
+        assert!(local.body().get("reasoning_effort").is_none());
     }
 }

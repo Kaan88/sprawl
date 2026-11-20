@@ -94,6 +94,7 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
         _ => true,
     };
     let opening = format!("{report}\n\n# The user asks\n{first}");
+    let effort = super::effort::pick(cfg, &model);
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
         let specs = if with_tools { chat_specs_with(web) } else { Vec::new() };
         let system = if with_tools { CHAT.to_string() } else { format!("{CHAT}\nYou have no tools in this conversation: answer from the report.") };
@@ -101,12 +102,12 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
             Provider::Off => return Err("AI is off".into()),
             Provider::Anthropic => {
                 let key = config::key(Provider::Anthropic).or_else(|| std::env::var("ANTHROPIC_API_KEY").ok()).filter(|k| !k.trim().is_empty());
-                Box::new(Anthropic::new(key.ok_or("No Anthropic API key. Add one in Options > AI setup.")?, &model, system, opening.clone(), &specs))
+                Box::new(Anthropic::new(key.ok_or("No Anthropic API key. Add one in Options > AI setup.")?, &model, system, opening.clone(), &specs).with_effort(effort.clone()))
             }
-            Provider::OpenAi => Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, &model, system, opening.clone(), &specs)),
+            Provider::OpenAi => Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, &model, system, opening.clone(), &specs).with_effort(effort.clone())),
             Provider::ClaudeCode => {
                 let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
-                let c = ClaudeCode::new(&exe, &model, &system, &opening).with_stop(stop.clone());
+                let c = ClaudeCode::new(&exe, &model, &system, &opening).with_stop(stop.clone()).with_effort(effort.clone());
                 match cc.as_ref().filter(|_| with_tools) {
                     Some(run) => Box::new(c.with_mcp(&run.cfg)),
                     None => Box::new(c),
@@ -114,7 +115,7 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
             }
             Provider::Codex => {
                 let exe = Detected::probe().codex.ok_or("Codex (codex) isn't installed or isn't on PATH.")?;
-                Box::new(Codex::new(&exe, &model, &system, &opening).with_stop(stop.clone()))
+                Box::new(Codex::new(&exe, &model, &system, &opening).with_stop(stop.clone()).with_effort(effort.clone()))
             }
         };
         Ok(Box::new(Metered::new(c, stop.clone(), Rc::new(RefCell::new(Usage::default())))) as Box<dyn Chat>)
@@ -402,26 +403,27 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode, stop: &Stop) -> 
         Mode::Tools => (SYSTEM.to_string(), report.to_string()),
         Mode::Single => (format!("{SYSTEM}\n\n{SINGLE}"), report.to_string()),
     };
+    let effort = super::effort::pick(cfg, model);
     Ok(match cfg.provider {
         Provider::Off => return Err("AI is off. Choose a provider in Options > AI setup.".into()),
         Provider::Anthropic => {
             let key = config::key(Provider::Anthropic).or_else(|| std::env::var("ANTHROPIC_API_KEY").ok()).filter(|k| !k.trim().is_empty());
             let key = key.ok_or("No Anthropic API key. Add one in Options > AI setup.")?;
-            Box::new(Anthropic::new(key, model, system, first, &tools))
+            Box::new(Anthropic::new(key, model, system, first, &tools).with_effort(effort))
         }
         Provider::OpenAi => {
             if model.trim().is_empty() {
                 return Err("Set a model name in Options > AI setup.".into());
             }
-            Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, model, system, first, &tools))
+            Box::new(OpenAi::new(&cfg.base_url, openai_key(&cfg.base_url)?, model, system, first, &tools).with_effort(effort))
         }
         Provider::ClaudeCode => {
             let exe = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
-            Box::new(ClaudeCode::new(&exe, model, &system, &first).with_stop(stop.clone()))
+            Box::new(ClaudeCode::new(&exe, model, &system, &first).with_stop(stop.clone()).with_effort(effort))
         }
         Provider::Codex => {
             let exe = Detected::probe().codex.ok_or("Codex (codex) isn't installed or isn't on PATH.")?;
-            Box::new(Codex::new(&exe, model, &system, &first).with_stop(stop.clone()))
+            Box::new(Codex::new(&exe, model, &system, &first).with_stop(stop.clone()).with_effort(effort))
         }
     })
 }
@@ -431,16 +433,17 @@ fn open(cfg: &AiConfig, model: &str, report: &str, mode: &Mode, stop: &Stop) -> 
 /// the same checks as any other model's: nothing it wrote is taken as it is.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn run_driven(tree: &Tree, scan_before: std::time::SystemTime, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
-    let mut run = run_driven_inner(tree, scan_before, facts, model, report, already, memory, exe, stop, progress)?;
-    let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), ..AiConfig::default() };
+fn run_driven(tree: &Tree, scan_before: std::time::SystemTime, user: &AiConfig, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+    let effort = super::effort::pick(user, model);
+    let mut run = run_driven_inner(tree, scan_before, facts, model, effort, report, already, memory, exe, stop, progress)?;
+    let cfg = AiConfig { provider: Provider::ClaudeCode, model: model.to_string(), efforts: user.efforts.clone(), ..AiConfig::default() };
     second_opinion(&cfg, model, &mut run, stop, progress);
     run_cleaner_check(&cfg, model, &mut run, stop, progress);
     Ok(run)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_driven_inner(tree: &Tree, scan_before: std::time::SystemTime, facts: &Facts, model: &str, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
+fn run_driven_inner(tree: &Tree, scan_before: std::time::SystemTime, facts: &Facts, model: &str, effort: Option<String>, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
     let dir = run_dir()?;
     /// Removes the run's folder however the run ends, a panic included.
@@ -463,7 +466,7 @@ fn run_driven_inner(tree: &Tree, scan_before: std::time::SystemTime, facts: &Fac
         let cfg_file = dir.join("mcp.json");
         std::fs::write(&cfg_file, crate::mcp::driven_config(exe, &tree_file, &out_file, model)).map_err(|e| e.to_string())?;
         let first = format!("{report}\n\nUse Sprawl's tools (mcp__sprawl__...) to look closer, report each opportunity with report_finding, and end with finish.");
-        let mut cc = ClaudeCode::new(&claude, model, SYSTEM, &first).with_mcp(&cfg_file).with_stop(stop.clone());
+        let mut cc = ClaudeCode::new(&claude, model, SYSTEM, &first).with_mcp(&cfg_file).with_stop(stop.clone()).with_effort(effort);
         progress(format!("Claude Code ({model}) is reading the scan..."));
         // show what it does as it goes: the server notes every tool call
         let started = std::time::Instant::now();
@@ -569,15 +572,16 @@ fn named(p: Provider, model: &str) -> String {
 
 /// One question to a fresh conversation without tools; its answer, or None.
 fn one_shot(cfg: &AiConfig, model: &str, system: &str, text: String, stop: &Stop, usage: &Rc<RefCell<Usage>>) -> Option<String> {
+    let effort = super::effort::pick(cfg, model);
     let chat: Result<Box<dyn Chat>, String> = match cfg.provider {
         Provider::Anthropic => config::key(Provider::Anthropic)
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
             .filter(|k| !k.trim().is_empty())
-            .map(|k| Box::new(Anthropic::new(k, model, system.into(), text.clone(), &[])) as Box<dyn Chat>)
+            .map(|k| Box::new(Anthropic::new(k, model, system.into(), text.clone(), &[]).with_effort(effort.clone())) as Box<dyn Chat>)
             .ok_or_else(|| "no key".to_string()),
-        Provider::OpenAi => openai_key(&cfg.base_url).map(|k| Box::new(OpenAi::new(&cfg.base_url, k, model, system.into(), text.clone(), &[])) as Box<dyn Chat>),
-        Provider::ClaudeCode => Detected::probe().claude_code.map(|exe| Box::new(ClaudeCode::new(&exe, model, system, &text).with_stop(stop.clone())) as Box<dyn Chat>).ok_or_else(|| "no claude".to_string()),
-        Provider::Codex => Detected::probe().codex.map(|exe| Box::new(Codex::new(&exe, model, system, &text).with_stop(stop.clone())) as Box<dyn Chat>).ok_or_else(|| "no codex".to_string()),
+        Provider::OpenAi => openai_key(&cfg.base_url).map(|k| Box::new(OpenAi::new(&cfg.base_url, k, model, system.into(), text.clone(), &[]).with_effort(effort.clone())) as Box<dyn Chat>),
+        Provider::ClaudeCode => Detected::probe().claude_code.map(|exe| Box::new(ClaudeCode::new(&exe, model, system, &text).with_stop(stop.clone()).with_effort(effort.clone())) as Box<dyn Chat>).ok_or_else(|| "no claude".to_string()),
+        Provider::Codex => Detected::probe().codex.map(|exe| Box::new(Codex::new(&exe, model, system, &text).with_stop(stop.clone()).with_effort(effort.clone())) as Box<dyn Chat>).ok_or_else(|| "no codex".to_string()),
         Provider::Off => Err("off".into()),
     };
     chat.ok().map(|c| Metered::new(c, stop.clone(), usage.clone())).and_then(|mut c| c.turn().ok()).map(|t| t.text)
@@ -712,7 +716,7 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     // Claude Code with Sprawl's own tools, when the app can serve them
     if cfg.provider == Provider::ClaudeCode {
         if let Some(exe) = super::mcp_exe() {
-            return run_driven(tree, scan_before, &facts, &model, &report, already, memory, exe, &stop, progress);
+            return run_driven(tree, scan_before, cfg, &facts, &model, &report, already, memory, exe, &stop, progress);
         }
     }
     let usage = Rc::new(RefCell::new(Usage::default()));
