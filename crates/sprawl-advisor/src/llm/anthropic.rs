@@ -1,6 +1,7 @@
 //! Anthropic Messages API over raw HTTP (there is no official Rust SDK).
 //!
-//! Adaptive thinking, effort set explicitly (Claude Opus 5.5 defaults to `medium`), tools on
+//! Adaptive thinking, effort set explicitly where the model takes it (the user's level, else
+//! `high`: Claude Opus 5.5 defaults to `medium`; see [`super::effort`]), tools on
 //! `auto` (forced tool choice is refused by current models), and the assistant's content echoed
 //! back unchanged on every turn, thinking blocks included. On models that support it, a refusal
 //! is retried on a fallback model by the API itself (`fallbacks: "default"`).
@@ -22,6 +23,8 @@ pub struct Anthropic {
     system: String,
     tools: Value,
     messages: Vec<Value>,
+    /// `output_config.effort`, when the model takes one ([`super::effort::pick`]).
+    effort: Option<String>,
 }
 
 /// Models that accept `fallbacks: "default"`.
@@ -33,7 +36,13 @@ impl Anthropic {
     pub fn new(key: String, model: &str, system: String, first: String, tools: &[ToolSpec]) -> Anthropic {
         let model = if model.trim().is_empty() { "claude-opus-5-5".to_string() } else { model.trim().to_string() };
         let tools = Value::Array(tools.iter().map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.schema})).collect());
-        Anthropic { sink: None, key, model, system, tools, messages: vec![json!({"role": "user", "content": first})] }
+        Anthropic { sink: None, key, model, system, tools, messages: vec![json!({"role": "user", "content": first})], effort: None }
+    }
+
+    /// Send `output_config.effort` with this level; None sends none (the model's default).
+    pub fn with_effort(mut self, effort: Option<String>) -> Anthropic {
+        self.effort = effort;
+        self
     }
 
     pub(crate) fn body(&self) -> Value {
@@ -43,8 +52,10 @@ impl Anthropic {
             "system": self.system,
             "messages": self.messages,
             "thinking": {"type": "adaptive"},
-            "output_config": {"effort": "high"},
         });
+        if let Some(e) = &self.effort {
+            body["output_config"] = json!({"effort": e});
+        }
         if self.tools.as_array().is_some_and(|t| !t.is_empty()) {
             body["tools"] = self.tools.clone();
         }
@@ -314,11 +325,11 @@ mod tests {
     #[test]
     fn request_and_tool_turn() {
         let tools = [ToolSpec { name: "largest", description: "d", schema: json!({"type": "object", "properties": {}}) }];
-        let mut a = Anthropic::new("k".into(), "", "sys".into(), "report".into(), &tools);
+        let mut a = Anthropic::new("k".into(), "", "sys".into(), "report".into(), &tools).with_effort(Some("high".into()));
         let b = a.body();
         assert_eq!(b["model"], "claude-opus-5-5");
         assert_eq!(b["thinking"]["type"], "adaptive");
-        assert_eq!(b["output_config"]["effort"], "high");
+        assert_eq!(b["output_config"], json!({"effort": "high"}));
         assert_eq!(b["fallbacks"], "default");
         assert!(b.get("tool_choice").is_none(), "forced tool choice is refused by current models");
         let resp = json!({
@@ -341,5 +352,19 @@ mod tests {
         // an older model gets no fallbacks parameter
         let old = Anthropic::new("k".into(), "claude-haiku-4-5", "s".into(), "r".into(), &[]);
         assert!(old.body().get("fallbacks").is_none() && old.body().get("tools").is_none());
+    }
+
+    /// The picked level goes in `output_config.effort` (the Messages API's place for it); a
+    /// model without effort gets no `output_config` at all.
+    #[test]
+    fn effort_in_the_body() {
+        use crate::config::{AiConfig, Provider};
+        let mut cfg = AiConfig { provider: Provider::Anthropic, ..AiConfig::default() };
+        cfg.efforts.insert("claude-sonnet-5-5".into(), "xhigh".into());
+        let a = Anthropic::new("k".into(), "claude-sonnet-5-5", "s".into(), "r".into(), &[]).with_effort(super::super::effort::pick(&cfg, "claude-sonnet-5-5"));
+        assert_eq!(a.body()["output_config"], json!({"effort": "xhigh"}));
+        let none = Anthropic::new("k".into(), "claude-haiku-4-5", "s".into(), "r".into(), &[]).with_effort(super::super::effort::pick(&cfg, "claude-haiku-4-5"));
+        assert!(none.body().get("output_config").is_none());
+        assert!(Anthropic::new("k".into(), "claude-next-1", "s".into(), "r".into(), &[]).body().get("output_config").is_none());
     }
 }

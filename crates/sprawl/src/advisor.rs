@@ -272,6 +272,8 @@ pub(crate) struct Advisor {
     ai_edit: Option<AiConfig>,
     /// The provider's models, for the Model dropdown.
     models: crate::models::ModelFetch,
+    /// The model the Effort dropdown was drawn for, and the levels it lists (after "Default").
+    effort_drawn: Option<(String, Vec<String>)>,
     sort: Sort,
     only: Only,
     /// The growth lens for a tree generation: a code per node (10 to 14 by how much it grew).
@@ -494,6 +496,15 @@ fn run_file(root: &std::path::Path) -> Option<PathBuf> {
 }
 
 /// One-click models: (id, what it is good for).
+/// The Provider dropdown, in order: the provider, its name there, and the command that picks it.
+const PROVIDER_PICKS: [(Provider, &str, &str); 5] = [
+    (Provider::ClaudeCode, "Claude Code", "AdvPClaudeCode"),
+    (Provider::Codex, "Codex", "AdvPCodex"),
+    (Provider::Anthropic, "Anthropic API", "AdvPAnthropic"),
+    (Provider::OpenAi, "OpenAI-compatible", "AdvPOpenAi"),
+    (Provider::Off, "Off", "AdvPOff"),
+];
+
 const CLAUDE_MODELS: [(&str, &str); 3] = [("claude-haiku-5-5", "fast and cheap"), ("claude-sonnet-5-5", "balanced"), ("claude-opus-5-5", "most careful")];
 
 /// What the goal box shows when empty, and what an empty box means.
@@ -1775,6 +1786,11 @@ impl State {
                 self.advisor.models.want(p, &u);
             }
         }
+        // the levels the chosen model offers (read again each time: a fetched list may say more)
+        self.advisor.effort_drawn = self.advisor.ai_edit.as_ref().and_then(|e| {
+            let levels = sprawl_advisor::llm::effort::levels(e.provider, &e.base_url, &e.model);
+            (!levels.is_empty()).then(|| (e.model.clone(), levels))
+        });
         // keep what was typed in the goal and question boxes across the redraw
         if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
             if let Ok(h) = t.Text() {
@@ -2038,6 +2054,32 @@ impl State {
                         keep(t);
                     }
                 }
+            }
+        }
+        // another provider: the form below it is drawn for that one
+        if let Ok(s) = find::<Selector>(fe, "AdvAiProviderPick") {
+            if let Ok(t) = s.SelectionChanged(|sel, _| {
+                let i = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
+                if let Some((_, _, cmd)) = i.and_then(|i| PROVIDER_PICKS.get(i)) {
+                    with(|s| {
+                        s.advisor.focus_after = Some("AdvAiProviderPick".into());
+                        s.advisor_command(cmd);
+                    });
+                }
+            }) {
+                keep(t);
+            }
+        }
+        // another model may offer other effort levels: draw the Effort dropdown for it
+        if let Ok(s) = find::<Selector>(fe, "AdvAiModelPick") {
+            if let Ok(t) = s.SelectionChanged(|_, _| {
+                with(|s| {
+                    s.read_ai_fields();
+                    s.advisor.focus_after = Some("AdvAiModelPick".into());
+                    s.render_advisor();
+                });
+            }) {
+                keep(t);
             }
         }
         for name in [
@@ -2890,10 +2932,24 @@ impl State {
     fn read_ai_fields(&mut self) {
         let get = |n: &str| self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, n).ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
         let (mut m, u) = (get("AdvAiModel"), get("AdvAiUrl"));
+        // the Effort dropdown, for the model it was drawn for (before the model may change)
+        let effort = self.advisor.panel.as_ref().and_then(|p| find::<Selector>(p, "AdvAiEffortPick").ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
+        if let (Some(i), Some((dm, levels)), Some(c)) = (effort, self.advisor.effort_drawn.clone(), self.advisor.ai_edit.as_mut()) {
+            if c.model == dm {
+                match i.checked_sub(1).and_then(|i| levels.get(i)) {
+                    Some(l) => {
+                        c.efforts.insert(dm, l.clone());
+                    }
+                    None => {
+                        c.efforts.remove(&dm);
+                    }
+                }
+            }
+        }
         // the dropdown, when there is one: its entries are the same as when it was drawn
         if let Some(c) = &self.advisor.ai_edit {
             let pick = self.advisor.panel.as_ref().and_then(|p| find::<Selector>(p, "AdvAiModelPick").ok()).and_then(|s| s.SelectedIndex().ok());
-            if let (Some(i), Some(list)) = (pick, self.advisor.models.choices(&c.model)) {
+            if let (Some(i), Some(list)) = (pick, self.model_choices(c)) {
                 if let Some(v) = usize::try_from(i).ok().and_then(|i| list.get(i)) {
                     m = Some(v.clone());
                 }
@@ -3674,40 +3730,60 @@ impl State {
         x
     }
 
+    /// The Model dropdown's entries: the provider's list, or, for the Claude providers while
+    /// there is none (no key yet, offline), the usual Claude models. None: a text box.
+    fn model_choices(&self, c: &AiConfig) -> Option<Vec<String>> {
+        self.advisor.models.choices(&c.model).or_else(|| {
+            matches!(c.provider, Provider::Anthropic | Provider::ClaudeCode).then(|| {
+                let mut v: Vec<String> = CLAUDE_MODELS.iter().map(|(id, _)| id.to_string()).collect();
+                let m = c.model.trim();
+                if !m.is_empty() && !v.iter().any(|x| x == m) {
+                    v.insert(0, m.to_string());
+                }
+                v
+            })
+        })
+    }
+
     /// Choosing the provider and model, here instead of the setup wizard.
     fn ai_settings(&self, e: &AiConfig) -> String {
-        let chip = |name: &str, label: &str, on: bool| {
-            format!(r##"<Button x:Name="{name}" Content="{label}" {} Padding="10,3" CornerRadius="12"/>"##, crate::look::pick(crate::look::Pick::Chip, on))
-        };
         let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF"><StackPanel Spacing="8">"##);
+        // one field like Model and Effort: it shows the choice alone, so it fits any width
+        let names: Vec<String> = PROVIDER_PICKS.iter().map(|(_, label, _)| label.to_string()).collect();
+        let current = PROVIDER_PICKS.iter().find(|(p, _, _)| *p == e.provider).map_or("Off", |(_, l, _)| *l);
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="4">{}{}{}{}{}</StackPanel>"##,
-            chip("AdvPClaudeCode", "Claude Code", e.provider == Provider::ClaudeCode),
-            chip("AdvPCodex", "Codex", e.provider == Provider::Codex),
-            chip("AdvPAnthropic", "Anthropic API", e.provider == Provider::Anthropic),
-            chip("AdvPOpenAi", "OpenAI-compatible", e.provider == Provider::OpenAi),
-            chip("AdvPOff", "Off", e.provider == Provider::Off),
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Provider" Width="70" VerticalAlignment="Center" FontSize="12"/>{}</StackPanel>"##,
+            crate::models::combo("AdvAiProviderPick", &names, current, 260)
         );
         if e.provider == Provider::Codex {
             x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::llm::codex::RISK));
         }
-        let choices = self.advisor.models.choices(&e.model);
-        // the quick picks, when there's no list to pick from
-        if choices.is_none() && matches!(e.provider, Provider::Anthropic | Provider::ClaudeCode) {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="4">"##;
-            for (i, (id, what)) in CLAUDE_MODELS.iter().enumerate() {
-                x += &chip(&format!("AdvM{i}"), &format!("{} ({what})", id.trim_start_matches("claude-")), e.model == *id);
-            }
-            x += "</StackPanel>";
-        }
+        let choices = self.model_choices(e);
         if e.provider != Provider::Off {
             let field = match &choices {
                 Some(list) => crate::models::combo("AdvAiModelPick", list, &e.model, 260),
                 None => format!(r##"<TextBox x:Name="AdvAiModel" Width="260" Text="{}"/>"##, ui::esc(&e.model)),
             };
             x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Model" Width="70" VerticalAlignment="Center" FontSize="12"/>{field}</StackPanel>"##);
-            if let Some(n) = self.advisor.models.note() {
+            // no list fetched yet, but the usual Claude models to pick from
+            let usual = self.advisor.models.choices(&e.model).is_none() && choices.is_some();
+            let note = self.advisor.models.note().map(|n| if usual && !n.starts_with("Loading") { "The usual Claude models. Save a key to list them all.".to_string() } else { n });
+            if let Some(n) = note {
                 x += &format!(r##"<TextBlock Text="{}" Margin="78,0,0,0" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(&n));
+            }
+            // only for a model whose levels are known: none, no control, and nothing is sent
+            if let Some((m, levels)) = self.advisor.effort_drawn.as_ref().filter(|(m, _)| *m == e.model) {
+                let default = match sprawl_advisor::llm::effort::sprawl_default(e.provider, levels) {
+                    Some(d) => format!("Default ({d})"),
+                    None => "Default (the model's own)".to_string(),
+                };
+                let mut items = vec![default];
+                items.extend(levels.iter().cloned());
+                let current = e.efforts.get(m).filter(|s| levels.contains(s)).cloned().unwrap_or_else(|| items[0].clone());
+                x += &format!(
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Effort" Width="70" VerticalAlignment="Center" FontSize="12"/>{}</StackPanel>"##,
+                    crate::models::combo("AdvAiEffortPick", &items, &current, 260).replacen("<ComboBox ", r##"<ComboBox ToolTipService.ToolTip="How hard the model thinks before it answers. Only the levels this model offers are listed; higher is slower and uses more tokens." "##, 1)
+                );
             }
         }
         if e.provider == Provider::OpenAi {

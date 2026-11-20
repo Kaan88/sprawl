@@ -81,6 +81,10 @@ pub struct AiConfig {
     /// chat isn't offered a web search at all.
     #[serde(default)]
     pub web_lookup: bool,
+    /// The reasoning effort picked per model id. Sent only when that model offers the level
+    /// (see [`crate::llm::effort`]); a model not listed gets Sprawl's or the provider's default.
+    #[serde(default)]
+    pub efforts: std::collections::BTreeMap<String, String>,
 }
 
 fn dir() -> Option<PathBuf> {

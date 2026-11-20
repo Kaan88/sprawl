@@ -15,6 +15,7 @@ pub mod claude_code;
 pub mod codex;
 #[cfg(windows)]
 pub(crate) mod contain;
+pub mod effort;
 pub mod http;
 pub mod models;
 pub mod more_tools;

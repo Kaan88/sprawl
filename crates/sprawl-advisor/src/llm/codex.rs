@@ -32,6 +32,8 @@ pub struct Codex {
     stop: Option<super::Stop>,
     /// Its answer, once written (Codex sends a message whole, not word by word).
     sink: Option<super::Sink>,
+    /// `model_reasoning_effort`, when the model lists the level ([`super::effort::pick`]).
+    effort: Option<String>,
 }
 
 /// What Codex could act with, switched off: its shell and command runner, code mode (through
@@ -72,14 +74,16 @@ fn common() -> Vec<String> {
 /// Arguments for `codex exec`: JSON events out, the prompt on stdin, no session saved, the
 /// user's config.toml (their MCP servers, hooks, profiles) and rules files not loaded, a
 /// read-only sandbox, the [`common`] settings, and `servers_off` (`-c
-/// mcp_servers.<name>.enabled=false` for each server the check found).
-pub(crate) fn args(model: &str, dir: &Path, servers_off: &[String]) -> Vec<String> {
+/// mcp_servers.<name>.enabled=false` for each server the check found), and the
+/// [`effort_setting`] the checks ran with.
+pub(crate) fn args(model: &str, dir: &Path, servers_off: &[String], effort: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = ["exec", "--json", "--color", "never", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     a.extend(common());
     a.extend(servers_off.iter().cloned());
+    a.extend(effort_setting(effort));
     a.push("-C".into());
     a.push(dir.display().to_string());
     if valid_model(model) {
@@ -115,6 +119,48 @@ fn fresh(what: &str) -> Result<sprawl_core::local::OwnedDir, String> {
 /// `-c model="..."` for the checks, so they see the model the run will use.
 fn model_setting(model: &str) -> Vec<String> {
     if valid_model(model) { vec!["-c".into(), format!("model=\"{model}\"")] } else { Vec::new() }
+}
+
+/// `-c model_reasoning_effort="..."` (Codex's config key for it, see its config reference:
+/// https://learn.chatgpt.com/docs/config-file/config-reference), for the run and the checks
+/// alike, so they see what the run will use. Only a plain lowercase word; never `ultra`.
+fn effort_setting(effort: Option<&str>) -> Vec<String> {
+    match effort {
+        Some(e) if !e.is_empty() && e != "ultra" && e.bytes().all(|b| b.is_ascii_lowercase()) => vec!["-c".into(), format!("model_reasoning_effort=\"{e}\"")],
+        _ => Vec::new(),
+    }
+}
+
+/// The effort levels Codex lists for `model` in its own cache (`supported_reasoning_levels`),
+/// fetched by Codex from OpenAI. Empty when the model isn't there. `ultra` ("maximum
+/// reasoning with automatic task delegation") is left out: it hands work to helper agents,
+/// which Sprawl keeps switched off (`multi_agent` in [`OFF`]).
+pub fn efforts(model: &str) -> Vec<String> {
+    let Some(home) = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".codex")) else { return Vec::new() };
+    let Ok(dir) = std::fs::read_dir(&home) else { return Vec::new() };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if !(name.starts_with("models_cache") && name.ends_with(".json")) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+        if let Some(l) = parse_efforts(&text, model) {
+            return l;
+        }
+    }
+    Vec::new()
+}
+
+/// The levels a Codex model cache lists for `model` (a listed one), or None when it isn't in it.
+fn parse_efforts(text: &str, model: &str) -> Option<Vec<String>> {
+    let v: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let m = v["models"].as_array()?.iter().find(|m| m["slug"].as_str() == Some(model) && m["visibility"].as_str() == Some("list"))?;
+    Some(
+        m["supported_reasoning_levels"]
+            .as_array()
+            .map(|ls| ls.iter().filter_map(|l| l["effort"].as_str()).filter(|e| *e != "ultra").map(str::to_string).collect())
+            .unwrap_or_default(),
+    )
 }
 
 /// A model name that is one plain argument: letters, digits, `-`, `.`, `_`, not starting with `-`.
@@ -258,7 +304,7 @@ fn check_tools(out: &str) -> Result<(), String> {
 /// server it lists is switched off by name and must then list as off; the tool features must
 /// be off and the tools offered within [`CHECKED_TOOLS`]. The settings that switch the
 /// servers off, for the run; or why it isn't started.
-fn verify(exe: &Path, dir: &Path, home: &Path, model: &str, stopped: &dyn Fn() -> bool) -> Result<Vec<String>, String> {
+fn verify(exe: &Path, dir: &Path, home: &Path, model: &str, effort: Option<&str>, stopped: &dyn Fn() -> bool) -> Result<Vec<String>, String> {
     // a configuration an administrator put in the login's home isn't seen by the check; one
     // that can't be looked for counts as there
     let h = codex_home().ok_or("the Codex home folder isn't known")?;
@@ -269,7 +315,8 @@ fn verify(exe: &Path, dir: &Path, home: &Path, model: &str, stopped: &dyn Fn() -
             Err(e) => return Err(format!("{} couldn't be looked for ({e})", h.join(f).display())),
         }
     }
-    let with_model = model_setting(model);
+    let mut with_model = model_setting(model);
+    with_model.extend(effort_setting(effort));
     let listed = parse_servers(&probe(exe, dir, home, &["mcp", "list", "--json"], &with_model, &[], stopped)?)?;
     let off: Vec<String> = listed.iter().flat_map(|(n, _)| ["-c".to_string(), format!("mcp_servers.{n}.enabled=false")]).collect();
     let checked: Vec<String> = with_model.iter().chain(off.iter()).cloned().collect();
@@ -318,7 +365,14 @@ fn parse_models(text: &str) -> Vec<(i64, String)> {
 
 impl Codex {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> Codex {
-        Codex { exe: exe.to_path_buf(), model: model.trim().to_string(), prompt: format!("{system}\n\n{first}"), pending: true, stop: None, sink: None }
+        Codex { exe: exe.to_path_buf(), model: model.trim().to_string(), prompt: format!("{system}\n\n{first}"), pending: true, stop: None, sink: None, effort: None }
+    }
+
+    /// Run (and check) with `model_reasoning_effort` at this level; None sets none (Codex's
+    /// own default for the model).
+    pub fn with_effort(mut self, effort: Option<String>) -> Codex {
+        self.effort = effort;
+        self
     }
 
     /// End the run when `stop` is set.
@@ -411,7 +465,7 @@ impl Codex {
         let home = fresh("check").map_err(|e| format!("Codex isn't started: {e}"))?;
         let stop = self.stop.clone();
         let stopped = move || stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
-        let off = verify(&self.exe, dir.path(), home.path(), &self.model, &stopped).map_err(|e| {
+        let off = verify(&self.exe, dir.path(), home.path(), &self.model, self.effort.as_deref(), &stopped).map_err(|e| {
             if e == super::STOPPED { e } else { format!("Codex isn't started, as it isn't a set-up Sprawl has checked: {e}") }
         })?;
         drop(home);
@@ -425,7 +479,7 @@ impl Codex {
             return Err(super::STOPPED.into());
         }
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args(&self.model, dir.path(), &off)).current_dir(dir.path());
+        cmd.args(args(&self.model, dir.path(), &off, self.effort.as_deref())).current_dir(dir.path());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // in a job with everything it starts: Stop, the time limit and every return end them all
         // (0x0800_0000: CREATE_NO_WINDOW)
@@ -580,7 +634,7 @@ mod tests {
     #[test]
     fn nothing_to_act_with() {
         let dir = std::path::Path::new(r"C:\x\codex");
-        let a = super::args("gpt-6-luna", dir, &["-c".into(), "mcp_servers.node_repl.enabled=false".into()]);
+        let a = super::args("gpt-6-luna", dir, &["-c".into(), "mcp_servers.node_repl.enabled=false".into()], None);
         assert!(a.windows(2).any(|w| w[0] == "-c" && w[1] == "mcp_servers.node_repl.enabled=false"), "the servers the check found are switched off");
         let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
         assert_eq!(a[0], "exec");
@@ -598,8 +652,8 @@ mod tests {
             assert!(a.windows(2).any(|w| w[0] == "--disable" && w[1] == f), "{f} is off");
         }
         assert!(!a.iter().any(|x| x.contains("dangerously")));
-        assert!(!super::args("--dangerously-bypass-approvals-and-sandbox", dir, &[]).contains(&"-m".to_string()), "a model name can't be a flag");
-        assert!(!super::args("", dir, &[]).contains(&"-m".to_string()), "no model: Codex picks its default");
+        assert!(!super::args("--dangerously-bypass-approvals-and-sandbox", dir, &[], None).contains(&"-m".to_string()), "a model name can't be a flag");
+        assert!(!super::args("", dir, &[], None).contains(&"-m".to_string()), "no model: Codex picks its default");
     }
 
     #[test]
@@ -637,10 +691,16 @@ mod tests {
         let exe = crate::config::Detected::probe().codex.expect("no Codex here");
         let dir = super::fresh("run").unwrap();
         let home = super::fresh("check").unwrap();
-        let off = super::verify(&exe, dir.path(), home.path(), "", &|| false);
-        assert_eq!(super::verify(&exe, dir.path(), home.path(), "", &|| true).unwrap_err(), super::super::STOPPED, "Stop ends the check");
+        let off = super::verify(&exe, dir.path(), home.path(), "", None, &|| false);
+        assert_eq!(super::verify(&exe, dir.path(), home.path(), "", None, &|| true).unwrap_err(), super::super::STOPPED, "Stop ends the check");
         eprintln!("{exe:?}: {off:?}");
         assert!(off.is_ok());
+        // a model and a level it lists: the same checked set
+        let model = super::models().into_iter().next().expect("no models in Codex's cache");
+        let level = super::efforts(&model).into_iter().next_back().expect("no levels for it");
+        let with = super::verify(&exe, dir.path(), home.path(), &model, Some(&level), &|| false);
+        eprintln!("{model} at {level}: {with:?}");
+        assert!(with.is_ok());
     }
 
     #[test]
@@ -680,5 +740,25 @@ mod tests {
         m.sort();
         assert_eq!(m, vec![(1, "a-model".to_string()), (2, "b-model".to_string())]);
         assert!(super::parse_models("not json").is_empty());
+    }
+
+    /// The levels come from the model's entry in Codex's cache, without `ultra`; the level
+    /// goes to the run and to every check as `-c model_reasoning_effort="..."`.
+    #[test]
+    fn effort_from_the_cache_into_the_args() {
+        let cache = r#"{"models":[{"slug":"gpt-6.2-sol","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"max"},{"effort":"ultra"}]},{"slug":"hidden","visibility":"hide","supported_reasoning_levels":[{"effort":"low"}]},{"slug":"plain","visibility":"list"}]}"#;
+        assert_eq!(super::parse_efforts(cache, "gpt-6.2-sol").unwrap(), ["low", "high", "max"]);
+        assert!(super::parse_efforts(cache, "hidden").is_none());
+        assert!(super::parse_efforts(cache, "plain").unwrap().is_empty());
+        assert!(super::parse_efforts(cache, "other").is_none() && super::parse_efforts("x", "plain").is_none());
+        let dir = std::path::Path::new(r"C:\run");
+        let a = super::args("gpt-6.2-sol", dir, &[], Some("high"));
+        let i = a.iter().position(|x| x == "model_reasoning_effort=\"high\"").expect("the effort setting");
+        assert_eq!(a[i - 1], "-c");
+        assert!(i < a.iter().position(|x| x == "-").unwrap(), "before the prompt marker");
+        for bad in [None, Some(""), Some("ultra"), Some("x\" -c y=\"z"), Some("HIGH")] {
+            assert!(!super::args("m", dir, &[], bad).iter().any(|x| x.starts_with("model_reasoning_effort")), "{bad:?}");
+        }
+        assert_eq!(super::effort_setting(Some("max")), vec!["-c".to_string(), "model_reasoning_effort=\"max\"".to_string()]);
     }
 }

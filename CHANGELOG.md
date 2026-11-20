@@ -16,6 +16,8 @@ in-app updater shows.
 - Clicking an orange or grey item's box for the first time no longer moves the box (the note under the item made the row taller, and the box re-centred).
 - The AI chat no longer tells Codex and other AIs to "Use Ask Claude": it names the Ask button.
 - After a clean-up, a folder scanned again is checked against the drive it is on now, so files on a drive that was reassigned since the first scan are no longer held back as "changed".
+- AI setup has an Effort setting for each model: how hard the model thinks before it answers. It lists only the levels that model offers: read from Anthropic's model list and from Codex's own model list, or taken from the providers' documentation otherwise. A model without effort levels, or one Sprawl doesn't know, shows no Effort setting, and its provider's own default applies.
+- AI setup picks the provider from a dropdown, like the model, instead of a row of buttons that didn't fit: "Off" was cut off. With no Anthropic key saved yet, the Model dropdown lists the usual Claude models.
 
 ## 1.0.3 — 2026-11-19
 

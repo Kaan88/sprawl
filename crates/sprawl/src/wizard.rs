@@ -808,7 +808,8 @@ impl State {
         }
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
-        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: web };
+        // the effort picked per model is set in the Advisor's AI settings, and kept here
+        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url: field(self, "WizUrl").trim().to_string(), web_lookup: web, efforts: AiConfig::load().efforts };
         // a chat under way was started with the old AI settings (provider, model, web lookup):
         // the next question starts a new one, so a change takes effect at once, without a restart
         let ai_changed = AiConfig::load() != ai;
