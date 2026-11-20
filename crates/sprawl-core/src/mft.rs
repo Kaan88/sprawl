@@ -833,7 +833,8 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
     }
     let mut runs: Vec<Run> = Vec::new();
     let mut size = None;
-    let mut ext: Vec<u64> = Vec::new();
+    // (lowest VCN, record) of each extension record holding part of $MFT's unnamed $DATA
+    let mut ext: Vec<(u64, u64)> = Vec::new();
     for (t, a) in attributes(rec) {
         if t == AT_DATA && attr_name_len(a) == 0 && is_non_resident(a) {
             if u64le(a, 0x10) == Some(0) {
@@ -841,10 +842,15 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
             }
             runs.extend(runlist_of(a).ok_or_else(|| bad("bad MFT runlist"))?);
         } else if t == AT_ATTRIBUTE_LIST {
-            if is_non_resident(a) {
-                return Err(bad("non-resident $ATTRIBUTE_LIST on $MFT"));
-            }
-            let v = resident_value(a).ok_or_else(|| bad("bad $ATTRIBUTE_LIST"))?;
+            // A heavily fragmented $MFT keeps its attribute list in clusters of its own
+            // (non-resident): read them from the volume first.
+            let owned;
+            let v: &[u8] = if is_non_resident(a) {
+                owned = read_nonresident(vol, a, boot.cluster_size).map_err(|e| bad(&format!("$MFT's $ATTRIBUTE_LIST couldn't be read ({e})")))?;
+                &owned
+            } else {
+                resident_value(a).ok_or_else(|| bad("bad $ATTRIBUTE_LIST"))?
+            };
             let mut o = 0usize;
             while o + 0x1A <= v.len() {
                 let (ty, len) = (u32le(v, o).unwrap_or(0), usize::from(u16le(v, o + 4).unwrap_or(0)));
@@ -852,15 +858,18 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
                     break;
                 }
                 let r = u64le(v, o + 0x10).unwrap_or(0) & FRN_MASK;
-                if ty == AT_DATA && v.get(o + 6) == Some(&0) && r != 0 && !ext.contains(&r) {
-                    ext.push(r);
+                let low = u64le(v, o + 0x08).unwrap_or(0);
+                if ty == AT_DATA && v.get(o + 6) == Some(&0) && r != 0 && !ext.iter().any(|e| e.1 == r) {
+                    ext.push((low, r));
                 }
                 o += len;
             }
         }
     }
-    // Extension records of $MFT hold the rest of its runlist.
-    for r in ext {
+    // Extension records of $MFT hold the rest of its runlist, in VCN order: each one lies in
+    // the part of the MFT the runs read so far describe.
+    ext.sort_unstable();
+    for (_, r) in ext {
         runs.sort_by_key(|r| r.vcn);
         let byte = r * rs as u64;
         let (Some(lcn), _) = map_vcn(&runs, byte / boot.cluster_size).ok_or_else(|| bad("MFT extension record out of range"))? else {
@@ -887,6 +896,42 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
     runs.sort_by_key(|r| r.vcn);
     let size = size.ok_or_else(|| bad("no $DATA in MFT record 0"))?;
     Ok((runs, size))
+}
+
+/// The value of a non-resident attribute, read from the volume through its runlist (at most
+/// 16 MB: an attribute list is far smaller).
+fn read_nonresident(vol: &Handle, a: &[u8], cluster: u64) -> io::Result<Vec<u8>> {
+    let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
+    if u64le(a, 0x10) != Some(0) {
+        return Err(bad("the attribute starts past VCN 0"));
+    }
+    let real = u64le(a, 0x30).ok_or_else(|| bad("no size"))?;
+    if real > 16 << 20 {
+        return Err(bad("too big"));
+    }
+    let runs = runlist_of(a).ok_or_else(|| bad("bad runlist"))?;
+    let clusters = real.div_ceil(cluster);
+    let mut buf = AlignedBuf::new((clusters * cluster).max(cluster) as usize);
+    let mut at = 0u64;
+    for run in runs {
+        if at >= clusters {
+            break;
+        }
+        if run.vcn != at {
+            return Err(bad("runlist out of order"));
+        }
+        let n = run.len.min(clusters - at);
+        let dst = &mut buf[(at * cluster) as usize..((at + n) * cluster) as usize];
+        match run.lcn {
+            Some(l) => vol.read_at(l * cluster, dst)?,
+            None => dst.fill(0),
+        }
+        at += n;
+    }
+    if at < clusters {
+        return Err(bad("runlist too short"));
+    }
+    Ok(buf[..real as usize].to_vec())
 }
 
 /// What a parser thread hands back for one chunk.
@@ -922,6 +967,9 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
     let mut top = live_root.map(|r| TopTracker::new(r, records));
     let stop = AtomicBool::new(false);
     let parsers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8);
+    // dev timing: time spent in reads, in parsing (all threads), and merging
+    let (read_ns, parse_ns) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+    let (mut merge_ns, t_all) = (0u64, std::time::Instant::now());
 
     let (free_tx, free_rx) = mpsc::sync_channel::<AlignedBuf>(BUFFERS);
     for _ in 0..BUFFERS {
@@ -934,7 +982,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
     let outcome: io::Result<()> = std::thread::scope(|s| {
         // Reader: one big sequential read per chunk, following the MFT's extents.
         let reader_res = res_tx.clone();
-        let (stop_r, runs_r, vol_r) = (&stop, &runs, &vol);
+        let (stop_r, runs_r, vol_r, read_ns) = (&stop, &runs, &vol, &read_ns);
         s.spawn(move || {
             let work_tx = work_tx;
             let mut off = 0u64;
@@ -953,10 +1001,12 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                     let dst = &mut buf[pos as usize..(pos + n) as usize];
                     match lcn {
                         Some(l) => {
+                            let t = std::time::Instant::now();
                             if let Err(e) = vol_r.read_at(l * cluster, dst) {
                                 let _ = reader_res.send(Err(e));
                                 return;
                             }
+                            read_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                         }
                         None => dst.fill(0),
                     }
@@ -972,10 +1022,11 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
         // aren't sorted into folders yet, so a skipped file's type and size would show.
         let live_types = !progress.has_exclusions();
         for _ in 0..parsers {
-            let (work_rx, res_tx, free_tx) = (&work_rx, res_tx.clone(), free_tx.clone());
+            let (work_rx, res_tx, free_tx, parse_ns) = (&work_rx, res_tx.clone(), free_tx.clone(), &parse_ns);
             s.spawn(move || loop {
                 let job = work_rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
                 let Ok((mut buf, first, len)) = job else { break };
+                let t = std::time::Instant::now();
                 let mut parsed = Vec::with_capacity(len / rs as usize);
                 let mut batch = LiveBatch::default();
                 for (i, rec) in buf[..len].chunks_exact_mut(rs as usize).enumerate() {
@@ -989,6 +1040,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                     }
                 }
                 let _ = free_tx.send(buf);
+                parse_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 if res_tx.send(Ok(ChunkResult { parsed, batch, bytes: len as u64 })).is_err() {
                     break;
                 }
@@ -1019,6 +1071,7 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                 }
             };
             received += 1;
+            let t_merge = std::time::Instant::now();
             let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
             sizes.clear();
             let mut last_file = None;
@@ -1053,11 +1106,17 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
             progress.add_counts(files, folders, bytes);
             progress.merge(&mut chunk_res.batch);
             progress.add_done_units(chunk_res.bytes);
+            merge_ns += t_merge.elapsed().as_nanos() as u64;
         }
         Ok(())
     });
     outcome?;
+    let t = std::time::Instant::now();
     if let Some(top) = &mut top { progress.top_reset(top.final_totals(&index)); }
+    crate::timing("scan: MFT final top totals", t);
+    let ms = |ns: u64| format!("{:.0} ms", ns as f64 / 1e6);
+    crate::timing(&format!("scan: MFT read+parse+merge ({} MB, {records} records, {parsers} parsers; reads {}, parsing {} over all threads, merging {})",
+        mft_bytes >> 20, ms(read_ns.load(Ordering::Relaxed)), ms(parse_ns.load(Ordering::Relaxed)), ms(merge_ns)), t_all);
     Ok(index)
 }
 
@@ -1098,10 +1157,16 @@ pub fn scan_multi(paths: &[PathBuf], progress: &Progress) -> io::Result<Vec<Tree
     // With skipped folders, the live list of top folders and the current-file line would show
     // what is skipped while the whole MFT is read: leave both out until the tree is built.
     let live = if roots.len() == 1 && !progress.has_exclusions() { Some(roots[0].0) } else { None };
+    let t = std::time::Instant::now();
     let mut index = read_mft(&volume, progress, live)?;
+    crate::timing("scan: read_mft", t);
     progress.set_phase("Building tree");
+    let t = std::time::Instant::now();
     let mut trees = index.build_excluding(&roots, progress);
+    crate::timing(&format!("scan: build the tree ({} skipped-folder rules)", if progress.has_exclusions() { "with" } else { "no" }), t);
+    let t = std::time::Instant::now();
     drop(index);
+    crate::timing("scan: drop the MFT index", t);
     for ((t, p), v) in trees.iter_mut().zip(paths).zip(serials) {
         t.volumes = v.map(|v| (p.clone(), v)).into_iter().collect();
     }
@@ -1188,6 +1253,11 @@ mod tests {
         }
 
         fn data_nonresident(&mut self, name: &str, start_vcn: u64, size: u64, alloc: u64, flags: u16, runlist: &[u8]) {
+            self.nonresident(AT_DATA, name, start_vcn, size, alloc, flags, runlist);
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn nonresident(&mut self, ty: u32, name: &str, start_vcn: u64, size: u64, alloc: u64, flags: u16, runlist: &[u8]) {
             // non-resident header from 0x10 to 0x40 (or 0x48 with compressed size)
             let hdr = if flags != 0 { 0x48 } else { 0x40 };
             let mut body = vec![0u8; hdr - 16];
@@ -1203,7 +1273,7 @@ mod tests {
             body.extend_from_slice(runlist);
             body.push(0);
             let start = self.off;
-            self.attr(AT_DATA, true, name, &body);
+            self.attr(ty, true, name, &body);
             let a = &mut self.buf[start..];
             a[0x0C..0x0E].copy_from_slice(&flags.to_le_bytes());
         }
@@ -1581,5 +1651,38 @@ mod tests {
         assert!(!trees[0].nodes.iter().any(|n| n.name == "big.bin"));
         assert_eq!(trees[0].nodes[ROOT].size, 10 + 5000 + 777);
         assert_eq!((trees[1].nodes.len(), trees[1].nodes[ROOT].size), (1, 0));
+
+        // A fragmented $MFT (as on a well-used system drive): record 0 holds only its first
+        // extent, and its attribute list is non-resident (at LCN 30), naming extension record 2
+        // for the extent from VCN 8. 1.0.3 refused this and walked the whole drive instead.
+        let mut img2 = img.clone();
+        let mut b = RecBuilder::new(RS, 1, REC_IN_USE, 0);
+        b.std_info(0, sys);
+        b.file_name(5, 5, 3, "$MFT");
+        b.nonresident(AT_ATTRIBUTE_LIST, "", 0, 64, CL as u64, 0, &[0x11, 0x01, 0x1E]);
+        b.data_nonresident("", 0, (RECORDS * RS) as u64, (RECORDS * RS) as u64, 0, &[0x11, 0x08, 0x04]);
+        place(&mut img2, 0, b.finish(13));
+        let entry = |ty: u32, low: u64, rec: u64| {
+            let mut e = vec![0u8; 0x20];
+            e[0..4].copy_from_slice(&ty.to_le_bytes());
+            e[4..6].copy_from_slice(&0x20u16.to_le_bytes());
+            e[7] = 0x1A;
+            e[0x08..0x10].copy_from_slice(&low.to_le_bytes());
+            e[0x10..0x18].copy_from_slice(&(rec | 1 << 48).to_le_bytes());
+            e
+        };
+        let list = [entry(AT_DATA, 0, 0), entry(AT_DATA, 8, 2)].concat();
+        img2[30 * CL..30 * CL + list.len()].copy_from_slice(&list);
+        let mut b = RecBuilder::new(RS, 1, REC_IN_USE, 1 << 48);
+        b.data_nonresident("", 8, 0, 0, 0, &[0x11, 0x08, 0x28]);
+        place(&mut img2, 2, b.finish(14));
+        let path = std::env::temp_dir().join(format!("sprawl-mft-image-frag-{}.img", std::process::id()));
+        std::fs::write(&path, &img2).unwrap();
+        let p = Progress::new();
+        let res = read_mft_device(&wide(path.as_os_str()), "X:", &p, None, 4 * CL);
+        let _ = std::fs::remove_file(&path);
+        let mut index = res.expect("a non-resident $ATTRIBUTE_LIST on $MFT is read");
+        let t = &index.build(&[(ROOT_FRN, PathBuf::from("X:\\"))])[0];
+        assert_eq!((t.nodes[ROOT].size, t.nodes[ROOT].files), (1_005_010 + 777, 4), "records past VCN 8 (Program Files, tool.exe) are read too");
     }
 }

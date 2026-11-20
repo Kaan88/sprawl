@@ -261,15 +261,7 @@ pub(crate) fn text(root: &FrameworkElement, name: &str, value: &str) {
 /// dev: with `SPRAWL_TIMING` set, one line per call in `%TEMP%\sprawl-timing.log`: what took
 /// how long since `since`. Off (one env lookup, cached) otherwise.
 pub(crate) fn timing(what: &str, since: Instant) {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("SPRAWL_TIMING").is_some()) {
-        return;
-    }
-    use std::io::Write;
-    let ms = since.elapsed().as_secs_f64() * 1000.0;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("sprawl-timing.log")) {
-        let _ = writeln!(f, "{what}: {ms:.1} ms");
-    }
+    sprawl_core::timing(what, since);
 }
 
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
@@ -346,16 +338,21 @@ impl State {
         let (g2, r2) = (progress.clone(), result.clone());
         let sorts = self.sorts();
         std::thread::spawn(move || {
+            let t = Instant::now();
             let tree = match &source {
                 Source::Folders(v) if v.len() == 1 => sprawl_core::scan_auto(&v[0], &g2),
                 Source::Folders(v) => sprawl_core::scan_many(v, &g2),
                 Source::Csv(p) => sprawl_core::load_csv(p, &g2),
             };
+            timing(&format!("scan: the scan itself ({} nodes)", tree.as_ref().map_or(0, |t| t.nodes.len())), t);
             // sorted and tallied here, not on the window's thread
             if tree.is_ok() {
                 g2.set_phase("Sorting");
             }
-            *r2.lock().unwrap() = Some(tree.map(|t| crate::tables::prepare(t, sorts)));
+            let t = Instant::now();
+            let prepared = tree.map(|t| crate::tables::prepare(t, sorts));
+            timing("scan: sort and tally (tables::prepare)", t);
+            *r2.lock().unwrap() = Some(prepared);
         });
         self.job = Some(Job { path: path.clone(), csv, progress, result, started: Instant::now(), last_layout: Instant::now(), roots, skips });
         if let Some((progress, _)) = self.advisor.cl.own_reading.take() { progress.cancel(); }
@@ -418,6 +415,8 @@ impl State {
             }
             Some(res) => {
                 let job = self.job.take().unwrap();
+                timing("scan: from Scan to the result on the window's thread", job.started);
+                let t_ui = Instant::now();
                 // A drive selected while scanning supersedes this result, even if it finished
                 // just before cancellation. Only the latest requested source is published.
                 if let Some(source) = self.pending_scan.take() {
@@ -463,17 +462,29 @@ impl State {
                         self.scan_began = if job.csv { std::fs::metadata(&job.path).and_then(|m| m.modified()).map_or(began, |t| t.min(began)) } else { began };
                         let (network, unknown) = crate::coverage::network_roots(&job.roots, &job.progress.roots());
                         self.coverage = Some(crate::coverage::Coverage { network, unknown, roots: job.roots.clone(), skips: job.skips.clone(), elevated: sprawl_core::is_elevated() });
+                        let t = Instant::now();
                         self.set_tree(prepared, &header);
+                        timing("scan: set_tree", t);
                         self.map.scene.start_wave();
+                        let t = Instant::now();
                         self.watch();
+                        timing("scan: watch", t);
+                        let t = Instant::now();
                         self.save_snapshot();
+                        timing("scan: save_snapshot", t);
                         if !self.filter_text.trim().is_empty() {
                             self.apply_filter();
                         }
                         self.scan_id += 1;
                         self.chat_reset();
+                        let t = Instant::now();
                         self.advisor_start();
+                        timing("scan: advisor_start", t);
+                        let t = Instant::now();
                         self.own_on_open();
+                        timing("scan: own_on_open", t);
+                        timing("scan: the window's work on the result", t_ui);
+                        timing("scan: from Scan to done", job.started);
                         // Settings > Scanning, "After a scan": open the Advisor (not for a
                         // stopped scan, nor in a screenshot run)
                         if self.settings.num("afterScan") == Some(1.0) && !job.progress.is_cancelled() && self.shot.is_none() && self.view != View::Advisor {

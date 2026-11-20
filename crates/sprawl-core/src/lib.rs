@@ -141,6 +141,20 @@ impl Tree {
     }
 }
 
+/// dev: with `SPRAWL_TIMING` set, one line per call in `%TEMP%\sprawl-timing.log`: what took
+/// how long since `since`. Off (one env lookup, cached) otherwise.
+pub fn timing(what: &str, since: std::time::Instant) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("SPRAWL_TIMING").is_some()) {
+        return;
+    }
+    use std::io::Write;
+    let ms = since.elapsed().as_secs_f64() * 1000.0;
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("sprawl-timing.log")) {
+        let _ = writeln!(f, "{what}: {ms:.1} ms");
+    }
+}
+
 /// The volume serial of the item at `path` (not following a link), read now (see
 /// [`local::volume_id`]).
 pub fn volume_serial(path: &Path) -> Option<u64> {
@@ -227,16 +241,25 @@ pub fn scan(path: &Path, mut progress: impl FnMut(u64)) -> io::Result<Tree> {
 /// Folder inventories retain listing compression attributes/tags, but do not open every
 /// plain file to discover hidden WOF backing. `walk::walk` provides that detailed check.
 pub fn scan_auto(path: &Path, progress: &Progress) -> io::Result<Tree> {
+    let t0 = std::time::Instant::now();
     let root = local::scan_root(path, false)?;
+    timing("scan: pin the root", t0);
     let path = &root.path;
     if root.pinned.is_some() && is_elevated() {
+        let t = std::time::Instant::now();
         match mft::scan(path, progress) {
-            Ok(tree) => { progress.note_root(path, root.on_network()); return Ok(tree) }
+            Ok(tree) => { timing("scan: MFT scan, all of it", t); progress.note_root(path, root.on_network()); return Ok(tree) }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
-            Err(_) => progress.reset_counts(), // not NTFS, not a folder, no access: walk instead
+            Err(e) => {
+                timing(&format!("scan: MFT scan FAILED ({e}), walking instead"), t);
+                progress.reset_counts() // not NTFS, not a folder, no access: walk instead
+            }
         }
     }
-    walk::inventory(path, progress)
+    let t = std::time::Instant::now();
+    let r = walk::inventory(path, progress);
+    timing("scan: walk", t);
+    r
 }
 
 /// "Select Multiple": scan each path and put them under one synthetic root named
