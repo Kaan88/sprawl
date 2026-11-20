@@ -353,7 +353,7 @@ title = "Previous Windows installation"
 paths = ['%SystemDrive%\Windows.old']
 risk = "amber"
 remedy = "command"
-command = "Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs   # tick 'Previous Windows installation(s)'"
+command = "Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs -Wait   # tick 'Previous Windows installation(s)'"
 allow_protected = true
 why = "The Windows you upgraded from. Removing it means you can't roll back the upgrade."
 

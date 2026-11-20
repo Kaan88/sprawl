@@ -290,6 +290,10 @@ pub(crate) struct Advisor {
     pub(crate) deleting: Option<Receiver<crate::commands::DelMsg>>,
     /// Stops that Delete after the item it is on (closing Sprawl asks for this).
     pub(crate) delete_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Draw the Advisor again on the next frame (a dropdown changed it).
+    pub(crate) rerender: bool,
+    /// The Delete running: what the scan said its items hold, whether it is for good, how many.
+    pub(crate) delete_total: (u64, bool, usize),
     /// Close Sprawl once that Delete has stopped.
     pub(crate) close_after_delete: bool,
 }
@@ -697,11 +701,11 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
 impl State {
     /// The report for the tree on screen, if it is current.
     pub(crate) fn advice(&self) -> Option<&Report> {
-        if self.job.is_some() { return None; }
-        // the Cleaners tab with no scan that covers the cleaners: its own read
+        // the Cleaners tab with no scan that covers the cleaners (or while one runs): its own read
         if self.own_active() {
             return self.advisor.cl.own.as_ref().map(|o| &o.report);
         }
+        if self.job.is_some() { return None; }
         self.tree.as_ref()?;
         self.advisor.report.as_ref().filter(|r| r.tree == self.tree_gen)
     }
@@ -892,6 +896,9 @@ impl State {
         self.recheck_poll();
         self.uncompress_poll();
         self.delete_poll();
+        if std::mem::take(&mut self.advisor.rerender) {
+            self.render_advisor();
+        }
         self.chat_poll();
         self.community_poll();
         self.own_poll();
@@ -1959,6 +1966,23 @@ impl State {
                         s.cleanup_toggle(i);
                         s.advisor.focus_after = Some(format!("AdvAiT{i}"));
                         s.render_advisor();
+                    });
+                }) {
+                    keep(t);
+                }
+            }
+        }
+        // B1: the open compress item's algorithm; drawn again on the next frame, not inside
+        // the dropdown's own event
+        if let Some(i) = self.advisor.open {
+            if let Ok(c) = find::<Selector>(fe, &format!("AdvAlg{i}")) {
+                if let Ok(t) = c.SelectionChanged(move |s, _| {
+                    let k = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).and_then(|k| usize::try_from(k).ok());
+                    with(|s| {
+                        let (Some(k), Some(f)) = (k, s.advice().and_then(|r| r.findings.get(i)).cloned()) else { return };
+                        let Some(choice) = sprawl_advisor::remedies::COMPRESS_CHOICES.get(k) else { return };
+                        s.advisor.cleanup.algs.insert(crate::cleanup::key(&f.path), choice.0.to_string());
+                        s.advisor.rerender = true;
                     });
                 }) {
                     keep(t);
@@ -3895,7 +3919,9 @@ impl State {
             Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="13" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(why)),
         };
         let armed = self.advisor.cleanup.armed.as_deref() == Some(crate::cleanup::key(&f.path).as_str()) && crate::cleanup::second_try(f, r.counted[i]);
-        x += &format!(r##"<Grid {ns} ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1">"##);
+        // the box sits beside the item's own line: the warning or the details opening below
+        // it don't move it (a second row)
+        x += &format!(r##"<Grid {ns} ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>{tick}<StackPanel Grid.Column="1">"##);
         // a tip removes nothing: it says so instead of a risk
         // left behind holding the user's work: shown, never removed by Sprawl
         let yours = f.leftover() && f.remedy == Remedy::Info;
@@ -3954,7 +3980,7 @@ impl State {
             }),
             num = crate::look::NUM,
             plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="4" Background="#33A97BF6"><TextBlock Text="AI" FontSize="12" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
-            size = match f.gain {
+            size = match self.with_choices(f).gain {
                 // a shrink's win is known only after it ran
                 Some(_) if sprawl_advisor::remedies::shrinks(f) => "unknown".to_string(),
                 Some(g) => format!("about {}", self.size(g)),
@@ -3963,6 +3989,7 @@ impl State {
             },
             op = if r.counted[i] { "1" } else { "0.55" },
         );
+        x += r##"</StackPanel><StackPanel Grid.Row="1" Grid.Column="1">"##;
         if armed {
             let why = if yours {
                 "it holds your own files"
@@ -3992,6 +4019,23 @@ impl State {
             x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="• {}"/>"##, ui::esc(e));
         }
         x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
+        // B1: how it is compressed, the user's to pick; the estimate follows
+        if let Some(now) = self.compress_alg_of(f) {
+            // a labelled dropdown row, like the AI settings
+            let labels: Vec<String> = sprawl_advisor::remedies::COMPRESS_CHOICES.iter().map(|c| c.1.to_string()).collect();
+            let current = sprawl_advisor::remedies::COMPRESS_CHOICES.iter().find(|c| c.0.eq_ignore_ascii_case(&now)).map_or("", |c| c.1);
+            x += &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="10"><TextBlock Text="Compression" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Width="84"/>{}</StackPanel>"##,
+                crate::models::combo(&format!("AdvAlg{i}"), &labels, current, 260)
+            );
+            let g = self.with_choices(f);
+            if let Some(gain) = g.gain {
+                x += &format!(
+                    r##"<TextBlock FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Text="On disk now {}; after compressing about {} (saves about {}). LZX saves the most but reads slower; XPRESS4K is the quickest to read."/>"##,
+                    self.size(f.bytes), self.size(f.bytes.saturating_sub(gain)), self.size(gain)
+                );
+            }
+        }
         x += r##"<Button x:Name="AdvAskFinding" Content="What is this?" HorizontalAlignment="Left" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
         if let Some(answer) = self.advisor.chat.row_answers.get(&crate::cleanup::key(&f.path)) {
             x += &ui::markdown(answer, 12, "#FFD5DBE8");

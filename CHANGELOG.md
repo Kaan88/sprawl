@@ -7,6 +7,13 @@ in-app updater shows.
 
 - Scanning a well-used system drive as administrator is much faster: when the drive's file table had become fragmented enough that Windows keeps its list of pieces apart, Sprawl couldn't use its fast read and went through every folder instead. It reads that list now: on a test C: drive, 7.6 seconds from Scan to result instead of 17.
 - A folder compressed partly (some files were busy) stops being offered once a retry goes through without problems, even when that retry had nothing more to compress: the busy files turned out not to get smaller, or were gone.
+- Windows' own clean-ups run inside Sprawl: tick the component store (DISM), the Recycle Bin or Windows.old (Disk Clean-up) and review them like anything else. Sprawl runs the command and shows what it freed; when one needs administrator rights, the bar offers "Restart as administrator". They were "Another account's" and couldn't be ticked.
+- Compressing: pick the compression for each folder (XPRESS4K, 8K, 16K or LZX) in its details; the estimate follows the choice.
+- The selection bar keeps the count, Review selection and the tick buttons together on one line, and says what the ticked items take on disk now and about what is left after.
+- Deleting from the tree shows a card with a progress bar, how much is gone, and Stop. The tree can be used meanwhile.
+- The Cleaners tab keeps its list while a drive is scanned, and says that it looks at this account's and Windows' own folders whatever drive is scanned.
+- Clicking an orange or grey item's box for the first time no longer moves the box (the note under the item made the row taller, and the box re-centred).
+- The AI chat no longer tells Codex and other AIs to "Use Ask Claude": it names the Ask button.
 - After a clean-up, a folder scanned again is checked against the drive it is on now, so files on a drive that was reassigned since the first scan are no longer held back as "changed".
 
 ## 1.0.3 — 2026-11-19

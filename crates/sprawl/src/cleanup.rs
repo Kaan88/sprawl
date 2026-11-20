@@ -23,6 +23,8 @@ pub(crate) struct Cleanup {
     confirmation_selection: Option<(HashSet<String>, HashSet<String>, Option<String>)>,
     /// Ticked findings, by lower-case path.
     pub ticked: HashSet<String>,
+    /// The compression the user picked for a compress item (B1), by lower-case path.
+    pub algs: std::collections::HashMap<String, String>,
     /// The report generation the default ticks were set for.
     pub ticked_for: Option<u64>,
     /// Ticks carried over a restart as administrator, for the first report.
@@ -354,6 +356,17 @@ fn still_open(path: &std::path::Path, app: &str, exes: &[String]) -> Option<Stri
     }
 }
 
+/// The built-in rules whose command is Windows' own clean-up of the whole PC (C, 1.0.4): DISM
+/// on the component store, emptying the Recycle Bin, Disk Clean-up for Windows.old. They act on
+/// Windows, not on one account's folders, so the "another account's" gate doesn't apply; they
+/// still need administrator where they do (held with "Restart as administrator"), and run only
+/// as the built-in pack wrote them. Never a user's or the AI's rule.
+pub(crate) const MACHINE_WIDE: &[&str] = &["win.component-store", "win.recycle-bin", "win.windows-old"];
+
+pub(crate) fn machine_wide(f: &Finding) -> bool {
+    f.builtin && f.trusted && matches!(&f.source, Source::Rule(id) if MACHINE_WIDE.contains(&id.as_str()))
+}
+
 /// Why a finding can't be ticked, or None when it can.
 pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
     if !matches!(f.remedy, Remedy::Delete | Remedy::Command) || f.risk == Risk::Red {
@@ -365,7 +378,7 @@ pub(crate) fn untickable(f: &Finding, counted: bool) -> Option<&'static str> {
     }
     // a tool's own clean-up acts on the account running it: only the user's own folders (a
     // compress acts on the files named, for every account alike)
-    if matches!(action, Action::Tool { .. }) && !sprawl_advisor::remedies::is_compress(&action) {
+    if matches!(action, Action::Tool { .. }) && !sprawl_advisor::remedies::is_compress(&action) && !machine_wide(f) {
         let mine = std::env::var_os("USERPROFILE").is_some_and(|home| PathBuf::from(key(&f.path)).starts_with(PathBuf::from(home.to_string_lossy().to_lowercase())));
         if !mine {
             return Some("Another account's");
@@ -572,8 +585,25 @@ impl State {
                 };
                 chosen && untickable(f, r.counted[*i]).is_none()
             })
-            .map(|(i, f)| (i, f.clone()))
+            .map(|(i, f)| (i, self.with_choices(f)))
             .collect()
+    }
+
+    /// `f` as the user set it up: a compress with the algorithm they picked. The clean-up's
+    /// checks then run on that command.
+    pub(crate) fn with_choices(&self, f: &Finding) -> Finding {
+        self.advisor.cleanup.algs.get(&key(&f.path))
+            .and_then(|alg| sprawl_advisor::remedies::with_compress_alg(f, alg))
+            .unwrap_or_else(|| f.clone())
+    }
+
+    /// The algorithm a compress item will use: the user's pick, or the one Sprawl chose.
+    pub(crate) fn compress_alg_of(&self, f: &Finding) -> Option<String> {
+        let f = self.with_choices(f);
+        match sprawl_advisor::clean::action(&f) {
+            Some((sprawl_advisor::clean::Action::Tool { command }, _)) => sprawl_advisor::remedies::compress_alg(&command).map(str::to_string),
+            _ => None,
+        }
     }
 
     /// The ticked privacy parts of the report on screen. Never for a one-row review.
@@ -1256,20 +1286,32 @@ impl State {
 <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><TextBlock Text="Nothing ticked" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>{options}</Grid></Border>"##
             );
         }
+        // B2: what the ticked items take on disk now, and about what is left after
+        let on_disk: u64 = picked.iter().map(|(_, f)| f.bytes).sum();
+        let sizes = if picked.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r##"<TextBlock {num} FontSize="12" Foreground="#FFB9C2D6" Text="On disk now {}  ·  after {}{}  ·  frees {}{}"/>"##,
+                self.size(on_disk), if up_to { "at least " } else { "about " }, self.size(on_disk.saturating_sub(bytes)), if up_to { "up to " } else { "about " }, self.size(bytes)
+            )
+        };
+        // B6: the count, Review and the tick buttons on one line, side by side; the other ways
+        // to tick on the next, the explanation last
         let mut x = format!(
             r##"<Border Padding="12,10" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="8">
-<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-<StackPanel VerticalAlignment="Center"><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/></StackPanel>
-<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">{prev}<Button x:Name="AdvClean" Content="Review selection..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/></StackPanel></Grid>
-<StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/><Button x:Name="AdvClean" Content="Review selection..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>{prev}<Border Width="1" Height="22" Margin="4,0" Background="#33FFFFFF" VerticalAlignment="Center"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/></StackPanel>
+{sizes}
+<StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Or tick enough for" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>
+<TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/>"##,
             match (picked.is_empty(), privacy) {
                 (true, 0) => "Nothing ticked".to_string(),
                 (true, n) => format!("{} ticked", privacy_count(n)),
                 (false, 0) => format!("{} ticked · {}{}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes)),
                 (false, n) => format!("{} ticked · {}{}, and {}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes), privacy_count(n)),
             },
-            if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then review them: nothing goes before you confirm." } else { "Review what is ticked: nothing goes before you confirm. Sprawl removes it itself and shows what was freed." },
             if picked.is_empty() && privacy == 0 { "False" } else { "True" },
+            if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then review them: nothing goes before you confirm." } else { "Review what is ticked: nothing goes before you confirm. Sprawl removes it itself and shows what was freed." },
             prev = if self.advisor.cleaners_tab_on() {
                 format!(
                     r##"<Button x:Name="AdvClPrev" Content="Preview" Padding="14,6" FontSize="13" CornerRadius="6" IsEnabled="{}" ToolTipService.ToolTip="The exact files that would go, counted now. Nothing is deleted."/>"##,
@@ -2117,6 +2159,32 @@ mod age_tests {
         // the user's own warning time
         assert_eq!(super::scan_age_words_after(t, after(20), 15).as_deref(), Some("20 minutes"));
         assert_eq!(super::scan_age_words_after(t, after(20), 30), None);
+    }
+}
+
+#[cfg(test)]
+mod machine_wide_tests {
+    use super::*;
+
+    fn dism(builtin: bool, id: &str) -> Finding {
+        let mut f = Finding {
+            path: r"C:\Windows\WinSxS".into(), owner: None, bytes: 5 << 30, risk: Risk::Green,
+            remedy: Remedy::Command, command: None, title: "Windows component store".into(), evidence: vec![],
+            confidence: 0.9, source: Source::Rule(id.into()), allow_protected: true,
+            trusted: builtin, builtin, on_path: true, action: None, admin: false,
+            carved: vec![], gain: None, forced_from: None,
+        };
+        f.set_action(Action::Tool { command: "DISM /Online /Cleanup-Image /StartComponentCleanup".into() }, true);
+        f
+    }
+
+    /// DISM from the built-in pack can be ticked (it acts on Windows, not an account's
+    /// folders); the same command from anything else is still another account's.
+    #[test]
+    fn windows_own_clean_ups_can_be_ticked() {
+        assert_eq!(untickable(&dism(true, "win.component-store"), true), None);
+        assert_eq!(untickable(&dism(false, "win.component-store"), true), Some(""), "not the built-in pack: no action at all");
+        assert_eq!(untickable(&dism(true, "user.dism"), true), Some("Another account's"));
     }
 }
 

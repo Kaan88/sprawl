@@ -2625,6 +2625,7 @@ mod tests {
         assert!(elevated_tool_ok("exit 3", &resolve, &roots).is_ok(), "a PowerShell word, not a program");
         assert!(elevated_tool_ok("npm-run cache", &resolve, &roots).is_err(), "a hyphen alone doesn't make a cmdlet");
         assert!(elevated_tool_ok("Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs", &resolve, &roots).is_ok());
+        assert!(elevated_tool_ok("Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs -Wait   # tick 'Previous Windows installation(s)'", &resolve, &roots).is_ok());
         let e = elevated_tool_ok("npm cache clean --force", &resolve, &roots).unwrap_err();
         assert!(e.contains("your account can change"), "{e}");
         assert!(elevated_tool_ok("pip cache purge", &resolve, &roots).is_err(), "not found: not run");

@@ -853,6 +853,11 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: the Delete card as it looks part way; nothing is deleted
+                    "deletedemo" => {
+                        self.advisor.delete_total = (3 << 30, true, 2);
+                        self.delete_card(Some(1 << 30));
+                    }
                     // dev: render a synthetic successful result; never run a cleanup.
                     "preventiondemo" => {
                         self.advisor.cleanup.done = Some(crate::cleanup::Done {

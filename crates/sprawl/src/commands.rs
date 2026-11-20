@@ -164,6 +164,12 @@ impl State {
             "mAbout" => self.command("TabAbout"),
             "mUpdate" => self.update_check(true),
             "UpdateNow" | "UpdateLater" | "UpdateSkip" => self.update_command(name),
+            "DeleteStop" => {
+                if let Some(stop) = &self.advisor.delete_stop {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    text(&self.root, "DeleteTitle", "Stopping after the item it is on...");
+                }
+            }
             "mShortcuts" => {
                 let body = crate::ui::shortcuts_xaml();
                 self.tell_rich("Keyboard shortcuts", body);
@@ -841,7 +847,11 @@ impl State {
         self.marked.clear();
         let (tx, rx) = std::sync::mpsc::channel();
         self.advisor.deleting = Some(rx);
+        // what the scan says they hold, for the card's bar
+        let total: u64 = self.active_tree().map_or(0, |t| paths.iter().filter_map(|p| sprawl_advisor::find_path(&t, p)).map(|n| t.nodes[n].size).sum());
+        self.advisor.delete_total = (total, permanent, paths.len());
         crate::state::text(&self.root, "FootLeft", if permanent { "Deleting..." } else { "Moving to the Recycle Bin..." });
+        self.delete_card(Some(0));
         std::thread::spawn(move || {
             let (mut results, mut notes) = (Vec::new(), Vec::new());
             let (mut before, mut last) = (0u64, std::time::Instant::now());
@@ -908,9 +918,13 @@ impl State {
         let mut finished = false;
         for m in msgs {
             match m {
-                DelMsg::Progress(bytes) => crate::state::text(&self.root, "FootLeft", &format!("Deleting... {} so far", self.size(bytes))),
+                DelMsg::Progress(bytes) => {
+                    crate::state::text(&self.root, "FootLeft", &format!("Deleting... {} so far", self.size(bytes)));
+                    self.delete_card(Some(bytes));
+                }
                 DelMsg::Done(results, notes) => {
                     finished = true;
+                    self.delete_card(None);
                     self.advisor.deleting = None;
                     self.advisor.delete_stop = None;
                     if self.advisor.close_after_delete { return self.exit_now(); }
@@ -923,11 +937,43 @@ impl State {
             }
         }
         if gone && !finished {
+            self.delete_card(None);
             self.advisor.deleting = None;
             self.advisor.delete_stop = None;
             if self.advisor.close_after_delete { return self.exit_now(); }
             crate::state::text(&self.root, "FootLeft", "The delete stopped unexpectedly. Scan again to see what is there now.");
         }
+    }
+}
+
+impl State {
+    /// The Delete's card over the window: shown with `Some(bytes done)`, hidden with None.
+    /// It doesn't block anything: the tree can be used meanwhile.
+    pub(crate) fn delete_card(&self, done: Option<u64>) {
+        use crate::bindings::Microsoft::UI::Xaml::FrameworkElement;
+        let Ok(card) = crate::state::find::<UIElement>(&self.root, "DeleteCard") else { return };
+        let Some(done) = done else {
+            let _ = card.SetVisibility(Visibility::Collapsed);
+            return;
+        };
+        let (total, permanent, count) = self.advisor.delete_total;
+        let verb = if permanent { "Deleting" } else { "Moving to the Recycle Bin" };
+        let what = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
+        let stopping = self.advisor.delete_stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
+        if !stopping {
+            crate::state::text(&self.root, "DeleteTitle", &format!("{verb} {what}..."));
+        }
+        let sub = if total > 0 {
+            format!("{} of {} ({}%)", self.size(done.min(total)), self.size(total), (done.min(total) as u128 * 100 / total as u128))
+        } else {
+            format!("{} so far", self.size(done))
+        };
+        crate::state::text(&self.root, "DeleteSub", &sub);
+        if let Ok(bar) = crate::state::find::<FrameworkElement>(&self.root, "DeleteBar") {
+            let share = if total > 0 { done.min(total) as f64 / total as f64 } else { 0.0 };
+            let _ = bar.SetWidth(372.0 * share);
+        }
+        let _ = card.SetVisibility(Visibility::Visible);
     }
 }
 

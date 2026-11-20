@@ -275,7 +275,15 @@ impl State {
 
     /// The Cleaners tab is on show and works from its own read, not the scan's report.
     pub(crate) fn own_active(&self) -> bool {
-        self.job.is_none() && self.view == crate::state::View::Advisor && self.advisor.cleaners_tab_on() && !self.scan_covers_cleaners()
+        if self.view != crate::state::View::Advisor || !self.advisor.cleaners_tab_on() {
+            return false;
+        }
+        // while a scan runs its report isn't there yet: the last read stays on show (nothing
+        // can be cleaned meanwhile, and no new read starts)
+        if self.job.is_some() {
+            return self.advisor.cl.own.is_some();
+        }
+        !self.scan_covers_cleaners()
     }
 
     /// Read the cleaners' folders and check them, off the UI thread (the tab opened, Check
@@ -1218,7 +1226,11 @@ impl State {
                     m => format!("{} hours ago", m / 60),
                 };
                 let out = self.cleaner_roots_all().1;
-                let mut s = format!("Checked {when}: the {} folders the cleaners look at, read for this tab", o.roots);
+                // the cleaners look at this account's and Windows' folders, wherever the scan is
+                let mut s = format!("Checked {when}: the {} folders the cleaners look at (this account's and Windows' own, whatever drive is scanned), read for this tab", o.roots);
+                if self.job.is_some() {
+                    s += ". A scan is running: this list stays until it ends";
+                }
                 if !o.unread.is_empty() {
                     s += &format!(". {}", unread_line(&o.unread));
                 }

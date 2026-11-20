@@ -31,6 +31,33 @@ pub fn compress_alg(command: &str) -> Option<&str> {
     command.strip_prefix(COMPRESS)?.split(' ').next()
 }
 
+/// The algorithms the user can pick for a compress (B1): name, label, and the share of LZX's
+/// saving each gets (what the estimates use).
+pub const COMPRESS_CHOICES: &[(&str, &str, f64)] = &[
+    ("xpress4k", "XPRESS4K: fastest", 0.65),
+    ("xpress8k", "XPRESS8K", 0.75),
+    ("xpress16k", "XPRESS16K", 0.85),
+    ("lzx", "LZX: smallest, slower to read", 1.0),
+];
+
+fn compress_share(alg: &str) -> Option<f64> {
+    COMPRESS_CHOICES.iter().find(|(a, _, _)| a.eq_ignore_ascii_case(alg)).map(|c| c.2)
+}
+
+/// `f`, one of Sprawl's compress findings, with the algorithm `alg` instead of its own: the
+/// same command on the same files (only the algorithm word changes), its saving estimate scaled
+/// to that algorithm. None when `f` isn't a compress or `alg` isn't one of [`COMPRESS_CHOICES`].
+pub fn with_compress_alg(f: &Finding, alg: &str) -> Option<Finding> {
+    let (Some((Action::Tool { command }, admin)), Some(new)) = (crate::clean::action(f), compress_share(alg)) else { return None };
+    let old = compress_alg(&command)?;
+    let old_share = compress_share(old)?;
+    let rest = command.strip_prefix(COMPRESS)?.strip_prefix(old)?;
+    let mut out = f.clone();
+    out.set_action(Action::Tool { command: format!("{COMPRESS}{}{rest}", alg.to_ascii_lowercase()) }, admin);
+    out.gain = f.gain.map(|g| (g as f64 * new / old_share) as u64);
+    Some(out)
+}
+
 /// One exact uncompress argument. Validation/pinning belongs to the batch caller; no recursion.
 pub fn uncompress_command(path: &Path) -> String {
     format!("compact.exe /u /a /i /q /exe {}", crate::rules::ps_quote(&path.display().to_string()))
@@ -532,6 +559,28 @@ pub fn moves(tree: &Tree, drives: &[(char, u64, u64)]) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_compress_takes_another_algorithm() {
+        let mut f = Finding {
+            path: r"C:\Games\X".into(), owner: None, bytes: 10_000, risk: Risk::Green,
+            remedy: Remedy::Command, command: None, title: "Compress X".into(), evidence: vec![],
+            confidence: 0.7, source: Source::Rule("remedy.compact".into()), allow_protected: true,
+            trusted: true, builtin: true, on_path: false, action: None, admin: false,
+            carved: vec![], gain: Some(7_500), forced_from: None,
+        };
+        f.set_action(Action::Tool { command: format!(r"{COMPRESS}xpress8k 'C:\Games\X\*'") }, false);
+        let g = with_compress_alg(&f, "LZX").unwrap();
+        assert_eq!(g.gain, Some(10_000));
+        let Some((Action::Tool { command }, false)) = crate::clean::action(&g) else { panic!() };
+        assert_eq!(command, format!(r"{COMPRESS}lzx 'C:\Games\X\*'"));
+        assert_eq!(compress_alg(&command), Some("lzx"));
+        assert!(with_compress_alg(&f, "zip").is_none());
+        // not a compress: nothing to change
+        let mut d = f.clone();
+        d.set_action(Action::Tool { command: "Dism.exe /Online /Cleanup-Image /StartComponentCleanup".into() }, true);
+        assert!(with_compress_alg(&d, "lzx").is_none());
+    }
 
     #[test]
     fn ratios() {
