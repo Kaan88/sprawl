@@ -1012,6 +1012,9 @@ pub(crate) fn replace_branch(t: &mut sprawl_core::Tree, n: usize, sub: &sprawl_c
         t.nodes.push(k);
     }
     t.nodes[n].children = new.children.iter().map(|&c| map(c)).collect();
+    // the fresh ids are on the volume the rescan found, not the one the old scan was on
+    let at = t.path_of(n);
+    t.replace_volumes(&at, &sub.volumes);
 }
 
 /// In a filtered view, the files below `k` that a fresh scan of it (`sub`) no longer has are
@@ -1197,9 +1200,14 @@ mod tests {
         // the cache is cleaned to one small file
         std::fs::remove_dir_all(base.join("cache").join("sub")).unwrap();
         std::fs::write(base.join("cache").join("a.bin"), vec![0u8; 10]).unwrap();
-        let sub = sprawl_core::scan(&base.join("cache"), |_| {}).unwrap();
+        let mut sub = sprawl_core::scan(&base.join("cache"), |_| {}).unwrap();
         let k = sprawl_advisor::find_path(&t, &base.join("cache")).unwrap();
+        // the old scan's volume against the rescan's (a reassigned drive)
+        t.volumes = vec![(base.clone(), 5)];
+        sub.volumes = vec![(base.join("cache"), 7)];
         replace_branch(&mut t, k, &sub, Some(&mut alloc));
+        assert_eq!(t.volume_of(&base.join("cache").join("a.bin")), Some(7));
+        assert_eq!(t.volume_of(&base.join("other").join("c.bin")), Some(5));
         assert_eq!(t.nodes[ROOT].size, 310);
         assert_eq!(t.nodes[ROOT].files, 2);
         assert_eq!(t.nodes[k].folders, 0);

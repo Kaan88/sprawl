@@ -288,6 +288,28 @@ fn done_words(d: &Done) -> String {
 
 fn succeeded(out: &Outcome) -> bool { !out.stopped && out.problems.is_empty() && out.more_problems == 0 }
 
+/// A compress of `path` that ended (`ok`: with no problems) goes into the Compressed list.
+fn note_compressed(list: &mut Vec<sprawl_advisor::memory::Compressed>, path: &str, alg: &str, now: u64, bytes: u64, freed: u64, d: &sprawl_core::wof::Done, ok: bool) {
+    // only a pass through every file stops it being offered, which the scan alone can't
+    // tell; one stopped or with files busy, changed or failing keeps its retry
+    let complete = ok && !d.stopped && d.in_use + d.failed + d.changed == 0;
+    let same = |r: &sprawl_advisor::memory::Compressed| r.path.eq_ignore_ascii_case(path);
+    // a retry that found nothing more to compress (the files done already are left out of
+    // its plan, the busy ones didn't get smaller or are gone) still completes a partial one
+    let completes = complete && list.iter().any(|r| same(r) && r.partial);
+    // compressed now (some files or all), or found compressed already by an earlier run:
+    // recorded, so it can be undone
+    if freed == 0 && d.compressed == 0 && !(ok && d.already > 0) && !completes {
+        return;
+    }
+    // an earlier run's saving is kept: a run over files compressed already saves no more
+    let earlier = list.iter().filter(|r| same(r)).map(|r| r.saved).max().unwrap_or(0);
+    list.retain(|r| !same(r));
+    // never over what the folder holds (or, if more, what this run measured)
+    let saved = earlier.saturating_add(freed).min(bytes.max(freed));
+    list.push(sprawl_advisor::memory::Compressed { path: path.to_string(), alg: alg.to_string(), when: now, saved, size: bytes, partial: !complete });
+}
+
 fn review_changed(before: &Finding, now: &Finding) -> bool {
     before.path != now.path || before.risk != now.risk || before.remedy != now.remedy
         || before.action != now.action || before.admin != now.admin || before.command != now.command
@@ -1061,19 +1083,7 @@ impl State {
             // compressed now (some files or all), or found compressed already by an earlier run:
             // recorded, so it can be undone
             let Some(d) = &o.compress else { continue };
-            if o.freed == 0 && d.compressed == 0 && !(succeeded(o) && d.already > 0) {
-                continue;
-            }
-            // only a pass through every file stops it being offered, which the scan alone can't
-            // tell; one stopped or with files busy, changed or failing keeps its retry
-            let complete = succeeded(o) && !d.stopped && d.in_use + d.failed + d.changed == 0;
-            let path = it.path.display().to_string();
-            let list = &mut self.advisor.memory.compressed;
-            // an earlier run's saving is kept: a run over files compressed already saves no more
-            let earlier = list.iter().filter(|r| r.path.eq_ignore_ascii_case(&path)).map(|r| r.saved).max().unwrap_or(0);
-            list.retain(|r| !r.path.eq_ignore_ascii_case(&path));
-            let saved = earlier.saturating_add(o.freed).min(it.bytes.max(o.freed));
-            list.push(sprawl_advisor::memory::Compressed { path, alg: alg.to_string(), when: now, saved, size: it.bytes, partial: !complete });
+            note_compressed(&mut self.advisor.memory.compressed, &it.path.display().to_string(), alg, now, it.bytes, o.freed, d, succeeded(o));
         }
         self.save_memory();
         self.advisor.cleanup.done = Some(done);
@@ -2107,6 +2117,37 @@ mod age_tests {
         // the user's own warning time
         assert_eq!(super::scan_age_words_after(t, after(20), 15).as_deref(), Some("20 minutes"));
         assert_eq!(super::scan_age_words_after(t, after(20), 30), None);
+    }
+}
+
+#[cfg(test)]
+mod compressed_tests {
+    use sprawl_advisor::memory::Compressed;
+    use sprawl_core::wof::Done;
+
+    fn rec(saved: u64, partial: bool) -> Compressed {
+        Compressed { path: r"C:\Games\Old".into(), alg: "xpress8k".into(), when: 1, saved, size: 1000, partial }
+    }
+
+    /// Run 1 compressed A and found B busy. The retry leaves A out (compressed already) and B
+    /// doesn't get smaller, or is gone: nothing more, no errors, so the record is complete
+    /// with run 1's saving.
+    #[test]
+    fn a_clean_retry_that_saves_nothing_completes_the_record() {
+        let mut list = vec![rec(300, true)];
+        super::note_compressed(&mut list, r"c:\games\old", "xpress8k", 2, 1000, 0, &Done::default(), true);
+        assert_eq!(list, vec![Compressed { path: r"c:\games\old".into(), when: 2, ..rec(300, false) }]);
+        // a retry with B still busy stays partial (nothing new to record)
+        let mut list = vec![rec(300, true)];
+        super::note_compressed(&mut list, r"C:\Games\Old", "xpress8k", 2, 1000, 0, &Done { in_use: 1, ..Done::default() }, true);
+        assert_eq!(list, vec![rec(300, true)]);
+        // nor does a run with problems complete it
+        super::note_compressed(&mut list, r"C:\Games\Old", "xpress8k", 2, 1000, 0, &Done::default(), false);
+        assert_eq!(list, vec![rec(300, true)]);
+        // and a clean run that saved nothing records nothing for a folder never compressed
+        let mut list = Vec::new();
+        super::note_compressed(&mut list, r"C:\Games\Old", "xpress8k", 2, 1000, 0, &Done::default(), true);
+        assert!(list.is_empty());
     }
 }
 

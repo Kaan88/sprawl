@@ -6,6 +6,8 @@ in-app updater shows.
 ## Unreleased
 
 - Scanning a well-used system drive as administrator is much faster: when the drive's file table had become fragmented enough that Windows keeps its list of pieces apart, Sprawl couldn't use its fast read and went through every folder instead. It reads that list now: on a test C: drive, 7.6 seconds from Scan to result instead of 17.
+- A folder compressed partly (some files were busy) stops being offered once a retry goes through without problems, even when that retry had nothing more to compress: the busy files turned out not to get smaller, or were gone.
+- After a clean-up, a folder scanned again is checked against the drive it is on now, so files on a drive that was reassigned since the first scan are no longer held back as "changed".
 
 ## 1.0.3 — 2026-11-19
 

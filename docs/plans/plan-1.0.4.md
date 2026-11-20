@@ -10,8 +10,8 @@ user before they are merged (see `status.md`). Safety code goes through an outsi
 
 | # | What | State |
 |---|------|-------|
-| D1 | **Faster C: scans.** The MFT fast read failed on a fragmented system drive (`$MFT`'s `$ATTRIBUTE_LIST` is non-resident), so Sprawl walked the drive instead. `mft.rs` now reads a non-resident attribute list. Measured: 16.9 s before, 7.6 s after (3.9 s MFT read + 3.7 s sort). `SPRAWL_TIMING=1` writes step times to `%TEMP%\sprawl-timing.log`. | Done (uncommitted); tests pass (412). |
-| D2 | **Effort levels per model** (`sprawl-advisor/src/llm/effort.rs` and the providers), built in a separate session. | Done (uncommitted). |
+| D1 | **Faster C: scans.** The MFT fast read failed on a fragmented system drive (`$MFT`'s `$ATTRIBUTE_LIST` is non-resident), so Sprawl walked the drive instead. `mft.rs` now reads a non-resident attribute list. Measured: 16.9 s before, 7.6 s after (3.9 s MFT read + 3.7 s sort). `SPRAWL_TIMING=1` writes step times to `%TEMP%\sprawl-timing.log`. | Committed c42c897. |
+| D2 | **Effort levels per model** (`sprawl-advisor/src/llm/effort.rs` and the providers), built in a separate session. | Committed on branch effort-levels (79a873a), not merged. |
 
 Follow-ups to D1: sorting (3.7 s) is the next thing to speed up. The fast read finds about 100k
 fewer entries than the walk on C: (3.79M vs 3.89M), probably hard links; check this.
@@ -20,11 +20,11 @@ fewer entries than the walk on C: (3.79M vs 3.89M), probably hard links; check t
 
 | # | What | Fix |
 |---|------|-----|
-| A1 | **[P2] Branch rescans drop the new scan's volume serials.** `commands.rs:975` `replace_branch()` copies the new nodes but not `sub.volumes`. After a drive is reassigned and a branch refreshed, freshly scanned files keep the old serial, and the mismatch check holds them. Refreshing a branch of a snapshot-based tree leaves it with no serial at all. | Update the volume entries for the replaced branch: remove the ones under it, add the new scan's, and keep unrelated branches. A new scan with an unknown volume must not take over an old known serial. Tests: snapshot-to-live refresh, and a branch refresh whose volume changed. |
-| A2 | **[P2] A retry that compresses nothing more leaves the record partial.** `cleanup.rs:1064` skips the record update when freed, compressed and already are all zero. Example: run 1 compresses A, B is busy; on retry A is skipped (already WOF) and B doesn't benefit, so `partial: true` stays and the suggestion keeps coming back. The same happens when B was deleted in between. | Work out completion before that check. A clean retry with zero saving completes an existing partial record and keeps its earlier saving. Test the "A already compressed + B doesn't benefit" case. |
-| A3 | Hardening: files with no listed ID (zero ID) are only checked for current eligibility, not that they are the planned file. | Skip zero-ID candidates in the compressor (or, later, keep full IDs). Don't describe this path as protected from replacement. |
-| A4 | Overlapping roots: `seen_in()` finds nodes with `history::find_path()` (first matching root) while `volume_of()` picks the deepest root. | Use one rule for both. When overlapping observations disagree on the volume, return unknown. |
-| A5 | Wording: the Undo estimate is capped by `max(it.bytes, o.freed)`, not by `it.bytes`; old savings can survive app updates. | Fix the description/comment. |
+| A1 | **Fixed.** **[P2] Branch rescans drop the new scan's volume serials.** `commands.rs:975` `replace_branch()` copies the new nodes but not `sub.volumes`. After a drive is reassigned and a branch refreshed, freshly scanned files keep the old serial, and the mismatch check holds them. Refreshing a branch of a snapshot-based tree leaves it with no serial at all. | Update the volume entries for the replaced branch: remove the ones under it, add the new scan's, and keep unrelated branches. A new scan with an unknown volume must not take over an old known serial. Tests: snapshot-to-live refresh, and a branch refresh whose volume changed. |
+| A2 | **Fixed.** **[P2] A retry that compresses nothing more leaves the record partial.** `cleanup.rs:1064` skips the record update when freed, compressed and already are all zero. Example: run 1 compresses A, B is busy; on retry A is skipped (already WOF) and B doesn't benefit, so `partial: true` stays and the suggestion keeps coming back. The same happens when B was deleted in between. | Work out completion before that check. A clean retry with zero saving completes an existing partial record and keeps its earlier saving. Test the "A already compressed + B doesn't benefit" case. |
+| A3 | **Fixed.** Hardening: files with no listed ID (zero ID) are only checked for current eligibility, not that they are the planned file. | Skip zero-ID candidates in the compressor (or, later, keep full IDs). Don't describe this path as protected from replacement. |
+| A4 | **Fixed.** Overlapping roots: `seen_in()` finds nodes with `history::find_path()` (first matching root) while `volume_of()` picks the deepest root. | Use one rule for both. When overlapping observations disagree on the volume, return unknown. |
+| A5 | **Fixed.** Wording: the Undo estimate is capped by `max(it.bytes, o.freed)`, not by `it.bytes`; old savings can survive app updates. | Fix the description/comment. |
 
 Accepted as is: compressor fixes, clean-up hard-link fix, case-only roots, OwnedDir removal,
 UI tick/refresh fixes, `bind(None)` keeping ticks, an empty owned folder left on anchor

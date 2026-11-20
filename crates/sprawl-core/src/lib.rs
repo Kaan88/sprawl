@@ -127,17 +127,55 @@ pub struct Tree {
     pub volumes: Vec<(PathBuf, u64)>,
 }
 
+/// The serial in [`Tree::volumes`] that stands for "not known here": an entry with it hides the
+/// serial of a root further out (a branch rescanned without one, or overlapping roots that
+/// disagree).
+pub const UNKNOWN_VOLUME: u64 = 0;
+
+/// A path's parts for comparing scan roots: whole names, lower case, no separators.
+fn root_parts(p: &Path) -> Vec<String> {
+    p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).filter(|c| c != "\\").collect()
+}
+
 impl Tree {
     /// The volume serial `p` was scanned on: that of the deepest scan root holding it (names
     /// compared whole, ignoring case), or None when not known.
     pub fn volume_of(&self, p: &Path) -> Option<u64> {
-        let parts = |p: &Path| -> Vec<String> { p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).filter(|c| c != "\\").collect() };
-        let want = parts(p);
+        let want = root_parts(p);
         self.volumes.iter()
-            .map(|(r, v)| (parts(r), *v))
+            .map(|(r, v)| (root_parts(r), *v))
             .filter(|(r, _)| want.starts_with(r))
             .max_by_key(|(r, _)| r.len())
             .map(|(_, v)| v)
+            .filter(|&v| v != UNKNOWN_VOLUME)
+    }
+
+    /// The branch at `at` was replaced by a fresh scan of it whose roots were on `incoming`:
+    /// the entries at or under `at` go and the fresh scan's come in. When those don't cover
+    /// `at` itself, `at` is marked unknown, so a root further out doesn't lend its serial to
+    /// the fresh ids. Other branches keep theirs.
+    pub fn replace_volumes(&mut self, at: &Path, incoming: &[(PathBuf, u64)]) {
+        let base = root_parts(at);
+        self.volumes.retain(|(r, _)| !root_parts(r).starts_with(&base));
+        let fresh: Vec<(PathBuf, u64)> = incoming.iter().filter(|(r, _)| root_parts(r).starts_with(&base)).cloned().collect();
+        if !fresh.iter().any(|(r, _)| root_parts(r) == base) {
+            self.volumes.push((at.to_path_buf(), UNKNOWN_VOLUME));
+        }
+        self.volumes.extend(fresh);
+    }
+}
+
+/// Overlapping roots that were on different volumes: the inner one (or both, for the same
+/// path) becomes unknown, since a node below it may come from either scan.
+fn settle_overlaps(volumes: &mut [(PathBuf, u64)]) {
+    let parts: Vec<Vec<String>> = volumes.iter().map(|(r, _)| root_parts(r)).collect();
+    let clash: Vec<bool> = (0..volumes.len())
+        .map(|i| (0..volumes.len()).any(|j| j != i && parts[i].starts_with(&parts[j]) && volumes[j].1 != UNKNOWN_VOLUME && volumes[j].1 != volumes[i].1))
+        .collect();
+    for (v, c) in volumes.iter_mut().zip(clash) {
+        if c {
+            v.1 = UNKNOWN_VOLUME;
+        }
     }
 }
 
@@ -361,7 +399,8 @@ fn scan_many_mode(paths: &[PathBuf], progress: &Progress, use_mft: bool) -> io::
 /// Put `trees` under a synthetic [`MULTIPLE`] root; `names` become the children's names.
 pub(crate) fn combine(trees: Vec<Tree>, names: Vec<String>) -> Tree {
     let method = if trees.iter().all(|t| t.method == ScanMethod::Mft) { ScanMethod::Mft } else { ScanMethod::Walk };
-    let volumes = trees.iter().flat_map(|t| t.volumes.iter().cloned()).collect();
+    let mut volumes: Vec<(PathBuf, u64)> = trees.iter().flat_map(|t| t.volumes.iter().cloned()).collect();
+    settle_overlaps(&mut volumes);
     let total: usize = 1 + trees.iter().map(|t| t.nodes.len()).sum::<usize>();
     let mut nodes: Vec<Node> = Vec::with_capacity(total);
     nodes.push(Node { name: MULTIPLE.to_string(), is_dir: true, attributes: attr::DIRECTORY, ..Default::default() });
@@ -804,6 +843,52 @@ pub fn treemap(tree: &Tree, start: usize, bounds: Rect, min_side: f64, max_tiles
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vol_tree(volumes: &[(&str, u64)]) -> Tree {
+        let volumes = volumes.iter().map(|(p, v)| (PathBuf::from(p), *v)).collect();
+        Tree { volumes, root_path: PathBuf::from(r"C:\"), nodes: Vec::new(), errors: 0, method: ScanMethod::Walk }
+    }
+
+    #[test]
+    fn a_rescanned_branch_takes_its_own_volume() {
+        // the drive was reassigned and C:\A rescanned: its fresh ids are on volume 7
+        let mut t = vol_tree(&[(r"C:\", 5), (r"D:\x", 9)]);
+        t.replace_volumes(Path::new(r"C:\A"), &[(PathBuf::from(r"c:\a"), 7)]);
+        assert_eq!(t.volume_of(Path::new(r"C:\A\f.txt")), Some(7));
+        assert_eq!(t.volume_of(Path::new(r"C:\B\f.txt")), Some(5));
+        assert_eq!(t.volume_of(Path::new(r"D:\x\y")), Some(9));
+        // rescanned again: the old entry under it goes
+        t.replace_volumes(Path::new(r"C:\"), &[(PathBuf::from(r"C:\"), 8)]);
+        assert_eq!(t.volume_of(Path::new(r"C:\A\f.txt")), Some(8));
+        assert_eq!(t.volumes.len(), 2, "{:?}", t.volumes);
+    }
+
+    #[test]
+    fn a_rescan_with_no_volume_does_not_borrow_the_old_one() {
+        let mut t = vol_tree(&[(r"C:\", 5)]);
+        t.replace_volumes(Path::new(r"C:\A"), &[]);
+        assert_eq!(t.volume_of(Path::new(r"C:\A\f.txt")), None);
+        assert_eq!(t.volume_of(Path::new(r"C:\B")), Some(5));
+    }
+
+    #[test]
+    fn a_snapshot_branch_refreshed_live_gets_a_volume() {
+        // a tree from a snapshot knows no volumes; the refreshed branch does
+        let mut t = vol_tree(&[]);
+        t.replace_volumes(Path::new(r"C:\A"), &[(PathBuf::from(r"C:\A"), 7)]);
+        assert_eq!(t.volume_of(Path::new(r"C:\A\f.txt")), Some(7));
+        assert_eq!(t.volume_of(Path::new(r"C:\B")), None);
+    }
+
+    #[test]
+    fn overlapping_roots_that_disagree_are_unknown() {
+        let mut v: Vec<(PathBuf, u64)> = [(r"C:\A", 5), (r"C:\A\B", 6), (r"C:\Z", 5), (r"C:\Z\Y", 5)].iter().map(|(p, s)| (PathBuf::from(p), *s)).collect();
+        settle_overlaps(&mut v);
+        let t = Tree { volumes: v, ..vol_tree(&[]) };
+        assert_eq!(t.volume_of(Path::new(r"C:\A\B\f")), None);
+        assert_eq!(t.volume_of(Path::new(r"C:\A\f")), Some(5));
+        assert_eq!(t.volume_of(Path::new(r"C:\Z\Y\f")), Some(5));
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6

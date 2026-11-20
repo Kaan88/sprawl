@@ -235,8 +235,8 @@ enum Skip {
     Failed(io::Error),
 }
 
-/// Compress the file `name` (listed as file `id`, 0 when the listing gave none) in the held
-/// folder `dir`: Some(on disk before and after, when both could be measured), or None when
+/// Compress the file `name` (listed as file `id`; 0, when the listing gave none, is left alone
+/// as changed: nothing would show it is still the file planned) in the held folder `dir`: Some(on disk before and after, when both could be measured), or None when
 /// Windows says it wouldn't get smaller.
 fn one(dir: &File, name: &str, id: u64, alg: Alg) -> Result<Option<Option<(u64, u64)>>, Skip> {
     // read access is all WOF needs; no other program may write it meanwhile
@@ -248,7 +248,7 @@ fn one(dir: &File, name: &str, id: u64, alg: Alg) -> Result<Option<Option<(u64, 
     })?;
     // the open file must be the one the plan listed, and still worth compressing
     let attrs = local::check_plain(&f, Kind::File).map_err(|_| Skip::Changed)?;
-    if id != 0 && local::identity(&f).map_err(Skip::Failed)?.1 != id {
+    if id == 0 || local::identity(&f).map_err(Skip::Failed)?.1 != id {
         return Err(Skip::Changed);
     }
     let (size, links) = standard(&f).map_err(Skip::Failed)?;
