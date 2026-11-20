@@ -59,6 +59,44 @@ pub enum ChatEvent {
     Failed(String),
 }
 
+/// Said to a chat without tools (Codex, Claude Code without Sprawl's server): it proposes in a
+/// block at the end of its answer, which Sprawl takes out and checks like a tool call.
+const NO_TOOLS: &str = "You have no tools in this conversation: answer from the report. You can't look inside folders, so say what is a guess. \
+To propose information rules or cleaners for the user to approve, end your answer with one fenced block tagged sprawl-proposals that holds JSON: \
+{\"rules\": [...], \"cleaners\": [...]}. A rule: {\"id\", \"title\", \"paths\": [absolute patterns like ?:\\\\Games\\\\*\\\\PS3_GAME], \"risk\": green|amber|orange|red, \"remedy\": info|delete|uninstall, \"why\"}; \
+use remedy info for anything you couldn't check. A cleaner: {\"id\", \"name\", \"group\", \"part\": [{\"id\", \"title\", \"paths\", \"risk\": green|amber|orange, \"why\", \"cost\", \"closed\": must|warn|no}]}. \
+At most 10. Sprawl checks each one and shows it to the user, who approves or dismisses it; nothing is used before that. No other button proposes them for you: \
+this block is the way. Leave the block out when there is nothing to propose.";
+
+/// The most proposals one answer's block may hold.
+const MAX_BLOCK_PROPOSALS: usize = 10;
+
+/// The `sprawl-proposals` block in an answer from a chat without tools: the answer without it,
+/// and the JSON inside (None when it couldn't be read). None when there is no block.
+pub(crate) fn proposals_block(text: &str) -> Option<(String, Option<Value>)> {
+    const TAG: &str = "```sprawl-proposals";
+    let start = text.find(TAG)?;
+    let body = start + TAG.len();
+    let end = text[body..].find("```").map_or(text.len(), |e| body + e);
+    let json = serde_json::from_str::<Value>(text[body..end].trim()).ok().filter(Value::is_object);
+    let after = (end + 3).min(text.len());
+    let rest = format!("{}{}", &text[..start], &text[after..]).trim().to_string();
+    Some((rest, json))
+}
+
+/// The tool calls a block stands for, in order: rules then cleaners, at most
+/// [`MAX_BLOCK_PROPOSALS`]. A rule's reason says it came from the report alone.
+pub(crate) fn block_calls(v: &Value) -> Vec<(&'static str, Value)> {
+    let rules = v["rules"].as_array().into_iter().flatten().map(|r| {
+        let mut r = r.clone();
+        let why = r["why"].as_str().unwrap_or("").trim().to_string();
+        r["why"] = serde_json::json!(format!("{why} (From the report only: the AI couldn't look inside.)").trim().to_string());
+        ("propose_rule", r)
+    });
+    let cleaners = v["cleaners"].as_array().into_iter().flatten().map(|c| ("propose_cleaner", c.clone()));
+    rules.chain(cleaners).take(MAX_BLOCK_PROPOSALS).collect()
+}
+
 /// "Ask your disk": answer each question from `questions` until the channel closes. Runs on its
 /// own thread with its own copy of the scan, so filtering the map doesn't end it.
 /// `stop` ends the question being answered (it is cleared again for the next one).
@@ -97,7 +135,7 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
     let effort = super::effort::pick(cfg, &model);
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
         let specs = if with_tools { chat_specs_with(web) } else { Vec::new() };
-        let system = if with_tools { CHAT.to_string() } else { format!("{CHAT}\nYou have no tools in this conversation: answer from the report.") };
+        let system = if with_tools { CHAT.to_string() } else { format!("{CHAT}\n{NO_TOOLS}") };
         let c: Box<dyn Chat> = match cfg.provider {
             Provider::Off => return Err("AI is off".into()),
             Provider::Anthropic => {
@@ -147,6 +185,8 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
         events(ChatEvent::Progress(format!("Asking {}...", named(cfg.provider, &model))));
         let mut turns = 0;
         let mut reply = String::new();
+        // the last answer as written, for a proposals block (cleaning could cut it off)
+        let mut raw = String::new();
         loop {
             // Claude Code runs the tools itself, in Sprawl's server: meanwhile its progress is
             // shown and its web lookups are answered here, through the same checks
@@ -201,6 +241,7 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
             turns += 1;
             if !t.text.trim().is_empty() {
                 reply = super::tools::clean_text_long(t.text.trim(), 6000);
+                raw = t.text.clone();
             }
             if t.calls.is_empty() {
                 break;
@@ -239,6 +280,28 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
                 results.push((c.id.clone(), clip(text, 12_000), err));
             }
             chat.answer(results);
+        }
+        // no tools: its proposals come in a block at the end of the answer, checked here the way
+        // a tool call is, and shown to the user to approve like any other
+        if !with_tools && !failed {
+            if let Some((rest, json)) = proposals_block(&raw) {
+                reply = super::tools::clean_text_long(&rest, 6000);
+                let mut refused = Vec::new();
+                match json {
+                    Some(v) => {
+                        for (name, input) in block_calls(&v) {
+                            let title = input["title"].as_str().or(input["name"].as_str()).unwrap_or("(no title)").chars().take(80).collect::<String>();
+                            if let Err(e) = tools.call(name, &input) {
+                                refused.push(format!("{title}: {e}"));
+                            }
+                        }
+                    }
+                    None => refused.push("the proposals block couldn't be read".into()),
+                }
+                if !refused.is_empty() {
+                    reply.push_str(&format!("\n\n(Sprawl didn't keep: {}.)", refused.join("; ")));
+                }
+            }
         }
         let mut cleaners = std::mem::take(&mut tools.cleaner_proposals);
         if !cleaners.is_empty() && !failed {
@@ -822,6 +885,39 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     second_opinion(cfg, &model, &mut run, &stop, progress);
     run_cleaner_check(cfg, &model, &mut run, &stop, progress);
     Ok(run)
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::{block_calls, proposals_block, MAX_BLOCK_PROPOSALS};
+    use serde_json::json;
+
+    #[test]
+    fn a_proposals_block_is_taken_out_and_read() {
+        assert!(proposals_block("Just an answer.").is_none(), "no block, nothing");
+        let text = "Here is what I see.\n\n```sprawl-proposals\n{\"rules\": [{\"id\": \"ps3\", \"title\": \"PS3 disc dumps\", \"paths\": [\"?:\\\\Games\\\\*\\\\PS3_GAME\"], \"risk\": \"amber\", \"remedy\": \"info\", \"why\": \"A PS3 disc copy\"}]}\n```\n";
+        let (rest, v) = proposals_block(text).unwrap();
+        assert_eq!(rest, "Here is what I see.", "the block isn't shown");
+        let calls = block_calls(&v.unwrap());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "propose_rule");
+        assert!(calls[0].1["why"].as_str().unwrap().contains("From the report only"));
+        // unreadable: taken out all the same, and said
+        let (rest, v) = proposals_block("Answer ```sprawl-proposals {not json ``` tail").unwrap();
+        assert!(v.is_none());
+        assert_eq!(rest, "Answer  tail");
+        // unclosed: everything after the tag is the block
+        let (rest, _) = proposals_block("Answer\n```sprawl-proposals\n{\"rules\": []}").unwrap();
+        assert_eq!(rest, "Answer");
+    }
+
+    #[test]
+    fn a_block_holds_at_most_ten() {
+        let many: Vec<_> = (0..25).map(|i| json!({"id": format!("r{i}"), "title": "t", "paths": [], "risk": "amber", "remedy": "info", "why": "w"})).collect();
+        let v = json!({"rules": many, "cleaners": [{"id": "c", "name": "C"}]});
+        assert_eq!(block_calls(&v).len(), MAX_BLOCK_PROPOSALS);
+        assert!(block_calls(&json!({"other": 1})).is_empty());
+    }
 }
 
 #[cfg(test)]

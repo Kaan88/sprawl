@@ -922,6 +922,30 @@ pub fn unused_apps(tree: &Tree, facts: &Facts, days: u64, min_bytes: u64) -> Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_newest_file_inside_ignores_folders_and_links() {
+        use sprawl_core::{Node, ScanMethod, Tree};
+        use std::time::{Duration, UNIX_EPOCH};
+        let at = |d: u64| Some(UNIX_EPOCH + Duration::from_secs(d * 86_400));
+        let node = |name: &str, dir: bool, modified, attributes: u32, parent: Option<usize>, children: Vec<usize>| Node { name: name.into(), is_dir: dir, modified, attributes, parent, children, ..Default::default() };
+        let tree = Tree { volumes: Vec::new(), root_path: r"D:\games".into(), errors: 0, method: ScanMethod::Walk,
+            nodes: vec![
+                // a folder touched last, which says nothing about its files
+                node(r"D:\games", true, at(900), 0, None, vec![1, 2, 3]),
+                node("old.iso", false, at(100), 0, Some(0), vec![]),
+                node("saves", true, at(800), 0, Some(0), vec![4]),
+                // a link to elsewhere: what is behind it isn't this folder's
+                node("link", true, at(50), 0x400, Some(0), vec![5]),
+                node("slot1.sav", false, at(300), 0, Some(2), vec![]),
+                node("elsewhere.bin", false, at(700), 0, Some(3), vec![]),
+            ] };
+        assert_eq!(super::newest_file(&tree, 0), Some((at(300).unwrap(), 4)));
+        assert_eq!(super::newest_file(&tree, 1), Some((at(100).unwrap(), 1)), "a file is its own newest");
+        let mut none = tree.clone();
+        for n in &mut none.nodes { n.modified = None; }
+        assert_eq!(super::newest_file(&none, 0), None, "no times read: unknown");
+    }
+
     use super::*;
 
     #[test]
@@ -1049,4 +1073,25 @@ mod tests {
         assert_eq!(clean_path(r#""C:\Games\X\""#), Some(PathBuf::from(r"C:\Games\X")));
         assert_eq!(clean_path(r"relative\x"), None);
     }
+}
+
+/// The newest file under `n` by its modified time, and which file: what "last change inside"
+/// means. Folders' own times are left out (adding or removing a file changes them, and a folder
+/// time says nothing about its files), and links aren't followed below `n` itself.
+pub fn newest_file(tree: &sprawl_core::Tree, n: usize) -> Option<(std::time::SystemTime, usize)> {
+    let mut best: Option<(std::time::SystemTime, usize)> = None;
+    let mut stack = vec![n];
+    while let Some(k) = stack.pop() {
+        let node = &tree.nodes[k];
+        if !node.is_dir {
+            if let Some(t) = node.modified {
+                if best.is_none_or(|(b, _)| t > b) {
+                    best = Some((t, k));
+                }
+            }
+        } else if k == n || !node.is_reparse_point() {
+            stack.extend_from_slice(&node.children);
+        }
+    }
+    best
 }

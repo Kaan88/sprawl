@@ -240,6 +240,12 @@ pub(crate) struct Advisor {
     pub(crate) foot: Option<FrameworkElement>,
     /// A control to focus after the next redraw (the box just ticked).
     pub(crate) focus_after: Option<String>,
+    /// The rules count ([`memory::Memory::rules_gen`]) the check now running began with.
+    pub(crate) check_began: Option<u64>,
+    /// Rule and cleaner ids approved since the last check: said what they found once it ran.
+    pub(crate) just_approved: Vec<String>,
+    /// The Remembered section was on screen at the last redraw (leaving it runs a check owed).
+    on_memory: bool,
     /// What is in the "I need __ GB" box, kept across redraws.
     goal_text: String,
     pub(crate) goal_options: bool,
@@ -294,6 +300,9 @@ pub(crate) struct Advisor {
     pub(crate) delete_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Draw the Advisor again on the next frame (a dropdown changed it).
     pub(crate) rerender: bool,
+    /// The API key typed in AI setup and not saved yet: kept across redraws, and used by Load
+    /// models before Save. Emptied on Save and when AI setup closes.
+    pub(crate) ai_key_typed: String,
     /// The Delete running: what the scan said its items hold, whether it is for good, how many.
     pub(crate) delete_total: (u64, bool, usize),
     /// Close Sprawl once that Delete has stopped.
@@ -373,6 +382,8 @@ pub(crate) struct Chat {
     live: Option<String>,
     /// A web search waiting for the user's yes or no.
     consent: Option<(String, Sender<bool>)>,
+    /// What the last answer proposed (rules and cleaners): its title, and why it was refused.
+    pub(crate) proposed: Vec<(String, Option<String>)>,
     /// "Allow for this session" was chosen.
     web_ok: Arc<std::sync::atomic::AtomicBool>,
     /// The chat thread is still running (it clears this when it ends).
@@ -487,6 +498,25 @@ fn ago(t: std::time::SystemTime) -> String {
         5400..=129_599 => format!("{} hours ago", (s + 1800) / 3600),
         _ => format!("{} days ago", (s + 43_200) / 86_400),
     }
+}
+
+/// One row of AI setup: its label, the field filling the width the column has, and a button or
+/// dropdown beside it. Nothing has a fixed width, so a narrow AI column cuts nothing off.
+fn ai_row(label: &str, field: &str, extra: &str) -> String {
+    let stretch = |x: &str, col: u8, fill: bool| -> String {
+        let x = if fill { x.replacen(" Width=\"260\"", "", 1) } else { x.to_string() };
+        let attrs = if fill { format!("Grid.Column=\"{col}\" HorizontalAlignment=\"Stretch\" ") } else { format!("Grid.Column=\"{col}\" ") };
+        match x.find(' ') {
+            Some(i) if x.starts_with('<') => format!("{} {attrs}{}", &x[..i], &x[i + 1..]),
+            _ => x,
+        }
+    };
+    format!(
+        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" VerticalAlignment="Center" FontSize="12"/>{}{}</Grid>"##,
+        ui::esc(label),
+        stretch(field, 1, true),
+        stretch(extra, 2, false)
+    )
 }
 
 /// Where the last AI result for a scanned folder is kept.
@@ -793,6 +823,7 @@ impl State {
         self.advisor.rx = Some(rx);
         self.advisor.tx = Some(tx.clone());
         self.advisor.running = true;
+        self.advisor.check_began = Some(self.advisor.memory.rules_gen);
         let gen = self.tree_gen;
         let memory = self.advisor.memory.clone();
         let scan_id = self.scan_id;
@@ -941,6 +972,13 @@ impl State {
                         r.growth = g.clone();
                     }
                     self.advisor.report = Some(r);
+                    // a check owed for changed rules is settled by this one, if it saw them all
+                    if let Some(b) = self.advisor.check_began.take() {
+                        if self.advisor.memory.check_finished(b) {
+                            self.save_memory();
+                        }
+                    }
+                    self.say_what_approved_found();
                     self.merge_growth();
                     self.load_run();
                     self.cleanup_defaults();
@@ -951,6 +989,7 @@ impl State {
                 }
                 Msg::Failed(gen) => {
                     if gen == self.tree_gen {
+                        self.advisor.check_began = None;
                         self.advisor.running = false;
                         self.advisor.note = Some("The check stopped on an error inside Sprawl (written to crash.log). Press Check again.");
                     }
@@ -1068,7 +1107,7 @@ impl State {
         }
     }
 
-    fn advisor_changed(&mut self) {
+    pub(crate) fn advisor_changed(&mut self) {
         self.invalidate_chat_if_changed();
         self.map.drawn_once = false;
         self.publish_bridge();
@@ -1180,9 +1219,9 @@ impl State {
             "AdvAiLoad" => {
                 self.read_ai_fields();
                 if let Some(e) = &self.advisor.ai_edit {
-                    let u = e.base_url.clone();
+                    let (p, u) = (e.provider, e.base_url.clone());
                     self.advisor.models.reset();
-                    self.advisor.models.want(Provider::OpenAi, &u);
+                    self.advisor.models.want(p, &u, &self.advisor.ai_key_typed);
                 }
             }
             "AdvAiSave" => {
@@ -1190,6 +1229,7 @@ impl State {
                 // a key may have just been stored: the list is fetched again next time
                 self.advisor.models.reset();
                 let key = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+                self.advisor.ai_key_typed.clear();
                 if let Some(c) = self.advisor.ai_edit.take() {
                     let mut notes = Vec::new();
                     if c.save().is_err() {
@@ -1269,8 +1309,9 @@ impl State {
             "AdvOwnOk" => self.advisor.cleanup.own_ok = !self.advisor.cleanup.own_ok,
             "AdvCleanNow" => return self.cleanup_start(),
             "AdvCleanStop" => {
-                if let Some(r) = &self.advisor.cleanup.running {
+                if let Some(r) = &mut self.advisor.cleanup.running {
                     r.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    r.stop_at.get_or_insert_with(std::time::Instant::now);
                 }
                 return;
             }
@@ -1431,6 +1472,12 @@ impl State {
             }
             "AdvGrowTide" => return self.command("ViewTideline"),
             "AdvSecMemory" => self.advisor.section = Section::Memory,
+            // from the strip under an answer: the proposals, focused so they are in view
+            "AdvGoApprove" => {
+                self.advisor.section = Section::Memory;
+                let m = &self.advisor.memory;
+                self.advisor.focus_after = if !m.cleaner_proposals.is_empty() { Some("AdvClApprove0".into()) } else if !m.proposals.is_empty() { Some("AdvApprove0".into()) } else { None };
+            }
             "AdvSortRecommended" => self.advisor.sort = Sort::Recommended,
             "AdvSortSize" => self.advisor.sort = Sort::Size,
             "AdvSortRisk" => self.advisor.sort = Sort::Risk,
@@ -1768,6 +1815,9 @@ impl State {
     }
 
     pub(crate) fn render_advisor(&mut self) {
+        if self.recheck_if_owed() {
+            return;
+        }
         self.cleanup_context_sync();
         let t0 = std::time::Instant::now();
         // a button that leads to another section (a question for the AI) leaves the Cleaners tab
@@ -1783,7 +1833,7 @@ impl State {
             // an OpenAI-compatible address is asked for its list only on "Load models"
             if e.provider != Provider::OpenAi {
                 let (p, u) = (e.provider, e.base_url.clone());
-                self.advisor.models.want(p, &u);
+                self.advisor.models.want(p, &u, &self.advisor.ai_key_typed);
             }
         }
         // the levels the chosen model offers (read again each time: a fetched list may say more)
@@ -1791,7 +1841,13 @@ impl State {
             let levels = sprawl_advisor::llm::effort::levels(e.provider, &e.base_url, &e.model);
             (!levels.is_empty()).then(|| (e.model.clone(), levels))
         });
-        // keep what was typed in the goal and question boxes across the redraw
+        // keep what was typed in the goal and question boxes, and an unsaved key, across the redraw
+        if let Some(k) = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()) {
+            self.advisor.ai_key_typed = k.to_string_lossy();
+        }
+        if self.advisor.ai_edit.is_none() {
+            self.advisor.ai_key_typed.clear();
+        }
         if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
             if let Ok(h) = t.Text() {
                 self.advisor.goal_text = h.to_string_lossy();
@@ -1839,6 +1895,11 @@ impl State {
         };
         let _ = host.SetChild(&el);
         let Ok(fe) = el.cast::<FrameworkElement>() else { return };
+        if !self.advisor.ai_key_typed.is_empty() {
+            if let Ok(k) = find::<PasswordBox>(&fe, "AdvAiKey") {
+                let _ = k.SetPassword(&self.advisor.ai_key_typed.as_str().into());
+            }
+        }
         self.advisor.panel = Some(fe.clone());
         // the foot, pinned under the list
         let foot = find::<Border>(&self.root, "AdvFoot").ok().and_then(|b| {
@@ -2070,6 +2131,28 @@ impl State {
                 keep(t);
             }
         }
+        // a well-known service: its address in the box (a list from the old address is forgotten)
+        if let Ok(s) = find::<Selector>(fe, "AdvAiUrlPreset") {
+            if let Ok(t) = s.SelectionChanged(|sel, _| {
+                let i = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
+                let Some(url) = i.and_then(sprawl_advisor::llm::models::preset_url) else { return };
+                with(|s| {
+                    s.read_ai_fields();
+                    let changed = s.advisor.ai_edit.as_mut().is_some_and(|c| {
+                        let changed = c.base_url != url;
+                        c.base_url = url.to_string();
+                        changed
+                    });
+                    if changed {
+                        s.advisor.models.reset();
+                        s.advisor.focus_after = Some("AdvAiUrlPreset".into());
+                        s.advisor.rerender = true;
+                    }
+                });
+            }) {
+                keep(t);
+            }
+        }
         // another model may offer other effort levels: draw the Effort dropdown for it
         if let Ok(s) = find::<Selector>(fe, "AdvAiModelPick") {
             if let Ok(t) = s.SelectionChanged(|_, _| {
@@ -2085,7 +2168,7 @@ impl State {
         for name in [
             "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide", "AdvOnlyComp",
             "AdvExplainUnknown", "AdvUnknownSetup", "AdvAskFinding", "AdvKeep", "AdvLater", "AdvStillUse", "AdvManageLibrary", "AdvForgetLearning", "AdvQuiet", "AdvSortRecommended", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPCodex", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvRefresh", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
+            "AdvRefresh", "AdvGoApprove", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
             "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain", "AdvGoalOptions", "AdvGoalHide", "AdvGoalGreen", "AdvGoalCleanup", "AdvGoalCompress", "AdvGoalMove",
         ] {
             for r in roots {
@@ -2194,7 +2277,11 @@ impl State {
                 r##"<StackPanel Orientation="Horizontal" Spacing="4" Margin="0,4,0,0">{}{}{}</StackPanel>"##,
                 tab("AdvSecFindings", format!("Findings ({shown})"), Section::Findings),
                 tab("AdvSecGrowth", "Growth".into(), Section::Growth),
-                tab("AdvSecMemory", format!("Remembered ({})", m.prefs.len() + m.labels.len() + m.proposals.len() + m.cleaner_proposals.len() + r.kept.len() + r.refused.len()), Section::Memory),
+                tab("AdvSecMemory", {
+                    let waiting = m.proposals.len() + m.cleaner_proposals.len();
+                    let all = m.prefs.len() + m.labels.len() + waiting + r.kept.len() + r.refused.len();
+                    if waiting > 0 { format!("Remembered ({all}) · {waiting} to approve") } else { format!("Remembered ({all})") }
+                }, Section::Memory),
             );
         }
         x
@@ -2212,8 +2299,10 @@ impl State {
         let ai_off = self.ai_off_line();
         let ai = self.cl_ai_open() && !ai_off;
         x += &format!(
-            r##"<Grid Grid.Row="1" ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="420"/><ColumnDefinition Width="{}"/></Grid.ColumnDefinitions>"##,
-            if ai { "400" } else { "Auto" }
+            r##"<Grid Grid.Row="1" ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="1.3*" MinWidth="300"/><ColumnDefinition {}/></Grid.ColumnDefinitions>"##,
+            // both columns give way in a narrow window, instead of the page running off the
+            // right edge (a fixed 400 beside at least 420 cut the findings off)
+            if ai { r#"Width="*" MinWidth="330" MaxWidth="420""# } else { r#"Width="Auto""# }
         );
         x += r##"<ScrollViewer x:Name="FnScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="10">"##;
         if ai_off {
@@ -2932,6 +3021,9 @@ impl State {
     fn read_ai_fields(&mut self) {
         let get = |n: &str| self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, n).ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
         let (mut m, u) = (get("AdvAiModel"), get("AdvAiUrl"));
+        if let Some(k) = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()) {
+            self.advisor.ai_key_typed = k.to_string_lossy();
+        }
         // the Effort dropdown, for the model it was drawn for (before the model may change)
         let effort = self.advisor.panel.as_ref().and_then(|p| find::<Selector>(p, "AdvAiEffortPick").ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
         if let (Some(i), Some((dm, levels)), Some(c)) = (effort, self.advisor.effort_drawn.clone(), self.advisor.ai_edit.as_mut()) {
@@ -3036,16 +3128,23 @@ impl State {
             "AdvUndo" => {
                 let Some(path) = self.advice().and_then(|r| r.kept.get(i)).map(|(f, _)| f.path.clone()) else { return };
                 self.advisor.memory.undo_hiding(&path);
+                // found again from scratch, so it comes back where it belongs: once, on leaving
+                // this section
+                self.advisor.memory.rules_changed();
                 self.save_memory();
-                // found again from scratch, so it comes back where it belongs
-                return self.advisor_start();
+                self.adv_say("It comes back in Findings when you leave Remembered.");
+                return self.advisor_changed();
             }
             "AdvApprove" => {
+                let id = m.proposals.get(i).map(|p| p.id.clone());
                 match m.approve(i) {
                     Ok(()) => {
+                        self.advisor.just_approved.extend(id);
+                        // saved at once, with the check it owes; the check itself runs once, on
+                        // leaving this section, not after every approval
                         self.save_memory();
-                        self.adv_say("Rule added to your rules. Checking again with it...");
-                        return self.advisor_start();
+                        self.adv_say("Approved: it is in your rules. The findings are checked again with it when you leave Remembered.");
+                        return self.advisor_changed();
                     }
                     Err(e) => self.adv_say(&format!("Couldn't add the rule: {e}")),
                 }
@@ -3304,6 +3403,7 @@ impl State {
             return;
         }
         let row = self.advisor.chat.next_row.take();
+        self.advisor.chat.proposed.clear();
         // empty the box now, or the redraw would read the old question back into it
         if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
             let _ = t.SetText(&"".into());
@@ -3505,9 +3605,18 @@ impl State {
                     redraw = true;
                 }
                 ChatMsg::Event(ChatEvent::Remember { prefs, labels, rules, cleaners }) => {
-                    for p in rules { let _ = self.advisor.memory.propose(p); }
+                    // said under the answer, with the way to them
+                    for p in rules {
+                        let title = p.title.clone();
+                        let r = self.advisor.memory.propose(p);
+                        self.advisor.chat.proposed.push((title, r.err()));
+                        redraw = true;
+                    }
                     for c in cleaners {
-                        let _ = self.advisor.memory.propose_cleaner(c);
+                        let title = c.cleaner.name.clone();
+                        let r = self.advisor.memory.propose_cleaner(c);
+                        self.advisor.chat.proposed.push((title, r.err()));
+                        redraw = true;
                     }
                     for p in &prefs {
                         let _ = self.advisor.memory.add_pref(&p.text, memory::From::Model);
@@ -3579,7 +3688,8 @@ impl State {
             // only once there is something to start over from
             if c.log.is_empty() && c.live.is_none() { "" } else { r##"<Button x:Name="AdvChatClear" HorizontalAlignment="Right" Content="New chat" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>"## }
         );
-        for (user, text) in c.log.iter().rev().take(12).rev() {
+        let last = c.log.len();
+        for (n, (user, text)) in c.log.iter().enumerate().skip(last.saturating_sub(12)) {
             if *user {
                 x += &format!(
                     r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True" Margin="0,4,0,0"><Run Text="You: " FontWeight="SemiBold" Foreground="#FF8FB4FF"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##,
@@ -3589,6 +3699,9 @@ impl State {
                 x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/>"##);
                 x += &ui::markdown(text, 12, "#FFD5DBE8");
                 x += UNCHECKED_LINE;
+                if n + 1 == last {
+                    x += &self.proposed_strip();
+                }
             }
         }
         if c.status.is_none() && c.live.is_none() {
@@ -3751,10 +3864,7 @@ impl State {
         // one field like Model and Effort: it shows the choice alone, so it fits any width
         let names: Vec<String> = PROVIDER_PICKS.iter().map(|(_, label, _)| label.to_string()).collect();
         let current = PROVIDER_PICKS.iter().find(|(p, _, _)| *p == e.provider).map_or("Off", |(_, l, _)| *l);
-        x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Provider" Width="70" VerticalAlignment="Center" FontSize="12"/>{}</StackPanel>"##,
-            crate::models::combo("AdvAiProviderPick", &names, current, 260)
-        );
+        x += &ai_row("Provider", &crate::models::combo("AdvAiProviderPick", &names, current, 260), "");
         if e.provider == Provider::Codex {
             x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::llm::codex::RISK));
         }
@@ -3764,7 +3874,13 @@ impl State {
                 Some(list) => crate::models::combo("AdvAiModelPick", list, &e.model, 260),
                 None => format!(r##"<TextBox x:Name="AdvAiModel" Width="260" Text="{}"/>"##, ui::esc(&e.model)),
             };
-            x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Model" Width="70" VerticalAlignment="Center" FontSize="12"/>{field}</StackPanel>"##);
+            // a list that needs a key (or an address) is asked for on "Load models", beside the model
+            let load = if matches!(e.provider, Provider::OpenAi | Provider::Anthropic) {
+                r##"<Button x:Name="AdvAiLoad" Content="Load models" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Ask for the list of models, with the key typed below (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/>"##
+            } else {
+                ""
+            };
+            x += &ai_row("Model", &field, load);
             // no list fetched yet, but the usual Claude models to pick from
             let usual = self.advisor.models.choices(&e.model).is_none() && choices.is_some();
             let note = self.advisor.models.note().map(|n| if usual && !n.starts_with("Loading") { "The usual Claude models. Save a key to list them all.".to_string() } else { n });
@@ -3780,23 +3896,28 @@ impl State {
                 let mut items = vec![default];
                 items.extend(levels.iter().cloned());
                 let current = e.efforts.get(m).filter(|s| levels.contains(s)).cloned().unwrap_or_else(|| items[0].clone());
-                x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Effort" Width="70" VerticalAlignment="Center" FontSize="12"/>{}</StackPanel>"##,
-                    crate::models::combo("AdvAiEffortPick", &items, &current, 260).replacen("<ComboBox ", r##"<ComboBox ToolTipService.ToolTip="How hard the model thinks before it answers. Only the levels this model offers are listed; higher is slower and uses more tokens." "##, 1)
+                x += &ai_row(
+                    "Effort",
+                    &crate::models::combo("AdvAiEffortPick", &items, &current, 260).replacen("<ComboBox ", r##"<ComboBox ToolTipService.ToolTip="How hard the model thinks before it answers. Only the levels this model offers are listed; higher is slower and uses more tokens." "##, 1),
+                    "",
                 );
             }
         }
         if e.provider == Provider::OpenAi {
-            x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Address" Width="70" VerticalAlignment="Center" FontSize="12"/><TextBox x:Name="AdvAiUrl" Width="260" PlaceholderText="http://localhost:11434/v1" Text="{}"/><Button x:Name="AdvAiLoad" Content="Load models" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></StackPanel>"##,
-                ui::esc(&e.base_url)
+            let names = sprawl_advisor::llm::models::preset_names();
+            let cur = names[sprawl_advisor::llm::models::preset_index(&e.base_url)].clone();
+            x += &ai_row(
+                "Address",
+                &format!(r##"<TextBox x:Name="AdvAiUrl" Width="260" PlaceholderText="https://api.openai.com/v1" Text="{}"/>"##, ui::esc(&e.base_url)),
+                &crate::models::combo("AdvAiUrlPreset", &names, &cur, 130).replacen("<ComboBox ", r##"<ComboBox ToolTipService.ToolTip="Fill in the address of a well-known service. Then Load models." "##, 1),
             );
         }
         if e.provider.needs_key() {
             let has = sprawl_advisor::config::has_key(e.provider);
-            x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Key" Width="70" VerticalAlignment="Center" FontSize="12"/><PasswordBox x:Name="AdvAiKey" Width="260" PlaceholderText="{}"/></StackPanel>"##,
-                if has { "A key is stored; leave empty to keep it" } else { "Paste the API key (stored in Windows Credential Manager)" }
+            x += &ai_row(
+                "Key",
+                &format!(r##"<PasswordBox x:Name="AdvAiKey" Width="260" PlaceholderText="{}"/>"##, if has { "A key is stored; leave empty to keep it" } else { "Paste the API key (stored in Windows Credential Manager)" }),
+                "",
             );
         }
         x += r##"<TextBlock Text="Your uninstaller app and the Claude Code setup are under Options &gt; Settings." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
@@ -3862,10 +3983,67 @@ impl State {
             && matches!(self.advisor.ai, Ai::Idle)
     }
 
+    /// Leaving Remembered (for another section, tab or view) with rules changed there: the one
+    /// check they owe starts now. True when it started (it draws the Advisor itself). A check
+    /// still owed after a close or a crash is settled by the first check of the next start.
+    pub(crate) fn recheck_if_owed(&mut self) -> bool {
+        let on = self.view == View::Advisor && self.advisor.section == Section::Memory;
+        let left = std::mem::replace(&mut self.advisor.on_memory, on) && !on;
+        if left && self.advisor.memory.check_owed() && !self.advisor.running && self.job.is_none() && self.tree.is_some() {
+            self.advisor_start();
+            return true;
+        }
+        false
+    }
+
+    /// After the check that followed approvals: what the approved rules found in this scan.
+    fn say_what_approved_found(&mut self) {
+        if self.advisor.just_approved.is_empty() {
+            return;
+        }
+        let ids = std::mem::take(&mut self.advisor.just_approved);
+        let Some(r) = self.advice() else { return };
+        let found: Vec<&Finding> = r.findings.iter().filter(|f| matches!(&f.source, Source::Rule(id) if ids.contains(id))).collect();
+        let bytes: u64 = found.iter().map(|f| f.bytes).sum();
+        let msg = match found.len() {
+            0 => "Checked again with your new rules: nothing in this scan matches them yet. They look in every scan from now on.".to_string(),
+            1 => format!("Checked again with your new rules: 1 folder ({}) is now recognised.", self.size(bytes)),
+            n => format!("Checked again with your new rules: {n} folders ({}) are now recognised.", self.size(bytes)),
+        };
+        self.adv_say(&msg);
+    }
+
+    /// Under the AI's last answer: the rules and cleaners it proposed, waiting for the user's
+    /// approval, with the way to them; and any Sprawl refused, with why.
+    fn proposed_strip(&self) -> String {
+        let p = &self.advisor.chat.proposed;
+        if p.is_empty() {
+            return String::new();
+        }
+        let ok: Vec<&String> = p.iter().filter(|(_, e)| e.is_none()).map(|(t, _)| t).collect();
+        let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#1A4CC38A" BorderBrush="#554CC38A" BorderThickness="1" Margin="0,4,0,0"><StackPanel Spacing="4">"##);
+        if !ok.is_empty() {
+            let head = if ok.len() == 1 { "1 proposal is waiting for your approval".to_string() } else { format!("{} proposals are waiting for your approval", ok.len()) };
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFD5DBE8" TextWrapping="Wrap"/>"##, ui::esc(&head));
+            for t in &ok {
+                x += &format!(r##"<TextBlock Text="- {}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(t));
+            }
+        }
+        for (t, e) in p.iter().filter_map(|(t, e)| e.as_ref().map(|e| (t, e))) {
+            x += &format!(r##"<TextBlock Text="Not kept: {}: {}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(t), ui::esc(e));
+        }
+        if !ok.is_empty() {
+            x += r##"<Button x:Name="AdvGoApprove" Content="Review and approve" Padding="10,3" FontSize="12" CornerRadius="5" Margin="0,2,0,0" ToolTipService.ToolTip="Opens Remembered, where each proposal has Approve and Dismiss. Nothing is used until you approve it."/>"##;
+        }
+        x += "</StackPanel></Border>";
+        x
+    }
+
     /// `plan`: the goal, the plan and the script; otherwise asking the AI and its answer.
     fn ai_card(&self, _r: &Report) -> String {
         let cfg = AiConfig::load();
-        let btn = |name: &str, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
+        // a long model name is cut short with "...", whole in the tooltip: the row's buttons stay whole
+        let btn = |name: &str, label: &str| format!(r##"<Button x:Name="{name}" Padding="10,3" FontSize="12" CornerRadius="5" MaxWidth="240" ToolTipService.ToolTip="{label}"><TextBlock Text="{label}" TextTrimming="CharacterEllipsis"/></Button>"##);
         let ask = match cfg.provider {
             Provider::Off => btn("AdvSetup", "Set up AI"),
             Provider::Anthropic => btn("AdvAsk", "Ask Claude"),
@@ -3877,7 +4055,7 @@ impl State {
         {
             let model = if cfg.model.is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.clone() };
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8">{ask}<TextBlock Text="{}" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/></StackPanel>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{ask}<TextBlock Grid.Column="1" Text="{0}" ToolTipService.ToolTip="{0}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Grid.Column="2" Content="{1}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/></Grid>"##,
                 if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) },
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
@@ -4095,6 +4273,20 @@ impl State {
             x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="• {}"/>"##, ui::esc(e));
         }
         x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
+        // when anything inside last changed, to judge whether it is still in use: the newest
+        // file's modified time (not when it was last opened), and which file
+        if let (Some(n), Some(t)) = (r.nodes[i], self.tree.as_ref().filter(|_| r.tree == self.tree_gen)) {
+            let line = match sprawl_advisor::facts::newest_file(t, n) {
+                Some((when, k)) => {
+                    let rel = t.path_of(k);
+                    let rel = rel.strip_prefix(t.path_of(n)).map(|p| p.display().to_string()).unwrap_or_else(|_| t.nodes[k].name.clone());
+                    let inside = if k == n || rel.is_empty() { String::new() } else { format!(", in {rel}") };
+                    format!("Last change inside: {} ({}){inside}. That is when a file was last written, not when it was last opened.", sprawl_core::local_time(when), ago(when))
+                }
+                None => "Last change inside: unknown (the scan read no file times here).".into(),
+            };
+            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="{}"/>"##, ui::esc(&line));
+        }
         // B1: how it is compressed, the user's to pick; the estimate follows
         if let Some(now) = self.compress_alg_of(f) {
             // a labelled dropdown row, like the AI settings

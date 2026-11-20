@@ -730,7 +730,6 @@ pub fn page(drives: &[String]) -> String {
     .concat();
     let options_menu = [
         item("mSettings", "Settings...", "S", "Control,Shift"),
-        item("mTweaks", "Colours and Tweaks...", "T", "Control"),
         SEP.to_string(),
         format!(
             r##"<MenuFlyoutSubItem Text="Show">{}{}{}</MenuFlyoutSubItem>"##,
@@ -812,6 +811,8 @@ pub fn page(drives: &[String]) -> String {
     let hist = crate::history::xaml();
     let version = env!("CARGO_PKG_VERSION");
     let (logo_small, logo_big) = (logo(46), logo(96));
+    // Colours and Tweaks act on the treemap only: its button is in the map bar, shown with it
+    note_shortcut("Colours and Tweaks", "T", "Control");
     let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
     let tweaks = format!(r##"
     <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="10" Padding="16,10,4,10" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
@@ -932,7 +933,7 @@ pub fn page(drives: &[String]) -> String {
     </Border>
   </Grid>
 
-  <Grid Grid.Row="3" Margin="12,0,12,6">
+  <Grid Grid.Row="3" Margin="12,0,12,6" MinHeight="32">
   <Button x:Name="BusyPill" Visibility="Collapsed" {busy_style} HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,352,0" Width="260" Height="32" Padding="10,0" HorizontalContentAlignment="Stretch" ToolTipService.ToolTip="What is running now. Click for the list; an entry opens its tab.">
     <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>
@@ -1049,6 +1050,7 @@ pub fn page(drives: &[String]) -> String {
       <Button x:Name="ViewOnly" Visibility="Collapsed" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="12"/></Button>
       <DropDownButton x:Name="ViewPaint" {drop_off} Padding="10,3,4,3" CornerRadius="5" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{paint_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
+      <Button x:Name="MapTweaks" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Colours and Tweaks: the treemap's palette, tile lift, shading and tilt (Ctrl+T)"><Button.KeyboardAccelerators><KeyboardAccelerator Key="T" Modifiers="Control"/></Button.KeyboardAccelerators><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE790;" FontSize="12"/><TextBlock Text="Tweaks" FontSize="12"/></StackPanel></Button>
     </StackPanel>
     <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="5" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
     <TextBlock x:Name="MapPath" Grid.Column="1" Text=" " HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/>

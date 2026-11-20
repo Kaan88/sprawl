@@ -156,7 +156,13 @@ pub(crate) struct Running {
     rescans: Vec<(PathBuf, Option<Tree>)>,
     /// Ticked items that didn't pass the checks again, and why.
     held: Vec<String>,
+    /// When Stop was pressed: an item that doesn't come back (a network drive that stopped
+    /// answering) isn't waited for past [`STOP_WAIT`].
+    pub stop_at: Option<Instant>,
 }
+
+/// How long Stop waits for the item in hand before the run is ended without it.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Default)]
 pub(crate) struct Done {
@@ -501,6 +507,15 @@ pub(crate) fn held_in_app(f: &Finding) -> Option<String> {
 }
 
 impl State {
+    /// Why the run would leave `f` as it is: [`held_in_app`], or a Recycle Bin it should go to
+    /// that its drive doesn't have (a network drive). Sprawl never deletes for good instead.
+    pub(crate) fn held_here(&self, f: &Finding) -> Option<String> {
+        held_in_app(f).or_else(|| {
+            let why = goes_to_bin(f, self.recycle_on()).then(|| sprawl_advisor::recycle::no_bin(&f.path)).flatten()?;
+            Some(format!("{why}, so it would stay: Sprawl doesn't delete for good what is meant for the bin. Turn \"Send my own files to the Recycle Bin\" off in Settings to delete such files for good"))
+        })
+    }
+
     fn selection_context(&self) -> Option<SelectionContext> {
         let (tree, r) = (self.active_tree()?, self.advice()?);
         Some(SelectionContext { tree: Arc::downgrade(&tree), findings: r.findings.clone(), privacy: r.privacy.clone(), definitions: r.catalogue.clone() })
@@ -778,7 +793,7 @@ impl State {
         let mut held = Vec::new();
         // the privacy sets after the rest, checked the same way (their own set checks inside)
         for f in picked.into_iter().map(|(_, f)| f).chain(privacy) {
-            if let Some(why) = held_in_app(&f) {
+            if let Some(why) = self.held_here(&f) {
                 held.push(format!("{}: not cleaned, {why}", f.title));
                 continue;
             }
@@ -900,7 +915,7 @@ impl State {
         c.review = false;
         c.single = None;
         c.done = None;
-        c.running = Some(Running { items, rx, stop, rescans: Vec::new(), held });
+        c.running = Some(Running { items, rx, stop, rescans: Vec::new(), held, stop_at: None });
         self.advisor_redraw();
     }
 
@@ -1009,6 +1024,19 @@ impl State {
                 }
                 Msg::End => ended = true,
             }
+        }
+        // Stop pressed and the item in hand still not back: Windows may be waiting on a network
+        // drive that stopped answering. The run ends here; that item may still finish later,
+        // and nothing after it starts (the thread sees Stop)
+        if !ended && run.stop_at.is_some_and(|t| t.elapsed() >= STOP_WAIT) {
+            for it in &mut run.items {
+                if matches!(it.state, ItemState::Running(_)) {
+                    let mut o = Outcome { stopped: true, ..Outcome::default() };
+                    o.problems.push("Stop didn't come back from Windows in time (a network drive that stopped answering?). Sprawl stopped waiting; this item may still finish on its own. Scan again to see what is left".into());
+                    it.state = ItemState::Done(o);
+                }
+            }
+            ended = true;
         }
         if ended {
             self.cleanup_finish();
@@ -1338,8 +1366,8 @@ impl State {
     pub(crate) fn cleanup_review_xaml(&self) -> String {
         let all = self.ticked_findings();
         // what the run will hold back is shown with its reason, and not counted
-        let held: Vec<(Finding, String)> = all.iter().filter_map(|(_, f)| held_in_app(f).map(|why| (f.clone(), why))).collect();
-        let picked: Vec<(usize, Finding)> = all.into_iter().filter(|(_, f)| held_in_app(f).is_none()).collect();
+        let held: Vec<(Finding, String)> = all.iter().filter_map(|(_, f)| self.held_here(f).map(|why| (f.clone(), why))).collect();
+        let picked: Vec<(usize, Finding)> = all.into_iter().filter(|(_, f)| self.held_here(f).is_none()).collect();
         let privacy = self.ticked_privacy();
         let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
         let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);

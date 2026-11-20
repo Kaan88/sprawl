@@ -515,6 +515,26 @@ impl State {
             crate::look::paint(&self.root, name, crate::look::Pick::Mode, m == mode);
         }
         let _ = CITY_DEPTH;
+        self.tweaks_room();
+    }
+
+    /// Colours and Tweaks act on the treemap alone.
+    pub(crate) fn tweaks_apply(&self) -> bool {
+        self.map.scene.mode == Mode::Map && self.map.views.kind.is_none()
+    }
+
+    /// Shows the Tweaks button with the treemap only, and closes the panel when another view is on.
+    pub(crate) fn tweaks_room(&self) {
+        use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
+        let on = self.tweaks_apply();
+        if let Ok(b) = crate::state::find::<UIElement>(&self.root, "MapTweaks") {
+            let _ = b.SetVisibility(if on { Visibility::Visible } else { Visibility::Collapsed });
+        }
+        if !on {
+            if let Ok(p) = crate::state::find::<UIElement>(&self.root, "Tweaks") {
+                let _ = p.SetVisibility(Visibility::Collapsed);
+            }
+        }
     }
 
     /// A button went down on the map.

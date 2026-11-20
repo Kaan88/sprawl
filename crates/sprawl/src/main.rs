@@ -100,7 +100,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mSearch", "mTweaks", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
+    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mSearch", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -210,6 +210,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     keep(find::<Selector>(&root, "WizProvider")?.SelectionChanged(|_, _| {
         with(|s| s.wizard_provider());
     })?);
+    keep(find::<Selector>(&root, "WizUrlPreset")?.SelectionChanged(|_, _| {
+        with(|s| s.wizard_preset());
+    })?);
     keep(find::<ButtonBase>(&root, "HistGrowth")?.Click(|_, _| {
         with(|s| {
             s.command("TabAdvisor");
@@ -229,7 +232,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             }
         });
     })?);
-    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip", "DeleteStop"] {
+    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "MapTweaks", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip", "DeleteStop"] {
         keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);

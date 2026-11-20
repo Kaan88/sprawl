@@ -10,16 +10,17 @@ type Answer = Result<Vec<String>, String>;
 
 #[derive(Default)]
 pub(crate) struct ModelFetch {
-    /// The provider and address the list is for.
-    key: Option<(Provider, String)>,
+    /// The provider, address and typed key (not saved yet; empty: the saved one) the list is for.
+    key: Option<(Provider, String, String)>,
     rx: Option<Receiver<Answer>>,
     result: Option<Answer>,
 }
 
 impl ModelFetch {
-    /// Fetch the list for `p` at `url`, unless it is already fetched or on its way.
-    pub(crate) fn want(&mut self, p: Provider, url: &str) {
-        let k = (p, url.trim().to_string());
+    /// Fetch the list for `p` at `url`, unless it is already fetched or on its way. `typed` is a
+    /// key typed in the settings and not saved yet (empty: the saved key).
+    pub(crate) fn want(&mut self, p: Provider, url: &str, typed: &str) {
+        let k = (p, url.trim().to_string(), typed.trim().to_string());
         if self.key.as_ref() == Some(&k) {
             return;
         }
@@ -32,7 +33,7 @@ impl ModelFetch {
         let (tx, rx) = channel();
         self.rx = Some(rx);
         std::thread::spawn(move || {
-            let r = std::panic::catch_unwind(|| sprawl_advisor::llm::models::list(k.0, &k.1)).unwrap_or_else(|_| Err("the list couldn't be read".into()));
+            let r = std::panic::catch_unwind(|| sprawl_advisor::llm::models::list(k.0, &k.1, Some(&k.2))).unwrap_or_else(|_| Err("the list couldn't be read".into()));
             let _ = tx.send(r);
         });
     }

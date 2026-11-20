@@ -356,7 +356,7 @@ pub(crate) struct Views {
     /// Per-view state: the bubbles, the glass seeds, the molecule, the lens focus, toggles.
     pub suds: HashMap<usize, [f32; 4]>,
     pub glass: Vec<(usize, [f32; 2], f32)>,
-    pub glass_for: Option<(usize, u64)>,
+    pub glass_for: Option<packed::GlassFor>,
     pub atoms: HashMap<usize, [f32; 6]>,
     pub atoms_for: Option<(usize, u64)>,
     pub lens_focus: Option<usize>,
@@ -405,6 +405,7 @@ impl State {
             }
         }
         self.map.drawn_once = false;
+        self.tweaks_room();
         self.render_map();
     }
 
@@ -776,7 +777,7 @@ impl Views {
 pub(crate) struct ViewState {
     pub suds: HashMap<usize, [f32; 4]>,
     pub glass: Vec<(usize, [f32; 2], f32)>,
-    pub glass_for: Option<(usize, u64)>,
+    pub glass_for: Option<packed::GlassFor>,
     pub atoms: HashMap<usize, [f32; 6]>,
     pub atoms_for: Option<(usize, u64)>,
     pub lens_focus: Option<usize>,

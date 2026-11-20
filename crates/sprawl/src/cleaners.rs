@@ -821,13 +821,16 @@ impl State {
                 self.save_memory();
                 return self.advisor_start();
             }
-            "AdvClApprove" => match self.advisor.memory.approve_cleaner(i) {
-                Ok(()) => {
+            "AdvClApprove" => match self.advisor.memory.cleaner_proposals.get(i).map(|p| p.cleaner.id.clone()).map(|id| (id, self.advisor.memory.approve_cleaner(i))) {
+                Some((id, Ok(()))) => {
+                    self.advisor.just_approved.push(id);
+                    // saved at once, with the check it owes, which runs on leaving this section
                     self.save_memory();
-                    self.adv_say("Cleaner added to your rules. Checking again with it...");
-                    return self.advisor_start();
+                    self.adv_say("Approved: the cleaner is in your rules. It is used when you leave Remembered.");
+                    return self.advisor_changed();
                 }
-                Err(e) => self.adv_say(&format!("Couldn't add the cleaner: {e}")),
+                None => {}
+                Some((_, Err(e))) => self.adv_say(&format!("Couldn't add the cleaner: {e}")),
             },
             "AdvClDismiss" => {
                 if i < self.advisor.memory.cleaner_proposals.len() {

@@ -3,6 +3,26 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Codex, and Claude Code without Sprawl's server, can propose recognisers and cleaners now. The AI writes its proposals at the end of its answer, and Sprawl checks each one the way it checks any AI proposal. Each one waits in Advisor > Remembered for you to approve; ones Sprawl refused are listed under the answer.
+- When the AI proposes something, a strip under its answer says so. Its "Review and approve" button takes you to Remembered.
+- Approving or undoing a rule no longer checks the findings again each time. They are checked once when you leave Remembered, and still are if Sprawl was closed or crashed first.
+- AI setup:
+  - a dropdown beside Address fills in a well-known service (OpenAI, DeepSeek, OpenRouter, Gemini, xAI, Mistral, Groq, Together, Ollama, LM Studio);
+  - Load models sits beside Model;
+  - Load models uses a key you typed but haven't saved yet (it said the key was refused);
+  - the rows fit a narrow AI column.
+- A finding's details show the last time a file inside it was written, so you can tell whether a folder is still in use.
+- Stained Glass no longer slides sideways without end: it settles and stays still.
+- Clean-up:
+  - files meant for the Recycle Bin on a network or removable drive, which has no bin, are held with the reason, not left hanging;
+  - Stop ends the run within a few seconds, even when Windows doesn't answer.
+- The AI card's header shortens a long model name instead of cutting off Change.
+- Search no longer moves up a few pixels when you switch to it.
+- The start page (Tree and File view before a scan) has the same background as every other page.
+- Colours and Tweaks is a Tweaks button in the map bar now, shown while the Treemap is on (it does nothing in the other views); Ctrl+T still opens it.
+
 ## 1.0.4 — 2026-11-20
 
 - Scanning a well-used system drive as administrator is much faster: when the drive's file table had become fragmented enough that Windows keeps its list of pieces apart, Sprawl couldn't use its fast read and went through every folder instead. It reads that list now: on a test C: drive, 7.6 seconds from Scan to result instead of 17.

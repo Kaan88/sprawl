@@ -87,8 +87,8 @@ pub fn xaml() -> String {
         {}{}
         <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="12" Foreground="#FFF5B342" Margin="0,4,0,2" Text="{}"/>
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
-        <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="http://localhost:11434/v1"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Ask this server for its models. A saved key goes only to the server it was saved for, and only over https (or to this PC)."/></Grid></StackPanel>
-        <StackPanel x:Name="WizModelRow" MaxWidth="420" HorizontalAlignment="Left" Width="420">{}<Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
+        <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="https://api.openai.com/v1"/>{}</Grid></StackPanel>
+        <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
         <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the AI works, folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time."/>
         </StackPanel>"##,
         label("Provider"),
@@ -96,6 +96,10 @@ pub fn xaml() -> String {
         crate::ui::esc(sprawl_advisor::llm::codex::RISK),
         label("API key (kept in Windows Credential Manager, not in a file)"),
         label("Base URL"),
+        {
+            let names = sprawl_advisor::llm::models::preset_names();
+            crate::models::combo("WizUrlPreset", &names, &names[0], 170).replacen("<ComboBox ", r##"<ComboBox Grid.Column="1" ToolTipService.ToolTip="Fill in the address of a well-known service. Then Load models." "##, 1)
+        },
         label("Model"),
     );
     let nav: String = Sec::ALL
@@ -163,6 +167,11 @@ fn checked(s: &State, item: &str) -> bool {
 
 fn field(s: &State, name: &str) -> String {
     find::<TextBox>(&s.root, name).and_then(|t| t.Text()).map(|h| h.to_string_lossy()).unwrap_or_default()
+}
+
+/// The API key typed in the wizard and not saved yet (empty: none typed).
+fn typed_key(s: &State) -> String {
+    find::<PasswordBox>(&s.root, "WizKey").and_then(|k| k.Password()).map(|h| h.to_string_lossy()).unwrap_or_default()
 }
 
 fn set_field(s: &State, name: &str, v: &str) {
@@ -718,6 +727,13 @@ impl State {
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         shown(self, "WizKeyRow", p.needs_key());
         shown(self, "WizUrlRow", p == Provider::OpenAi);
+        shown(self, "WizLoadModels", matches!(p, Provider::OpenAi | Provider::Anthropic));
+        if p == Provider::OpenAi {
+            let i = sprawl_advisor::llm::models::preset_index(&field(self, "WizUrl"));
+            if i != selected(self, "WizUrlPreset") {
+                select(self, "WizUrlPreset", i);
+            }
+        }
         shown(self, "WizCodexRisk", p == Provider::Codex);
         shown(self, "WizModelRow", p != Provider::Off);
         // an empty model, or another provider's default, becomes this provider's default
@@ -733,10 +749,21 @@ impl State {
         // OpenAI-compatible address is asked only on "Load models", never while it is typed;
         // nothing is asked while working offline
         if p != Provider::OpenAi && !sprawl_advisor::offline() {
-            self.wiz_models.want(p, &field(self, "WizUrl"));
+            self.wiz_models.want(p, &field(self, "WizUrl"), &typed_key(self));
         }
         self.wizard_models();
         self.wizard_provider_rows();
+    }
+
+    /// A well-known service picked beside Base URL: its address in the box. Its models are asked
+    /// for on Load models, as for a typed address.
+    pub(crate) fn wizard_preset(&mut self) {
+        let Some(url) = sprawl_advisor::llm::models::preset_url(selected(self, "WizUrlPreset")) else { return };
+        if field(self, "WizUrl").trim() != url {
+            set_field(self, "WizUrl", url);
+            self.wiz_models.reset();
+            self.wizard_models();
+        }
     }
 
     /// The web-lookup switch shows only once a provider is chosen.
@@ -770,7 +797,7 @@ impl State {
                 }
                 let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
                 self.wiz_models.reset();
-                self.wiz_models.want(p, &field(self, "WizUrl"));
+                self.wiz_models.want(p, &field(self, "WizUrl"), &typed_key(self));
                 self.wizard_models();
             }
             n if n.starts_with("PfSec") => {

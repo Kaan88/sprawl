@@ -37,18 +37,31 @@ pub fn account_sid() -> Option<String> {
     win::user_sid()
 }
 
-/// The Recycle Bin for `path`'s volume, or why there is none Sprawl can use.
-pub fn bin_for(path: &Path) -> Result<Bin, String> {
+/// Why `path` can't go to a Recycle Bin at all, found without touching the folder itself: a
+/// network folder, or a drive that isn't fixed (a mapped network drive, a USB stick). Quick, so
+/// the review can say so before the run, and a run never waits on a slow network for an item it
+/// would leave anyway.
+pub fn no_bin(path: &Path) -> Option<String> {
     let s = path.to_string_lossy();
     let b = s.as_bytes();
     if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || (b[2] != b'\\' && b[2] != b'/') {
-        return Err("a network folder has no Recycle Bin".into());
+        return Some("a network folder has no Recycle Bin".into());
     }
     let drive = format!("{}:", (b[0] as char).to_ascii_uppercase());
-    let root = format!("{drive}\\");
-    if win::drive_type(&root) != 3 {
-        return Err(format!("{drive} has no Recycle Bin Sprawl can use (only fixed drives do)"));
+    match win::drive_type(&format!("{drive}\\")) {
+        3 => None,
+        4 => Some(format!("{drive} is a network drive, which has no Recycle Bin")),
+        _ => Some(format!("{drive} has no Recycle Bin Sprawl can use (only fixed drives do)")),
     }
+}
+
+/// The Recycle Bin for `path`'s volume, or why there is none Sprawl can use.
+pub fn bin_for(path: &Path) -> Result<Bin, String> {
+    if let Some(why) = no_bin(path) {
+        return Err(why);
+    }
+    let drive = format!("{}:", (path.to_string_lossy().as_bytes()[0] as char).to_ascii_uppercase());
+    let root = format!("{drive}\\");
     let sid = win::user_sid().ok_or("Windows couldn't say which account this is")?;
     let dir = PathBuf::from(format!(r"{root}$Recycle.Bin\{sid}"));
     let pinned = sprawl_core::local::directory(&dir).map_err(|e| format!("the Recycle Bin or an ancestor isn't a stable local folder: {e}"))?;
@@ -280,5 +293,7 @@ mod tests {
     fn no_bin_for_a_network_folder() {
         assert!(bin_for(Path::new(r"\\server\share\x")).unwrap_err().contains("network"));
         assert!(bin_for(Path::new(r"relative\x")).is_err());
+        assert!(no_bin(Path::new(r"\\server\share\x")).is_some());
+        assert_eq!(no_bin(Path::new(r"C:\Windows")), None, "the system drive is fixed");
     }
 }

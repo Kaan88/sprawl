@@ -164,46 +164,24 @@ fn power_cells(seeds: &[(usize, [f32; 2], f32)], rect: [f32; 4]) -> Vec<Vec<[f32
 
 /// A Voronoi treemap: each child of the root a pane whose area follows its size, relaxing every
 /// frame (weights adjust, seeds move to their pane's middle).
-pub(crate) fn glass(c: &Ctx, o: &mut Out, seeds: &mut Vec<(usize, [f32; 2], f32)>, made_for: &mut Option<(usize, u64)>) {
+pub(crate) fn glass(c: &Ctx, o: &mut Out, seeds: &mut Vec<(usize, [f32; 2], f32)>, made_for: &mut Option<GlassFor>) {
     let kids = top_kids(c, 60);
     let rect = [10.0, 10.0, c.w - 20.0, c.h - 20.0];
-    if *made_for != Some((c.root, c.gen)) || seeds.len() != kids.len() {
-        *made_for = Some((c.root, c.gen));
+    // the folder, the scan and the panel's size the panes are laid out for; a new one starts over
+    let key = (c.root, c.gen, (c.w.round() as u32, c.h.round() as u32));
+    if made_for.map(|m| (m.root, m.gen, m.size)) != Some(key) || seeds.len() != kids.len() {
+        *made_for = Some(GlassFor { root: key.0, gen: key.1, size: key.2, step: 0 });
         seeds.clear();
         for &k in &kids {
             let p = [rect[0] + rect[2] * (0.05 + 0.9 * hash01(k as u64 * 3 + 1)), rect[1] + rect[3] * (0.05 + 0.9 * hash01(k as u64 * 3 + 2))];
             seeds.push((k, p, 0.0));
         }
     }
-    let total: f32 = kids.iter().map(|&k| (c.size)(k) as f32).sum::<f32>().max(1.0);
-    let whole = rect[2] * rect[3];
-    let mean = whole / kids.len().max(1) as f32;
-    let mut cells = power_cells(seeds, rect);
-    for _ in 0..4 {
-        for (i, s) in seeds.iter_mut().enumerate() {
-            let target = (c.size)(s.0) as f32 / total * whole;
-            let (a, centre) = area_centroid(&cells[i]);
-            if a <= 1.0 {
-                // squeezed out: give it room again
-                s.2 *= 0.5;
-                continue;
-            }
-            s.1 = [s.1[0] + (centre[0] - s.1[0]) * 0.6, s.1[1] + (centre[1] - s.1[1]) * 0.6];
-            s.2 += (target - a) / target.max(1.0) * mean * 0.35;
-        }
-        // keep each seed inside its own pane: a weight may not outgrow the distance to a neighbour
-        for i in 0..seeds.len() {
-            for j in 0..seeds.len() {
-                if i == j {
-                    continue;
-                }
-                let d2 = (seeds[i].1[0] - seeds[j].1[0]).powi(2) + (seeds[i].1[1] - seeds[j].1[1]).powi(2);
-                if seeds[i].2 - seeds[j].2 > d2 * 0.9 {
-                    seeds[i].2 = seeds[j].2 + d2 * 0.9;
-                }
-            }
-        }
-        cells = power_cells(seeds, rect);
+    // the panes settle in a few seconds, then stay still
+    let step = made_for.as_ref().map_or(0, |m| m.step);
+    let cells = if step < SETTLE { relax(seeds, &|k| (c.size)(k) as f32, rect, step) } else { power_cells(seeds, rect) };
+    if let Some(m) = made_for.as_mut() {
+        m.step = m.step.saturating_add(1);
     }
     let shimmer = |k: usize| 1.0 + 0.05 * (c.time * 0.9 + hash01(k as u64) * 9.0).sin();
     for (i, cell) in cells.iter().enumerate() {
@@ -233,6 +211,52 @@ pub(crate) fn glass(c: &Ctx, o: &mut Out, seeds: &mut Vec<(usize, [f32; 2], f32)
             o.label(centre[0] - w * 0.5, centre[1] + 1.0, w, (c.fmt)((c.size)(k)), false);
         }
     }
+}
+
+/// What the glass's panes are laid out for, and how many frames they have relaxed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct GlassFor {
+    root: usize,
+    gen: u64,
+    size: (u32, u32),
+    step: u32,
+}
+
+/// Frames of relaxing (about four seconds); after them the panes don't move.
+const SETTLE: u32 = 240;
+
+/// Frame `step` of the glass's relaxation: weights adjust and seeds move towards their pane's
+/// middle, less and less as `step` nears [`SETTLE`], so the panes come to rest instead of
+/// swinging between two layouts. Returns the panes.
+fn relax(seeds: &mut [(usize, [f32; 2], f32)], size: &dyn Fn(usize) -> f32, rect: [f32; 4], step: u32) -> Vec<Vec<[f32; 2]>> {
+    let cool = 1.0 - step.min(SETTLE) as f32 / SETTLE as f32;
+    let total: f32 = seeds.iter().map(|s| size(s.0)).sum::<f32>().max(1.0);
+    let whole = rect[2] * rect[3];
+    let mut cells = power_cells(seeds, rect);
+    for _ in 0..4 {
+        for (i, s) in seeds.iter_mut().enumerate() {
+            let target = (size(s.0) / total * whole).max(1.0);
+            let (a, centre) = area_centroid(&cells[i]);
+            if a <= 1.0 {
+                // squeezed out: give it room again
+                s.2 *= 0.5;
+                continue;
+            }
+            let pull = 0.6 * cool + 0.1;
+            s.1 = [s.1[0] + (centre[0] - s.1[0]) * pull, s.1[1] + (centre[1] - s.1[1]) * pull];
+            // a weight is a pane's reach squared: grown or shrunk by how far its area is off
+            // (Nocaj and Brandes' update), gently and less as the panes settle
+            let w = s.2.max(whole * 1e-4);
+            s.2 = w * (target / a).powf(cool.max(0.15));
+        }
+        // keep each seed inside its own pane: no weight may reach a neighbour's seed
+        for i in 0..seeds.len() {
+            let near = seeds.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, q)| (seeds[i].1[0] - q.1[0]).powi(2) + (seeds[i].1[1] - q.1[1]).powi(2)).fold(f32::MAX, f32::min);
+            seeds[i].2 = seeds[i].2.clamp(0.0, near.min(whole) * 0.9);
+        }
+        cells = power_cells(seeds, rect);
+    }
+    cells
 }
 
 /// A file type's family, for grouping the bars.
@@ -304,5 +328,43 @@ pub(crate) fn spectrum(c: &Ctx, o: &mut Out) {
             let lx = if dir[0] < -0.2 { lp[0] - w } else if dir[0] > 0.2 { lp[0] } else { lp[0] - w * 0.5 };
             o.label(lx, lp[1] - 8.0, w, name, false);
         }
+    }
+}
+
+#[cfg(test)]
+mod glass_tests {
+    use super::relax;
+
+    #[test]
+    fn the_glass_settles() {
+        let sizes = [900.0f32, 500.0, 300.0, 250.0, 120.0, 80.0, 60.0, 30.0, 20.0, 10.0, 5.0, 2.0];
+        let rect = [10.0, 10.0, 1180.0, 580.0];
+        let mut seeds: Vec<(usize, [f32; 2], f32)> = (0..sizes.len()).map(|i| (i, [rect[0] + rect[2] * (0.05 + 0.9 * super::hash01(i as u64 * 3 + 1)), rect[1] + rect[3] * (0.05 + 0.9 * super::hash01(i as u64 * 3 + 2))], 0.0)).collect();
+        let size = |k: usize| sizes[k];
+        let mut moves = Vec::new();
+        let mut cells = Vec::new();
+        for step in 0..6000u32 {
+            let before: Vec<[f32; 2]> = seeds.iter().map(|s| s.1).collect();
+            cells = if step < super::SETTLE { relax(&mut seeds, &size, rect, step) } else { super::power_cells(&seeds, rect) };
+            let m: f32 = seeds.iter().zip(&before).map(|(s, b)| ((s.1[0] - b[0]).powi(2) + (s.1[1] - b[1]).powi(2)).sqrt()).sum();
+            moves.push(m);
+            for s in &seeds {
+                assert!(s.1[0] >= rect[0] - 1.0 && s.1[0] <= rect[0] + rect[2] + 1.0 && s.1[1] >= rect[1] - 1.0 && s.1[1] <= rect[1] + rect[3] + 1.0, "{:?}", s.1);
+            }
+        }
+        // still a treemap: every pane has room, the biggest folder the biggest pane
+        let areas: Vec<f32> = cells.iter().map(|c| super::area_centroid(c).0).collect();
+        assert!(areas.iter().all(|&a| a > 0.0), "every pane has room");
+        assert!(areas[0] > areas[5] && areas[1] > areas[8], "bigger folders, bigger panes");
+        let total: f32 = sizes.iter().sum();
+        for (i, &a) in areas.iter().enumerate().take(8) {
+            let want = sizes[i] / total * rect[2] * rect[3];
+            assert!((a - want).abs() / want < 0.35, "pane {i}: {a} for {want}");
+        }
+        let (whole, w) = (rect[2] * rect[3], seeds.iter().map(|s| s.2.abs()).fold(0.0f32, f32::max));
+        assert!(w < whole, "the weights stay bounded: {w}");
+        assert!(moves[super::SETTLE as usize..].iter().all(|&m| m == 0.0), "still after it settles");
+        let last: f32 = moves[super::SETTLE as usize - 20..super::SETTLE as usize].iter().sum();
+        assert!(last < 20.0, "slowing down before it stops, not a jump: {last}");
     }
 }

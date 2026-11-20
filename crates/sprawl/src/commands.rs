@@ -47,6 +47,8 @@ impl State {
             }
         }
         self.paint_tabs();
+        // left Remembered for the main window: a check its approvals owe runs now
+        self.recheck_if_owed();
         // the Advisor and Search take the whole width; the types pane comes back as the user left it
         let types = !matches!(v, View::Advisor | View::Search) && find::<ToggleMenuFlyoutItem>(&self.root, "oTypes").and_then(|t| t.IsChecked()).unwrap_or(true);
         // Search has its own box: the Filter box beside it would be a second one
@@ -175,7 +177,10 @@ impl State {
                 self.tell_rich("Keyboard shortcuts", body);
             }
             "ModeHist" | "mHistory" => self.hist_toggle(),
-            "mTweaks" => {
+            "mTweaks" | "MapTweaks" => {
+                if !self.tweaks_apply() {
+                    return;
+                }
                 if let Ok(p) = find::<UIElement>(&self.root, "Tweaks") {
                     let shown = p.Visibility().map(|v| v == Visibility::Visible).unwrap_or(false);
                     let _ = p.SetVisibility(if shown { Visibility::Collapsed } else { Visibility::Visible });

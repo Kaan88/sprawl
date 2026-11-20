@@ -289,17 +289,7 @@ pub fn is_build_output(id: &str) -> bool {
 
 /// Newest modification of any file inside `n` (links not followed).
 fn newest_inside(tree: &Tree, n: usize) -> Option<SystemTime> {
-    let mut best = None;
-    let mut stack = vec![n];
-    while let Some(k) = stack.pop() {
-        let node = &tree.nodes[k];
-        if !node.is_dir {
-            best = best.max(node.modified);
-        } else if k == n || !node.is_reparse_point() {
-            stack.extend_from_slice(&node.children);
-        }
-    }
-    best
+    crate::facts::newest_file(tree, n).map(|(t, _)| t)
 }
 
 /// The parts of a big output a project being worked on is offered by: Cargo's `target` by

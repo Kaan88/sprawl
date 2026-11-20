@@ -14,7 +14,7 @@ use crate::ui;
 
 /// The welcome page: the whole workspace (tables, map bar and map) until something is scanned.
 pub(crate) fn xaml() -> &'static str {
-    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#38000000" Visibility="Collapsed"/>"##
+    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#0DFFFFFF" Visibility="Collapsed"/>"##
 }
 
 pub(crate) fn tree_hint() -> &'static str {

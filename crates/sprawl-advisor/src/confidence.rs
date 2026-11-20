@@ -38,17 +38,7 @@ fn base(f: &Finding) -> (f32, &'static str) {
 
 /// The newest change of anything in `n`.
 fn newest(tree: &Tree, n: usize) -> Option<SystemTime> {
-    let mut best = None;
-    let mut stack = vec![n];
-    while let Some(k) = stack.pop() {
-        let node = &tree.nodes[k];
-        if !node.is_dir {
-            best = best.max(node.modified);
-        } else if k == n || !node.is_reparse_point() {
-            stack.extend_from_slice(&node.children);
-        }
-    }
-    best
+    crate::facts::newest_file(tree, n).map(|(t, _)| t)
 }
 
 /// How sure Sprawl is of `f` (0 to 1), and the signals that say so, in words.

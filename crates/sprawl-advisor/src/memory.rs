@@ -90,6 +90,10 @@ pub struct CleanerProposal {
     pub note: String,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
     #[serde(default)]
@@ -129,6 +133,13 @@ pub struct Memory {
     /// Cleaners the AI proposed, for the user to approve.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleaner_proposals: Vec<CleanerProposal>,
+    /// Changes to the user's rules (approvals, an undone "keep"), counted; and the count the
+    /// last finished check of the scan already had. While the first is ahead, a check is owed:
+    /// saved with the rest, so a close or a crash before it ran doesn't lose it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rules_gen: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rules_seen: u64,
     /// Community cleaners (winapp2.ini, BleachBit) are not fetched nor shown.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub community_off: bool,
@@ -655,6 +666,7 @@ impl Memory {
         validate_local_save(path, &text)?;
         write_atomic(path, &text).map_err(|e| e.to_string())?;
         self.cleaner_proposals.remove(i);
+        self.rules_changed();
         Ok(())
     }
 
@@ -662,6 +674,24 @@ impl Memory {
     pub fn approve(&mut self, i: usize) -> Result<(), String> {
         let path = rules_dir().ok_or("APPDATA is not set")?.join("local.toml");
         self.approve_at(i, &path)
+    }
+
+    /// The user's rules changed: the scan is to be checked again with them.
+    pub fn rules_changed(&mut self) {
+        self.rules_gen += 1;
+    }
+
+    /// A check with the current rules is owed (none has finished since they changed).
+    pub fn check_owed(&self) -> bool {
+        self.rules_gen > self.rules_seen
+    }
+
+    /// A check finished that began when the count was `began` (its [`Memory::rules_gen`] then).
+    /// True when that settled what was owed: a check that began before a later change doesn't.
+    pub fn check_finished(&mut self, began: u64) -> bool {
+        let owed = self.check_owed();
+        self.rules_seen = self.rules_seen.max(began.min(self.rules_gen));
+        owed && !self.check_owed()
     }
 
     fn approve_at(&mut self, i: usize, path: &Path) -> Result<(), String> {
@@ -683,6 +713,7 @@ impl Memory {
         validate_local_save(path, &text)?;
         write_atomic(path, &text).map_err(|e| e.to_string())?;
         self.proposals.remove(i);
+        self.rules_changed();
         Ok(())
     }
 
@@ -844,6 +875,40 @@ pub fn load_packs() -> (Vec<RulePack>, Vec<(PathBuf, String)>) {
 /// The local packs that pass the checks (see [`load_packs`]).
 pub fn local_packs() -> Vec<RulePack> {
     load_packs().0
+}
+
+#[cfg(test)]
+mod check_owed_tests {
+    use super::Memory;
+
+    /// What 1.0.5's deferred check promises: one check after any number of approvals, kept
+    /// through a close or a crash, settled only by a check that saw every change.
+    #[test]
+    fn approvals_owe_one_check_until_one_finishes() {
+        let mut m = Memory::default();
+        assert!(!m.check_owed(), "nothing owed at first");
+        for _ in 0..5 {
+            m.rules_changed();
+        }
+        assert!(m.check_owed());
+        // a crash or a close before leaving the tab: what was saved still owes it
+        let saved = toml::to_string(&m).unwrap();
+        let mut back: Memory = toml::from_str(&saved).unwrap();
+        assert!(back.check_owed(), "kept through a restart");
+        // a check that began before the last change doesn't settle it
+        let early = back.rules_gen - 1;
+        assert!(!back.check_finished(early));
+        assert!(back.check_owed());
+        // a check stopped or failed never calls check_finished: still owed
+        // one that began after every change does, once
+        let began = back.rules_gen;
+        assert!(back.check_finished(began));
+        assert!(!back.check_owed());
+        assert!(!back.check_finished(began), "settled once");
+        // a memory from before 1.0.5 owes nothing
+        let old: Memory = toml::from_str("").unwrap();
+        assert!(!old.check_owed());
+    }
 }
 
 #[cfg(test)]
