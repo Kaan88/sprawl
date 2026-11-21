@@ -530,6 +530,8 @@ impl State {
             "TabFiles" => self.set_view(View::Files),
             "TabSearch" | "mSearch" => self.search_focus(),
             "SearchToFilter" => self.search_to_filter(),
+            // the same Delete as the key and the menu (to the Recycle Bin), on the picked results
+            "SearchDelete" => self.delete(false),
             d if d.len() == 4 && d.starts_with("SxD") => self.more_drive(d.chars().nth(3).unwrap_or('C')),
             "TabAdvisor" => {
                 self.set_cleaners_tab(false);
@@ -772,7 +774,18 @@ impl State {
         if self.marked.len() > 1 || (self.marked.len() == 1 && self.selected.is_some_and(|s| !self.marked.contains(&s))) {
             return self.delete_many(permanent);
         }
-        let Some(n) = self.selected.filter(|&n| n != ROOT) else { return };
+        let Some(n) = self.selected.filter(|&n| n != ROOT) else {
+            // Search: a row from another drive or a saved scan is not part of the scan on
+            // screen, so there is nothing safe to delete it by; say so instead of doing nothing
+            if self.view == View::Search {
+                if self.search.more.sel.is_some() {
+                    self.tell("Not deleted", "This result is from another drive or a saved scan, not from the scan on screen. Use Scan This Folder first, then delete it from that scan.");
+                } else {
+                    text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several).");
+                }
+            }
+            return;
+        };
         let Some(path) = self.selected_path() else { return };
         if let Some(why) = self.delete_refusal(n, &path) {
             self.tell("Not deleted", &why);
