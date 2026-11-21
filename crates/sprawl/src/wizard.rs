@@ -655,7 +655,7 @@ impl State {
             "PfB_data" => {
                 if let Some(d) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Sprawl")) {
                     let _ = std::fs::create_dir_all(&d);
-                    let _ = std::process::Command::new("explorer.exe").arg(d).spawn();
+                    crate::win32::reveal(&d);
                 }
             }
             "PfB_logOpen" => match sprawl_advisor::llm::request_log_path().filter(|p| p.is_file()) {

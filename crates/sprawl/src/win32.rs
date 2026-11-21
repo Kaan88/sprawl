@@ -3,7 +3,7 @@
 #![allow(non_snake_case, clippy::upper_case_acronyms)]
 
 use std::ffi::c_void;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub type HWND = isize;
 
@@ -283,6 +283,49 @@ pub fn copy_text(owner: HWND, text: &str) -> bool {
     }
 }
 
+/// The Explorer command line that shows `path` selected: `/select,"C:\a b\c.txt"`.
+///
+/// Explorer parses this line itself rather than argv, and it splits the path at the first
+/// space unless the quotes start right after the comma. Rust's `arg` quotes the whole
+/// switch instead (`"/select,C:\a b\c.txt"`), which Explorer reads as far as
+/// `C:\a` — a path that isn't there — and then opens Documents.
+pub fn select_arg(path: &Path) -> String {
+    format!("/select,\"{}\"", path.display())
+}
+
+/// Show `path` in Explorer: a file is selected inside its folder, a folder opens itself.
+///
+/// The shell call takes the path as a wide string, so spaces, commas, `&`, `#` and
+/// non-ASCII names reach Explorer intact. (`SHOpenFolderAndSelectItems` given a folder's
+/// own pidl opens its *parent* with the folder selected, so a folder is opened as a path,
+/// which needs no `/select,` parsing at all.) `select_arg` is only the fallback.
+pub fn reveal(path: &Path) -> bool {
+    if path.is_dir() {
+        return explorer().arg(path).spawn().is_ok();
+    }
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let w: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    unsafe {
+        let pidl = ILCreateFromPathW(windows::core::PCWSTR(w.as_ptr()));
+        if !pidl.is_null() {
+            // a file's pidl as the folder: the item is selected in the folder holding it
+            let ok = SHOpenFolderAndSelectItems(pidl, None, 0).is_ok();
+            ILFree(Some(pidl));
+            if ok {
+                return true;
+            }
+        }
+    }
+    use std::os::windows::process::CommandExt;
+    explorer().raw_arg(select_arg(path)).spawn().is_ok()
+}
+
+fn explorer() -> std::process::Command {
+    let exe = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("explorer.exe")).unwrap_or_else(|| PathBuf::from("explorer.exe"));
+    std::process::Command::new(exe)
+}
+
 /// Show without taking focus and put it behind the other windows.
 pub fn show_behind(h: HWND) {
     unsafe {
@@ -348,6 +391,36 @@ pub fn set_app_icon(h: HWND) {
             if icon != 0 {
                 SendMessageW(h, WM_SETICON, which, icon);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_arg;
+    use std::path::Path;
+
+    fn unquoted(arg: &str) -> &str {
+        arg.strip_prefix("/select,\"").and_then(|a| a.strip_suffix('"')).expect("the switch, then one quoted path")
+    }
+
+    #[test]
+    fn select_arg_quotes_the_path_after_the_comma() {
+        // the reported case: the old `arg(format!("/select,{}", …))` let Rust quote the
+        // whole switch, and Explorer stopped at "Downloads" and opened Documents
+        let p = Path::new(r"C:\Users\Someone\Downloads Archive\Old Files\Scripts and tools\tray tool.py");
+        let arg = select_arg(p);
+        assert_eq!(arg, r#"/select,"C:\Users\Someone\Downloads Archive\Old Files\Scripts and tools\tray tool.py""#);
+        assert_eq!(unquoted(&arg), p.display().to_string());
+        assert!(!arg.contains("\"/select"), "the switch itself is never quoted");
+    }
+
+    #[test]
+    fn select_arg_keeps_commas_ampersands_hashes_and_unicode_inside_the_quotes() {
+        for p in [r"C:\a, b\c, d.txt", r"C:\x&y\a & b #1.txt", r"C:\Ölçüm\şğü ı İ.txt", r"C:\plain\file.py", r"C:\"] {
+            let arg = select_arg(Path::new(p));
+            assert_eq!(arg, format!("/select,\"{p}\""));
+            assert_eq!(unquoted(&arg), p);
         }
     }
 }

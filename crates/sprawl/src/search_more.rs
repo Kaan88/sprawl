@@ -727,10 +727,10 @@ impl State {
                 let target = path.ancestors().find(|p| p.exists()).map(Path::to_path_buf);
                 match target {
                     Some(t) if t == path => {
-                        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", t.display())).spawn();
+                        crate::win32::reveal(&t);
                     }
                     Some(t) => {
-                        let _ = std::process::Command::new("explorer.exe").arg(&t).spawn();
+                        crate::win32::reveal(&t);
                         crate::state::text(&self.root, "SearchInfo", "That is gone now; its nearest folder is open.");
                     }
                     None => crate::state::text(&self.root, "SearchInfo", "That path is gone."),

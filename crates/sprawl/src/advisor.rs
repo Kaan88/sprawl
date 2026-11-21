@@ -3372,9 +3372,7 @@ impl State {
         let file = (1..100).map(|k| dir.join(if k == 1 { format!("{base}.ps1") } else { format!("{base} ({k}).ps1") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("{base}.ps1")));
         match sprawl_advisor::export::write_script(&file, &text) {
             Ok(()) => {
-                use std::os::windows::process::CommandExt;
-                // quoted for Explorer itself: a comma in the path would split it
-                let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
+                crate::win32::reveal(&file);
                 let mut left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
                 if keeping > 0 {
                     left += &format!(" {keeping} ticked item(s) held by Keep, protection, scan exclusions or the recycle-only policy were left out. Review them inside Sprawl.");

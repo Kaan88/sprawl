@@ -345,7 +345,7 @@ impl State {
             }
             "mExplore" => {
                 if let Some(p) = self.selected_path() {
-                    let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", p.display())).spawn();
+                    crate::win32::reveal(&p);
                 }
             }
             "mCmd" => {
