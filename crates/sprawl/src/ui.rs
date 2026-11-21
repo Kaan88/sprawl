@@ -31,6 +31,39 @@ pub fn esc_lines(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n").replace('\t', " ").split('\n').map(esc).collect::<Vec<_>>().join("&#10;")
 }
 
+/// An explanation: a sentence or two that says what something is or does (a note under a
+/// setting, the clean-up bar's text, a Search hint). 13 px in the second text colour, the
+/// opening words (`lead`, may be empty) semibold in the first. Both texts are escaped here.
+/// Table cells, labels, headings and figures are not explanations and keep their size.
+pub(crate) fn note(lead: &str, rest: &str) -> String {
+    note_with("", lead, rest)
+}
+
+/// [`note`] with more attributes on the TextBlock, such as `Margin="0,0,0,6"`.
+pub(crate) fn note_with(attrs: &str, lead: &str, rest: &str) -> String {
+    let open = format!(r##"<TextBlock FontSize="{{$fs13}}" Foreground="{{$text2}}" TextWrapping="Wrap" {attrs}>"##);
+    let mut x = open;
+    if lead.is_empty() {
+        x += &format!(r##"<Run Text="{}"/>"##, esc(rest));
+    } else {
+        x += &format!(r##"<Run Text="{}" FontWeight="SemiBold" Foreground="{{$text1}}"/>"##, esc(lead));
+        if !rest.is_empty() {
+            x += &format!(r##"<Run Text="{}"/>"##, esc(&format!(" {rest}")));
+        }
+    }
+    x + "</TextBlock>"
+}
+
+/// [`note_with`] for a whole sentence already written: the lead is its first clause when it
+/// has a natural one (up to the first `: ` or `. `, at most 40 characters, with more after
+/// it), and none otherwise. The words are not changed.
+pub(crate) fn note_text(attrs: &str, text: &str) -> String {
+    let lead_end = [": ", ". "].iter().filter_map(|p| text.find(p).map(|i| i + p.len() - 1)).min();
+    match lead_end {
+        Some(end) if end <= 40 && !text[end..].trim().is_empty() => note_with(attrs, &text[..end], text[end..].trim_start()),
+        _ => note_with(attrs, "", text),
+    }
+}
 
 /// The Markdown models write, as XAML: paragraphs (a single line break kept), `#` headings,
 /// `-`/`*`/`1.` lists with their nesting, fenced code, tables, `>` quotes, `---` rules, and

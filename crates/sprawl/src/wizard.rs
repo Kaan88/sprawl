@@ -47,7 +47,7 @@ fn help(t: &str) -> String {
     if t.is_empty() {
         return String::new();
     }
-    format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,0,0,6"/>"##, ui::esc(t))
+    ui::note_text(r#"Margin="0,0,0,6""#, t)
 }
 
 fn combo(name: &str, items: &[&str], pick: usize) -> String {
@@ -80,16 +80,18 @@ fn bullet(glyph: &str, title: &str, t: &str) -> String {
 /// their own events); everything else is built per page.
 pub fn xaml() -> String {
     let providers: Vec<&str> = Provider::ALL.iter().map(|p| p.label()).collect();
+    let ai_intro = ui::note_with("", "The built-in rules already find caches and leftovers.", "An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm.");
+    let ai_privacy = ui::note_with(r#"Margin="0,10,0,0""#, "When the AI works,", "folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time.");
     let ai = format!(
         r##"<StackPanel x:Name="WizAi" Spacing="2" Visibility="Collapsed">
-        <TextBlock TextWrapping="Wrap" FontSize="{{$fs12_5}}" Foreground="{{$text1}}" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
+        {ai_intro}
         <Border Background="{{$accentwash}}" CornerRadius="{{$rc6}}" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="{{$fs13}}" Foreground="{{$link}}"/><TextBlock x:Name="WizDetected" Text=" " FontSize="{{$fs12}}" TextWrapping="Wrap" Foreground="{{$seltext}}" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
         <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="{{$fs12}}" Foreground="{{$warn}}" Margin="0,4,0,2" Text="{}"/>
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="https://api.openai.com/v1"/>{}</Grid></StackPanel>
         <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
-        <TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,10,0,0" Text="When the AI works, folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time."/>
+        {ai_privacy}
         </StackPanel>"##,
         label("Provider"),
         format!(r##"<ComboBox x:Name="WizProvider" HorizontalAlignment="Left" Width="420" SelectedIndex="0">{}</ComboBox>"##, providers.iter().map(|i| format!(r##"<ComboBoxItem Content="{i}"/>"##)).collect::<String>()),
@@ -434,7 +436,8 @@ impl State {
             }
             if p.advanced && !advanced_said {
                 advanced_said = true;
-                x += r##"<TextBlock Text="Advanced" FontSize="{$fs14}" FontWeight="SemiBold" Margin="0,14,0,0"/><TextBlock Text="Thresholds with a floor: none can make something look safer or be ticked for you." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$text3}"/>"##;
+                x += r##"<TextBlock Text="Advanced" FontSize="{$fs14}" FontWeight="SemiBold" Margin="0,14,0,0"/>"##;
+                x += &ui::note("Thresholds with a floor:", "none can make something look safer or be ticked for you.");
             }
             x += &self.pref_row(p, &mut buttons);
         }
@@ -484,9 +487,9 @@ impl State {
                 r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="{{$rc6}}" Background="{{$warnwash}}" BorderBrush="{{$warnline}}" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text1}}" TextWrapping="Wrap"/>{}</StackPanel></Border>"##,
                 ui::esc(crate::admin::WARNING),
                 if sprawl_core::is_elevated() {
-                    ""
+                    String::new()
                 } else {
-                    r##"<TextBlock Text="They can be changed only in Sprawl running as administrator, so that no other program can turn them on for you." FontSize="{$fs12}" Foreground="{$text2}" TextWrapping="Wrap"/>"##
+                    ui::note("They can be changed only in Sprawl running as administrator,", "so that no other program can turn them on for you.")
                 }
             )
         } else {

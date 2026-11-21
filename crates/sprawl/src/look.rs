@@ -958,6 +958,11 @@ mod tests {
         assert!(danger.contains(&crate::look::danger()) && danger.contains(r#"Target="Root.Background""#));
         // the page tabs: underlined, never filled
         assert!(r.contains("SprawlPage") && r.contains(r#"x:Name="Line""#));
+        // the chips are pills: a corner past half the height, which the control clamps
+        let chip = &r[r.find(r#"x:Key="SprawlChip""#).unwrap()..];
+        let chip = &chip[..chip.find("</Style>").unwrap()];
+        assert!(chip.contains(r#"<Setter Property="CornerRadius" Value="999"/>"#), "{chip}");
+        assert!(chip.contains(r#"<Setter Property="BorderBrush" Value="{$line1}"/>"#));
         assert_eq!(Pick::Page.bg(true), "Transparent");
         assert!(pick(Pick::Page, true).contains(underline()) && !pick(Pick::Page, false).contains(underline()));
     }
