@@ -429,7 +429,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
             }
         });
     })?);
-    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "MapTweaks", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip", "DeleteStop"] {
+    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchDelete", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "MapTweaks", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip", "DeleteStop"] {
         keep(find::<ButtonBase>(root, name)?.Click(move |_, _| {
             with(|s| s.command(name));
         })?);

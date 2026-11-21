@@ -1087,7 +1087,7 @@ pub fn page(drives: &[String]) -> String {
           </FlyoutBase.AttachedFlyout>
         </Border>
         <Grid x:Name="SearchBar" Visibility="Collapsed" Margin="8,8,8,6" ColumnSpacing="8" RowSpacing="6">
-          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBox x:Name="SearchBox" FontSize="{{$fs13}}" Height="32" PlaceholderText="Search names:  report 2024    *.iso    \steam\ *.vdf    &gt;1gb    folder:cache    !tmp" ToolTipService.ToolTip="Space: and.  a|b: either.  !word: not.  *, ?: wildcards.  A word with \ looks at the whole path.  &gt;1gb, &lt;10kb: size.  folder: or file: one kind.  ? lists everything."/>
           <Button x:Name="SearchHelp" Grid.Column="1" Content="?" FontSize="{{$fs13}}" Padding="10,3" Height="32" ToolTipService.ToolTip="Everything the search box understands, with examples to try">
@@ -1097,8 +1097,9 @@ pub fn page(drives: &[String]) -> String {
           <TextBlock x:Name="SearchInfo" Grid.Column="3" {num} VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{{$text3}}" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
           <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
           <ToggleButton x:Name="SearchMapBtn" Grid.Column="5" FontSize="{{$fs12}}" Padding="10,4" ToolTipService.ToolTip="Show the map under the results, with the matches lit"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80A;" FontSize="{{$fs12}}"/><TextBlock Text="Map"/></StackPanel></ToggleButton>
-          <ScrollViewer Grid.Row="1" Grid.ColumnSpan="6" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled"><StackPanel Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel></ScrollViewer>
-          <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="6" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" MaxLines="3"/>
+          <Button x:Name="SearchDelete" Grid.Column="6" FontSize="{{$fs12}}" Padding="10,4" ToolTipService.ToolTip="Move the picked results to the Recycle Bin (Del). Shift+Del deletes for good. Ctrl+click and Shift+click pick several."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE74D;" FontSize="{{$fs12}}"/><TextBlock Text="Delete"/></StackPanel></Button>
+          <ScrollViewer Grid.Row="1" Grid.ColumnSpan="7" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled"><StackPanel Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel></ScrollViewer>
+          <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="7" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" MaxLines="3"/>
         </Grid>
         <Border x:Name="SearchNone" Grid.Row="2" Visibility="Collapsed" Padding="16,14" VerticalAlignment="Top" IsHitTestVisible="False" Canvas.ZIndex="5"><TextBlock x:Name="SearchNoneText" TextWrapping="Wrap" FontSize="{{$fs13}}" LineHeight="22" Foreground="{{$text2}}"/></Border>
         <Border x:Name="SearchEmpty" Grid.Row="2" Visibility="Collapsed" Background="Transparent"><ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="16,12"><Border x:Name="SearchEmptyHost"/></ScrollViewer></Border>
