@@ -13,14 +13,24 @@ static LIGHT: AtomicBool = AtomicBool::new(false);
 /// The choices of the Theme setting, in the order `prefs` lists them.
 pub(crate) const CHOICES: [&str; 3] = ["Like Windows", "Light", "Dark"];
 
-/// Decided once at start, from the Theme setting (or Windows' app mode).
+/// Decided at start, and again when the Theme setting is saved (`crate::restyle`), from the
+/// Theme setting (or Windows' app mode).
 pub(crate) fn init(setting: Option<&str>) {
-    let light = match setting.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0) {
+    LIGHT.store(wanted_light(setting), Ordering::Relaxed);
+}
+
+/// Whether the Theme setting asks for the light page right now.
+pub(crate) fn wanted_light(setting: Option<&str>) -> bool {
+    match setting.and_then(|s| s.parse::<usize>().ok()).unwrap_or(0) {
         1 => true,
         2 => false,
         _ => windows_uses_light(),
-    };
-    LIGHT.store(light, Ordering::Relaxed);
+    }
+}
+
+/// The Theme setting is "Like Windows" (or unset).
+pub(crate) fn follows_windows(setting: Option<&str>) -> bool {
+    !matches!(setting.and_then(|s| s.parse::<usize>().ok()), Some(1 | 2))
 }
 
 pub(crate) fn light() -> bool {

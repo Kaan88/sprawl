@@ -35,10 +35,12 @@ pub(crate) struct Accent {
     pub text: String,
 }
 
-/// The accent, read once.
+/// The accent for the theme in use, read once per theme (the theme can change while Sprawl runs).
 pub(crate) fn accent() -> &'static Accent {
-    static A: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
-    A.get_or_init(|| accent_from(palette(), crate::theme::light()))
+    static DARK: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
+    static LIGHT: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
+    let light = crate::theme::light();
+    (if light { &LIGHT } else { &DARK }).get_or_init(|| accent_from(palette(), light))
 }
 
 /// Windows' accent palette, lightest first: Light3, Light2, Light1, the accent, Dark1, Dark2,
@@ -630,6 +632,15 @@ struct Shown {
 
 thread_local! {
     static SHOWN: std::cell::RefCell<Shown> = std::cell::RefCell::new(Shown::default());
+}
+
+/// The Running strip is drawn again at the next frame (the page was made again).
+pub(crate) fn forget_shown() {
+    SHOWN.with(|s| {
+        let mut s = s.borrow_mut();
+        s.listed.clear();
+        s.cleanup_tab = None;
+    });
 }
 
 impl State {

@@ -962,11 +962,16 @@ thread_local! {
     static LOOK: std::cell::RefCell<Option<Look>> = const { std::cell::RefCell::new(None) };
 }
 
+/// The table is made again, for the theme now in use (and the look in use), the next time a
+/// value is asked for. The look itself is kept (`LOOK`), so a rebuild after a live theme change
+/// keeps the user's options.
+pub(crate) fn reset() {
+    TABLE.with(|c| *c.borrow_mut() = None);
+}
+
 /// The look in use. Set at start, and again when the Theme page saves; until then, Sprawl's own.
-#[allow(dead_code)]
 pub(crate) fn set(look: &Look) {
-    let t = table(look, crate::theme::light());
-    TABLE.with(|c| *c.borrow_mut() = Some(t));
+    reset();
     LOOK.with(|c| *c.borrow_mut() = Some(look.clone()));
 }
 

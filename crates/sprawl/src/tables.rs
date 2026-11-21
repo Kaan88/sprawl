@@ -145,6 +145,14 @@ impl Default for Tables {
     }
 }
 
+impl Tables {
+    /// The page was made again (the theme changed): what was drawn is drawn again, into new
+    /// hosts. The sorts and the measured widths stay.
+    pub(crate) fn restyle(&mut self) {
+        *self = Tables { compact_tree: self.compact_tree, folder_chars: self.folder_chars, tree_sort: self.tree_sort, files_sort: self.files_sort, ext_sort: self.ext_sort, ..Default::default() };
+    }
+}
+
 impl Col {
     pub(crate) fn key(&self) -> Key {
         self.key

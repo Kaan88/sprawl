@@ -576,9 +576,14 @@ thread_local! {
     static BRUSHES: std::cell::RefCell<HashMap<(&'static str, String), Brush>> = std::cell::RefCell::new(HashMap::new());
 }
 
+/// The theme changed: a brush made for the old one is never given out again.
+pub(crate) fn forget_brushes() {
+    BRUSHES.with(|m| m.borrow_mut().clear());
+}
+
 /// The brush `attr="raw"` gives, as loading it gives it: a token's value for the theme in use,
 /// a colour written by hand turned around for the light page. Kept by the text as it is written;
-/// the theme is fixed for the process, so one key can only mean one brush.
+/// one key means one brush until the theme changes ([`forget_brushes`]).
 fn brush(attr: &'static str, raw: &str) -> windows_core::Result<Brush> {
     if let Some(b) = BRUSHES.with(|m| m.borrow().get(&(attr, raw.to_string())).cloned()) {
         return Ok(b);
