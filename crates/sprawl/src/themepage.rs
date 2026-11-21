@@ -286,7 +286,7 @@ impl State {
         let mut buttons: Vec<String> = Vec::new();
         let mut x = String::new();
         x += &format!(r##"<Border x:Name="TmSample"/>"##);
-        x += &ui::note_text(r#"Margin="0,2,0,0""#, "The sample follows each pick. Press Save to use it in Sprawl.");
+        x += &ui::note_text(r#"Margin="0,2,0,0""#, "Each pick shows at once on the whole window. Save keeps it; Cancel goes back.");
         x += r##"<Border x:Name="TmPresets"/>"##;
         x += &format!(
             r##"<StackPanel Orientation="Horizontal" Spacing="6">{}{}{}</StackPanel>"##,
@@ -390,6 +390,22 @@ impl State {
         if let Some(fe) = self.prefs.fe.clone() {
             self.theme_refresh(&fe);
         }
+        self.theme_live();
+    }
+
+    /// The picks on the whole window at once, before Save (Cancel takes them back).
+    fn theme_live(&self) {
+        let t = &self.prefs.theme;
+        crate::restyle::preview(t.look.clone(), t.mode);
+    }
+
+    /// Cancel: the look and the light or dark choice in use when Settings opened.
+    pub(crate) fn theme_cancel(&mut self) {
+        let orig = self.prefs.theme.orig.clone();
+        crate::restyle::end_preview();
+        if crate::tokens::current() != orig {
+            crate::restyle::apply_look(orig);
+        }
     }
 
     /// A button of the page; the page is made again after it.
@@ -443,6 +459,9 @@ impl State {
             }
             _ => {}
         }
+        if matches!(name, "TmPaste" | "TmBack") || name.starts_with("TmPre") {
+            self.theme_live();
+        }
     }
 
     /// Reset everything: the picks are Sprawl's own too.
@@ -451,11 +470,14 @@ impl State {
         t.look = Look::default();
         t.mode = 0;
         t.custom = None;
+        self.theme_live();
     }
 
     /// Save: the picks are kept in the settings, and a changed look is applied now. The light
     /// or dark choice is the `theme` setting, applied by the page's own path.
     pub(crate) fn theme_commit(&mut self) {
+        // the light or dark choice is the saved setting again (it was tried while picking)
+        crate::restyle::end_preview();
         let t = &self.prefs.theme;
         if t.custom != t.orig_custom {
             write_custom(&mut self.settings, t.custom.as_ref());
@@ -463,7 +485,10 @@ impl State {
         if t.look != t.orig {
             let look = t.look.clone();
             write(&mut self.settings, &look);
-            crate::restyle::apply_look(look.clone());
+            // already on screen when it was tried
+            if crate::tokens::current() != look {
+                crate::restyle::apply_look(look.clone());
+            }
             self.prefs.theme.orig = look;
         }
         self.prefs.theme.orig_custom = self.prefs.theme.custom.clone();

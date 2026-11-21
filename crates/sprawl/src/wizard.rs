@@ -607,7 +607,7 @@ impl State {
     }
 
     /// Read the page's controls back into the draft (before the page changes, and on Save).
-    fn prefs_harvest(&mut self) {
+    pub(crate) fn prefs_harvest(&mut self) {
         let Some(fe) = self.prefs.fe.clone() else { return };
         for k in self.prefs.shown.clone() {
             let Some(p) = prefs::get(k) else { continue };
@@ -842,7 +842,11 @@ impl State {
                 self.wizard_show();
             }
             "WizNext" if self.wizard_all => self.wizard_finish(),
-            "WizSkip" if self.wizard_all => shown(self, "Wizard", false),
+            "WizSkip" if self.wizard_all => {
+                // the look tried on the Theme page goes back to the one in use
+                self.theme_cancel();
+                shown(self, "Wizard", false);
+            }
             "WizNext" if self.wizard_page + 1 < PAGES => {
                 self.prefs_harvest();
                 self.wizard_page += 1;

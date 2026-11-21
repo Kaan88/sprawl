@@ -6,9 +6,10 @@
 //! [`State::restyle_now`]); the data (the scan, the tab, the selection, the map's camera) is not
 //! touched.
 //!
-//! It runs from a frame, never from inside the event that asked (the Settings page's Save
-//! button is part of the page that is being replaced). It waits while a question or the
-//! Settings page is open.
+//! It runs from a frame, never from inside the event that asked (the Settings page's buttons
+//! are part of the page that is being replaced). It waits while a question is open. With the
+//! Settings page open it goes ahead (the Theme page's picks show at once on the whole window),
+//! and the page is put back as it was: the same section, the same unsaved changes.
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 use windows_core::{Interface, HSTRING};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{RangeBase, Selector};
-use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, Control, FontIcon, RowDefinition, TextBlock, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, Control, FontIcon, PasswordBox, RowDefinition, TextBlock, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibility};
 use crate::scene::Mode;
 use crate::state::{find, load, State, View};
@@ -30,6 +31,9 @@ thread_local! {
     /// The look in use before the look change waiting to be made, for the change to be undone if
     /// the page cannot be made.
     static LOOK_WAS: std::cell::RefCell<Option<crate::tokens::Look>> = const { std::cell::RefCell::new(None) };
+    /// The Theme page's light or dark pick, tried before it is saved: used instead of the
+    /// `theme` setting until Save or Cancel.
+    static PREVIEW_MODE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The Theme setting changed (or Windows' app mode did): the page is made again at the next
@@ -46,6 +50,27 @@ pub(crate) fn apply_look(look: crate::tokens::Look) {
     crate::tokens::set(&look);
     LOOK_CHANGED.with(|l| l.set(true));
     request();
+}
+
+/// The Theme page's picks, tried on the whole window before they are saved: the look and the
+/// light or dark choice (an index of [`crate::theme::CHOICES`]). Nothing is made again when both
+/// are what the window shows or is about to.
+pub(crate) fn preview(look: crate::tokens::Look, mode: usize) {
+    let mode = mode.to_string();
+    let same_mode = PREVIEW_MODE.with(|m| m.borrow().as_deref() == Some(mode.as_str()));
+    PREVIEW_MODE.with(|m| *m.borrow_mut() = Some(mode));
+    if look != crate::tokens::current() {
+        apply_look(look);
+    } else if !same_mode {
+        request();
+    }
+}
+
+/// Save or Cancel: the `theme` setting is the light or dark choice again.
+pub(crate) fn end_preview() {
+    if PREVIEW_MODE.with(|m| m.borrow_mut().take()).is_some() {
+        request();
+    }
 }
 
 /// Every `x:Name` the page's XAML gives a control.
@@ -101,6 +126,12 @@ fn carry(old: &FrameworkElement, new: &FrameworkElement, names: &[&str]) {
         if let (Ok(a), Ok(b)) = (o.cast::<TextBox>(), n.cast::<TextBox>()) {
             if let Ok(t) = a.Text() {
                 let _ = b.SetText(&t);
+            }
+        }
+        // a key typed in Settings and not yet saved
+        if let (Ok(a), Ok(b)) = (o.cast::<PasswordBox>(), n.cast::<PasswordBox>()) {
+            if let Ok(t) = a.Password() {
+                let _ = b.SetPassword(&t);
             }
         }
         if let (Ok(a), Ok(b)) = (o.cast::<ToggleMenuFlyoutItem>(), n.cast::<ToggleMenuFlyoutItem>()) {
@@ -160,13 +191,13 @@ impl State {
             let due = POLLED.with(|p| p.get().is_none_or(|t| t.elapsed() >= Duration::from_secs(1)));
             if due {
                 POLLED.with(|p| p.set(Some(Instant::now())));
-                let setting = self.settings.get("theme");
-                if crate::theme::follows_windows(setting) && crate::theme::wanted_light(setting) != crate::theme::light() {
+                let setting = self.theme_setting();
+                if crate::theme::follows_windows(setting.as_deref()) && crate::theme::wanted_light(setting.as_deref()) != crate::theme::light() {
                     request();
                 }
             }
         }
-        if !PENDING.with(Cell::get) || self.dialogs.open() || self.settings_shown() {
+        if !PENDING.with(Cell::get) || self.dialogs.open() {
             return false;
         }
         PENDING.with(|p| p.set(false));
@@ -180,6 +211,12 @@ impl State {
         }
     }
 
+    /// The light or dark choice in force: the Theme page's while it is being tried, else the
+    /// saved setting.
+    fn theme_setting(&self) -> Option<String> {
+        PREVIEW_MODE.with(|m| m.borrow().clone()).or_else(|| self.settings.get("theme").map(str::to_string))
+    }
+
     /// The Settings page (or the first-run wizard) is on screen.
     fn settings_shown(&self) -> bool {
         find::<UIElement>(&self.root, "Wizard").and_then(|w| w.Visibility()).is_ok_and(|v| v == Visibility::Visible)
@@ -189,7 +226,7 @@ impl State {
     /// both are what the page shows. On an error before the new page is on screen, everything
     /// goes back to the old theme and look.
     fn restyle_now(&mut self) -> windows_core::Result<bool> {
-        let setting = self.settings.get("theme").map(str::to_string);
+        let setting = self.theme_setting();
         let was = crate::theme::light();
         // a look change makes the page again even when the light/dark theme is the same
         let look_changed = LOOK_CHANGED.with(Cell::take);
@@ -198,6 +235,12 @@ impl State {
             return Ok(false);
         }
         let t0 = Instant::now();
+        // Settings open: what is typed or picked on its page goes into the draft first, so the
+        // page made again shows it
+        let settings_open = self.settings_shown();
+        if settings_open {
+            self.prefs_harvest();
+        }
         let set_theme = |setting: Option<&str>| {
             crate::theme::init(setting);
             // the caches that hold a value written for the theme: the token table, the accent
@@ -273,6 +316,10 @@ impl State {
             self.search_box_state();
         }
         self.render_map();
+        // the Settings page again, as it was: its section, its picks, its unsaved changes
+        if settings_open {
+            self.wizard_show();
+        }
         crate::state::timing("theme change", t0);
         Ok(true)
     }
