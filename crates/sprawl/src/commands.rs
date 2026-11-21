@@ -704,15 +704,21 @@ impl State {
         text(&self.root, "FootLeft", &msg);
     }
 
-    /// Why the selected item may not be deleted from here, if it may not.
-    fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
+    /// Why no Delete may start now, if so: another job, a read-only run, a clean-up or other
+    /// file operation. Shared by the scan's rows and the Search tab's other-drive rows.
+    pub(crate) fn delete_busy_refusal(&self) -> Option<String> {
         if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.job.is_some()
             || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.update.applying
             || self.advisor.reading() || self.shell_rescans.is_some() {
             return Some("Deletion waits until scanning, Check again and other file operations finish; screenshot runs cannot delete.".into());
         }
-        if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {
-            return Some("This path contains or is inside a folder excluded in Settings > Scanning.".into());
+        None
+    }
+
+    /// Why the selected item may not be deleted from here, if it may not.
+    fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
+        if let Some(why) = self.delete_busy_refusal() {
+            return Some(why);
         }
         let t = self.tree.as_ref()?;
         if t.method == sprawl_core::ScanMethod::Csv {
@@ -724,18 +730,10 @@ impl State {
         if self.full_tree.is_some() && t.nodes[n].is_dir {
             return Some("A filter is on, so this folder holds more than you can see. Clear the filter to delete a whole folder.".into());
         }
-        let s = path.display().to_string();
-        let bad_seg = s.split('\\').skip(1).any(|g| g == "." || g == ".." || g.ends_with('.') || g.ends_with(' '));
-        if !path.is_absolute() || s.contains(['*', '?']) || bad_seg {
-            return Some(format!("Sprawl won't delete a path written like this:\n{s}"));
+        if let Some(why) = path_refusal(path) {
+            return Some(why);
         }
         let never = sprawl_advisor::safety::Never::default_list();
-        if !never.complete() {
-            return Some("Sprawl couldn't work out where Windows keeps its own folders, so it won't delete anything.".into());
-        }
-        if let Some(p) = never.hit(&s) {
-            return Some(format!("{s}\n\nis protected (it matches {p}). Deleting it could break Windows, an app or your profile."));
-        }
         if let Some((at, p)) = never.hit_inside(t, n) {
             return Some(format!("This folder holds\n{at}\n\nwhich is protected ({p}). Delete the things around it one by one instead."));
         }
@@ -771,18 +769,16 @@ impl State {
     }
 
     pub(crate) fn delete(&mut self, permanent: bool) {
+        // Search: rows from other drives or saved scans, deleted by path (search_delete.rs)
+        if self.view == View::Search && (self.search.more.sel.is_some() || !self.search.more.picks.is_empty()) {
+            return self.delete_more(permanent);
+        }
         if self.marked.len() > 1 || (self.marked.len() == 1 && self.selected.is_some_and(|s| !self.marked.contains(&s))) {
             return self.delete_many(permanent);
         }
         let Some(n) = self.selected.filter(|&n| n != ROOT) else {
-            // Search: a row from another drive or a saved scan is not part of the scan on
-            // screen, so there is nothing safe to delete it by; say so instead of doing nothing
             if self.view == View::Search {
-                if self.search.more.sel.is_some() {
-                    self.tell("Not deleted", "This result is from another drive or a saved scan, not from the scan on screen. Use Scan This Folder first, then delete it from that scan.");
-                } else {
-                    text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several).");
-                }
+                text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several).");
             }
             return;
         };
@@ -939,14 +935,30 @@ impl State {
     /// to recursively remove a stale pathname, and it always rescans partial outcomes. It runs
     /// on its own thread (1.0 ran it on the window's, which froze on a big folder).
     fn manual_delete_paths(&mut self, paths: Vec<PathBuf>, permanent: bool) {
+        // what the scan says they hold, for the card's bar
+        let total: u64 = self.active_tree().map_or(0, |t| paths.iter().filter_map(|p| sprawl_advisor::find_path(&t, p)).map(|n| t.nodes[n].size).sum());
+        let basis = DeleteBasis {
+            since: self.active_began(),
+            seen: self.active_tree().map(sprawl_advisor::clean::seen_in),
+            total,
+            precheck: None,
+            more: false,
+        };
+        self.manual_delete_with(paths, permanent, basis);
+    }
+
+    /// [`State::manual_delete_paths`] on a given footing. The Search tab's rows from other
+    /// drives and saved scans have no scan node: they come with `since` (when their fresh
+    /// check began, so anything created or changed after it stays), no `seen`, and a
+    /// `precheck` the worker runs on each path immediately before that item goes.
+    pub(crate) fn manual_delete_with(&mut self, paths: Vec<PathBuf>, permanent: bool, basis: DeleteBasis) {
         use sprawl_advisor::clean::{self, Action, Spare};
         if self.advisor.deleting.is_some() { return; }
         // what was kept and skipped when the user said yes; each item adds what is kept and
         // skipped by then (a folder skipped in Settings meanwhile is never deleted)
         let mut confirmed = self.advisor.memory.kept_paths();
         confirmed.extend(sprawl_advisor::exclusions::configured());
-        let since = self.active_began();
-        let seen = self.active_tree().map(clean::seen_in);
+        let DeleteBasis { since, seen, total, precheck, more } = basis;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.advisor.delete_stop = Some(stop.clone());
         let at = std::time::Instant::now();
@@ -954,8 +966,6 @@ impl State {
         self.marked.clear();
         let (tx, rx) = std::sync::mpsc::channel();
         self.advisor.deleting = Some(rx);
-        // what the scan says they hold, for the card's bar
-        let total: u64 = self.active_tree().map_or(0, |t| paths.iter().filter_map(|p| sprawl_advisor::find_path(&t, p)).map(|n| t.nodes[n].size).sum());
         self.advisor.delete_total = (total, permanent, paths.len());
         crate::state::text(&self.root, "FootLeft", if permanent { "Deleting..." } else { "Moving to the Recycle Bin..." });
         self.delete_card(Some(0));
@@ -965,6 +975,7 @@ impl State {
             // every Keep seen during this Delete keeps counting, even if a later read of the
             // list no longer has it
             let mut kept_seen: Vec<std::path::PathBuf> = Vec::new();
+            let mut touched: Vec<PathBuf> = Vec::new();
             for path in paths {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     notes.push(format!("{}: not deleted, the Delete was stopped", path.display()));
@@ -991,6 +1002,13 @@ impl State {
                 let mut keep = confirmed.clone();
                 keep.extend(skipped);
                 keep.extend(kept_seen.iter().cloned());
+                // the last look at this very item, immediately before it goes (Search rows
+                // from other drives: still there, same kind, no link, not protected, a file
+                // still the size and date the result showed)
+                if let Some(why) = precheck.as_ref().and_then(|check| check(&path)) {
+                    notes.push(format!("{}: not deleted, {why}", path.display()));
+                    continue;
+                }
                 let spare = Spare { since: Some(since), keep, seen: seen.clone() };
                 let mut bin = (!permanent).then(|| sprawl_advisor::recycle::bin_for(&path));
                 let outcome = clean::run_with(&path, &Action::Remove, &spare, bin.as_mut(), &stop, &mut |n| {
@@ -1004,8 +1022,14 @@ impl State {
                 if outcome.kept_new + outcome.kept_chosen + outcome.kept_protected > 0 {
                     notes.push(format!("{}: kept {} new, {} chosen and {} protected items", path.display(), outcome.kept_new, outcome.kept_chosen, outcome.kept_protected));
                 }
-                if let Some(now) = crate::shellmenu::read_now(&path) { results.push((path, now)); }
+                if more {
+                    // not in the scan on screen: nothing to read back into it
+                    touched.push(path);
+                } else if let Some(now) = crate::shellmenu::read_now(&path) { results.push((path, now)); }
                 else { notes.push(format!("{} could not be read again; scan again to refresh it", path.display())); }
+            }
+            if more {
+                let _ = tx.send(DelMsg::Touched(touched));
             }
             let _ = tx.send(DelMsg::Done(results, notes));
         });
@@ -1029,6 +1053,7 @@ impl State {
                     crate::state::text(&self.root, "FootLeft", &format!("Deleting... {} so far", self.size(bytes)));
                     self.delete_card(Some(bytes));
                 }
+                DelMsg::Touched(paths) => self.more_forget_deleted(&paths),
                 DelMsg::Done(results, notes) => {
                     finished = true;
                     self.delete_card(None);
@@ -1084,10 +1109,52 @@ impl State {
     }
 }
 
-/// From the thread of a Delete in the tree: bytes so far, then each path as it is now.
+/// What a Delete leaves alone because of when and what the scan (or fresh check) saw, and what
+/// it runs just before each item. See [`State::manual_delete_with`].
+pub(crate) struct DeleteBasis {
+    /// Anything created or changed after this stays.
+    pub since: std::time::SystemTime,
+    /// What the scan saw at a path (None: nothing is known).
+    pub seen: Option<sprawl_advisor::clean::Seen>,
+    /// What the items hold, for the card's bar.
+    pub total: u64,
+    /// Run in the worker immediately before each item: `Some(why)` leaves that item alone.
+    pub precheck: Option<std::sync::Arc<dyn Fn(&std::path::Path) -> Option<String> + Send + Sync>>,
+    /// Rows from other drives or saved scans: the paths are reported with `DelMsg::Touched`
+    /// instead of being read back into the scan on screen.
+    pub more: bool,
+}
+
+/// From the thread of a Delete: bytes so far, then each path as it is now.
 pub(crate) enum DelMsg {
     Progress(u64),
+    /// A Delete of Search rows from other drives or saved scans (there is no scan tree to read
+    /// the paths back into): the paths it went through, to see which are gone.
+    Touched(Vec<PathBuf>),
     Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>),
+}
+
+/// Why `path` may not be deleted whatever it is: inside a folder skipped in Settings >
+/// Scanning, written in a way Sprawl won't touch, or on the never-list (or above an entry of
+/// it). The one list every Delete goes by: the scan's rows, and the Search tab's other-drive
+/// rows at the question and again in the worker just before each item.
+pub(crate) fn path_refusal(path: &std::path::Path) -> Option<String> {
+    if sprawl_advisor::exclusions::intersects(path, &sprawl_advisor::exclusions::configured()) {
+        return Some("This path contains or is inside a folder excluded in Settings > Scanning.".into());
+    }
+    let s = path.display().to_string();
+    let bad_seg = s.split('\\').skip(1).any(|g| g == "." || g == ".." || g.ends_with('.') || g.ends_with(' '));
+    if !path.is_absolute() || s.contains(['*', '?']) || bad_seg {
+        return Some(format!("Sprawl won't delete a path written like this:\n{s}"));
+    }
+    let never = sprawl_advisor::safety::Never::default_list();
+    if !never.complete() {
+        return Some("Sprawl couldn't work out where Windows keeps its own folders, so it won't delete anything.".into());
+    }
+    if let Some(p) = never.hit(&s) {
+        return Some(format!("{s}\n\nis protected (it matches {p}). Deleting it could break Windows, an app or your profile."));
+    }
+    None
 }
 /// Take node `n` out of the tree after it was deleted: its totals come off every parent and the
 /// whole branch is emptied so file-type totals forget it.

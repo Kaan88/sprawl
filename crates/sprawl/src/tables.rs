@@ -745,10 +745,11 @@ impl State {
         let double = if self.view == View::Search { self.tap_is_double((n, d), double) } else { double };
         if self.view == View::Search {
             if d > 0 {
-                self.more_tapped(d - 1, n, double);
+                self.more_tapped(k, d - 1, n, double);
                 return;
             }
             self.search.more.sel = None;
+            self.search.more.picks.clear();
         }
         let on_chevron = self.view == View::Tree && x < (8 + d * 16 + 20) as f64;
         // Ctrl adds or takes away a row, Shift picks the run from the selected row
@@ -857,6 +858,7 @@ impl State {
                     if let Some((ix, i)) = self.search.more.item(d - 1, n) {
                         let p = ix.path_of(i);
                         self.search.more.sel = Some((d - 1, n));
+                        self.search.more.picks.clear();
                         // as more_tapped does: a Delete afterwards must not act on a scan row
                         self.selected = None;
                         self.marked.clear();
@@ -869,6 +871,7 @@ impl State {
                 return;
             }
             self.search.more.sel = None;
+            self.search.more.picks.clear();
         }
         // right-click outside the picked rows picks just that row
         if !self.marked.contains(&n) {
@@ -923,9 +926,11 @@ impl State {
         if !on_listed {
             if self.scan_row(&first) {
                 self.search.more.sel = None;
+                self.search.more.picks.clear();
                 self.selected = Some(first.0);
             } else {
                 self.search.more.sel = Some((first.1 - 1, first.0));
+                self.search.more.picks.clear();
                 self.selected = None;
                 self.marked.clear();
             }
@@ -966,8 +971,9 @@ impl State {
         let (ctrl, shift) = crate::win32::ctrl_shift_down();
         match key {
             // Esc drops the picks; Ctrl+A picks every row
-            27 if !self.marked.is_empty() => {
+            27 if !self.marked.is_empty() || (self.view == View::Search && !self.search.more.picks.is_empty()) => {
                 self.marked.clear();
+                self.search.more.picks.clear();
                 self.refresh_rows();
                 self.show_selection();
                 return true;
@@ -977,7 +983,20 @@ impl State {
                 self.search_box_focus();
                 return true;
             }
+            // (in Search, on a row from another drive: every such row, up to the most that
+            // can be picked; never together with the scan's rows)
+            65 if ctrl && self.view == View::Search && self.rows.get(k).is_some_and(|r| !self.scan_row(r)) => {
+                self.selected = None;
+                self.marked.clear();
+                self.search.more.picks.clear();
+                let last = self.rows.len().saturating_sub(1);
+                self.more_pick_run(0, last);
+                self.more_picked_note();
+                self.refresh_rows();
+                return true;
+            }
             65 if ctrl => {
+                self.search.more.picks.clear();
                 self.marked = self.rows.iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
                 self.refresh_rows();
                 self.show_selection();
@@ -989,8 +1008,15 @@ impl State {
         if matches!(key, 33..=40) {
             if shift {
                 self.marked.extend(self.selected);
+                // a row from another drive the keyboard is on starts the run of picks there
+                if let Some((p, n)) = self.search.more.sel.filter(|_| self.view == View::Search) {
+                    if self.search.more.picks.is_empty() {
+                        self.more_pick(p, n);
+                    }
+                }
             } else if !(self.view == View::Tree && matches!(key, 37 | 39)) {
                 self.marked.clear();
+                self.search.more.picks.clear();
             }
         }
         match key {
@@ -1073,8 +1099,14 @@ impl State {
                 self.search.more.sel = Some((d - 1, n));
                 self.selected = None;
                 self.marked.clear();
+                if shift && matches!(key, 33..=40) {
+                    // the whole run of rows from other drives from where it started
+                    self.more_pick_run(k.min(target), k.max(target));
+                    self.more_picked_note();
+                }
             } else {
                 self.search.more.sel = None;
+                self.search.more.picks.clear();
                 self.selected = Some(n);
                 if shift && matches!(key, 33..=40) {
                     // the whole run from where it started

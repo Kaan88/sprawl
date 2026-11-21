@@ -5,8 +5,10 @@
 //! What was read is kept as a [`CompactIndex`] (names, sizes, times; no [`sprawl_core::Tree`]):
 //! its item ids are its own, not node numbers of the scan on screen. A row from here is
 //! `(id, place + 1)` and is never put in `selected` or `marked`, never looked up in `self.tree`,
-//! and offers Show in Explorer, Copy path and "Scan this folder" — never a delete, which only
-//! goes through a scanned tree. Places live in slots that are never reused, so a row's place
+//! and offers Show in Explorer, Copy path and "Scan this folder". Several can be picked
+//! (`picks`, keyed by the row's full path, so a re-sort can't move a pick to another item) and
+//! deleted by path: see `search_delete.rs`, which checks each item on the disk as it is now
+//! instead of against a scan. Places live in slots that are never reused, so a row's place
 //! number always means the same place (or none, once it is gone).
 
 use std::collections::BTreeSet;
@@ -67,7 +69,7 @@ pub(crate) struct More {
     /// Never reused: a row's place number always means the same place (None: gone).
     places: Vec<Option<Arc<Place>>>,
     /// Bumped when `places` changes.
-    gen: u64,
+    pub(crate) gen: u64,
     snapshots_tried: bool,
     reading: Vec<Reading>,
     /// Reads that failed: (drive or label, why).
@@ -88,8 +90,15 @@ pub(crate) struct More {
     hits_query: String,
     hits_sort: (usize, bool),
     resorting: Option<Receiver<Found>>,
-    /// The row from another drive that is picked (place, id).
+    /// The row from another drive that is picked (place, id): the one the keyboard is on.
     pub(crate) sel: Option<(usize, usize)>,
+    /// The rows picked with Ctrl/Shift, by full path (never mixed with the scan's `marked`).
+    pub(crate) picks: crate::search_delete::Picks,
+    /// What was deleted from the places, as (slot, run of ids): gone from the rows and from
+    /// every later search, though the places keep what they read.
+    gone: Vec<(usize, std::ops::Range<u32>)>,
+    /// A Delete measuring its folders before it asks.
+    pub(crate) prep: Option<crate::search_delete::Prep>,
     /// When the strip last showed the reading progress.
     drawn: Option<Instant>,
     /// The drive toggles and the strip as built: while they stay the same only texts change,
@@ -121,7 +130,15 @@ impl More {
     /// Place `k` and its item `id`, if both still exist.
     pub(crate) fn item(&self, k: usize, id: usize) -> Option<(&CompactIndex, u32)> {
         let p = self.place(k).filter(|p| p.has(id))?;
+        if self.is_gone(k, id as u32) {
+            return None;
+        }
         Some((&p.ix, id as u32))
+    }
+
+    /// The item was deleted from the disk by Sprawl since the place was read.
+    fn is_gone(&self, k: usize, id: u32) -> bool {
+        self.gone.iter().any(|(pk, r)| *pk == k && r.contains(&id))
     }
 
     /// Items in every place (their roots not counted).
@@ -161,6 +178,7 @@ impl More {
     fn bump(&mut self) {
         self.gen += 1;
         self.sel = None;
+        self.picks.clear();
         self.resorting = None;
     }
 }
@@ -174,12 +192,12 @@ fn reading_label(r: &Reading) -> String {
     }
 }
 
-fn norm(p: &Path) -> String {
+pub(crate) fn norm(p: &Path) -> String {
     p.to_string_lossy().trim_end_matches('\\').to_lowercase()
 }
 
 /// `a` is `b` or inside it.
-fn within(a: &str, b: &str) -> bool {
+pub(crate) fn within(a: &str, b: &str) -> bool {
     a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with('\\')) || (b.len() == 2 && a.starts_with(b))
 }
 
@@ -508,13 +526,14 @@ impl State {
             return;
         }
         let places = m.places.clone();
+        let gone = m.gone.clone();
         let gen = m.gen;
         let text_q = self.search.query.clone();
         let sort = self.search.sort;
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let mut all: Vec<Vec<u32>> = Vec::with_capacity(places.len());
-            for p in &places {
+            for (slot, p) in places.iter().enumerate() {
                 let Some(p) = p else {
                     all.push(Vec::new());
                     continue;
@@ -526,6 +545,10 @@ impl State {
                 // what the scan on screen already shows is left out
                 if let Some(r) = cur.as_deref().and_then(|c| covered(&p.ix, c)) {
                     v.retain(|id| !r.contains(id));
+                }
+                // what Sprawl deleted since the place was read
+                if gone.iter().any(|(k, _)| *k == slot) {
+                    v.retain(|id| !gone.iter().any(|(k, r)| *k == slot && r.contains(id)));
                 }
                 all.push(v);
             }
@@ -596,7 +619,10 @@ impl State {
                 m.hits_query = q;
                 m.hits_sort = sort;
                 if !which {
+                    // a new list of results: what was picked is for the old one (a re-sort
+                    // keeps the picks, which are by path)
                     m.sel = None;
+                    m.picks.clear();
                 }
                 if sort != self.search.sort {
                     self.more_sort();
@@ -634,15 +660,45 @@ impl State {
         }
     }
 
-    /// A click on a row from another drive: picked (never part of the scan's picks); a
-    /// double-click opens it (a file with its program, a folder in Explorer).
-    pub(crate) fn more_tapped(&mut self, k: usize, id: usize, double: bool) {
+    /// A click on a row from another drive (the table's row `row`): picked (never part of the
+    /// scan's picks); Ctrl adds or takes away a row, Shift picks the run from the row the
+    /// keyboard is on; a double-click opens it (a file with its program, a folder in Explorer).
+    pub(crate) fn more_tapped(&mut self, row: usize, k: usize, id: usize, double: bool) {
         if self.search.more.item(k, id).is_none() {
             return;
         }
-        self.search.more.sel = Some((k, id));
+        let (ctrl, shift) = if double { (false, false) } else { crate::win32::ctrl_shift_down() };
+        let before = self.search.more.sel;
+        // the scan's rows and these never share a pick
         self.selected = None;
         self.marked.clear();
+        if shift {
+            let from = before.and_then(|(p, n)| self.rows.iter().position(|r| r.1 == p + 1 && r.0 == n)).unwrap_or(row);
+            self.more_pick_run(from.min(row), from.max(row));
+            self.search.more.sel = Some((k, id));
+        } else if ctrl {
+            if self.search.more.picks.is_empty() {
+                if let Some((p, n)) = before {
+                    self.more_pick(p, n);
+                }
+            }
+            let now = self.search.more.item(k, id).map(|(ix, i)| ix.path_of(i)).map(|p| crate::search_delete::key(&p)).unwrap_or_default();
+            if self.search.more.picks.contains_key(&now) {
+                self.search.more.picks.remove(&now);
+            } else {
+                self.more_pick(k, id);
+            }
+            self.search.more.sel = Some((k, id));
+        } else {
+            self.search.more.picks.clear();
+            self.search.more.sel = Some((k, id));
+        }
+        if ctrl || shift {
+            self.more_picked_note();
+            self.focus_main();
+            self.refresh_rows();
+            return;
+        }
         if double {
             self.more_command('O', k, id);
         } else {
@@ -650,6 +706,79 @@ impl State {
         }
         self.focus_main();
         self.refresh_rows();
+    }
+
+    /// Pick the item `id` of place `k`, by its full path, with what the row shows of it (size,
+    /// date, file or folder): a Delete holds it to that. False when it is not an item or the
+    /// picks are full.
+    pub(crate) fn more_pick(&mut self, k: usize, id: usize) -> bool {
+        let m = &self.search.more;
+        let Some((ix, i)) = m.item(k, id) else { return false };
+        let pick = crate::search_delete::Pick::of(ix, i, k, id, m.gen);
+        self.search.more.picks.add(pick)
+    }
+
+    /// Pick every row from other drives among the table's rows `a..=b`.
+    pub(crate) fn more_pick_run(&mut self, a: usize, b: usize) {
+        let run: Vec<(usize, usize)> = self.rows[a.min(self.rows.len())..(b + 1).min(self.rows.len())].iter().filter(|r| r.1 > 0).map(|r| (r.1 - 1, r.0)).collect();
+        for (k, id) in run {
+            if !self.more_pick(k, id) {
+                break;
+            }
+        }
+    }
+
+    /// Say how many are picked (and that the picks are full).
+    pub(crate) fn more_picked_note(&self) {
+        let n = self.search.more.picks.len();
+        let full = if n >= crate::search_delete::MAX_PICKS { format!(" (the most Sprawl picks at once: {})", crate::search_delete::MAX_PICKS) } else { String::new() };
+        let note = match n {
+            0 => String::new(),
+            1 => format!("1 result picked{full}"),
+            n => format!("{} results picked{full}", thousands(n as u64)),
+        };
+        crate::state::text(&self.root, "SearchInfo", &if note.is_empty() { self.search_count() } else { note });
+    }
+
+    /// Paths a Delete went through: those no longer on the disk leave the results (and every
+    /// later search). A folder that is still there, even if only part of it went, stays.
+    pub(crate) fn more_forget_deleted(&mut self, paths: &[std::path::PathBuf]) {
+        let mut any = false;
+        for path in paths {
+            if !matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                continue;
+            }
+            let cur = norm(path);
+            let m = &mut self.search.more;
+            for k in 0..m.places.len() {
+                let Some(r) = m.place(k).and_then(|p| covered(&p.ix, &cur)) else { continue };
+                // (a root is never an item of its own to delete: covered() of a drive root is all)
+                if r.len() == m.place(k).map_or(0, |p| p.ix.len()) {
+                    continue;
+                }
+                any = true;
+                let r2 = r.clone();
+                let all = Arc::make_mut(&mut m.all);
+                if let Some(list) = all.get_mut(k) {
+                    list.retain(|id| !r2.contains(id));
+                }
+                m.hits.retain(|&(pk, id)| !(pk == k && r.contains(&(id as u32))));
+                m.gone.push((k, r));
+            }
+        }
+        if !any {
+            return;
+        }
+        let m = &mut self.search.more;
+        m.total = m.all.iter().map(Vec::len).sum();
+        m.sel = None;
+        m.picks.clear();
+        self.search.stamp += 1;
+        if self.view == View::Search {
+            self.refresh_rows();
+            let info = self.search_count();
+            crate::state::text(&self.root, "SearchInfo", &info);
+        }
     }
 
     /// The full path of a row from another drive, under the table.
@@ -667,6 +796,7 @@ impl State {
             return;
         }
         self.search.more.sel = Some((k, id));
+        self.search.more.picks.clear();
         self.selected = None;
         self.marked.clear();
         self.refresh_rows();
@@ -700,7 +830,9 @@ impl State {
         let Some(p) = self.search.more.place(k) else { return String::new() };
         let Some((ix, i)) = self.search.more.item(k, id) else { return String::new() };
         let name = ix.name(i);
-        let bg = self.row_bg(row, self.search.more.sel == Some((k, id)));
+        let full = ix.path_of(i).display().to_string();
+        let picked = self.search.more.sel == Some((k, id)) || self.search.more.picks.contains_key(&crate::search_delete::key(Path::new(&full)));
+        let bg = self.row_bg(row, picked);
         let folder = ix.parent(i).map(|q| ix.path_of(q).display().to_string()).unwrap_or_default();
         let ext = name.rsplit_once('.').filter(|(a, b)| !a.is_empty() && !b.is_empty()).map(|(_, e)| e.to_lowercase()).unwrap_or_default();
         let (glyph, gc) = if ix.is_dir(i) { ("&#xE8B7;", crate::tokens::refer("folder")) } else { ("&#xE7C3;", self.ext_colour_hex(&ext)) };
@@ -711,7 +843,6 @@ impl State {
             ),
             None => String::new(),
         };
-        let full = ix.path_of(i).display().to_string();
         format!(
             r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
