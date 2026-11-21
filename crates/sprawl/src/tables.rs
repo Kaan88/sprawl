@@ -228,7 +228,7 @@ fn header(cols: &[Col], sort: (usize, bool)) -> String {
         let arrow = if i == sort.0 { if sort.1 { "&#xE70D;" } else { "&#xE70E;" } } else { "" };
         let colour = if i == sort.0 { "#FFE6EBF5" } else { "#FFB9C2D6" };
         s += &format!(
-            r##"<StackPanel Grid.Column="{i}" Orientation="Horizontal" Spacing="5" HorizontalAlignment="{align}" Margin="10,0,10,0"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{colour}" VerticalAlignment="Center"/><FontIcon Glyph="{arrow}" FontSize="12" Foreground="#FF4CC2FF" VerticalAlignment="Center"/></StackPanel>"##,
+            r##"<StackPanel Grid.Column="{i}" Orientation="Horizontal" Spacing="5" HorizontalAlignment="{align}" Margin="10,0,10,0"><TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{colour}" VerticalAlignment="Center"/><FontIcon Glyph="{arrow}" FontSize="{{$fs12}}" Foreground="#FF4CC2FF" VerticalAlignment="Center"/></StackPanel>"##,
             ui::esc(c.title)
         );
     }
@@ -279,14 +279,14 @@ fn cmp_nodes(t: &Tree, alloc: &[u64], key: Key, a: usize, b: usize) -> Ordering 
 }
 
 pub(crate) fn cell(col: usize, s: &str) -> String {
-    format!(r##"<TextBlock Grid.Column="{col}" Text="{}" {} FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>"##, ui::esc(s), crate::look::NUM)
+    format!(r##"<TextBlock Grid.Column="{col}" Text="{}" {} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>"##, ui::esc(s), crate::look::NUM)
 }
 
 pub(crate) fn pct_bar(col: usize, pct: f64, a: &str, b: &str) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="{{$line1}}"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" {num} FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="{{$rc3}}" Background="{{$line1}}"/><Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 
@@ -615,7 +615,7 @@ impl State {
         };
         let name = if node.is_compressed() { format!("{} · compressed", label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", label(n)) } else { label(n) };
         format!(
-            r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="{{$fs12}}" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="{{$fs14}}" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(self.main_cols().0),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
@@ -629,9 +629,9 @@ impl State {
             c6 = match self.owner_of(n).filter(|_| !self.tables.compact_tree) {
                 // an uninstall mark where the app starts, when Sprawl knows where it is uninstalled
                 Some((name, inherited, can_uninstall)) => format!(
-                    r##"<TextBlock Grid.Column="6" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,
+                    r##"<TextBlock Grid.Column="6" FontSize="{{$fs12}}" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,
                     if inherited { "#FF8E97AA" } else { "#FFB9C2D6" },
-                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="12" Foreground="{$text3}"/>"## } else { "" },
+                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="{$fs12}" Foreground="{$text3}"/>"## } else { "" },
                     ui::esc(&name),
                 ),
                 None => String::new(),
@@ -647,7 +647,7 @@ impl State {
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         format!(
-            r##"<Grid x:Name="FRow{n}" Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="13" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid x:Name="FRow{n}" Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="{{$fs13}}" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = col_defs(FILES),
             fc = self.ext_colour_hex(&node.extension()),
@@ -664,7 +664,7 @@ impl State {
         let bg = self.row_bg(k, self.ext_selected.as_deref() == Some(e.ext.as_str()));
         let shown = if e.ext == "(none)" { String::new() } else { format!(".{}", e.ext) };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<Border Width="12" Height="12" CornerRadius="3" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<Border Width="12" Height="12" CornerRadius="{{$rc3}}" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="{{$fs12}}" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(EXTS),
             c = self.ext_colour_hex(&e.ext),
             ext = ui::esc(&shown),

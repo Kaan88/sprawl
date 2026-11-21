@@ -576,7 +576,9 @@ thread_local! {
     static BRUSHES: std::cell::RefCell<HashMap<(&'static str, String), Brush>> = std::cell::RefCell::new(HashMap::new());
 }
 
-/// The brush `attr="raw"` gives, as loading it gives it (the light page's colours included).
+/// The brush `attr="raw"` gives, as loading it gives it: a token's value for the theme in use,
+/// a colour written by hand turned around for the light page. Kept by the text as it is written;
+/// the theme is fixed for the process, so one key can only mean one brush.
 fn brush(attr: &'static str, raw: &str) -> windows_core::Result<Brush> {
     if let Some(b) = BRUSHES.with(|m| m.borrow().get(&(attr, raw.to_string())).cloned()) {
         return Ok(b);
@@ -594,21 +596,25 @@ fn brush(attr: &'static str, raw: &str) -> windows_core::Result<Brush> {
 
 /// Set `attr` of the live `el` (a `tag` element) to the value written as `raw`.
 fn set(el: &UIElement, tag: &str, attr: &str, raw: &str) -> windows_core::Result<()> {
+    // a token is resolved for the values read here; a brush is made from `raw` as it is written,
+    // so `state::load` puts the theme's value in (resolved first, it would be turned around again)
+    let resolved = crate::tokens::resolve(raw);
+    let value = resolved.as_ref();
     match attr {
-        "Visibility" => el.SetVisibility(match raw {
+        "Visibility" => el.SetVisibility(match value {
             "Visible" => Visibility::Visible,
             "Collapsed" => Visibility::Collapsed,
             _ => return Err(bad()),
         }),
-        "Opacity" => el.SetOpacity(number(raw)?),
-        "Width" => el.cast::<FrameworkElement>()?.SetWidth(number(raw)?),
-        "Height" => el.cast::<FrameworkElement>()?.SetHeight(number(raw)?),
-        "ToolTipService.ToolTip" => ToolTipService::SetToolTip(&el.cast::<DependencyObject>()?, &boxed(&unescape(raw))),
-        "AutomationProperties.Name" => AutomationProperties::SetName(&el.cast::<DependencyObject>()?, &HSTRING::from(unescape(raw))),
-        "Text" => el.cast::<TextBlock>()?.SetText(&HSTRING::from(unescape(raw))),
-        "IsChecked" => el.cast::<ToggleButton>()?.SetIsChecked(Some(flag(raw)?)),
-        "IsOn" => el.cast::<ToggleSwitch>()?.SetIsOn(flag(raw)?),
-        "IsEnabled" => el.cast::<Control>()?.SetIsEnabled(flag(raw)?),
+        "Opacity" => el.SetOpacity(number(value)?),
+        "Width" => el.cast::<FrameworkElement>()?.SetWidth(number(value)?),
+        "Height" => el.cast::<FrameworkElement>()?.SetHeight(number(value)?),
+        "ToolTipService.ToolTip" => ToolTipService::SetToolTip(&el.cast::<DependencyObject>()?, &boxed(&unescape(value))),
+        "AutomationProperties.Name" => AutomationProperties::SetName(&el.cast::<DependencyObject>()?, &HSTRING::from(unescape(value))),
+        "Text" => el.cast::<TextBlock>()?.SetText(&HSTRING::from(unescape(value))),
+        "IsChecked" => el.cast::<ToggleButton>()?.SetIsChecked(Some(flag(value)?)),
+        "IsOn" => el.cast::<ToggleSwitch>()?.SetIsOn(flag(value)?),
+        "IsEnabled" => el.cast::<Control>()?.SetIsEnabled(flag(value)?),
         "Background" => {
             let b = brush("Background", raw)?;
             if tag == "Border" {
@@ -636,12 +642,12 @@ fn set(el: &UIElement, tag: &str, attr: &str, raw: &str) -> windows_core::Result
             }
         }
         "Fill" => el.cast::<Shape>()?.SetFill(&brush("Fill", raw)?),
-        "Content" => el.cast::<ContentControl>()?.SetContent(&boxed(&unescape(raw))),
-        "Glyph" => el.cast::<FontIcon>()?.SetGlyph(&HSTRING::from(unescape(raw))),
-        "Value" => el.cast::<RangeBase>()?.SetValue(number(raw)?),
-        "Maximum" => el.cast::<RangeBase>()?.SetMaximum(number(raw)?),
-        "IsIndeterminate" => el.cast::<ProgressBar>()?.SetIsIndeterminate(flag(raw)?),
-        "SelectedIndex" => el.cast::<Selector>()?.SetSelectedIndex(raw.parse::<i32>().map_err(|_| bad())?),
+        "Content" => el.cast::<ContentControl>()?.SetContent(&boxed(&unescape(value))),
+        "Glyph" => el.cast::<FontIcon>()?.SetGlyph(&HSTRING::from(unescape(value))),
+        "Value" => el.cast::<RangeBase>()?.SetValue(number(value)?),
+        "Maximum" => el.cast::<RangeBase>()?.SetMaximum(number(value)?),
+        "IsIndeterminate" => el.cast::<ProgressBar>()?.SetIsIndeterminate(flag(value)?),
+        "SelectedIndex" => el.cast::<Selector>()?.SetSelectedIndex(value.parse::<i32>().map_err(|_| bad())?),
         _ => Err(bad()),
     }
 }
@@ -724,9 +730,9 @@ impl Slot {
     /// Put `xaml` into `host`: in place where `in_place` allows and the strings do, whole
     /// otherwise (the first time, another root, anything this module doesn't know how to do).
     pub(crate) fn show(&mut self, host: &Border, xaml: &str, in_place: bool) -> windows_core::Result<Shown> {
-        // the look's tokens go in before anything is compared, so the strings on both sides of
-        // a diff, and the values set on live controls, are the ones XAML would have been given
-        let xaml = &*crate::tokens::expand(xaml);
+        // the strings are compared as they are written, tokens and all: one that didn't change
+        // reads the same on both sides. Whatever is loaded or set goes through `state::load`,
+        // which puts the theme's value in, and `set` resolves a token for a value it reads itself
         let new = Doc::parse(xaml);
         let mut pieces = None;
         if let (true, Some(old), Some(root), Some(new)) = (in_place, self.doc.as_ref(), self.root.clone(), new.as_ref()) {
@@ -997,7 +1003,7 @@ mod tests {
     #[test]
     fn reads_the_xaml_the_app_writes() {
         let x = r##"<Grid xmlns="a" xmlns:x="b" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-<CheckBox x:Name="AdvT3" IsChecked="True" AutomationProperties.Name="Clean up a &amp; b"/><StackPanel Grid.Column="1"><TextBlock FontSize="15"><Run Text="1 GiB" FontWeight="SemiBold"/><Run Text=" can be cleaned"/></TextBlock><FontIcon Glyph="&#xE72E;"/><!-- a note --></StackPanel></Grid>"##;
+<CheckBox x:Name="AdvT3" IsChecked="True" AutomationProperties.Name="Clean up a &amp; b"/><StackPanel Grid.Column="1"><TextBlock FontSize="{$fs15}"><Run Text="1 GiB" FontWeight="SemiBold"/><Run Text=" can be cleaned"/></TextBlock><FontIcon Glyph="&#xE72E;"/><!-- a note --></StackPanel></Grid>"##;
         let d = Doc::parse(x).unwrap();
         assert_eq!(d.root.tag(&d.src), "Grid");
         assert_eq!(d.root.kind, Kind::Panel);
@@ -1131,7 +1137,7 @@ mod tests {
         let ns = r#"xmlns="a" xmlns:x="b""#;
         let one = |old: &str, new: &str| ops(&format!("<StackPanel {ns}>{old}</StackPanel>"), &format!("<StackPanel {ns}>{new}</StackPanel>")).unwrap();
         // an attribute that can't be set, one that went, another name, another tag
-        assert_eq!(one(r#"<TextBlock FontSize="12"/>"#, r#"<TextBlock FontSize="13"/>"#), ["replace []/0"]);
+        assert_eq!(one(r#"<TextBlock FontSize="{$fs12}"/>"#, r#"<TextBlock FontSize="{$fs13}"/>"#), ["replace []/0"]);
         assert_eq!(one(r#"<Button Content="a" Foreground="White"/>"#, r#"<Button Content="a"/>"#), ["replace []/0"]);
         assert_eq!(one(r#"<Button x:Name="AdvT1"/>"#, r#"<Button x:Name="AdvT2"/>"#), ["replace []/0"]);
         assert_eq!(one(r#"<Border/>"#, r#"<Grid/>"#), ["replace []/0"]);

@@ -170,7 +170,7 @@ pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
 /// A tag on a row that says what kind of thing it is ("Delete", "How to"): plain words in the
 /// row's quiet colour, with no background or border, so it does not read as a button.
 pub(crate) fn label(text: &str) -> String {
-    format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
+    format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
 }
 
 /// The template both selectable styles share: the item's own background (set by `paint` or
@@ -183,13 +183,13 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
     let (cols, arrow) = if arrow {
         (
             r##"<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>"##,
-            r##"<FontIcon x:Name="Arrow" Grid.Column="1" Glyph="&#xE70D;" FontSize="8" Margin="2,0,10,0" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}"/>"##,
+            r##"<FontIcon x:Name="Arrow" Grid.Column="1" Glyph="&#xE70D;" FontSize="{$fs8}" Margin="2,0,10,0" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}"/>"##,
         )
     } else {
         ("", "")
     };
     let (border, underline) = if line {
-        ("", r##"<Border x:Name="Line" Grid.ColumnSpan="2" VerticalAlignment="Bottom" Height="3" Margin="12,0,12,0" CornerRadius="2" Background="{TemplateBinding BorderBrush}" IsHitTestVisible="False"/>"##)
+        ("", r##"<Border x:Name="Line" Grid.ColumnSpan="2" VerticalAlignment="Bottom" Height="3" Margin="12,0,12,0" CornerRadius="{$rc2}" Background="{TemplateBinding BorderBrush}" IsHitTestVisible="False"/>"##)
     } else {
         (r##"BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}""##, "")
     };
@@ -224,8 +224,8 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
 /// The size and colours a style sets; a button's own attributes still win.
 struct Geo {
     padding: &'static str,
-    corner: &'static str,
-    size: &'static str,
+    corner: String,
+    size: String,
     weight: &'static str,
     /// The border: its width and colour (a transparent one keeps the height of a WinUI button).
     border: (&'static str, &'static str),
@@ -236,12 +236,12 @@ struct Geo {
 impl Geo {
     /// The selectable items as they were: small, no border.
     fn small() -> Self {
-        Geo { padding: "10,3", corner: "6", size: "12", weight: "Normal", border: ("0", "Transparent"), background: "Transparent", foreground: REST_TEXT.into() }
+        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent"), background: "Transparent", foreground: REST_TEXT.into() }
     }
 
     /// A WinUI button's size: 14 px text, 4 px corners, 32 px high with its 1 px border.
     fn button() -> Self {
-        Geo { padding: "11,5,11,6", corner: "4", size: "14", ..Geo::small() }.with_border("1", "Transparent")
+        Geo { padding: "11,5,11,6", corner: crate::tokens::rc(4.0), size: crate::tokens::fs(14.0), ..Geo::small() }.with_border("1", "Transparent")
     }
 
     fn with_border(mut self, width: &'static str, colour: &'static str) -> Self {
@@ -483,7 +483,7 @@ impl State {
     /// The list under the pill: each job, and a click opens its tab.
     fn busy_list(&self, listed: &[Job]) {
         let Ok(host) = find::<Border>(&self.root, "BusyList") else { return };
-        let mut x = format!(r##"<StackPanel {} Spacing="2"><TextBlock Text="Running now" FontSize="12" Foreground="{{$text3}}" Margin="10,0,10,4"/>"##, ui::NS);
+        let mut x = format!(r##"<StackPanel {} Spacing="2"><TextBlock Text="Running now" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="10,0,10,4"/>"##, ui::NS);
         for (i, j) in listed.iter().enumerate() {
             x += &format!(
                 r##"<Button x:Name="BusyGo{i}" {} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,5" ToolTipService.ToolTip="Open {tab}"><Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{tab}  &#x203A;" Foreground="{{$text3}}"/></Grid></Button>"##,

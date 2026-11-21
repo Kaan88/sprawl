@@ -18,18 +18,18 @@ const TIP: &str = "Enter goes to the results: Enter there opens, Ctrl+Enter show
 fn help_xaml(prefix: &str, intro: &str) -> String {
     let mut x = format!(r##"<StackPanel {} Spacing="6">"##, ui::NS);
     if !intro.is_empty() {
-        x += &format!(r##"<TextBlock Text="{}" FontSize="13" Foreground="{{$text2}}" TextWrapping="Wrap" Margin="0,0,0,4"/>"##, ui::esc(intro));
+        x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs13}}" Foreground="{{$text2}}" TextWrapping="Wrap" Margin="0,0,0,4"/>"##, ui::esc(intro));
     }
     for (i, (examples, what)) in sq::help().iter().enumerate() {
         x += r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4">"##;
         for (j, e) in examples.iter().enumerate() {
             x += &format!(
-                r##"<Button x:Name="{prefix}{i}_{j}" Padding="6,1" FontSize="12" FontFamily="Consolas" Background="#1AFFFFFF" BorderThickness="0" ToolTipService.ToolTip="Put it in the search box"><TextBlock Text="{}"/></Button>"##,
+                r##"<Button x:Name="{prefix}{i}_{j}" Padding="6,1" FontSize="{{$fs12}}" FontFamily="Consolas" Background="#1AFFFFFF" BorderThickness="0" ToolTipService.ToolTip="Put it in the search box"><TextBlock Text="{}"/></Button>"##,
                 ui::esc(e)
             );
         }
         x += &format!(
-            r##"</StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap" VerticalAlignment="Center"/></Grid>"##,
+            r##"</StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" VerticalAlignment="Center"/></Grid>"##,
             ui::esc(what)
         );
     }
@@ -84,7 +84,7 @@ impl State {
                 .collect();
             x += &format!(
                 // one control per chip: the words and its arrow in one button, so the two can't differ in size
-                r##"<Button x:Name="Chip{k}" {off} ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="9" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
+                r##"<Button x:Name="Chip{k}" {off} ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="{{$fs9}}" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
                 t = ui::esc(chip.title()),
                 off = crate::look::pick(crate::look::Pick::Chip, false),
             );
@@ -217,11 +217,11 @@ impl State {
         for (i, (label, _)) in s.items.iter().enumerate() {
             let bg = if self.search.highlight == Some(i) { "#FF2C3B63" } else { "Transparent" };
             x += &format!(
-                r##"<Button x:Name="SxSug{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,3" FontSize="12" BorderThickness="0" Background="{bg}" IsTabStop="False"><TextBlock Text="{}" FontFamily="Consolas"/></Button>"##,
+                r##"<Button x:Name="SxSug{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,3" FontSize="{{$fs12}}" BorderThickness="0" Background="{bg}" IsTabStop="False"><TextBlock Text="{}" FontFamily="Consolas"/></Button>"##,
                 ui::esc(label)
             );
         }
-        x += r##"<TextBlock Text="Up and Down pick, Enter or Tab takes it, Esc closes" FontSize="11" Foreground="#FF7A8296" Margin="8,2,8,2"/></StackPanel>"##;
+        x += r##"<TextBlock Text="Up and Down pick, Enter or Tab takes it, Esc closes" FontSize="{$fs11}" Foreground="#FF7A8296" Margin="8,2,8,2"/></StackPanel>"##;
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
         let Ok(fe) = content.cast::<FrameworkElement>() else { return };
@@ -343,7 +343,7 @@ impl State {
         // (label, what it does)
         let mut items: Vec<(String, SavedAct)> = Vec::new();
         let mut x = format!(
-            r##"<Button {} x:Name="SxSaved" Height="32" Padding="10,3" ToolTipService.ToolTip="Saved and recent searches"><FontIcon Glyph="&#xE81C;" FontSize="14"/><Button.Flyout><MenuFlyout x:Name="SxSavedFly" Placement="BottomEdgeAlignedRight">"##,
+            r##"<Button {} x:Name="SxSaved" Height="32" Padding="10,3" ToolTipService.ToolTip="Saved and recent searches"><FontIcon Glyph="&#xE81C;" FontSize="{{$fs14}}"/><Button.Flyout><MenuFlyout x:Name="SxSavedFly" Placement="BottomEdgeAlignedRight">"##,
             ui::NS
         );
         let mut item = |x: &mut String, label: String, act: SavedAct, icon: &str, enabled: bool| {

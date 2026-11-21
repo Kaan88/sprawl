@@ -700,14 +700,14 @@ impl State {
         let (glyph, gc) = if ix.is_dir(i) { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&ext)) };
         let saved = match p.as_of {
             Some(t) => format!(
-                r##"<Border Background="#33FFB547" CornerRadius="3" Padding="5,0" VerticalAlignment="Center" ToolTipService.ToolTip="From a saved scan: how it was then, not checked now"><TextBlock Text="saved {}" FontSize="11" Foreground="#FFFFB547"/></Border>"##,
+                r##"<Border Background="#33FFB547" CornerRadius="{{$rc3}}" Padding="5,0" VerticalAlignment="Center" ToolTipService.ToolTip="From a saved scan: how it was then, not checked now"><TextBlock Text="saved {}" FontSize="{{$fs11}}" Foreground="#FFFFB547"/></Border>"##,
                 ui::esc(&fmt_time(t))
             ),
             None => String::new(),
         };
         let full = ix.path_of(i).display().to_string();
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = crate::tables::col_defs(crate::search::COLS),
             runs = self.name_runs(&name),
@@ -831,19 +831,19 @@ impl State {
             if matches!(*kind, "reading" | "rereading") {
                 x += r##"<ProgressRing IsActive="True" Width="12" Height="12" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>"##;
             } else {
-                x += &format!(r##"<FontIcon Glyph="{glyph}" FontSize="12" Foreground="{colour}" VerticalAlignment="Center"/>"##);
+                x += &format!(r##"<FontIcon Glyph="{glyph}" FontSize="{{$fs12}}" Foreground="{colour}" VerticalAlignment="Center"/>"##);
             }
-            x += &format!(r##"<TextBlock x:Name="SxE{i}" Text="{}" {} FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="700"/>"##, ui::esc(line), crate::look::NUM);
+            x += &format!(r##"<TextBlock x:Name="SxE{i}" Text="{}" {} FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="700"/>"##, ui::esc(line), crate::look::NUM);
             if drive.is_some() && *kind != "rereading" {
                 let label = if *kind == "failed" { "Try again" } else { "Refresh" };
-                x += &format!(r##"<Button x:Name="SxR{i}" Content="{label}" FontSize="11" Padding="8,1" ToolTipService.ToolTip="Read this drive again: new files show, deleted ones go"/>"##);
+                x += &format!(r##"<Button x:Name="SxR{i}" Content="{label}" FontSize="{{$fs11}}" Padding="8,1" ToolTipService.ToolTip="Read this drive again: new files show, deleted ones go"/>"##);
             }
             if *kind == "rereading" {
-                x += r##"<TextBlock Text="reading again..." FontSize="12" Foreground="#FF7A8296" VerticalAlignment="Center"/>"##;
+                x += r##"<TextBlock Text="reading again..." FontSize="{$fs12}" Foreground="#FF7A8296" VerticalAlignment="Center"/>"##;
             }
             x += "</StackPanel>";
         }
-        x += &format!(r##"<TextBlock x:Name="SxNote" Text="{}" FontSize="11" Foreground="#FF7A8296" TextWrapping="Wrap"/>"##, ui::esc(&note));
+        x += &format!(r##"<TextBlock x:Name="SxNote" Text="{}" FontSize="{{$fs11}}" Foreground="#FF7A8296" TextWrapping="Wrap"/>"##, ui::esc(&note));
         x += "</StackPanel>";
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
@@ -897,7 +897,7 @@ impl State {
             items += r##"<MenuFlyoutItem Text="No other fixed drive to add" IsEnabled="False"/>"##;
         }
         let x = format!(
-            r##"<DropDownButton {} FontSize="12" Padding="10,3,6,3" ToolTipService.ToolTip="Where Search looks: this scan, and the other drives you switch on"><TextBlock Text="Search in: {}" FontSize="12"/><DropDownButton.Flyout><MenuFlyout Placement="Bottom">{items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>"##,
+            r##"<DropDownButton {} FontSize="{{$fs12}}" Padding="10,3,6,3" ToolTipService.ToolTip="Where Search looks: this scan, and the other drives you switch on"><TextBlock Text="Search in: {}" FontSize="{{$fs12}}"/><DropDownButton.Flyout><MenuFlyout Placement="Bottom">{items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>"##,
             ui::NS,
             ui::esc(&label)
         );

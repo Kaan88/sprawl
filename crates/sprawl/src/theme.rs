@@ -1,8 +1,9 @@
-//! Light or dark. The page is drawn for dark, with its colours written into the XAML; in light
-//! mode every piece of XAML is rewritten on its way to [`crate::state::load`]: greys and dark
-//! tints turn their lightness around (a white wash becomes a black one, light grey text dark
-//! grey), coloured text gets dark enough to read on white, and coloured fills (the accent, the
-//! risk colours, the file types) stay as they are. The map draws its own colours either way.
+//! Light or dark. The page is drawn for dark. In light mode every piece of XAML is rewritten on
+//! its way to [`crate::state::load`]: a colour written into it by hand has its lightness turned
+//! around (a white wash becomes a black one, light grey text dark grey), coloured text gets dark
+//! enough to read on white, and coloured fills (the accent, the risk colours, the file types)
+//! stay as they are. A token's own colour isn't rewritten here: [`crate::tokens`] holds it for
+//! the theme in use, and it is put in after this. The map draws its own colours either way.
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,8 +77,9 @@ pub(crate) fn to_light(xaml: &str) -> String {
     out.replace(r#"x:Name="Root" RequestedTheme="Light" Background="Transparent""#, r##"x:Name="Root" RequestedTheme="Light" Background="#F2F3F4F7""##)
 }
 
-/// The attribute name a value belongs to: `Foreground` in `Foreground="#..`.
-fn attr_before(s: &str) -> &str {
+/// The attribute name a value belongs to: `Foreground` in `Foreground="#..`. Shared with
+/// [`crate::tokens`]'s test, which reads a token site the way this rewrite reads a colour.
+pub(crate) fn attr_before(s: &str) -> &str {
     let s = s.strip_suffix('=').unwrap_or(s);
     let start = s.rfind(|c: char| c.is_whitespace() || c == '<').map_or(0, |p| p + 1);
     &s[start..]

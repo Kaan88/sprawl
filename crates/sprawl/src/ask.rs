@@ -80,7 +80,7 @@ impl State {
         };
         let body: String = match &p.rich {
             Some(x) => x.clone(),
-            None => p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="13" Foreground="{{$text1}}" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect(),
+            None => p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs13}}" Foreground="{{$text1}}" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect(),
         };
         let (max_w, max_h) = if p.rich.is_some() { (940, 720) } else { (560, 420) };
         let buttons = match &p.yes {
@@ -92,8 +92,8 @@ impl State {
             None => r##"<Button x:Name="DlgNo" Content="OK" Style="{StaticResource SprawlPrimary}"/>"##.to_string(),
         };
         let xaml = format!(
-            r##"<Grid {ns} Background="#B8080A10"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="10" Background="#FF1C1F2A" BorderBrush="{edge}" BorderThickness="1">
-<StackPanel Spacing="14"><TextBlock Text="{title}" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap"/>
+            r##"<Grid {ns} Background="#B8080A10"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="{{$rc10}}" Background="#FF1C1F2A" BorderBrush="{edge}" BorderThickness="1">
+<StackPanel Spacing="14"><TextBlock Text="{title}" FontSize="{{$fs17}}" FontWeight="SemiBold" TextWrapping="Wrap"/>
 <ScrollViewer MaxHeight="{max_h}" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">{buttons}</StackPanel></StackPanel></Border></Grid>"##,
             ns = ui::NS,

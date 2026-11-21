@@ -40,14 +40,14 @@ pub(crate) struct PrefUi {
 }
 
 fn label(t: &str) -> String {
-    format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##, ui::esc(t))
+    format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##, ui::esc(t))
 }
 
 fn help(t: &str) -> String {
     if t.is_empty() {
         return String::new();
     }
-    format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}" Margin="0,0,0,6"/>"##, ui::esc(t))
+    format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,0,0,6"/>"##, ui::esc(t))
 }
 
 fn combo(name: &str, items: &[&str], pick: usize) -> String {
@@ -61,7 +61,7 @@ fn button(name: &str, t: &str) -> String {
 
 fn page_title(glyph: &str, title: &str, sub: &str) -> String {
     format!(
-        r##"<StackPanel {} Orientation="Horizontal" Spacing="12" Margin="0,0,0,4"><Border Width="40" Height="40" CornerRadius="10" Background="{{$selected}}"><FontIcon Glyph="{glyph}" FontSize="18" Foreground="#FFBFD4FF"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="#FF9AA3B8" TextWrapping="Wrap"/></StackPanel></StackPanel>"##,
+        r##"<StackPanel {} Orientation="Horizontal" Spacing="12" Margin="0,0,0,4"><Border Width="40" Height="40" CornerRadius="{{$rc10}}" Background="{{$selected}}"><FontIcon Glyph="{glyph}" FontSize="{{$fs18}}" Foreground="#FFBFD4FF"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="{{$fs20}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FF9AA3B8" TextWrapping="Wrap"/></StackPanel></StackPanel>"##,
         ui::NS,
         ui::esc(title),
         ui::esc(sub)
@@ -70,7 +70,7 @@ fn page_title(glyph: &str, title: &str, sub: &str) -> String {
 
 fn bullet(glyph: &str, title: &str, t: &str) -> String {
     format!(
-        r##"<Grid ColumnSpacing="12" Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{{$link}}" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF9AA3B8"/></StackPanel></Grid>"##,
+        r##"<Grid ColumnSpacing="12" Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="{{$fs16}}" Foreground="{{$link}}" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontWeight="SemiBold" FontSize="{{$fs13}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="#FF9AA3B8"/></StackPanel></Grid>"##,
         ui::esc(title),
         ui::esc(t)
     )
@@ -82,14 +82,14 @@ pub fn xaml() -> String {
     let providers: Vec<&str> = Provider::ALL.iter().map(|p| p.label()).collect();
     let ai = format!(
         r##"<StackPanel x:Name="WizAi" Spacing="2" Visibility="Collapsed">
-        <TextBlock TextWrapping="Wrap" FontSize="12.5" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
-        <Border Background="#1A8FB4FF" CornerRadius="6" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="13" Foreground="{{$link}}"/><TextBlock x:Name="WizDetected" Text=" " FontSize="12" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="12" CornerRadius="4" Visibility="Collapsed"/></StackPanel></Border>
+        <TextBlock TextWrapping="Wrap" FontSize="{{$fs12_5}}" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
+        <Border Background="#1A8FB4FF" CornerRadius="{{$rc6}}" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="{{$fs13}}" Foreground="{{$link}}"/><TextBlock x:Name="WizDetected" Text=" " FontSize="{{$fs12}}" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
-        <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="12" Foreground="{{$warn}}" Margin="0,4,0,2" Text="{}"/>
+        <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="{{$fs12}}" Foreground="{{$warn}}" Margin="0,4,0,2" Text="{}"/>
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="https://api.openai.com/v1"/>{}</Grid></StackPanel>
-        <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
-        <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}" Margin="0,10,0,0" Text="When the AI works, folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time."/>
+        <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
+        <TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,10,0,0" Text="When the AI works, folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time."/>
         </StackPanel>"##,
         label("Provider"),
         format!(r##"<ComboBox x:Name="WizProvider" HorizontalAlignment="Left" Width="420" SelectedIndex="0">{}</ComboBox>"##, providers.iter().map(|i| format!(r##"<ComboBoxItem Content="{i}"/>"##)).collect::<String>()),
@@ -107,7 +107,7 @@ pub fn xaml() -> String {
         .enumerate()
         .map(|(i, s)| {
             format!(
-                r##"<Button x:Name="PfSec{i}" {} HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" CornerRadius="6"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{}" FontSize="14"/><TextBlock Text="{}" FontSize="13"/></StackPanel></Button>"##,
+                r##"<Button x:Name="PfSec{i}" {} HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" CornerRadius="{{$rc6}}"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{}" FontSize="{{$fs14}}"/><TextBlock Text="{}" FontSize="{{$fs13}}"/></StackPanel></Button>"##,
                 crate::look::pick(crate::look::Pick::Tab, false),
                 s.glyph(),
                 ui::esc(s.title())
@@ -117,13 +117,13 @@ pub fn xaml() -> String {
     format!(
         r##"
   <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="#B8080A10">
-    <Border x:Name="WizCard" Width="640" Height="610" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="14" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
+    <Border x:Name="WizCard" Width="640" Height="610" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="{{$rc14}}" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
       <Border.Background><AcrylicBrush TintColor="#FF141824" TintOpacity="0.62" TintLuminosityOpacity="0.75" FallbackColor="#F2161A26"/></Border.Background>
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid>
-          <TextBlock x:Name="WizStep" Text="Step 1" FontSize="12" Foreground="{{$text3}}"/>
-          <TextBlock x:Name="WizDots" Text="" FontSize="12" Foreground="{{$link}}" HorizontalAlignment="Right"/>
+          <TextBlock x:Name="WizStep" Text="Step 1" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>
+          <TextBlock x:Name="WizDots" Text="" FontSize="{{$fs12}}" Foreground="{{$link}}" HorizontalAlignment="Right"/>
         </Grid>
         <Grid Grid.Row="1" ColumnSpacing="18">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -418,10 +418,10 @@ impl State {
         shown(self, "WizAi", keys.contains(&"ai"));
         let mut x = format!(r##"<StackPanel {} Spacing="4">"##, ui::NS);
         if let Some(n) = &self.prefs.note {
-            x += &format!(r##"<Border Padding="10,6" CornerRadius="6" Background="#1A4CC38A"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12"/></Border>"##, ui::esc(n));
+            x += &format!(r##"<Border Padding="10,6" CornerRadius="{{$rc6}}" Background="#1A4CC38A"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}"/></Border>"##, ui::esc(n));
         }
         if !self.wizard_all && self.wizard_page == 0 {
-            x += r##"<TextBlock TextWrapping="Wrap" FontSize="13" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before you start, all optional: nothing that sends or keeps data is on unless you choose it, and each one is in Settings (Ctrl+Shift+S) too."/>"##;
+            x += r##"<TextBlock TextWrapping="Wrap" FontSize="{$fs13}" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before you start, all optional: nothing that sends or keeps data is on unless you choose it, and each one is in Settings (Ctrl+Shift+S) too."/>"##;
             for (t, g, s, _) in WIZARD.iter().skip(1) {
                 x += &bullet(g, t, s);
             }
@@ -435,7 +435,7 @@ impl State {
             }
             if p.advanced && !advanced_said {
                 advanced_said = true;
-                x += r##"<TextBlock Text="Advanced" FontSize="14" FontWeight="SemiBold" Margin="0,14,0,0"/><TextBlock Text="Thresholds with a floor: none can make something look safer or be ticked for you." TextWrapping="Wrap" FontSize="12" Foreground="{$text3}"/>"##;
+                x += r##"<TextBlock Text="Advanced" FontSize="{$fs14}" FontWeight="SemiBold" Margin="0,14,0,0"/><TextBlock Text="Thresholds with a floor: none can make something look safer or be ticked for you." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$text3}"/>"##;
             }
             x += &self.pref_row(p, &mut buttons);
         }
@@ -482,12 +482,12 @@ impl State {
         // the four administrator switches share one warning, in a box above the first
         let admin_note = if p.key == crate::admin::SHELL_MENU.key {
             format!(
-                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="6" Background="#1AF5B342" BorderBrush="#55F5B342" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text1}}" TextWrapping="Wrap"/>{}</StackPanel></Border>"##,
+                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="{{$rc6}}" Background="#1AF5B342" BorderBrush="#55F5B342" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text1}}" TextWrapping="Wrap"/>{}</StackPanel></Border>"##,
                 ui::esc(crate::admin::WARNING),
                 if sprawl_core::is_elevated() {
                     ""
                 } else {
-                    r##"<TextBlock Text="They can be changed only in Sprawl running as administrator, so that no other program can turn them on for you." FontSize="12" Foreground="{$text2}" TextWrapping="Wrap"/>"##
+                    r##"<TextBlock Text="They can be changed only in Sprawl running as administrator, so that no other program can turn them on for you." FontSize="{$fs12}" Foreground="{$text2}" TextWrapping="Wrap"/>"##
                 }
             )
         } else {
@@ -496,9 +496,9 @@ impl State {
         // greyed out unless elevated: the store they are kept in takes no other writer
         let enabled = if crate::admin::is_switch(p.key) && !sprawl_core::is_elevated() { r#" IsEnabled="False""# } else { "" };
         match &p.kind {
-            Kind::Switch(_) => format!("{admin_note}{}", row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="13"{enabled}/>{}"##, ui::esc(p.label), on(&v), if p.help_line().is_empty() { String::new() } else { help(&p.help_line()) }))),
+            Kind::Switch(_) => format!("{admin_note}{}", row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="{{$fs13}}"{enabled}/>{}"##, ui::esc(p.label), on(&v), if p.help_line().is_empty() { String::new() } else { help(&p.help_line()) }))),
             Kind::Number(_, unit) => row(format!(
-                r##"{}<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" Width="130" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="12" Foreground="{{$text2}}"/></StackPanel>{}"##,
+                r##"{}<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" Width="130" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></StackPanel>{}"##,
                 label(p.label),
                 ui::esc(&v),
                 ui::esc(unit),
@@ -526,7 +526,7 @@ impl State {
                 x += &help(p.help);
                 let size = sprawl_advisor::llm::request_log_path().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center"/>{}{}</StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center"/>{}{}</StackPanel>"##,
                     ui::esc(&if size == 0 { "Empty".to_string() } else { self.size(size) }),
                     b("PfB_logOpen", "Open"),
                     b("PfB_logClear", "Clear")
@@ -538,7 +538,7 @@ impl State {
                 let on: Vec<String> = v.split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_lowercase).collect();
                 self.prefs.drives = State::fixed_drives_pub();
                 for (i, d) in self.prefs.drives.iter().enumerate() {
-                    x += &format!(r##"<ToggleSwitch x:Name="PfDrv{i}" OnContent="{0}" OffContent="{0}" IsOn="{1}" FontSize="13"/>"##, ui::esc(d), if on.contains(&d.to_lowercase()) { "True" } else { "False" });
+                    x += &format!(r##"<ToggleSwitch x:Name="PfDrv{i}" OnContent="{0}" OffContent="{0}" IsOn="{1}" FontSize="{{$fs13}}"/>"##, ui::esc(d), if on.contains(&d.to_lowercase()) { "True" } else { "False" });
                 }
                 if self.prefs.drives.is_empty() {
                     x += &help("No fixed drive found.");
@@ -553,7 +553,7 @@ impl State {
                 }
                 for (i, k) in kept.iter().enumerate().take(200) {
                     x += &format!(
-                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button x:Name="PfB_unkeep{i}" Grid.Column="1" Content="Remove" Padding="8,1" FontSize="12" CornerRadius="4"/></Grid>"##,
+                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button x:Name="PfB_unkeep{i}" Grid.Column="1" Content="Remove" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/></Grid>"##,
                         ui::esc(&k.display().to_string())
                     );
                     buttons.push(format!("PfB_unkeep{i}"));
@@ -566,7 +566,7 @@ impl State {
             "mcp" => {
                 x += &help(p.help);
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="520"/>{}</StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="520"/>{}</StackPanel>"##,
                     ui::esc(&crate::bridge::setup_command()),
                     b("PfB_mcpCopy", "Copy")
                 );
@@ -576,7 +576,7 @@ impl State {
                 let (n, bytes) = sprawl_advisor::history::base_dir().map(|d| sprawl_advisor::history::list(&d)).map_or((0, 0), |l| (l.len(), l.iter().map(|e| e.bytes).sum::<u64>()));
                 let armed = self.prefs.clear_armed;
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center"/>{}</StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center"/>{}</StackPanel>"##,
                     ui::esc(&format!("{n} snapshots, {}", self.size(bytes))),
                     if n > 0 { b("PfB_histClear", if armed { "Press again to delete them all" } else { "Clear" }) } else { String::new() }
                 );

@@ -264,12 +264,12 @@ pub(crate) fn timing(what: &str, since: Instant) {
     sprawl_core::timing(what, since);
 }
 
-/// Load a piece of XAML: the look's tokens are put in first, then the light page's colours.
-/// Expanding here covers every string the app loads, `reconcile`'s one-attribute loads
-/// included; `reconcile` expands its own strings before it compares them, and expanding twice
-/// changes nothing, since no token is left after the first.
+/// Load a piece of XAML: the page's own colours are turned around first, then the look's tokens
+/// are put in, each already holding the value for the theme in use. Expanding here covers every
+/// string the app loads, `reconcile`'s one-attribute loads included; `reconcile` compares the
+/// strings as they are written and lets `set` resolve a token for a value it reads itself.
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
-    XamlReader::Load(&HSTRING::from(&*crate::theme::themed(&crate::tokens::expand(xaml))))?.cast()
+    XamlReader::Load(&HSTRING::from(&*crate::tokens::expand(&crate::theme::themed(xaml))))?.cast()
 }
 
 impl State {

@@ -146,3 +146,19 @@ Both are from installer P3-10 and are deliberately not implemented.
    SmartScreen reputation accrue to the certificate instead of to each new file. If it is bought,
    the signing step goes in `sprawl-release::build()` **after** ISCC and **before** the Setup is
    hashed for the manifest.
+
+## Update (same day, later session): items 1 and 2 done, not committed
+
+Every `FontSize` and `CornerRadius` is now a by-value token (`fs8`..`fs30`, `fs12_5`, `rc2`..`rc14`);
+`look.rs` setters go through `tokens::fs()` / `tokens::rc()`, which fall back to the bare number when no
+token has that value. New tests: `no_font_size_or_corner_radius_is_written_as_a_number`,
+`a_size_from_rust_uses_its_token`. Still runtime numbers, not tokens: `ui::markdown`'s `FontSize="{size}"`
+and one `FontSize="{}"` in `reconcile.rs`; the Text size option must scale those in Rust. 112 app tests green;
+screens checked with `shots.ps1` (`target/qw/shots/tokens-sizes` against `tok-b2b`): differences are noise only.
+
+Item 4, first half, also done (not committed): every token has its own `light` value, equal to what
+`theme::flip` gave at each site (proved by `tokens` test walking every site). `state::load` now flips the
+hand-written literals first and expands tokens after; `reconcile` diffs the token text and `set` resolves a
+token through `tokens::resolve`. `warnmark` / `goodmark` are the fill versions of warn / good. Light screens
+match the previous run within noise (`target/qw/shots/tokens-light`). Still to do: the raw-colour test, which
+waits for the colour long tail (Part 3).
