@@ -1402,7 +1402,7 @@ impl State {
 <StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/><Button x:Name="AdvClean" Content="Review selection..." Style="{{StaticResource SprawlPrimary}}" IsEnabled="{}"/>{prev}<Border Width="1" Height="22" Margin="4,0" Background="#33FFFFFF" VerticalAlignment="Center"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" VerticalAlignment="Center"/><Button x:Name="AdvSelNone" Content="Untick all" VerticalAlignment="Center"/></StackPanel>
 {sizes}
 <StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Or tick enough for" FontSize="12" VerticalAlignment="Center" Foreground="{{$text2}}"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="{{$text2}}"/><Button x:Name="AdvSelGoal" Content="Tick"/></StackPanel>
-<TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/>"##,
+{}"##,
             match (picked.is_empty(), privacy) {
                 (true, 0) => "Nothing ticked".to_string(),
                 (true, n) => format!("{} ticked", privacy_count(n)),
@@ -1410,7 +1410,11 @@ impl State {
                 (false, n) => format!("{} ticked · {}{}, and {}", picked.len(), if up_to { "up to " } else { "" }, self.size(bytes), privacy_count(n)),
             },
             if picked.is_empty() && privacy == 0 { "False" } else { "True" },
-            if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then review them: nothing goes before you confirm." } else { "Review what is ticked: nothing goes before you confirm. Sprawl removes it itself and shows what was freed." },
+            if self.advisor.cleanup.auto && !picked.is_empty() {
+                ui::note("The safe ones are ticked.", "Change the ticks, then review them: nothing goes before you confirm.")
+            } else {
+                ui::note("Review what is ticked:", "nothing goes before you confirm. Sprawl removes it itself and shows what was freed.")
+            },
             prev = if self.advisor.cleaners_tab_on() {
                 format!(
                     r##"<Button x:Name="AdvClPrev" Content="Preview" IsEnabled="{}" ToolTipService.ToolTip="The exact files that would go, counted now. Nothing is deleted."/>"##,

@@ -15,10 +15,10 @@ use crate::ui;
 const TIP: &str = "Enter goes to the results: Enter there opens, Ctrl+Enter shows it in the tree, Esc comes back here.   ? lists everything the box understands.";
 
 /// The help list as XAML: each example a button named `{prefix}{line}_{example}`.
-fn help_xaml(prefix: &str, intro: &str) -> String {
+fn help_xaml(prefix: &str, intro: (&str, &str)) -> String {
     let mut x = format!(r##"<StackPanel {} Spacing="6">"##, ui::NS);
-    if !intro.is_empty() {
-        x += &format!(r##"<TextBlock Text="{}" FontSize="13" Foreground="{{$text2}}" TextWrapping="Wrap" Margin="0,0,0,4"/>"##, ui::esc(intro));
+    if !intro.1.is_empty() {
+        x += &ui::note_with(r#"Margin="0,0,0,4""#, intro.0, intro.1);
     }
     for (i, (examples, what)) in sq::help().iter().enumerate() {
         x += r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4">"##;
@@ -45,8 +45,8 @@ impl State {
         self.search.ui_built = true;
         let help = sq::help();
         for (host, prefix, intro) in [
-            ("SearchHelpHost", "SxHelp", ""),
-            ("SearchEmptyHost", "SxEmpty", "Type a name to find it in this scan (and on the drives chosen in Search in). The filters under the box write their words into it. Or start from an example:"),
+            ("SearchHelpHost", "SxHelp", ("", "")),
+            ("SearchEmptyHost", "SxEmpty", ("Type a name", "to find it in this scan (and on the drives chosen in Search in). The filters under the box write their words into it. Or start from an example:")),
         ] {
             let Ok(h) = find::<Border>(&self.root, host) else { continue };
             let Ok(content) = load::<UIElement>(&help_xaml(prefix, intro)) else { continue };
