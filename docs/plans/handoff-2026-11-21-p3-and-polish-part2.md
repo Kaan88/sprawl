@@ -187,3 +187,11 @@ Open work, none of it merged:
 
 Still to do in Part 3 after that: noticed in screenshots, white % text on a light accent bar reads poorly;
 the focus ring (accent outline + 3 px ring) needs a template; tick drawing / switch slide motion. Then Part 4.
+
+## Update 4: items 1-3 of Update 3 are done
+
+8851302 stock controls + 4/8 corners; b127bae merge of press feedback (pill token `rcpill`); 3ee6bd6 merge of
+the explanation helper (`ui::note`, fs13). 119 app tests green; screenshots in `target/qw/shots/ink-2`.
+Waiting on the user clicking a test build (hover / press feel cannot be judged from pictures). Part 3 left:
+white % text on a light accent bar, focus ring template, tick / switch motion, soft shadow. Then Part 4.
+The two `.claude/worktrees/agent-*` worktrees are merged and can be removed.
