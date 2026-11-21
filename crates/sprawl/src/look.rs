@@ -75,6 +75,17 @@ fn accent_from(p: Option<[[u8; 3]; 7]>, light: bool) -> Accent {
     }
 }
 
+/// The accent's gradient as a brush: the fill on the left, a shade with 35% white mixed in on the
+/// right. Both stops are six digits, so the light page's rewrite of eight-digit literals leaves
+/// them as they are.
+pub(crate) fn accent_gradient() -> String {
+    let fill = &accent().fill;
+    format!(
+        r##"<LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5"><GradientStop Color="{fill}" Offset="0"/><GradientStop Color="{}" Offset="1"/></LinearGradientBrush>"##,
+        crate::tokens::lighter(fill)
+    )
+}
+
 /// The fill of a button that deletes for good (and of the dialogs that warn about it).
 pub(crate) fn danger() -> String {
     crate::tokens::refer("danger")
@@ -179,17 +190,46 @@ pub(crate) fn label(text: &str) -> String {
     format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
 }
 
-/// How long a state takes to arrive: 140 ms, or none when Windows' "Animation effects" is off
-/// (read when the styles are built, at start; the states still change, without the travel).
-fn state_time() -> &'static str {
-    if crate::win32::animations_on() { "0:0:0.14" } else { "0:0:0" }
+/// The motion the buttons are drawn with: Windows' "Animation effects" off wins over the look.
+fn motion() -> crate::tokens::Motion {
+    if crate::win32::animations_on() {
+        crate::tokens::current().motion
+    } else {
+        crate::tokens::Motion::None
+    }
+}
+
+/// How long a state takes to arrive.
+fn state_time(motion: crate::tokens::Motion) -> &'static str {
+    match motion {
+        crate::tokens::Motion::Subtle => "0:0:0.14",
+        crate::tokens::Motion::Lively => "0:0:0.22",
+        crate::tokens::Motion::None => "0:0:0",
+    }
+}
+
+/// The travel a state makes under `motion`: Lively goes twice as far and presses deeper, None
+/// keeps the content still so only the wash changes.
+fn travel(motion: crate::tokens::Motion, lift: f64, scale: f64) -> (f64, f64) {
+    match motion {
+        crate::tokens::Motion::Subtle => (lift, scale),
+        crate::tokens::Motion::Lively => (lift * 2.0, if scale < 1.0 { 0.96 } else { 1.0 }),
+        crate::tokens::Motion::None => (0.0, 1.0),
+    }
 }
 
 /// One state's storyboard, shared by every button: the wash over the item, and the content's
 /// lift (negative Y is up) and scale. Ease-out, ExponentialEase with exponent 6, as close as
 /// WinUI gets to cubic-bezier(.2,.8,.2,1).
 fn states(wash: f64, lift: f64, scale: f64) -> String {
-    let d = state_time();
+    states_with(motion(), wash, lift, scale)
+}
+
+/// [`states`] under one motion, so both the look's option and Windows' animations setting reach
+/// the same storyboard.
+fn states_with(motion: crate::tokens::Motion, wash: f64, lift: f64, scale: f64) -> String {
+    let d = state_time(motion);
+    let (lift, scale) = travel(motion, lift, scale);
     let ease = r##"<DoubleAnimation.EasingFunction><ExponentialEase EasingMode="EaseOut" Exponent="6"/></DoubleAnimation.EasingFunction>"##;
     let one = |target: &str, prop: &str, to: f64| {
         format!(r##"<DoubleAnimation Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}" To="{to}" Duration="{d}">{ease}</DoubleAnimation>"##)
@@ -206,7 +246,8 @@ fn states(wash: f64, lift: f64, scale: f64) -> String {
 
 /// The template both selectable styles share: the item's own background (set by `paint` or
 /// `pick`: at rest or selected), a white wash over it for the pointer (pointer over: 10%,
-/// pressed: 20%, with the content up 1 px, then down 1 px and at 0.98), and the system's focus rectangle, which shows for the keyboard
+/// pressed: 20%), and the content's travel by the look's motion (Subtle, today, is up 1 px, then
+/// down 1 px and at 0.98; None keeps it still), and the system's focus rectangle, which shows for the keyboard
 /// only. So selected-and-pointer-over is the selected background with the faint wash, and a
 /// selected item the pointer has left is the selected background alone. With `line`: a 3 px
 /// line under the content in the BorderBrush (the page tabs; they have no border of their own).
@@ -439,6 +480,13 @@ fn stock() -> String {
         ("ButtonForegroundPressed", "text1"),
     ] {
         x += &brush(key, token);
+    }
+    // a round tick box: WinUI's check box binds its box's RadiusX/RadiusY to the control's own
+    // CornerRadius (generic.xaml), and its box is 20 px, so half of it is 10. BasedOn keeps the
+    // stock template; an implicit style alone would replace it.
+    if crate::tokens::current().ticks == crate::tokens::Ticks::Round {
+        let half = 10;
+        x += &format!(r#"<Style TargetType="CheckBox" BasedOn="{{StaticResource DefaultCheckBoxStyle}}"><Setter Property="CornerRadius" Value="{half}"/></Style>"#);
     }
     x
 }
@@ -980,5 +1028,52 @@ mod tests {
         assert!(chip.contains(r#"<Setter Property="BorderBrush" Value="{$line1}"/>"#));
         assert_eq!(Pick::Page.bg(true), "Transparent");
         assert!(pick(Pick::Page, true).contains(underline()) && !pick(Pick::Page, false).contains(underline()));
+    }
+
+    /// The time and the travel each motion asks for, and the styles they make when Windows'
+    /// "Animation effects" is on (off, None always wins, so the emitted styles are the still ones).
+    #[test]
+    fn the_buttons_move_as_the_motion_option_says() {
+        use crate::tokens::{Look, Motion, Ticks};
+        assert_eq!(state_time(Motion::Subtle), "0:0:0.14");
+        assert_eq!(state_time(Motion::Lively), "0:0:0.22");
+        assert_eq!(state_time(Motion::None), "0:0:0");
+        assert_eq!(travel(Motion::Subtle, -1.0, 0.98), (-1.0, 0.98));
+        assert_eq!(travel(Motion::Lively, -1.0, 0.98), (-2.0, 0.96));
+        assert_eq!(travel(Motion::None, -1.0, 0.98), (0.0, 1.0));
+
+        if crate::win32::animations_on() {
+            crate::tokens::set(&Look { motion: Motion::Lively, ..Look::default() });
+            let r = resources();
+            assert!(r.contains(r#"Duration="0:0:0.22""#), "Lively's time");
+        }
+
+        // the storyboards each motion emits (the pointer-over and pressed states)
+        let subtle = states_with(Motion::Subtle, 0.10, -1.0, 1.0);
+        assert!(subtle.contains(r#"Duration="0:0:0.14""#), "{subtle}");
+        assert!(subtle.contains(r#"TranslateY)" To="-1""#), "{subtle}");
+        let lively = states_with(Motion::Lively, 0.10, -1.0, 1.0);
+        assert!(lively.contains(r#"Duration="0:0:0.22""#), "{lively}");
+        assert!(lively.contains(r#"TranslateY)" To="-2""#), "{lively}");
+        let lively_press = states_with(Motion::Lively, 0.20, 1.0, 0.98);
+        assert!(lively_press.contains(r#"TranslateY)" To="2""#), "{lively_press}");
+        assert!(lively_press.contains(r#"ScaleX)" To="0.96""#), "{lively_press}");
+        let still = states_with(Motion::None, 0.20, 1.0, 0.98);
+        assert!(still.contains(r#"Duration="0:0:0""#), "{still}");
+        assert!(still.contains(r#"TranslateY)" To="0""#), "{still}");
+        assert!(still.contains(r#"ScaleX)" To="1""#), "{still}");
+        // the wash still changes in each
+        assert!(still.contains(r#"To="0.2""#), "{still}");
+
+        // Square is WinUI's own box; Round is the check box's CornerRadius, half of its 20 px
+        crate::tokens::set(&Look { motion: Motion::Subtle, ..Look::default() });
+        assert!(!resources().contains(r#"<Style TargetType="CheckBox""#));
+        crate::tokens::set(&Look { ticks: Ticks::Round, ..Look::default() });
+        let r = resources();
+        assert!(
+            r.contains(r#"<Style TargetType="CheckBox" BasedOn="{StaticResource DefaultCheckBoxStyle}"><Setter Property="CornerRadius" Value="10"/></Style>"#),
+            "{r}"
+        );
+        crate::tokens::set(&Look::default());
     }
 }

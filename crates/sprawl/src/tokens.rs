@@ -30,6 +30,10 @@ pub(crate) struct Look {
     pub contrast: Contrast,
     pub folders: Folders,
     pub corners: Corners,
+    pub motion: Motion,
+    pub bars: Bars,
+    pub small_text: SmallText,
+    pub ticks: Ticks,
     pub text: TextSizes,
 }
 
@@ -100,6 +104,56 @@ pub(crate) enum Corners {
     Eight14,
     Pills,
     Square,
+}
+
+/// How the buttons move: how long a state takes, and how far its content travels.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Motion {
+    /// Today's: 140 ms, a 1 px lift, a press at 0.98.
+    #[default]
+    Subtle,
+    /// 220 ms, a 2 px lift, a press at 0.96.
+    Lively,
+    /// No travel and no time: only the wash changes.
+    None,
+}
+
+/// How a percentage bar or the drive's usage bar is drawn.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Bars {
+    /// Today's: the accent, washed.
+    #[default]
+    Solid,
+    /// The accent running to a lighter shade of it.
+    Gradient,
+    /// A 4 px bar at the bottom of its cell.
+    Thin,
+}
+
+/// How an explanation is set: the size, the colour, and whether its opening words lead.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SmallText {
+    /// Today's: 13 px in the second text colour, the opening words semibold in the first.
+    #[default]
+    LeadWords,
+    /// 13 px in the second text colour, the lead in the same style.
+    Plain,
+    /// The old look: 12 px in the labels' colour, no lead.
+    Grey12,
+}
+
+/// The shape of a tick box.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Ticks {
+    /// Today's: WinUI's square box.
+    #[default]
+    Square,
+    /// A round box: WinUI's check box takes the control's own corner radius.
+    Round,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -243,6 +297,14 @@ fn argb(s: &str) -> Option<u32> {
 /// The `#AARRGGBB` a colour is written as.
 fn hex(c: u32) -> String {
     format!("#{c:08X}")
+}
+
+/// A six-digit `#RRGGBB` with 35% white mixed in: the lighter end of an accent's gradient. Six
+/// digits on purpose — the light page's rewrite turns only eight-digit literals around.
+pub(crate) fn lighter(six: &str) -> String {
+    let c = u32::from_str_radix(six.trim_start_matches('#'), 16).unwrap_or(0x00_78D4);
+    let at = |shift: u32| (channel(c, shift) * 65 + 0xFF * 35 + 50) / 100;
+    format!("#{:02X}{:02X}{:02X}", at(16), at(8), at(0))
 }
 
 /// One channel of a colour: 16 red, 8 green, 0 blue.
@@ -600,6 +662,84 @@ impl Corners {
 }
 
 #[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Motion {
+    fn name(self) -> &'static str {
+        match self {
+            Motion::Subtle => "subtle",
+            Motion::Lively => "lively",
+            Motion::None => "none",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "subtle" => Motion::Subtle,
+            "lively" => Motion::Lively,
+            "none" => Motion::None,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Bars {
+    fn name(self) -> &'static str {
+        match self {
+            Bars::Solid => "solid",
+            Bars::Gradient => "gradient",
+            Bars::Thin => "thin",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "solid" => Bars::Solid,
+            "gradient" => Bars::Gradient,
+            "thin" => Bars::Thin,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl SmallText {
+    fn name(self) -> &'static str {
+        match self {
+            SmallText::LeadWords => "leadwords",
+            SmallText::Plain => "plain",
+            SmallText::Grey12 => "grey12",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "leadwords" => SmallText::LeadWords,
+            "plain" => SmallText::Plain,
+            "grey12" => SmallText::Grey12,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Ticks {
+    fn name(self) -> &'static str {
+        match self {
+            Ticks::Square => "square",
+            Ticks::Round => "round",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "square" => Ticks::Square,
+            "round" => Ticks::Round,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
 impl TextSizes {
     fn name(self) -> &'static str {
         match self {
@@ -620,12 +760,16 @@ impl Look {
     /// The options as one line, for Copy theme: `accent=iris;surfaces=slate;...`, lowercase.
     pub(crate) fn to_kv(&self) -> String {
         format!(
-            "accent={};surfaces={};contrast={};folders={};corners={};text={}",
+            "accent={};surfaces={};contrast={};folders={};corners={};motion={};bars={};smalltext={};ticks={};text={}",
             self.accent.name(),
             self.surfaces.name(),
             self.contrast.name(),
             self.folders.name(),
             self.corners.name(),
+            self.motion.name(),
+            self.bars.name(),
+            self.small_text.name(),
+            self.ticks.name(),
             self.text.name(),
         )
     }
@@ -661,6 +805,26 @@ impl Look {
                 "corners" => {
                     if let Some(v) = Corners::from_name(value) {
                         look.corners = v;
+                    }
+                }
+                "motion" => {
+                    if let Some(v) = Motion::from_name(value) {
+                        look.motion = v;
+                    }
+                }
+                "bars" => {
+                    if let Some(v) = Bars::from_name(value) {
+                        look.bars = v;
+                    }
+                }
+                "smalltext" => {
+                    if let Some(v) = SmallText::from_name(value) {
+                        look.small_text = v;
+                    }
+                }
+                "ticks" => {
+                    if let Some(v) = Ticks::from_name(value) {
+                        look.ticks = v;
                     }
                 }
                 "text" => {
@@ -1233,14 +1397,25 @@ mod tests {
     /// line read from outside takes only known keys with known values.
     #[test]
     fn a_look_survives_a_round_trip_and_ignores_junk() {
-        assert_eq!(Look::default().to_kv(), "accent=windows;surfaces=ink;contrast=normal;folders=classic;corners=four8;text=aswritten");
+        assert_eq!(
+            Look::default().to_kv(),
+            "accent=windows;surfaces=ink;contrast=normal;folders=classic;corners=four8;motion=subtle;bars=solid;smalltext=leadwords;ticks=square;text=aswritten"
+        );
         for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
             for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
                 for contrast in [Contrast::Normal, Contrast::Strong] {
                     for folders in [Folders::Classic, Folders::Accent, Folders::Grey] {
                         for corners in [Corners::Four8, Corners::Six10, Corners::Eight14, Corners::Pills, Corners::Square] {
-                            let look = Look { accent, surfaces, contrast, folders, corners, text: TextSizes::AsWritten };
-                            assert_eq!(Look::from_kv(&look.to_kv()), look, "{}", look.to_kv());
+                            for motion in [Motion::Subtle, Motion::Lively, Motion::None] {
+                                for bars in [Bars::Solid, Bars::Gradient, Bars::Thin] {
+                                    for small_text in [SmallText::LeadWords, SmallText::Plain, SmallText::Grey12] {
+                                        for ticks in [Ticks::Square, Ticks::Round] {
+                                            let look = Look { accent, surfaces, contrast, folders, corners, motion, bars, small_text, ticks, text: TextSizes::AsWritten };
+                                            assert_eq!(Look::from_kv(&look.to_kv()), look, "{}", look.to_kv());
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1248,8 +1423,32 @@ mod tests {
         }
         // only known keys with known values: an unknown key, an unknown value, a wrong case, an
         // empty part and a broken part are all left behind
-        let junk = Look::from_kv("accent=iris;surfaces=slate;contrast=loud;nope=1;;corners=SQUARE;folders=accent;text=aswritten;more junk");
-        assert_eq!(junk, Look { accent: Accent::Iris, surfaces: Surfaces::Slate, folders: Folders::Accent, ..Look::default() });
+        let junk = Look::from_kv(
+            "accent=iris;surfaces=slate;contrast=loud;nope=1;;corners=SQUARE;folders=accent;motion=lively;bars=gradient;smalltext=grey12;ticks=round;text=aswritten;more junk",
+        );
+        assert_eq!(
+            junk,
+            Look {
+                accent: Accent::Iris,
+                surfaces: Surfaces::Slate,
+                folders: Folders::Accent,
+                motion: Motion::Lively,
+                bars: Bars::Gradient,
+                small_text: SmallText::Grey12,
+                ticks: Ticks::Round,
+                ..Look::default()
+            }
+        );
         assert_eq!(Look::from_kv(""), Look::default());
+    }
+
+    /// The gradient's far stop is six digits: the light page's rewrite leaves it alone.
+    #[test]
+    fn the_lighter_accent_is_six_digits() {
+        assert_eq!(lighter("#000000"), "#595959");
+        assert_eq!(lighter("#FFFFFF"), "#FFFFFF");
+        let l = lighter(&crate::look::accent().fill);
+        assert_eq!(l.len(), 7, "{l}");
+        assert!(l.starts_with('#') && l[1..].bytes().all(|b| b.is_ascii_hexdigit()), "{l}");
     }
 }

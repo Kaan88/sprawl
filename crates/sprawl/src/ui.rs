@@ -32,23 +32,48 @@ pub fn esc_lines(s: &str) -> String {
 }
 
 /// An explanation: a sentence or two that says what something is or does (a note under a
-/// setting, the clean-up bar's text, a Search hint). 13 px in the second text colour, the
-/// opening words (`lead`, may be empty) semibold in the first. Both texts are escaped here.
-/// Table cells, labels, headings and figures are not explanations and keep their size.
+/// setting, the clean-up bar's text, a Search hint). Sprawl's own look sets it 13 px in the
+/// second text colour, the opening words (`lead`, may be empty) semibold in the first; the
+/// Theme page's small-text option can set it plainer ([`note_with`]). Both texts are escaped
+/// here. Table cells, labels, headings and figures are not explanations and keep their size.
 pub(crate) fn note(lead: &str, rest: &str) -> String {
     note_with("", lead, rest)
 }
 
 /// [`note`] with more attributes on the TextBlock, such as `Margin="0,0,0,6"`.
 pub(crate) fn note_with(attrs: &str, lead: &str, rest: &str) -> String {
-    let open = format!(r##"<TextBlock FontSize="{{$fs13}}" Foreground="{{$text2}}" TextWrapping="Wrap" {attrs}>"##);
+    let small = crate::tokens::current().small_text;
+    // the size and colour tokens by name: the braces stay out of this source (a token is only
+    // written as a whole attribute value), and the page fills the value in on the way to XAML.
+    let (size, colour) = match small {
+        crate::tokens::SmallText::LeadWords | crate::tokens::SmallText::Plain => (13.0, "text2"),
+        crate::tokens::SmallText::Grey12 => (12.0, "text3"),
+    };
+    let open = format!(
+        r##"<TextBlock FontSize="{}" Foreground="{}" TextWrapping="Wrap" {attrs}>"##,
+        crate::tokens::fs(size),
+        crate::tokens::refer(colour)
+    );
     let mut x = open;
-    if lead.is_empty() {
-        x += &format!(r##"<Run Text="{}"/>"##, esc(rest));
-    } else {
-        x += &format!(r##"<Run Text="{}" FontWeight="SemiBold" Foreground="{{$text1}}"/>"##, esc(lead));
-        if !rest.is_empty() {
-            x += &format!(r##"<Run Text="{}"/>"##, esc(&format!(" {rest}")));
+    match small {
+        crate::tokens::SmallText::LeadWords => {
+            if lead.is_empty() {
+                x += &format!(r##"<Run Text="{}"/>"##, esc(rest));
+            } else {
+                x += &format!(r##"<Run Text="{}" FontWeight="SemiBold" Foreground="{{$text1}}"/>"##, esc(lead));
+                if !rest.is_empty() {
+                    x += &format!(r##"<Run Text="{}"/>"##, esc(&format!(" {rest}")));
+                }
+            }
+        }
+        // the same words in one style: the lead keeps its place, not its weight or shade
+        crate::tokens::SmallText::Plain | crate::tokens::SmallText::Grey12 => {
+            let all = match (lead.is_empty(), rest.is_empty()) {
+                (true, _) => rest.to_string(),
+                (false, true) => lead.to_string(),
+                (false, false) => format!("{lead} {rest}"),
+            };
+            x += &format!(r##"<Run Text="{}"/>"##, esc(&all));
         }
     }
     x + "</TextBlock>"
@@ -534,6 +559,53 @@ mod esc_tests {
         assert_eq!(super::esc("a{b}"), "a{b}");
         assert_eq!(super::esc("x\u{1}y"), "x\u{FFFD}y");
     }
+
+    /// An explanation's size, colour and lead, as the small-text option sets them.
+    #[test]
+    fn explanations_follow_the_small_text_option() {
+        use crate::tokens::{Look, SmallText};
+        let lead = super::note("Lead words", "and the rest.");
+        assert!(lead.contains(r#"FontSize="{$fs13}""#) && lead.contains(r#"Foreground="{$text2}""#), "{lead}");
+        assert!(lead.contains(r#"<Run Text="Lead words" FontWeight="SemiBold" Foreground="{$text1}"/>"#), "{lead}");
+
+        crate::tokens::set(&Look { small_text: SmallText::Plain, ..Look::default() });
+        let plain = super::note("Lead words", "and the rest.");
+        assert!(plain.contains(r#"FontSize="{$fs13}""#) && plain.contains(r#"Foreground="{$text2}""#), "{plain}");
+        assert!(!plain.contains("SemiBold"), "{plain}");
+        assert_eq!(plain.matches("<Run ").count(), 1, "one style, one run: {plain}");
+        assert!(plain.contains(r#"<Run Text="Lead words and the rest."/>"#), "{plain}");
+
+        crate::tokens::set(&Look { small_text: SmallText::Grey12, ..Look::default() });
+        let grey = super::note("Lead words", "and the rest.");
+        assert!(grey.contains(r#"FontSize="{$fs12}""#) && grey.contains(r#"Foreground="{$text3}""#), "{grey}");
+        assert!(!grey.contains("SemiBold") && grey.contains("Lead words and the rest."), "{grey}");
+        crate::tokens::set(&Look::default());
+    }
+
+    /// The drive's usage bar: the accent solid, its gradient, or a 4 px line.
+    #[test]
+    fn the_usage_bar_follows_the_bars_option() {
+        use crate::tokens::{Bars, Look};
+        let fill = crate::look::accent().fill.clone();
+        let p = super::page(&[]);
+        assert!(
+            p.contains(&format!(r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{fill}"/>"##)),
+            "the solid bar is today's"
+        );
+
+        crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::default() });
+        let p = super::page(&[]);
+        let at = p.find(r#"x:Name="UsageBar""#).unwrap();
+        let bar = &p[at..(at + 700).min(p.len())];
+        assert!(bar.contains(r#"<LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">"#), "{bar}");
+        assert!(bar.contains(&format!(r##"GradientStop Color="{fill}" Offset="0""##)), "{bar}");
+        assert!(bar.contains(&format!(r##"GradientStop Color="{}" Offset="1""##, crate::tokens::lighter(&fill))), "{bar}");
+
+        crate::tokens::set(&Look { bars: Bars::Thin, ..Look::default() });
+        let p = super::page(&[]);
+        assert!(p.contains(r##"<Border x:Name="UsageBar" Height="4" CornerRadius="{$rc4}""##), "the thin bar is 4 px");
+        crate::tokens::set(&Look::default());
+    }
 }
 
 thread_local! {
@@ -720,6 +792,19 @@ fn hud() -> String {
 pub fn page(drives: &[String]) -> String {
     let num = crate::look::NUM;
     let accent = crate::look::accent().fill.clone();
+    // the drive's usage bar: the accent solid, running to a lighter shade, or a 4 px line
+    let usage_bar = match crate::tokens::current().bars {
+        crate::tokens::Bars::Solid => {
+            format!(r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{accent}"/>"##)
+        }
+        crate::tokens::Bars::Gradient => format!(
+            r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0"><Border.Background>{}</Border.Background></Border>"##,
+            crate::look::accent_gradient()
+        ),
+        crate::tokens::Bars::Thin => {
+            format!(r##"<Border x:Name="UsageBar" Height="4" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{accent}"/>"##)
+        }
+    };
     use crate::look::{pick, pick_drop, Pick};
     let (tab_on, tab_off) = (pick(Pick::Page, true), pick(Pick::Page, false));
     // a small count beside a tab's name, hidden while there is nothing to count
@@ -947,7 +1032,7 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock x:Name="DriveText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontSize="{{$fs12}}" Foreground="{{$text1}}"/>
         <Grid Grid.Row="2" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
           <Border x:Name="UsageTrack" Height="8" CornerRadius="{{$rc4}}" Background="{{$hover}}"/>
-          <Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{accent}"/>
+          {usage_bar}
         </Grid>
       </Grid>
     </Border>

@@ -283,13 +283,32 @@ pub(crate) fn cell(col: usize, s: &str) -> String {
 }
 
 /// A percentage bar: the track, then the share in the accent, washed so the figure on it reads
-/// whichever accent Windows is set to. One colour, no gradient.
+/// whichever accent Windows is set to. The look's `bars` option decides whether the fill is one
+/// colour, a gradient to a lighter accent, or a 4 px line along the bottom.
 pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
     let fill = &crate::look::accent().fill;
+    let bars = crate::tokens::current().bars;
+    let (track, fill_border) = match bars {
+        crate::tokens::Bars::Thin => (
+            r##"<Border CornerRadius="{$rc3}" Background="{$line1}" VerticalAlignment="Bottom" Height="4"/>"##.to_string(),
+            format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}" Opacity="0.45" VerticalAlignment="Bottom" Height="4"/>"##),
+        ),
+        crate::tokens::Bars::Gradient => (
+            r##"<Border CornerRadius="{$rc3}" Background="{$line1}"/>"##.to_string(),
+            format!(
+                r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Opacity="0.45"><Border.Background>{}</Border.Background></Border>"##,
+                crate::look::accent_gradient()
+            ),
+        ),
+        crate::tokens::Bars::Solid => (
+            r##"<Border CornerRadius="{$rc3}" Background="{$line1}"/>"##.to_string(),
+            format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}" Opacity="0.45"/>"##),
+        ),
+    };
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="{{$rc3}}" Background="{{$line1}}"/><Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}" Opacity="0.45"/><TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" Foreground="{{$text1}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4">{track}{fill_border}<TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" Foreground="{{$text1}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 
@@ -1153,6 +1172,36 @@ mod tests {
         let x = crate::tokens::expand(&b);
         let open = format!("{}{}", '{', '$');
         assert!(!x.contains(&open), "{x}");
+    }
+
+    /// The bars option: today's solid accent, the accent's gradient, or a 4 px line at the
+    /// bottom; the figure stays where it is in each.
+    #[test]
+    fn the_percentage_bar_follows_the_bars_option() {
+        use crate::tokens::{Bars, Look};
+        let fill = crate::look::accent().fill.clone();
+
+        let solid = pct_bar(1, 42.0);
+        assert!(solid.contains(&format!(r##"Background="{fill}" Opacity="0.45""##)), "{solid}");
+
+        crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::default() });
+        let g = pct_bar(1, 42.0);
+        assert!(g.contains("<LinearGradientBrush StartPoint=\"0,0.5\" EndPoint=\"1,0.5\">"), "{g}");
+        assert!(g.contains(&format!(r##"GradientStop Color="{fill}" Offset="0""##)), "{g}");
+        assert!(g.contains(&format!(r##"GradientStop Color="{}" Offset="1""##, crate::tokens::lighter(&fill))), "{g}");
+        assert!(g.contains(r##"Opacity="0.45""##) && g.contains("42.0 %"), "{g}");
+
+        crate::tokens::set(&Look { bars: Bars::Thin, ..Look::default() });
+        let t = pct_bar(1, 42.0);
+        assert_eq!(t.matches(r#"VerticalAlignment="Bottom" Height="4""#).count(), 2, "{t}");
+        // the figure keeps its place in the cell
+        assert!(t.contains(r#"Text="42.0 %""#) && t.contains(r#"VerticalAlignment="Center""#), "{t}");
+        // and every shape loads as XAML with the tokens filled in
+        for b in [solid, g, t] {
+            let x = crate::tokens::expand(&b);
+            assert!(!x.contains(&format!("{}{}", '{', '$')), "{x}");
+        }
+        crate::tokens::set(&Look::default());
     }
 
     /// C:\T with folders b, A, a b, a (and a\x), each holding a file or two.
