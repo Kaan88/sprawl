@@ -1020,6 +1020,7 @@ impl State {
         self.recheck_poll();
         self.uncompress_poll();
         self.delete_poll();
+        self.more_prep_poll();
         if std::mem::take(&mut self.advisor.rerender) {
             self.render_advisor();
         }
