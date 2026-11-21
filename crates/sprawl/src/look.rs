@@ -408,7 +408,7 @@ fn stock() -> String {
     for key in ["TextControlBorderThemeThickness", "TextControlBorderThemeThicknessFocused"] {
         x += &thickness(key);
     }
-    // a combo box: the field on the ground, its list on the popup's
+    // a combo box: the field on the ground, its list on the menu colour
     for (key, token) in [
         ("ComboBoxBackground", "ground"),
         ("ComboBoxBackgroundPointerOver", "row"),
@@ -416,20 +416,20 @@ fn stock() -> String {
         ("ComboBoxBorderBrush", "line2"),
         ("ComboBoxBorderBrushPointerOver", "edge"),
         ("ComboBoxForeground", "text1"),
-        ("ComboBoxDropDownBackground", "popup"),
+        ("ComboBoxDropDownBackground", "menu"),
         ("ComboBoxDropDownBorderBrush", "line1"),
     ] {
         x += &brush(key, token);
     }
-    // flyouts, menus and tooltips: the popup's ground inside a hairline
+    // flyouts, menus and tooltips: the menu colour inside a hairline
     for (key, token) in [
-        ("FlyoutPresenterBackground", "popup"),
+        ("FlyoutPresenterBackground", "menu"),
         ("FlyoutBorderThemeBrush", "line1"),
-        ("MenuFlyoutPresenterBackground", "popup"),
+        ("MenuFlyoutPresenterBackground", "menu"),
         ("MenuFlyoutPresenterBorderBrush", "line1"),
         ("MenuFlyoutItemBackgroundPointerOver", "hover"),
         ("MenuFlyoutItemBackgroundPressed", "pressed"),
-        ("ToolTipBackground", "popup"),
+        ("ToolTipBackground", "menu"),
         ("ToolTipBorderBrush", "line1"),
         ("ToolTipForeground", "text1"),
     ] {

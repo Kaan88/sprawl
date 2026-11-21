@@ -187,7 +187,8 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "ground", what: "the window's own ground, under everything", value: "#FF11131A", light: "#FFE9ECF4" },
     Token { name: "card", what: "a card or pane", value: "#FF191C26", light: "#FFF6F7FC" },
     Token { name: "row", what: "a row or field inside a card", value: "#FF212533", light: "#FFFFFFFF" },
-    Token { name: "popup", what: "a menu, flyout, dialog or floating panel", value: "#FF1E2230", light: "#FFFFFFFF" },
+    Token { name: "popup", what: "a dialog or floating panel", value: "#FF1E2230", light: "#FFFFFFFF" },
+    Token { name: "menu", what: "a menu, a dropdown's list or a tooltip: the popup with a touch of the look", value: "#FF1E2230", light: "#FFFFFFFF" },
     Token { name: "surface1", what: "the faintest panel wash", value: "#0AFFFFFF", light: "#0A000000" },
     Token { name: "surface2", what: "a panel or card", value: "#0CFFFFFF", light: "#0C000000" },
     Token { name: "surface3", what: "a card that stands out a little", value: "#0FFFFFFF", light: "#0F000000" },
@@ -899,12 +900,12 @@ pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
     t.insert("onaccent", hex(on_accent(fill)));
     t.insert("accenttext", hex(accent_text(fill, card, light)));
     t.insert("selected", hex(mix(card, fill, 26)));
-    // Menus, lists and floating panels take a little of the page: on a light page the popup
-    // is the card's colour, and on either a touch of the accent, so each look's menus are its
-    // own instead of plain white or grey.
-    let popup = mix(if light { card } else { colour(&t, "popup") }, fill, if light { 7 } else { 6 });
-    t.insert("popup", hex(popup));
-    t.insert("panel", hex(popup));
+    // Menus, dropdown lists and tooltips take a little of the page: on a light page the card's
+    // colour, and on either a touch of the accent, so each look's menus are its own instead of
+    // plain white or grey. Dialogs and floating panels keep the popup's own colour: a tint over
+    // a whole dialog reads as a different page.
+    let menu = mix(if light { card } else { colour(&t, "popup") }, fill, if light { 7 } else { 6 });
+    t.insert("menu", hex(menu));
 
     match look.folders {
         Folders::Classic => {}
@@ -1097,7 +1098,7 @@ mod tests {
             assert!(seen.insert(token.name), "{} is in the list twice", token.name);
             assert!(!token.what.is_empty(), "{} says nothing", token.name);
             // computed from the accent, or drawn at the corner option's size, rather than written
-            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "popup" | "panel") {
+            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu") {
                 let v = &t[token.name];
                 assert!(v.len() == 9 && v.starts_with('#'), "{}: {v}", token.name);
                 continue;
@@ -1324,7 +1325,7 @@ mod tests {
         let dark = table(&Look::default(), false);
         let light = table(&Look::default(), true);
         for token in TOKENS {
-            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "popup" | "panel") || token.name.starts_with("rc") {
+            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu") || token.name.starts_with("rc") {
                 continue;
             }
             assert_eq!(dark[token.name], token.value, "{} (dark)", token.name);
