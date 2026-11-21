@@ -8,6 +8,11 @@
 //! target\release\sprawl-release publish   create the GitHub release from dist\v<version> (needs gh)
 //! ```
 //!
+//! Both `build` and `publish` want a clean working tree: `build` records the commit it was made
+//! from in `dist\v<version>\commit.txt`, and `publish` tags that exact commit instead of `main`.
+//! A version that is already released is refused: a copy that has it would never take it again,
+//! so the patch number goes up instead.
+//!
 //! The signing key is `%USERPROFILE%\.sprawl-release\signing.key` (hex). Its public half must be
 //! `sprawl_install::PUBLIC_KEY`, or `build` refuses: a release signed with another key would be
 //! refused by every installed copy.
@@ -81,6 +86,54 @@ fn run(cmd: &mut Command) {
     }
 }
 
+/// The commit `build` was made from, written beside the files so `publish` can check that it
+/// is releasing what was built.
+const COMMIT: &str = "commit.txt";
+
+fn git(args: &[&str]) -> String {
+    let out = Command::new("git").args(args).output().unwrap_or_else(|e| fail(format!("git {}: {e}", args.join(" "))));
+    if !out.status.success() {
+        fail(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Whether `git status --porcelain` listed nothing.
+fn clean_tree(porcelain: &str) -> bool {
+    porcelain.lines().all(|l| l.trim().is_empty())
+}
+
+/// A full commit hash, as `git rev-parse HEAD` prints it.
+fn valid_commit(s: &str) -> Option<&str> {
+    let s = s.trim();
+    (s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).then_some(s)
+}
+
+/// What is built and what is tagged must be the same commit, so neither step runs on a tree
+/// with changes in it.
+fn require_clean_tree(what: &str) {
+    if !clean_tree(&git(&["status", "--porcelain"])) {
+        fail(format!("the working tree has changes; commit and push them before {what}"));
+    }
+}
+
+fn head_commit() -> String {
+    let head = git(&["rev-parse", "HEAD"]);
+    valid_commit(&head).unwrap_or_else(|| fail(format!("git rev-parse HEAD said {head:?}"))).to_string()
+}
+
+/// What `gh release view` said about a tag: already released, not released yet, or a question
+/// that couldn't be asked (no network, not signed in) — which is never taken for "not yet".
+fn release_exists(ok: bool, stderr: &str) -> Result<bool, String> {
+    if ok {
+        return Ok(true);
+    }
+    if stderr.to_ascii_lowercase().contains("release not found") {
+        return Ok(false);
+    }
+    Err(stderr.trim().to_string())
+}
+
 /// `keygen` makes the release key; `keygen backup` the backup key (`BACKUP_KEY`), which belongs
 /// offline: it is only for signing if the release key is lost or leaked.
 fn keygen(backup: bool) {
@@ -106,6 +159,9 @@ fn dist(v: &str) -> PathBuf {
 fn build() {
     let v = version();
     let notes = notes(&v);
+    // the release is tied to one commit: it is recorded here and checked again at publish
+    require_clean_tree("building");
+    let commit = head_commit();
     let key = load_key();
     if key.verifying_key().to_bytes() != PUBLIC_KEY {
         fail("the signing key doesn't match sprawl_install::PUBLIC_KEY (rebuild this tool after changing it)");
@@ -169,7 +225,8 @@ fn build() {
     std::fs::write(out.join(MANIFEST), &manifest).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(SIGNATURE), &sig).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join("notes.md"), notes).unwrap_or_else(|e| fail(e));
-    println!("Sprawl {v} is ready in {}", out.display());
+    std::fs::write(out.join(COMMIT), &commit).unwrap_or_else(|e| fail(e));
+    println!("Sprawl {v} is ready in {} (commit {commit})", out.display());
 }
 
 fn publish() {
@@ -178,17 +235,32 @@ fn publish() {
     if !out.join(SIGNATURE).exists() {
         fail(format!("{} is not built; run `build` first", out.display()));
     }
-    let status = Command::new("git").args(["status", "--porcelain"]).output().unwrap_or_else(|e| fail(e));
-    if !status.stdout.is_empty() {
-        fail("the working tree has changes; commit and push them first");
+    let tag = format!("v{v}");
+    // A copy that already has this version never takes it again (an update has to be strictly
+    // newer), so a release is never replaced: the version goes up instead.
+    let view = Command::new("gh").args(["release", "view", &tag, "--repo", REPO, "--json", "tagName"]).output().unwrap_or_else(|e| fail(format!("gh: {e}")));
+    match release_exists(view.status.success(), &String::from_utf8_lossy(&view.stderr)) {
+        Ok(true) => fail(format!(
+            "{tag} is already published, and copies that already have {v} would never see a second one: bump the patch number in Cargo.toml, write its CHANGELOG.md section, and build again"
+        )),
+        Ok(false) => {}
+        Err(e) => fail(format!("could not ask GitHub whether {tag} is published ({e})")),
+    }
+    require_clean_tree("publishing");
+    let built = std::fs::read_to_string(out.join(COMMIT)).unwrap_or_else(|_| fail(format!("{} doesn't say which commit it was built from; run `build` again", out.display())));
+    let built = valid_commit(&built).unwrap_or_else(|| fail(format!("{} is not a commit hash", out.join(COMMIT).display()))).to_string();
+    let head = head_commit();
+    if built != head {
+        fail(format!("{} was built from {built}, but HEAD is now {head}; check out that commit or run `build` again", out.display()));
     }
     let mut assets: Vec<PathBuf> = FILES.iter().map(|n| out.join(n)).collect();
     assets.extend([out.join(format!("Sprawl-Setup-{v}.exe")), out.join(MANIFEST), out.join(SIGNATURE)]);
     let mut cmd = Command::new("gh");
-    cmd.args(["release", "create", &format!("v{v}"), "--repo", REPO, "--target", "main", "--title", &format!("Sprawl {v}"), "--notes-file"]).arg(out.join("notes.md"));
+    // the tag goes on the commit that was built, not on whatever main points at
+    cmd.args(["release", "create", &tag, "--repo", REPO, "--target", &built, "--title", &format!("Sprawl {v}"), "--notes-file"]).arg(out.join("notes.md"));
     cmd.args(&assets);
     run(&mut cmd);
-    println!("Published Sprawl {v}.");
+    println!("Published Sprawl {v} from {built}.");
 }
 
 fn main() {
@@ -197,5 +269,37 @@ fn main() {
         Some("build") => build(),
         Some("publish") => publish(),
         _ => fail("usage: sprawl-release keygen | build | publish"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn a_tree_is_clean_only_when_git_listed_nothing() {
+        assert!(clean_tree(""));
+        assert!(clean_tree("\n \n"));
+        assert!(!clean_tree(" M crates/sprawl/src/main.rs\n"));
+        assert!(!clean_tree("?? installer/sprawl.iss"));
+    }
+
+    #[test]
+    fn only_a_full_commit_hash_is_taken() {
+        assert_eq!(valid_commit(&format!("{HASH}\n")), Some(HASH));
+        assert_eq!(valid_commit("fc2d97c"), None);
+        assert_eq!(valid_commit(&HASH.replace('0', "z")), None);
+        assert_eq!(valid_commit(""), None);
+    }
+
+    #[test]
+    fn a_published_version_is_told_apart_from_an_unpublished_one() {
+        assert_eq!(release_exists(true, ""), Ok(true));
+        assert_eq!(release_exists(false, "release not found\n"), Ok(false));
+        // anything else is a question that couldn't be asked, never a free pass
+        assert!(release_exists(false, "could not connect to api.github.com").is_err());
+        assert!(release_exists(false, "gh auth login required").is_err());
     }
 }

@@ -235,6 +235,11 @@ pub(crate) fn plain_pattern(p: &str) -> bool {
     if !rooted || p.len() >= 300 || p.contains("..") || p.contains(['"', '\'', '`', '|', '<', '>', ';', '\n', '\r', '{', '}', '$']) {
         return false;
     }
+    // nothing unseen on the approval card: controls (a tab included), bidi overrides,
+    // zero-width and other format characters, variation selectors and tags (Fable AI review P3-5)
+    if p.chars().any(|c| c.is_control() || matches!(c, '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{e0000}'..='\u{e007f}')) {
+        return false;
+    }
     let literal = p.split('\\').skip(1).filter(|s| !s.is_empty() && !s.contains(['*', '?']) && !s.starts_with('%')).count();
     literal >= 2
 }
@@ -1139,6 +1144,14 @@ mod tests {
             let _ = plain_pattern(p);
         }
         assert!(!plain_pattern("%\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\u{fc}\\a\\b"), "not a known variable");
+    }
+
+    #[test]
+    fn a_pattern_with_unseen_characters_is_refused() {
+        assert!(plain_pattern("C:\\Users\\x\\AppData\\cache"));
+        for bad in ["C:\\Users\\x\\App\tData\\cache", "C:\\Users\\x\\App\u{202e}ataD\\cache", "C:\\Users\\x\\App\u{200b}Data\\cache", "C:\\Users\\x\\AppData\u{feff}\\cache", "C:\\Users\\x\\App\u{e0041}Data\\cache"] {
+            assert!(!plain_pattern(bad), "{bad:?}");
+        }
     }
 
     #[test]

@@ -56,10 +56,21 @@ const HARDEN_CMD: &str = "-c core.fsmonitor=false -c core.hooksPath=NUL -c log.s
 /// prompts, no window, [`HARDEN`]ed, at most 15 seconds and 1 MB of output. None when git isn't
 /// there, timed out, or couldn't be read. Only for a repository [`repo_ok`] passed.
 pub fn run_git(dir: &Path, args: &[&str]) -> Option<(bool, String)> {
+    run_git_until(dir, args, Instant::now() + Duration::from_secs(15))
+}
+
+/// [`run_git`], ended at `deadline` (or 15 seconds, the sooner). Git runs in a job with all it
+/// starts: a time-out ends them all and waits for git, so nothing is left running and the
+/// reader isn't left blocked (Fable 1.0.4-1.0.5 P3-7).
+fn run_git_until(dir: &Path, args: &[&str], deadline: Instant) -> Option<(bool, String)> {
     use std::io::Read;
-    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
-    let mut child = Command::new("git")
+    let deadline = deadline.min(Instant::now() + Duration::from_secs(15));
+    if Instant::now() >= deadline {
+        return None;
+    }
+    let mut cmd = Command::new("git");
+    cmd
         .args(HARDEN)
         .arg("-C")
         .arg(dir)
@@ -68,23 +79,26 @@ pub fn run_git(dir: &Path, args: &[&str]) -> Option<(bool, String)> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(0x0800_0000)
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut run = crate::llm::contain::spawn(&mut cmd, 0x0800_0000).ok()?;
+    let child = &mut run.child;
     let out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut s = String::new();
         let _ = out.take(1 << 20).read_to_string(&mut s);
         s
     });
-    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some((status.success(), reader.join().ok()?)),
+        match run.child.try_wait() {
+            Ok(Some(status)) => {
+                // a helper git started may still hold the pipe: it ends with the job
+                run.end();
+                return Some((status.success(), reader.join().ok()?));
+            }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
-                let _ = child.kill();
+                run.end();
+                let _ = reader.join();
                 return None;
             }
         }
@@ -103,7 +117,9 @@ pub fn find(tree: &Tree, projects: &[Project], idle_days: u64) -> Vec<Finding> {
     if !git_allowed() {
         return Vec::new();
     }
-    find_with(tree, projects, idle_days, MIN_BYTES, SystemTime::now(), &run_git, &repo_ok, &worktree_main)
+    // each call within the whole budget too, not only between repositories
+    let until = Instant::now() + BUDGET;
+    find_with(tree, projects, idle_days, MIN_BYTES, SystemTime::now(), &|d: &Path, a: &[&str]| run_git_until(d, a, until), &repo_ok, &worktree_main)
 }
 
 /// The settings a repository's config may hold for Sprawl to ask git about it: plain ones that

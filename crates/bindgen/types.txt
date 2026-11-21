@@ -145,3 +145,11 @@ Microsoft.UI.Xaml.Controls.TextBox::SelectionStart
 Microsoft.UI.Xaml.Controls.TextBox::Select
 Microsoft.UI.Xaml.UIElement::UpdateLayout
 Microsoft.UI.Xaml.Controls.ScrollViewer::ChangeViewWithOptionalAnimation
+# --- Advisor panels updated in place (reconcile.rs) ---
+Microsoft.UI.Xaml.Controls.Panel::Children
+Microsoft.UI.Xaml.Controls.UIElementCollection
+Microsoft.UI.Xaml.Controls.Primitives.ToggleButton::IsChecked
+Microsoft.UI.Xaml.Shapes.Shape::Fill
+Microsoft.UI.Xaml.Controls.Border::BorderBrush
+Microsoft.UI.Xaml.Controls.ToolTipService::SetToolTip
+Microsoft.UI.Xaml.Automation.AutomationProperties::SetName

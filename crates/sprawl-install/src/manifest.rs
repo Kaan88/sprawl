@@ -51,8 +51,16 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
+/// Windows' device names. `con.exe` is still the console, whatever the extension, so a name
+/// whose first part is one of these never reaches a file.
+const DEVICE_NAMES: [&str; 24] = [
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5",
+    "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 /// A file name a release may carry: a plain `.exe` or `.dll` name in the program's folder (no
-/// folders, no leading dot), so a later release can add a file without stranding older copies.
+/// folders, no leading dot, no device name), so a later release can add a file without
+/// stranding older copies.
 pub fn valid_name(n: &str) -> bool {
     let lower = n.to_ascii_lowercase();
     !n.is_empty()
@@ -61,6 +69,7 @@ pub fn valid_name(n: &str) -> bool {
         && !n.contains("..")
         && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         && (lower.ends_with(".exe") || lower.ends_with(".dll"))
+        && !DEVICE_NAMES.contains(&lower.split('.').next().unwrap_or(""))
 }
 
 /// Check `signature` (hex) over `manifest` with any of `keys`, then read the manifest. Every
@@ -152,6 +161,20 @@ mod tests {
         let m = GOOD.replace(r#"}]}"#, r#"},{"name":"helper.dll","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1}]}"#);
         let (m, s, k) = signed(&m);
         assert!(verify(&m, &s, &[k]).is_ok());
+    }
+
+    #[test]
+    fn device_names_are_refused() {
+        for name in ["con.exe", "CON.exe", "nul.dll", "com1.exe", "LPT9.dll", "aux.exe", "prn.dll", "lpt0.exe", "con.old.exe", "con.exe.dll"] {
+            assert!(!valid_name(name), "{name}");
+            let m = GOOD.replace("sprawl.exe", name);
+            let (m, s, k) = signed(&m);
+            assert!(verify(&m, &s, &[k]).is_err(), "{name}");
+        }
+        // names that only start like one are fine
+        for name in ["console.exe", "connect.dll", "com10.exe", "nulls.dll", "sprawl.exe"] {
+            assert!(valid_name(name), "{name}");
+        }
     }
 
     #[test]

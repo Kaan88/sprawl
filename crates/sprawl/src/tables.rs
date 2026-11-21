@@ -111,14 +111,20 @@ pub(crate) struct Tables {
     pub(crate) tree_sort: (usize, bool),
     pub(crate) files_sort: (usize, bool),
     pub(crate) ext_sort: (usize, bool),
-    main_body: Option<Border>,
-    ext_body: Option<Border>,
+    /// The tall content of each table's scroll (Tree, Files, Search, file types): each view has
+    /// its own, so going back to a tab shows its rows as they were, not loaded again.
+    bodies: [Option<Border>; 4],
     main_span: (usize, usize, usize),
     ext_span: (usize, usize, usize),
     /// The rows' XAML as last loaded (main table, file types): the same text is not loaded
     /// again, so rows that didn't change aren't replaced (other drives' results arrive every
     /// half second; replacing the rows lost a double-click and the scroll's smoothness).
-    drawn: [String; 2],
+    drawn: [String; 4],
+    /// The rows on screen (as `bodies`): a new set of rows changes only the rows that differ
+    /// (a selection, a folder opened, a sort), so the others aren't laid out again.
+    slots: [crate::reconcile::Slot; 4],
+    /// The headers' XAML as last loaded: loaded again only when it changed.
+    heads: [String; 2],
 }
 
 impl Default for Tables {
@@ -129,11 +135,12 @@ impl Default for Tables {
             tree_sort: (2, true),
             files_sort: (1, true),
             ext_sort: (4, true),
-            main_body: None,
-            ext_body: None,
+            bodies: Default::default(),
             main_span: (0, 0, usize::MAX),
             ext_span: (0, 0, usize::MAX),
             drawn: Default::default(),
+            slots: Default::default(),
+            heads: Default::default(),
         }
     }
 }
@@ -225,7 +232,7 @@ fn header(cols: &[Col], sort: (usize, bool)) -> String {
             ui::esc(c.title)
         );
     }
-    s + r##"<Border Grid.ColumnSpan="9" Height="1" VerticalAlignment="Bottom" Background="#22FFFFFF"/></Grid>"##
+    s + r##"<Border Grid.ColumnSpan="9" Height="1" VerticalAlignment="Bottom" Background="{$pressed}"/></Grid>"##
 }
 
 /// The column under `x` in a header `width` wide.
@@ -279,7 +286,7 @@ pub(crate) fn pct_bar(col: usize, pct: f64, a: &str, b: &str) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="#18FFFFFF"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" {num} FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="3" Background="{{$line1}}"/><Border CornerRadius="3" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" {num} FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 
@@ -358,6 +365,12 @@ impl State {
 
     /// A click on a table header at `x` (header coordinates).
     pub(crate) fn header_clicked(&mut self, which: Which, x: f64, width: f64) {
+        let t0 = std::time::Instant::now();
+        self.header_clicked_inner(which, x, width);
+        crate::state::timing("header click (sort)", t0);
+    }
+
+    fn header_clicked_inner(&mut self, which: Which, x: f64, width: f64) {
         let cols = match which {
             Which::Exts => EXTS,
             Which::Main => self.main_cols().0,
@@ -414,14 +427,19 @@ impl State {
         if self.tree.is_none() && self.view != View::Search {
             return;
         }
+        let t0 = std::time::Instant::now();
         self.rows = match self.view {
             View::Files => self.files.iter().map(|&f| (f, 0)).collect(),
             View::Search => self.search_rows(),
             _ => self.visible_rows(),
         };
         let (cols, sort) = self.main_cols();
-        if let (Ok(h), Ok(head)) = (find::<Border>(&self.root, "TreeHeader"), load::<UIElement>(&header(cols, sort))) {
-            let _ = h.SetChild(&head);
+        let head = header(cols, sort);
+        if head != self.tables.heads[0] {
+            if let (Ok(h), Ok(el)) = (find::<Border>(&self.root, "TreeHeader"), load::<UIElement>(&head)) {
+                let _ = h.SetChild(&el);
+                self.tables.heads[0] = head;
+            }
         }
         let total = self.tree.as_ref().map_or(0, |t| t.nodes[ROOT].size);
         let items = self.tree.as_ref().map_or(0, |t| t.nodes[ROOT].items());
@@ -433,12 +451,18 @@ impl State {
             text(&self.root, "FootRight", &format!("{} items  |  {}", thousands(items), self.size(total)));
         }
         self.tables.main_span = (0, 0, usize::MAX);
+        crate::state::timing("refresh_rows: rows and header", t0);
         self.fill(Which::Main);
+        crate::state::timing(&format!("refresh_rows ({} rows)", self.rows.len()), t0);
     }
 
     pub(crate) fn refresh_exts(&mut self) {
-        if let (Ok(h), Ok(head)) = (find::<Border>(&self.root, "ExtHeader"), load::<UIElement>(&header(EXTS, self.tables.ext_sort))) {
-            let _ = h.SetChild(&head);
+        let head = header(EXTS, self.tables.ext_sort);
+        if head != self.tables.heads[1] {
+            if let (Ok(h), Ok(el)) = (find::<Border>(&self.root, "ExtHeader"), load::<UIElement>(&head)) {
+                let _ = h.SetChild(&el);
+                self.tables.heads[1] = head;
+            }
         }
         self.tables.ext_span = (0, 0, usize::MAX);
         self.fill(Which::Exts);
@@ -478,9 +502,11 @@ impl State {
         if span.2 == count && span.0 <= first && last <= span.1 {
             // a long list's rows move with the scroll (see Rows): the loaded ones are moved
             if g.scaled() {
-                let body = if which == Which::Main { &self.tables.main_body } else { &self.tables.ext_body };
-                if let Some(fe) = body.as_ref().and_then(|b| b.Child().ok()).and_then(|c| c.cast::<FrameworkElement>().ok()) {
+                let ix = self.body_ix(which);
+                if let Some(fe) = self.tables.bodies[ix].as_ref().and_then(|b| b.Child().ok()).and_then(|c| c.cast::<FrameworkElement>().ok()) {
                     let _ = fe.SetMargin(crate::bindings::Microsoft::UI::Xaml::Thickness { Left: 0.0, Top: g.y_of(span.0), Right: 0.0, Bottom: 0.0 });
+                    // the screen no longer shows the string's place: the next rows load whole
+                    self.tables.slots[ix].forget();
                 }
             }
             return;
@@ -489,19 +515,18 @@ impl State {
         let b = (last + OVERSCAN).min(count);
 
         // The tall, empty content that gives the scroll bar its range; rows sit inside it.
-        let body = {
-            let slot = if which == Which::Main { &mut self.tables.main_body } else { &mut self.tables.ext_body };
-            if slot.is_none() {
-                if let Ok(b) = load::<Border>(&format!(r##"<Border {} VerticalAlignment="Top" Background="Transparent"/>"##, ui::NS)) {
-                    if let Ok(u) = b.cast::<UIElement>() {
-                        let _ = sv.SetContent(&u);
-                    }
-                    *slot = Some(b);
-                }
+        let slot = self.body_ix(which);
+        if self.tables.bodies[slot].is_none() {
+            self.tables.bodies[slot] = load::<Border>(&format!(r##"<Border {} VerticalAlignment="Top" Background="Transparent"/>"##, ui::NS)).ok();
+        }
+        let Some(body) = self.tables.bodies[slot].clone() else { return };
+        // this view's rows in the scroll (another tab's stay as they are, for coming back)
+        let shown = sv.Content().ok().and_then(|c| c.cast::<Border>().ok()).is_some_and(|c| c == body);
+        if !shown {
+            if let Ok(u) = body.cast::<UIElement>() {
+                let _ = sv.SetContent(&u);
             }
-            slot.clone()
-        };
-        let Some(body) = body else { return };
+        }
         if let Ok(fe) = body.cast::<FrameworkElement>() {
             let _ = fe.SetHeight(g.body());
         }
@@ -515,7 +540,6 @@ impl State {
             };
         }
         xaml += "</StackPanel>";
-        let slot = if which == Which::Main { 0 } else { 1 };
         let span = (a, b, count);
         if self.tables.drawn[slot] == xaml && body.Child().is_ok() {
             if which == Which::Main {
@@ -525,9 +549,11 @@ impl State {
             }
             return;
         }
-        match load::<UIElement>(&xaml) {
-            Ok(chunk) => {
-                let _ = body.SetChild(&chunk);
+        let t0 = std::time::Instant::now();
+        let shown = self.tables.slots[slot].show(&body, &xaml, true);
+        crate::state::timing(&format!("fill: {} {} rows", if shown.as_ref().is_ok_and(|s| s.whole) { "load" } else { "change" }, b - a), t0);
+        match shown {
+            Ok(_) => {
                 self.tables.drawn[slot] = xaml;
             }
             Err(e) => {
@@ -541,6 +567,18 @@ impl State {
             self.tables.main_span = span;
         } else {
             self.tables.ext_span = span;
+        }
+    }
+
+    /// Which of `bodies` (and `slots`, `drawn`) a table shows now.
+    fn body_ix(&self, which: Which) -> usize {
+        match which {
+            Which::Exts => 3,
+            Which::Main => match self.view {
+                View::Files => 1,
+                View::Search => 2,
+                _ => 0,
+            },
         }
     }
 
@@ -577,7 +615,7 @@ impl State {
         };
         let name = if node.is_compressed() { format!("{} · compressed", label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", label(n)) } else { label(n) };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="#FF8E97AA"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="12" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="14" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="12" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(self.main_cols().0),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
@@ -593,8 +631,8 @@ impl State {
                 Some((name, inherited, can_uninstall)) => format!(
                     r##"<TextBlock Grid.Column="6" FontSize="12" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,
                     if inherited { "#FF8E97AA" } else { "#FFB9C2D6" },
-                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="12" Foreground="#FF8E97AA"/>"## } else { "" },
-                    ui::esc(name),
+                    if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="12" Foreground="{$text3}"/>"## } else { "" },
+                    ui::esc(&name),
                 ),
                 None => String::new(),
             },
@@ -609,7 +647,7 @@ impl State {
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="13" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid x:Name="FRow{n}" Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="13" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = col_defs(FILES),
             fc = self.ext_colour_hex(&node.extension()),
@@ -626,7 +664,7 @@ impl State {
         let bg = self.row_bg(k, self.ext_selected.as_deref() == Some(e.ext.as_str()));
         let shown = if e.ext == "(none)" { String::new() } else { format!(".{}", e.ext) };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<Border Width="12" Height="12" CornerRadius="3" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<Border Width="12" Height="12" CornerRadius="3" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(EXTS),
             c = self.ext_colour_hex(&e.ext),
             ext = ui::esc(&shown),
@@ -666,6 +704,12 @@ impl State {
     }
 
     pub(crate) fn row_tapped(&mut self, x: f64, y: f64, double: bool) {
+        let t0 = std::time::Instant::now();
+        self.row_tapped_inner(x, y, double);
+        crate::state::timing("row tap", t0);
+    }
+
+    fn row_tapped_inner(&mut self, x: f64, y: f64, double: bool) {
         let k = self.rows_now(Which::Main).at(y);
         let Some(&(n, d)) = self.rows.get(k) else { return };
         let double = if self.view == View::Search { self.tap_is_double((n, d), double) } else { double };

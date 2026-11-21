@@ -70,7 +70,7 @@ pub(crate) fn start() {
         let mut facts: Option<(Weak<Tree>, Facts)> = None;
         // scans servers ask for, kept on this thread, saved to History as the app's own are
         let mut index = sprawl_advisor::mcp_scan::Index::for_app(false);
-        let _ = sprawl_advisor::pipe::serve(|line, client_elevated| {
+        let served = sprawl_advisor::pipe::serve(|line, client_elevated| {
             // an elevated app reads the disk for a client that isn't only when the user allowed
             // it (an elevation Windows can't confirm counts as elevated)
             let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
@@ -111,6 +111,16 @@ pub(crate) fn start() {
             out
             }).unwrap_or_else(|error| serde_json::json!({"ok": false, "text": error}).to_string())
         });
+        // the pipe's name was taken: by another Sprawl window (normal), or by a program of
+        // another account that made it first (clients refuse that server; Fable AI review
+        // P3-10). Either way the bridge is off in this window, and the log says why.
+        if let Err(e) = served {
+            if let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Sprawl")) {
+                let msg = format!("The MCP bridge didn't start in this window ({e}): another Sprawl window has it, or another program took its name first.
+");
+                let _ = sprawl_advisor::write_local(&dir.join("bridge.log"), msg.as_bytes(), true);
+            }
+        }
     });
 }
 

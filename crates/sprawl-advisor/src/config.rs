@@ -106,11 +106,16 @@ pub struct CustomAi {
 
 impl AiConfig {
     /// Keep the custom AI in use (`custom`, with this address and model) in `customs`: a new
-    /// entry, or the one named `was` (renamed) or `custom` brought up to date.
-    pub fn keep_custom(&mut self, was: &str) {
+    /// entry, or the one named `was` (renamed) or `custom` brought up to date. `false`, and
+    /// nothing changed: a new one, or a renamed one, takes the name of another that is on the
+    /// list (it would have replaced it without a word; Fable review 1.0.4-1.0.5 P3-4).
+    pub fn keep_custom(&mut self, was: &str) -> bool {
         let name = self.custom.trim().to_string();
         if self.provider != Provider::OpenAi || name.is_empty() {
-            return;
+            return true;
+        }
+        if !was.eq_ignore_ascii_case(&name) && self.customs.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
+            return false;
         }
         if !was.is_empty() && !was.eq_ignore_ascii_case(&name) {
             self.customs.retain(|c| !c.name.eq_ignore_ascii_case(was));
@@ -121,6 +126,7 @@ impl AiConfig {
             None => self.customs.push(entry),
         }
         self.custom = name;
+        true
     }
 
     /// Use the custom AI named `name`.
@@ -254,6 +260,60 @@ fn host_credential(host: &str) -> String {
 /// The key saved for the OpenAI-compatible server at `host`.
 pub fn key_for_host(host: &str) -> Option<String> {
     cred::read(&host_credential(host)).filter(|k| !k.trim().is_empty())
+}
+
+/// A key saved before hosts were recorded (before 0.3.0) followed whatever address `ai.toml`
+/// named at the time: with several custom AIs that changes all the time. Its host is written
+/// once, now, from the address saved then, so it stays with that server (Fable AI review P3-4,
+/// 1.0.4-1.0.5 P3-3). Run at start, before the user can switch.
+///
+/// Keys were kept under the host alone before 1.0.6; now under the server (host and a port
+/// that isn't the scheme's own). A key under the bare host is moved to each saved address on
+/// that host with its own port, and removed when no saved address uses the host as it is.
+pub fn record_key_host() {
+    let p = Provider::OpenAi;
+    let cfg = AiConfig::load();
+    let servers: Vec<String> = std::iter::once(cfg.base_url.as_str()).chain(cfg.customs.iter().map(|c| c.base_url.as_str())).filter_map(crate::llm::agent::host_of).collect();
+    let mut moved = Vec::new();
+    for s in &servers {
+        let bare = bare_host(s);
+        if bare == *s || key_for_host(s).is_some() {
+            continue;
+        }
+        if let Some(k) = key_for_host(&bare) {
+            if cred::write(&host_credential(s), &k) {
+                moved.push(bare);
+            }
+        }
+    }
+    for bare in moved {
+        if !servers.iter().any(|s| *s == bare) {
+            cred::delete(&host_credential(&bare));
+        }
+    }
+    if key_host(p).is_some() || !has_key(p) {
+        // the single key's host, when it was the bare host of the address in use, gets its port
+        if let (Some(h), Some(now)) = (key_host(p), crate::llm::agent::host_of(&cfg.base_url)) {
+            if h != now && bare_host(&now) == h {
+                cred::write(&format!("{}/host", p.credential()), &now);
+            }
+        }
+        return;
+    }
+    if let Some(host) = crate::llm::agent::host_of(&cfg.base_url) {
+        cred::write(&format!("{}/host", p.credential()), &host);
+    }
+}
+
+/// A server (`host`, `host:port` or `[v6]:port`) without its port.
+fn bare_host(server: &str) -> String {
+    if let Some(rest) = server.strip_prefix('[') {
+        return rest.split_once(']').map_or(server, |(h, _)| h).to_string();
+    }
+    match server.rsplit_once(':') {
+        Some((h, p)) if !h.contains(':') && p.bytes().all(|b| b.is_ascii_digit()) => h.to_string(),
+        _ => server.to_string(),
+    }
 }
 
 /// The host a provider's key was saved for, when that was recorded.
@@ -440,6 +500,13 @@ mod custom_tests {
         c.custom = "DeepSeek work".into();
         c.keep_custom("DeepSeek");
         assert!(c.customs.iter().all(|x| x.name != "DeepSeek") && c.customs.iter().any(|x| x.name == "DeepSeek work"));
+        // renamed to, or a new one called, the name of another: refused, nothing replaced
+        let before = c.customs.clone();
+        c.custom = "ollama".into();
+        assert!(!c.keep_custom("DeepSeek work"));
+        assert!(!c.keep_custom(""));
+        assert_eq!(c.customs, before);
+        c.custom = "DeepSeek work".into();
         // unnamed, or another provider: nothing kept
         let mut d = AiConfig { provider: Provider::OpenAi, ..Default::default() };
         d.keep_custom("");

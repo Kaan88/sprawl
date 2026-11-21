@@ -357,8 +357,8 @@ impl State {
             Ok(o) => o,
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 // the count as it goes, without a redraw
-                if let Some(p) = self.advisor.panel.as_ref().filter(|_| self.own_active()) {
-                    crate::state::text(p, "ClReading", &format!("Reading the folders the cleaners look at... {} items", crate::format::thousands(progress.items())));
+                if self.own_active() {
+                    self.advisor.ptext("ClReading", &format!("Reading the folders the cleaners look at... {} items", crate::format::thousands(progress.items())));
                 }
                 return;
             }
@@ -517,7 +517,7 @@ impl State {
     fn community_card(&self) -> String {
         let off = self.advisor.memory.community_off;
         let st = sprawl_advisor::community::status();
-        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF" Margin="0,8,0,0"><StackPanel Spacing="4"><TextBlock Text="Community cleaners" FontSize="13" FontWeight="SemiBold"/>"##);
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="{$surface2}" Margin="0,8,0,0"><StackPanel Spacing="4"><TextBlock Text="Community cleaners" FontSize="13" FontWeight="SemiBold"/>"##);
         let line = if off {
             "Off: winapp2.ini and BleachBit's cleaners are neither fetched nor shown.".to_string()
         } else if self.advisor.cl.fetching.is_some() {
@@ -528,9 +528,9 @@ impl State {
             let srcs: Vec<String> = st.sources.iter().map(|s| format!("{}: {} cleaners ({})", s.name, s.imported, s.licence)).collect();
             format!("{}. Fetched {}. Each is checked like your own rules, at least amber, and does nothing until you turn it on.", srcs.join(", "), crate::format::fmt_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(st.fetched)))
         };
-        x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##, ui::esc(&line));
+        x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}"/>"##, ui::esc(&line));
         for s in st.sources.iter().filter(|s| !s.error.is_empty()) {
-            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342"/>"##, ui::esc(&format!("{}: {}", s.name, s.error)));
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$warn}}"/>"##, ui::esc(&format!("{}: {}", s.name, s.error)));
         }
         let left: usize = st.sources.iter().map(|s| s.left_out.len()).sum();
         x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
@@ -548,7 +548,7 @@ impl State {
         if self.advisor.cl.left_shown && !off {
             x += r##"<ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="1">"##;
             for l in st.sources.iter().flat_map(|s| s.left_out.iter()).take(400) {
-                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(&format!("{}: {}", l.entry, l.why)));
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/>"##, ui::esc(&format!("{}: {}", l.entry, l.why)));
             }
             x += "</StackPanel></ScrollViewer>";
         }
@@ -606,7 +606,7 @@ impl State {
         }
         let ai = AiConfig::load().provider != Provider::Off;
         let mut x = format!(
-            r##"<TextBlock Text="Unknown applications" FontSize="12" FontWeight="SemiBold" Foreground="#FF9AA3B8" Margin="0,10,0,2"/><Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="4"><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+            r##"<TextBlock Text="Unknown applications" FontSize="12" FontWeight="SemiBold" Foreground="#FF9AA3B8" Margin="0,10,0,2"/><Border Padding="12,10" CornerRadius="7" Background="{{$surface2}}"><StackPanel Spacing="4"><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}"/>"##,
             ui::esc(&format!("Sprawl doesn't know {} {}", list.len(), if list.len() == 1 { "application" } else { "applications" })),
             if ai {
                 "Big folders of programs in your AppData that no cleaner knows. The AI can look inside and propose a cleaner; a second opinion checks it, and you approve it before it is used."
@@ -616,7 +616,7 @@ impl State {
         );
         for (i, (p, bytes)) in list.iter().enumerate() {
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTipService.ToolTip="{0}"/>{}<TextBlock Grid.Column="2" Text="{}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTipService.ToolTip="{0}"/>{}<TextBlock Grid.Column="2" Text="{}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
                 ui::esc(&p.display().to_string()),
                 if ai { format!(r##"<Button x:Name="AdvClU{i}" Grid.Column="1" Content="Ask the AI to look" Padding="8,1" FontSize="12" CornerRadius="4"/>"##) } else { String::new() },
                 self.size(*bytes)
@@ -640,7 +640,7 @@ impl State {
             return String::new();
         }
         let mut x = String::from(
-            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Cleaners the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved cleaners join your own rules and show in Cleaners. Their parts are at least amber, never run as administrator, and nothing is cleaned until you tick it, review it and confirm." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+            r##"<Border Padding="12,10" CornerRadius="7" Background="{$surface2}"><StackPanel Spacing="6"><TextBlock Text="Cleaners the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved cleaners join your own rules and show in Cleaners. Their parts are at least amber, never run as administrator, and nothing is cleaned until you tick it, review it and confirm." TextWrapping="Wrap" FontSize="12" Foreground="{$text3}"/>"##,
         );
         for (i, p) in m.cleaner_proposals.iter().enumerate() {
             let c = &p.cleaner;
@@ -650,20 +650,20 @@ impl State {
                 None => "Can't be matched against this scan".to_string(),
             };
             x += &format!(
-                r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClApprove{i}" Content="Approve" Padding="8,1" FontSize="12" CornerRadius="4"/><Button x:Name="AdvClDismiss{i}" Content="Dismiss" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
+                r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center"/><Button x:Name="AdvClApprove{i}" Content="Approve" Padding="8,1" FontSize="12" CornerRadius="4"/><Button x:Name="AdvClDismiss{i}" Content="Dismiss" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
                 ui::esc(&c.name),
                 ui::esc(&now)
             );
             for part in &c.parts {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="12,0,0,0"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" MaxWidth="600"/></StackPanel><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="28,0,0,0"/>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="12,0,0,0"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap" MaxWidth="600"/></StackPanel><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="28,0,0,0"/>"##,
                     crate::advisor::risk_hex(part.risk),
                     ui::esc(&format!("{}: {}", part.title, part.why)),
                     ui::esc(&part.paths.join("   "))
                 );
             }
             if !p.note.is_empty() {
-                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" FontStyle="Italic" TextWrapping="Wrap" Margin="12,0,0,0"/>"##, ui::esc(&p.note));
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" FontStyle="Italic" TextWrapping="Wrap" Margin="12,0,0,0"/>"##, ui::esc(&p.note));
             }
             x += "</StackPanel>";
         }
@@ -702,16 +702,16 @@ impl State {
             }
         }
         files.sort_by_key(|&k| std::cmp::Reverse(t.nodes[k].size));
-        let mut x = String::from(r##"<Border Margin="34,0,0,4" Padding="12,8" CornerRadius="7" Background="#0AFFFFFF"><StackPanel Spacing="2">"##);
-        x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(&p.why));
+        let mut x = String::from(r##"<Border Margin="34,0,0,4" Padding="12,8" CornerRadius="7" Background="{$surface1}"><StackPanel Spacing="2">"##);
+        x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(&p.why));
         for &i in &p.findings {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
         }
-        x += &format!(r##"<TextBlock Text="{} files, the biggest:" FontSize="12" Foreground="#FF8E97AA" Margin="0,4,0,0"/>"##, crate::format::thousands(count));
+        x += &format!(r##"<TextBlock Text="{} files, the biggest:" FontSize="12" Foreground="{{$text3}}" Margin="0,4,0,0"/>"##, crate::format::thousands(count));
         for &k in files.iter().take(12) {
             let name = t.nodes[k].name.clone();
             x += &format!(
-                r##"<Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="12" HorizontalAlignment="Right" Foreground="#FFB9C2D6"/></Grid>"##,
+                r##"<Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="12" HorizontalAlignment="Right" Foreground="{{$text2}}"/></Grid>"##,
                 ui::esc(&name),
                 self.size(t.nodes[k].size)
             );
@@ -1008,14 +1008,14 @@ impl State {
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#1A2F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="6">"##);
         x += &format!(r##"<TextBlock Text="The AI suggests ticking {} part{} ({})" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>"##, ok.len(), if ok.len() == 1 { "" } else { "s" }, self.size(bytes));
         if !why.is_empty() {
-            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(why));
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text1}}"/>"##, ui::esc(why));
         }
         for (c, p) in &ok {
-            x += &format!(r##"<TextBlock Text="{}: {}   {}" FontSize="12" Foreground="#FFB9C2D6" Margin="8,0,0,0" TextWrapping="Wrap"/>"##, ui::esc(&c.name), ui::esc(&p.title), self.size(self.part_true(r, p).0));
+            x += &format!(r##"<TextBlock Text="{}: {}   {}" FontSize="12" Foreground="{{$text2}}" Margin="8,0,0,0" TextWrapping="Wrap"/>"##, ui::esc(&c.name), ui::esc(&p.title), self.size(self.part_true(r, p).0));
         }
-        x += r##"<TextBlock Text="Each is marked in the list, where it can be ticked or turned down on its own." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
+        x += r##"<TextBlock Text="Each is marked in the list, where it can be ticked or turned down on its own." TextWrapping="Wrap" FontSize="12" Foreground="{$text3}"/>"##;
         if left > 0 {
-            x += &format!(r##"<TextBlock Text="{left} more it named can't be ticked here (not found, not safe enough, or nothing to clean); they are left out." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
+            x += &format!(r##"<TextBlock Text="{left} more it named can't be ticked here (not found, not safe enough, or nothing to clean); they are left out." TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}"/>"##);
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if !ok.is_empty() {
@@ -1222,7 +1222,7 @@ impl State {
                 None => self.advisor.note.unwrap_or("Scan a drive or folder, and the cleaners show what can go.").into(),
             };
             x += &format!(
-                r##"<StackPanel Spacing="10"><StackPanel Orientation="Horizontal" Spacing="10">{}<TextBlock x:Name="ClReading" Text="{}" {} TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13" VerticalAlignment="Center"/></StackPanel>{}</StackPanel></Grid>"##,
+                r##"<StackPanel Spacing="10"><StackPanel Orientation="Horizontal" Spacing="10">{}<TextBlock x:Name="ClReading" Text="{}" {} TextWrapping="Wrap" Foreground="{{$text2}}" FontSize="13" VerticalAlignment="Center"/></StackPanel>{}</StackPanel></Grid>"##,
                 if reading.is_some() || self.advisor.running { r##"<ProgressRing IsActive="True" Width="18" Height="18"/>"## } else { "" },
                 ui::esc(&msg),
                 crate::look::NUM,
@@ -1264,7 +1264,7 @@ impl State {
             },
         };
         x += &format!(
-            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock {} FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
+            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock {} FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="{{$text2}}"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
             crate::look::NUM,
             if total > 0 { self.size(total) } else { "Nothing to clean".into() },
             if total > 0 { format!(" in {apps} {}", if apps == 1 { "application" } else { "applications" }) } else { String::new() },
@@ -1308,7 +1308,7 @@ impl State {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
         }
         if rows.is_empty() {
-            x += r##"<TextBlock Text="No application Sprawl knows is here." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            x += r##"<TextBlock Text="No application Sprawl knows is here." TextWrapping="Wrap" Foreground="{$text2}"/>"##;
             x += &self.privacy_group(r);
             return x;
         }
@@ -1319,7 +1319,7 @@ impl State {
         for (ci, c) in rows.iter().enumerate() {
             if c.group != last_group {
                 last_group = c.group;
-                x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,8,0,0"/>"##, ui::esc(c.group));
+                x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text2}}" Margin="0,8,0,0"/>"##, ui::esc(c.group));
             }
             let open = self.advisor.cl.open.contains(&c.id);
             let bytes: u64 = c.parts.iter().filter(|p| !p.info).map(|p| self.part_true(r, p).0).sum();
@@ -1370,10 +1370,10 @@ impl State {
                 _ => String::new(),
             };
             x += &format!(
-                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{tick}<Button x:Name="AdvClO{ci}" Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,6" CornerRadius="7" BorderThickness="0" Background="{bg}" AutomationProperties.Name="{name}">
+                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{tick}<Border Grid.Column="1" CornerRadius="7" Background="{bg}"/><Button x:Name="AdvClO{ci}" Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,6" CornerRadius="7" BorderThickness="0" Background="Transparent" AutomationProperties.Name="{name}">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
-<FontIcon Glyph="{chev}" FontSize="10" Foreground="#FF8E97AA" VerticalAlignment="Center"/>
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
+<FontIcon Glyph="{chev}" FontSize="10" Foreground="{{$text3}}" VerticalAlignment="Center"/>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
 <TextBlock Grid.Column="2" Text="{size}" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button>{side}</Grid>"##,
                 bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
@@ -1438,7 +1438,7 @@ impl State {
             _ => {}
         }
         let cost = if all_ticked && !p.cost.is_empty() && p.risk >= Risk::Amber {
-            format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&format!("Ticked: {}", p.cost)))
+            format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$warn}}" TextWrapping="Wrap"/>"##, ui::esc(&format!("Ticked: {}", p.cost)))
         } else {
             String::new()
         };
@@ -1446,7 +1446,7 @@ impl State {
         // the AI's suggestion, on the row: its reason, Tick and Not this
         let sug = if self.part_suggested(r, p) {
             format!(
-                r##"<Border Grid.Column="1" Grid.Row="1" Margin="8,0,0,4" Padding="8,4" CornerRadius="5" Background="#1A2F7BF6"><StackPanel Spacing="4"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="AI suggests: " FontWeight="SemiBold" Foreground="#FF8FB4FF"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvClSgT{n}" Content="Tick" Padding="8,1" FontSize="12" CornerRadius="4" IsEnabled="{}"/><Button x:Name="AdvClSgX{n}" Content="Not this" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Turns it down: the AI won't suggest it again."/></StackPanel></StackPanel></Border>"##,
+                r##"<Border Grid.Column="1" Grid.Row="1" Margin="8,0,0,4" Padding="8,4" CornerRadius="5" Background="#1A2F7BF6"><StackPanel Spacing="4"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="AI suggests: " FontWeight="SemiBold" Foreground="{{$link}}"/><Run Text="{}" Foreground="{{$text1}}"/></TextBlock><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvClSgT{n}" Content="Tick" Padding="8,1" FontSize="12" CornerRadius="4" IsEnabled="{}"/><Button x:Name="AdvClSgX{n}" Content="Not this" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="Turns it down: the AI won't suggest it again."/></StackPanel></StackPanel></Border>"##,
                 ui::esc(&self.sug_reason(p)),
                 if running || all_ticked { "False" } else { "True" }
             )
@@ -1456,7 +1456,7 @@ impl State {
         let (true_bytes, counted) = self.part_true(r, p);
         format!(
             r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>{tick}<Button x:Name="AdvClP{n}" Grid.Column="1" {bg} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8,4" CornerRadius="6" AutomationProperties.Name="{title}: details">
-<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{dot}" VerticalAlignment="Top" Margin="0,6,0,0"/><StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="13" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{dot}" VerticalAlignment="Top" Margin="0,6,0,0"/><StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="13" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
             op = if bytes > 0 { "1" } else { "0.55" },
             bg = crate::look::pick(crate::look::Pick::Tab, sel),
             dot = if p.info { "#FF8E97AA" } else { crate::advisor::risk_hex(p.risk) },
@@ -1509,7 +1509,7 @@ impl State {
             match found {
                 Some((n, (c, p))) => x += &self.part_details(r, c, p, n),
                 None => {
-                    x += r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><TextBlock Text="Pick a part to see what it is, what cleaning it costs, where it is and whether its application is open. Nothing goes before you review it and confirm." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></Border>"##
+                    x += r##"<Border Padding="14,12" CornerRadius="8" Background="{$surface1}"><TextBlock Text="Pick a part to see what it is, what cleaning it costs, where it is and whether its application is open. Nothing goes before you review it and confirm." TextWrapping="Wrap" FontSize="12" Foreground="{$text2}"/></Border>"##
                 }
             }
         }
@@ -1521,7 +1521,7 @@ impl State {
     fn ai_column(&self, r: &Report) -> String {
         let cfg = AiConfig::load();
         if cfg.provider == Provider::Off {
-            return r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><StackPanel Spacing="8"><TextBlock Text="AI" FontSize="13" FontWeight="SemiBold"/><Button x:Name="AdvClSetup" Content="Set up AI"/></StackPanel></Border>"##.into();
+            return r##"<Border Padding="14,12" CornerRadius="8" Background="{$surface1}"><StackPanel Spacing="8"><TextBlock Text="AI" FontSize="13" FontWeight="SemiBold"/><Button x:Name="AdvClSetup" Content="Set up AI"/></StackPanel></Border>"##.into();
         }
         let mut x = self.suggest_card(r);
         x += &self.chat_card();
@@ -1532,11 +1532,11 @@ impl State {
     /// days it keeps, and its biggest files.
     fn part_details(&self, r: &Report, c: &ClRow, p: &PartRow, n: usize) -> String {
         let bytes = p.bytes(r);
-        let label = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,4,0,0"/>"##, ui::esc(t));
-        let body = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(t));
-        let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="3">"##);
+        let label = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text2}}" Margin="0,4,0,0"/>"##, ui::esc(t));
+        let body = |t: &str| format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text1}}" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(t));
+        let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="8" Background="{$surface3}" BorderBrush="{$line2}" BorderThickness="1"><StackPanel Spacing="3">"##);
         x += &format!(
-            r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="15" FontWeight="SemiBold"/></Grid>"##,
+            r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="15" FontWeight="SemiBold"/></Grid>"##,
             ui::esc(&p.title),
             ui::esc(&format!("{} · {}", c.name, if p.info { "Tip" } else if p.class == Class::Privacy { "Privacy" } else { crate::advisor::risk_label(p.risk) })),
             match self.part_true(r, p) {
@@ -1546,7 +1546,7 @@ impl State {
             }
         );
         if self.part_suggested(r, p) {
-            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0"><Run Text="AI suggests: " FontWeight="SemiBold" Foreground="#FF8FB4FF"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##, ui::esc(&self.sug_reason(p)));
+            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0"><Run Text="AI suggests: " FontWeight="SemiBold" Foreground="{{$link}}"/><Run Text="{}" Foreground="{{$text1}}"/></TextBlock>"##, ui::esc(&self.sug_reason(p)));
         }
         x += &label("What it is");
         x += &body(if p.why.is_empty() { "No description." } else { &p.why });
@@ -1569,7 +1569,7 @@ impl State {
             x += &body("Nothing of it here now.");
         }
         for &i in p.findings.iter().take(8) {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="#FFB9C2D6" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontFamily="Consolas" Foreground="{{$text2}}" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
         }
         if p.findings.len() > 8 {
             x += &body(&format!("and {} more places", p.findings.len() - 8));
@@ -1579,7 +1579,7 @@ impl State {
         let open = p.findings.first().and_then(|&i| self.app_open(&r.findings[i]));
         x += &label("In use");
         x += &match (&open, d) {
-            (Some((app, Closed::Must)), _) => format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open, or that can't be told: close it first. This can't be cleaned while it runs."))),
+            (Some((app, Closed::Must)), _) => format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$warn}}" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open, or that can't be told: close it first. This can't be cleaned while it runs."))),
             (Some((app, _)), _) => format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open: files it is using are skipped."))),
             (None, Some(d)) if !d.running.is_empty() && p.closed != Closed::No => body(&format!("{} isn't open.", d.name)),
             _ => body("Can be cleaned while the application runs; files in use are skipped."),
@@ -1589,7 +1589,7 @@ impl State {
             let days = self.part_days(p);
             x += &label("Keeps");
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFD5DBE8" VerticalAlignment="Center"/><Button x:Name="AdvClK{n}" Content="Keep more days" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What changed lately stays. Press to keep more days."/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="{{$text1}}" VerticalAlignment="Center"/><Button x:Name="AdvClK{n}" Content="Keep more days" Padding="8,1" FontSize="12" CornerRadius="4" ToolTipService.ToolTip="What changed lately stays. Press to keep more days."/></StackPanel>"##,
                 ui::esc(&if days == 0 { "Everything in it goes.".to_string() } else { format!("What changed in the last {days} days stays.") })
             );
         }
@@ -1610,7 +1610,7 @@ impl State {
         }
         if self.advisor.cl.part_q.as_deref() == Some(p.key.as_str()) {
             x += &label("The AI says");
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Asking..." FontSize="12" Foreground="#FFB9C2D6"/></StackPanel>"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Asking..." FontSize="12" Foreground="{$text2}"/></StackPanel>"##;
         } else if let Some(a) = self.advisor.cl.part_answers.get(&p.key) {
             x += &label("The AI says");
             x += &ui::markdown(a, 12, "#FFD5DBE8");
@@ -1626,13 +1626,13 @@ impl State {
                 format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
             };
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}"/>{forget}</StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0"><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}"/>{forget}</StackPanel>"##,
                 ui::esc(&format!("From {}", d.pack)),
                 if showing { "Hide the definition" } else { "Show the definition" }
             );
             if showing {
                 x += &format!(
-                    r##"<Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
+                    r##"<Border Padding="10,8" CornerRadius="5" Background="{{$shade}}"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
                     d.text.lines().map(ui::esc).collect::<Vec<_>>().join("&#10;")
                 );
             }
@@ -1646,7 +1646,7 @@ impl State {
         let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="4">"##);
         match pv {
             PreviewRun::Counting(_) => {
-                x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="Counting what would go..." FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel><TextBlock Text="Nothing is deleted: this only looks." FontSize="12" Foreground="#FFB9C2D6"/>"##;
+                x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="Counting what would go..." FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel><TextBlock Text="Nothing is deleted: this only looks." FontSize="12" Foreground="{$text2}"/>"##;
             }
             PreviewRun::Done(items, keys) => {
                 let bytes: u64 = items.iter().filter_map(|it| it.got.as_ref()).map(|g| g.bytes).sum();
@@ -1655,11 +1655,11 @@ impl State {
                     r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><Button x:Name="AdvClPrevX" Grid.Column="1" Content="Close"/></Grid>"##,
                     ui::esc(&format!("{} {} would go, {}", crate::format::thousands(files), if files == 1 { "file" } else { "files" }, self.size(bytes)))
                 );
-                x += r##"<TextBlock Text="Counted now by the clean-up's own tests: what is protected, kept by you, or new since the read stays. Nothing was deleted." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##;
+                x += r##"<TextBlock Text="Counted now by the clean-up's own tests: what is protected, kept by you, or new since the read stays. Nothing was deleted." FontSize="12" Foreground="{$text2}" TextWrapping="Wrap"/>"##;
                 let mut now: Vec<String> = self.ticked_findings().into_iter().map(|(_, f)| key(&f.path)).collect();
                 now.sort();
                 if now != *keys {
-                    x += r##"<TextBlock Text="The ticks changed since: preview again for these numbers." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##;
+                    x += r##"<TextBlock Text="The ticks changed since: preview again for these numbers." FontSize="12" Foreground="{$warn}" TextWrapping="Wrap"/>"##;
                 }
                 for it in items {
                     let what = match &it.got {
@@ -1667,7 +1667,7 @@ impl State {
                         None => "its program decides".into(),
                     };
                     x += &format!(
-                        r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="12" Foreground="#FFB9C2D6"/></Grid>"##,
+                        r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="12" Foreground="{{$text2}}"/></Grid>"##,
                         ui::esc(&it.title),
                         ui::esc(&what)
                     );
@@ -1675,11 +1675,11 @@ impl State {
                 let mut biggest: Vec<&(std::path::PathBuf, u64)> = items.iter().filter_map(|it| it.got.as_ref()).flat_map(|g| g.biggest.iter()).collect();
                 biggest.sort_by_key(|(_, b)| std::cmp::Reverse(*b));
                 if !biggest.is_empty() {
-                    x += r##"<TextBlock Text="The biggest of them:" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,6,0,0"/>"##;
+                    x += r##"<TextBlock Text="The biggest of them:" FontSize="12" FontWeight="SemiBold" Foreground="{$text2}" Margin="0,6,0,0"/>"##;
                 }
                 for (p, b) in biggest.into_iter().take(PREVIEW_FILES) {
                     x += &format!(
-                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="11" FontFamily="Consolas" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" ToolTipService.ToolTip="{0}"/><TextBlock Grid.Column="1" Text="{}" FontSize="11" Foreground="#FFB9C2D6"/></Grid>"##,
+                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="11" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" ToolTipService.ToolTip="{0}"/><TextBlock Grid.Column="1" Text="{}" FontSize="11" Foreground="{{$text2}}"/></Grid>"##,
                         ui::esc(&p.display().to_string()),
                         self.size(*b)
                     );
@@ -1824,7 +1824,7 @@ impl State {
         apps.sort_by_key(|(_, b)| std::cmp::Reverse(*b));
         let total: u64 = apps.iter().map(|(_, b)| b).sum();
         let mut x = format!(
-            r##"<Button x:Name="AdvClGrp" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Cleaners" FontWeight="SemiBold"/><Run Text="   Caches of {} {}, {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="Caches, logs and crash reports the applications make again. Tick an application here for its caches and logs, or see each part in Cleaners." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+            r##"<Button x:Name="AdvClGrp" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="{{$surface2}}"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Cleaners" FontWeight="SemiBold"/><Run Text="   Caches of {} {}, {} ({})" Foreground="{{$text2}}"/></TextBlock><TextBlock Text="Caches, logs and crash reports the applications make again. Tick an application here for its caches and logs, or see each part in Cleaners." FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel></Button>"##,
             apps.len(),
             if apps.len() == 1 { "application" } else { "applications" },
             self.size(total),
@@ -1851,7 +1851,7 @@ impl State {
             };
             let n = c.parts.iter().filter(|p| p.findings.iter().any(|i| mine.contains(i))).count();
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="13" VerticalAlignment="Center"/></Grid>"##,
                 match state {
                     Some(s) => format!(
                         r##"<CheckBox x:Name="AdvClA{ci}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{s}" IsEnabled="{}" AutomationProperties.Name="Clean up {}" ToolTipService.ToolTip="Ticks its caches and logs. Privacy parts are ticked one by one, in Cleaners."/>"##,
@@ -1873,7 +1873,7 @@ impl State {
         // ticks in the applications not listed here would be out of sight
         let hidden: usize = apps.iter().skip(GROUP_APPS).map(|&(ci, _)| rows[ci].parts.iter().filter(|p| p.findings.iter().any(|&i| ticked(i))).count()).sum();
         if hidden > 0 {
-            x += &format!(r##"<TextBlock Text="{hidden} more ticked in applications not listed here: see them in Cleaners." FontSize="12" Foreground="#FF8E97AA" Margin="34,2,0,0" TextWrapping="Wrap"/>"##);
+            x += &format!(r##"<TextBlock Text="{hidden} more ticked in applications not listed here: see them in Cleaners." FontSize="12" Foreground="{{$text3}}" Margin="34,2,0,0" TextWrapping="Wrap"/>"##);
         }
         x += &format!(
             r##"<Button x:Name="AdvClAll" Content="{}" Margin="34,4,0,0"/></StackPanel>"##,
@@ -1904,12 +1904,12 @@ impl State {
         }
         let running = self.advisor.cleanup.running.is_some();
         let mut x = format!(
-            r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6" Margin="0,8,0,0"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##,
+            r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text2}}" Margin="0,8,0,0"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/>"##,
             PV_HEAD,
             ui::esc(PV_SUB)
         );
         if r.privacy_rows.is_empty() {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Margin="34,2,0,0"/>"##, ui::esc(PV_NONE));
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="34,2,0,0"/>"##, ui::esc(PV_NONE));
         }
         for row in &r.privacy_rows {
             let name = format!("{} · {}", row.browser.short, row.shown);
@@ -1929,7 +1929,7 @@ impl State {
                     None => {}
                 }
                 x += &format!(
-                    r##"<Grid ColumnSpacing="6" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvPvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="{}"/><StackPanel Grid.Column="1" Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="13" ToolTipService.ToolTip="{}"/></StackPanel><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/><TextBlock Text="{}" FontSize="12" Foreground="{}" TextWrapping="Wrap"/></StackPanel></Grid>"##,
+                    r##"<Grid ColumnSpacing="6" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvPvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="{}"/><StackPanel Grid.Column="1" Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="13" ToolTipService.ToolTip="{}"/></StackPanel><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}"/><TextBlock Text="{}" FontSize="12" Foreground="{}" TextWrapping="Wrap"/></StackPanel></Grid>"##,
                     if ticked { "True" } else { "False" },
                     if running { "False" } else { "True" },
                     ui::esc(&f.title),
@@ -1946,7 +1946,7 @@ impl State {
         if !r.privacy_held.is_empty() {
             let why: Vec<String> = r.privacy_held.iter().map(|(f, w)| format!("{}: {w}", f.title)).collect();
             x += &format!(
-                r##"<TextBlock Text="{} {}" FontSize="12" Foreground="#FF8E97AA" Margin="34,2,0,0" ToolTipService.ToolTip="{}"/>"##,
+                r##"<TextBlock Text="{} {}" FontSize="12" Foreground="{{$text3}}" Margin="34,2,0,0" ToolTipService.ToolTip="{}"/>"##,
                 r.privacy_held.len(),
                 PV_HELD,
                 ui::esc(&why.join("&#10;"))

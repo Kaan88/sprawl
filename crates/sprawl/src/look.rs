@@ -132,7 +132,12 @@ pub(crate) fn pick(kind: Pick, on: bool) -> String {
     if kind == Pick::Page {
         return format!(r##"Style="{{StaticResource SprawlPage}}" Background="Transparent" BorderBrush="{}""##, if on { underline() } else { "Transparent" });
     }
-    let fg = kind.fg(on).map(|c| format!(r#" Foreground="{c}""#)).unwrap_or_default();
+    // written off too, so a chip picked or unpicked is changed in place (an attribute that goes
+    // has the control loaded again: see reconcile.rs)
+    let fg = match kind {
+        Pick::Chip | Pick::Mode => format!(r#" Foreground="{}""#, kind.fg(on).unwrap_or(REST_TEXT)),
+        _ => kind.fg(on).map(|c| format!(r#" Foreground="{c}""#)).unwrap_or_default(),
+    };
     format!(r##"Style="{{StaticResource {}}}" Background="{}"{fg}"##, kind.style(), kind.bg(on))
 }
 
@@ -165,7 +170,7 @@ pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
 /// A tag on a row that says what kind of thing it is ("Delete", "How to"): plain words in the
 /// row's quiet colour, with no background or border, so it does not read as a button.
 pub(crate) fn label(text: &str) -> String {
-    format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
+    format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
 }
 
 /// The template both selectable styles share: the item's own background (set by `paint` or
@@ -191,7 +196,7 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
     // a filled button (the red one) turns grey when it can't be pressed, as WinUI's do; the
     // rest just fade
     let disabled = if grey_off {
-        r##"<Setter Target="Root.Background" Value="#14FFFFFF"/><Setter Target="Content.Foreground" Value="#5CFFFFFF"/>"##
+        r##"<Setter Target="Root.Background" Value="{$hover}"/><Setter Target="Content.Foreground" Value="#5CFFFFFF"/>"##
     } else {
         r##"<Setter Target="Content.Opacity" Value="0.4"/>"##
     };
@@ -478,10 +483,10 @@ impl State {
     /// The list under the pill: each job, and a click opens its tab.
     fn busy_list(&self, listed: &[Job]) {
         let Ok(host) = find::<Border>(&self.root, "BusyList") else { return };
-        let mut x = format!(r##"<StackPanel {} Spacing="2"><TextBlock Text="Running now" FontSize="12" Foreground="#FF8E97AA" Margin="10,0,10,4"/>"##, ui::NS);
+        let mut x = format!(r##"<StackPanel {} Spacing="2"><TextBlock Text="Running now" FontSize="12" Foreground="{{$text3}}" Margin="10,0,10,4"/>"##, ui::NS);
         for (i, j) in listed.iter().enumerate() {
             x += &format!(
-                r##"<Button x:Name="BusyGo{i}" {} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,5" ToolTipService.ToolTip="Open {tab}"><Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{tab}  &#x203A;" Foreground="#FF8E97AA"/></Grid></Button>"##,
+                r##"<Button x:Name="BusyGo{i}" {} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,5" ToolTipService.ToolTip="Open {tab}"><Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{tab}  &#x203A;" Foreground="{{$text3}}"/></Grid></Button>"##,
                 pick(Pick::Tab, false),
                 ui::esc(&j.what),
                 tab = tab_name(j.tab),

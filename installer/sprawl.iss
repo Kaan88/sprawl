@@ -73,6 +73,14 @@ Type: files; Name: "{app}\Microsoft.WindowsAppRuntime.Bootstrap.dll.old"
 Type: files; Name: "{app}\.sprawl-update\sprawl.exe"; Check: CanCleanStage
 Type: files; Name: "{app}\.sprawl-update\Microsoft.WindowsAppRuntime.Bootstrap.dll"; Check: CanCleanStage
 Type: dirifempty; Name: "{app}\.sprawl-update"; Check: CanCleanStage
+; the recovery copy of a previous update: only the names Sprawl writes there, so a runnable
+; old sprawl.exe doesn't stay behind after uninstall
+Type: files; Name: "{app}\.sprawl-recovery\sprawl.exe"; Check: CanCleanRecovery
+Type: files; Name: "{app}\.sprawl-recovery\Microsoft.WindowsAppRuntime.Bootstrap.dll"; Check: CanCleanRecovery
+Type: files; Name: "{app}\.sprawl-recovery\recovery.json"; Check: CanCleanRecovery
+Type: files; Name: "{app}\.sprawl-recovery\READY"; Check: CanCleanRecovery
+Type: files; Name: "{app}\.sprawl-recovery\README.txt"; Check: CanCleanRecovery
+Type: dirifempty; Name: "{app}\.sprawl-recovery"; Check: CanCleanRecovery
 
 [Run]
 ; as the user who started Setup, never with Setup's administrator rights
@@ -94,12 +102,23 @@ end;
 function GetFileAttributesW(Name: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
 
-function CanCleanStage: Boolean;
+{ A plain folder: there, a directory, and not a reparse point or an offline placeholder. }
+function PlainDir(Path: String): Boolean;
 var Attr: Cardinal;
 begin
-  Attr := GetFileAttributesW(ExpandConstant('{app}\.sprawl-update'));
+  Attr := GetFileAttributesW(Path);
   Result := (Attr <> $FFFFFFFF) and ((Attr and $10) <> 0) and
     ((Attr and ($400 or $1000 or $40000 or $400000)) = 0);
+end;
+
+function CanCleanStage: Boolean;
+begin
+  Result := PlainDir(ExpandConstant('{app}\.sprawl-update'));
+end;
+
+function CanCleanRecovery: Boolean;
+begin
+  Result := PlainDir(ExpandConstant('{app}\.sprawl-recovery'));
 end;
 
 function CurrentAccountSid: String;

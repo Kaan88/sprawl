@@ -18,11 +18,17 @@
 //! `-` or `.` and be y/m/d or m/d/y with optional AM/PM, attributes may be a number or letters
 //! (`RHSDA...`), and `\\?\` prefixes are dropped. The hierarchy is rebuilt from the paths; folder
 //! sizes and counts are recomputed from the files (a folder row without any rows below it keeps
-//! the values written in the file).
+//! the values written in the file). A line longer than [`MAX_LINE`] stops the import with an
+//! error, so a planted file with no newline in it can't be read into memory whole.
+//!
+//! A name can hold control characters (the MFT keeps whatever was written); writing one raw
+//! would split the row over two lines. The writer puts each of them as `?`, which no Windows
+//! name may contain, so the file stays one row per item and the reader skips that row as the
+//! implausible path it is.
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
@@ -32,6 +38,10 @@ use crate::progress::{LiveBatch, Progress, ScanMethod};
 use crate::{attr, filetime_to_system, system_to_filetime, Node, Tree, MULTIPLE, ROOT};
 
 pub const HEADER: &str = "File Name,Size,Allocated,Modified,Attributes,Files,Folders";
+
+/// Longest line the reader accepts (review P3-6). A Windows path is at most 32 767 UTF-16
+/// units, which is about 64 KB of UTF-8, and the other columns are short.
+pub const MAX_LINE: usize = 70 * 1024;
 
 /// Write `tree` as a WizTree-style CSV.
 pub fn export_csv(tree: &Tree, out: &mut impl Write) -> io::Result<()> {
@@ -69,13 +79,29 @@ pub fn export_csv(tree: &Tree, out: &mut impl Write) -> io::Result<()> {
             let modified = n.modified.map(|t| local_time_string(system_to_filetime(t))).unwrap_or_default();
             let attrs = if n.is_dir { n.attributes | attr::DIRECTORY } else { n.attributes };
             let (files, folders) = if n.is_dir { (n.files, n.folders) } else { (0, 0) };
-            write!(w, "\"{}\",{},{},{},{},{},{}\r\n", buf.replace('"', "\"\""), n.size, n.allocated, modified, attrs, files, folders)?;
+            write!(w, "\"{}\",{},{},{},{},{},{}\r\n", quoted_path(&buf), n.size, n.allocated, modified, attrs, files, folders)?;
         }
         for &c in n.children.iter().rev() {
             stack.push((c, here));
         }
     }
     w.flush()
+}
+
+/// A path as the body of a quoted field: quotes doubled, and every control character as `?`
+/// (review P3-6). A raw control character would break the file - a `\n` or `\r` in a name ends
+/// the row in the middle - and `?` can't be part of a Windows name, so the row stays one line
+/// and [`plausible_path`] refuses it on the way back in.
+fn quoted_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len() + 2);
+    for c in p.chars() {
+        match c {
+            '"' => out.push_str("\"\""),
+            c if (c as u32) < 0x20 => out.push('?'),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Columns of interest, by position in a row.
@@ -204,6 +230,20 @@ fn normalise(raw: &str) -> (String, bool) {
         p.push('\\');
     }
     (p, is_dir)
+}
+
+/// One path component that means only itself: not empty, not `.` or `..`, no separator, no
+/// wildcard or other character Windows reserves, nothing it would trim (a trailing dot or
+/// space) and no control character. The same rule [`plausible_path`] applies to each segment;
+/// the History snapshot reader uses it too, so a saved tree can always be projected onto a
+/// live one (review P3-7).
+pub fn plausible_name(name: &str) -> bool {
+    !name.is_empty()
+        && !matches!(name, "." | "..")
+        && !name.ends_with('.')
+        && !name.ends_with(' ')
+        && !name.contains(['\\', '/', ':', '*', '?', '<', '>', '|'])
+        && !name.chars().any(|c| (c as u32) < 0x20)
 }
 
 /// A CSV row is only data: rows whose path could mean something other than what it says
@@ -385,9 +425,14 @@ pub fn load_csv(path: &Path, progress: &Progress) -> io::Result<Tree> {
     let mut first = true;
     loop {
         raw.clear();
-        let n = reader.read_until(b'\n', &mut raw)?;
+        // one line at a time, and never more than MAX_LINE of it: a file with no newline in it
+        // must not be read into memory whole (review P3-6)
+        let n = (&mut reader).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut raw)?;
         if n == 0 {
             break;
+        }
+        if n > MAX_LINE {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("a line in the CSV file is longer than {} KB (at byte {read})", MAX_LINE / 1024)));
         }
         read += n as u64;
         let mut line: &[u8] = &raw;
@@ -516,6 +561,14 @@ mod tests {
         assert!(!plausible_path(r"relative\path"));
         assert!(!plausible_path(r"C:\a.txt:hidden"));
         assert!(!plausible_path("C:\\a\u{7}b"));
+        // the shared name rule says of one component what plausible_path says of the path
+        assert!(plausible_name("notes.txt") && plausible_name("a b") && plausible_name(".hidden"));
+        for bad in ["", ".", "..", "notes.", "trail ", "a*b", "a?b", "a<b", "a>b", "a|b", "a:b", "a\\b", "a/b", "a\u{7}b"] {
+            assert!(!plausible_name(bad), "{bad:?}");
+            if !bad.is_empty() && !bad.contains(['\\', '/']) {
+                assert!(!plausible_path(&format!("C:\\{bad}")), "{bad:?}");
+            }
+        }
         assert_eq!(normalise("C:"), (r"C:\".to_string(), false));
         assert_eq!(normalise(r"\\?\C:\x\y.txt"), (r"C:\x\y.txt".to_string(), false));
         assert_eq!(normalise(r"\\?\UNC\srv\share\x\"), (r"\\srv\share\x".to_string(), true));
@@ -658,6 +711,47 @@ mod tests {
         std::fs::write(&path, csv).unwrap();
         let t = load_csv(&path, &Progress::new()).unwrap();
         assert_eq!((t.nodes[ROOT].size, t.nodes[ROOT].files, t.nodes[ROOT].folders), (500, 9, 2));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_overlong_line_stops_the_import() {
+        // review P3-6: a planted file with no newline must not be read into memory whole
+        let path = temp("long.csv");
+        let long = format!("\"C:\\{}.txt\",2\r\n", "b".repeat(MAX_LINE));
+        std::fs::write(&path, format!("File Name,Size\r\n\"C:\\a.txt\",1\r\n{long}")).unwrap();
+        let e = load_csv(&path, &Progress::new()).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert!(e.to_string().contains("longer than 70 KB"), "{e}");
+        // and the same with no newline anywhere in the file
+        std::fs::write(&path, "x".repeat(MAX_LINE * 2)).unwrap();
+        assert!(load_csv(&path, &Progress::new()).unwrap_err().to_string().contains("longer than 70 KB"));
+        // a line just inside the limit is still read
+        let name = "c".repeat(MAX_LINE - 20);
+        std::fs::write(&path, format!("File Name,Size\r\n\"C:\\{name}.txt\",7\r\n")).unwrap();
+        let t = load_csv(&path, &Progress::new()).unwrap();
+        assert_eq!(t.nodes[ROOT].size, 7);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn control_characters_in_a_name_keep_the_file_one_row_per_item() {
+        // review P3-6: written raw, a `\r\n` in a name would end the row in the middle
+        let mut t = sample();
+        t.nodes[2].name = "we\r\nird\u{1}.txt".to_string();
+        let mut out = Vec::new();
+        export_csv(&t, &mut out).unwrap();
+        let text = String::from_utf8(out[3..].to_vec()).unwrap();
+        let lines: Vec<&str> = text.split("\r\n").filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2 + t.nodes.len(), "one line per item, plus the two header lines");
+        assert!(lines.iter().any(|l| l.starts_with(r#""C:\Program Files\we??ird?.txt","#)), "{lines:?}");
+
+        // and such a row is skipped on the way back in, as an implausible path
+        let path = temp("control.csv");
+        std::fs::write(&path, &out).unwrap();
+        let back = load_csv(&path, &Progress::new()).unwrap();
+        assert_eq!(back.nodes[ROOT].files, t.nodes[ROOT].files - 1);
+        assert!(!back.nodes.iter().any(|n| n.name.contains('?') || n.name.contains('\r')));
         let _ = std::fs::remove_file(&path);
     }
 }

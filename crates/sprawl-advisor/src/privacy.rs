@@ -109,11 +109,11 @@ const CHROMIUM_COOKIE_WAIVES: &[&str] = &[r"?:\**\Network\Cookies"];
 
 pub const PARTS: &[PrivacyPart] = &[
     PrivacyPart { browser: "privacy.chrome", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Chrome (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES },
-    PrivacyPart { browser: "privacy.chrome", id: "history", title: "History and download list", cost: "Chrome forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles and address-bar suggestions made from them. The downloaded files stay.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
+    PrivacyPart { browser: "privacy.chrome", id: "history", title: "History and download list", cost: "Chrome forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
     PrivacyPart { browser: "privacy.edge", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Edge (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES },
-    PrivacyPart { browser: "privacy.edge", id: "history", title: "History and download list", cost: "Edge forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles and address-bar suggestions made from them. The downloaded files stay.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
+    PrivacyPart { browser: "privacy.edge", id: "history", title: "History and download list", cost: "Edge forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
     PrivacyPart { browser: "privacy.brave", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Brave (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES },
-    PrivacyPart { browser: "privacy.brave", id: "history", title: "History and download list", cost: "Brave forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles and address-bar suggestions made from them. The downloaded files stay.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
+    PrivacyPart { browser: "privacy.brave", id: "history", title: "History and download list", cost: "Brave forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
     PrivacyPart {
         browser: "privacy.firefox",
         id: "cookies",
@@ -370,13 +370,21 @@ pub(crate) fn find_in(tree: &Tree, places: &Places) -> Vec<Finding> {
         };
         let mut profiles: Vec<usize> = tree.nodes[n].children.iter().copied().filter(|&c| tree.nodes[c].is_dir && !tree.nodes[c].is_reparse_point() && profile_name_ok(b.kind, &tree.nodes[c].name)).collect();
         profiles.sort_by_key(|&c| tree.nodes[c].name.to_lowercase());
+        // a real profile: the browser's own settings file is in it
+        profiles.retain(|&prof| child(tree, prof, marker).is_some_and(|k| plain_file(tree, k)));
+        let name_of = |prof: usize| names.get(&tree.nodes[prof].name.to_lowercase()).cloned().unwrap_or_else(|| tree.nodes[prof].name.clone());
+        // two profiles may have the same name ("Work"): then each title says its folder too
+        // (Fable AI review P3-6)
+        let mut uses: HashMap<String, usize> = HashMap::new();
+        for &prof in &profiles {
+            *uses.entry(name_of(prof).to_lowercase()).or_default() += 1;
+        }
         for prof in profiles {
-            // a real profile: the browser's own settings file is in it
-            if !child(tree, prof, marker).is_some_and(|k| plain_file(tree, k)) {
-                continue;
-            }
             let folder = tree.nodes[prof].name.clone();
-            let shown = names.get(&folder.to_lowercase()).cloned().unwrap_or_else(|| folder.clone());
+            let mut shown = name_of(prof);
+            if uses.get(&shown.to_lowercase()).is_some_and(|&n| n > 1) && !shown.eq_ignore_ascii_case(&folder) {
+                shown = format!("{shown}, {folder}");
+            }
             'part: for part in parts_of(b.cleaner) {
                 let mut files = Vec::new();
                 let mut members: Vec<(String, u64)> = Vec::new();

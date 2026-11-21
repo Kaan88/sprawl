@@ -5,6 +5,8 @@ in-app updater shows.
 
 ## Unreleased
 
+- Ticking or opening a row in the Advisor and Cleaners changes only that part of the panel: the row keeps its highlight instead of flashing again when the mouse moves, the panel no longer blinks, and clicks answer faster. An opened Advisor finding or Cleaners app row no longer flashes bright grey when the mouse leaves it.
+
 - Buttons follow Windows 11: the standard size (14 px text, 32 px high, 4 px corners), the one main action of each place in your Windows accent colour, and a red button for deleting for good, so it no longer looks like ticking the safe ones. Selected chips and map modes are filled with the accent; text actions are plain until you point at them.
 - Update and restart from a Sprawl running as administrator works with one click: the copy that reopens without administrator rights waits for the administrator one to close, instead of stopping with "could not be closed" until you click again.
 - After Setup (an update, or Install for all users), Sprawl opens without administrator rights unless Always Run as Administrator is on, and the older per-user copy is removed even when Sprawl opens as administrator.
@@ -12,6 +14,25 @@ in-app updater shows.
 - Review selection opens again when the ticked items mix ones deleted for good with a program's own clean-up (or the Recycle Bin): the review's first line quotes "Deleted for good", and that quote stopped the whole review from being drawn, so the button seemed to do nothing. If part of the Advisor ever can't be drawn, Sprawl now says so.
 - Settings > General > Theme is saved now (it always went back to Like Windows). A change shows when Sprawl starts next.
 - An application's tick in Cleaners and in the Advisor ticks what its box shows, your own files included (the review asks for "my own files"): a cleaner for a project in Documents showed a box that ticked nothing.
+- Emptying the Recycle Bin is held, with its reason, when Sprawl runs as a different account from the one signed in: it would empty that account's bin, not yours.
+- Rows picked with Ctrl or Shift are dropped when a clean-up's rescan no longer finds them. They stayed behind counting nothing, and a later Delete could still catch them.
+- A folder scanned again after a clean-up takes its new identity, so it can be cleaned or compressed straight away instead of only after a whole new scan.
+- Replacing duplicates with links leaves a copy alone when its owner, permissions or read-only, hidden, system, compressed or encrypted marks differ from the file it would be linked to: one file can only have one set of each, so the copy would quietly take the other's. Because of that, this often does nothing for copies in different folders, and the suggestion says so.
+- Closing Sprawl during a link run waits for the instant a copy has no name of its own, so no file is left under its backup name. The duplicate search now lists any file an earlier interrupted run did leave under a ".sprawl-original" name, and says how to tell whether to rename it back or delete it.
+- The fast scan (as administrator) checks the drive's file table more strictly and reads folders instead when something doesn't add up: a boot record that isn't plain, a file table larger than the volume, pieces with a gap or an overlap, or a record that belongs to another file.
+- Sparse and NTFS-compressed files show what they really take on disk in an ordinary scan, instead of their size rounded up to a cluster.
+- If reading a folder goes wrong in a way Sprawl didn't expect, the scan counts that folder as unreadable and finishes, instead of waiting for ever.
+- A pattern with an invisible character in it (a tab, a zero-width space, a mark that reverses text) is refused, so the approval card shows exactly what will be checked.
+- A new or renamed custom AI can't take another's name, and a label the AI wrote says so in the Owner column.
+- A check owed after a rule was approved in Remembered starts as soon as the running check ends, not when you next open Remembered.
+- Each Claude Code chat runs in a folder made for it and removed when it ends, and an answer over 16 MB is not taken: Sprawl says so instead of working from half of it.
+- An AI key belongs to one server, host and port both, so a key saved for a local server on one port isn't sent to another server on the same PC. Keys saved before this are moved to the server they were saved for, once.
+- "Allow for this session" explains itself: the AI searches without asking until Sprawl closes, each search shows on the status line, and a search can carry folder and project names from your scan (your name and the PC's are taken out).
+- Privacy > History (Chrome, Edge, Brave) says what stays: the downloaded files, and some traces — site icons, address-bar predictions and the last session. Two profiles with the same name are told apart by their folder in the title.
+- A scan an MCP client asks for is saved to History as folders only, so it doesn't push out your own snapshots; a client that connects and sends nothing is disconnected instead of holding the pipe against the others; and a window where the bridge couldn't start writes the reason to bridge.log.
+- Restart as administrator from a scan of several folders opens all of them again, instead of trying to scan the word "Multiple", and says how many ticks didn't fit on the command line so you can tick those again.
+- Uninstall removes the recovery copy an earlier update left, so no old Sprawl stays runnable in Program Files.
+- Light or dark is read straight from Windows' setting; Sprawl no longer starts a program to ask.
 
 ## 1.0.5 — 2026-11-21
 

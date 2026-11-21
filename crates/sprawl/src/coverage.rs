@@ -165,7 +165,7 @@ impl State {
             .into_iter()
             .map(|(label, text)| {
                 format!(
-                    r##"<Grid ColumnSpacing="14" Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/><TextBlock Grid.Column="1" Text="{}" FontSize="13" Foreground="#FFD5DBE8" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></Grid>"##,
+                    r##"<Grid ColumnSpacing="14" Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}"/><TextBlock Grid.Column="1" Text="{}" FontSize="13" Foreground="{{$text1}}" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></Grid>"##,
                     esc(label),
                     // line by line: esc turns a line break into a replacement character
                     text.split('\n').map(esc).collect::<Vec<_>>().join("&#10;")

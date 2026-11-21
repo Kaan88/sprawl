@@ -32,7 +32,9 @@ mod watch;
 mod treemap;
 mod ui;
 mod look;
+mod reconcile;
 mod theme;
+mod tokens;
 mod win32;
 mod welcome;
 mod wizard;
@@ -70,10 +72,14 @@ use state::{find, keep, load, with, State, Units, View, STATE};
 
 struct Args {
     shot: Option<PathBuf>,
-    folder: Option<PathBuf>,
+    /// What to scan. Several, when a scan of several folders is opened again (a restart as
+    /// administrator passes each real root, not the "Multiple" the tree is named after).
+    folders: Vec<PathBuf>,
     /// Restarted as administrator from the Advisor: open it again, with these ticks.
     advisor: bool,
     ticks: Vec<PathBuf>,
+    /// Ticks that did not fit on that restart's command line, to say once.
+    ticks_left: usize,
     /// Started by an elevated copy to install this version without administrator rights.
     resume: Option<String>,
     /// Started by Setup when it finishes (Setup runs as administrator).
@@ -86,9 +92,11 @@ struct Args {
 const FROM_SETUP_ARG: &str = "--from-setup";
 /// The helper an elevated copy starts without administrator rights to remove the per-user copy.
 const REMOVE_PER_USER_ARG: &str = "--remove-per-user";
+/// How many ticks a restart as administrator had to leave behind (the command line is finite).
+pub(crate) const TICKS_LEFT_ARG: &str = "--ticks-left";
 
 fn args() -> Args {
-    let mut a = Args { shot: None, folder: None, advisor: false, ticks: Vec::new(), resume: None, from_setup: false, remove_per_user: false };
+    let mut a = Args { shot: None, folders: Vec::new(), advisor: false, ticks: Vec::new(), ticks_left: 0, resume: None, from_setup: false, remove_per_user: false };
     let mut it = std::env::args_os().skip(1);
     while let Some(x) = it.next() {
         if x == "--screenshot" {
@@ -99,12 +107,14 @@ fn args() -> Args {
             a.resume = Some(it.next().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default());
         } else if x == "--tick" {
             a.ticks.extend(it.next().map(PathBuf::from));
+        } else if x == TICKS_LEFT_ARG {
+            a.ticks_left = it.next().and_then(|v| v.to_string_lossy().parse().ok()).unwrap_or(0);
         } else if x == FROM_SETUP_ARG {
             a.from_setup = true;
         } else if x == REMOVE_PER_USER_ARG {
             a.remove_per_user = true;
         } else {
-            a.folder = Some(PathBuf::from(x));
+            a.folders.push(PathBuf::from(x));
         }
     }
     a
@@ -525,7 +535,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     let shot = a.shot.clone();
     // dev: SPRAWL_EMPTY=1 pictures the window as it opens, before any scan
     let empty = std::env::var_os("SPRAWL_EMPTY").is_some();
-    let first = a.folder.clone().or_else(|| shot.as_ref().filter(|_| !empty).map(|_| PathBuf::from(r"C:\Program Files")));
+    let first = a.folders.first().cloned().or_else(|| shot.as_ref().filter(|_| !empty).map(|_| PathBuf::from(r"C:\Program Files")));
     let state = State {
         window,
         hwnd,
@@ -603,11 +613,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         if restart {
             // ticks only become ticks for findings of the new report; the review still asks
             s.advisor.cleanup.pending = Some(a.ticks.iter().take(500).map(|p| crate::cleanup::key(p)).collect());
+            s.advisor.cleanup.pending_left = a.ticks_left;
             s.command("TabAdvisor");
         } else {
             s.open_on(tab);
         }
-        if let Some(f) = first {
+        if a.folders.len() > 1 {
+            s.start(state::Source::Folders(a.folders.clone()));
+        } else if let Some(f) = first {
             s.start_scan(f);
         } else if let Some(c) = s.drives.first().cloned() {
             s.update_header(std::path::Path::new(&c));
@@ -642,6 +655,8 @@ fn main() {
     }
     bridge::start();
     sprawl_advisor::config::migrate_old_folders();
+    // a key from before hosts were recorded stays with the server it was saved for
+    sprawl_advisor::config::record_key_host();
     // A panic inside a XAML callback aborts the process with no message; keep a note of it.
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("{info}

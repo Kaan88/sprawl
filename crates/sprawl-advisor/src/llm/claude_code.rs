@@ -55,12 +55,23 @@ pub(crate) fn args(model: &str, mcp: Option<&Path>, effort: Option<&str>) -> Vec
     a
 }
 
-/// An empty folder to run it in, so no project CLAUDE.md or settings are picked up.
-fn workdir() -> PathBuf {
-    let d = super::advisor_dir().map(|d| d.join("claude-code")).unwrap_or_else(std::env::temp_dir);
-    let _ = std::fs::create_dir_all(&d);
-    d
+/// A new, empty folder to run it in, so no CLAUDE.md or settings are picked up: an
+/// [`sprawl_core::local::OwnedDir`] made for this turn alone and held until it ends, as Codex's
+/// (Fable AI review P3-1). Each folder from AppData down (`Sprawl`, `advisor`, `claude-code`)
+/// is opened, or made, through its parent's handle as itself (a link on the way is refused).
+fn workdir() -> Result<sprawl_core::local::OwnedDir, String> {
+    let appdata = std::env::var_os("APPDATA").ok_or("this account's AppData folder isn't known")?;
+    let mut held = sprawl_core::local::directory(Path::new(&appdata)).map_err(|e| format!("its AppData folder isn't a plain local folder ({e})"))?;
+    for name in ["Sprawl", "advisor", "claude-code"] {
+        held = held.child(name, true).map_err(|e| format!("couldn't make its {name} folder ({e})"))?;
+    }
+    let at = held.path.display().to_string();
+    sprawl_core::local::OwnedDir::create_under(held, "turn").map_err(|e| format!("couldn't make a folder for Claude Code in {at} ({e})"))
 }
+
+/// The most of Claude Code's output read for one turn.
+const MAX_OUTPUT: u64 = 16 << 20;
+const OUTPUT_TOO_LONG: &str = "Claude Code wrote more than 16 MB: no answer was taken from it";
 
 impl ClaudeCode {
     pub fn new(exe: &Path, model: &str, system: &str, first: &str) -> ClaudeCode {
@@ -139,7 +150,8 @@ impl ClaudeCode {
             }
             a.extend(["--include-partial-messages".to_string(), "--verbose".to_string()]);
         }
-        cmd.args(a).current_dir(workdir());
+        let wd = workdir()?;
+        cmd.args(a).current_dir(wd.path());
         // stderr isn't read: a full pipe would stall it
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         // in a job with everything it starts (a .cmd shim starts node): Stop, the time limit and
@@ -153,14 +165,23 @@ impl ClaudeCode {
         });
         let stdout = run.child.stdout.take().ok_or("no stdout")?;
         let (otx, orx) = std::sync::mpsc::channel::<Option<String>>();
+        // set when it wrote more than is kept (16 MB, as Codex; Fable AI review P3-3): no answer
+        let cut = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c2 = cut.clone();
         std::thread::spawn(move || {
             // each line as it comes, then None at the end
-            let mut r = std::io::BufReader::new(stdout);
+            let mut r = std::io::BufReader::new(std::io::Read::take(stdout, MAX_OUTPUT + 1));
+            let mut total = 0u64;
             loop {
                 let mut line = String::new();
                 match std::io::BufRead::read_line(&mut r, &mut line) {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => {
+                    Ok(n) => {
+                        total += n as u64;
+                        if total > MAX_OUTPUT {
+                            c2.store(true, std::sync::atomic::Ordering::Relaxed);
+                            break;
+                        }
                         if otx.send(Some(line)).is_err() {
                             return;
                         }
@@ -199,6 +220,10 @@ impl ClaudeCode {
                     None => finished = true,
                 }
             }
+            if cut.load(std::sync::atomic::Ordering::Relaxed) {
+                run.end();
+                return Err(OUTPUT_TOO_LONG.into());
+            }
             match run.child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) if self.stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) => {
@@ -225,6 +250,9 @@ impl ClaudeCode {
         }
         // whatever it started ends now
         run.end();
+        if cut.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(OUTPUT_TOO_LONG.into());
+        }
         let text = parse(&out)?;
         // each new process gets the whole conversation
         self.prompt.push_str(&format!("\n\nYour answer:\n{text}"));
@@ -292,6 +320,21 @@ mod tests {
         cfg.efforts.insert("claude-sonnet-4-6".into(), "xhigh".into());
         assert!(!super::args("claude-sonnet-4-6", None, crate::llm::effort::pick(&cfg, "claude-sonnet-4-6").as_deref()).contains(&"--effort".to_string()), "Sonnet 4.6 has no xhigh");
         assert!(!super::args("m", None, Some("--x")).contains(&"--effort".to_string()), "a level can't be a flag");
+    }
+
+    /// Each flag Sprawl relies on is one the installed `claude` lists in its help (Fable AI
+    /// review P3-2; the audit's AI-12): `--restricted` and `--permission-prompts none` carry the
+    /// claim that settings files and hooks aren't loaded. Run by hand where Claude Code is.
+    #[test]
+    #[ignore]
+    fn the_installed_claude_code_knows_the_flags() {
+        let exe = crate::config::Detected::probe().claude_code.expect("no Claude Code here");
+        let out = std::process::Command::new(&exe).arg("--help").output().expect("claude --help");
+        let help = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+        let a = super::args("m", Some(std::path::Path::new("mcp.json")), Some("low"));
+        let missing: Vec<&String> = a.iter().filter(|f| f.starts_with("--")).filter(|f| !help.contains(f.as_str())).collect();
+        eprintln!("{exe:?}");
+        assert!(missing.is_empty(), "not in `claude --help`: {missing:?}");
     }
 
     #[test]

@@ -47,7 +47,7 @@ pub fn scan_specs() -> Vec<ToolSpec> {
             description: "Scan a folder or a whole drive (such as D:\\ or C:\\Users\\me\\Projects) so the other tools can answer about it. \
                 Returns a job number. With wait_seconds (up to 50) it waits that long and answers with the result when the scan is done \
                 in time; a folder usually is, a whole drive can take minutes (follow it with scan_status). A path already scanned isn't \
-                scanned again unless rescan is true. Network paths are refused. Read-only: a scan reads names and sizes.",
+                scanned again unless rescan is true. Network paths are refused. Read-only on the disk: a scan reads names and sizes. When History is on in Sprawl, the scan is saved there (folders only).",
             schema: json!({"type": "object", "properties": {
                 "path": {"type": "string", "description": "A full path: a drive (D:\\) or a folder."},
                 "rescan": {"type": "boolean", "description": "Scan again even if Sprawl has a scan of this path."},
@@ -373,8 +373,10 @@ impl Index {
             let history = match (on, base) {
                 (true, Some(base)) => {
                     sv.store(true, Ordering::Relaxed);
-                    match crate::history::prepare(&tree, taken, true).save(&base, cap) {
-                        Ok(()) => "Saved in Sprawl's History.".to_string(),
+                    // folders only (Fable AI review P3-10): small, and the first to go when History is over
+                    // its cap, so a scan the AI asked for doesn't push out the user's own snapshots
+                    match crate::history::prepare(&tree, taken, false).save(&base, cap) {
+                        Ok(()) => "Saved in Sprawl's History (folders only).".to_string(),
                         Err(e) => format!("Not saved in History: {e}."),
                     }
                 }

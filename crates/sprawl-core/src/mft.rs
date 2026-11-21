@@ -91,10 +91,15 @@ pub fn parse_boot(b: &[u8]) -> Option<BootSector> {
     let spc_raw = *b.get(0x0D)?;
     // Values above 0x80 mean 2^(256 - v) sectors (for clusters of 128 KB and more).
     let spc: u64 = if spc_raw <= 0x80 { u64::from(spc_raw) } else { 1u64 << (256 - u32::from(spc_raw)).min(31) };
-    if spc == 0 {
+    // a power of two, as NTFS makes them, and at most 2 MB (its largest cluster): a crafted
+    // value can't size a read past the buffers (Fable core review P3-1)
+    if spc == 0 || !spc.is_power_of_two() {
         return None;
     }
     let cluster_size = u64::from(bps) * spc;
+    if cluster_size > 2 << 20 {
+        return None;
+    }
     let mft_lcn = u64le(b, 0x30)?;
     let cpr = *b.get(0x40)? as i8;
     let record_size: u64 = if cpr > 0 { cpr as u64 * cluster_size } else { 1u64 << u32::from(cpr.unsigned_abs()).min(31) };
@@ -261,6 +266,8 @@ pub struct Parsed {
     pub seq: u16,
     /// Base record this one extends; 0 when it is a base record itself.
     pub base: u64,
+    /// The sequence number the base reference names (0: not checked).
+    pub base_seq: u16,
     pub is_dir: bool,
     /// `$STANDARD_INFORMATION` was present.
     pub has_std: bool,
@@ -316,10 +323,17 @@ pub fn parse_record(rec: &mut [u8], frn: u64) -> Option<Parsed> {
         return None;
     }
     let rec = &*rec;
+    let base_ref = u64le(rec, 0x20)?;
+    // an extension record of $MFT itself (base: record 0) holds only its runlist, which
+    // `mft_layout` reads: not a file (Fable core review P3-3)
+    if base_ref != 0 && base_ref & FRN_MASK == 0 {
+        return None;
+    }
     let mut p = Parsed {
         frn,
         seq: u16le(rec, 0x10)?,
-        base: u64le(rec, 0x20)? & FRN_MASK,
+        base: base_ref & FRN_MASK,
+        base_seq: (base_ref >> 48) as u16,
         is_dir: flags & REC_DIRECTORY != 0,
         ..Default::default()
     };
@@ -410,11 +424,13 @@ struct Rec {
     flags: u8,
     /// Name rank * 2 + 1 when the name came from an extension record; 255 = no name yet.
     rank: u8,
+    /// The base sequence number the extension records folded in so far named (0: none).
+    ext_seq: u16,
 }
 
 impl Default for Rec {
     fn default() -> Self {
-        Rec { size: 0, alloc: 0, wof: 0, modified: 0, parent: NONE32, attrs: 0, seq: 0, parent_seq: 0, flags: 0, rank: 255 }
+        Rec { size: 0, alloc: 0, wof: 0, modified: 0, parent: NONE32, attrs: 0, seq: 0, parent_seq: 0, flags: 0, rank: 255, ext_seq: 0 }
     }
 }
 
@@ -439,16 +455,27 @@ impl Index {
             return;
         }
         let t = target as usize;
+        // The index is sized from the MFT's own record count: a reference past it is a damaged
+        // record, never a reason to grow it (Fable core review P3-1)
         if t >= self.recs.len() {
-            // The index is sized from the MFT's own record count; a reference past it is a damaged
-            // record. Grow a little for safety, never by billions of entries.
-            if t > self.recs.len().saturating_mul(2).max(1 << 16) {
-                return;
-            }
-            self.recs.resize(t + 1, Rec::default());
-            self.names.resize(t + 1, String::new());
+            return;
         }
         let r = &mut self.recs[t];
+        // An extension record counts only for the base record its reference names, sequence
+        // number included: an orphan left from a file since deleted doesn't lend its name or
+        // size to the record's next file (Fable core review P3-3). Order doesn't matter: what
+        // extensions gave before their base was read goes when the base doesn't match.
+        if p.base != 0 && p.base_seq != 0 {
+            let base_seen = r.flags & F_IN_USE != 0;
+            if (base_seen && r.seq != p.base_seq) || (r.ext_seq != 0 && r.ext_seq != p.base_seq) {
+                return;
+            }
+            r.ext_seq = p.base_seq;
+        } else if p.base == 0 && r.ext_seq != 0 && r.ext_seq != p.seq {
+            // only extension records were folded in so far: all they gave goes
+            *r = Rec::default();
+            self.names[t].clear();
+        }
         if p.base == 0 {
             r.flags |= F_IN_USE;
             if p.is_dir {
@@ -884,7 +911,7 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
     let rs = boot.record_size as usize;
     let read_len = rs.div_ceil(4096) * 4096;
     let mut buf = AlignedBuf::new(read_len);
-    vol.read_at(boot.mft_lcn * boot.cluster_size, &mut buf[..read_len])?;
+    vol.read_at(boot.mft_lcn.checked_mul(boot.cluster_size).ok_or_else(|| bad("MFT out of range"))?, &mut buf[..read_len])?;
     let rec = &mut buf[..rs];
     if rec.get(0..4) != Some(b"FILE") || !apply_fixups(rec) {
         return Err(bad("MFT record 0 is damaged"));
@@ -896,7 +923,7 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
     for (t, a) in attributes(rec) {
         if t == AT_DATA && attr_name_len(a) == 0 && is_non_resident(a) {
             if u64le(a, 0x10) == Some(0) {
-                size = u64le(a, 0x30);
+                size = valid_size(a);
             }
             runs.extend(runlist_of(a).ok_or_else(|| bad("bad MFT runlist"))?);
         } else if t == AT_ATTRIBUTE_LIST {
@@ -929,11 +956,11 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
     ext.sort_unstable();
     for (_, r) in ext {
         runs.sort_by_key(|r| r.vcn);
-        let byte = r * rs as u64;
+        let byte = r.checked_mul(rs as u64).ok_or_else(|| bad("MFT extension record out of range"))?;
         let (Some(lcn), _) = map_vcn(&runs, byte / boot.cluster_size).ok_or_else(|| bad("MFT extension record out of range"))? else {
             return Err(bad("MFT extension record in a hole"));
         };
-        let disk = lcn * boot.cluster_size + byte % boot.cluster_size;
+        let disk = lcn.checked_mul(boot.cluster_size).and_then(|d| d.checked_add(byte % boot.cluster_size)).ok_or_else(|| bad("MFT extension record out of range"))?;
         let aligned = disk / 4096 * 4096;
         let mut b = AlignedBuf::new(read_len + 4096);
         vol.read_at(aligned, &mut b[..read_len + 4096])?;
@@ -945,7 +972,7 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
         for (t, a) in attributes(rec) {
             if t == AT_DATA && attr_name_len(a) == 0 && is_non_resident(a) {
                 if u64le(a, 0x10) == Some(0) {
-                    size = u64le(a, 0x30);
+                    size = valid_size(a);
                 }
                 runs.extend(runlist_of(a).ok_or_else(|| bad("bad MFT runlist"))?);
             }
@@ -953,7 +980,37 @@ fn mft_layout(vol: &Handle, boot: &BootSector) -> io::Result<(Vec<Run>, u64)> {
     }
     runs.sort_by_key(|r| r.vcn);
     let size = size.ok_or_else(|| bad("no $DATA in MFT record 0"))?;
+    // no larger than the volume (a crafted size can't size the index: Fable core review P3-1)
+    if size > boot.total_sectors.saturating_mul(u64::from(boot.bytes_per_sector)) {
+        return Err(bad("the MFT is larger than the volume"));
+    }
+    covers(&runs, size.div_ceil(boot.cluster_size)).map_err(|m| bad(m))?;
     Ok((runs, size))
+}
+
+/// A non-resident attribute's size up to its initialized part (`min(0x30, 0x38)`): past the
+/// valid data length the clusters hold stale disk content, perhaps old records (Fable core
+/// review P3-2).
+fn valid_size(a: &[u8]) -> Option<u64> {
+    let size = u64le(a, 0x30)?;
+    Some(u64le(a, 0x38).map_or(size, |v| v.min(size)))
+}
+
+/// The runs (sorted) cover VCN 0 to `clusters` with no gap or overlap: a missed extent would
+/// give a smaller tree, where the read should fail and the folder walk be used (Fable 1.0.4-1.0.5
+/// P3-8).
+fn covers(runs: &[Run], clusters: u64) -> Result<(), &'static str> {
+    let mut at = 0u64;
+    for r in runs {
+        if r.vcn != at {
+            return Err(if r.vcn < at { "the MFT's runlist overlaps itself" } else { "the MFT's runlist has a gap" });
+        }
+        at = at.checked_add(r.len).ok_or("the MFT's runlist is out of range")?;
+    }
+    if at < clusters {
+        return Err("the MFT's runlist is shorter than the MFT");
+    }
+    Ok(())
 }
 
 /// The value of a non-resident attribute, read from the volume through its runlist (at most
@@ -981,7 +1038,7 @@ fn read_nonresident(vol: &Handle, a: &[u8], cluster: u64) -> io::Result<Vec<u8>>
         let n = run.len.min(clusters - at);
         let dst = &mut buf[(at * cluster) as usize..((at + n) * cluster) as usize];
         match run.lcn {
-            Some(l) => vol.read_at(l * cluster, dst)?,
+            Some(l) => vol.read_at(l.checked_mul(cluster).ok_or_else(|| bad("run out of range"))?, dst)?,
             None => dst.fill(0),
         }
         at += n;
@@ -1061,7 +1118,11 @@ fn read_mft_device(device: &[u16], label: &str, progress: &Progress, live_root: 
                     match lcn {
                         Some(l) => {
                             let t = std::time::Instant::now();
-                            if let Err(e) = vol_r.read_at(l * cluster, dst) {
+                            let Some(at) = l.checked_mul(cluster) else {
+                                let _ = reader_res.send(Err(io::Error::new(io::ErrorKind::InvalidData, "MFT run out of range")));
+                                return;
+                            };
+                            if let Err(e) = vol_r.read_at(at, dst) {
                                 let _ = reader_res.send(Err(e));
                                 return;
                             }
@@ -1499,6 +1560,7 @@ mod tests {
             frn,
             seq,
             base: 0,
+            base_seq: 0,
             is_dir: dir,
             has_std: true,
             modified: 0,
@@ -1507,6 +1569,56 @@ mod tests {
             data,
             wof: None,
         }
+    }
+
+    /// Fable core review P3-3: an extension record whose base reference names another sequence
+    /// number (an orphan of a deleted file) gives nothing to the record's new file, whichever
+    /// is read first; one that matches does.
+    #[test]
+    fn an_orphan_extension_record_lends_nothing() {
+        for ext_first in [false, true] {
+            let mut idx = Index::with_capacity(64);
+            let base = rec(40, 7, 5, 5, "new.txt", false, Some((10, 4096)));
+            let orphan = Parsed { frn: 41, base: 40, base_seq: 6, data: Some((999_999, 1 << 20)), name: Some(FileName { parent: 5, parent_seq: 5, rank: 0, name: "old.txt".into() }), ..Default::default() };
+            if ext_first {
+                idx.merge(orphan.clone());
+                idx.merge(base.clone());
+            } else {
+                idx.merge(base.clone());
+                idx.merge(orphan.clone());
+            }
+            assert_eq!(idx.names[40], "new.txt", "ext first: {ext_first}");
+            assert_eq!(idx.recs[40].size, 10, "ext first: {ext_first}");
+            let good = Parsed { frn: 42, base: 40, base_seq: 7, data: Some((20, 8192)), ..Default::default() };
+            idx.merge(good);
+            assert_eq!(idx.recs[40].size, 20);
+        }
+        // past the record count: dropped, the index doesn't grow
+        let mut idx = Index::with_capacity(64);
+        idx.merge(rec(1 << 20, 1, 5, 5, "far", false, None));
+        assert_eq!(idx.recs.len(), 64);
+    }
+
+    /// Fable 1.0.4-1.0.5 P3-8 and core review P3-1: the MFT's runs cover it exactly, and a
+    /// cluster is a power of two of at most 2 MB.
+    #[test]
+    fn the_mft_runs_cover_it_and_clusters_are_plain() {
+        let run = |vcn, len| Run { vcn, lcn: Some(100 + vcn), len };
+        assert!(covers(&[run(0, 4), run(4, 4)], 8).is_ok());
+        assert!(covers(&[run(0, 4), run(5, 3)], 8).unwrap_err().contains("gap"));
+        assert!(covers(&[run(0, 4), run(3, 5)], 8).unwrap_err().contains("overlaps"));
+        assert!(covers(&[run(0, 4)], 8).unwrap_err().contains("shorter"));
+        assert!(covers(&[run(1, 8)], 8).is_err(), "not from VCN 0");
+        let mut b = vec![0u8; 512];
+        b[3..11].copy_from_slice(b"NTFS    ");
+        b[0x0B..0x0D].copy_from_slice(&512u16.to_le_bytes());
+        b[0x40] = 0xF6; // 1024-byte records
+        b[0x0D] = 8;
+        assert_eq!(parse_boot(&b).unwrap().cluster_size, 4096);
+        b[0x0D] = 3;
+        assert_eq!(parse_boot(&b), None, "3 sectors a cluster");
+        b[0x0D] = 0x80 + 0x70; // 2^(256 - 0xF0) = 65536 sectors: 32 MB clusters
+        assert_eq!(parse_boot(&b), None, "clusters over 2 MB");
     }
 
     /// Fable core review P2-3 and P2-4: a WOF file's compressed stream is what it takes on

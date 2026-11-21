@@ -44,11 +44,11 @@ pub(crate) fn xaml() -> &'static str {
       <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
       <StackPanel Spacing="4">
         <Grid>
-          <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE81C;" FontSize="14" Foreground="#FF8FB4FF"/><TextBlock Text="History" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE81C;" FontSize="14" Foreground="{$link}"/><TextBlock Text="History" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
           <Button x:Name="HistClose" AutomationProperties.Name="Close History" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="12"/></Button>
         </Grid>
         <TextBlock x:Name="HistWhen" Text="Now" FontSize="18" FontWeight="SemiBold"/>
-        <TextBlock x:Name="HistInfo" Text=" " FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>
+        <TextBlock x:Name="HistInfo" Text=" " FontSize="12" Foreground="{$text2}" TextWrapping="Wrap"/>
         <Grid ColumnSpacing="10" Margin="0,4,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Button x:Name="HistPlay" AutomationProperties.Name="Play the history" VerticalAlignment="Center" ToolTipService.ToolTip="Play through the history"><FontIcon x:Name="HistPlayIcon" Glyph="&#xE768;" FontSize="13"/></Button>

@@ -135,6 +135,8 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
     // the one to keep
     let protected = |p: &std::path::Path| never.hit(&p.to_string_lossy().to_lowercase()).is_some() || !never.complete();
     let mut by_size: HashMap<u64, Vec<usize>> = HashMap::new();
+    // originals left behind by a link run that was interrupted between the two names
+    let mut interrupted: Vec<usize> = Vec::new();
     let mut stack = vec![sprawl_core::ROOT];
     while let Some(k) = stack.pop() {
         let n = &tree.nodes[k];
@@ -142,8 +144,15 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
             if k == sprawl_core::ROOT || !n.is_reparse_point() {
                 stack.extend_from_slice(&n.children);
             }
-        } else if n.size >= min_size && !n.is_reparse_point() && n.attributes & NOT_LOCAL == 0 {
-            by_size.entry(n.size).or_default().push(k);
+        } else {
+            // by bytes, not a lower-cased copy: this runs for every file node in the scan
+            let b = n.name.as_bytes();
+            if b.len() > BACKUP_SUFFIX.len() && b[b.len() - BACKUP_SUFFIX.len()..].eq_ignore_ascii_case(BACKUP_SUFFIX.as_bytes()) {
+                interrupted.push(k);
+            }
+            if n.size >= min_size && !n.is_reparse_point() && n.attributes & NOT_LOCAL == 0 {
+                by_size.entry(n.size).or_default().push(k);
+            }
         }
     }
     let mut groups: Vec<(u64, Vec<usize>)> = by_size.into_iter().filter(|(_, v)| v.len() > 1).collect();
@@ -236,7 +245,7 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
                 let keep_path = cl.last().map(|(_, p)| p.clone()).unwrap_or_default();
                 if linkable {
                     evidence.push(format!(
-                        "Link: keeps {} and makes the other {} hard links to it. Every path stays and opens the same file; the space of one is used. Then a change to one changes all, and each takes the kept one's dates. Each is compared again just before.",
+                        "Link: keeps {} and makes the other {} hard links to it. Every path stays and opens the same file; the space of one is used. Then a change to one changes all, and each takes the kept one's dates, owner, permissions and marks. A copy whose owner, permissions or hidden, system, compressed or encrypted marks differ from the kept one is left alone, so this often does nothing for copies in different folders. Each is compared again just before.",
                         keep_path.display(),
                         if cl.len() == 2 { "copy".to_string() } else { format!("{} copies", cl.len() - 1) }
                     ));
@@ -279,8 +288,61 @@ pub fn find(tree: &Tree, min_size: u64, budget: u64, cancel: &AtomicBool, progre
         }
     }
     out.findings.sort_by_key(|f| std::cmp::Reverse(f.bytes));
-    out.findings.truncate(50);
+    // the notice is added after the cut: it frees nothing, so by size it would always be the
+    // first thing dropped, and a drive with fifty duplicate sets is exactly where it matters
+    out.findings.truncate(49);
+    if !interrupted.is_empty() {
+        out.findings.insert(0, interrupted_link(tree, &interrupted));
+    }
     out
+}
+
+/// The name a link run gives the original while it has no name of its own.
+pub(crate) const BACKUP_SUFFIX: &str = ".sprawl-original";
+
+/// The rule id of the notice about files left under that name.
+pub const INTERRUPTED: &str = "remedy.interrupted-link";
+
+/// Files left under that name: the link run was interrupted (Sprawl ended, or the PC lost
+/// power) between the rename and the link. The file is whole; only its name is the backup one.
+fn interrupted_link(tree: &Tree, nodes: &[usize]) -> Finding {
+    let bytes: u64 = nodes.iter().map(|&n| tree.nodes[n].size).sum();
+    let mut evidence = vec![
+        "Sprawl renames a copy to this before replacing it with a link to the file it matches. A name like this left behind means that run was interrupted: the file is whole and is the original, only under its backup name.".to_string(),
+        format!("If nothing holds its real name (take \"{BACKUP_SUFFIX}\" off the end and look), the rename puts it back. If something does, the link was already made and this is a spare copy of the same bytes, which you can delete once you have checked that."),
+    ];
+    for &n in nodes.iter().take(8) {
+        evidence.push(tree.path_of(n).display().to_string());
+    }
+    if nodes.len() > 8 {
+        evidence.push(format!("and {} more", nodes.len() - 8));
+    }
+    Finding {
+        path: tree.path_of(nodes[0]),
+        owner: None,
+        bytes: 0,
+        // the user's own file under the wrong name: nothing here is Sprawl's to remove
+        risk: Risk::Orange,
+        remedy: Remedy::Info,
+        command: None,
+        title: format!(
+            "{} left by an interrupted link, {}",
+            if nodes.len() == 1 { "A file".to_string() } else { format!("{} files", nodes.len()) },
+            format_size(bytes)
+        ),
+        evidence,
+        confidence: 1.0,
+        source: Source::Rule(INTERRUPTED.into()),
+        allow_protected: false,
+        trusted: true,
+        builtin: true,
+        on_path: false,
+        action: None,
+        admin: false,
+        carved: Vec::new(),
+        gain: None,
+        forced_from: None,
+    }
 }
 
 /// All on one drive letter (`C:`): hard links can't cross volumes (checked again when linking).

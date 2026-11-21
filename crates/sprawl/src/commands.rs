@@ -15,6 +15,11 @@ use crate::state::{find, text, State, Units, View};
 /// Options menu switches that are remembered between runs.
 const TOGGLES: &[&str] = &["oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oNames", "oTilt", "oCushion", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "oUpdates"];
 const UNITS: &[&str] = &["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
+/// Room for the arguments of a restart as administrator. Windows' whole command line stops at
+/// 32,767 characters, the program's own path included.
+const ADMIN_ARGS_MAX: usize = 30_000;
+/// Kept free inside that for ` --ticks-left <n>`, which is added after the last tick.
+const TICKS_LEFT_ROOM: usize = 32;
 use crate::state::Source;
 use crate::{dialogs, paint, win32};
 
@@ -28,6 +33,12 @@ impl State {
     // ------------------------------------------------------------ commands
 
     pub(crate) fn set_view(&mut self, v: View) {
+        let t0 = std::time::Instant::now();
+        self.set_view_inner(v);
+        crate::state::timing(&format!("set_view {v:?}"), t0);
+    }
+
+    fn set_view_inner(&mut self, v: View) {
         self.view = v;
         // the welcome page is drawn again for this view on the next frame
         if self.tree.is_none() && self.job.is_none() {
@@ -208,12 +219,43 @@ impl State {
             }
             "mAdmin" if self.advisor.cleanup.running.is_some() => text(&self.root, "FootLeft", "A clean-up is running: restart as administrator when it has finished."),
             "mAdmin" => {
-                let mut arg = self.tree.as_ref().map(|t| dialogs::quote(&t.root_path)).unwrap_or_default();
-                // from the Advisor: the new copy opens it again with the same ticks
+                // each root the scan really had: a scan of several folders is named after the
+                // literal "Multiple", which the new copy would then try to scan (Fable P3-9)
+                let roots: Vec<PathBuf> = match self.coverage.as_ref() {
+                    Some(c) if !c.roots.is_empty() => c.roots.clone(),
+                    _ => self
+                        .tree
+                        .as_ref()
+                        .filter(|t| t.method != sprawl_core::ScanMethod::Csv && t.nodes[ROOT].name != sprawl_core::MULTIPLE)
+                        .map(|t| vec![t.root_path.clone()])
+                        .unwrap_or_default(),
+                };
+                let mut arg = roots.iter().map(|r| dialogs::quote(r)).collect::<Vec<_>>().join(" ");
+                // Windows stops at 32,767 characters, and over that ShellExecuteW fails and
+                // nothing at all happens. The folders themselves are the scan: too many of them
+                // is said, never quietly dropped.
+                if arg.len() > ADMIN_ARGS_MAX {
+                    text(&self.root, "FootLeft", "This scan has too many folders to hand to a new copy. Scan fewer at once, or start Sprawl as administrator yourself.");
+                    return;
+                }
+                // from the Advisor: the new copy opens it again with the same ticks. Those that
+                // don't fit are counted and said there instead.
                 if self.view == View::Advisor && !arg.is_empty() {
                     arg += " --advisor";
-                    for k in self.advisor.cleanup.ticked.iter().take(500) {
-                        arg += &format!(" --tick {}", dialogs::quote(std::path::Path::new(k)));
+                    let ticked = &self.advisor.cleanup.ticked;
+                    let room = ADMIN_ARGS_MAX - TICKS_LEFT_ROOM;
+                    let mut carried = 0;
+                    for k in ticked.iter().take(500) {
+                        let one = format!(" --tick {}", dialogs::quote(std::path::Path::new(k.as_str())));
+                        if arg.len() + one.len() > room {
+                            break;
+                        }
+                        arg += &one;
+                        carried += 1;
+                    }
+                    let left = ticked.len() - carried;
+                    if left > 0 {
+                        arg += &format!(" {} {left}", crate::TICKS_LEFT_ARG);
                     }
                 }
                 if sprawl_core::is_elevated() {
@@ -222,6 +264,8 @@ impl State {
                     self.offer_all_users();
                 } else if dialogs::restart_elevated(self.hwnd, &arg) {
                     std::process::exit(0);
+                } else {
+                    text(&self.root, "FootLeft", "Sprawl didn't restart as administrator.");
                 }
             }
             "oExplorer" => {
@@ -757,6 +801,10 @@ impl State {
 
     pub(crate) fn exit_now(&mut self) {
         self.save_window_place();
+        // "Close anyway" during a clean-up: a copy being replaced by a link has no name of its
+        // own for an instant. Let that instant finish, so nothing is left under its
+        // .sprawl-original name with nothing to put it back (Fable P3-5).
+        sprawl_advisor::clean::wait_for_publish(std::time::Duration::from_secs(2));
         std::process::exit(0);
     }
 
@@ -1091,6 +1139,11 @@ pub(crate) fn replace_branch(t: &mut sprawl_core::Tree, n: usize, sub: &sprawl_c
     t.nodes[n].is_dir = new.is_dir;
     t.nodes[n].modified = new.modified;
     t.nodes[n].attributes = new.attributes;
+    // and which file or folder it now is: a folder deleted and made again has a new id, and
+    // the stale one would refuse every clean-up here until the next whole scan (Fable core
+    // P3-8). An id from a rescan's folder walk and one from an MFT scan are the same number
+    // (`Spare::is_new` already compares tree ids against handle ids), so this holds either way.
+    t.nodes[n].id = new.id;
     // the scan's nodes after its root, renumbered to follow the tree's own
     let base = t.nodes.len();
     let map = |i: usize| if i == sprawl_core::ROOT { n } else { base + i - 1 };
@@ -1180,6 +1233,10 @@ impl State {
                         Some(s) => forget_missing(t, k, s, &mut self.alloc),
                     }
                 }
+                // the filtered view is made again below, and `set_tree` clears the picks then;
+                // until it arrives they would be indices of detached nodes (Fable P3-6)
+                let live: Vec<usize> = self.marked.iter().copied().filter(|&n| alive(self.tree.as_ref().unwrap(), n)).collect();
+                self.marked = live.into_iter().collect();
                 continue;
             }
             let t = std::sync::Arc::make_mut(self.tree.as_mut().unwrap());
@@ -1222,6 +1279,9 @@ impl State {
         self.selected = self.selected.map(up);
         self.map_root = up(self.map_root);
         self.expanded.retain(|&n| alive(t, n));
+        // rows picked with Ctrl or Shift are indices too: a detached one would still be
+        // counted (0 bytes) and shown in a later Delete (Fable P3-6)
+        self.marked.retain(|&n| alive(t, n));
         let files = sprawl_core::largest_files(t, usize::MAX);
         let root = t.path_of(ROOT);
         self.files = files;

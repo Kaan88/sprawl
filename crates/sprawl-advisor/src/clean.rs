@@ -1247,6 +1247,46 @@ fn unreadable(n: usize) -> String {
     format!("{n} item{} in it couldn't be read; left as {}", if n == 1 { "" } else { "s" }, if n == 1 { "it is" } else { "they are" })
 }
 
+/// How many copies are between their backup name and their new link right now. The window is
+/// microseconds per copy, but Sprawl ending inside it would leave the file under
+/// `name.sprawl-original` alone, with nothing to put it back (Fable P3-5).
+static PUBLISHING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Set once a close is waiting: from then on no further copy may enter that window. Without it
+/// `wait_for_publish` is only a poll, and a copy could enter between its last look and the exit.
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
+struct Publishing;
+
+impl Publishing {
+    /// None when a close is already waiting; the copy is then left exactly as it is. The count
+    /// is raised before the flag is read, and the flag is set before the count is read, so one
+    /// of the two always sees the other (sequential consistency on both).
+    fn begin() -> Option<Publishing> {
+        PUBLISHING.fetch_add(1, Ordering::SeqCst);
+        let held = Publishing;
+        (!CLOSING.load(Ordering::SeqCst)).then_some(held)
+    }
+}
+
+impl Drop for Publishing {
+    fn drop(&mut self) {
+        PUBLISHING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Wait, at most `limit`, while any copy is between its two names, and stop any further copy
+/// from starting one. This guards the close path only ("Close anyway" and Exit): a kill, a power
+/// cut or any `process::exit` elsewhere runs no code here, and what those leave behind is what
+/// the duplicate search reports as an interrupted link.
+pub fn wait_for_publish(limit: std::time::Duration) {
+    CLOSING.store(true, Ordering::SeqCst);
+    let until = std::time::Instant::now() + limit;
+    while PUBLISHING.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// F4: each copy replaced by a hard link to `keep`. Each must be a plain local file (not a link,
 /// not a never-list name, not one the user keeps, not created or changed since the scan, not
 /// read-only), the same size and volume as `keep` and not already one file with it. Both are
@@ -1299,6 +1339,19 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
         // A copy with another name (a hard link, maybe outside the folder) frees nothing, and
         // making the original read-only below would leave that other name read-only.
         if ci.links != 1 { o.problem(c, "left alone: it has another name (a hard link) elsewhere, so linking it would free nothing"); continue; }
+        // One file under two names has one set of marks and one security descriptor, so the
+        // copy would silently take the kept file's owner, permissions and its hidden, system,
+        // compressed or encrypted marks. A copy in a shared folder could become unreadable to
+        // the other accounts, or the other way round. Different, and it is left alone. (P3-7)
+        const SHARED_MARKS: u32 = 0x1 | 0x2 | 0x4 | 0x200 | 0x800 | 0x2000 | 0x4000;
+        if (ci.attrs ^ ki.attrs) & SHARED_MARKS != 0 {
+            o.problem(c, "left alone: it is marked differently from the kept copy (read-only, hidden, system, sparse, compressed, encrypted or left out of the index), and one file can only have one set of marks"); continue;
+        }
+        match (win::security(&kf.file), win::security(&cf)) {
+            (Ok(a), Ok(b)) if a == b => {},
+            (Ok(_), Ok(_)) => { o.problem(c, "left alone: its owner or permissions differ from the kept copy's, and one file can only have one set of them"); continue; }
+            (Err(e), _) | (_, Err(e)) => { o.problem(c, format!("left alone: its owner and permissions couldn't be read ({e})")); continue; }
+        }
         match crate::dupes::same_open(&mut kf.file, &mut cf, stop) {
             Some(true) => {},
             Some(false) => { o.problem(c, "left alone: no longer the same bytes"); continue; }
@@ -1314,10 +1367,14 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
             (Err(e), _) | (_, Err(e)) => { o.problem(c, format!("left alone: its extra streams couldn't be checked ({e})")); continue; }
         }
         let Some(name) = c.file_name() else { continue };
-        let backup = c.with_file_name(format!("{}.sprawl-original", name.to_string_lossy()));
+        let backup = c.with_file_name(format!("{}{}", name.to_string_lossy(), crate::dupes::BACKUP_SUFFIX));
         // Rename the checked handle, never a pathname replacement. Every subsequent operation
         // also refuses an occupied name. Failure leaves the original recoverable, never removes
         // a third party's file, and never unlinks a temporary name by pathname.
+        // Between the rename and the link the copy's own name does not exist. Sprawl ending in
+        // that instant would leave the file under the backup name alone, so a close waits for
+        // it (`wait_for_publish`, Fable P3-5).
+        let Some(publishing) = Publishing::begin() else { o.problem(c, "left alone: Sprawl is closing"); continue };
         if let Err(e) = win::rename_file(&cf, &backup) { o.problem(c, format!("left alone: couldn't preserve the original ({e})")); continue; }
         before_publish(c);
         if let Err(e) = std::fs::hard_link(keep, c) {
@@ -1326,6 +1383,7 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
                 else { format!("not linked ({e}); original preserved at {} because its old name is occupied", backup.display()) });
             continue;
         }
+        drop(publishing);
         // Sharing is kept per stream, so the handle above doesn't stop another program adding a
         // stream to the original. So the original is first made read-only: from then on Windows
         // refuses to create a stream on it. Its stream list is read after that, so a stream
@@ -1510,6 +1568,13 @@ mod win {
         fn SetInformationJobObject(job: H, class: i32, info: *const c_void, size: u32) -> i32;
         fn AssignProcessToJobObject(job: H, process: H) -> i32;
         fn TerminateJobObject(job: H, code: u32) -> i32;
+        fn LocalFree(p: *mut c_void) -> *mut c_void;
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn GetSecurityInfo(h: H, kind: i32, what: u32, owner: *mut *mut c_void, group: *mut *mut c_void, dacl: *mut *mut c_void, sacl: *mut *mut c_void, descriptor: *mut *mut c_void) -> u32;
+        fn ConvertSecurityDescriptorToStringSecurityDescriptorW(sd: *mut c_void, revision: u32, what: u32, out: *mut *mut u16, len: *mut u32) -> i32;
     }
 
     pub(super) struct Handle(H);
@@ -1658,6 +1723,56 @@ mod win {
         } else {
             Err(std::io::Error::last_os_error())
         }
+    }
+
+    /// Who owns the open file and who may do what with it, as one SDDL text (owner, group and
+    /// the DACL). A hard link shares all of it between the two names, so a copy and the file
+    /// it would link to must read the same here (Fable P3-7).
+    pub(super) fn security(file: &std::fs::File) -> std::io::Result<String> {
+        const SE_FILE_OBJECT: i32 = 1;
+        const OWNER_GROUP_DACL: u32 = 0x1 | 0x2 | 0x4;
+        const SDDL_REVISION_1: u32 = 1;
+        let mut descriptor: *mut c_void = std::ptr::null_mut();
+        // SAFETY: the handle is borrowed for the call; only `descriptor` is written, and it
+        // owns the other four pointers, so freeing it frees them all.
+        let e = unsafe {
+            GetSecurityInfo(
+                borrowed(file).0,
+                SE_FILE_OBJECT,
+                OWNER_GROUP_DACL,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if e != 0 {
+            return Err(std::io::Error::from_raw_os_error(e as i32));
+        }
+        if descriptor.is_null() {
+            return Err(std::io::Error::other("Windows returned no security descriptor"));
+        }
+        let mut text: *mut u16 = std::ptr::null_mut();
+        let mut len = 0u32;
+        // SAFETY: `descriptor` is a self-relative security descriptor from the call above.
+        let ok = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, OWNER_GROUP_DACL, &mut text, &mut len) } != 0;
+        let out = if ok && !text.is_null() {
+            // SAFETY: `len` is the size of the buffer in UTF-16 units, the NUL included, so the
+            // text itself is one shorter.
+            let n = (len as usize).saturating_sub(1);
+            Ok(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, n) }))
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        // SAFETY: both come from Windows and are freed once.
+        unsafe {
+            if !text.is_null() {
+                LocalFree(text.cast());
+            }
+            LocalFree(descriptor);
+        }
+        out
     }
 
     /// Set the open file's attributes (FILE_BASIC_INFO with its times left as they are); the
@@ -2143,6 +2258,37 @@ mod tests {
         assert!(recycling_refused(&info), "a cloud object must stay");
         info.attrs = sprawl_core::attr::COMPRESSED;
         assert!(!recycling_refused(&info), "plain NTFS compression can be moved to the bin");
+    }
+
+    #[test]
+    fn a_close_can_tell_that_a_copy_is_between_its_two_names() {
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-link-publish").unwrap();
+        let root = owned.path().to_path_buf();
+        let keep = root.join("keep.bin");
+        let copy = root.join("copy.bin");
+        std::fs::write(&keep, b"same bytes").unwrap();
+        std::fs::write(&copy, b"same bytes").unwrap();
+        let inside = std::sync::atomic::AtomicUsize::new(0);
+        let mut o = Outcome::default();
+        link_with(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {},
+            &mut |_| { inside.store(PUBLISHING.load(Ordering::SeqCst), Ordering::SeqCst); }, &mut |_| {});
+        assert_eq!(o.files, 1, "{:?}", o.problems);
+        assert!(inside.load(Ordering::SeqCst) >= 1, "the guard must be up while the copy has no name of its own");
+        assert_eq!(PUBLISHING.load(Ordering::SeqCst), 0, "and down once the link is published");
+        // a marked difference keeps a copy, and never reaches the window at all
+        let other = root.join("hidden.bin");
+        std::fs::write(&other, b"same bytes").unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(&other).unwrap();
+        win::set_attributes(&f, 0x2).unwrap();
+        drop(f);
+        let mut o = Outcome::default();
+        let mut reached = false;
+        link_with(&keep, &[other.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {},
+            &mut |_| reached = true, &mut |_| {});
+        assert!(!reached, "a hidden copy must be refused before the rename");
+        assert_eq!(o.files, 0, "{:?}", o.problems);
+        assert!(o.problems.iter().any(|p| p.contains("marked differently")), "{:?}", o.problems);
+        drop(owned);
     }
 
     #[test]

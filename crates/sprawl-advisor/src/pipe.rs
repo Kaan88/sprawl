@@ -2,6 +2,62 @@
 //! one JSON answer per line. Local clients only; the first instance is ours or nothing.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a connected client has to send its whole request line. The pipe serves one client
+/// at a time, so a client that connects and sends nothing would hold it against every other
+/// client of this account; after this it is disconnected and the blocking read gives up.
+const REQUEST_LIMIT: Duration = Duration::from_secs(5);
+
+/// When the client being read from has run out of time, for the watchdog thread.
+#[derive(Default)]
+struct Deadline {
+    due: Mutex<Option<Instant>>,
+    stop: AtomicBool,
+}
+
+/// Cancels the serving thread's blocking read once the deadline passes, so a client that sends
+/// nothing lets go of the pipe. The check and the cancel happen under the same lock that the
+/// serving thread clears the deadline with, so a later client's read is never cancelled for
+/// this one's silence.
+///
+/// It must be the read that is cancelled, not the connection: the pipe handle is a synchronous
+/// one, so every operation on it queues behind the pending read, and `DisconnectNamedPipe` from
+/// here would wait for the very read it is meant to end — both threads then wait for ever.
+/// `CancelSynchronousIo` asks the kernel to abandon that thread's current synchronous call, and
+/// the serving thread disconnects as usual on its way round the loop.
+#[cfg(windows)]
+fn watchdog(thread: usize, deadline: Arc<Deadline>) {
+    while !deadline.stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(200));
+        let mut due = deadline.due.lock().unwrap_or_else(|e| e.into_inner());
+        if due.is_some_and(|t| Instant::now() >= t) {
+            // SAFETY: the thread handle is this process's own, duplicated for the watchdog and
+            // open for as long as it runs. A cancel that found nothing to cancel (the read has
+            // just ended) fails with ERROR_NOT_FOUND and changes nothing; only one that worked
+            // clears the deadline, so a failure is simply tried again.
+            if unsafe { ffi::CancelSynchronousIo(thread as isize) } != 0 {
+                *due = None;
+            }
+        }
+    }
+}
+
+/// This thread, as a handle another thread may use (`GetCurrentThread` is only a stand-in for
+/// "whoever asks").
+#[cfg(windows)]
+fn this_thread() -> std::io::Result<isize> {
+    let mut out = 0isize;
+    let me = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() } as isize;
+    // SAFETY: both are pseudo-handles for this process and this thread; `out` is written only
+    // when the call succeeds.
+    if unsafe { ffi::DuplicateHandle(me, ffi::GetCurrentThread(), me, &mut out, 0, 0, ffi::SAME_ACCESS) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(out)
+}
 
 /// `\\.\pipe\sprawl-mcp-<user>`: one per Windows user.
 pub fn name() -> std::io::Result<String> {
@@ -41,7 +97,13 @@ mod ffi {
         pub fn ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl: *const u16, revision: u32, out: *mut *mut c_void, size: *mut u32) -> i32;
     }
     #[link(name = "kernel32")]
-    extern "system" { pub fn LocalFree(ptr: *mut c_void) -> *mut c_void; }
+    extern "system" {
+        pub fn LocalFree(ptr: *mut c_void) -> *mut c_void;
+        pub fn CancelSynchronousIo(thread: isize) -> i32;
+        pub fn DuplicateHandle(src_process: isize, src: isize, dst_process: isize, dst: *mut isize, access: u32, inherit: i32, options: u32) -> i32;
+    }
+    /// DUPLICATE_SAME_ACCESS.
+    pub const SAME_ACCESS: u32 = 2;
     pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     /// SECURITY_IDENTIFICATION: the server may learn who connects, not act as them.
     pub const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
@@ -73,6 +135,13 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
     if h == -1 {
         return Err(error.unwrap());
     }
+    let deadline = Arc::new(Deadline::default());
+    // The reads below all happen on this thread, so the watchdog is given this thread, not the
+    // pipe. A thread handle Windows won't give up is not fatal: the limit is simply not kept.
+    if let Ok(thread) = this_thread() {
+        let (thread, deadline) = (thread as usize, deadline.clone());
+        std::thread::spawn(move || watchdog(thread, deadline));
+    }
     loop {
         let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
         let client = if ok { peer(h, false) } else { None };
@@ -84,8 +153,13 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
             // One request per connection (the client connects afresh for every call): the
             // identity read below is the one this connection was opened with, so a reused or
             // handed-on connection can't carry a second request under it. A line is at most
-            // 1 MB: a client that never sends a newline can't fill memory.
-            if (&mut reader).take(1 << 20).read_line(&mut line).is_ok_and(|n| n > 0) && line.ends_with('\n') {
+            // 1 MB: a client that never sends a newline can't fill memory. The watchdog cuts
+            // the connection after REQUEST_LIMIT, so one that sends nothing at all can't hold
+            // the pipe either; the deadline is cleared before the answer, which may take long.
+            *deadline.due.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + REQUEST_LIMIT);
+            let asked = (&mut reader).take(1 << 20).read_line(&mut line).is_ok_and(|n| n > 0) && line.ends_with('\n');
+            *deadline.due.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            if asked {
                 // Who opened this connection: the security context the pipe recorded when the
                 // client opened it, not only the process behind a client PID (which could have
                 // exited and been reused). That authenticates the opening, not each write: a
@@ -269,6 +343,38 @@ mod tests {
         // after the revert this thread is itself again
         assert_eq!(sprawl_core::identity::account_sid().unwrap(), account);
         unsafe { super::ffi::DisconnectNamedPipe(h); super::ffi::CloseHandle(h); }
+    }
+
+    #[test]
+    fn a_client_that_connects_and_sends_nothing_is_cut_off() {
+        use std::io::BufRead;
+        use std::os::windows::io::FromRawHandle;
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let name = format!(r"\\.\pipe\sprawl-watchdog-test-{}", std::process::id());
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let h = unsafe { super::ffi::CreateNamedPipeW(wide.as_ptr(), super::ffi::ACCESS_DUPLEX | super::ffi::FIRST_INSTANCE, super::ffi::REJECT_REMOTE, 1, 4096, 4096, 0, std::ptr::null()) };
+        assert_ne!(h, -1);
+        let _silent = std::fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let ok = unsafe { super::ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(super::ffi::ERROR_PIPE_CONNECTED);
+        assert!(ok);
+        let deadline = std::sync::Arc::new(super::Deadline::default());
+        *deadline.due.lock().unwrap() = Some(Instant::now() + Duration::from_millis(100));
+        let watch = {
+            let (thread, deadline) = (super::this_thread().unwrap() as usize, deadline.clone());
+            std::thread::spawn(move || super::watchdog(thread, deadline))
+        };
+        let started = Instant::now();
+        let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(h as _) });
+        let mut line = String::new();
+        let read = std::io::BufReader::new(&*file).read_line(&mut line);
+        assert!(read.is_err() || read.unwrap() == 0, "the read should have been cut short, not answered");
+        assert!(started.elapsed() < Duration::from_secs(5), "the watchdog took too long");
+        // and the pipe is the serving thread's to disconnect afterwards, as the loop does
+        assert_ne!(unsafe { super::ffi::DisconnectNamedPipe(h) }, 0);
+        deadline.stop.store(true, Ordering::Relaxed);
+        watch.join().unwrap();
+        unsafe { super::ffi::CloseHandle(h) };
     }
 
     #[test]

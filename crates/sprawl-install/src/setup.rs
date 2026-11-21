@@ -213,12 +213,20 @@ pub fn swap_in(dir: &Path, version: &str, staged: &[(String, PathBuf, String)]) 
     swap_in_with(dir, version, staged, || {})
 }
 
-fn swap_in_with(dir: &Path, version: &str, staged: &[(String, PathBuf, String)], before_publish: impl FnOnce()) -> Result<(), String> {
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+/// The checks `swap_in` makes before it changes anything (the staged files: names, places,
+/// links, hashes), alone: run before other Sprawl processes are closed, so an update that
+/// can't go in doesn't close them first (Fable core review P2-2). `swap_in` checks again.
+pub fn preflight(dir: &Path, staged: &[(String, PathBuf, String)]) -> Result<(), String> {
     per_user_only()?;
     let root = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
-    let dir = &root.path;
-    let _stage = sprawl_core::local::directory(&dir.join(STAGE)).map_err(|e| e.to_string())?;
+    let _stage = sprawl_core::local::directory(&root.path.join(STAGE)).map_err(|e| e.to_string())?;
+    check_staged(&root.path, staged).map(drop)
+}
+
+/// Each staged file opened (no write sharing, so the bytes stay as checked), checked and
+/// hashed.
+fn check_staged(dir: &Path, staged: &[(String, PathBuf, String)]) -> Result<Vec<(String, std::fs::File)>, String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     if let Some((n, _, _)) = staged.iter().find(|(n, _, _)| !crate::manifest::valid_name(n)) {
         return Err(format!("refused to write {n}"));
     }
@@ -236,6 +244,16 @@ fn swap_in_with(dir: &Path, version: &str, staged: &[(String, PathBuf, String)],
         check_hash(&mut file, sha)?;
         checked.push((name.clone(), file));
     }
+    Ok(checked)
+}
+
+fn swap_in_with(dir: &Path, version: &str, staged: &[(String, PathBuf, String)], before_publish: impl FnOnce()) -> Result<(), String> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    per_user_only()?;
+    let root = sprawl_core::local::directory(dir).map_err(|e| e.to_string())?;
+    let dir = &root.path;
+    let _stage = sprawl_core::local::directory(&dir.join(STAGE)).map_err(|e| e.to_string())?;
+    let checked = check_staged(dir, staged)?;
     let replacements = checked.iter().zip(staged).map(|((name, file), (_, _, sha))| {
         file.metadata().map(|m| crate::FileEntry { name: name.clone(), size: m.len(), sha256: sha.clone() }).map_err(|e| e.to_string())
     }).collect::<Result<Vec<_>, _>>()?;
@@ -363,14 +381,24 @@ pub fn uninstall(quiet: bool) {
     // window may still be open: a short-lived cmd tries every 2 seconds for 2 minutes, then
     // removes the folder if it is empty. cmd and ping by full path, started in System32.
     use std::os::windows::process::CommandExt;
-    let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32");
-    let dels: String = crate::FILES.iter().map(|n| format!("del /f /q \"{}\" 2>nul & ", dir.join(n).display())).collect();
-    let script = format!(
+    let Ok(sys) = system_dir() else { return };
+    let _ = std::process::Command::new(sys.join("cmd.exe")).current_dir(&sys).env(CLEANUP_DIR, &dir)
+        .raw_arg("/d /q /v:on /c").raw_arg(cleanup_script(&sys)).creation_flags(0x0800_0000).spawn();
+}
+
+/// How the clean-up below is told which folder to remove.
+const CLEANUP_DIR: &str = "SPRAWL_UNINSTALL_DIR";
+
+/// The clean-up command line. The folder is never written into it: a `%` in the profile name
+/// would be expanded as a variable there. `!...!` is replaced once per round, after cmd has
+/// done its own `%` and loop-variable substitution, so nothing in the path is read as syntax.
+fn cleanup_script(sys: &Path) -> String {
+    let d = format!("!{CLEANUP_DIR}!");
+    let dels: String = crate::FILES.iter().map(|n| format!("del /f /q \"{d}\\{n}\" 2>nul & ")).collect();
+    format!(
         "for /l %i in (1,1,60) do @(\"{ping}\" -n 3 127.0.0.1 >nul & {dels}rmdir \"{d}\" 2>nul & if not exist \"{d}\" exit)",
-        ping = sys.join("ping.exe").display(),
-        d = dir.display()
-    );
-    let _ = std::process::Command::new(sys.join("cmd.exe")).current_dir(&sys).raw_arg("/d /q /c").raw_arg(script).creation_flags(0x0800_0000).spawn();
+        ping = sys.join("ping.exe").display()
+    )
 }
 
 #[cfg(test)]
@@ -388,6 +416,18 @@ mod update_tests {
     fn the_alert_task_is_named_for_this_account() {
         let actual = sprawl_core::identity::account_sid().unwrap();
         assert_eq!(alert_task_name().unwrap(), format!("{LEGACY_ALERT_TASK} {actual}"));
+    }
+
+    #[test]
+    fn the_uninstall_cleanup_names_the_folder_only_through_its_variable() {
+        let script = cleanup_script(&system_dir().unwrap());
+        for name in crate::FILES {
+            assert!(script.contains(&format!("\"!{CLEANUP_DIR}!\\{name}\"")), "{script}");
+        }
+        assert!(script.contains(&format!("rmdir \"!{CLEANUP_DIR}!\"")), "{script}");
+        // the loop counter is the only % in the line, so no part of the path can be expanded
+        assert_eq!(script.matches('%').count(), 1, "{script}");
+        assert!(script.contains(&format!("\"{}\"", system_dir().unwrap().join("ping.exe").display())), "{script}");
     }
 
     #[test]
@@ -415,10 +455,14 @@ mod update_tests {
         std::fs::write(dir.join("sprawl.exe"), b"old program").unwrap();
         std::fs::write(dir.join(STAGE).join("sprawl.exe"), b"new program").unwrap();
         let mut files = vec![("sprawl.exe".into(), dir.join(STAGE).join("sprawl.exe"), crate::sha256_hex(b"wrong"))];
+        // the preflight that runs before other windows are closed refuses it too, changing nothing
+        assert!(preflight(&dir, &files).is_err());
         assert!(swap_in(&dir, "99.0.0", &files).is_err());
         assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"old program");
         if per_user_only().is_ok() {
             files[0].2 = crate::sha256_hex(b"new program");
+            preflight(&dir, &files).unwrap();
+            assert_eq!(std::fs::read(dir.join("sprawl.exe")).unwrap(), b"old program");
             std::fs::write(dir.join(crate::FILES[1]), b"old bootstrap").unwrap();
             swap_in(&dir, "99.0.0", &files).unwrap();
             assert_eq!(std::fs::read(dir.join("sprawl.exe.old")).unwrap(), b"old program");

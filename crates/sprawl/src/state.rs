@@ -29,7 +29,7 @@ pub(crate) enum Units {
     TB,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum View {
     Tree,
     Files,
@@ -264,8 +264,12 @@ pub(crate) fn timing(what: &str, since: Instant) {
     sprawl_core::timing(what, since);
 }
 
+/// Load a piece of XAML: the look's tokens are put in first, then the light page's colours.
+/// Expanding here covers every string the app loads, `reconcile`'s one-attribute loads
+/// included; `reconcile` expands its own strings before it compares them, and expanding twice
+/// changes nothing, since no token is left after the first.
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
-    XamlReader::Load(&HSTRING::from(&*crate::theme::themed(xaml)))?.cast()
+    XamlReader::Load(&HSTRING::from(&*crate::theme::themed(&crate::tokens::expand(xaml))))?.cast()
 }
 
 impl State {
@@ -891,7 +895,14 @@ impl State {
                         self.row_tapped(40.0, self.rows_now(crate::tables::Which::Main).y_of(k as usize) + 5.0, false);
                     }
                     k if k.starts_with("key=") => {
+                        let t0 = std::time::Instant::now();
                         self.table_key(k[4..].parse().unwrap_or(0));
+                        crate::state::timing(&format!("{k}"), t0);
+                    }
+                    // dev: a click on the main table's header at x (sorts by that column)
+                    h if h.starts_with("hdr=") => {
+                        let width = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "TreeScroll").ok().and_then(|s| s.ViewportWidth().ok()).unwrap_or(1200.0);
+                        self.header_clicked(crate::tables::Which::Main, h[4..].parse().unwrap_or(0.0), width);
                     }
                     // dev: type into the search box
                     q if q.starts_with("find=") => {
@@ -928,13 +939,13 @@ impl State {
                     "mapclick" => self.map_click(w * 0.3, h * 0.5),
                     // dev: write where the Cleaners tab's list is scrolled to into the timing log
                     "cllog" => {
-                        if let Some(sv) = self.advisor.panel.as_ref().and_then(|p| find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(p, "ClScroll").ok()) {
+                        if let Some(sv) = self.advisor.pfind::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>("ClScroll") {
                             crate::state::timing(&format!("ClScroll is at {:.0}", sv.VerticalOffset().unwrap_or(-1.0)), std::time::Instant::now());
                         }
                     }
                     // dev: scroll the Cleaners tab's list down to y
                     y if y.starts_with("clscroll=") => {
-                        if let Some(sv) = self.advisor.panel.as_ref().and_then(|p| find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(p, "ClScroll").ok()) {
+                        if let Some(sv) = self.advisor.pfind::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>("ClScroll") {
                             let _ = sv.ChangeViewWithOptionalAnimation(None, y[9..].parse().ok(), None, true);
                         }
                     }

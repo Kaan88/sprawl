@@ -23,8 +23,8 @@ use windows_core::Interface;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, PasswordBox, TextBox};
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ButtonBase;
-use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
-use crate::state::{find, keep, load, with, State, View};
+use crate::bindings::Microsoft::UI::Xaml::UIElement;
+use crate::state::{find, keep, with, State, View};
 use crate::{ui, win32};
 
 
@@ -208,6 +208,23 @@ enum InUse {
     Done(Option<sprawl_advisor::inuse::Checked>),
 }
 
+/// The Advisor's buttons with a name of their own: a click runs `advisor_command(name)`.
+const ADVISOR_COMMANDS: &[&str] = &[
+    "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize",
+    "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide", "AdvOnlyComp", "AdvExplainUnknown", "AdvUnknownSetup", "AdvAskFinding", "AdvKeep",
+    "AdvLater", "AdvStillUse", "AdvManageLibrary", "AdvForgetLearning", "AdvQuiet", "AdvSortRecommended", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit",
+    "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPCodex", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave",
+    "AdvAiRemove", "AdvAiForget", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop",
+    "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0",
+    "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev",
+    "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny", "AdvRefresh", "AdvGoApprove", "AdvHeld",
+    "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvExport",
+    "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow",
+    "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe",
+    "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain", "AdvGoalOptions", "AdvGoalHide", "AdvGoalGreen", "AdvGoalCleanup",
+    "AdvGoalCompress", "AdvGoalMove",
+];
+
 #[derive(Default)]
 pub(crate) struct Advisor {
     pub(crate) report: Option<Report>,
@@ -234,10 +251,14 @@ pub(crate) struct Advisor {
     show_cmd: bool,
     /// The last message for the user, shown in the panel's foot next to the buttons.
     pub(crate) msg: std::cell::RefCell<Option<String>>,
-    /// The panel as loaded, for its named parts (its own namescope).
-    pub(crate) panel: Option<FrameworkElement>,
+    /// The panel in the Advisor's list host (AdvHost) and in the column host (ClHost): what was
+    /// last shown in each, changed in place on the next redraw (reconcile.rs).
+    pub(crate) slot_adv: crate::reconcile::Slot,
+    pub(crate) slot_cl: crate::reconcile::Slot,
+    /// Which of the two shows the panel now.
+    pub(crate) on_cl: bool,
     /// The foot under the list: messages, the clean-up bar, review and progress.
-    pub(crate) foot: Option<FrameworkElement>,
+    pub(crate) slot_foot: crate::reconcile::Slot,
     /// A control to focus after the next redraw (the box just ticked).
     pub(crate) focus_after: Option<String>,
     /// The rules count ([`memory::Memory::rules_gen`]) the check now running began with.
@@ -333,6 +354,37 @@ impl Advisor {
     pub(crate) fn reading(&self) -> bool {
         self.recheck.is_some() || self.cl.own_reading.is_some()
     }
+
+    /// The slot that shows the panel now.
+    pub(crate) fn panel(&self) -> &crate::reconcile::Slot {
+        if self.on_cl {
+            &self.slot_cl
+        } else {
+            &self.slot_adv
+        }
+    }
+
+    /// A panel is on screen.
+    pub(crate) fn has_panel(&self) -> bool {
+        self.panel().root().is_some()
+    }
+
+    /// The element called `name` in the panel (pieces loaded later included).
+    pub(crate) fn pfind<T: Interface>(&self, name: &str) -> Option<T> {
+        self.panel().find::<T>(name)
+    }
+
+    /// The element called `name` in the foot.
+    pub(crate) fn ffind<T: Interface>(&self, name: &str) -> Option<T> {
+        self.slot_foot.find::<T>(name)
+    }
+
+    /// Set a status line in the panel from code (the string's own text comes back at the next
+    /// redraw).
+    pub(crate) fn ptext(&self, name: &str, value: &str) {
+        self.panel().text(name, value);
+    }
+
 }
 
 impl Advisor {
@@ -991,6 +1043,7 @@ impl State {
         let mut changed = false;
         // the folders a script cleaned, measured again: into the tree after the messages
         let mut rescanned = Vec::new();
+        let mut ended = false;
         for m in msgs {
             match m {
                 Msg::Report(r) => {
@@ -1017,6 +1070,7 @@ impl State {
                     self.advisor.open = None;
                     self.advisor.in_use = None;
                     self.tab_counts();
+                    ended = true;
                 }
                 Msg::Failed(gen) => {
                     if gen == self.tree_gen {
@@ -1032,9 +1086,7 @@ impl State {
                 }
                 Msg::DupesProgress(gen, line) => {
                     if gen == self.tree_gen && self.advisor.dupes_status.is_some() {
-                        if let Some(p) = &self.advisor.panel {
-                            crate::state::text(p, "AdvDupesStatus", &line);
-                        }
+                        self.advisor.ptext("AdvDupesStatus", &line);
                         self.advisor.dupes_status = Some(line);
                     }
                     continue;
@@ -1044,7 +1096,9 @@ impl State {
                     if gen == self.tree_gen {
                         match result {
                             Ok(d) => {
-                                let n = d.findings.len();
+                                // the interrupted-link notice rides along in the same list and
+                                // is not a set of copies
+                                let n = d.findings.iter().filter(|f| f.source != sprawl_advisor::finding::Source::Rule(sprawl_advisor::dupes::INTERRUPTED.into())).count();
                                 self.advisor.dupes_note = Some(match (n, d.partial) {
                                     (0, false) => "No duplicate files of 50 MB or more.".to_string(),
                                     (0, true) => "Stopped before finding duplicates.".to_string(),
@@ -1075,9 +1129,7 @@ impl State {
                 Msg::AiProgress(gen, line) => {
                     // only the status line changes, so typing in the panel isn't disturbed
                     if gen == self.tree_gen && matches!(self.advisor.ai, Ai::Running(_)) {
-                        if let Some(p) = &self.advisor.panel {
-                            crate::state::text(p, "AdvAiStatus", &line);
-                        }
+                        self.advisor.ptext("AdvAiStatus", &line);
                         self.advisor.ai = Ai::Running(line);
                     }
                     continue;
@@ -1120,6 +1172,11 @@ impl State {
             self.advisor_changed();
             self.refresh_rows(); // the Owner column
         }
+        // rules changed (and Remembered left) while that check ran: the check they owe starts
+        // now, not on the next visit (Fable AI review P3-8)
+        if ended {
+            self.recheck_if_owed();
+        }
     }
 
     /// Once a second, the time on a running AI or chat status line, so it visibly works.
@@ -1129,12 +1186,14 @@ impl State {
             return;
         }
         self.advisor.ai_tick = Some(now);
-        let Some(p) = self.advisor.panel.clone() else { return };
+        if !self.advisor.has_panel() {
+            return;
+        }
         if let (Ai::Running(line), Some(t)) = (&self.advisor.ai, self.advisor.ai_started) {
-            crate::state::text(&p, "AdvAiStatus", &format!("{line}  ·  {} s", t.elapsed().as_secs()));
+            self.advisor.ptext("AdvAiStatus", &format!("{line}  ·  {} s", t.elapsed().as_secs()));
         }
         if let (Some(line), Some(t)) = (&self.advisor.chat.status, self.advisor.chat.asked) {
-            crate::state::text(&p, "AdvChatStatus", &format!("{line}  ·  {} s", t.elapsed().as_secs()));
+            self.advisor.ptext("AdvChatStatus", &format!("{line}  ·  {} s", t.elapsed().as_secs()));
         }
     }
 
@@ -1157,18 +1216,20 @@ impl State {
 
     /// The owner of `n` for the Owner column, whether its parent has the same one, and whether
     /// Sprawl knows where to uninstall it.
-    pub(crate) fn owner_of(&self, n: usize) -> Option<(&str, bool, bool)> {
+    pub(crate) fn owner_of(&self, n: usize) -> Option<(std::borrow::Cow<'_, str>, bool, bool)> {
         let r = self.advice()?;
         let Some(o) = r.owners.get(n).copied().flatten() else {
             // no app owns it: what the user or the model said it is
             let t = self.tree.as_ref()?;
             let label = self.advisor.memory.label_for(&t.path_of(n))?;
             let parent_same = t.nodes[n].parent.is_some_and(|p| self.advisor.memory.label_for(&t.path_of(p)).is_some_and(|l| l.label == label.label));
-            return Some((label.label.as_str(), parent_same, false));
+            // an AI answer's label says so: it is a guess, not the user's word (Fable AI review P2-2)
+            let name = if label.from == memory::From::Model { std::borrow::Cow::Owned(format!("{} (an AI's guess)", label.label)) } else { std::borrow::Cow::Borrowed(label.label.as_str()) };
+            return Some((name, parent_same, false));
         };
         let inherited = self.tree.as_ref().and_then(|t| t.nodes[n].parent).and_then(|p| r.owners.get(p).copied().flatten()) == Some(o);
         let can_uninstall = r.uninstall.get(o as usize).is_some_and(|u| u.is_some());
-        Some((r.apps.get(o as usize)?.as_str(), inherited, can_uninstall))
+        Some((std::borrow::Cow::Borrowed(r.apps.get(o as usize)?.as_str()), inherited, can_uninstall))
     }
 
     pub(crate) fn advisor_command(&mut self, name: &str) {
@@ -1310,11 +1371,18 @@ impl State {
                 self.read_ai_fields();
                 // a key may have just been stored: the list is fetched again next time
                 self.advisor.models.reset();
-                let key = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+                let key = self.advisor.pfind::<PasswordBox>("AdvAiKey").and_then(|k| k.Password().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
                 self.advisor.ai_key_typed.clear();
                 if let Some(mut c) = self.advisor.ai_edit.take() {
                     let mut notes = Vec::new();
-                    c.keep_custom(&std::mem::take(&mut self.advisor.ai_custom_was));
+                    let was = std::mem::take(&mut self.advisor.ai_custom_was);
+                    if !c.keep_custom(&was) {
+                        // another custom AI has that name: nothing saved, the form stays open
+                        self.adv_say(&format!("Another custom AI is already called {}: choose another name.", c.custom.trim()));
+                        self.advisor.ai_custom_was = was;
+                        self.advisor.ai_edit = Some(c);
+                        return self.render_advisor();
+                    }
                     if c.save().is_err() {
                         notes.push("the settings couldn't be saved");
                     }
@@ -1630,9 +1698,7 @@ impl State {
                     return;
                 }
                 self.advisor.ai_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(p) = &self.advisor.panel {
-                    crate::state::text(p, "AdvAiStatus", "Stopping after this step");
-                }
+                self.advisor.ptext("AdvAiStatus", "Stopping after this step");
                 self.advisor.ai = Ai::Running("Stopping after this step".into());
                 return;
             }
@@ -1688,7 +1754,7 @@ impl State {
             "AdvMemShow" => self.advisor.show_memory = !self.advisor.show_memory,
             "AdvKeep" | "AdvLater" => return self.advisor_decide(if name == "AdvKeep" { Verdict::Keep } else { Verdict::Later }),
             "AdvPrefAdd" => {
-                let text = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvPrefText").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+                let text = self.advisor.pfind::<TextBox>("AdvPrefText").and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
                 if let Err(e) = self.advisor.memory.add_pref(&text, memory::From::You) {
                     self.adv_say(&format!("Not added: {e}."));
                 }
@@ -1833,49 +1899,17 @@ impl State {
         self.advisor_rows(&rows);
     }
 
-    /// Only rows `rows` changed (one opened or closed, an in-use answer): each is loaded again
-    /// in its place, so the list keeps its scroll and the rest isn't rebuilt. Anything not
-    /// found that way (a row in a hidden group, the Cleaners tab) gets the whole panel again.
+    /// Only rows `rows` changed (one opened or closed, an in-use answer). The panel is drawn
+    /// again, and only what differs is changed on screen (reconcile.rs), so the list keeps its
+    /// scroll and the row its pointer highlight.
     pub(crate) fn advisor_rows(&mut self, rows: &[usize]) {
-        let t0 = std::time::Instant::now();
+        let _ = rows;
         // the map lights the selected finding
         self.map.drawn_once = false;
         if self.view != View::Advisor {
             return;
         }
-        let swapped = !self.advisor.cleaners_tab
-            && self.advisor.section == Section::Findings
-            && self.advisor.panel.is_some()
-            && rows.iter().all(|&i| self.advisor_row_swap(i));
-        // a focus asked for and not taken (the row wasn't swapped) is the full render's to take
-        if !swapped {
-            return self.render_advisor();
-        }
-        crate::state::timing(&format!("advisor_rows {rows:?} swapped"), t0);
-    }
-
-    fn advisor_row_swap(&mut self, i: usize) -> bool {
-        let (Some(p), Some(r)) = (self.advisor.panel.as_ref(), self.advice()) else { return false };
-        if i >= r.findings.len() {
-            return false;
-        }
-        let Ok(host) = find::<Border>(p, &format!("AdvRow{i}")) else { return false };
-        let Ok(el) = load::<UIElement>(&self.finding_row_inner(r, i, ui::NS)) else { return false };
-        let Ok(fe) = el.cast::<FrameworkElement>() else { return false };
-        if host.SetChild(&el).is_err() {
-            return false;
-        }
-        self.wire_advisor(&fe, std::slice::from_ref(&fe));
-        // the row's button was clicked, had the focus, and was replaced: the new one takes it,
-        // or focus falls to the list's first control and the list jumps to the top
-        let name = format!("AdvF{i}");
-        if self.advisor.focus_after.as_deref() == Some(name.as_str()) {
-            self.advisor.focus_after = None;
-            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&fe, &name) {
-                let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
-            }
-        }
-        true
+        self.render_advisor();
     }
 
     /// After a tick button in the foot: the list where the ticks show, not Growth or
@@ -1932,18 +1966,18 @@ impl State {
             (!levels.is_empty()).then(|| (e.model.clone(), levels))
         });
         // keep what was typed in the goal and question boxes, and an unsaved key, across the redraw
-        if let Some(k) = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()) {
+        if let Some(k) = self.advisor.pfind::<PasswordBox>("AdvAiKey").and_then(|k| k.Password().ok()) {
             self.advisor.ai_key_typed = k.to_string_lossy();
         }
         if self.advisor.ai_edit.is_none() {
             self.advisor.ai_key_typed.clear();
         }
-        if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
+        if let Some(t) = self.advisor.ffind::<TextBox>("AdvGoal") {
             if let Ok(h) = t.Text() {
                 self.advisor.goal_text = h.to_string_lossy();
             }
         }
-        if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
+        if let Some(t) = self.advisor.pfind::<TextBox>("AdvChatText") {
             if let Ok(h) = t.Text() {
                 self.advisor.chat.text = h.to_string_lossy();
             }
@@ -1962,16 +1996,13 @@ impl State {
         }
         let Ok(host) = find::<Border>(&self.root, if tab { "ClHost" } else { "AdvHost" }) else { return };
         // the lists stay where they were scrolled to. The Cleaners tab's columns are inside the
-        // panel that is replaced: their places are read from the old one
+        // panel: when it is loaded again whole, their places are read from the old one
         type Sv = crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer;
         const CL_SCROLLS: [&str; 5] = ["ClScroll", "ClSide", "ClAiScroll", "FnScroll", "FnAiScroll"];
         let scroll = if tab { None } else { find::<Sv>(&self.root, "AdvScroll").ok() };
         let offset = scroll.as_ref().and_then(|s| s.VerticalOffset().ok());
         // a column the old panel didn't have (the other page) starts at the top
-        let cl_offsets: Vec<Option<f64>> = CL_SCROLLS
-            .iter()
-            .map(|n| if tab { self.advisor.panel.as_ref().and_then(|p| find::<Sv>(p, n).ok()).and_then(|s| s.VerticalOffset().ok()) } else { None })
-            .collect();
+        let cl_offsets: Vec<Option<f64>> = CL_SCROLLS.iter().map(|n| if tab { self.advisor.pfind::<Sv>(n).and_then(|s| s.VerticalOffset().ok()) } else { None }).collect();
         let xaml = if cleaners {
             self.cleaners_tab_xaml()
         } else if tab {
@@ -1979,44 +2010,56 @@ impl State {
         } else {
             self.advisor_xaml()
         };
-        let Ok(el) = load::<UIElement>(&xaml) else {
-            eprintln!("advisor panel failed to load");
-            return;
+        self.advisor.on_cl = tab;
+        let slot = if tab { &mut self.advisor.slot_cl } else { &mut self.advisor.slot_adv };
+        let shown = match slot.show(&host, &xaml, true) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("advisor panel failed to load");
+                return;
+            }
         };
-        let _ = host.SetChild(&el);
-        let Ok(fe) = el.cast::<FrameworkElement>() else { return };
+        // the foot, pinned under the list. While a clean-up is reviewed, runs or has just run it
+        // is loaded whole every time: what the user confirms is never a patched view
+        let c = &self.advisor.cleanup;
+        let in_place = !(c.review || c.running.is_some() || c.done.is_some());
+        let foot = match find::<Border>(&self.root, "AdvFoot") {
+            Ok(b) => {
+                let xaml = self.advisor_foot_xaml();
+                match self.advisor.slot_foot.show(&b, &xaml, in_place) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!("advisor foot failed to load: {}", e.message());
+                        // never silently: the old bar stays, and a press would look like it did nothing
+                        crate::state::text(&self.root, "StatusText", &format!("Sprawl couldn't draw this part of the Advisor (a bug inside Sprawl: {}). Nothing was changed.", e.message()));
+                        // dev: a screenshot run keeps what failed, to find the piece
+                        if self.shot.is_some() {
+                            let _ = std::fs::write(std::env::temp_dir().join("sprawl-foot-failed.xaml"), &xaml);
+                        }
+                        // the next time, all of it again
+                        self.advisor.slot_foot.forget();
+                        None
+                    }
+                }
+            }
+            Err(_) => None,
+        };
+        let whole = shown.whole;
+        let pieces: Vec<crate::reconcile::Loaded> = shown.loaded.into_iter().chain(foot.into_iter().flat_map(|f| f.loaded)).collect();
+        // the element called `name`, if it is in a piece just loaded
+        fn get<T: Interface>(pieces: &[crate::reconcile::Loaded], name: &str) -> Option<T> {
+            pieces.iter().find(|l| l.names.iter().any(|n| n == name))?.find(name)
+        }
         if !self.advisor.ai_key_typed.is_empty() {
-            if let Ok(k) = find::<PasswordBox>(&fe, "AdvAiKey") {
+            if let Some(k) = get::<PasswordBox>(&pieces, "AdvAiKey") {
                 let _ = k.SetPassword(&self.advisor.ai_key_typed.as_str().into());
             }
         }
-        self.advisor.panel = Some(fe.clone());
-        // the foot, pinned under the list
-        let foot = find::<Border>(&self.root, "AdvFoot").ok().and_then(|b| {
-            let xaml = self.advisor_foot_xaml();
-            let el = load::<UIElement>(&xaml).map_err(|e| {
-                eprintln!("advisor foot failed to load: {}", e.message());
-                // never silently: the old bar stays, and a press would look like it did nothing
-                crate::state::text(&self.root, "StatusText", &format!("Sprawl couldn't draw this part of the Advisor (a bug inside Sprawl: {}). Nothing was changed.", e.message()));
-                // dev: a screenshot run keeps what failed, to find the piece
-                if self.shot.is_some() {
-                    let _ = std::fs::write(std::env::temp_dir().join("sprawl-foot-failed.xaml"), &xaml);
-                }
-            }).ok()?;
-            let _ = b.SetChild(&el);
-            el.cast::<FrameworkElement>().ok()
-        });
-        self.advisor.foot = foot.clone();
-        let roots: Vec<FrameworkElement> = std::iter::once(fe.clone()).chain(foot).collect();
-        if let Some(t) = roots.iter().find_map(|r| find::<TextBox>(r, "AdvGoal").ok()) {
+        // a text box that stayed keeps what is typed in it; a new one gets it back
+        if let Some(t) = get::<TextBox>(&pieces, "AdvGoal") {
             let _ = t.SetText(&self.advisor.goal_text.as_str().into());
-        }
-        if let Ok(t) = find::<TextBox>(&fe, "AdvChatText") {
-            let _ = t.SetText(&self.advisor.chat.text.as_str().into());
-        }
-        // Enter in the goal box ticks enough
-        if let Some(el) = roots.iter().find_map(|r| find::<UIElement>(r, "AdvGoal").ok()) {
-            if let Ok(t) = el.KeyDown(|_, e| {
+            // Enter in the goal box ticks enough
+            if let Ok(t) = t.KeyDown(|_, e| {
                 let Some(e) = e.as_ref() else { return };
                 if e.Key().is_ok_and(|k| k.0 == 13) {
                     let _ = e.SetHandled(true);
@@ -2026,9 +2069,10 @@ impl State {
                 keep(t);
             }
         }
-        // Enter in the question box asks
-        if let Ok(el) = find::<UIElement>(&fe, "AdvChatText") {
-            if let Ok(t) = el.KeyDown(|_, e| {
+        if let Some(t) = get::<TextBox>(&pieces, "AdvChatText") {
+            let _ = t.SetText(&self.advisor.chat.text.as_str().into());
+            // Enter in the question box asks
+            if let Ok(t) = t.KeyDown(|_, e| {
                 let Some(e) = e.as_ref() else { return };
                 if e.Key().is_ok_and(|k| k.0 == 13) {
                     let _ = e.SetHandled(true);
@@ -2038,146 +2082,40 @@ impl State {
                 keep(t);
             }
         }
-        self.wire_advisor(&fe, &roots);
-        if let (Some(sv), Some(y)) = (&scroll, offset) {
-            let _ = sv.ChangeViewWithOptionalAnimation(None, Some(y), None, true);
+        // only the controls just loaded: the ones that stayed are hooked up already
+        for l in &pieces {
+            self.wire_advisor(l);
         }
-        // a new panel has no height until it is laid out, and a place set before that is lost
-        // (the list jumped to the top on every click on the Cleaners tab): lay it out now, then
-        // put each column back at once, without the scroll animation
-        if cl_offsets.iter().any(|o| o.is_some_and(|y| y > 0.0)) {
-            let _ = fe.UpdateLayout();
-            for (n, y) in CL_SCROLLS.iter().zip(&cl_offsets) {
-                if let (Ok(sv), Some(y)) = (find::<Sv>(&fe, n), y) {
-                    let _ = sv.ChangeViewWithOptionalAnimation(None, Some(*y), None, true);
-                }
+        if whole {
+            if let (Some(sv), Some(y)) = (&scroll, offset) {
+                let _ = sv.ChangeViewWithOptionalAnimation(None, Some(y), None, true);
             }
-        }
-        // and the box just ticked keeps the focus, for the keyboard
-        if let Some(name) = self.advisor.focus_after.take() {
-            if let Some(c) = roots.iter().find_map(|r| find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(r, &name).ok()) {
-                let _ = c.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
-            }
-        }
-        crate::state::timing("render_advisor (the whole panel)", t0);
-    }
-
-    /// Hook up the buttons in a freshly loaded Advisor panel (`fe`, with the foot in `roots`),
-    /// or in one row loaded alone (`fe` and `roots` that row).
-    fn wire_advisor(&self, fe: &FrameworkElement, roots: &[FrameworkElement]) {
-        let count = self.advice().map_or(0, |r| r.findings.len());
-        for i in 0..count {
-            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvF{i}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| {
-                        s.advisor.focus_after = Some(format!("AdvF{i}"));
-                        s.advisor_open(i);
-                    });
-                }) {
-                    keep(t);
-                }
-            }
-        }
-        // F1: the compressed folders' buttons
-        for i in 0..self.advisor.memory.compressed.len() {
-            for (name, forget) in [(format!("AdvUnc{i}"), false), (format!("AdvUncF{i}"), true)] {
-                if let Ok(b) = find::<ButtonBase>(fe, &name) {
-                    if let Ok(t) = b.Click(move |_, _| {
-                        with(|s| {
-                            if forget {
-                                if i < s.advisor.memory.compressed.len() {
-                                    s.advisor.memory.compressed.remove(i);
-                                    s.save_memory();
-                                }
-                                s.render_advisor();
-                            } else {
-                                s.uncompress_ask(i);
-                            }
-                        });
-                    }) {
-                        keep(t);
+            // a new panel has no height until it is laid out, and a place set before that is
+            // lost (the list jumped to the top on every click on the Cleaners tab): lay it out
+            // now, then put each column back at once, without the scroll animation
+            if let (true, Some(fe)) = (cl_offsets.iter().any(|o| o.is_some_and(|y| y > 0.0)), self.advisor.panel().root().cloned()) {
+                let _ = fe.UpdateLayout();
+                for (n, y) in CL_SCROLLS.iter().zip(&cl_offsets) {
+                    if let (Some(sv), Some(y)) = (self.advisor.pfind::<Sv>(n), y) {
+                        let _ = sv.ChangeViewWithOptionalAnimation(None, Some(*y), None, true);
                     }
                 }
             }
         }
-        for i in 0..count {
-            // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
-            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvU{i}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| {
-                        s.second_try_click(i);
-                        let ticked = s.advice().and_then(|r| r.findings.get(i)).is_some_and(|f| f.forced_from.is_some());
-                        s.advisor.focus_after = Some(if ticked { format!("AdvT{i}") } else { format!("AdvU{i}") });
-                        s.render_advisor();
-                    });
-                }) {
-                    keep(t);
-                }
+        // the box just ticked keeps the focus, for the keyboard: a control that stayed has it
+        // still, one loaded again takes it
+        if let Some(name) = self.advisor.focus_after.take() {
+            if let Some(c) = get::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&pieces, &name) {
+                let _ = c.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
             }
         }
-        for i in 0..count {
-            // a finding the AI suggested: ticked from its card, in the AI's colour (R9)
-            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvSgT{i}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| {
-                        let on = s.advice().and_then(|r| r.findings.get(i)).is_some_and(|f| s.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)));
-                        if on {
-                            s.cleanup_toggle(i);
-                        } else {
-                            s.fn_suggest_tick(&[i]);
-                        }
-                        s.advisor.focus_after = Some(format!("AdvSgT{i}"));
-                        s.render_advisor();
-                    });
-                }) {
-                    keep(t);
-                }
-            }
-        }
-        for i in 0..count {
-            // the same tick, in the AI's column
-            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvAiT{i}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| {
-                        s.cleanup_toggle(i);
-                        s.advisor.focus_after = Some(format!("AdvAiT{i}"));
-                        s.render_advisor();
-                    });
-                }) {
-                    keep(t);
-                }
-            }
-        }
-        // B1: the open compress item's algorithm; drawn again on the next frame, not inside
-        // the dropdown's own event
-        if let Some(i) = self.advisor.open {
-            if let Ok(c) = find::<Selector>(fe, &format!("AdvAlg{i}")) {
-                if let Ok(t) = c.SelectionChanged(move |s, _| {
-                    let k = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).and_then(|k| usize::try_from(k).ok());
-                    with(|s| {
-                        let (Some(k), Some(f)) = (k, s.advice().and_then(|r| r.findings.get(i)).cloned()) else { return };
-                        let Some(choice) = sprawl_advisor::remedies::COMPRESS_CHOICES.get(k) else { return };
-                        s.advisor.cleanup.algs.insert(crate::cleanup::key(&f.path), choice.0.to_string());
-                        s.advisor.rerender = true;
-                    });
-                }) {
-                    keep(t);
-                }
-            }
-        }
-        for i in 0..count {
-            if let Ok(b) = find::<ButtonBase>(fe, &format!("AdvT{i}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| {
-                        s.cleanup_toggle(i);
-                        s.advisor.focus_after = Some(format!("AdvT{i}"));
-                        s.render_advisor();
-                    });
-                }) {
-                    keep(t);
-                }
-            }
-        }
+        crate::state::timing(if whole { "render_advisor (the whole panel)" } else { "render_advisor (in place)" }, t0);
+    }
+
+    /// Hook up the controls of a piece of the Advisor just loaded (the whole panel or foot, or
+    /// one piece of it), by the names written in it.
+    fn wire_advisor(&self, piece: &crate::reconcile::Loaded) {
+        let count = self.advice().map_or(0, |r| r.findings.len());
         let cl = self.cleaner_counts();
         let m = &self.advisor.memory;
         let counts = [
@@ -2205,97 +2143,206 @@ impl State {
             ("AdvPvT", self.advice().map_or(0, |r| r.privacy.len())),
             ("AdvClDismiss", m.cleaner_proposals.len()),
         ];
-        for (kind, n) in counts {
-            for i in 0..n {
-                if let Ok(b) = find::<ButtonBase>(fe, &format!("{kind}{i}")) {
-                    if let Ok(t) = b.Click(move |_, _| {
-                        with(|s| s.advisor_indexed(kind, i));
-                    }) {
-                        keep(t);
-                    }
+        let click = |name: &str, f: Box<dyn Fn() + Send + Sync>| {
+            if let Some(b) = piece.find::<ButtonBase>(name) {
+                if let Ok(t) = b.Click(move |_, _| f()) {
+                    keep(t);
                 }
             }
-        }
-        // another provider: the form below it is drawn for that one
-        if let Ok(s) = find::<Selector>(fe, "AdvAiProviderPick") {
-            if let Ok(t) = s.SelectionChanged(|sel, _| {
-                let i = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
-                if let Some((_, _, cmd)) = i.and_then(|i| PROVIDER_PICKS.get(i)) {
-                    with(|s| {
-                        s.advisor.focus_after = Some("AdvAiProviderPick".into());
-                        s.advisor_command(cmd);
-                    });
-                } else if let Some(j) = i.and_then(|i| i.checked_sub(PROVIDER_PICKS.len())) {
-                    // a custom AI: its address, model and name in the form
-                    with(|s| {
-                        s.read_ai_fields();
-                        let Some(name) = s.advisor.ai_edit.as_ref().and_then(|c| c.customs.get(j)).map(|c| c.name.clone()) else { return };
-                        let same = s.advisor.ai_edit.as_ref().is_some_and(|c| c.provider == Provider::OpenAi && c.custom == name) && s.advisor.ai_custom_was == name;
-                        if same {
-                            return;
+        };
+        for name in &piece.names {
+            let name = name.as_str();
+            match name {
+                // another provider: the form below it is drawn for that one
+                "AdvAiProviderPick" => {
+                    if let Some(s) = piece.find::<Selector>(name) {
+                        if let Ok(t) = s.SelectionChanged(|sel, _| {
+                            let i = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
+                            if let Some((_, _, cmd)) = i.and_then(|i| PROVIDER_PICKS.get(i)) {
+                                with(|s| {
+                                    s.advisor.focus_after = Some("AdvAiProviderPick".into());
+                                    s.advisor_command(cmd);
+                                });
+                            } else if let Some(j) = i.and_then(|i| i.checked_sub(PROVIDER_PICKS.len())) {
+                                // a custom AI: its address, model and name in the form
+                                with(|s| {
+                                    s.read_ai_fields();
+                                    let Some(name) = s.advisor.ai_edit.as_ref().and_then(|c| c.customs.get(j)).map(|c| c.name.clone()) else { return };
+                                    let same = s.advisor.ai_edit.as_ref().is_some_and(|c| c.provider == Provider::OpenAi && c.custom == name) && s.advisor.ai_custom_was == name;
+                                    if same {
+                                        return;
+                                    }
+                                    if let Some(c) = s.advisor.ai_edit.as_mut() {
+                                        c.use_custom(&name);
+                                    }
+                                    s.advisor.ai_custom_was = name;
+                                    s.advisor.ai_key_typed.clear();
+                                    s.advisor.models.reset();
+                                    s.advisor.focus_after = Some("AdvAiProviderPick".into());
+                                    s.advisor.rerender = true;
+                                });
+                            }
+                        }) {
+                            keep(t);
                         }
-                        if let Some(c) = s.advisor.ai_edit.as_mut() {
-                            c.use_custom(&name);
-                        }
-                        s.advisor.ai_custom_was = name;
-                        s.advisor.ai_key_typed.clear();
-                        s.advisor.models.reset();
-                        s.advisor.focus_after = Some("AdvAiProviderPick".into());
-                        s.advisor.rerender = true;
-                    });
-                }
-            }) {
-                keep(t);
-            }
-        }
-        // a well-known service: its address in the box (a list from the old address is forgotten)
-        if let Ok(s) = find::<Selector>(fe, "AdvAiUrlPreset") {
-            if let Ok(t) = s.SelectionChanged(|sel, _| {
-                let i = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
-                let Some(url) = i.and_then(sprawl_advisor::llm::models::preset_url) else { return };
-                with(|s| {
-                    s.read_ai_fields();
-                    let changed = s.advisor.ai_edit.as_mut().is_some_and(|c| {
-                        let changed = c.base_url != url;
-                        c.base_url = url.to_string();
-                        changed
-                    });
-                    if changed {
-                        // a key typed for the old address never goes to the new one
-                        s.forget_typed_key();
-                        s.advisor.models.reset();
-                        s.advisor.focus_after = Some("AdvAiUrlPreset".into());
-                        s.advisor.rerender = true;
                     }
-                });
-            }) {
-                keep(t);
+                    continue;
+                }
+                // a well-known service: its address in the box (a list from the old address is forgotten)
+                "AdvAiUrlPreset" => {
+                    if let Some(s) = piece.find::<Selector>(name) {
+                        if let Ok(t) = s.SelectionChanged(|sel, _| {
+                            let i = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
+                            let Some(url) = i.and_then(sprawl_advisor::llm::models::preset_url) else { return };
+                            with(|s| {
+                                s.read_ai_fields();
+                                let changed = s.advisor.ai_edit.as_mut().is_some_and(|c| {
+                                    let changed = c.base_url != url;
+                                    c.base_url = url.to_string();
+                                    changed
+                                });
+                                if changed {
+                                    // a key typed for the old address never goes to the new one
+                                    s.forget_typed_key();
+                                    s.advisor.models.reset();
+                                    s.advisor.focus_after = Some("AdvAiUrlPreset".into());
+                                    s.advisor.rerender = true;
+                                }
+                            });
+                        }) {
+                            keep(t);
+                        }
+                    }
+                    continue;
+                }
+                // another model may offer other effort levels: draw the Effort dropdown for it
+                "AdvAiModelPick" => {
+                    if let Some(s) = piece.find::<Selector>(name) {
+                        if let Ok(t) = s.SelectionChanged(|_, _| {
+                            with(|s| {
+                                s.read_ai_fields();
+                                s.advisor.focus_after = Some("AdvAiModelPick".into());
+                                s.render_advisor();
+                            });
+                        }) {
+                            keep(t);
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
             }
-        }
-        // another model may offer other effort levels: draw the Effort dropdown for it
-        if let Ok(s) = find::<Selector>(fe, "AdvAiModelPick") {
-            if let Ok(t) = s.SelectionChanged(|_, _| {
-                with(|s| {
-                    s.read_ai_fields();
-                    s.advisor.focus_after = Some("AdvAiModelPick".into());
-                    s.render_advisor();
-                });
-            }) {
-                keep(t);
+            if let Some(&cmd) = ADVISOR_COMMANDS.iter().find(|c| **c == name) {
+                click(
+                    name,
+                    Box::new(move || {
+                        with(|s| s.advisor_command(cmd));
+                    }),
+                );
+                continue;
             }
-        }
-        for name in [
-            "AdvSecFindings", "AdvSecCleaners", "AdvClCheck", "AdvClUsual", "AdvClUpd", "AdvClComm", "AdvClLeft", "AdvSecGrowth", "AdvSecMemory", "AdvSortSize", "AdvSortRisk", "AdvSortOwner", "AdvOnlyAll", "AdvOnlyRun", "AdvOnlyDecide", "AdvOnlyComp",
-            "AdvExplainUnknown", "AdvUnknownSetup", "AdvAskFinding", "AdvKeep", "AdvLater", "AdvStillUse", "AdvManageLibrary", "AdvForgetLearning", "AdvQuiet", "AdvSortRecommended", "AdvRun", "AdvRescan", "AdvRescanOld", "AdvAiEdit", "AdvPOff", "AdvPAnthropic", "AdvPClaudeCode", "AdvPCodex", "AdvPOpenAi", "AdvM0", "AdvM1", "AdvM2", "AdvAiLoad", "AdvAiSave", "AdvAiRemove", "AdvAiForget", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop", "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0", "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev", "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny",
-            "AdvRefresh", "AdvGoApprove", "AdvHeld", "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", 
-            "AdvExport", "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow", "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe", "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain", "AdvGoalOptions", "AdvGoalHide", "AdvGoalGreen", "AdvGoalCleanup", "AdvGoalCompress", "AdvGoalMove",
-        ] {
-            for r in roots {
-                if let Ok(b) = find::<ButtonBase>(r, name) {
-                    if let Ok(t) = b.Click(move |_, _| {
-                        with(|s| s.advisor_command(name));
-                    }) {
-                        keep(t);
+            // a name with a number: the kind, and which one
+            let kind = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            let Ok(i) = name[kind.len()..].parse::<usize>() else { continue };
+            match kind {
+                "AdvF" if i < count => click(
+                    name,
+                    Box::new(move || {
+                        with(|s| {
+                            s.advisor.focus_after = Some(format!("AdvF{i}"));
+                            s.advisor_open(i);
+                        });
+                    }),
+                ),
+                // F1: the compressed folders' buttons
+                "AdvUnc" | "AdvUncF" if i < m.compressed.len() => {
+                    let forget = kind == "AdvUncF";
+                    click(
+                        name,
+                        Box::new(move || {
+                            with(|s| {
+                                if forget {
+                                    if i < s.advisor.memory.compressed.len() {
+                                        s.advisor.memory.compressed.remove(i);
+                                        s.save_memory();
+                                    }
+                                    s.render_advisor();
+                                } else {
+                                    s.uncompress_ask(i);
+                                }
+                            });
+                        }),
+                    )
+                }
+                // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
+                "AdvU" if i < count => click(
+                    name,
+                    Box::new(move || {
+                        with(|s| {
+                            s.second_try_click(i);
+                            let ticked = s.advice().and_then(|r| r.findings.get(i)).is_some_and(|f| f.forced_from.is_some());
+                            s.advisor.focus_after = Some(if ticked { format!("AdvT{i}") } else { format!("AdvU{i}") });
+                            s.render_advisor();
+                        });
+                    }),
+                ),
+                // a finding the AI suggested: ticked from its card, in the AI's colour (R9)
+                "AdvSgT" if i < count => click(
+                    name,
+                    Box::new(move || {
+                        with(|s| {
+                            let on = s.advice().and_then(|r| r.findings.get(i)).is_some_and(|f| s.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)));
+                            if on {
+                                s.cleanup_toggle(i);
+                            } else {
+                                s.fn_suggest_tick(&[i]);
+                            }
+                            s.advisor.focus_after = Some(format!("AdvSgT{i}"));
+                            s.render_advisor();
+                        });
+                    }),
+                ),
+                // the tick in the list, and the same tick in the AI's column
+                "AdvT" | "AdvAiT" if i < count => {
+                    let kind = if kind == "AdvT" { "AdvT" } else { "AdvAiT" };
+                    click(
+                        name,
+                        Box::new(move || {
+                            with(|s| {
+                                s.cleanup_toggle(i);
+                                s.advisor.focus_after = Some(format!("{kind}{i}"));
+                                s.render_advisor();
+                            });
+                        }),
+                    )
+                }
+                // B1: the open compress item's algorithm; drawn again on the next frame, not
+                // inside the dropdown's own event
+                "AdvAlg" => {
+                    if let Some(c) = piece.find::<Selector>(name) {
+                        if let Ok(t) = c.SelectionChanged(move |s, _| {
+                            let k = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).and_then(|k| usize::try_from(k).ok());
+                            with(|s| {
+                                let (Some(k), Some(f)) = (k, s.advice().and_then(|r| r.findings.get(i)).cloned()) else { return };
+                                let Some(choice) = sprawl_advisor::remedies::COMPRESS_CHOICES.get(k) else { return };
+                                s.advisor.cleanup.algs.insert(crate::cleanup::key(&f.path), choice.0.to_string());
+                                s.advisor.rerender = true;
+                            });
+                        }) {
+                            keep(t);
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(&(kind, n)) = counts.iter().find(|(k, _)| *k == kind) {
+                        if i < n {
+                            click(
+                                name,
+                                Box::new(move || {
+                                    with(|s| s.advisor_indexed(kind, i));
+                                }),
+                            );
+                        }
                     }
                 }
             }
@@ -2306,7 +2353,7 @@ impl State {
         let mut x = format!(r##"<StackPanel {} Spacing="10" Padding="18,14,18,18">"##, ui::NS);
         let Some(r) = self.advice() else {
             let msg = if self.job.is_some() { "Scanning the selected source. Advice will appear when it finishes." } else if self.advisor.running { "Looking for space to win back..." } else { self.advisor.note.unwrap_or("Scan a drive or folder, and the advisor shows what can be won back.") };
-            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/>"##, ui::esc(msg));
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="{{$text2}}" FontSize="13"/>"##, ui::esc(msg));
             if !self.advisor.running && self.tree.is_some() {
                 x += r##"<Button x:Name="AdvRefresh" Content="Check again"/>"##;
             }
@@ -2351,17 +2398,17 @@ impl State {
             let tips = r.findings.len();
             format!(r##"<Run Text="{}" FontWeight="SemiBold"/>"##, if tips == 0 { "Nothing to clean here".to_string() } else { format!("{tips} {}, nothing to clean", if tips == 1 { "tip" } else { "tips" }) })
         } else {
-            let mut l = format!(r##"<Run Text="{}{}" FontWeight="SemiBold"/><Run Text=" can be cleaned" Foreground="#FFB9C2D6"/>"##, upto(up_to(&|f| actionable(f))), self.size(total));
+            let mut l = format!(r##"<Run Text="{}{}" FontWeight="SemiBold"/><Run Text=" can be cleaned" Foreground="{{$text2}}"/>"##, upto(up_to(&|f| actionable(f))), self.size(total));
             if green > 0 {
-                l += &format!(r##"<Run Text="   ·   "/><Run Text="{}{}" Foreground="#FF4CC38A" FontWeight="SemiBold"/><Run Text=" safe to delete" Foreground="#FFB9C2D6"/>"##, upto(up_to(&|f| actionable(f) && f.risk == Risk::Green)), self.size(green));
+                l += &format!(r##"<Run Text="   ·   "/><Run Text="{}{}" Foreground="{{$good}}" FontWeight="SemiBold"/><Run Text=" safe to delete" Foreground="{{$text2}}"/>"##, upto(up_to(&|f| actionable(f) && f.risk == Risk::Green)), self.size(green));
             }
             l
         };
         if as_admin > 0 {
-            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" FontWeight="SemiBold"/><Run Text=" more as administrator" Foreground="#FFB9C2D6"/>"##, self.size(as_admin));
+            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" FontWeight="SemiBold"/><Run Text=" more as administrator" Foreground="{{$text2}}"/>"##, self.size(as_admin));
         }
         if orange > 0 {
-            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="#FFFF9A70" FontWeight="SemiBold"/><Run Text=" your own files" Foreground="#FFB9C2D6"/>"##, self.size(orange));
+            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="#FFFF9A70" FontWeight="SemiBold"/><Run Text=" your own files" Foreground="{{$text2}}"/>"##, self.size(orange));
         }
         let full = r.growth.as_ref().and_then(|g| g.full_in_days).map(|d| if d < 365.0 { format!("Full in about {d:.0} days") } else { "Room for over a year".into() });
         let _ = now;
@@ -2375,7 +2422,7 @@ impl State {
         if total > 0 {
             let share = |v: u64| (v as f64 * 1000.0 / total as f64).max(if v > 0 { 4.0 } else { 0.0 });
             x += &format!(
-                r##"<Grid Height="6" CornerRadius="3" ColumnSpacing="2"><Grid.ColumnDefinitions><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/></Grid.ColumnDefinitions><Rectangle Fill="#FF4CC38A"/><Rectangle Grid.Column="1" Fill="#FFF5B342"/><Rectangle Grid.Column="2" Fill="#FFFF7A45"/></Grid>"##,
+                r##"<Grid Height="6" CornerRadius="3" ColumnSpacing="2"><Grid.ColumnDefinitions><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/></Grid.ColumnDefinitions><Rectangle Fill="{{$good}}"/><Rectangle Grid.Column="1" Fill="{{$warn}}"/><Rectangle Grid.Column="2" Fill="#FFFF7A45"/></Grid>"##,
                 share(green),
                 share(amber),
                 share(orange)
@@ -2425,7 +2472,7 @@ impl State {
         );
         x += r##"<ScrollViewer x:Name="FnScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="10">"##;
         if ai_off {
-            x += r##"<Border Padding="12,6" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list, and answer questions about this scan. Nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."><Run Text="AI is off" FontWeight="SemiBold" Foreground="#FFD5DBE8"/><Run Text="  ·  nothing is sent anywhere. With one, Sprawl can explain folders its rules don't know and answer questions about this scan."/></TextBlock><Button x:Name="AdvSetup" Grid.Column="1" Content="Set up AI"/></Grid></Border>"##;
+            x += r##"<Border Padding="12,6" CornerRadius="7" Background="{$surface2}"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{$text2}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list, and answer questions about this scan. Nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."><Run Text="AI is off" FontWeight="SemiBold" Foreground="{$text1}"/><Run Text="  ·  nothing is sent anywhere. With one, Sprawl can explain folders its rules don't know and answer questions about this scan."/></TextBlock><Button x:Name="AdvSetup" Grid.Column="1" Content="Set up AI"/></Grid></Border>"##;
         }
         x += &self.findings_section(r);
         x += "</StackPanel></ScrollViewer>";
@@ -2451,7 +2498,7 @@ impl State {
             return String::new();
         }
         let running = self.advisor.cleanup.running.is_some();
-        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="What the AI found ({})" FontSize="13" FontWeight="SemiBold"/>"##, mine.len());
+        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="7" Background="{{$surface2}}"><StackPanel Spacing="6"><TextBlock Text="What the AI found ({})" FontSize="13" FontWeight="SemiBold"/>"##, mine.len());
         let mut safe = 0;
         for &i in &mine {
             let f = &r.findings[i];
@@ -2473,7 +2520,7 @@ impl State {
                 ),
             };
             x += &format!(
-                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="#FF8E97AA"/></TextBlock><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></StackPanel></Grid>"##,
+                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>{tick}<StackPanel Grid.Column="1"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="{{$text3}}"/></TextBlock><TextBlock Text="{}" FontSize="11" Foreground="{{$text3}}" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></StackPanel></Grid>"##,
                 ui::esc(&f.title),
                 self.size(f.bytes),
                 risk_label(f.risk),
@@ -2491,10 +2538,10 @@ impl State {
     fn compressed_list(&self) -> String {
         let list = &self.advisor.memory.compressed;
         if list.is_empty() {
-            return r##"<TextBlock Text="Nothing compressed by Sprawl." Foreground="#FFB9C2D6"/>"##.into();
+            return r##"<TextBlock Text="Nothing compressed by Sprawl." Foreground="{$text2}"/>"##.into();
         }
         let busy = self.advisor.file_op() || self.advisor.cleanup.running.is_some();
-        let mut x = String::from(r##"<TextBlock Text="Folders Sprawl compressed. An update writes new files uncompressed: when the folder is offered again in Findings, compress it again. Uncompress puts every file back as it was; it needs the space it saved free on the drive." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
+        let mut x = String::from(r##"<TextBlock Text="Folders Sprawl compressed. An update writes new files uncompressed: when the folder is offered again in Findings, compress it again. Uncompress puts every file back as it was; it needs the space it saved free on the drive." TextWrapping="Wrap" FontSize="12" Foreground="{$text3}"/>"##);
         for (i, c) in list.iter().enumerate().rev() {
             let gone = std::fs::symlink_metadata(&c.path).is_err();
             let when = sprawl_core::local_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.when));
@@ -2505,7 +2552,7 @@ impl State {
                 format!(r##"<Button x:Name="AdvUnc{i}" Content="Uncompress" IsEnabled="{}"/>"##, if busy { "False" } else { "True" })
             };
             x += &format!(
-                r##"<Border Padding="10,7" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{} on {} · saved {} of {}{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center">{button}</StackPanel></Grid></Border>"##,
+                r##"<Border Padding="10,7" CornerRadius="7" Background="{{$surface2}}"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{} on {} · saved {} of {}{}" FontSize="12" Foreground="{{$text3}}"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center">{button}</StackPanel></Grid></Border>"##,
                 ui::esc(&c.path),
                 c.alg.to_uppercase(),
                 ui::esc(&when),
@@ -2515,7 +2562,7 @@ impl State {
             );
         }
         if let Some((_, _, status)) = &self.advisor.uncompress {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##, ui::esc(status));
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$link}}" TextWrapping="Wrap"/>"##, ui::esc(status));
         }
         x
     }
@@ -2577,8 +2624,8 @@ impl State {
         if self.advisor.goal_options { x += &self.goal_options_xaml(r); }
         if !r.unexplained.is_empty() {
             let off = AiConfig::load().provider == Provider::Off;
-            x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="5"><TextBlock Text="Folders the rules haven't explained" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="These may be useful data. The AI can inspect the scan and propose reusable information rules; you approve each before a future scan uses it." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##);
-            for (p, bytes) in r.unexplained.iter().take(5) { x += &format!(r##"<TextBlock Text="{} · {}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(&p.display().to_string()), self.size(*bytes)); }
+            x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="{{$surface2}}"><StackPanel Spacing="5"><TextBlock Text="Folders the rules haven't explained" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="These may be useful data. The AI can inspect the scan and propose reusable information rules; you approve each before a future scan uses it." TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}"/>"##);
+            for (p, bytes) in r.unexplained.iter().take(5) { x += &format!(r##"<TextBlock Text="{} · {}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(&p.display().to_string()), self.size(*bytes)); }
             if off && self.ai_off_line() {
                 x += "</StackPanel></Border>";
             } else {
@@ -2590,7 +2637,7 @@ impl State {
         };
         let (s, o) = (self.advisor.sort, self.advisor.only);
         x += &format!(
-            r##"<StackPanel Spacing="6"><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}{}</StackPanel><Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Show" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}{}</StackPanel><Border Grid.Column="1" HorizontalAlignment="Right">"##,
+            r##"<StackPanel Spacing="6"><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Sort" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}{}</StackPanel><Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock Text="Show" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="0,0,4,0"/>{}{}{}{}</StackPanel><Border Grid.Column="1" HorizontalAlignment="Right">"##,
             chip("AdvSortRecommended", "Recommended", s == Sort::Recommended),
             chip("AdvSortSize", "Size", s == Sort::Size),
             chip("AdvSortRisk", "Risk", s == Sort::Risk),
@@ -2603,11 +2650,11 @@ impl State {
         );
         x += &match &self.advisor.dupes_status {
             Some(s) => format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="AdvDupesStatus" Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvDupesStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock x:Name="AdvDupesStatus" Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center"/><Button x:Name="AdvDupesStop" Content="Stop" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
                 ui::esc(s)
             ),
             None => format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" ToolTipService.ToolTip="Copies are confirmed byte for byte; hard links aren't copies."/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" ToolTipService.ToolTip="Copies are confirmed byte for byte; hard links aren't copies."/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
                 ui::esc(self.advisor.dupes_note.as_deref().unwrap_or(""))
             ),
         };
@@ -2619,14 +2666,14 @@ impl State {
         if r.findings.is_empty() {
             // an empty list must not read as "broken": say what was looked for, where such things
             // usually are, and what does fill this scan
-            x += r##"<TextBlock Text="Nothing to clean here. Sprawl looks for caches, leftovers of removed applications, idle build outputs and applications you no longer use. Those live mostly on the drive Windows is on." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            x += r##"<TextBlock Text="Nothing to clean here. Sprawl looks for caches, leftovers of removed applications, idle build outputs and applications you no longer use. Those live mostly on the drive Windows is on." TextWrapping="Wrap" Foreground="{$text2}"/>"##;
             if let Some(t) = self.tree.as_ref() {
                 let mut kids: Vec<usize> = t.nodes[sprawl_core::ROOT].children.clone();
                 kids.sort_by(|&a, &b| t.nodes[b].size.cmp(&t.nodes[a].size));
                 let top: Vec<String> = kids.iter().take(5).filter(|&&k| t.nodes[k].size > 0).map(|&k| format!("{} ({})", t.nodes[k].name, self.size(t.nodes[k].size))).collect();
                 if !top.is_empty() {
                     x += &format!(
-                        r##"<TextBlock TextWrapping="Wrap" Foreground="#FFB9C2D6"><Run Text="What fills this scan: " FontWeight="SemiBold"/><Run Text="{}"/></TextBlock><TextBlock Text="Tree View and the map show where it is; Find duplicate files looks for copies; the AI under Ask can say what a folder is." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##,
+                        r##"<TextBlock TextWrapping="Wrap" Foreground="{{$text2}}"><Run Text="What fills this scan: " FontWeight="SemiBold"/><Run Text="{}"/></TextBlock><TextBlock Text="Tree View and the map show where it is; Find duplicate files looks for copies; the AI under Ask can say what a folder is." TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}"/>"##,
                         ui::esc(&format!("{}.", top.join(", ")))
                     );
                 }
@@ -2661,7 +2708,7 @@ impl State {
         let list = pick(Group::Clean);
         let (yourself, know, left) = (pick(Group::Yourself), pick(Group::Know), pick(Group::Leftover));
         if list.is_empty() && by_cleaners.is_empty() && yourself.is_empty() && know.is_empty() && left.is_empty() && !r.findings.is_empty() && o == Only::All {
-            x += r##"<TextBlock Text="Nothing big enough for this list. Smaller things that can go are in Cleaners." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
+            x += r##"<TextBlock Text="Nothing big enough for this list. Smaller things that can go are in Cleaners." TextWrapping="Wrap" Foreground="{$text2}"/>"##;
         }
         for i in list {
             x += &self.finding_row(r, i);
@@ -2670,7 +2717,7 @@ impl State {
             x += &self.cleaners_group(r);
         }
         if !r.quiet.is_empty() {
-            x += &format!(r##"<Button x:Name="AdvQuiet" Content="Not recommended again: {} ({})" HorizontalAlignment="Left"/><TextBlock Text="Refilled quickly or covered by a game-library preference. Automatic choices leave these out; Cleaners still works directly. Forget learning in Remembered restores recommendations." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, r.quiet.len(), if self.advisor.show_quiet { "hide" } else { "show" });
+            x += &format!(r##"<Button x:Name="AdvQuiet" Content="Not recommended again: {} ({})" HorizontalAlignment="Left"/><TextBlock Text="Refilled quickly or covered by a game-library preference. Automatic choices leave these out; Cleaners still works directly. Forget learning in Remembered restores recommendations." FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/>"##, r.quiet.len(), if self.advisor.show_quiet { "hide" } else { "show" });
             if self.advisor.show_quiet {
                 for i in (0..r.findings.len()).filter(|&i| r.quiet.contains(&crate::cleanup::key(&r.findings[i].path))).take(100) { x += &self.finding_row(r, i); }
             }
@@ -2680,7 +2727,7 @@ impl State {
             // only what Sprawl would remove: those holding the user's work are shown, not counted
             let bytes: u64 = left.iter().filter(|&&i| r.counted[i] && r.findings[i].remedy == Remedy::Delete).map(|&i| r.findings[i].bytes).sum();
             x += &format!(
-                r##"<Button x:Name="AdvLeft" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Left behind by applications that are no longer installed" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="Sprawl found no installed application by these names, and nothing in them changed for half a year. They may hold settings or saved games: decide each one. Never ticked for you; one holding your saved games or files is only shown: look before removing it." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                r##"<Button x:Name="AdvLeft" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="{{$surface2}}"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Left behind by applications that are no longer installed" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="{{$text2}}"/></TextBlock><TextBlock Text="Sprawl found no installed application by these names, and nothing in them changed for half a year. They may hold settings or saved games: decide each one. Never ticked for you; one holding your saved games or files is only shown: look before removing it." FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel></Button>"##,
                 left.len(),
                 self.size(bytes),
                 if self.advisor.hide_left { "show" } else { "hide" }
@@ -2698,7 +2745,7 @@ impl State {
             active.sort_by_key(|&i| (r.findings[i].holds_tool_in_use(), std::cmp::Reverse(r.findings[i].bytes)));
             let bytes: u64 = active.iter().filter(|&&i| r.counted[i]).map(|&i| r.findings[i].bytes).sum();
             x += &format!(
-                r##"<Button x:Name="AdvActive" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Build outputs of projects you are working on" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="They come back with your next build, which then takes longer. Not counted above, and never ticked for you." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                r##"<Button x:Name="AdvActive" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="{{$surface2}}"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="Build outputs of projects you are working on" FontWeight="SemiBold"/><Run Text="   {} · {} ({})" Foreground="{{$text2}}"/></TextBlock><TextBlock Text="They come back with your next build, which then takes longer. Not counted above, and never ticked for you." FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel></Button>"##,
                 active.len(),
                 self.size(bytes),
                 if self.advisor.show_active { "hide" } else { "show" }
@@ -2719,7 +2766,7 @@ impl State {
             let bytes: u64 = rows.iter().filter(|&&i| r.counted[i] && name == "AdvTips").map(|&i| r.findings[i].expected_gain()).sum();
             let size = if bytes > 0 { format!(" · about {}", self.size(bytes)) } else { String::new() };
             x += &format!(
-                r##"<Button x:Name="{name}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="#0CFFFFFF"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="{title}" FontWeight="SemiBold"/><Run Text="   {}{size} ({})" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{note}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Button>"##,
+                r##"<Button x:Name="{name}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,6" Margin="0,6,0,0" CornerRadius="7" BorderThickness="0" Background="{{$surface2}}"><StackPanel Spacing="1"><TextBlock FontSize="13"><Run Text="{title}" FontWeight="SemiBold"/><Run Text="   {}{size} ({})" Foreground="{{$text2}}"/></TextBlock><TextBlock Text="{note}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel></Button>"##,
                 rows.len(),
                 if hidden { "show" } else { "hide" }
             );
@@ -2731,12 +2778,12 @@ impl State {
         }
         if let Some(h) = r.hidden.as_ref().filter(|h| h.notable) {
             x += &format!(
-                r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="{} used on the drive that the scan can't see" FontSize="13" FontWeight="SemiBold"/>"##,
+                r##"<Border Padding="12,10" CornerRadius="7" Background="{{$surface2}}"><StackPanel Spacing="6"><TextBlock Text="{} used on the drive that the scan can't see" FontSize="13" FontWeight="SemiBold"/>"##,
                 self.size(h.gap.unsigned_abs())
             );
             for p in &h.parts {
                 let size = p.bytes.map(|b| format!(" ({})", self.size(b))).unwrap_or_default();
-                x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"><Run Text="{}{size}: " FontWeight="SemiBold"/><Run Text="{}"/></TextBlock>"##, ui::esc(p.label), ui::esc(&p.note));
+                x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}"><Run Text="{}{size}: " FontWeight="SemiBold"/><Run Text="{}"/></TextBlock>"##, ui::esc(p.label), ui::esc(&p.note));
             }
             x += "</StackPanel></Border>";
         }
@@ -2747,7 +2794,7 @@ impl State {
             x += r##"<TextBlock Text="Held back by the safety checks" FontSize="13" FontWeight="SemiBold" Margin="10,8,0,0"/>"##;
             for (f, why) in big {
                 x += &format!(
-                    r##"<Border Padding="12,8" CornerRadius="7" Background="#0CFFFFFF"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF6F788A" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="13" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
+                    r##"<Border Padding="12,8" CornerRadius="7" Background="{{$surface2}}"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF6F788A" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="13" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
                     ui::esc(&f.title),
                     ui::esc(why),
                     ui::esc(&f.path.to_string_lossy()),
@@ -2764,7 +2811,7 @@ impl State {
             if self.advisor.show_held {
                 for (f, why) in &r.held {
                     x += &format!(
-                        r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="10,0,0,0"><Run Text="{} ({})" Foreground="#FFB9C2D6"/><Run Text=": {}"/></TextBlock>"##,
+                        r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}" Margin="10,0,0,0"><Run Text="{} ({})" Foreground="{{$text2}}"/><Run Text=": {}"/></TextBlock>"##,
                         ui::esc(&f.title),
                         self.size(f.bytes),
                         ui::esc(why)
@@ -2802,29 +2849,29 @@ impl State {
     fn goal_options_xaml(&self, r: &Report) -> String {
         let Some(need) = self.goal_bytes() else { return String::new() };
         if self.advisor.goal_text != self.advisor.goal_compared_text {
-            return r##"<TextBlock Text="The goal changed. Compare options again to refresh the plan." TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342"/>"##.into();
+            return r##"<TextBlock Text="The goal changed. Compare options again to refresh the plan." TextWrapping="Wrap" FontSize="12" Foreground="{$warn}"/>"##.into();
         }
-        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#142F7BF6" BorderBrush="#442F7BF6" BorderThickness="1"><StackPanel Spacing="8"><Grid><TextBlock Text="Options to free {}" FontWeight="SemiBold" FontSize="14"/><Button x:Name="AdvGoalHide" Content="Hide" HorizontalAlignment="Right" Padding="8,1" FontSize="12"/></Grid><TextBlock Text="Lowest cost first. These are alternatives: do not add their totals together. Nothing runs until you choose items and confirm the review." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##, self.size(need));
+        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#142F7BF6" BorderBrush="#442F7BF6" BorderThickness="1"><StackPanel Spacing="8"><Grid><TextBlock Text="Options to free {}" FontWeight="SemiBold" FontSize="14"/><Button x:Name="AdvGoalHide" Content="Hide" HorizontalAlignment="Right" Padding="8,1" FontSize="12"/></Grid><TextBlock Text="Lowest cost first. These are alternatives: do not add their totals together. Nothing runs until you choose items and confirm the review." TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}"/>"##, self.size(need));
         for option in self.goal_plans(r).iter() {
             let remaining = need.saturating_sub(option.bytes);
             let outcome = if remaining == 0 { if option.estimated { "could cover the goal (estimate)" } else { "covers the goal" }.to_string() } else { format!("{} still needed", self.size(remaining)) };
-            x += &format!(r##"<StackPanel Spacing="4" Margin="0,4,0,0"><TextBlock Text="{}: {}{} ({})" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            x += &format!(r##"<StackPanel Spacing="4" Margin="0,4,0,0"><TextBlock Text="{}: {}{} ({})" FontWeight="SemiBold" FontSize="13" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##,
                 ui::esc(option.title), if option.estimated { "up to " } else { "" }, self.size(option.bytes), ui::esc(&outcome), ui::esc(option.cost));
             for &k in option.findings.iter().take(6) {
                 if let Some(f) = r.findings.get(k) {
                     let (bytes, estimated) = self.review_size(f);
-                    x += &format!(r##"<TextBlock Text="{}: {}{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(&f.title), if estimated { "up to " } else { "" }, self.size(bytes));
+                    x += &format!(r##"<TextBlock Text="{}: {}{}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap" Margin="10,0,0,0"/>"##, ui::esc(&f.title), if estimated { "up to " } else { "" }, self.size(bytes));
                 }
             }
             if option.findings.len() > 6 {
-                x += &format!(r##"<TextBlock Text="And {} more; the review lists every item." FontSize="12" Foreground="#FF8E97AA"/>"##, option.findings.len() - 6);
+                x += &format!(r##"<TextBlock Text="And {} more; the review lists every item." FontSize="12" Foreground="{{$text3}}"/>"##, option.findings.len() - 6);
             }
             for m in &option.moves {
-                x += &format!(r##"<TextBlock Text="{} → {}: · {} on the source disk; destination needs {}. Planned free space: {} before, {} after this move." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" Margin="10,0,0,0"/><TextBlock Text="{}" FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##,
+                x += &format!(r##"<TextBlock Text="{} → {}: · {} on the source disk; destination needs {}. Planned free space: {} before, {} after this move." FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap" Margin="10,0,0,0"/><TextBlock Text="{}" FontSize="11" Foreground="{{$text3}}" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>"##,
                     ui::esc(&m.game.name), m.destination, self.size(m.game.bytes), self.size(m.game.destination_need), self.size(m.free_before), self.size(m.free_after), ui::esc(&m.game.path.display().to_string()));
             }
             if !option.moves.is_empty() {
-                x += r##"<TextBlock Text="Steam > Settings > Storage: add a library on the destination drive, select the named games, then Move. Recheck free space in Steam first; other programs may have used it. Steam performs the move; Sprawl never moves game files itself." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##;
+                x += r##"<TextBlock Text="Steam > Settings > Storage: add a library on the destination drive, select the named games, then Move. Recheck free space in Steam first; other programs may have used it. Steam performs the move; Sprawl never moves game files itself." FontSize="12" Foreground="{$warn}" TextWrapping="Wrap"/>"##;
             }
             if !option.findings.is_empty() {
                 use sprawl_advisor::goal::Kind;
@@ -2835,10 +2882,10 @@ impl State {
             x += "</StackPanel>";
         }
         for f in r.findings.iter().filter(|f| matches!(&f.source, Source::Rule(id) if id == "remedy.move-known-folder")).take(4) {
-            x += &format!(r##"<TextBlock Text="{}: {}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##,
+            x += &format!(r##"<TextBlock Text="{}: {}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##,
                 ui::esc(&f.title), ui::esc(&f.evidence.join(" ")));
         }
-        x += r##"<TextBlock Text="Game moves are offered only for registered Steam installs with enough room on another fixed drive. Other launchers and folders need their owner's supported workflow. Estimates and disk space can change; check the final review and the destination." FontSize="11" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel></Border>"##;
+        x += r##"<TextBlock Text="Game moves are offered only for registered Steam installs with enough room on another fixed drive. Other launchers and folders need their owner's supported workflow. Estimates and disk space can change; check the final review and the destination." FontSize="11" Foreground="{$text3}" TextWrapping="Wrap"/></StackPanel></Border>"##;
         x
     }
 
@@ -2856,13 +2903,13 @@ impl State {
     /// Put `v` in the goal box (screenshot runs).
     pub(crate) fn advisor_set_goal(&mut self, v: &str) {
         self.advisor.goal_text = v.to_string();
-        if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
+        if let Some(t) = self.advisor.ffind::<TextBox>("AdvGoal") {
             let _ = t.SetText(&v.into());
         }
     }
 
     fn read_goal(&mut self) {
-        if let Some(t) = self.advisor.foot.as_ref().and_then(|p| find::<TextBox>(p, "AdvGoal").ok()) {
+        if let Some(t) = self.advisor.ffind::<TextBox>("AdvGoal") {
             if let Ok(h) = t.Text() {
                 self.advisor.goal_text = h.to_string_lossy();
             }
@@ -2995,7 +3042,15 @@ impl State {
         let Some(r) = self.advisor.report.as_mut().filter(|r| r.tree == gen) else { return };
         // the duplicates of an earlier search go, and the files the scan only guessed at (A3):
         // this search has read them (copies of whole folders stay: it doesn't compare folders)
-        let keep: Vec<bool> = r.findings.iter().map(|f| f.source != Source::Rule("remedy.duplicates".into()) && f.source != Source::Rule(sprawl_advisor::dupes::LIKELY.into())).collect();
+        let keep: Vec<bool> = r
+            .findings
+            .iter()
+            .map(|f| {
+                f.source != Source::Rule("remedy.duplicates".into())
+                    && f.source != Source::Rule(sprawl_advisor::dupes::LIKELY.into())
+                    && f.source != Source::Rule(sprawl_advisor::dupes::INTERRUPTED.into())
+            })
+            .collect();
         let mut k = keep.iter();
         r.findings.retain(|_| *k.next().unwrap_or(&true));
         let mut k = keep.iter();
@@ -3138,13 +3193,13 @@ impl State {
 
     /// What is typed in the AI settings' model and address boxes.
     fn read_ai_fields(&mut self) {
-        let get = |n: &str| self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, n).ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
+        let get = |n: &str| self.advisor.pfind::<TextBox>(n).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy());
         let (mut m, u, name) = (get("AdvAiModel"), get("AdvAiUrl"), get("AdvAiName"));
-        if let Some(k) = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()).and_then(|k| k.Password().ok()) {
+        if let Some(k) = self.advisor.pfind::<PasswordBox>("AdvAiKey").and_then(|k| k.Password().ok()) {
             self.advisor.ai_key_typed = k.to_string_lossy();
         }
         // the Effort dropdown, for the model it was drawn for (before the model may change)
-        let effort = self.advisor.panel.as_ref().and_then(|p| find::<Selector>(p, "AdvAiEffortPick").ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
+        let effort = self.advisor.pfind::<Selector>("AdvAiEffortPick").and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok());
         if let (Some(i), Some((dm, levels)), Some(c)) = (effort, self.advisor.effort_drawn.clone(), self.advisor.ai_edit.as_mut()) {
             if c.model == dm {
                 match i.checked_sub(1).and_then(|i| levels.get(i)) {
@@ -3159,7 +3214,7 @@ impl State {
         }
         // the dropdown, when there is one: its entries are the same as when it was drawn
         if let Some(c) = &self.advisor.ai_edit {
-            let pick = self.advisor.panel.as_ref().and_then(|p| find::<Selector>(p, "AdvAiModelPick").ok()).and_then(|s| s.SelectedIndex().ok());
+            let pick = self.advisor.pfind::<Selector>("AdvAiModelPick").and_then(|s| s.SelectedIndex().ok());
             if let (Some(i), Some(list)) = (pick, self.model_choices(c)) {
                 if let Some(v) = usize::try_from(i).ok().and_then(|i| list.get(i)) {
                     m = Some(v.clone());
@@ -3471,12 +3526,12 @@ impl State {
         let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#1AA97BF6" BorderBrush="#55A97BF6" BorderThickness="1"><StackPanel Spacing="6">"##);
         x += &format!(r##"<TextBlock Text="The AI suggests ticking {} ({})" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>"##, ok.len(), self.size(bytes));
         if !why.is_empty() {
-            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8"/>"##, ui::esc(why));
+            x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text1}}"/>"##, ui::esc(why));
         }
         for &i in &ok {
             let f = &r.findings[i];
             x += &format!(
-                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvSgT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Tick {}"/><TextBlock Grid.Column="1" TextWrapping="Wrap" FontSize="12"><Run Text="{}"/><Run Text="   {} · {}" Foreground="#FF8E97AA"/></TextBlock></Grid>"##,
+                r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvSgT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="Tick {}"/><TextBlock Grid.Column="1" TextWrapping="Wrap" FontSize="12"><Run Text="{}"/><Run Text="   {} · {}" Foreground="{{$text3}}"/></TextBlock></Grid>"##,
                 if self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) { "True" } else { "False" },
                 if running { "False" } else { "True" },
                 ui::esc(&f.title),
@@ -3486,7 +3541,7 @@ impl State {
             );
         }
         if left > 0 {
-            x += &format!(r##"<TextBlock Text="{left} more it named can't be ticked here (not found, not safe enough, or already gone); they are left out." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##);
+            x += &format!(r##"<TextBlock Text="{left} more it named can't be ticked here (not found, not safe enough, or already gone); they are left out." TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}"/>"##);
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if !ok.is_empty() {
@@ -3514,14 +3569,14 @@ impl State {
 
     /// Type a question and send it (screenshot runs).
     pub(crate) fn advisor_chat_dev(&mut self, q: &str) {
-        if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
+        if let Some(t) = self.advisor.pfind::<TextBox>("AdvChatText") {
             let _ = t.SetText(&q.into());
         }
         self.chat_send();
     }
 
     fn chat_send(&mut self) {
-        let q = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()).and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
+        let q = self.advisor.pfind::<TextBox>("AdvChatText").and_then(|t| t.Text().ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
         self.chat_ask(q);
     }
 
@@ -3534,7 +3589,7 @@ impl State {
         let row = self.advisor.chat.next_row.take();
         self.advisor.chat.proposed.clear();
         // empty the box now, or the redraw would read the old question back into it
-        if let Some(t) = self.advisor.panel.as_ref().and_then(|p| find::<TextBox>(p, "AdvChatText").ok()) {
+        if let Some(t) = self.advisor.pfind::<TextBox>("AdvChatText") {
             let _ = t.SetText(&"".into());
         }
         // a chat about the scan can't answer about the Cleaners tab's own read, nor the other way
@@ -3664,16 +3719,14 @@ impl State {
         for m in msgs {
             match m {
                 ChatMsg::Event(ChatEvent::Progress(s)) => {
-                    if let Some(p) = &self.advisor.panel {
-                        crate::state::text(p, "AdvChatStatus", &s);
-                    }
+                    self.advisor.ptext("AdvChatStatus", &s);
                     self.advisor.chat.status = Some(s);
                 }
                 ChatMsg::Event(ChatEvent::Partial(s)) => {
                     // the first piece makes room for it; after that, only its text changes
                     let first = self.advisor.chat.live.is_none();
-                    if let (false, Some(p)) = (first, &self.advisor.panel) {
-                        crate::state::text(p, "AdvChatLive", &s);
+                    if !first {
+                        self.advisor.ptext("AdvChatLive", &s);
                     }
                     self.advisor.chat.live = Some(s);
                     if first {
@@ -3812,7 +3865,7 @@ impl State {
             _ => "AI",
         };
         let mut x = format!(
-            r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF" HorizontalAlignment="Stretch"><StackPanel Spacing="6"><Grid><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>{}</Grid>"##,
+            r##"<Border Padding="12,10" CornerRadius="7" Background="{{$surface2}}" HorizontalAlignment="Stretch"><StackPanel Spacing="6"><Grid><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>{}</Grid>"##,
             if cleaning { "Ask the AI about cleaning" } else { "Ask your disk" },
             // only once there is something to start over from
             if c.log.is_empty() && c.live.is_none() { "" } else { r##"<Button x:Name="AdvChatClear" HorizontalAlignment="Right" Content="New chat" Padding="8,1" FontSize="12" CornerRadius="4" Style="{StaticResource SprawlSubtle}"/>"## }
@@ -3821,11 +3874,11 @@ impl State {
         for (n, (user, text)) in c.log.iter().enumerate().skip(last.saturating_sub(12)) {
             if *user {
                 x += &format!(
-                    r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True" Margin="0,4,0,0"><Run Text="You: " FontWeight="SemiBold" Foreground="#FF8FB4FF"/><Run Text="{}" Foreground="#FFD5DBE8"/></TextBlock>"##,
+                    r##"<TextBlock TextWrapping="Wrap" FontSize="12" IsTextSelectionEnabled="True" Margin="0,4,0,0"><Run Text="You: " FontWeight="SemiBold" Foreground="{{$link}}"/><Run Text="{}" Foreground="{{$text1}}"/></TextBlock>"##,
                     ui::esc_lines(text)
                 );
             } else {
-                x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/>"##);
+                x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text2}}"/>"##);
                 x += &ui::markdown(text, 12, "#FFD5DBE8");
                 x += UNCHECKED_LINE;
                 if n + 1 == last {
@@ -3854,17 +3907,17 @@ impl State {
         }
         if let Some((q, _)) = &c.consent {
             x += &format!(
-                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="12" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once"/><Button x:Name="AdvWebSession" Content="Allow for this session"/><Button x:Name="AdvWebDeny" Content="Don't search"/></StackPanel></StackPanel></Border>"##,
+                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="12" Foreground="{{$text3}}"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once"/><Button x:Name="AdvWebSession" Content="Allow for this session" ToolTipService.ToolTip="Until Sprawl closes, the AI searches without asking: each search shows only on the status line. A search can carry folder and project names from your scan (your name and the PC's are taken out)."/><Button x:Name="AdvWebDeny" Content="Don't search"/></StackPanel></StackPanel></Border>"##,
                 ui::esc(q)
             );
         }
         if let Some(t) = &c.live {
-            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc_lines(t));
+            x += &format!(r##"<TextBlock Text="{who}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text2}}"/><TextBlock x:Name="AdvChatLive" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text1}}" IsTextSelectionEnabled="True"/>"##, ui::esc_lines(t));
         }
         if let Some(s) = &c.status {
             // which provider is working (Stop is below, where Ask was: it never moves with the text)
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><ProgressRing IsActive="True" Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFB9C2D6"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/></StackPanel></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><ProgressRing IsActive="True" Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text2}}"/><TextBlock x:Name="AdvChatStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}"/></StackPanel></Grid>"##,
                 ui::esc(&format!("Asking {who}")),
                 ui::esc(s)
             );
@@ -3876,9 +3929,9 @@ impl State {
             if cleaning { "Ask about cleaning" } else { "Ask about this scan" }
         );
         x += if c.status.is_some() {
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatStop" Content="Stop" MinWidth="64"/><TextBlock Text="Enter asks the next question" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatStop" Content="Stop" MinWidth="64"/><TextBlock Text="Enter asks the next question" FontSize="12" Foreground="{$text3}" VerticalAlignment="Center"/></StackPanel>"##
         } else {
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatSend" Content="Ask" MinWidth="64"/><TextBlock Text="or press Enter" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatSend" Content="Ask" MinWidth="64"/><TextBlock Text="or press Enter" FontSize="12" Foreground="{$text3}" VerticalAlignment="Center"/></StackPanel>"##
         };
         x += "</StackPanel></Border>";
         x
@@ -3889,7 +3942,7 @@ impl State {
         let small = |name: String, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,1" FontSize="12" CornerRadius="4"/>"##);
         let mut x = String::new();
         if !m.learning.rules.is_empty() || !m.learning.cleaned.is_empty() || !m.learning.managed_libraries.is_empty() {
-            x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="5"><TextBlock Text="Learned on this PC" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{} rule histories, {} cleanup measurements, {} game-library preferences. This changes recommendations, never safety grades or permissions. Keep and Not now decisions are separate." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/><Button x:Name="AdvForgetLearning" Content="Forget learning" HorizontalAlignment="Left"/></StackPanel></Border>"##, m.learning.rules.len(), m.learning.cleaned.len(), m.learning.managed_libraries.len());
+            x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="{{$surface2}}"><StackPanel Spacing="5"><TextBlock Text="Learned on this PC" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{} rule histories, {} cleanup measurements, {} game-library preferences. This changes recommendations, never safety grades or permissions. Keep and Not now decisions are separate." TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}"/><Button x:Name="AdvForgetLearning" Content="Forget learning" HorizontalAlignment="Left"/></StackPanel></Border>"##, m.learning.rules.len(), m.learning.cleaned.len(), m.learning.managed_libraries.len());
         }
         if !r.kept.is_empty() {
             x += &format!(
@@ -3905,7 +3958,7 @@ impl State {
                         Verdict::Done => "done",
                     };
                     x += &format!(
-                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{} ({}, {why})"/>{}</StackPanel>"##,
+                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><TextBlock FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" Text="{} ({}, {why})"/>{}</StackPanel>"##,
                         ui::esc(&f.title),
                         self.size(f.bytes),
                         small(format!("AdvUndo{i}"), "Undo")
@@ -3914,10 +3967,10 @@ impl State {
             }
         }
         if !r.refused.is_empty() {
-            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#22F5B342"><StackPanel Spacing="4"><TextBlock Text="Rule files not used" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="These files in your rules folder didn't pass Sprawl's checks, so nothing in them is offered. Fix or remove them." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
+            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#22F5B342"><StackPanel Spacing="4"><TextBlock Text="Rule files not used" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="These files in your rules folder didn't pass Sprawl's checks, so nothing in them is offered. Fix or remove them." TextWrapping="Wrap" FontSize="12" Foreground="{$text3}"/>"##;
             for (f, why) in &r.refused {
                 x += &format!(
-                    r##"<TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="{}" FontFamily="Consolas" Foreground="#FFB9C2D6"/><Run Text="  {}" Foreground="#FF8E97AA"/></TextBlock>"##,
+                    r##"<TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="{}" FontFamily="Consolas" Foreground="{{$text2}}"/><Run Text="  {}" Foreground="{{$text3}}"/></TextBlock>"##,
                     ui::esc(&f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
                     ui::esc(&why.chars().take(300).collect::<String>())
                 );
@@ -3926,10 +3979,10 @@ impl State {
         }
         x += &self.cleaner_proposals_card();
         if !m.proposals.is_empty() {
-            x += r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA"/>"##;
+            x += r##"<Border Padding="12,10" CornerRadius="7" Background="{$surface2}"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="13" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="12" Foreground="{$text3}"/>"##;
             for (i, p) in m.proposals.iter().enumerate() {
                 x += &format!(
-                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" FontFamily="Consolas" Foreground="#FF8E97AA"/></StackPanel>"##,
+                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" FontFamily="Consolas" Foreground="{{$text3}}"/></StackPanel>"##,
                     // a local rule's deletes are at least amber, whatever it proposes
                     risk_hex(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }),
                     ui::esc(&p.title),
@@ -3943,7 +3996,7 @@ impl State {
             x += "</StackPanel></Border>";
         }
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center"/><TextBlock Text="{}" FontFamily="Consolas" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="12" CornerRadius="4"/></StackPanel>"##,
             ui::esc(&crate::bridge::setup_command())
         );
         x += &format!(
@@ -3957,12 +4010,12 @@ impl State {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="AdvPrefText" Width="360" PlaceholderText="A preference, like: I still play my Steam games"/><Button x:Name="AdvPrefAdd" Content="Remember"/></StackPanel>"##;
             for (i, p) in m.prefs.iter().enumerate() {
                 let who = if p.from == memory::From::Model { " (from the AI)" } else { "" };
-                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
             }
             for (i, l) in m.labels.iter().enumerate() {
                 let who = if l.from == memory::From::Model { " (from the AI)" } else { "" };
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{}: {}{who}"/>{}</StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" Text="{}: {}{who}"/>{}</StackPanel>"##,
                     ui::esc(&l.pattern),
                     ui::esc(&l.label),
                     small(format!("AdvForgetL{i}"), "Forget")
@@ -3997,7 +4050,7 @@ impl State {
 
     /// Choosing the provider and model, here instead of the setup wizard.
     fn ai_settings(&self, e: &AiConfig) -> String {
-        let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF"><StackPanel Spacing="8">"##);
+        let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="{$surface1}"><StackPanel Spacing="8">"##);
         // one field like Model and Effort: it shows the choice alone, so it fits any width
         // the providers, then each custom AI by its name
         let mut names: Vec<String> = PROVIDER_PICKS.iter().map(|(_, label, _)| label.to_string()).collect();
@@ -4017,7 +4070,7 @@ impl State {
             );
         }
         if e.provider == Provider::Codex {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::llm::codex::RISK));
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="{{$warn}}" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::llm::codex::RISK));
         }
         let choices = self.model_choices(e);
         if e.provider != Provider::Off {
@@ -4036,7 +4089,7 @@ impl State {
             let usual = self.advisor.models.choices(&e.model).is_none() && choices.is_some();
             let note = self.advisor.models.note().map(|n| if usual && !n.starts_with("Loading") { "The usual Claude models. Save a key to list them all.".to_string() } else { n });
             if let Some(n) = note {
-                x += &format!(r##"<TextBlock Text="{}" Margin="78,0,0,0" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(&n));
+                x += &format!(r##"<TextBlock Text="{}" Margin="78,0,0,0" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/>"##, ui::esc(&n));
             }
             // only for a model whose levels are known: none, no control, and nothing is sent
             if let Some((m, levels)) = self.advisor.effort_drawn.as_ref().filter(|(m, _)| *m == e.model) {
@@ -4071,7 +4124,7 @@ impl State {
                 if has { r##"<Button x:Name="AdvAiForget" Content="Forget key" ToolTipService.ToolTip="Delete the saved key from Windows Credential Manager now"/>"## } else { "" },
             );
         }
-        x += r##"<TextBlock Text="Your uninstaller app and the Claude Code setup are under Options &gt; Settings." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
+        x += r##"<TextBlock Text="Your uninstaller app and the Claude Code setup are under Options &gt; Settings." FontSize="12" Foreground="{$text3}" TextWrapping="Wrap"/>"##;
         x += r##"<Button x:Name="AdvAiSave" Content="Save"/>"##;
         x += "</StackPanel></Border>";
         x
@@ -4079,13 +4132,13 @@ impl State {
 
     fn growth_card(&self, r: &Report) -> String {
         use sprawl_advisor::growth::signed;
-        let not_yet = r##"<TextBlock Text="Growth rates and 'full in N days' need scans of this folder at least a day apart. Scans closer together still show in History and Tideline." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
+        let not_yet = r##"<TextBlock Text="Growth rates and 'full in N days' need scans of this folder at least a day apart. Scans closer together still show in History and Tideline." FontSize="12" Foreground="{$text3}" TextWrapping="Wrap"/>"##;
         let Some(t) = self.tree.as_ref() else { return String::new() };
         let links = r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,2,0,4"><Button x:Name="AdvGrowHist" Content="Play it in History" Padding="8,2" FontSize="12" CornerRadius="4"/><Button x:Name="AdvGrowTide" Content="See it as Tideline" Padding="8,2" FontSize="12" CornerRadius="4"/></StackPanel>"##;
         let not_yet = format!("{not_yet}{links}");
         let not_yet = not_yet.as_str();
         let Some(g) = &r.growth else { return not_yet.to_string() };
-        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="4">"##);
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="{$surface2}"><StackPanel Spacing="4">"##);
         let mut head = String::new();
         if let Some(since) = g.since {
             head += &format!("{} since {}", signed(g.change), sprawl_advisor::facts::month_year(since));
@@ -4114,7 +4167,7 @@ impl State {
                 continue;
             }
             x += &format!(
-                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" VerticalAlignment="Center" Foreground="#FFF5B342"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="12" CornerRadius="4" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="12" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" VerticalAlignment="Center" Foreground="{{$warn}}"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="12" CornerRadius="4" VerticalAlignment="Center"/></Grid>"##,
                 ui::esc(&t.path_of(gr.node).display().to_string()),
                 ui::esc(&gr.why.join("; ")),
                 ui::esc(&signed(gr.delta)),
@@ -4155,7 +4208,7 @@ impl State {
     /// it back.
     pub(crate) fn forget_typed_key(&mut self) {
         self.advisor.ai_key_typed.clear();
-        if let Some(k) = self.advisor.panel.as_ref().and_then(|p| find::<PasswordBox>(p, "AdvAiKey").ok()) {
+        if let Some(k) = self.advisor.pfind::<PasswordBox>("AdvAiKey") {
             let _ = k.SetPassword(&"".into());
         }
     }
@@ -4203,13 +4256,13 @@ impl State {
         let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="6" Background="#1A4CC38A" BorderBrush="#554CC38A" BorderThickness="1" Margin="0,4,0,0"><StackPanel Spacing="4">"##);
         if !ok.is_empty() {
             let head = if ok.len() == 1 { "1 proposal is waiting for your approval".to_string() } else { format!("{} proposals are waiting for your approval", ok.len()) };
-            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="#FFD5DBE8" TextWrapping="Wrap"/>"##, ui::esc(&head));
+            x += &format!(r##"<TextBlock Text="{}" FontSize="12" FontWeight="SemiBold" Foreground="{{$text1}}" TextWrapping="Wrap"/>"##, ui::esc(&head));
             for t in &ok {
-                x += &format!(r##"<TextBlock Text="- {}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##, ui::esc(t));
+                x += &format!(r##"<TextBlock Text="- {}" FontSize="12" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(t));
             }
         }
         for (t, e) in p.iter().filter_map(|(t, e)| e.as_ref().map(|e| (t, e))) {
-            x += &format!(r##"<TextBlock Text="Not kept: {}: {}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(t), ui::esc(e));
+            x += &format!(r##"<TextBlock Text="Not kept: {}: {}" FontSize="12" Foreground="{{$warn}}" TextWrapping="Wrap"/>"##, ui::esc(t), ui::esc(e));
         }
         if !ok.is_empty() {
             x += r##"<Button x:Name="AdvGoApprove" Content="Review and approve" Margin="0,2,0,0" ToolTipService.ToolTip="Opens Remembered, where each proposal has Approve and Dismiss. Nothing is used until you approve it."/>"##;
@@ -4230,16 +4283,16 @@ impl State {
             Provider::Codex => btn("AdvAsk", "Ask Codex"),
             Provider::OpenAi => btn("AdvAsk", &format!("Ask {}", ui::esc(if cfg.model.is_empty() { "the model" } else { &cfg.model }))),
         };
-        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="8">"##);
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="7" Background="{$surface2}"><StackPanel Spacing="8">"##);
         {
             let model = if cfg.model.is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.clone() };
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{ask}<TextBlock Grid.Column="1" Text="{0}" ToolTipService.ToolTip="{0}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Grid.Column="2" Content="{1}" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{ask}<TextBlock Grid.Column="1" Text="{0}" ToolTipService.ToolTip="{0}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12" Foreground="{{$text3}}"/><Button x:Name="AdvAiEdit" Grid.Column="2" Content="{1}" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}"/></Grid>"##,
                 if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) },
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
             if cfg.provider == Provider::Off && self.advisor.ai_edit.is_none() {
-                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
+                x += r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{$text2}" Text="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list to tick like any other, and answer questions about this scan. Every finding it adds is checked against the scan (what it writes in a chat is not), and nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."/>"##;
             }
             if let Some(e) = &self.advisor.ai_edit {
                 x += &self.ai_settings(e);
@@ -4249,7 +4302,7 @@ impl State {
             Ai::Idle => {}
             Ai::Running(s) => {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><Button x:Name="AdvStop" Content="Stop" MinWidth="56" Padding="8,1" FontSize="12" CornerRadius="4"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/></StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="16" Height="16"/><Button x:Name="AdvStop" Content="Stop" MinWidth="56" Padding="8,1" FontSize="12" CornerRadius="4"/><TextBlock x:Name="AdvAiStatus" Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center"/></StackPanel>"##,
                     ui::esc(s)
                 )
             }
@@ -4266,7 +4319,7 @@ impl State {
                     how += &format!(" · {}, still the same size in this scan", ago(*t));
                 }
                 x += &format!(
-                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="#FF8E97AA" FontSize="12"/></TextBlock>"##,
+                    r##"<TextBlock FontSize="13" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="   {} · {}" Foreground="{{$text3}}" FontSize="12"/></TextBlock>"##,
                     match found {
                         0 => "Nothing more found".to_string(),
                         1 => "1 more finding".to_string(),
@@ -4277,10 +4330,10 @@ impl State {
                 );
                 // its findings are in the one list, marked AI: ticked and cleaned there
                 if *found > 0 {
-                    x += r##"<TextBlock Text="Tick them below or in the list (marked AI), then review the selection." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/>"##;
+                    x += r##"<TextBlock Text="Tick them below or in the list (marked AI), then review the selection." TextWrapping="Wrap" FontSize="12" Foreground="{$text2}"/>"##;
                 }
                 if !summary.is_empty() {
-                    x += r##"<Border Padding="10,8" CornerRadius="6" Background="#0AFFFFFF">"##;
+                    x += r##"<Border Padding="10,8" CornerRadius="6" Background="{$surface1}">"##;
                     x += &ui::markdown(summary, 12, "#FFD5DBE8");
                     x += "</Border>";
                 }
@@ -4292,14 +4345,14 @@ impl State {
                     );
                     if self.advisor.show_rejected {
                         for (f, why) in rejected {
-                            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="10,0,0,0" Text="{}: {}"/>"##, ui::esc(&f.path.display().to_string()), ui::esc(why));
+                            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}" Margin="10,0,0,0" Text="{}: {}"/>"##, ui::esc(&f.path.display().to_string()), ui::esc(why));
                         }
                     }
                 }
             }
         }
         if cfg.provider != Provider::Off {
-            x += r##"<Button x:Name="AdvLog" Padding="0" FontSize="12" BorderThickness="0" Background="Transparent" Foreground="#FF8E97AA" Content="See what was sent to the AI"/>"##;
+            x += r##"<Button x:Name="AdvLog" Padding="0" FontSize="12" BorderThickness="0" Background="Transparent" Foreground="{$text3}" Content="See what was sent to the AI"/>"##;
         }
         x += "</StackPanel></Border>";
         x
@@ -4319,7 +4372,7 @@ impl State {
             }
         };
         format!(
-            r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvVerify" Grid.Column="1" Content="Check what it freed"/></Grid>"##,
+            r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center"/><Button x:Name="AdvVerify" Grid.Column="1" Content="Check what it freed"/></Grid>"##,
             ui::esc(&line)
         )
     }
@@ -4378,13 +4431,13 @@ impl State {
             _ => format!("{} · {}", kind, f.path.display()),
         };
         x += &format!(
-            r##"<Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="7" BorderThickness="0" Background="{bg}">
+            r##"<Grid><Border CornerRadius="7" Background="{bg}"/><Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="7" BorderThickness="0" Background="Transparent">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="118"/></Grid.ColumnDefinitions>
 <Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/>
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="#FF8E97AA" TextTrimming="CharacterEllipsis"/></StackPanel>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="12" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}{remedy}</StackPanel>
 <TextBlock Grid.Column="3" Text="{size}" {num} FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
-</Grid></Button>"##,
+</Grid></Button></Grid>"##,
             bg = if open {
                 "#FF262C3D"
             } else if self.advisor.cleanup.ai_ticked.contains(&crate::cleanup::key(&f.path)) && self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) {
@@ -4432,7 +4485,7 @@ impl State {
                 "it is a tip, not something Sprawl cleans"
             };
             x += &format!(
-                r##"<TextBlock Margin="10,2,0,4" TextWrapping="Wrap" FontSize="12" Foreground="#FFF5B342" Text="Sprawl doesn't tick this: {}. Click the box again to tick it anyway: all of {} ({}) goes to the Recycle Bin, and you confirm it in the review."/>"##,
+                r##"<TextBlock Margin="10,2,0,4" TextWrapping="Wrap" FontSize="12" Foreground="{{$warn}}" Text="Sprawl doesn't tick this: {}. Click the box again to tick it anyway: all of {} ({}) goes to the Recycle Bin, and you confirm it in the review."/>"##,
                 why,
                 ui::esc(&f.path.display().to_string()),
                 self.size(f.bytes)
@@ -4447,11 +4500,11 @@ impl State {
 
     fn finding_detail(&self, r: &Report, i: usize) -> String {
         let f = &r.findings[i];
-        let mut x = String::from(r##"<Border Margin="20,0,0,4" Padding="12,10" CornerRadius="7" Background="#0AFFFFFF"><StackPanel Spacing="6">"##);
+        let mut x = String::from(r##"<Border Margin="20,0,0,4" Padding="12,10" CornerRadius="7" Background="{$surface1}"><StackPanel Spacing="6">"##);
         for e in &f.evidence {
-            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="• {}"/>"##, ui::esc(e));
+            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}" Text="• {}"/>"##, ui::esc(e));
         }
-        x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
+        x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text3}}" IsTextSelectionEnabled="True" Text="{}"/>"##, ui::esc(&f.path.display().to_string()));
         // when anything inside last changed, to judge whether it is still in use: the newest
         // file's modified time (not when it was last opened), and which file
         if let (Some(n), Some(t)) = (r.nodes[i], self.tree.as_ref().filter(|_| r.tree == self.tree_gen)) {
@@ -4464,7 +4517,7 @@ impl State {
                 }
                 None => "Last change inside: unknown (the scan read no file times here).".into(),
             };
-            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" Text="{}"/>"##, ui::esc(&line));
+            x += &format!(r##"<TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{{$text2}}" Text="{}"/>"##, ui::esc(&line));
         }
         // B1: how it is compressed, the user's to pick; the estimate follows
         if let Some(now) = self.compress_alg_of(f) {
@@ -4472,13 +4525,13 @@ impl State {
             let labels: Vec<String> = sprawl_advisor::remedies::COMPRESS_CHOICES.iter().map(|c| c.1.to_string()).collect();
             let current = sprawl_advisor::remedies::COMPRESS_CHOICES.iter().find(|c| c.0.eq_ignore_ascii_case(&now)).map_or("", |c| c.1);
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="10"><TextBlock Text="Compression" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Width="84"/>{}</StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="10"><TextBlock Text="Compression" FontSize="12" Foreground="{{$text2}}" VerticalAlignment="Center" Width="84"/>{}</StackPanel>"##,
                 crate::models::combo(&format!("AdvAlg{i}"), &labels, current, 260)
             );
             let g = self.with_choices(f);
             if let Some(gain) = g.gain {
                 x += &format!(
-                    r##"<TextBlock FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Text="On disk now {}; after compressing about {} (saves about {}). LZX saves the most but reads slower; XPRESS4K is the quickest to read."/>"##,
+                    r##"<TextBlock FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap" Text="On disk now {}; after compressing about {} (saves about {}). LZX saves the most but reads slower; XPRESS4K is the quickest to read."/>"##,
                     self.size(f.bytes), self.size(f.bytes.saturating_sub(gain)), self.size(gain)
                 );
             }
@@ -4506,9 +4559,9 @@ impl State {
         if let Some(c) = &f.command {
             if crate::cleanup::untickable(f, r.counted[i]).is_none() {
                 x += if sprawl_advisor::remedies::compresses(f) {
-                    r##"<TextBlock Text="Sprawl compresses it for you: Compress this... shows what happens, then compresses it with its progress shown. Nothing is deleted, and it can be undone under Compressed." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##
+                    r##"<TextBlock Text="Sprawl compresses it for you: Compress this... shows what happens, then compresses it with its progress shown. Nothing is deleted, and it can be undone under Compressed." FontSize="12" Foreground="{$link}" TextWrapping="Wrap"/>"##
                 } else {
-                    r##"<TextBlock Text="Sprawl does this for you: tick it and review the selection, or Clean up just this." FontSize="12" Foreground="#FF8FB4FF" TextWrapping="Wrap"/>"##
+                    r##"<TextBlock Text="Sprawl does this for you: tick it and review the selection, or Clean up just this." FontSize="12" Foreground="{$link}" TextWrapping="Wrap"/>"##
                 };
             }
             if self.advisor.show_cmd {
@@ -4518,7 +4571,7 @@ impl State {
                     None => (c.clone(), "The command, in PowerShell"),
                 };
                 x += &format!(
-                    r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/><Border Padding="10,8" CornerRadius="5" Background="#33000000"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
+                    r##"<TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/><Border Padding="10,8" CornerRadius="5" Background="{{$shade}}"><TextBlock FontFamily="Consolas" FontSize="12" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
                     label,
                     ui::esc(&shown)
                 );

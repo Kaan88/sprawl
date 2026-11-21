@@ -14,7 +14,7 @@ use crate::ui;
 
 /// The welcome page: the whole workspace (tables, map bar and map) until something is scanned.
 pub(crate) fn xaml() -> &'static str {
-    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="8" BorderBrush="#18FFFFFF" BorderThickness="1" Background="#0DFFFFFF" Visibility="Collapsed"/>"##
+    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="8" BorderBrush="{$line1}" BorderThickness="1" Background="#0DFFFFFF" Visibility="Collapsed"/>"##
 }
 
 pub(crate) fn tree_hint() -> &'static str {
@@ -89,7 +89,7 @@ impl State {
         let recent = recent();
         let drives = crate::win32::drives();
         let mut x = format!(r##"<ScrollViewer {} HorizontalScrollBarVisibility="Disabled"><StackPanel Spacing="18" Padding="28,24,28,24" MaxWidth="1100" HorizontalAlignment="Left">"##, ui::NS);
-        x += r##"<StackPanel Spacing="4"><TextBlock Text="Where did the space go?" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="Pick a drive or a folder: Sprawl shows what uses the space, as a tree, a table of file types and a map you can fly through." FontSize="13" Foreground="#FFB9C2D6" TextWrapping="Wrap"/></StackPanel>"##;
+        x += r##"<StackPanel Spacing="4"><TextBlock Text="Where did the space go?" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="Pick a drive or a folder: Sprawl shows what uses the space, as a tree, a table of file types and a map you can fly through." FontSize="13" Foreground="{$text2}" TextWrapping="Wrap"/></StackPanel>"##;
 
         // the drives, as cards
         x += r##"<VariableSizedWrapGrid Orientation="Horizontal" ItemWidth="260" ItemHeight="128">"##;
@@ -108,12 +108,12 @@ impl State {
             let letter = d.root.trim_end_matches('\\');
             let name = if d.label.is_empty() { letter.to_string() } else { format!("{} ({letter})", d.label) };
             x += &format!(
-                r##"<Button x:Name="WelD{i}" Margin="0,0,12,12" Padding="16,12" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Top" CornerRadius="10" Background="#14FFFFFF" BorderBrush="#22FFFFFF" ToolTipService.ToolTip="Scan {root}">
+                r##"<Button x:Name="WelD{i}" Margin="0,0,12,12" Padding="16,12" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Top" CornerRadius="10" Background="{{$hover}}" BorderBrush="{{$line2}}" ToolTipService.ToolTip="Scan {root}">
 <StackPanel Spacing="6">
 <StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xEDA2;" FontSize="18" Foreground="{colour}"/><TextBlock Text="{name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxWidth="180"/></StackPanel>
-<Grid Height="6" CornerRadius="3" Background="#22FFFFFF"><Border HorizontalAlignment="Left" Width="{w:.0}" CornerRadius="3" Background="{colour}"/></Grid>
-<TextBlock FontSize="12" Foreground="#FFD5DBE8" Text="{space}"/>
-<TextBlock FontSize="12" Foreground="#FF8E97AA" Text="{last}" TextTrimming="CharacterEllipsis"/>
+<Grid Height="6" CornerRadius="3" Background="{{$pressed}}"><Border HorizontalAlignment="Left" Width="{w:.0}" CornerRadius="3" Background="{colour}"/></Grid>
+<TextBlock FontSize="12" Foreground="{{$text1}}" Text="{space}"/>
+<TextBlock FontSize="12" Foreground="{{$text3}}" Text="{last}" TextTrimming="CharacterEllipsis"/>
 </StackPanel></Button>"##,
                 root = ui::esc(&d.root),
                 name = ui::esc(&name),
@@ -123,8 +123,8 @@ impl State {
             );
         }
         x += r##"<Button x:Name="WelFolder" Margin="0,0,12,12" Padding="16,12" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" HorizontalContentAlignment="Left" VerticalContentAlignment="Top" CornerRadius="10" Background="Transparent" BorderBrush="#33FFFFFF" BorderThickness="1">
-<StackPanel Spacing="6"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE8B7;" FontSize="18" Foreground="#FFB9C2D6"/><TextBlock Text="A folder..." FontSize="15" FontWeight="SemiBold"/></StackPanel>
-<TextBlock FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Text="Any folder, or several at once (Shift+F3). A WizTree or Sprawl CSV opens with Ctrl+O."/></StackPanel></Button>"##;
+<StackPanel Spacing="6"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE8B7;" FontSize="18" Foreground="{$text2}"/><TextBlock Text="A folder..." FontSize="15" FontWeight="SemiBold"/></StackPanel>
+<TextBlock FontSize="12" Foreground="{$text3}" TextWrapping="Wrap" Text="Any folder, or several at once (Shift+F3). A WizTree or Sprawl CSV opens with Ctrl+O."/></StackPanel></Button>"##;
         x += "</VariableSizedWrapGrid>";
 
         // folders scanned before (drives are on their cards)
@@ -135,7 +135,7 @@ impl State {
             x += r##"<StackPanel Spacing="2"><TextBlock Text="Scanned before" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4"/>"##;
             for (i, (r, t, b)) in folders.iter().enumerate() {
                 x += &format!(
-                    r##"<Button x:Name="WelR{i}" Padding="10,5" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" CornerRadius="5"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8B7;" FontSize="13" Foreground="#FF8E97AA"/><TextBlock Text="{}" FontSize="12" Width="520" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Width="80" TextAlignment="Right" Foreground="#FFD5DBE8"/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel></Button>"##,
+                    r##"<Button x:Name="WelR{i}" Padding="10,5" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" CornerRadius="5"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8B7;" FontSize="13" Foreground="{{$text3}}"/><TextBlock Text="{}" FontSize="12" Width="520" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="12" Width="80" TextAlignment="Right" Foreground="{{$text1}}"/><TextBlock Text="{}" FontSize="12" Foreground="{{$text3}}"/></StackPanel></Button>"##,
                     ui::esc(&r.display().to_string()),
                     self.size(*b),
                     ago(*t)
@@ -146,7 +146,7 @@ impl State {
 
         // the fast path, when it isn't on yet
         if !sprawl_core::is_elevated() {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE945;" FontSize="14" Foreground="#FFE8A33D"/><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" MaxWidth="640" Text="As administrator, Sprawl reads a whole NTFS drive's file table directly: a full drive in seconds instead of minutes."/><Button x:Name="WelAdmin" Content="Restart as administrator"/></StackPanel>"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE945;" FontSize="14" Foreground="#FFE8A33D"/><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{$text2}" TextWrapping="Wrap" MaxWidth="640" Text="As administrator, Sprawl reads a whole NTFS drive's file table directly: a full drive in seconds instead of minutes."/><Button x:Name="WelAdmin" Content="Restart as administrator"/></StackPanel>"##;
         }
         x += "</StackPanel></ScrollViewer>";
 

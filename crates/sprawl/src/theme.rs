@@ -26,24 +26,19 @@ pub(crate) fn light() -> bool {
     LIGHT.load(Ordering::Relaxed)
 }
 
-/// Windows' "Choose your app mode" (Settings > Personalisation > Colours).
+/// Windows' "Choose your app mode" (Settings > Personalisation > Colours), read through the
+/// registry API: no program is started for it (a `reg.exe` beside a per-user copy run as
+/// administrator would have been; Fable 1.0.4-1.0.5 P3-5), and the value itself is read.
 fn windows_uses_light() -> bool {
-    let out = std::process::Command::new("reg")
-        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "/v", "AppsUseLightTheme"])
-        .creation_flags_no_window()
-        .output();
-    out.ok().map(|o| String::from_utf8_lossy(&o.stdout).contains("0x1")).unwrap_or(false)
-}
-
-trait NoWindow {
-    fn creation_flags_no_window(&mut self) -> &mut Self;
-}
-
-impl NoWindow for std::process::Command {
-    fn creation_flags_no_window(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
-        self.creation_flags(0x0800_0000)
-    }
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let mut v = 0u32;
+    let mut n = 4u32;
+    let r = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, &HSTRING::from(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"), &HSTRING::from("AppsUseLightTheme"), RRF_RT_REG_DWORD, None, Some((&mut v as *mut u32).cast()), Some(&mut n))
+    };
+    r == ERROR_SUCCESS && v == 1
 }
 
 /// `xaml` for the theme in use: as written when dark.

@@ -9,9 +9,15 @@
 //! * Reparse points (junctions, symbolic links, mount points) are listed as themselves and
 //!   never entered - except the scanned path itself.
 //! * Paths are passed as `\\?\` long paths, so deep trees beyond MAX_PATH work.
-//! * Allocated size is the length rounded up to the volume's cluster size. (Whether a small
-//!   file lives inside its MFT record, or how much a compressed file really takes, can't be seen
-//!   from a listing; the MFT scanner knows.)
+//! * Allocated size is the listing's own `AllocationSize` wherever a listing gives one: both
+//!   handle listings (FILE_ID_EXTD_DIR_INFO and FILE_FULL_DIR_INFO) carry it at offset 48, so a
+//!   sparse or NTFS-compressed file is reported as it really lies on the disk. It is the length
+//!   rounded up to the volume's cluster size where there is none: `FindFirstFileExW`'s basic
+//!   listing has no such field, a file resident in its own MFT record reports zero, and a file
+//!   scanned on its own is not listed at all.
+//! * So a walk's and an MFT scan's allocated sizes can disagree. A hard-linked file is counted
+//!   once per name here (the MFT scanner counts it once in total), and wherever the rounded-up
+//!   length is the fallback a sparse or compressed file is overstated.
 
 use std::collections::VecDeque;
 use std::io;
@@ -37,6 +43,9 @@ const NO_JOB: u32 = u32::MAX;
 struct Entry {
     name: String,
     size: u64,
+    /// What the listing said the entry takes on the disk (0: the listing had no such field,
+    /// or the file is resident in its MFT record).
+    allocated: u64,
     attrs: u32,
     modified: u64,
     /// The file's id on its volume (0: not known).
@@ -196,7 +205,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
                 name: e.name,
                 is_dir,
                 size: if is_dir { 0 } else { e.size },
-                allocated: if is_dir { 0 } else { round_up(e.size, cluster) },
+                allocated: if is_dir { 0 } else { allocated_of(e.size, e.allocated, cluster) },
                 files: u64::from(!is_dir),
                 folders: 0,
                 modified: filetime_to_system(e.modified),
@@ -218,7 +227,32 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     Ok(tree)
 }
 
+/// Holds the `pending` count of the job a worker is listing. A panicking worker loses its
+/// lists, and without this its job stays pending for ever: the other workers wait for a folder
+/// nobody will finish and only cancelling ends the walk (review P3-5). On unwind the count is
+/// released, the others are woken, and the folder is counted unreadable.
+struct JobGuard<'a, 'p> {
+    sh: &'a Shared<'p>,
+    /// A job is in hand (and its `pending` count not yet settled).
+    armed: bool,
+}
+
+impl Drop for JobGuard<'_, '_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        {
+            let mut q = self.sh.queue.lock().unwrap_or_else(|e| e.into_inner());
+            q.pending = q.pending.saturating_sub(1);
+        }
+        self.sh.cv.notify_all();
+        self.sh.progress.add_errors(1);
+    }
+}
+
 fn worker(sh: &Shared) -> Vec<(u32, Vec<Entry>)> {
+    let mut guard = JobGuard { sh, armed: false };
     let mut out = Vec::new();
     let mut batch = LiveBatch::default();
     let mut last_flush = Instant::now();
@@ -243,6 +277,7 @@ fn worker(sh: &Shared) -> Vec<(u32, Vec<Entry>)> {
                 q = sh.cv.wait_timeout(q, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
             }
         };
+        guard.armed = true;
         let mut subjobs = Vec::new();
         let entries = list_dir(sh, &job, &mut find, &mut pattern, &mut buf, &mut subjobs, &mut batch);
         out.push((job.id, entries));
@@ -258,6 +293,7 @@ fn worker(sh: &Shared) -> Vec<(u32, Vec<Entry>)> {
             q.pending = q.pending + n - 1;
             q.pending == 0
         };
+        guard.armed = false;
         if finished || n > 1 {
             sh.cv.notify_all();
         } else if n == 1 {
@@ -291,7 +327,7 @@ fn list_dir(
     let is_root = job.top == NO_JOB;
     let mut top_names: Vec<(String, u64)> = Vec::new();
     let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
-    let mut visit = |wname: &[u16], raw_attrs: u32, tag: u32, size: u64, modified: u64, id: u64| -> bool {
+    let mut visit = |wname: &[u16], raw_attrs: u32, tag: u32, size: u64, alloc: u64, modified: u64, id: u64| -> bool {
         if sh.progress.is_cancelled() { return false; }
         let dot = wname == [b'.' as u16] || wname == [b'.' as u16, b'.' as u16];
         let excluded = !dot && sh.progress.has_exclusions() && sh.progress.excludes(&Path::new(&display_path(&job.path)).join(String::from_utf16_lossy(wname)));
@@ -333,13 +369,13 @@ fn list_dir(
             if is_root {
                 top_names.push((name.clone(), 0));
             }
-            entries.push(Entry { name, size, attrs, modified, id, job: child_job });
+            entries.push(Entry { name, size, allocated: alloc, attrs, modified, id, job: child_job });
         }
         true
     };
     // the detailed walk lists through the folder it pinned (that handle may list it)
     let listed = match (&sh.verify, pinned.as_ref().and_then(|p| p.handle().ok())) {
-        (_, Some(h)) => dir::list(h, buf, &mut visit),
+        (_, Some(h)) => dir::list_alloc(h, buf, &mut visit),
         (Some((root, root_len)), None) => list_by_handle(job, root, *root_len, buf, &mut visit),
         (None, None) => list_by_name(job, find, pattern, &mut visit),
     };
@@ -359,9 +395,14 @@ fn list_dir(
 /// file id); false stops the listing.
 pub(crate) type Visit<'a> = dyn FnMut(&[u16], u32, u32, u64, u64, u64) -> bool + 'a;
 
+/// [`Visit`] with the entry's allocation size after its size (0: the listing has no such
+/// field, or the file is resident in its MFT record).
+pub(crate) type VisitAlloc<'a> = dyn FnMut(&[u16], u32, u32, u64, u64, u64, u64) -> bool + 'a;
+
 /// Each entry of `job`'s folder as (name, attributes, reparse tag, size, modified), by name
 /// (`FindFirstFileExW`). False when the listing failed (a folder that is gone is not a failure).
-fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, visit: &mut Visit<'_>) -> bool {
+/// This listing has no allocation size, so every entry is given 0 and the caller rounds up.
+fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, visit: &mut VisitAlloc<'_>) -> bool {
     pattern.clear();
     pattern.extend_from_slice(&job.path);
     if pattern.last() != Some(&(b'\\' as u16)) {
@@ -389,7 +430,7 @@ fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, 
         let len = find.cFileName.iter().position(|&c| c == 0).unwrap_or(find.cFileName.len());
         let size = (u64::from(find.nFileSizeHigh) << 32) | u64::from(find.nFileSizeLow);
         let modified = (u64::from(find.ftLastWriteTime.dwHighDateTime) << 32) | u64::from(find.ftLastWriteTime.dwLowDateTime);
-        if !visit(&find.cFileName[..len], find.dwFileAttributes, find.dwReserved0, size, modified, 0) { break; }
+        if !visit(&find.cFileName[..len], find.dwFileAttributes, find.dwReserved0, size, 0, modified, 0) { break; }
         // SAFETY: `h` is a valid find handle.
         if unsafe { FindNextFileW(h, find) } == 0 {
             // SAFETY: trivially safe.
@@ -405,7 +446,7 @@ fn list_by_name(job: &Job, find: &mut WIN32_FIND_DATAW, pattern: &mut Vec<u16>, 
 /// [`list_by_name`] through a handle to the folder itself, after checking that it is a plain
 /// folder at `root` plus the job's own relative path. A folder that has become a link, or whose
 /// path now leads elsewhere, is not listed (and counts as unreadable).
-fn list_by_handle(job: &Job, root: &[u16], root_len: usize, buf: &mut Vec<u64>, visit: &mut Visit<'_>) -> bool {
+fn list_by_handle(job: &Job, root: &[u16], root_len: usize, buf: &mut Vec<u64>, visit: &mut VisitAlloc<'_>) -> bool {
     let h = match dir::open(&job.path) {
         Ok(h) => h,
         Err(e) => return e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32),
@@ -414,7 +455,7 @@ fn list_by_handle(job: &Job, root: &[u16], root_len: usize, buf: &mut Vec<u64>, 
     if !dir::is_plain_dir(&h) || dir::real_path(&h).ok().as_deref() != Some(&expected[..]) {
         return false;
     }
-    dir::list(&h, buf, visit)
+    dir::list_alloc(&h, buf, visit)
 }
 
 /// Where a queued folder must really be: the root's real path (volume included) and the job's
@@ -492,11 +533,18 @@ pub(crate) mod dir {
         Ok((info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64)
     }
 
-    /// Every entry: (name, attributes, reparse tag, size, write time, file id), from
-    /// FILE_ID_EXTD_DIR_INFO. A volume without that listing (FAT, for one) is listed as
-    /// FindFirstFileExW's basic listing is (FILE_FULL_DIR_INFO), with no ids (0); so is an id
-    /// wider than 64 bits (ReFS), which a handle's file index couldn't be compared with.
+    /// [`list_alloc`] for callers that don't want the allocation size.
     pub(crate) fn list(h: &impl AsRawHandle, buf: &mut Vec<u64>, visit: &mut super::Visit<'_>) -> bool {
+        list_alloc(h, buf, &mut |name, attrs, tag, size, _alloc, written, id| visit(name, attrs, tag, size, written, id))
+    }
+
+    /// Every entry: (name, attributes, reparse tag, size, allocation size, write time, file id),
+    /// from FILE_ID_EXTD_DIR_INFO. A volume without that listing (FAT, for one) is listed as
+    /// FindFirstFileExW's basic listing is (FILE_FULL_DIR_INFO), with no ids (0); so is an id
+    /// wider than 64 bits (ReFS), which a handle's file index couldn't be compared with. Both
+    /// listings hold AllocationSize at offset 48 (review P3-4); it is 0 for a file that lives
+    /// inside its own MFT record.
+    pub(crate) fn list_alloc(h: &impl AsRawHandle, buf: &mut Vec<u64>, visit: &mut super::VisitAlloc<'_>) -> bool {
         // (class, restart class, where the name starts)
         const ID_EXTD: (i32, i32, usize) = (19, 20, 88);
         const FULL: (i32, i32, usize) = (14, 15, 68);
@@ -525,7 +573,7 @@ pub(crate) mod dir {
                 if off + at_name > bytes { return false; }
                 let rd = |at: usize| unsafe { std::ptr::read_unaligned(base.add(off + at) as *const u32) };
                 let rd64 = |at: usize| unsafe { std::ptr::read_unaligned(base.add(off + at) as *const u64) };
-                let (next, written, size, attrs, name_len, ea) = (rd(0) as usize, rd64(24), rd64(40), rd(56), rd(60) as usize, rd(64));
+                let (next, written, size, alloc, attrs, name_len, ea) = (rd(0) as usize, rd64(24), rd64(40), rd64(48), rd(56), rd(60) as usize, rd(64));
                 if off + at_name + name_len > bytes || name_len % 2 != 0 { return false; }
                 // SAFETY: in bounds (checked above); u16 reads unaligned-safe via a copy.
                 let name: Vec<u16> = (0..name_len / 2).map(|i| unsafe { std::ptr::read_unaligned(base.add(off + at_name + 2 * i) as *const u16) }).collect();
@@ -537,11 +585,21 @@ pub(crate) mod dir {
                     // the reparse tag is in EaSize for a reparse point, as FindFirstFile's dwReserved0
                     (ea, 0)
                 };
-                if !visit(&name, attrs, if attrs & crate::attr::REPARSE_POINT != 0 { tag } else { 0 }, size, written, id) { return true; }
+                if !visit(&name, attrs, if attrs & crate::attr::REPARSE_POINT != 0 { tag } else { 0 }, size, alloc, written, id) { return true; }
                 if next == 0 { break; }
                 off += next;
             }
         }
+    }
+}
+
+/// What a listed file takes on the disk: the allocation size the listing gave, or the length
+/// rounded up to a cluster where it gave none (review P3-4).
+fn allocated_of(size: u64, listed: u64, cluster: u64) -> u64 {
+    if listed != 0 {
+        listed
+    } else {
+        round_up(size, cluster)
     }
 }
 
@@ -711,7 +769,7 @@ mod tests {
         let real = dir::real_path(&dir::open(&root_job).unwrap()).unwrap();
         assert!(String::from_utf16_lossy(&real).starts_with(r"\\?\Volume{"), "{}", String::from_utf16_lossy(&real));
         let mut seen = 0;
-        let mut visit = |_: &[u16], _: u32, _: u32, _: u64, _: u64, _: u64| { seen += 1; true };
+        let mut visit = |_: &[u16], _: u32, _: u32, _: u64, _: u64, _: u64, _: u64| { seen += 1; true };
         assert!(list_by_handle(&Job { id: 1, path: long_path(&child), top: 0 }, &real, root_job.len(), &mut Vec::new(), &mut visit), "{}", child.display());
         assert!(seen > 0);
     }
@@ -730,7 +788,7 @@ mod tests {
         let job = |p: &Path| Job { id: 1, path: long_path(p), top: 0 };
         let mut buf = Vec::new();
         let mut names = Vec::new();
-        let mut visit = |w: &[u16], _: u32, _: u32, _: u64, _: u64, _: u64| { names.push(String::from_utf16_lossy(w)); true };
+        let mut visit = |w: &[u16], _: u32, _: u32, _: u64, _: u64, _: u64, _: u64| { names.push(String::from_utf16_lossy(w)); true };
         // the folder where it really is: listed
         assert!(list_by_handle(&job(&abs.join("real").join("inner")), &root, root_job.len(), &mut buf, &mut visit));
         // the same folder through a junction above it (a queued folder's parent swapped for a
@@ -811,9 +869,16 @@ mod tests {
                 assert_eq!(fast.nodes[c].parent, Some(i));
             }
         }
-        // Allocated is cluster-rounded and summed.
+        // Allocated is what the volume gives each file (the length rounded up where it gives
+        // nothing), and is summed.
         let cluster = cluster_size(&dir).unwrap();
-        let alloc: u64 = fast.nodes.iter().filter(|n| !n.is_dir).map(|n| round_up(n.size, cluster)).sum();
+        let alloc: u64 = fast
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !n.is_dir)
+            .map(|(i, n)| allocated_of(n.size, allocation_of(&fast.path_of(i)), cluster))
+            .sum();
         assert_eq!(fr.allocated, alloc);
         // Progress agrees with the tree.
         let s = p.snapshot();
@@ -871,6 +936,103 @@ mod tests {
         assert_eq!(tree.nodes[ROOT].folders, 6);
         assert_eq!(tree.errors, 0);
         let _ = fs::remove_dir_all(String::from_utf16(&long_path(&dir)).unwrap());
+    }
+
+    /// What the volume really gives a file (FILE_STANDARD_INFO's AllocationSize).
+    fn allocation_of(p: &Path) -> u64 {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
+        let f = fs::File::open(p).unwrap();
+        let mut info = [0u8; 24]; // AllocationSize, EndOfFile, NumberOfLinks and two flags
+        // SAFETY: the buffer is the size given; class 1 is FileStandardInfo.
+        assert!(unsafe { GetFileInformationByHandleEx(f.as_raw_handle(), 1, info.as_mut_ptr().cast(), 24) } != 0);
+        u64::from_le_bytes(info[..8].try_into().unwrap())
+    }
+
+    #[test]
+    fn allocated_comes_from_the_listing_when_it_has_one() {
+        // review P3-4: a sparse file takes far less than its length rounded up to a cluster
+        let dir = temp_dir("allocated");
+        let sparse = dir.join("sparse.bin");
+        fs::write(&sparse, b"").unwrap();
+        let made = std::process::Command::new("fsutil").args(["sparse", "setflag"]).arg(&sparse).output().is_ok_and(|o| o.status.success());
+        if made {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = fs::OpenOptions::new().write(true).open(&sparse).unwrap();
+            f.seek(SeekFrom::Start(1_000_000)).unwrap();
+            f.write_all(b"x").unwrap();
+            drop(f);
+        } else {
+            eprintln!("fsutil sparse unavailable; only the fallback is checked");
+        }
+        let tiny = dir.join("tiny.txt");
+        fs::write(&tiny, b"abc").unwrap();
+        let cluster = cluster_size(&dir).unwrap();
+        // the rule itself: the listing's number, or the length rounded up when it gave none
+        assert_eq!(allocated_of(5000, 8192, 4096), 8192);
+        assert_eq!(allocated_of(5000, 4096, 4096), 4096, "a compressed file is not rounded up");
+        assert_eq!(allocated_of(5000, 0, 4096), 8192, "no allocation size: the length rounded up");
+        assert_eq!(allocated_of(0, 0, 4096), 0);
+        for t in [inventory(&dir, &Progress::new()).unwrap(), walk(&dir, &Progress::new()).unwrap()] {
+            let node = |name: &str| t.nodes.iter().find(|n| n.name == name).unwrap().clone();
+            if made {
+                let n = node("sparse.bin");
+                assert_eq!(n.size, 1_000_001);
+                assert_eq!(n.allocated, allocation_of(&sparse), "the listing's own allocation size");
+                assert!(n.allocated < round_up(n.size, cluster), "a sparse file is not the length rounded up");
+            }
+            // a file small enough to live inside its MFT record has no allocation size of its
+            // own: the length rounded up stays the fallback
+            let real = allocation_of(&tiny);
+            assert_eq!(node("tiny.txt").allocated, if real == 0 { round_up(3, cluster) } else { real });
+            assert_eq!(t.nodes[ROOT].allocated, t.nodes.iter().filter(|n| !n.is_dir).map(|n| n.allocated).sum::<u64>());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn listing_by_name_has_no_allocation_size() {
+        let dir = temp_dir("by-name");
+        fs::write(dir.join("a.bin"), vec![0u8; 9000]).unwrap();
+        // SAFETY: WIN32_FIND_DATAW is plain old data; all-zero is a valid value.
+        let mut find: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
+        let mut seen: Vec<(String, u64, u64)> = Vec::new();
+        let mut visit = |w: &[u16], _: u32, _: u32, size: u64, alloc: u64, _: u64, _: u64| {
+            seen.push((String::from_utf16_lossy(w), size, alloc));
+            true
+        };
+        let job = Job { id: 0, path: long_path(&std::path::absolute(&dir).unwrap()), top: NO_JOB };
+        assert!(list_by_name(&job, &mut find, &mut Vec::new(), &mut visit));
+        let a = seen.iter().find(|e| e.0 == "a.bin").unwrap();
+        assert_eq!((a.1, a.2), (9000, 0), "FindFirstFileExW gives no allocation size");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panicking_worker_releases_its_job() {
+        // review P3-5: without the guard the other workers wait for a folder nobody finishes
+        let progress = Progress::new();
+        let shared = Shared {
+            queue: Mutex::new(Queue { jobs: Vec::new(), pending: 1 }),
+            cv: Condvar::new(),
+            next_id: AtomicU32::new(1),
+            progress: &progress,
+            detect_wof: false,
+            verify: None,
+        };
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = JobGuard { sh: &shared, armed: true };
+            panic!("a worker panicked while listing");
+        }));
+        std::panic::set_hook(hook);
+        assert!(caught.is_err());
+        assert_eq!(shared.queue.lock().unwrap().pending, 0, "the job must not stay pending");
+        assert_eq!(progress.errors(), 1, "the folder is counted unreadable");
+        // a worker that took no job leaves the count alone
+        drop(JobGuard { sh: &shared, armed: false });
+        assert_eq!(progress.errors(), 1);
     }
 
     #[test]

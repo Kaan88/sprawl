@@ -339,41 +339,46 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
     }
 }
 
-/// A run folder in Temp for Claude Code (machine-local, never roamed: a snapshot lists every
-/// path of the scan). What an earlier run left (the app closed or crashed) goes after a day.
-fn run_dir() -> Result<std::path::PathBuf, String> {
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let runs = std::env::temp_dir().join("sprawl-claude-runs");
-    // only Sprawl's own run folders (`<pid>-<stamp>`), and never through a link: as
+/// A new run folder for Claude Code, in Temp (machine-local, never roamed: a snapshot lists
+/// every path of the scan): an [`sprawl_core::local::OwnedDir`] made by this run alone, held
+/// until it ends and removed through that hold (Fable AI review P3-1). Each folder from Temp
+/// down is opened through its parent's handle as itself (a link on the way is refused). What
+/// an earlier run left (the app closed or crashed) goes after a day.
+fn run_dir() -> Result<sprawl_core::local::OwnedDir, String> {
+    let temp = std::env::temp_dir();
+    let runs = sprawl_core::local::directory(&temp)
+        .and_then(|t| t.child("sprawl-claude-runs", true))
+        .map_err(|e| format!("couldn't make a folder for Claude Code in {} ({e})", temp.display()))?;
+    // only Sprawl's own run folders (`run-<pid>-<nanos>-<try>`), and never through a link: as
     // administrator a swapped-in junction would aim this delete elsewhere
-    let ours = |n: &str| n.split_once('-').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|c| c.is_ascii_digit()));
+    let ours = |n: &str| n.strip_prefix("run-").is_some_and(|r| r.split('-').count() == 3 && r.split('-').all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit())));
     let plain = |p: &std::path::Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && std::os::windows::fs::MetadataExt::file_attributes(&m) & 0x400 == 0); // FILE_ATTRIBUTE_REPARSE_POINT
-    if let Ok(rd) = std::fs::read_dir(&runs).map_err(|_| ()).and_then(|rd| if plain(&runs) { Ok(rd) } else { Err(()) }) {
+    if let Ok(rd) = std::fs::read_dir(&runs.path) {
         for e in rd.flatten().filter(|e| ours(&e.file_name().to_string_lossy()) && plain(&e.path())) {
             if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 86_400) {
                 let _ = std::fs::remove_dir_all(e.path());
             }
         }
     }
-    // nor written into through one: the scan's snapshot and the MCP config would land elsewhere
-    if std::fs::symlink_metadata(&runs).is_ok() && !plain(&runs) {
-        return Err(format!("{} is a link, not a folder: remove it, then ask again", runs.display()));
-    }
-    let dir = runs.join(format!("{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&runs).map_err(|e| e.to_string())?;
-    // the run's own folder made new, not taken over if something put a link there first
-    match std::fs::create_dir(&dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && plain(&dir) => {}
-        Err(e) => return Err(e.to_string()),
-    }
-    Ok(dir)
+    let at = runs.path.display().to_string();
+    sprawl_core::local::OwnedDir::create_under(runs, "run").map_err(|e| format!("couldn't make a folder for Claude Code in {at} ({e})"))
+}
+
+/// A file made new in a run folder: never one that was there already, nor a link put there.
+fn new_file(p: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(p)
+}
+
+/// [`new_file`] with `text` in it.
+fn write_new(p: &std::path::Path, text: &str) -> std::io::Result<()> {
+    new_file(p)?.write_all(text.as_bytes())
 }
 
 /// The chat with Claude Code given Sprawl's tools: a snapshot of the scan, the server's out
 /// file and its MCP config, removed when the chat ends.
 struct CcRun {
-    dir: std::path::PathBuf,
+    /// Removed (through its hold) when the chat ends.
+    dir: sprawl_core::local::OwnedDir,
     out: std::path::PathBuf,
     cfg: std::path::PathBuf,
     /// Lines of the out file already handled.
@@ -385,21 +390,21 @@ struct CcRun {
 impl CcRun {
     fn new(tree: &Tree, scan_before: std::time::SystemTime, exe: &std::path::Path, model: &str, web: bool) -> Result<CcRun, String> {
         let dir = run_dir()?;
-        let run = CcRun { out: dir.join("out.jsonl"), cfg: dir.join("mcp.json"), dir, seen: Default::default(), effects: Default::default() };
-        let tree_file = run.dir.join("scan.dtsn");
-        let mut w = std::io::BufWriter::new(std::fs::File::create(&tree_file).map_err(|e| e.to_string())?);
+        let run = CcRun { out: dir.path().join("out.jsonl"), cfg: dir.path().join("mcp.json"), dir, seen: Default::default(), effects: Default::default() };
+        let tree_file = run.dir.path().join("scan.dtsn");
+        let mut w = std::io::BufWriter::new(new_file(&tree_file).map_err(|e| e.to_string())?);
         crate::snapshot::write(tree, scan_before, 1, &mut w).map_err(|e| e.to_string())?;
         w.flush().and_then(|_| w.get_ref().sync_all()).map_err(|e| e.to_string())?;
         drop(w);
-        std::fs::write(&run.out, "").map_err(|e| e.to_string())?;
-        std::fs::write(&run.cfg, crate::mcp::chat_config(exe, &tree_file, &run.out, model, web)).map_err(|e| e.to_string())?;
+        write_new(&run.out, "").map_err(|e| e.to_string())?;
+        write_new(&run.cfg, &crate::mcp::chat_config(exe, &tree_file, &run.out, model, web)).map_err(|e| e.to_string())?;
         Ok(run)
     }
 
     /// Remove the web-lookup answers (and a half-written one) of an earlier turn.
     fn clear_lookups(&self) {
         let stem = self.out.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
+        let Ok(rd) = std::fs::read_dir(self.dir.path()) else { return };
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if name.strip_prefix(&stem).is_some_and(|rest| rest.starts_with(".lookup-") || rest == ".tmp") {
@@ -442,11 +447,6 @@ impl CcRun {
     }
 }
 
-impl Drop for CcRun {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct AiRun {
@@ -523,26 +523,20 @@ fn run_driven(tree: &Tree, scan_before: std::time::SystemTime, user: &AiConfig, 
 #[allow(clippy::too_many_arguments)]
 fn run_driven_inner(tree: &Tree, scan_before: std::time::SystemTime, facts: &Facts, model: &str, effort: Option<String>, report: &str, already: &[Finding], memory: &Memory, exe: &std::path::Path, stop: &Stop, progress: &mut dyn FnMut(String)) -> Result<AiRun, String> {
     let claude = Detected::probe().claude_code.ok_or("Claude Code (claude) isn't installed or isn't on PATH.")?;
-    let dir = run_dir()?;
-    /// Removes the run's folder however the run ends, a panic included.
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(dir.clone());
+    // removed (through its hold) however the run ends, a panic included
+    let owned = run_dir()?;
+    let dir = owned.path().to_path_buf();
     let result = (|| {
         progress("Handing the scan to Claude Code...".into());
         let tree_file = dir.join("scan.dtsn");
-        let mut w = std::io::BufWriter::new(std::fs::File::create(&tree_file).map_err(|e| e.to_string())?);
+        let mut w = std::io::BufWriter::new(new_file(&tree_file).map_err(|e| e.to_string())?);
         crate::snapshot::write(tree, scan_before, 1, &mut w).map_err(|e| e.to_string())?;
         w.flush().and_then(|_| w.get_ref().sync_all()).map_err(|e| e.to_string())?;
         drop(w);
         let out_file = dir.join("out.jsonl");
-        std::fs::write(&out_file, "").map_err(|e| e.to_string())?;
+        write_new(&out_file, "").map_err(|e| e.to_string())?;
         let cfg_file = dir.join("mcp.json");
-        std::fs::write(&cfg_file, crate::mcp::driven_config(exe, &tree_file, &out_file, model)).map_err(|e| e.to_string())?;
+        write_new(&cfg_file, &crate::mcp::driven_config(exe, &tree_file, &out_file, model)).map_err(|e| e.to_string())?;
         let first = format!("{report}\n\nUse Sprawl's tools (mcp__sprawl__...) to look closer, report each opportunity with report_finding, and end with finish.");
         let mut cc = ClaudeCode::new(&claude, model, SYSTEM, &first).with_mcp(&cfg_file).with_stop(stop.clone()).with_effort(effort);
         progress(format!("Claude Code ({model}) is reading the scan..."));
@@ -727,10 +721,24 @@ fn run_cleaner_check(cfg: &AiConfig, model: &str, run: &mut AiRun, stop: &Stop, 
     run.usage.add(*usage.borrow());
 }
 
-/// The host of an OpenAI-compatible address (empty: OpenAI itself), lower case.
+/// The server of an OpenAI-compatible address (empty: OpenAI itself), lower case: its host, and
+/// its port when that isn't the scheme's own (a key saved for `localhost:11434` is not sent to
+/// `localhost:1234`; Fable review 1.0.4-1.0.5 P3-2).
 pub fn host_of(base_url: &str) -> Option<String> {
     let url = if base_url.trim().is_empty() { "https://api.openai.com/v1" } else { base_url.trim() };
-    super::http::split_url(&format!("{}/x", url.trim_end_matches('/'))).ok().map(|(_, h, _, _)| h.to_lowercase())
+    super::http::split_url(&format!("{}/x", url.trim_end_matches('/'))).ok().map(|(secure, h, port, _)| server(&h, secure, port))
+}
+
+/// `host`, with `:port` when it isn't the default for the scheme (an IPv6 host in brackets).
+fn server(host: &str, secure: bool, port: u16) -> String {
+    let h = host.to_lowercase();
+    if port == if secure { 443 } else { 80 } {
+        h
+    } else if h.contains(':') {
+        format!("[{h}]:{port}")
+    } else {
+        format!("{h}:{port}")
+    }
 }
 
 /// The key for an OpenAI-compatible endpoint. `OPENAI_API_KEY` from the environment goes only to
@@ -742,7 +750,9 @@ pub(crate) fn openai_key(base_url: &str) -> Result<Option<String>, String> {
         // the key saved for this server
         Some(k) => (Some(k), host),
         // the single key of before, for the host it was saved for
-        None => (config::key(Provider::OpenAi).filter(|k| !k.trim().is_empty()), config::key_host(Provider::OpenAi).or_else(|| host_of(&AiConfig::load().base_url))),
+        // (a key from before hosts were recorded had its host written once at start:
+        // `config::record_key_host`; with none, it goes nowhere)
+        None => (config::key(Provider::OpenAi).filter(|k| !k.trim().is_empty()), config::key_host(Provider::OpenAi)),
     };
     key_for(base_url, saved, bound, std::env::var("OPENAI_API_KEY").ok())
 }
@@ -756,10 +766,11 @@ pub fn saved_key_for(base_url: &str) -> bool {
 /// `OPENAI_API_KEY`.
 pub(crate) fn key_for(base_url: &str, saved: Option<String>, bound: Option<String>, env: Option<String>) -> Result<Option<String>, String> {
     let url = if base_url.trim().is_empty() { "https://api.openai.com/v1" } else { base_url.trim() };
-    let (secure, host, _, _) = super::http::split_url(&format!("{}/x", url.trim_end_matches('/')))?;
+    let (secure, host, port, _) = super::http::split_url(&format!("{}/x", url.trim_end_matches('/')))?;
+    let at = server(&host, secure, port);
     let host = host.to_lowercase();
     let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]");
-    let saved = saved.filter(|_| bound.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(&host)));
+    let saved = saved.filter(|_| bound.as_deref().is_some_and(|b| b.eq_ignore_ascii_case(&at)));
     let key = saved.or_else(|| (host == "api.openai.com").then_some(env).flatten()).filter(|k| !k.trim().is_empty());
     if key.is_some() && !secure && !local {
         return Err(format!("{host} isn't https: an API key would go over the network unencrypted. Use https, or remove the key."));
@@ -772,7 +783,7 @@ pub fn key_elsewhere(base_url: &str) -> Option<String> {
     if host_of(base_url).and_then(|h| config::key_for_host(&h)).is_some() {
         return None;
     }
-    let bound = config::key_host(Provider::OpenAi).or_else(|| host_of(&AiConfig::load().base_url))?;
+    let bound = config::key_host(Provider::OpenAi)?;
     let host = host_of(base_url)?;
     (config::has_key(Provider::OpenAi) && !bound.eq_ignore_ascii_case(&host)).then(|| format!("the saved key is for {bound}, so it isn't sent to {host}: paste it again to use it there"))
 }
@@ -966,7 +977,11 @@ mod tests {
         // https to another host: not sent
         assert_eq!(key_for("https://evil.example.org/v1", k(), Some("example.com".into()), None).unwrap(), None);
         // this machine over http: fine
-        assert_eq!(key_for("http://localhost:11434/v1", k(), Some("localhost".into()), None).unwrap(), k());
+        assert_eq!(key_for("http://localhost:11434/v1", k(), Some("localhost:11434".into()), None).unwrap(), k());
+        // the same machine on another port: another server, so not sent
+        assert_eq!(key_for("http://localhost:1234/v1", k(), Some("localhost:11434".into()), None).unwrap(), None);
+        assert_eq!(super::host_of("https://Example.com:443/v1").as_deref(), Some("example.com"));
+        assert_eq!(super::host_of("http://[::1]:8080/v1").as_deref(), Some("[::1]:8080"));
         // the environment's key only to OpenAI
         assert_eq!(key_for("", None, None, k()).unwrap(), k());
         assert_eq!(key_for("https://openrouter.ai/api/v1", None, None, k()).unwrap(), None);

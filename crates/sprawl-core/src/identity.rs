@@ -49,6 +49,36 @@ pub(crate) unsafe fn token_elevated(process: windows_sys::Win32::Foundation::HAN
     }
 }
 
+/// Whether the desktop shell (Explorer) runs under this process's account: false when an
+/// administrator's credentials were typed for Sprawl (another account), None when it can't be
+/// told (no shell, no access).
+pub fn shell_is_this_account() -> Option<bool> {
+    use std::os::windows::io::{AsHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetShellWindow() -> *mut core::ffi::c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut core::ffi::c_void, pid: *mut u32) -> u32;
+    }
+    let mine = account_sid().ok()?;
+    unsafe {
+        let shell = GetShellWindow();
+        if shell.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        if GetWindowThreadProcessId(shell, &mut pid) == 0 || pid == 0 {
+            return None;
+        }
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let h = OwnedHandle::from_raw_handle(h);
+        Some(process_account_sid(h.as_handle()).ok()? == mine)
+    }
+}
+
 /// Start `exe` with `args` as the signed-in user without administrator rights, from an
 /// elevated Sprawl. The new process is created with the desktop shell (Explorer) as its parent,
 /// so it takes the shell's token. The shell must run under this account and must not itself be

@@ -707,7 +707,7 @@ impl State {
         };
         let full = ix.path_of(i).display().to_string();
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="13" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="12" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = crate::tables::col_defs(crate::search::COLS),
             runs = self.name_runs(&name),
@@ -833,7 +833,7 @@ impl State {
             } else {
                 x += &format!(r##"<FontIcon Glyph="{glyph}" FontSize="12" Foreground="{colour}" VerticalAlignment="Center"/>"##);
             }
-            x += &format!(r##"<TextBlock x:Name="SxE{i}" Text="{}" {} FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="700"/>"##, ui::esc(line), crate::look::NUM);
+            x += &format!(r##"<TextBlock x:Name="SxE{i}" Text="{}" {} FontSize="12" Foreground="{{$text3}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="700"/>"##, ui::esc(line), crate::look::NUM);
             if drive.is_some() && *kind != "rereading" {
                 let label = if *kind == "failed" { "Try again" } else { "Refresh" };
                 x += &format!(r##"<Button x:Name="SxR{i}" Content="{label}" FontSize="11" Padding="8,1" ToolTipService.ToolTip="Read this drive again: new files show, deleted ones go"/>"##);

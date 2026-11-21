@@ -80,7 +80,7 @@ impl State {
         };
         let body: String = match &p.rich {
             Some(x) => x.clone(),
-            None => p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="13" Foreground="#FFD5DBE8" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect(),
+            None => p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="13" Foreground="{{$text1}}" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect(),
         };
         let (max_w, max_h) = if p.rich.is_some() { (940, 720) } else { (560, 420) };
         let buttons = match &p.yes {

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sprawl: the Theme page</title>
+<style>
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body{margin:0;background:#0b0c10;color:#e8eaf0;font:14px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+.page{max-width:960px;margin:0 auto;padding:18px 16px 50px}
+h1{font:600 20px/1.3 "Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;margin:0 0 4px}
+.lead{color:#a6acbb;font-size:13.5px;margin:0 0 12px;max-width:860px}
+.var{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.pillb{appearance:none;background:none;border:1px solid #ffffff2b;color:#b4bac8;font:inherit;font-size:13px;border-radius:999px;padding:5px 14px;cursor:pointer}
+.pillb:hover{color:#fff;border-color:#ffffff66}
+.pillb.on{color:#0e0f12;background:#8ab4ff;border-color:#8ab4ff}
+
+.mix{--w06:#ffffff0f;--w10:#ffffff1a;--w16:#ffffff29;--w30:#ffffff4d;--w55:#ffffff8c;--sh:#00000073;--hi:#ffffff14;--sel:color-mix(in srgb,var(--acc) 26%,var(--card));--barfill:var(--accfill);color:var(--tx);font-size:13px;line-height:1.4}
+.mix[data-mode=light]{--w06:#0000000d;--w10:#00000014;--w16:#00000024;--w30:#00000047;--w55:#00000080;--sh:#00000029;--hi:#ffffffb3;color-scheme:light}
+.dlg{position:relative;isolation:isolate;display:grid;grid-template-columns:184px minmax(0,1fr);background:var(--base);border:1px solid var(--line);border-radius:calc(var(--rk) + 2px);box-shadow:0 24px 60px #000000b3;overflow:hidden}
+.mix[data-fancy=glass] .dlg::before{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(45% 60% at 12% 15%,color-mix(in srgb,var(--acc) 55%,transparent),transparent 72%),radial-gradient(40% 55% at 90% 25%,color-mix(in srgb,var(--acc2) 45%,transparent),transparent 72%);filter:blur(30px);opacity:.8}
+.mini{padding:10px;background:var(--base);border-radius:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+
+.mix[data-acc=win]{--acc:#97c8ce;--acc2:#97c8ce;--accfill:#97c8ce;--on:#000;--acct:#a9d5da;--prihov:#000}
+.mix[data-acc=win][data-mode=light]{--acc:#376372;--acc2:#376372;--accfill:#376372;--on:#fff;--acct:#234452;--prihov:#fff}
+.mix[data-acc=azure]{--acc:#2f6fed;--acc2:#56a8ff;--accfill:#2f6fed;--on:#fff;--acct:#7db2ff;--prihov:#fff}
+.mix[data-acc=azure][data-mode=light]{--acct:#1f57c9}
+.mix[data-acc=iris]{--acc:#4a6cf7;--acc2:#9a5cf6;--accfill:linear-gradient(100deg,#3f6ff5,#9458f5);--on:#fff;--acct:#a5b4ff;--prihov:#fff}
+.mix[data-acc=iris][data-mode=light]{--acct:#3b54d8}
+.mix[data-acc=violet]{--acc:#7c5cf0;--acc2:#b18cff;--accfill:#7c5cf0;--on:#fff;--acct:#b9a6ff;--prihov:#fff}
+.mix[data-acc=violet][data-mode=light]{--acct:#5b3fd0}
+.mix[data-acc=sunset]{--acc:#ff7a45;--acc2:#f04e7a;--accfill:linear-gradient(100deg,#ff8a3d,#f04e7a);--on:#2a0a05;--acct:#ffa477;--prihov:#000}
+.mix[data-acc=sunset][data-mode=light]{--acct:#c2410c}
+
+.mix[data-surf=ink]{--base:#11131a;--card:#191c26;--row:#212533;--line:#a0b4ff1f;--tx:#eef1f8;--tx2:#b9c2d6;--tx3:#8791a8;--pop:#1e2230}
+.mix[data-surf=graphite]{--base:#1f1f1f;--card:#292929;--row:#323232;--line:#ffffff14;--tx:#fff;--tx2:#cfcfcf;--tx3:#9d9d9d;--pop:#2e2e2e}
+.mix[data-surf=tint]{--base:color-mix(in srgb,var(--acc) 7%,#141518);--card:color-mix(in srgb,var(--acc) 10%,#1f2024);--row:color-mix(in srgb,var(--acc) 13%,#28292e);--line:#ffffff14;--tx:#f4f5f8;--tx2:#c4c8d4;--tx3:#9197a6;--pop:color-mix(in srgb,var(--acc) 9%,#26272c)}
+.mix[data-mode=light][data-surf=ink]{--base:#e9ecf4;--card:#f6f7fc;--row:#fff;--line:#1b2a6026;--tx:#141824;--tx2:#3a4258;--tx3:#5b647a;--pop:#fff}
+.mix[data-mode=light][data-surf=graphite]{--base:#f0f0f0;--card:#fafafa;--row:#fff;--line:#0000001f;--tx:#1b1b1b;--tx2:#444;--tx3:#666;--pop:#fff}
+.mix[data-mode=light][data-surf=tint]{--base:color-mix(in srgb,var(--acc) 8%,#f3f3f5);--card:color-mix(in srgb,var(--acc) 4%,#fcfcfd);--row:#fff;--line:#0000001f;--tx:#17181c;--tx2:#40434d;--tx3:#646875;--pop:#fff}
+
+.mix[data-round=r4]{--rc:4px;--rk:8px;--rr:4px;--rb:2px;--rx:4px;--rchip:4px}
+.mix[data-round=r6]{--rc:6px;--rk:10px;--rr:6px;--rb:3px;--rx:5px;--rchip:6px}
+.mix[data-round=r8]{--rc:8px;--rk:14px;--rr:8px;--rb:4px;--rx:6px;--rchip:8px}
+.mix[data-round=pill]{--rc:999px;--rk:16px;--rr:12px;--rb:999px;--rx:7px;--rchip:999px}
+
+.mix[data-chip=rect]{--cgap:6px;--tpad:0px;--tbg:transparent;--trad:0px;--crad:var(--rchip);--cbg:var(--w10);--cbd:var(--w10);--csbg:var(--accfill);--csfg:var(--on);--csbd:transparent;--thumbd:none}
+.mix[data-chip=pill]{--cgap:6px;--tpad:0px;--tbg:transparent;--trad:0px;--crad:999px;--cbg:var(--w06);--cbd:var(--w10);--csbg:var(--accfill);--csfg:var(--on);--csbd:transparent;--thumbd:none}
+.mix[data-chip=soft]{--cgap:6px;--tpad:0px;--tbg:transparent;--trad:0px;--crad:999px;--cbg:transparent;--cbd:var(--w16);--csbg:color-mix(in srgb,var(--acc) 24%,transparent);--csfg:var(--acct);--csbd:color-mix(in srgb,var(--acc) 62%,transparent);--thumbd:none}
+.mix[data-chip=seg]{--cgap:0px;--tpad:3px;--tbg:var(--w10);--trad:calc(var(--rchip) + 3px);--crad:var(--rchip);--cbg:transparent;--cbd:transparent;--csbg:transparent;--csfg:var(--tx);--csbd:transparent;--thumbd:block}
+
+.mix[data-press=faint]{--hov:.07;--act:.12;--pt:0ms;--pe:linear}
+.mix[data-press=clear]{--hov:.13;--act:.22;--pt:90ms;--pe:ease}
+.mix[data-press=sink]{--hov:.13;--act:.22;--pt:130ms;--pe:cubic-bezier(.2,.9,.3,1.35)}
+.mix[data-press=lift]{--hov:.1;--act:.2;--pt:140ms;--pe:cubic-bezier(.2,.8,.2,1)}
+.mix[data-motion=none]{--m:0ms;--me:linear}
+.mix[data-motion=subtle]{--m:160ms;--me:cubic-bezier(.2,.8,.2,1)}
+.mix[data-motion=lively]{--m:340ms;--me:cubic-bezier(.3,1.55,.5,1)}
+.mix[data-note=dim]{--ns:12px;--nc:var(--tx3);--nlead:var(--tx3);--nw:400}
+.mix[data-note=bright]{--ns:13px;--nc:var(--tx2);--nlead:var(--tx2);--nw:400}
+.mix[data-note=lead]{--ns:13px;--nc:var(--tx2);--nlead:var(--tx);--nw:600}
+
+.t2{color:var(--tx2)}.t3{color:var(--tx3);font-size:12px}
+.sp{flex:1}
+.srow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.card{--cardbg:var(--card);background:var(--cardbg);border:1px solid var(--line);border-radius:var(--rk)}
+.note{font-size:var(--ns);color:var(--nc);line-height:1.45;margin:6px 0 0}
+.note b{font-weight:var(--nw);color:var(--nlead)}
+
+.w{position:relative}
+.w::after{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--tx);opacity:0;pointer-events:none;transition:opacity var(--pt) ease}
+.w:hover::after{opacity:var(--hov)}
+.w:active::after{opacity:var(--act)}
+.b.pri.w:hover::after,.chip.on.w:hover::after{background:var(--prihov);opacity:.16}
+.b.pri.w:active::after,.chip.on.w:active::after{background:#000;opacity:.26}
+.mix[data-chip=seg] .chip.on.w:hover::after{background:var(--tx);opacity:var(--hov)}
+.row.w:hover::after,.nav.w:hover::after{opacity:calc(var(--hov)*.55)}
+
+.b{appearance:none;border:1px solid var(--w10);background:var(--w06);color:var(--tx);font:inherit;font-size:13px;height:30px;padding:0 12px;border-radius:var(--rc);cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;transition:transform var(--pt) var(--pe),box-shadow var(--pt) ease}
+.b.w::after{inset:-1px}
+.b.pri{background:var(--accfill);color:var(--on);border-color:transparent;font-weight:600}
+.b.sub{background:transparent;border-color:transparent;color:var(--acct)}
+.mix[data-press=sink] .b:active,.mix[data-press=sink] .chip:active{transform:scale(.95)}
+.mix[data-press=lift] .b:hover{transform:translateY(-1px);box-shadow:0 6px 14px var(--sh)}
+.mix[data-press=lift] .b.pri:hover{box-shadow:0 6px 16px color-mix(in srgb,var(--acc) 48%,transparent)}
+.mix[data-press=lift] .b:active{transform:translateY(1px) scale(.98);box-shadow:none}
+.mix[data-press=lift] .row:hover{transform:translateY(-1px);box-shadow:0 5px 12px var(--sh)}
+.mix[data-press=lift] .row:active{transform:none;box-shadow:none}
+
+.chips{position:relative;display:inline-flex;gap:var(--cgap);padding:var(--tpad);background:var(--tbg);border-radius:var(--trad)}
+.chip{z-index:1;appearance:none;font:inherit;font-size:13px;height:28px;padding:0 12px;cursor:pointer;color:var(--tx);background:var(--cbg);border:1px solid var(--cbd);border-radius:var(--crad);white-space:nowrap;transition:color var(--m),border-color var(--m),transform var(--pt) var(--pe)}
+.chip.on{background:var(--csbg);color:var(--csfg);border-color:var(--csbd)}
+.mix[data-chip=rect] .chip.on,.mix[data-chip=pill] .chip.on{font-weight:600}
+.thumb{display:var(--thumbd);position:absolute;z-index:0;top:var(--tpad);bottom:var(--tpad);border-radius:var(--crad);background:var(--row);box-shadow:0 1px 3px var(--sh),inset 0 1px 0 var(--hi);transition:left var(--m) var(--me),width var(--m) var(--me)}
+
+.frow{display:flex;gap:10px;align-items:center;min-width:0}
+.row{flex:1;min-width:0;display:flex;gap:10px;align-items:center;padding:6px 10px;border-radius:var(--rr);background:var(--row);transition:transform var(--pt) var(--pe),box-shadow var(--pt) ease}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:#4cc38a}
+.rt{min-width:0;flex:1}
+.rt div,.rt small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.rt small{color:var(--tx3);font-size:12px}
+.bar{width:90px;height:6px;border-radius:999px;background:var(--w10);overflow:hidden;flex:none}
+.bar i{display:block;height:100%;width:70%;border-radius:999px;background:var(--barfill)}
+.sz{flex:none;font-variant-numeric:tabular-nums}
+
+.chk{width:18px;height:18px;flex:none;border-radius:4px;border:1px solid var(--w55);background:transparent;cursor:pointer;display:grid;place-items:center;transition:border-color var(--m) ease}
+.chk svg{width:12px;height:12px;stroke:var(--on);stroke-width:2.2;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:16;stroke-dashoffset:16;transition:stroke-dashoffset var(--m) ease}
+.chk.on{background:var(--accfill);border-color:transparent}
+.chk.on svg{stroke-dashoffset:0}
+.mix[data-field=ring] .chk{border-radius:var(--rx);border:1.5px solid var(--tx3)}
+.mix[data-field=ring] .chk.on{border-color:transparent}
+.mix[data-field=soft] .chk{border-radius:var(--rx);border-color:transparent;background:var(--w16)}
+.mix[data-field=soft] .chk.on{background:var(--accfill)}
+.sw{width:38px;height:20px;border-radius:999px;position:relative;cursor:pointer;flex:none;border:1px solid var(--w55);background:transparent}
+.sw::before{content:"";position:absolute;top:50%;left:3px;width:12px;height:12px;margin-top:-6px;border-radius:50%;background:var(--tx2);transition:left var(--m) var(--me)}
+.sw.on{background:var(--accfill);border-color:transparent}
+.sw.on::before{left:21px;background:var(--on)}
+.mix:not([data-field=win]) .sw{border-color:transparent;background:var(--w16)}
+.mix:not([data-field=win]) .sw::before{width:16px;height:16px;margin-top:-8px;left:1px;background:#fff;box-shadow:0 1px 3px #00000066}
+.mix:not([data-field=win]) .sw.on{background:var(--accfill)}
+.mix:not([data-field=win]) .sw.on::before{left:19px;background:#fff}
+
+.f,.dd{height:30px;font:inherit;font-size:13px;color:var(--tx);padding:0 10px;outline:none;min-width:0}
+.f::placeholder{color:var(--tx3)}
+.dd{appearance:none;display:flex;width:100%;align-items:center;gap:10px;justify-content:space-between;cursor:pointer;white-space:nowrap;text-align:left}
+.mix[data-field=win] .f,.mix[data-field=win] .dd{background:var(--w06);border:1px solid var(--w10);border-radius:4px}
+.mix[data-field=win] .f{border-bottom-color:var(--w55)}
+.mix[data-field=win] .f:focus{border-bottom:2px solid var(--acc)}
+.mix[data-field=win] .dd:hover{background:var(--w10)}
+.mix[data-field=ring] .f,.mix[data-field=ring] .dd{background:color-mix(in srgb,var(--base) 55%,var(--card));border:1px solid var(--w16);border-radius:var(--rc);transition:border-color var(--m),box-shadow var(--m)}
+.mix[data-field=ring] .f:hover,.mix[data-field=ring] .dd:hover{border-color:var(--w30)}
+.mix[data-field=ring] .f:focus,.mix[data-field=ring] .dd.open{border-color:var(--acc);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 32%,transparent)}
+.mix[data-field=soft] .f,.mix[data-field=soft] .dd{background:var(--w10);border:1px solid transparent;border-radius:var(--rc);transition:background-color var(--m),box-shadow var(--m)}
+.mix[data-field=soft] .f:hover,.mix[data-field=soft] .dd:hover{background:var(--w16)}
+.mix[data-field=soft] .f:focus,.mix[data-field=soft] .dd.open{box-shadow:0 0 0 2px var(--acc)}
+.ddw{position:relative;display:block}
+.menu{position:absolute;left:0;top:calc(100% + 4px);min-width:100%;z-index:9;padding:4px;background:var(--pop);border:1px solid var(--w16);border-radius:max(6px,min(var(--rk),12px));box-shadow:0 10px 28px var(--sh);opacity:0;transform:translateY(-5px) scale(.97);transform-origin:top left;pointer-events:none;transition:opacity var(--m) ease,transform var(--m) var(--me)}
+.menu.up{top:auto;bottom:calc(100% + 4px);transform-origin:bottom left}
+.menu.open{opacity:1;transform:none;pointer-events:auto}
+.mi{display:block;position:relative;padding:6px 12px;border-radius:max(3px,min(var(--rc),8px));cursor:pointer;white-space:nowrap}
+.mi:hover{background:var(--w10)}
+.mi.on::before{content:"";position:absolute;left:2px;top:28%;bottom:28%;width:3px;border-radius:2px;background:var(--acc)}
+
+.mix[data-fancy=depth] .card{box-shadow:inset 0 1px 0 var(--hi),0 8px 22px var(--sh)}
+.mix[data-fancy=depth] .b{box-shadow:inset 0 1px 0 var(--hi),0 1px 2px var(--sh)}
+.mix[data-fancy=depth] .b.sub{box-shadow:none}
+.mix[data-fancy=depth] .b.pri{box-shadow:inset 0 1px 0 #ffffff5c,0 3px 10px color-mix(in srgb,var(--acc) 45%,transparent)}
+.mix[data-fancy=depth] .row{box-shadow:inset 0 1px 0 var(--hi),0 1px 2px var(--sh)}
+.mix[data-fancy=depth]:not([data-chip=seg]) .chip.on,.mix[data-fancy=depth] .chk.on,.mix[data-fancy=depth] .sw.on{box-shadow:inset 0 1px 0 #ffffff4d}
+.mix[data-fancy=glass] .card{background:var(--w06);backdrop-filter:blur(22px) saturate(1.4);border-color:var(--w16);box-shadow:inset 0 1px 0 var(--hi)}
+.mix[data-fancy=glass] .row{background:var(--w06)}
+.mix[data-fancy=glass] .b.pri{box-shadow:inset 0 1px 0 #ffffff70,inset 0 -9px 12px #0000001f}
+.mix[data-fancy=glow] .card{border-color:transparent;background:linear-gradient(var(--cardbg),var(--cardbg)) padding-box,linear-gradient(135deg,color-mix(in srgb,var(--acc) 65%,transparent),var(--w10) 32%,var(--w06) 68%,color-mix(in srgb,var(--acc2) 60%,transparent)) border-box}
+.mix[data-fancy=glow] .b.pri{box-shadow:0 0 0 1px color-mix(in srgb,var(--acc2) 70%,transparent),0 0 20px color-mix(in srgb,var(--acc) 62%,transparent)}
+.mix[data-fancy=glow] .chk.on,.mix[data-fancy=glow] .sw.on{box-shadow:0 0 10px color-mix(in srgb,var(--acc) 60%,transparent)}
+.mix[data-fancy=glow]:not([data-chip=seg]) .chip.on{box-shadow:0 0 14px color-mix(in srgb,var(--acc) 50%,transparent)}
+
+.side{padding:14px 8px;border-right:1px solid var(--line);display:grid;gap:2px;align-content:start}
+.side .t3{padding:0 10px 8px}
+.nav{appearance:none;border:0;background:none;color:var(--tx);font:inherit;font-size:13px;text-align:left;padding:6px 10px;border-radius:var(--rc);cursor:pointer}
+.nav.on{background:var(--sel)}
+.main{padding:16px 20px 14px;min-width:0;display:grid;gap:12px;align-content:start}
+.main h2{font:600 18px/1.2 "Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;margin:0}
+.sample{padding:12px;display:grid;gap:9px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 20px}
+.opt label{display:block;font-size:12px;color:var(--tx2);margin:0 0 3px}
+.presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.preset{appearance:none;font:inherit;color:inherit;text-align:left;cursor:pointer;padding:8px;display:grid;gap:7px}
+.preset.on{outline:2px solid var(--acc);outline-offset:1px}
+.preset b{font-weight:600}
+.preset small{display:block;color:var(--tx3);font-size:12px}
+.foot{display:flex;gap:8px;align-items:center;border-top:1px solid var(--line);padding-top:12px;margin-top:2px}
+.hide{display:none!important}
+</style></head><body><div class="page">
+<h1>Settings &gt; Theme: how it could look and work</h1>
+<p class="lead">A working sketch of the Settings window with a new Theme page, drawn in the look you picked. Change anything: the sample and the window itself follow at once. Two layouts to compare.</p>
+<div class="var"><button class="pillb on" data-lay="b">Layout B: presets first, details behind Customise</button><button class="pillb" data-lay="a">Layout A: every option on the page</button></div>
+<div class="mix" id="app"><div class="dlg">
+<div class="side"><div class="t3">Settings</div><button class="nav w">General</button><button class="nav w on">Theme</button><button class="nav w">AI and privacy</button><button class="nav w">Network</button><button class="nav w">Scanning</button><button class="nav w">Search</button><button class="nav w">Map</button><button class="nav w">Cleaning</button><button class="nav w">Advisor</button><button class="nav w">History</button></div>
+<div class="main">
+<div><h2>Theme</h2><p class="note"><b>How Sprawl looks and reacts.</b> The sample follows as you pick; the window takes it when you press Save.</p></div>
+<div class="card sample"><div class="srow"><button class="b pri w">Scan</button><button class="b w">Tick the safe ones</button><button class="b sub w">Check again</button><span class="sp"></span><div class="chips"><span class="thumb"></span><button class="chip w on">Recommended</button><button class="chip w">Size</button><button class="chip w">Risk</button></div></div>
+<div class="frow"><span class="chk on"><svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.6 9.6 3.6"/></svg></span><div class="row w"><span class="dot"></span><div class="rt"><div>npm cache</div><small>Safe to delete · C:\Users\you\AppData\Local\npm-cache</small></div><span class="bar"><i></i></span><span class="sz">12.1 GiB</span></div></div>
+<div class="srow"><input class="f" placeholder="Filter: *.mp4" style="width:150px"><span class="sw on"></span><span class="t2">Ask the AI about this scan</span></div>
+<p class="note" style="margin:0"><b>Review what is ticked:</b> nothing goes before you confirm.</p></div>
+<div class="presets" id="presets"></div>
+<div class="srow" id="tools"><button class="b w" id="cust">Customise</button><span class="t3" id="state"></span></div>
+<div class="grid" id="grid"></div>
+<div class="foot"><button class="b sub w" id="reset">Back to Sprawl's own</button><span class="sp"></span><button class="b w">Cancel</button><button class="b pri w">Save</button></div>
+</div></div></div>
+</div>
+<script>
+const D=[
+['preset','Preset',[['sprawl','Sprawl'],['windows','Windows'],['custom','Custom']]],
+['mode','Light or dark',[['win','Like Windows (dark here)'],['dark','Dark'],['light','Light']]],
+['acc','Accent',[['win','Windows accent'],['azure','Azure'],['iris','Iris'],['violet','Violet'],['sunset','Sunset']]],
+['surf','Surfaces',[['ink','Ink'],['graphite','Graphite'],['tint','Tinted']]],
+['round','Corners',[['r4','4 / 8'],['r6','6 / 10'],['r8','8 / 14'],['pill','Pills']]],
+['chip','Chips',[['pill','Pills'],['soft','Soft pills'],['seg','Segmented'],['rect','Rectangles']]],
+['press','Press feedback',[['lift','Lift and sink'],['sink','Press-in'],['clear','Clear fade'],['faint','Faint']]],
+['motion','Motion',[['subtle','Subtle'],['lively','Lively'],['none','None']]],
+['fancy','Finish',[['depth','Soft depth'],['flat','Flat'],['glass','Glass'],['glow','Glow']]],
+['field','Controls',[['ring','Outlined'],['soft','Soft filled'],['win','Windows stock']]],
+['note','Small text',[['lead','13 px, first words in white'],['bright','13 px'],['dim','12 px grey']]]];
+const P={
+sprawl:{mode:'win',acc:'win',surf:'ink',round:'r4',chip:'pill',press:'lift',motion:'subtle',fancy:'depth',field:'ring',note:'lead'},
+windows:{mode:'win',acc:'win',surf:'graphite',round:'r4',chip:'rect',press:'clear',motion:'subtle',fancy:'flat',field:'win',note:'bright'}};
+const PT={sprawl:['Sprawl','The look Sprawl ships with.'],windows:['Windows','Plain Windows 11 controls.'],custom:['Custom','Your own picks, kept when you change a preset back.']};
+let st={...P.sprawl},custom=null,lay='b',open=false;
+const $=s=>document.querySelector(s),app=$('#app');
+const preset=()=>Object.keys(P).find(k=>Object.keys(P[k]).every(d=>P[k][d]===st[d]))||'custom';
+const label=(d,v)=>D.find(x=>x[0]===d)[2].find(o=>o[0]===v)[1];
+$('#grid').innerHTML=D.map(([d,name,opts],i)=>`<div class="opt" data-dim="${d}"><label>${name}</label><span class="ddw"><button class="dd"><span></span><svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></button><span class="menu${i>6?' up':''}">${opts.map(o=>`<span class="mi" data-v="${o[0]}">${o[1]}</span>`).join('')}</span></span></div>`).join('');
+const mini=k=>`<span class="mix mini" data-p="${k}"><span class="b pri" style="height:22px;padding:0 9px;font-size:12px">Scan</span><span class="chip on" style="height:22px;padding:0 9px;font-size:12px;display:inline-flex;align-items:center">Size</span><span class="row" style="flex:none;padding:3px 8px;font-size:12px">Row</span><span class="chk on" style="width:15px;height:15px"><svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.6 9.6 3.6"/></svg></span></span>`;
+$('#presets').innerHTML=Object.keys(PT).map(k=>`<button class="preset card w" data-p="${k}">${mini(k)}<span><b>${PT[k][0]}</b><small>${PT[k][1]}</small></span></button>`).join('');
+function place(){document.querySelectorAll('.chips').forEach(c=>{const on=c.querySelector('.chip.on'),t=c.querySelector('.thumb');if(on&&t){t.style.left=on.offsetLeft+'px';t.style.width=on.offsetWidth+'px'}})}
+function dress(el,s){for(const d in s)el.dataset[d]=d==='mode'?(s[d]==='light'?'light':'dark'):s[d]}
+function apply(){
+const p=preset();if(p==='custom')custom={...st};
+dress(app,st);
+document.querySelectorAll('.mini').forEach(m=>dress(m,m.dataset.p==='custom'?(custom||st):P[m.dataset.p]));
+document.querySelectorAll('.opt').forEach(o=>{const d=o.dataset.dim,v=d==='preset'?p:st[d];o.querySelector('.dd span').textContent=label(d,v);o.querySelectorAll('.mi').forEach(m=>m.classList.toggle('on',m.dataset.v===v))});
+document.querySelectorAll('.preset').forEach(c=>c.classList.toggle('on',c.dataset.p===p));
+$('#presets').classList.toggle('hide',lay==='a');$('#tools').classList.toggle('hide',lay==='a');
+$('.opt[data-dim=preset]').classList.toggle('hide',lay==='b');
+$('#grid').classList.toggle('hide',lay==='b'&&!open);
+$('#cust').textContent=open?'Hide the details':'Customise';
+$('#state').textContent=p==='custom'?'Custom: changed from a preset.':'';
+document.querySelectorAll('[data-lay]').forEach(b=>b.classList.toggle('on',b.dataset.lay===lay));
+requestAnimationFrame(place);setTimeout(place,380)}
+function pick(k){if(k==='custom'){if(custom)st={...custom};else open=true}else st={...P[k]}}
+document.addEventListener('click',e=>{const q=s=>e.target.closest(s);let el;
+if(!q('.ddw'))document.querySelectorAll('.menu.open').forEach(m=>{m.classList.remove('open');m.previousElementSibling.classList.remove('open')});
+if(el=q('[data-lay]')){lay=el.dataset.lay;apply();return}
+if(el=q('.preset')){pick(el.dataset.p);apply();return}
+if(el=q('#cust')){open=!open;apply();return}
+if(el=q('#reset')){st={...P.sprawl};apply();return}
+if(el=q('.mi')){const d=el.closest('.opt').dataset.dim;if(d==='preset')pick(el.dataset.v);else st[d]=el.dataset.v;el.closest('.menu').classList.remove('open');apply();return}
+if(el=q('.dd')){const m=el.nextElementSibling,was=m.classList.contains('open');document.querySelectorAll('.menu.open').forEach(x=>x.classList.remove('open'));if(!was)m.classList.add('open');return}
+if(el=q('.nav')){return}
+if(el=q('.chip')){el.parentElement.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c===el));place();return}
+if(el=q('.chk,.sw')){el.classList.toggle('on')}});
+addEventListener('resize',place);apply();
+</script></body></html>

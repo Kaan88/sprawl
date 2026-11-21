@@ -18,7 +18,7 @@ const TIP: &str = "Enter goes to the results: Enter there opens, Ctrl+Enter show
 fn help_xaml(prefix: &str, intro: &str) -> String {
     let mut x = format!(r##"<StackPanel {} Spacing="6">"##, ui::NS);
     if !intro.is_empty() {
-        x += &format!(r##"<TextBlock Text="{}" FontSize="13" Foreground="#FFB9C2D6" TextWrapping="Wrap" Margin="0,0,0,4"/>"##, ui::esc(intro));
+        x += &format!(r##"<TextBlock Text="{}" FontSize="13" Foreground="{{$text2}}" TextWrapping="Wrap" Margin="0,0,0,4"/>"##, ui::esc(intro));
     }
     for (i, (examples, what)) in sq::help().iter().enumerate() {
         x += r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4">"##;
@@ -29,7 +29,7 @@ fn help_xaml(prefix: &str, intro: &str) -> String {
             );
         }
         x += &format!(
-            r##"</StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" VerticalAlignment="Center"/></Grid>"##,
+            r##"</StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="12" Foreground="{{$text3}}" TextWrapping="Wrap" VerticalAlignment="Center"/></Grid>"##,
             ui::esc(what)
         );
     }

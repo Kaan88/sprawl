@@ -12,6 +12,11 @@
 //!
 //! Folder totals aren't stored: [`read`] adds them up again. Times keep one-second precision.
 //! Columns compress much better than rows because neighbouring values look alike.
+//!
+//! [`encode`] writes only what [`decode`] takes back, so a saved scan always loads again: names
+//! go through `csv::plausible_name` (a History tree must be projectable onto a live one) and
+//! the sizes of a whole tree add up to at most [`MAX_SIZE`], which is what the reader's own
+//! arithmetic allows.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -25,6 +30,10 @@ const VERSION: u32 = 1;
 pub const MAX_FILE: u64 = 512 << 20;
 const MAX_BODY: usize = 512 << 20;
 const MAX_HEAP: usize = 1024 << 20;
+/// The largest total a snapshot can hold. [`decode`] works in `i64` for the allocated-size
+/// delta and refuses a tree that adds up past this, so [`encode`] clamps to it rather than
+/// write a file that never loads (review P3-7).
+pub const MAX_SIZE: u64 = i64::MAX as u64;
 /// Seconds from 1601-01-01 to 1970-01-01.
 const EPOCH_1601: i64 = 11_644_473_600;
 
@@ -91,6 +100,47 @@ fn leaf(n: &Node) -> bool {
     !n.is_dir || n.children.is_empty()
 }
 
+/// Nodes whose name isn't one path component and so isn't held to the name rule: the root
+/// (a whole path), the drives under a `Multiple` tree, and the pseudo-file [`folders_only`]
+/// adds (no Windows name can look like it).
+fn exempt_name(root_path: &std::path::Path, i: usize, n: &Node) -> bool {
+    i == 0
+        || n.name == FILES_HERE
+        || (root_path == std::path::Path::new(sprawl_core::MULTIPLE) && n.parent == Some(0) && std::path::Path::new(&n.name).is_absolute())
+}
+
+/// Longest name [`decode`] takes for one path component. A Windows name is at most 255 UTF-16
+/// units; a path out of a CSV import is only as sane as the file it came from.
+const MAX_NAME: usize = 1024;
+
+/// A name [`decode`] will take back. A scan can hold names Windows itself won't resolve - a
+/// trailing dot or space, a wildcard, a control character, something far too long - and a
+/// snapshot holding one would never load, so each refused character is written as `_`, the
+/// rest is cut to [`MAX_NAME`] and trailing dots and spaces are dropped. Two such names in one
+/// folder can come out alike; only History's own display shows it, and neither name could be
+/// projected onto a live tree anyway (review P3-7).
+fn storable_name(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| if (c as u32) < 0x20 || matches!(c, '\\' | '/' | ':' | '*' | '?' | '<' | '>' | '|') { '_' } else { c })
+        .collect();
+    if s.len() > MAX_NAME {
+        let mut cut = MAX_NAME;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+    }
+    while s.ends_with('.') || s.ends_with(' ') {
+        s.pop();
+    }
+    if s.is_empty() {
+        s.push('_');
+    }
+    debug_assert!(sprawl_core::csv::plausible_name(&s) && s.len() <= MAX_NAME);
+    s
+}
+
 /// The uncompressed body (exposed for measuring).
 pub fn encode(tree: &Tree, taken: SystemTime) -> Vec<u8> {
     let mut out = Vec::with_capacity(tree.nodes.len() * 12);
@@ -102,14 +152,24 @@ pub fn encode(tree: &Tree, taken: SystemTime) -> Vec<u8> {
     put(&mut out, secs(Some(taken)) as u64);
     put(&mut out, tree.errors);
 
+    // the few names the reader's rule refuses, written in a form it takes
+    let fixed: HashMap<usize, String> = tree
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|&(i, n)| !exempt_name(&tree.root_path, i, n) && (n.name.len() > MAX_NAME || !sprawl_core::csv::plausible_name(&n.name)))
+        .map(|(i, n)| (i, storable_name(&n.name)))
+        .collect();
     let mut index: HashMap<&str, u64> = HashMap::new();
     let mut names: Vec<&str> = Vec::new();
     let ids: Vec<u64> = tree
         .nodes
         .iter()
-        .map(|n| {
-            *index.entry(n.name.as_str()).or_insert_with(|| {
-                names.push(n.name.as_str());
+        .enumerate()
+        .map(|(i, n)| {
+            let name = fixed.get(&i).map_or(n.name.as_str(), String::as_str);
+            *index.entry(name).or_insert_with(|| {
+                names.push(name);
                 names.len() as u64 - 1
             })
         })
@@ -128,11 +188,21 @@ pub fn encode(tree: &Tree, taken: SystemTime) -> Vec<u8> {
     for n in &tree.nodes {
         put(&mut out, (u64::from(n.attributes) << 1) | u64::from(n.is_dir));
     }
+    // Sizes are clamped so the whole tree adds up to at most MAX_SIZE: a single absurd size
+    // from a damaged scan must not save a snapshot the reader then refuses (review P3-7).
+    let mut left = MAX_SIZE;
     for n in tree.nodes.iter().filter(|n| leaf(n)) {
-        put(&mut out, n.size);
+        let size = n.size.min(left);
+        left -= size;
+        put(&mut out, size);
     }
+    let (mut left, mut left_alloc) = (MAX_SIZE, MAX_SIZE);
     for n in tree.nodes.iter().filter(|n| leaf(n)) {
-        put(&mut out, zig(n.allocated as i64 - n.size as i64));
+        let size = n.size.min(left);
+        left -= size;
+        let allocated = n.allocated.min(left_alloc);
+        left_alloc -= allocated;
+        put(&mut out, zig(allocated as i64 - size as i64));
     }
     let mut prev = 0i64;
     for n in &tree.nodes {
@@ -262,7 +332,7 @@ pub fn decode(body: &[u8]) -> io::Result<(Tree, Meta)> {
     for i in 0..count {
         let id = c.get()? as usize;
         let name = names.get(id).ok_or_else(Cursor::bad)?;
-        if i != 0 && root_path != std::path::Path::new(sprawl_core::MULTIPLE) && name.len() > 1024 { return Err(Cursor::bad()); }
+        if i != 0 && root_path != std::path::Path::new(sprawl_core::MULTIPLE) && name.len() > MAX_NAME { return Err(Cursor::bad()); }
         budget = budget.checked_sub(name.len()).ok_or_else(Cursor::bad)?;
     }
     c.at = ids_at;
@@ -294,8 +364,9 @@ pub fn decode(body: &[u8]) -> io::Result<(Tree, Meta)> {
     }
     for (i, node) in nodes.iter().enumerate() {
         if !node.is_dir && !node.children.is_empty() { return Err(Cursor::bad()); }
-        let synthetic = root_path == std::path::Path::new(sprawl_core::MULTIPLE) && node.parent == Some(0) && std::path::Path::new(&node.name).is_absolute();
-        if i != 0 && !synthetic && (node.name.is_empty() || matches!(node.name.as_str(), "." | "..") || node.name.contains(['\\', '/', ':', '\0'])) { return Err(Cursor::bad()); }
+        // the same name rule the CSV reader applies, so a History tree can always be projected
+        // onto a live one (review P3-7)
+        if !exempt_name(&root_path, i, node) && !sprawl_core::csv::plausible_name(&node.name) { return Err(Cursor::bad()); }
     }
     let leaves: Vec<usize> = (0..count).filter(|&i| leaf(&nodes[i])).collect();
     for &i in &leaves {
@@ -455,6 +526,59 @@ mod tests {
         body.push(b'x');
         for v in [0, 0, 0, i64::MAX as u64, zig(1), 0] { put(&mut body, v); }
         assert!(decode(&body).is_err(), "allocated-size arithmetic cannot overflow");
+    }
+
+    #[test]
+    fn names_and_sizes_a_reader_refuses_are_never_written() {
+        // review P3-7: whatever a scan holds, the snapshot loads again
+        let mut t = sample();
+        t.nodes[2].name = "we*ird\u{1}. ".into(); // leaf, 5000 bytes
+        t.nodes[3].name = "..".into(); // leaf, 10 bytes
+        t.nodes[4].name = "trailing ".into(); // empty folder, a leaf too
+        t.nodes[1].name = "l".repeat(MAX_NAME * 2); // longer than the reader takes
+        t.nodes[5].size = u64::MAX;
+        t.nodes[5].allocated = u64::MAX;
+        let (back, _) = decode(&encode(&t, UNIX_EPOCH)).unwrap();
+        assert_eq!(back.nodes[2].name, "we_ird_");
+        assert_eq!(back.nodes[3].name, "_");
+        assert_eq!(back.nodes[4].name, "trailing");
+        assert_eq!(back.nodes[1].name, "l".repeat(MAX_NAME));
+        for (i, n) in back.nodes.iter().enumerate() {
+            assert!(exempt_name(&back.root_path, i, n) || sprawl_core::csv::plausible_name(&n.name), "{}", n.name);
+        }
+        // the absurd size is clamped so the tree as a whole still fits what decode allows
+        assert_eq!(back.nodes[5].size, MAX_SIZE - 5010);
+        assert_eq!(back.nodes[5].allocated, MAX_SIZE - 8192);
+        assert_eq!((back.nodes[0].size, back.nodes[0].allocated), (MAX_SIZE, MAX_SIZE));
+    }
+
+    #[test]
+    fn a_name_the_rule_refuses_is_not_read_back() {
+        // the same tree with one name put back by hand: the reader says no
+        let t = sample();
+        let body = encode(&t, UNIX_EPOCH);
+        for bad in ["x.bin.", "x bin ", "x*bin", "x\u{1}bin", "..", ""] {
+            let mut doctored = Vec::new();
+            let good = b"\x05x.bin";
+            let at = body.windows(good.len()).position(|w| w == good).expect("the name table holds x.bin");
+            doctored.extend_from_slice(&body[..at]);
+            put(&mut doctored, bad.len() as u64);
+            doctored.extend_from_slice(bad.as_bytes());
+            doctored.extend_from_slice(&body[at + good.len()..]);
+            assert!(decode(&doctored).is_err(), "{bad:?} must not load");
+        }
+    }
+
+    #[test]
+    fn a_folders_only_tree_still_round_trips() {
+        // `<files>` is no path component, so the name rule must let it through
+        let fo = folders_only(&sample());
+        assert!(fo.nodes.iter().any(|n| n.name == FILES_HERE));
+        let mut bytes = Vec::new();
+        write(&fo, UNIX_EPOCH, 3, &mut bytes).unwrap();
+        let (back, _) = read(&mut bytes.as_slice()).unwrap();
+        assert_eq!(back.nodes.len(), fo.nodes.len());
+        assert_eq!(back.nodes[0].size, fo.nodes[0].size);
     }
 
     #[test]
