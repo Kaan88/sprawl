@@ -623,7 +623,7 @@ pub(crate) const GOAL_EXAMPLE: &str = "20";
 const EXAMPLES: [&str; 4] = ["What is the biggest thing here?", "Show me videos over 1 GB", "What did I download and forget?", "What can I safely clean up?"];
 /// Ready-made questions in the Cleaners section.
 /// Under every AI answer: it isn't checked the way findings are.
-pub(crate) const UNCHECKED_LINE: &str = r##"<TextBlock Text="AI answers aren't checked the way Sprawl's findings are. Look before you rely on one." TextWrapping="Wrap" FontSize="{$fs11}" Foreground="#FF7E8799" FontStyle="Italic"/>"##;
+pub(crate) const UNCHECKED_LINE: &str = r##"<TextBlock Text="AI answers aren't checked the way Sprawl's findings are. Look before you rely on one." TextWrapping="Wrap" FontSize="{$fs11}" Foreground="{$faint}" FontStyle="Italic"/>"##;
 
 /// How many ready questions the AI box shows at most (AdvEx0.., AdvClAi0..).
 const CHIPS: usize = 6;
@@ -2408,7 +2408,7 @@ impl State {
             line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" FontWeight="SemiBold"/><Run Text=" more as administrator" Foreground="{{$text2}}"/>"##, self.size(as_admin));
         }
         if orange > 0 {
-            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="#FFFF9A70" FontWeight="SemiBold"/><Run Text=" your own files" Foreground="{{$text2}}"/>"##, self.size(orange));
+            line += &format!(r##"<Run Text="   ·   "/><Run Text="{}" Foreground="{{$alertquiet}}" FontWeight="SemiBold"/><Run Text=" your own files" Foreground="{{$text2}}"/>"##, self.size(orange));
         }
         let full = r.growth.as_ref().and_then(|g| g.full_in_days).map(|d| if d < 365.0 { format!("Full in about {d:.0} days") } else { "Room for over a year".into() });
         let _ = now;
@@ -2422,7 +2422,7 @@ impl State {
         if total > 0 {
             let share = |v: u64| (v as f64 * 1000.0 / total as f64).max(if v > 0 { 4.0 } else { 0.0 });
             x += &format!(
-                r##"<Grid Height="6" CornerRadius="{{$rc3}}" ColumnSpacing="2"><Grid.ColumnDefinitions><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/></Grid.ColumnDefinitions><Rectangle Fill="{{$goodmark}}"/><Rectangle Grid.Column="1" Fill="{{$warnmark}}"/><Rectangle Grid.Column="2" Fill="#FFFF7A45"/></Grid>"##,
+                r##"<Grid Height="6" CornerRadius="{{$rc3}}" ColumnSpacing="2"><Grid.ColumnDefinitions><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/><ColumnDefinition Width="{}*"/></Grid.ColumnDefinitions><Rectangle Fill="{{$goodmark}}"/><Rectangle Grid.Column="1" Fill="{{$warnmark}}"/><Rectangle Grid.Column="2" Fill="{{$alertmark}}"/></Grid>"##,
                 share(green),
                 share(amber),
                 share(orange)
@@ -2515,7 +2515,7 @@ impl State {
                     )
                 }
                 Some(why) => format!(
-                    r##"<FontIcon Glyph="&#xE72E;" FontSize="{{$fs13}}" Foreground="#FFA0A8B8" VerticalAlignment="Top" Margin="0,3,0,0" ToolTipService.ToolTip="Can't be ticked{0}"/>"##,
+                    r##"<FontIcon Glyph="&#xE72E;" FontSize="{{$fs13}}" Foreground="{{$label}}" VerticalAlignment="Top" Margin="0,3,0,0" ToolTipService.ToolTip="Can't be ticked{0}"/>"##,
                     if why.is_empty() { String::new() } else { format!(": {}", ui::esc(why)) }
                 ),
             };
@@ -2794,7 +2794,7 @@ impl State {
             x += r##"<TextBlock Text="Held back by the safety checks" FontSize="{$fs13}" FontWeight="SemiBold" Margin="10,8,0,0"/>"##;
             for (f, why) in big {
                 x += &format!(
-                    r##"<Border Padding="12,8" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FF6F788A" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
+                    r##"<Border Padding="12,8" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$faint}}" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
                     ui::esc(&f.title),
                     ui::esc(why),
                     ui::esc(&f.path.to_string_lossy()),
@@ -2851,7 +2851,7 @@ impl State {
         if self.advisor.goal_text != self.advisor.goal_compared_text {
             return r##"<TextBlock Text="The goal changed. Compare options again to refresh the plan." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$warn}"/>"##.into();
         }
-        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="{{$rc7}}" Background="#142F7BF6" BorderBrush="#442F7BF6" BorderThickness="1"><StackPanel Spacing="8"><Grid><TextBlock Text="Options to free {}" FontWeight="SemiBold" FontSize="{{$fs14}}"/><Button x:Name="AdvGoalHide" Content="Hide" HorizontalAlignment="Right" Padding="8,1" FontSize="{{$fs12}}"/></Grid><TextBlock Text="Lowest cost first. These are alternatives: do not add their totals together. Nothing runs until you choose items and confirm the review." TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/>"##, self.size(need));
+        let mut x = format!(r##"<Border Padding="12,10" CornerRadius="{{$rc7}}" Background="{{$accentwash}}" BorderBrush="{{$accentline}}" BorderThickness="1"><StackPanel Spacing="8"><Grid><TextBlock Text="Options to free {}" FontWeight="SemiBold" FontSize="{{$fs14}}"/><Button x:Name="AdvGoalHide" Content="Hide" HorizontalAlignment="Right" Padding="8,1" FontSize="{{$fs12}}"/></Grid><TextBlock Text="Lowest cost first. These are alternatives: do not add their totals together. Nothing runs until you choose items and confirm the review." TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/>"##, self.size(need));
         for option in self.goal_plans(r).iter() {
             let remaining = need.saturating_sub(option.bytes);
             let outcome = if remaining == 0 { if option.estimated { "could cover the goal (estimate)" } else { "covers the goal" }.to_string() } else { format!("{} still needed", self.size(remaining)) };
@@ -3523,7 +3523,7 @@ impl State {
         let (ok, left) = self.fn_suggested(r);
         let running = self.advisor.cleanup.running.is_some();
         let bytes: u64 = ok.iter().map(|&i| r.findings[i].bytes).sum();
-        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="#1AA97BF6" BorderBrush="#55A97BF6" BorderThickness="1"><StackPanel Spacing="6">"##);
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="{$aiwash}" BorderBrush="{$ailine}" BorderThickness="1"><StackPanel Spacing="6">"##);
         x += &format!(r##"<TextBlock Text="The AI suggests ticking {} ({})" FontSize="{{$fs13}}" FontWeight="SemiBold" TextWrapping="Wrap"/>"##, ok.len(), self.size(bytes));
         if !why.is_empty() {
             x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text1}}"/>"##, ui::esc(why));
@@ -3879,7 +3879,7 @@ impl State {
                 );
             } else {
                 x += &format!(r##"<TextBlock Text="{who}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$text2}}"/>"##);
-                x += &ui::markdown(text, 12, "#FFD5DBE8");
+                x += &ui::markdown(text, 12, &crate::tokens::refer("text1"));
                 x += UNCHECKED_LINE;
                 if n + 1 == last {
                     x += &self.proposed_strip();
@@ -3898,7 +3898,7 @@ impl State {
                 x += r##"<StackPanel Spacing="4" Margin="0,4,0,0">"##;
                 for (i, q) in chips {
                     x += &format!(
-                        r##"<Button x:Name="{prefix}{i}" HorizontalAlignment="Left" HorizontalContentAlignment="Left" Padding="10,4" CornerRadius="{{$rc12}}" Background="#142F7BF6"><TextBlock Text="{}" FontSize="{{$fs12}}" TextWrapping="Wrap"/></Button>"##,
+                        r##"<Button x:Name="{prefix}{i}" HorizontalAlignment="Left" HorizontalContentAlignment="Left" Padding="10,4" CornerRadius="{{$rc12}}" Background="{{$accentwash}}"><TextBlock Text="{}" FontSize="{{$fs12}}" TextWrapping="Wrap"/></Button>"##,
                         ui::esc(&q)
                     );
                 }
@@ -3907,7 +3907,7 @@ impl State {
         }
         if let Some((q, _)) = &c.consent {
             x += &format!(
-                r##"<Border Padding="10,8" CornerRadius="{{$rc6}}" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="{{$fs12}}" Foreground="{{$text3}}"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once"/><Button x:Name="AdvWebSession" Content="Allow for this session" ToolTipService.ToolTip="Until Sprawl closes, the AI searches without asking: each search shows only on the status line. A search can carry folder and project names from your scan (your name and the PC's are taken out)."/><Button x:Name="AdvWebDeny" Content="Don't search"/></StackPanel></StackPanel></Border>"##,
+                r##"<Border Padding="10,8" CornerRadius="{{$rc6}}" Background="{{$warnwash}}"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="{{$fs12}}" Foreground="{{$text3}}"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once"/><Button x:Name="AdvWebSession" Content="Allow for this session" ToolTipService.ToolTip="Until Sprawl closes, the AI searches without asking: each search shows only on the status line. A search can carry folder and project names from your scan (your name and the PC's are taken out)."/><Button x:Name="AdvWebDeny" Content="Don't search"/></StackPanel></StackPanel></Border>"##,
                 ui::esc(q)
             );
         }
@@ -3967,7 +3967,7 @@ impl State {
             }
         }
         if !r.refused.is_empty() {
-            x += r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="#22F5B342"><StackPanel Spacing="4"><TextBlock Text="Rule files not used" FontSize="{$fs13}" FontWeight="SemiBold"/><TextBlock Text="These files in your rules folder didn't pass Sprawl's checks, so nothing in them is offered. Fix or remove them." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$text3}"/>"##;
+            x += r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="{$warnwash}"><StackPanel Spacing="4"><TextBlock Text="Rule files not used" FontSize="{$fs13}" FontWeight="SemiBold"/><TextBlock Text="These files in your rules folder didn't pass Sprawl's checks, so nothing in them is offered. Fix or remove them." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$text3}"/>"##;
             for (f, why) in &r.refused {
                 x += &format!(
                     r##"<TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="{}" FontFamily="Consolas" Foreground="{{$text2}}"/><Run Text="  {}" Foreground="{{$text3}}"/></TextBlock>"##,
@@ -4154,11 +4154,11 @@ impl State {
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,2,0,4"><Button x:Name="AdvGrowPaint" Content="Colour the map by growth" Padding="8,2" FontSize="{$fs12}" CornerRadius="{$rc4}"/><Button x:Name="AdvGrowHist" Content="Play it in History" Padding="8,2" FontSize="{$fs12}" CornerRadius="{$rc4}"/><Button x:Name="AdvGrowTide" Content="See it as Tideline" Padding="8,2" FontSize="{$fs12}" CornerRadius="{$rc4}"/></StackPanel>"##;
         if let Some(d) = g.full_in_days {
             let (colour, text) = if d < 30.0 {
-                ("#FFFF7A45", format!("At this rate the drive is full in about {d:.0} days."))
+                (crate::tokens::refer("alert"), format!("At this rate the drive is full in about {d:.0} days."))
             } else if d < 365.0 {
-                ("#FFF5B342", format!("At this rate the drive is full in about {:.0} weeks.", d / 7.0))
+                (crate::tokens::refer("warn"), format!("At this rate the drive is full in about {:.0} weeks.", d / 7.0))
             } else {
-                ("#FF8E97AA", "At this rate the drive has room for over a year.".to_string())
+                (crate::tokens::refer("text3"), "At this rate the drive has room for over a year.".to_string())
             };
             x += &format!(r##"<TextBlock Text="{text}" FontSize="{{$fs12}}" Foreground="{colour}"/>"##);
         }
@@ -4253,7 +4253,7 @@ impl State {
             return String::new();
         }
         let ok: Vec<&String> = p.iter().filter(|(_, e)| e.is_none()).map(|(t, _)| t).collect();
-        let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="{$rc6}" Background="#1A4CC38A" BorderBrush="#554CC38A" BorderThickness="1" Margin="0,4,0,0"><StackPanel Spacing="4">"##);
+        let mut x = String::from(r##"<Border Padding="10,8" CornerRadius="{$rc6}" Background="{$goodwash}" BorderBrush="{$goodline}" BorderThickness="1" Margin="0,4,0,0"><StackPanel Spacing="4">"##);
         if !ok.is_empty() {
             let head = if ok.len() == 1 { "1 proposal is waiting for your approval".to_string() } else { format!("{} proposals are waiting for your approval", ok.len()) };
             x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$text1}}" TextWrapping="Wrap"/>"##, ui::esc(&head));
@@ -4306,7 +4306,7 @@ impl State {
                     ui::esc(s)
                 )
             }
-            Ai::Failed(e) => x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="#FFFF7A45"/>"##, ui::esc(e)),
+            Ai::Failed(e) => x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$alert}}"/>"##, ui::esc(e)),
             Ai::Done { summary, model, found, rejected, with_tools, turns, usage, stopped, from } => {
                 let mut how = if *with_tools { format!("{turns} steps with tools") } else { "one answer from the report".into() };
                 if !usage.is_empty() {
@@ -4334,7 +4334,7 @@ impl State {
                 }
                 if !summary.is_empty() {
                     x += r##"<Border Padding="10,8" CornerRadius="{$rc6}" Background="{$surface1}">"##;
-                    x += &ui::markdown(summary, 12, "#FFD5DBE8");
+                    x += &ui::markdown(summary, 12, &crate::tokens::refer("text1"));
                     x += "</Border>";
                 }
                 if !rejected.is_empty() {
@@ -4402,7 +4402,7 @@ impl State {
                 ui::esc(&f.title)
             ),
             Some("") => String::new(),
-            Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="{{$fs13}}" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(why)),
+            Some(why) => format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="{{$fs13}}" Foreground="{{$label}}" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(why)),
         };
         let armed = self.advisor.cleanup.armed.as_deref() == Some(crate::cleanup::key(&f.path).as_str()) && crate::cleanup::second_try(f, r.counted[i]);
         // the box sits beside the item's own line: the warning or the details opening below
@@ -4439,14 +4439,14 @@ impl State {
 <TextBlock Grid.Column="3" Text="{size}" {num} FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button></Grid>"##,
             bg = if open {
-                "#FF262C3D"
+                crate::tokens::refer("rowopen")
             } else if self.advisor.cleanup.ai_ticked.contains(&crate::cleanup::key(&f.path)) && self.advisor.cleanup.ticked.contains(&crate::cleanup::key(&f.path)) {
                 // ticked on the AI's suggestion, not touched since (R9)
-                "#26A97BF6"
+                crate::tokens::refer("aichip")
             } else {
-                "#0CFFFFFF"
+                crate::tokens::refer("surface2")
             },
-            dot = if kind == "Tip" { "#FF8E97AA" } else { risk_hex(f.risk) },
+            dot = if kind == "Tip" { crate::tokens::refer("text3") } else { risk_hex(f.risk).to_string() },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
             remedy = crate::look::label(if yours {
@@ -4465,7 +4465,7 @@ impl State {
                 remedy_label(f.remedy)
             }),
             num = crate::look::NUM,
-            plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="{$rc4}" Background="#33A97BF6"><TextBlock Text="AI" FontSize="{$fs12}" Foreground="#FFC9B4FF"/></Border>"## } else { "" },
+            plan = if matches!(f.source, Source::Model(_)) { r##"<Border Padding="7,1" CornerRadius="{$rc4}" Background="{$aichip}"><TextBlock Text="AI" FontSize="{$fs12}" Foreground="{$aitext}"/></Border>"## } else { "" },
             size = match self.with_choices(f).gain {
                 // a shrink's win is known only after it ran
                 Some(_) if sprawl_advisor::remedies::shrinks(f) => "unknown".to_string(),
@@ -4538,20 +4538,20 @@ impl State {
         }
         x += r##"<Button x:Name="AdvAskFinding" Content="What is this?" HorizontalAlignment="Left"/>"##;
         if let Some(answer) = self.advisor.chat.row_answers.get(&crate::cleanup::key(&f.path)) {
-            x += &ui::markdown(answer, 12, "#FFD5DBE8");
+            x += &ui::markdown(answer, 12, &crate::tokens::refer("text1"));
             x += UNCHECKED_LINE;
         }
         let line = |colour: &str, text: &str| format!(r##"<TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{colour}" Text="{}"/>"##, ui::esc(text));
         match &self.advisor.in_use {
             Some((j, state)) if *j == i => {
                 x += &match state {
-                    InUse::Checking => line("#FF8E97AA", "Checking which programs use it..."),
-                    InUse::Done(None) => line("#FF8E97AA", "Couldn't check which programs use it."),
+                    InUse::Checking => line(&crate::tokens::refer("text3"), "Checking which programs use it..."),
+                    InUse::Done(None) => line(&crate::tokens::refer("text3"), "Couldn't check which programs use it."),
                     InUse::Done(Some(c)) if !c.names.is_empty() => {
-                        line("#FFF5B342", &format!("In use by {}: close it first, or files still open are skipped.", c.names.join(", ")))
+                        line(&crate::tokens::refer("warn"), &format!("In use by {}: close it first, or files still open are skipped.", c.names.join(", ")))
                     }
-                    InUse::Done(Some(c)) if c.all_files => line("#FF8E97AA", "No program has its files open."),
-                    InUse::Done(Some(_)) => line("#FF8E97AA", "No program has the first 10,000 of its files open."),
+                    InUse::Done(Some(c)) if c.all_files => line(&crate::tokens::refer("text3"), "No program has its files open."),
+                    InUse::Done(Some(_)) => line(&crate::tokens::refer("text3"), "No program has the first 10,000 of its files open."),
                 }
             }
             _ => {}
@@ -4571,7 +4571,7 @@ impl State {
                     None => (c.clone(), "The command, in PowerShell"),
                 };
                 x += &format!(
-                    r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FFA0A8B8" TextWrapping="Wrap"/><Border Padding="10,8" CornerRadius="{{$rc5}}" Background="{{$shade}}"><TextBlock FontFamily="Consolas" FontSize="{{$fs12}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
+                    r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" TextWrapping="Wrap"/><Border Padding="10,8" CornerRadius="{{$rc5}}" Background="{{$shade}}"><TextBlock FontFamily="Consolas" FontSize="{{$fs12}}" TextWrapping="Wrap" IsTextSelectionEnabled="True" Text="{}"/></Border>"##,
                     label,
                     ui::esc(&shown)
                 );
@@ -4581,7 +4581,7 @@ impl State {
         if f.command.is_some() {
             if crate::cleanup::untickable(f, r.counted[i]).is_none() && self.advisor.cleanup.running.is_none() {
                 let run = if sprawl_advisor::remedies::compresses(f) { "Compress this..." } else { "Clean up just this..." };
-                x += &format!(r##"<Button x:Name="AdvRun" Content="{run}" Padding="10,3" FontSize="{{$fs12}}" CornerRadius="{{$rc5}}" Background="#332F7BF6"/>"##);
+                x += &format!(r##"<Button x:Name="AdvRun" Content="{run}" Padding="10,3" FontSize="{{$fs12}}" CornerRadius="{{$rc5}}" Background="{{$accentchip}}"/>"##);
             }
             x += &format!(r##"<Button x:Name="AdvShowCmd" Content="{}" Style="{{StaticResource SprawlSubtle}}"/>"##, if self.advisor.show_cmd { "Hide the command" } else { "Show the command" });
             if self.advisor.show_cmd {

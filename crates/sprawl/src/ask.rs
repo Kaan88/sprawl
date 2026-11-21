@@ -92,12 +92,12 @@ impl State {
             None => r##"<Button x:Name="DlgNo" Content="OK" Style="{StaticResource SprawlPrimary}"/>"##.to_string(),
         };
         let xaml = format!(
-            r##"<Grid {ns} Background="#B8080A10"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="{{$rc10}}" Background="#FF1C1F2A" BorderBrush="{edge}" BorderThickness="1">
+            r##"<Grid {ns} Background="{{$scrim}}"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="{{$rc10}}" Background="{{$popup}}" BorderBrush="{edge}" BorderThickness="1">
 <StackPanel Spacing="14"><TextBlock Text="{title}" FontSize="{{$fs17}}" FontWeight="SemiBold" TextWrapping="Wrap"/>
 <ScrollViewer MaxHeight="{max_h}" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">{buttons}</StackPanel></StackPanel></Border></Grid>"##,
             ns = ui::NS,
-            edge = if p.danger { "#88C42B1C" } else { "#552F7BF6" },
+            edge = if p.danger { crate::tokens::refer("dangerline") } else { crate::tokens::refer("accentline") },
             title = ui::esc(&p.title),
         );
         let Ok(el) = load::<UIElement>(&xaml) else {

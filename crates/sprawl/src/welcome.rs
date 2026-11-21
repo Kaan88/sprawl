@@ -14,11 +14,11 @@ use crate::ui;
 
 /// The welcome page: the whole workspace (tables, map bar and map) until something is scanned.
 pub(crate) fn xaml() -> &'static str {
-    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="{$rc8}" BorderBrush="{$line1}" BorderThickness="1" Background="#0DFFFFFF" Visibility="Collapsed"/>"##
+    r##"<Border x:Name="Welcome" Grid.Row="4" Grid.RowSpan="3" Margin="12,0,12,0" CornerRadius="{$rc8}" BorderBrush="{$line1}" BorderThickness="1" Background="{$surface2}" Visibility="Collapsed"/>"##
 }
 
 pub(crate) fn tree_hint() -> &'static str {
-    r##"<TextBlock x:Name="TreeHint" Grid.Row="2" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="{$fs13}" Foreground="#FF6E7789" Text="Folders show up here, biggest first.&#x0a;Click one to find it on the map below."/>"##
+    r##"<TextBlock x:Name="TreeHint" Grid.Row="2" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="{$fs13}" Foreground="{$faint}" Text="Folders show up here, biggest first.&#x0a;Click one to find it on the map below."/>"##
 }
 
 /// "Folders show up here" under the welcome page; never over Search's results.
@@ -29,7 +29,7 @@ pub(crate) fn tree_hint_shown(st: &State, on: bool) {
 }
 
 pub(crate) fn types_hint() -> &'static str {
-    r##"<TextBlock x:Name="TypesHint" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="{$fs13}" Foreground="#FF6E7789" Text="File types show up here.&#x0a;Click one to light up its files."/>"##
+    r##"<TextBlock x:Name="TypesHint" Grid.Row="1" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="{$fs13}" Foreground="{$faint}" Text="File types show up here.&#x0a;Click one to light up its files."/>"##
 }
 
 /// Roots of what was scanned before, newest first: (root, when, the folder's size then).
@@ -122,7 +122,7 @@ impl State {
                 last = ui::esc(&last),
             );
         }
-        x += r##"<Button x:Name="WelFolder" Margin="0,0,12,12" Padding="16,12" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" HorizontalContentAlignment="Left" VerticalContentAlignment="Top" CornerRadius="{$rc10}" Background="Transparent" BorderBrush="#33FFFFFF" BorderThickness="1">
+        x += r##"<Button x:Name="WelFolder" Margin="0,0,12,12" Padding="16,12" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" HorizontalContentAlignment="Left" VerticalContentAlignment="Top" CornerRadius="{$rc10}" Background="Transparent" BorderBrush="{$edge}" BorderThickness="1">
 <StackPanel Spacing="6"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE8B7;" FontSize="{$fs18}" Foreground="{$text2}"/><TextBlock Text="A folder..." FontSize="{$fs15}" FontWeight="SemiBold"/></StackPanel>
 <TextBlock FontSize="{$fs12}" Foreground="{$text3}" TextWrapping="Wrap" Text="Any folder, or several at once (Shift+F3). A WizTree or Sprawl CSV opens with Ctrl+O."/></StackPanel></Button>"##;
         x += "</VariableSizedWrapGrid>";

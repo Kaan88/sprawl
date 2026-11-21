@@ -40,8 +40,7 @@ const KEEP: usize = 6;
 
 pub(crate) fn xaml() -> &'static str {
     r##"
-    <Border x:Name="HistPanel" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="14" Width="440" CornerRadius="{$rc10}" Padding="16,12,16,12" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
-      <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
+    <Border x:Name="HistPanel" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="14" Width="440" CornerRadius="{$rc10}" Padding="16,12,16,12" BorderBrush="{$line2}" BorderThickness="1" Background="{$popup}" Visibility="Collapsed">
       <StackPanel Spacing="4">
         <Grid>
           <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE81C;" FontSize="{$fs14}" Foreground="{$link}"/><TextBlock Text="History" FontSize="{$fs13}" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
@@ -54,13 +53,13 @@ pub(crate) fn xaml() -> &'static str {
           <Button x:Name="HistPlay" AutomationProperties.Name="Play the history" VerticalAlignment="Center" ToolTipService.ToolTip="Play through the history"><FontIcon x:Name="HistPlayIcon" Glyph="&#xE768;" FontSize="{$fs13}"/></Button>
           <Slider x:Name="HistSlider" Grid.Column="1" Minimum="0" Maximum="1" Value="1" StepFrequency="1" TickFrequency="1" TickPlacement="Outside" SnapsTo="Ticks" VerticalAlignment="Center"/>
         </Grid>
-        <TextBlock x:Name="HistGrew" Text=" " FontSize="{$fs12}" Foreground="#FFE8EDF7" TextWrapping="Wrap"/>
+        <TextBlock x:Name="HistGrew" Text=" " FontSize="{$fs12}" Foreground="{$rest}" TextWrapping="Wrap"/>
         <HyperlinkButton x:Name="HistGrowth" Content="What grew, and when the drive fills: Advisor &gt; Growth" FontSize="{$fs12}" Padding="0"/>
         <StackPanel Orientation="Horizontal" Spacing="14" Margin="0,4,0,0">
-          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FFFF5A45"/><TextBlock Text="grew" FontSize="{$fs12}" Foreground="#FF9AA3B8"/></StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FF4A8CFF"/><TextBlock Text="shrank" FontSize="{$fs12}" Foreground="#FF9AA3B8"/></StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FF2AD9FF"/><TextBlock Text="new" FontSize="{$fs12}" Foreground="#FF9AA3B8"/></StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FF3A3F4C"/><TextBlock Text="unchanged" FontSize="{$fs12}" Foreground="#FF9AA3B8"/></StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FFFF5A45"/><TextBlock Text="grew" FontSize="{$fs12}" Foreground="{$label}"/></StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FF4A8CFF"/><TextBlock Text="shrank" FontSize="{$fs12}" Foreground="{$label}"/></StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FF2AD9FF"/><TextBlock Text="new" FontSize="{$fs12}" Foreground="{$label}"/></StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="5"><Border Width="10" Height="10" CornerRadius="{$rc2}" Background="#FF3A3F4C"/><TextBlock Text="unchanged" FontSize="{$fs12}" Foreground="{$label}"/></StackPanel>
         </StackPanel>
       </StackPanel>
     </Border>"##

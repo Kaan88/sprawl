@@ -40,7 +40,7 @@ pub(crate) struct PrefUi {
 }
 
 fn label(t: &str) -> String {
-    format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FF9AA3B8" Margin="0,8,0,2"/>"##, ui::esc(t))
+    format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" Margin="0,8,0,2"/>"##, ui::esc(t))
 }
 
 fn help(t: &str) -> String {
@@ -61,7 +61,7 @@ fn button(name: &str, t: &str) -> String {
 
 fn page_title(glyph: &str, title: &str, sub: &str) -> String {
     format!(
-        r##"<StackPanel {} Orientation="Horizontal" Spacing="12" Margin="0,0,0,4"><Border Width="40" Height="40" CornerRadius="{{$rc10}}" Background="{{$selected}}"><FontIcon Glyph="{glyph}" FontSize="{{$fs18}}" Foreground="#FFBFD4FF"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="{{$fs20}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FF9AA3B8" TextWrapping="Wrap"/></StackPanel></StackPanel>"##,
+        r##"<StackPanel {} Orientation="Horizontal" Spacing="12" Margin="0,0,0,4"><Border Width="40" Height="40" CornerRadius="{{$rc10}}" Background="{{$selected}}"><FontIcon Glyph="{glyph}" FontSize="{{$fs18}}" Foreground="{{$seltext}}"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="{{$fs20}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" TextWrapping="Wrap"/></StackPanel></StackPanel>"##,
         ui::NS,
         ui::esc(title),
         ui::esc(sub)
@@ -70,7 +70,7 @@ fn page_title(glyph: &str, title: &str, sub: &str) -> String {
 
 fn bullet(glyph: &str, title: &str, t: &str) -> String {
     format!(
-        r##"<Grid ColumnSpacing="12" Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="{{$fs16}}" Foreground="{{$link}}" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontWeight="SemiBold" FontSize="{{$fs13}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="#FF9AA3B8"/></StackPanel></Grid>"##,
+        r##"<Grid ColumnSpacing="12" Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="{{$fs16}}" Foreground="{{$link}}" VerticalAlignment="Top" Margin="0,2,0,0"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontWeight="SemiBold" FontSize="{{$fs13}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$label}}"/></StackPanel></Grid>"##,
         ui::esc(title),
         ui::esc(t)
     )
@@ -82,8 +82,8 @@ pub fn xaml() -> String {
     let providers: Vec<&str> = Provider::ALL.iter().map(|p| p.label()).collect();
     let ai = format!(
         r##"<StackPanel x:Name="WizAi" Spacing="2" Visibility="Collapsed">
-        <TextBlock TextWrapping="Wrap" FontSize="{{$fs12_5}}" Foreground="#FFC9D1E2" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
-        <Border Background="#1A8FB4FF" CornerRadius="{{$rc6}}" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="{{$fs13}}" Foreground="{{$link}}"/><TextBlock x:Name="WizDetected" Text=" " FontSize="{{$fs12}}" TextWrapping="Wrap" Foreground="#FFBFD4FF" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" Visibility="Collapsed"/></StackPanel></Border>
+        <TextBlock TextWrapping="Wrap" FontSize="{{$fs12_5}}" Foreground="{{$text1}}" Text="The built-in rules already find caches and leftovers. An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm."/>
+        <Border Background="{{$accentwash}}" CornerRadius="{{$rc6}}" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="{{$fs13}}" Foreground="{{$link}}"/><TextBlock x:Name="WizDetected" Text=" " FontSize="{{$fs12}}" TextWrapping="Wrap" Foreground="{{$seltext}}" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" Visibility="Collapsed"/></StackPanel></Border>
         {}{}
         <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="{{$fs12}}" Foreground="{{$warn}}" Margin="0,4,0,2" Text="{}"/>
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
@@ -116,9 +116,8 @@ pub fn xaml() -> String {
         .collect();
     format!(
         r##"
-  <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="#B8080A10">
-    <Border x:Name="WizCard" Width="640" Height="610" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="{{$rc14}}" BorderBrush="#30FFFFFF" BorderThickness="1" Padding="28,22,28,20">
-      <Border.Background><AcrylicBrush TintColor="#FF141824" TintOpacity="0.62" TintLuminosityOpacity="0.75" FallbackColor="#F2161A26"/></Border.Background>
+  <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="{{$scrim}}">
+    <Border x:Name="WizCard" Width="640" Height="610" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="{{$rc14}}" BorderBrush="{{$edge}}" BorderThickness="1" Background="{{$popup}}" Padding="28,22,28,20">
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid>
@@ -133,7 +132,7 @@ pub fn xaml() -> String {
           </ScrollViewer>
         </Grid>
         <Grid Grid.Row="2">
-          <Button x:Name="WizSkip" Background="Transparent" BorderThickness="0" Foreground="#FF9AA3B8"><TextBlock x:Name="WizSkipText" Text="Skip setup"/></Button>
+          <Button x:Name="WizSkip" Background="Transparent" BorderThickness="0" Foreground="{{$label}}"><TextBlock x:Name="WizSkipText" Text="Skip setup"/></Button>
           <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
             <Button x:Name="WizBack" Content="Back" MinWidth="90"/>
             <Button x:Name="WizNext" MinWidth="110" Style="{{StaticResource SprawlPrimary}}"><TextBlock x:Name="WizNextText" Text="Next"/></Button>
@@ -418,10 +417,10 @@ impl State {
         shown(self, "WizAi", keys.contains(&"ai"));
         let mut x = format!(r##"<StackPanel {} Spacing="4">"##, ui::NS);
         if let Some(n) = &self.prefs.note {
-            x += &format!(r##"<Border Padding="10,6" CornerRadius="{{$rc6}}" Background="#1A4CC38A"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}"/></Border>"##, ui::esc(n));
+            x += &format!(r##"<Border Padding="10,6" CornerRadius="{{$rc6}}" Background="{{$goodwash}}"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}"/></Border>"##, ui::esc(n));
         }
         if !self.wizard_all && self.wizard_page == 0 {
-            x += r##"<TextBlock TextWrapping="Wrap" FontSize="{$fs13}" Foreground="#FFC9D1E2" Margin="0,4,0,6" Text="A few choices before you start, all optional: nothing that sends or keeps data is on unless you choose it, and each one is in Settings (Ctrl+Shift+S) too."/>"##;
+            x += r##"<TextBlock TextWrapping="Wrap" FontSize="{$fs13}" Foreground="{$text1}" Margin="0,4,0,6" Text="A few choices before you start, all optional: nothing that sends or keeps data is on unless you choose it, and each one is in Settings (Ctrl+Shift+S) too."/>"##;
             for (t, g, s, _) in WIZARD.iter().skip(1) {
                 x += &bullet(g, t, s);
             }
@@ -482,7 +481,7 @@ impl State {
         // the four administrator switches share one warning, in a box above the first
         let admin_note = if p.key == crate::admin::SHELL_MENU.key {
             format!(
-                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="{{$rc6}}" Background="#1AF5B342" BorderBrush="#55F5B342" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text1}}" TextWrapping="Wrap"/>{}</StackPanel></Border>"##,
+                r##"<Border Margin="0,10,0,2" Padding="12,10" CornerRadius="{{$rc6}}" Background="{{$warnwash}}" BorderBrush="{{$warnline}}" BorderThickness="1" MaxWidth="640" HorizontalAlignment="Left"><StackPanel Spacing="4"><TextBlock Text="While Sprawl runs as administrator, also allow" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text1}}" TextWrapping="Wrap"/>{}</StackPanel></Border>"##,
                 ui::esc(crate::admin::WARNING),
                 if sprawl_core::is_elevated() {
                     ""

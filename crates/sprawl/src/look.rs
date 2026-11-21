@@ -16,10 +16,14 @@ pub(crate) const NUM: &str = r##"Typography.NumeralAlignment="Tabular""##;
 
 /// The background of a selected row or tab (a list's line, the Settings sections). Chips and
 /// the map's modes take the accent instead ([`Pick::bg`]).
-pub(crate) const SELECTED: &str = "#FF2C3B63";
+pub(crate) fn selected() -> String {
+    crate::tokens::refer("selected")
+}
 
 /// A selectable item's text at rest, as the styles set it.
-const REST_TEXT: &str = "#FFE6EAF2";
+fn rest_text() -> String {
+    crate::tokens::refer("rest")
+}
 
 /// The Windows accent colour (Settings > Personalisation > Colours) the way WinUI's own accent
 /// buttons draw it: `fill` behind `on` text, and `text` for accent-coloured words on the page.
@@ -72,7 +76,9 @@ fn accent_from(p: Option<[[u8; 3]; 7]>, light: bool) -> Accent {
 }
 
 /// The fill of a button that deletes for good (and of the dialogs that warn about it).
-pub(crate) const DANGER: &str = "#FFC42B1C";
+pub(crate) fn danger() -> String {
+    crate::tokens::refer("danger")
+}
 
 /// The families of selectable items: they differ only in their background at rest.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -93,29 +99,29 @@ pub(crate) fn underline() -> &'static str {
 }
 
 impl Pick {
-    pub(crate) fn rest(self) -> &'static str {
+    pub(crate) fn rest(self) -> String {
         match self {
-            Pick::Tab => "Transparent",
-            Pick::Chip => "#14FFFFFF",
-            Pick::Mode => "#FF1E212C",
-            Pick::Page => "Transparent",
+            Pick::Tab => "Transparent".to_string(),
+            Pick::Chip => crate::tokens::refer("hover"),
+            Pick::Mode => crate::tokens::refer("panel"),
+            Pick::Page => "Transparent".to_string(),
         }
     }
 
     /// Its background, selected or not: a selected chip or map mode is filled with the accent,
     /// like WinUI's toggle buttons; a selected row or tab is quieter, so its grey second line
     /// stays readable.
-    pub(crate) fn bg(self, on: bool) -> &'static str {
+    pub(crate) fn bg(self, on: bool) -> String {
         match (self, on) {
-            (Pick::Chip | Pick::Mode, true) => &accent().fill,
-            (Pick::Tab, true) => SELECTED,
+            (Pick::Chip | Pick::Mode, true) => accent().fill.clone(),
+            (Pick::Tab, true) => selected(),
             _ => self.rest(),
         }
     }
 
     /// Its text colour when it differs from the style's: on the accent fill.
-    pub(crate) fn fg(self, on: bool) -> Option<&'static str> {
-        (on && matches!(self, Pick::Chip | Pick::Mode)).then(|| accent().on)
+    pub(crate) fn fg(self, on: bool) -> Option<String> {
+        (on && matches!(self, Pick::Chip | Pick::Mode)).then(|| accent().on.to_string())
     }
 
     fn style(self) -> &'static str {
@@ -135,7 +141,7 @@ pub(crate) fn pick(kind: Pick, on: bool) -> String {
     // written off too, so a chip picked or unpicked is changed in place (an attribute that goes
     // has the control loaded again: see reconcile.rs)
     let fg = match kind {
-        Pick::Chip | Pick::Mode => format!(r#" Foreground="{}""#, kind.fg(on).unwrap_or(REST_TEXT)),
+        Pick::Chip | Pick::Mode => format!(r#" Foreground="{}""#, kind.fg(on).unwrap_or(rest_text())),
         _ => kind.fg(on).map(|c| format!(r#" Foreground="{c}""#)).unwrap_or_default(),
     };
     format!(r##"Style="{{StaticResource {}}}" Background="{}"{fg}"##, kind.style(), kind.bg(on))
@@ -161,7 +167,7 @@ pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
     }
     // the text follows: dark on the accent, the style's own colour off it
     if matches!(kind, Pick::Chip | Pick::Mode) {
-        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, kind.fg(on).unwrap_or(REST_TEXT))) {
+        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, kind.fg(on).unwrap_or(rest_text()))) {
             let _ = c.SetForeground(&br);
         }
     }
@@ -196,7 +202,7 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
     // a filled button (the red one) turns grey when it can't be pressed, as WinUI's do; the
     // rest just fade
     let disabled = if grey_off {
-        r##"<Setter Target="Root.Background" Value="{$hover}"/><Setter Target="Content.Foreground" Value="#5CFFFFFF"/>"##
+        r##"<Setter Target="Root.Background" Value="{$hover}"/><Setter Target="Content.Foreground" Value="{$disabled}"/>"##
     } else {
         r##"<Setter Target="Content.Opacity" Value="0.4"/>"##
     };
@@ -204,7 +210,7 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
         r##"<ControlTemplate TargetType="{target}">
   <Grid x:Name="Root" Background="{{TemplateBinding Background}}" CornerRadius="{{TemplateBinding CornerRadius}}" {border}>
     {cols}
-    <Border x:Name="Wash" Grid.ColumnSpan="2" Background="#FFFFFFFF" Opacity="0" CornerRadius="{{TemplateBinding CornerRadius}}"/>
+    <Border x:Name="Wash" Grid.ColumnSpan="2" Background="{{$wash}}" Opacity="0" CornerRadius="{{TemplateBinding CornerRadius}}"/>
     <ContentPresenter x:Name="Content" Content="{{TemplateBinding Content}}" ContentTemplate="{{TemplateBinding ContentTemplate}}" Padding="{{TemplateBinding Padding}}" HorizontalContentAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalContentAlignment="{{TemplateBinding VerticalContentAlignment}}" Foreground="{{TemplateBinding Foreground}}" FontSize="{{TemplateBinding FontSize}}" FontFamily="{{TemplateBinding FontFamily}}" FontWeight="{{TemplateBinding FontWeight}}"/>
     {arrow}
     {underline}
@@ -228,23 +234,23 @@ struct Geo {
     size: String,
     weight: &'static str,
     /// The border: its width and colour (a transparent one keeps the height of a WinUI button).
-    border: (&'static str, &'static str),
-    background: &'static str,
+    border: (&'static str, String),
+    background: String,
     foreground: String,
 }
 
 impl Geo {
     /// The selectable items as they were: small, no border.
     fn small() -> Self {
-        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent"), background: "Transparent", foreground: REST_TEXT.into() }
+        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent".to_string()), background: "Transparent".to_string(), foreground: rest_text() }
     }
 
     /// A WinUI button's size: 14 px text, 4 px corners, 32 px high with its 1 px border.
     fn button() -> Self {
-        Geo { padding: "11,5,11,6", corner: crate::tokens::rc(4.0), size: crate::tokens::fs(14.0), ..Geo::small() }.with_border("1", "Transparent")
+        Geo { padding: "11,5,11,6", corner: crate::tokens::rc(4.0), size: crate::tokens::fs(14.0), ..Geo::small() }.with_border("1", "Transparent".to_string())
     }
 
-    fn with_border(mut self, width: &'static str, colour: &'static str) -> Self {
+    fn with_border(mut self, width: &'static str, colour: String) -> Self {
         self.border = (width, colour);
         self
     }
@@ -297,9 +303,9 @@ pub(crate) fn resources() -> String {
         style("SprawlPickDrop", "DropDownButton", true),
         style_with("SprawlPage", "Button", false, true, false, Geo::small()),
         // chips: a WinUI button's size with its faint edge, filled with the accent when picked
-        style_with("SprawlChip", "Button", false, false, false, Geo::button().with_border("1", "#17FFFFFF")),
+        style_with("SprawlChip", "Button", false, false, false, Geo::button().with_border("1", crate::tokens::refer("line1"))),
         style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text.clone(), ..Geo::button() }),
-        style_with("SprawlDanger", "Button", false, false, true, Geo { background: DANGER, foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
+        style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
     )
 }
 
@@ -728,13 +734,13 @@ mod tests {
     fn chips_and_modes_take_the_accent_and_rows_stay_quiet() {
         for k in [Pick::Chip, Pick::Mode] {
             assert_eq!(k.bg(true), accent().fill);
-            assert_eq!(k.fg(true), Some(accent().on));
+            assert_eq!(k.fg(true), Some(accent().on.to_string()));
             assert_ne!(k.bg(false), accent().fill);
             assert_eq!(k.fg(false), None);
             assert!(pick(k, true).contains(&format!(r#"Foreground="{}""#, accent().on)));
         }
         // a selected row keeps its grey second line readable: no accent fill, no text colour
-        assert_eq!(Pick::Tab.bg(true), SELECTED);
+        assert_eq!(Pick::Tab.bg(true), selected());
         assert_eq!(Pick::Tab.fg(true), None);
         assert!(pick(Pick::Tab, true).contains("SprawlPick") && !pick(Pick::Tab, true).contains("Foreground"));
         assert!(pick(Pick::Chip, false).contains("SprawlChip"));
@@ -770,7 +776,7 @@ mod tests {
         // the red one greys out when it can't be pressed, as WinUI's filled buttons do
         let danger = &r[r.find(r#"x:Key="SprawlDanger""#).unwrap()..];
         let danger = &danger[..danger.find("</Style>").unwrap()];
-        assert!(danger.contains(DANGER) && danger.contains(r#"Target="Root.Background""#));
+        assert!(danger.contains(&crate::look::danger()) && danger.contains(r#"Target="Root.Background""#));
         // the page tabs: underlined, never filled
         assert!(r.contains("SprawlPage") && r.contains(r#"x:Name="Line""#));
         assert_eq!(Pick::Page.bg(true), "Transparent");

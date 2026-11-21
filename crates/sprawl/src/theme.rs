@@ -72,14 +72,11 @@ pub(crate) fn to_light(xaml: &str) -> String {
         }
     }
     out.push_str(&xaml[last..]);
-    // the window's own backdrop isn't light everywhere (inactive, remote, some drivers): the page
-    // brings its own light ground, nearly opaque (after the colours, so it isn't turned around)
-    out.replace(r#"x:Name="Root" RequestedTheme="Light" Background="Transparent""#, r##"x:Name="Root" RequestedTheme="Light" Background="#F2F3F4F7""##)
+    out
 }
 
-/// The attribute name a value belongs to: `Foreground` in `Foreground="#..`. Shared with
-/// [`crate::tokens`]'s test, which reads a token site the way this rewrite reads a colour.
-pub(crate) fn attr_before(s: &str) -> &str {
+/// The attribute name a value belongs to: `Foreground` in `Foreground="#..`.
+fn attr_before(s: &str) -> &str {
     let s = s.strip_suffix('=').unwrap_or(s);
     let start = s.rfind(|c: char| c.is_whitespace() || c == '<').map_or(0, |p| p + 1);
     &s[start..]

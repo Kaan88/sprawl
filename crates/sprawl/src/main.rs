@@ -63,7 +63,7 @@ use bindings::Windows::Foundation::Point;
 use tables::Which;
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
 use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
-use bindings::Microsoft::UI::Xaml::Media::{CompositionTarget, DesktopAcrylicBackdrop, SystemBackdrop};
+use bindings::Microsoft::UI::Xaml::Media::CompositionTarget;
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
 use state::{find, keep, load, with, State, Units, View, STATE};
@@ -242,11 +242,6 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         let theme = if crate::theme::light() { TitleBarTheme::Light } else { TitleBarTheme::Dark };
         let _ = window.AppWindow().and_then(|a| a.TitleBar()).and_then(|t| t.SetPreferredTheme(theme));
     }
-    // Frosted glass: the desktop shows through the whole window, blurred.
-    if let Ok(b) = DesktopAcrylicBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()) {
-        window.SetSystemBackdrop(&b)?;
-    }
-
     let hwnd = app::hwnd_of(&window)?;
     win32::set_app_icon(hwnd);
 

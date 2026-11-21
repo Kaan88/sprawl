@@ -249,18 +249,18 @@ fn running_label(it: &Item, so_far: u64) -> String {
 }
 
 /// A finished compress's row: what it saved, and what it left.
-fn compress_label(o: &Outcome) -> (&'static str, &'static str, String) {
+fn compress_label(o: &Outcome) -> (&'static str, String, String) {
     let saved = crate::format::size(o.freed);
     let Some(c) = &o.compress else {
-        return ("&#xE7BA;", "#FFF5B342", "Not compressed; nothing changed".to_string());
+        return ("&#xE7BA;", crate::tokens::refer("warn"), "Not compressed; nothing changed".to_string());
     };
     let busy = if c.in_use > 0 { format!("; {} file(s) in use left as they were", c.in_use) } else { String::new() };
     match (succeeded(o), c.compressed) {
-        (true, 0) if c.already > 0 => ("&#xE73E;", "#FF4CC38A", "Already compressed".to_string()),
-        (true, 0) => ("&#xE73E;", "#FF4CC38A", format!("Nothing to compress{busy}")),
-        (true, n) => ("&#xE73E;", "#FF4CC38A", format!("Compressed {n} files, saved {saved}{busy}")),
-        (false, _) if o.stopped => ("&#xE7BA;", "#FFF5B342", format!("Stopped part way: saved {saved}")),
-        (false, _) => ("&#xE7BA;", "#FFF5B342", format!("Saved {saved}; some files couldn't be compressed")),
+        (true, 0) if c.already > 0 => ("&#xE73E;", crate::tokens::refer("good"), "Already compressed".to_string()),
+        (true, 0) => ("&#xE73E;", crate::tokens::refer("good"), format!("Nothing to compress{busy}")),
+        (true, n) => ("&#xE73E;", crate::tokens::refer("good"), format!("Compressed {n} files, saved {saved}{busy}")),
+        (false, _) if o.stopped => ("&#xE7BA;", crate::tokens::refer("warn"), format!("Stopped part way: saved {saved}")),
+        (false, _) => ("&#xE7BA;", crate::tokens::refer("warn"), format!("Saved {saved}; some files couldn't be compressed")),
     }
 }
 
@@ -1257,23 +1257,23 @@ impl State {
                 else if only_compress { format!("Compressing... {} of {} gone through, {} saved so far", self.size(through), self.size(total), self.size(freed)) }
                 else { format!("Cleaning up... {} freed so far", self.size(freed)) };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="{{$rc8}}" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="{}" {num} FontSize="{{$fs15}}" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop"/></StackPanel>"##,
+                r##"<Border Padding="14,12" CornerRadius="{{$rc8}}" Background="{{$accentwash}}" BorderBrush="{{$accentline}}" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="{}" {num} FontSize="{{$fs15}}" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop"/></StackPanel>"##,
                 ui::esc(&head),
                 num = crate::look::NUM
             );
             for (i, it) in run.items.iter().enumerate() {
                 let (glyph, colour, state) = match &it.state {
-                    ItemState::Waiting => ("&#xE823;", "#FF8E97AA", "Waiting".to_string()),
-                    ItemState::Running(_) if it.privacy => ("&#xE895;", "#FF8FB4FF", "Removing...".to_string()),
-                    ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", "Removed".to_string()),
-                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", "#FFF5B342", "Held back: nothing in this set went".to_string()),
-                    ItemState::Running(f) => ("&#xE895;", "#FF8FB4FF", running_label(it, *f)),
+                    ItemState::Waiting => ("&#xE823;", crate::tokens::refer("text3"), "Waiting".to_string()),
+                    ItemState::Running(_) if it.privacy => ("&#xE895;", crate::tokens::refer("link"), "Removing...".to_string()),
+                    ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
+                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing in this set went".to_string()),
+                    ItemState::Running(f) => ("&#xE895;", crate::tokens::refer("link"), running_label(it, *f)),
                     ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
-                    ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("{} to the Recycle Bin", self.size(o.recycled))),
-                    ItemState::Done(o) if it.recycle => ("&#xE7BA;", "#FFF5B342", format!("{} to the Recycle Bin; some couldn't go", self.size(o.recycled))),
-                    ItemState::Done(o) if o.saving_unknown && succeeded(o) => ("&#xE73E;", "#FF4CC38A", "Done; the saving couldn't be measured".to_string()),
-                    ItemState::Done(o) if o.problems.is_empty() => ("&#xE73E;", "#FF4CC38A", format!("Freed {}", self.size(o.freed))),
-                    ItemState::Done(o) => ("&#xE7BA;", "#FFF5B342", format!("Freed {}; some couldn't go", self.size(o.freed))),
+                    ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), format!("{} to the Recycle Bin", self.size(o.recycled))),
+                    ItemState::Done(o) if it.recycle => ("&#xE7BA;", crate::tokens::refer("warn"), format!("{} to the Recycle Bin; some couldn't go", self.size(o.recycled))),
+                    ItemState::Done(o) if o.saving_unknown && succeeded(o) => ("&#xE73E;", crate::tokens::refer("good"), "Done; the saving couldn't be measured".to_string()),
+                    ItemState::Done(o) if o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), format!("Freed {}", self.size(o.freed))),
+                    ItemState::Done(o) => ("&#xE7BA;", crate::tokens::refer("warn"), format!("Freed {}; some couldn't go", self.size(o.freed))),
                 };
                 x += &format!(
                     r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{colour}"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="AdvCS{i}" Grid.Column="2" Text="{}" {num} MinWidth="160" TextAlignment="Right" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></Grid>"##,
@@ -1285,7 +1285,7 @@ impl State {
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
             let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled + d.privacy_items as u64 + d.unmeasured as u64 > 0;
-            let (bg, border, glyph, colour) = if fine { ("#144CC38A", "#554CC38A", "&#xE73E;", "#FF4CC38A") } else { ("#14F5B342", "#55F5B342", "&#xE7BA;", "#FFF5B342") };
+            let (bg, border, glyph, colour) = if fine { (crate::tokens::refer("goodwash"), crate::tokens::refer("goodline"), "&#xE73E;", crate::tokens::refer("good")) } else { (crate::tokens::refer("warnwash"), crate::tokens::refer("warnline"), "&#xE7BA;", crate::tokens::refer("warn")) };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = match (d.stopped, d.items) {
                 (true, 0) if d.recycled == 0 && d.privacy_items == 0 => "Stopped. Nothing was freed.".to_string(),
@@ -1399,10 +1399,10 @@ impl State {
         // to tick on the next, the explanation last
         let mut x = format!(
             r##"<Border Padding="12,10" CornerRadius="{{$rc8}}" Background="{{$surface3}}" BorderBrush="{{$line2}}" BorderThickness="1"><StackPanel Spacing="8">
-<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="{{$fs15}}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/><Button x:Name="AdvClean" Content="Review selection..." Style="{{StaticResource SprawlPrimary}}" IsEnabled="{}"/>{prev}<Border Width="1" Height="22" Margin="4,0" Background="#33FFFFFF" VerticalAlignment="Center"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" VerticalAlignment="Center"/><Button x:Name="AdvSelNone" Content="Untick all" VerticalAlignment="Center"/></StackPanel>
+<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="{{$fs15}}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/><Button x:Name="AdvClean" Content="Review selection..." Style="{{StaticResource SprawlPrimary}}" IsEnabled="{}"/>{prev}<Border Width="1" Height="22" Margin="4,0" Background="{{$edge}}" VerticalAlignment="Center"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" VerticalAlignment="Center"/><Button x:Name="AdvSelNone" Content="Untick all" VerticalAlignment="Center"/></StackPanel>
 {sizes}
 <StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Or tick enough for" FontSize="{{$fs12}}" VerticalAlignment="Center" Foreground="{{$text2}}"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="{{$fs12}}" VerticalAlignment="Center" Foreground="{{$text2}}"/><Button x:Name="AdvSelGoal" Content="Tick"/></StackPanel>
-<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FFA0A8B8" TextWrapping="Wrap"/>"##,
+<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" TextWrapping="Wrap"/>"##,
             match (picked.is_empty(), privacy) {
                 (true, 0) => "Nothing ticked".to_string(),
                 (true, n) => format!("{} ticked", privacy_count(n)),
@@ -1443,7 +1443,7 @@ impl State {
         let own = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         let bin_on = self.recycle_on();
         let mut x = format!(
-            r##"<Border Padding="14,12" CornerRadius="{{$rc8}}" Background="{{$surface3}}" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="{}" FontSize="{{$fs16}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs13}}" FontWeight="SemiBold" Foreground="{{$warn}}" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##,
+            r##"<Border Padding="14,12" CornerRadius="{{$rc8}}" Background="{{$surface3}}" BorderBrush="{{$accentline}}" BorderThickness="1"><StackPanel Spacing="8"><TextBlock Text="{}" FontSize="{{$fs16}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs13}}" FontWeight="SemiBold" Foreground="{{$warn}}" TextWrapping="Wrap"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##,
             // all three escaped: the lead line quotes a group's name ("Deleted for good"), and
             // a quote left in would end the attribute, fail the whole review, and leave the bar
             // on screen as if Review did nothing
@@ -1516,7 +1516,7 @@ impl State {
                 x += &format!(
                     r##"<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{}" Margin="0,4,0,0"/>"##,
                     ui::esc(&format!("{} · {n}{total}", o.heading())),
-                    if o == Fate::Gone { "#FFF5B342" } else { "#FFD5DBE8" }
+                    if o == Fate::Gone { crate::tokens::refer("warn") } else { crate::tokens::refer("text1") }
                 );
             }
             let what = crate::advisor::risk_words_for(f);
@@ -1611,7 +1611,7 @@ impl State {
                 );
             }
             if !warn.is_empty() {
-                x += &format!(r##"<TextBlock Text="{} {} open: files in use are skipped." FontSize="{{$fs12}}" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(&warn.join(", ")), if warn.len() == 1 { "is" } else { "are" });
+                x += &format!(r##"<TextBlock Text="{} {} open: files in use are skipped." FontSize="{{$fs12}}" Foreground="{{$warnquiet}}" TextWrapping="Wrap"/>"##, ui::esc(&warn.join(", ")), if warn.len() == 1 { "is" } else { "are" });
             }
             x += r##"<Button x:Name="AdvClCheck" Content="Check again"/></StackPanel>"##;
         }
@@ -1801,7 +1801,7 @@ impl State {
     /// The Advisor's foot, pinned under the list: the message, then the clean-up's status, review
     /// or bar, whatever section is open.
     pub(crate) fn advisor_foot_xaml(&self) -> String {
-        let mut x = format!(r##"<StackPanel {} Spacing="8" Padding="18,10,18,12" BorderBrush="{{$line2}}" BorderThickness="0,1,0,0" Background="#FF1A1D27">"##, crate::ui::NS);
+        let mut x = format!(r##"<StackPanel {} Spacing="8" Padding="18,10,18,12" BorderBrush="{{$line2}}" BorderThickness="0,1,0,0" Background="{{$panel}}">"##, crate::ui::NS);
         let msg = self.advisor.msg.borrow().clone();
         x += &format!(
             r##"<TextBlock x:Name="AdvMsg" Text="{}" FontSize="{{$fs12}}" Foreground="{{$link}}" TextWrapping="Wrap" Visibility="{}"/>"##,
@@ -1861,7 +1861,7 @@ impl State {
             return String::new();
         }
         let spare = self.spare();
-        let mut x = format!(r##"<Border Padding="10,8" CornerRadius="{{$rc6}}" Background="{{$surface1}}" BorderBrush="#33F5B342" BorderThickness="1"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(PV_REVIEW_HEAD));
+        let mut x = format!(r##"<Border Padding="10,8" CornerRadius="{{$rc6}}" Background="{{$surface1}}" BorderBrush="{{$warnline}}" BorderThickness="1"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(PV_REVIEW_HEAD));
         let mut open: Vec<String> = Vec::new();
         for f in privacy {
             let part = match &f.source {

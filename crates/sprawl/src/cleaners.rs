@@ -606,7 +606,7 @@ impl State {
         }
         let ai = AiConfig::load().provider != Provider::Off;
         let mut x = format!(
-            r##"<TextBlock Text="Unknown applications" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="#FF9AA3B8" Margin="0,10,0,2"/><Border Padding="12,10" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><StackPanel Spacing="4"><TextBlock Text="{}" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>"##,
+            r##"<TextBlock Text="Unknown applications" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$label}}" Margin="0,10,0,2"/><Border Padding="12,10" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><StackPanel Spacing="4"><TextBlock Text="{}" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>"##,
             ui::esc(&format!("Sprawl doesn't know {} {}", list.len(), if list.len() == 1 { "application" } else { "applications" })),
             if ai {
                 "Big folders of programs in your AppData that no cleaner knows. The AI can look inside and propose a cleaner; a second opinion checks it, and you approve it before it is used."
@@ -1005,7 +1005,7 @@ impl State {
         let rows = self.cleaner_layout(r);
         let (ok, left) = self.suggested_parts(r, &rows);
         let bytes: u64 = ok.iter().map(|(_, p)| self.part_true(r, p).0).sum();
-        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="#1A2F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="6">"##);
+        let mut x = String::from(r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="{$accentwash}" BorderBrush="{$accentline}" BorderThickness="1"><StackPanel Spacing="6">"##);
         x += &format!(r##"<TextBlock Text="The AI suggests ticking {} part{} ({})" FontSize="{{$fs13}}" FontWeight="SemiBold" TextWrapping="Wrap"/>"##, ok.len(), if ok.len() == 1 { "" } else { "s" }, self.size(bytes));
         if !why.is_empty() {
             x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text1}}"/>"##, ui::esc(why));
@@ -1376,7 +1376,7 @@ impl State {
 <StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
 <TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button>{side}</Grid>"##,
-                bg = if open { "#FF262C3D" } else { "#0CFFFFFF" },
+                bg = if open { crate::tokens::refer("rowopen") } else { crate::tokens::refer("surface2") },
                 name = ui::esc(&c.name),
                 chev = if open { "&#xE70D;" } else { "&#xE76C;" },
                 sub = ui::esc(&sub),
@@ -1416,7 +1416,7 @@ impl State {
                 ui::esc(&format!("{}: {}", c.name, p.title))
             )
         } else if let (Some(w), true) = (why_not, bytes > 0) {
-            format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="{{$fs13}}" Foreground="#FFA0A8B8" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(w))
+            format!(r##"<FontIcon Glyph="&#xE72E;" FontSize="{{$fs13}}" Foreground="{{$label}}" VerticalAlignment="Center" ToolTipService.ToolTip="Can't be ticked: {0}" AutomationProperties.Name="Can't be ticked: {0}"/>"##, ui::esc(w))
         } else {
             String::new()
         };
@@ -1446,7 +1446,7 @@ impl State {
         // the AI's suggestion, on the row: its reason, Tick and Not this
         let sug = if self.part_suggested(r, p) {
             format!(
-                r##"<Border Grid.Column="1" Grid.Row="1" Margin="8,0,0,4" Padding="8,4" CornerRadius="{{$rc5}}" Background="#1A2F7BF6"><StackPanel Spacing="4"><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="AI suggests: " FontWeight="SemiBold" Foreground="{{$link}}"/><Run Text="{}" Foreground="{{$text1}}"/></TextBlock><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvClSgT{n}" Content="Tick" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" IsEnabled="{}"/><Button x:Name="AdvClSgX{n}" Content="Not this" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Turns it down: the AI won't suggest it again."/></StackPanel></StackPanel></Border>"##,
+                r##"<Border Grid.Column="1" Grid.Row="1" Margin="8,0,0,4" Padding="8,4" CornerRadius="{{$rc5}}" Background="{{$accentwash}}"><StackPanel Spacing="4"><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="AI suggests: " FontWeight="SemiBold" Foreground="{{$link}}"/><Run Text="{}" Foreground="{{$text1}}"/></TextBlock><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvClSgT{n}" Content="Tick" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" IsEnabled="{}"/><Button x:Name="AdvClSgX{n}" Content="Not this" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Turns it down: the AI won't suggest it again."/></StackPanel></StackPanel></Border>"##,
                 ui::esc(&self.sug_reason(p)),
                 if running || all_ticked { "False" } else { "True" }
             )
@@ -1459,7 +1459,7 @@ impl State {
 <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{dot}" VerticalAlignment="Top" Margin="0,6,0,0"/><StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
             op = if bytes > 0 { "1" } else { "0.55" },
             bg = crate::look::pick(crate::look::Pick::Tab, sel),
-            dot = if p.info { "#FF8E97AA" } else { crate::advisor::risk_hex(p.risk) },
+            dot = if p.info { crate::tokens::refer("text3") } else { crate::advisor::risk_hex(p.risk).to_string() },
             title = ui::esc(&p.title),
             sub = ui::esc(&sub),
             size = match (bytes, counted) {
@@ -1580,7 +1580,7 @@ impl State {
         x += &label("In use");
         x += &match (&open, d) {
             (Some((app, Closed::Must)), _) => format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open, or that can't be told: close it first. This can't be cleaned while it runs."))),
-            (Some((app, _)), _) => format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open: files it is using are skipped."))),
+            (Some((app, _)), _) => format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$warnquiet}}" TextWrapping="Wrap"/>"##, ui::esc(&format!("{app} is open: files it is using are skipped."))),
             (None, Some(d)) if !d.running.is_empty() && p.closed != Closed::No => body(&format!("{} isn't open.", d.name)),
             _ => body("Can be cleaned while the application runs; files in use are skipped."),
         };
@@ -1613,7 +1613,7 @@ impl State {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><ProgressRing IsActive="True" Width="14" Height="14"/><TextBlock Text="Asking..." FontSize="{$fs12}" Foreground="{$text2}"/></StackPanel>"##;
         } else if let Some(a) = self.advisor.cl.part_answers.get(&p.key) {
             x += &label("The AI says");
-            x += &ui::markdown(a, 12, "#FFD5DBE8");
+            x += &ui::markdown(a, 12, &crate::tokens::refer("text1"));
             x += crate::advisor::UNCHECKED_LINE;
         }
         if let Some(k) = c.def {
@@ -1643,7 +1643,7 @@ impl State {
 
     /// Preview: the exact files the ticks would remove, counted by the clean-up's own tests.
     fn preview_xaml(&self, pv: &PreviewRun) -> String {
-        let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="{$rc8}" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="4">"##);
+        let mut x = String::from(r##"<Border Padding="14,12" CornerRadius="{$rc8}" Background="{$accentwash}" BorderBrush="{$accentline}" BorderThickness="1"><StackPanel Spacing="4">"##);
         match pv {
             PreviewRun::Counting(_) => {
                 x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="Counting what would go..." FontSize="{$fs14}" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel><TextBlock Text="Nothing is deleted: this only looks." FontSize="{$fs12}" Foreground="{$text2}"/>"##;
@@ -1938,7 +1938,7 @@ impl State {
                     ui::esc(part.map_or("", |p| p.why)),
                     ui::esc(&sub),
                     ui::esc(part.map_or("", |p| p.cost)),
-                    if ticked { "#FFF5B342" } else { "#FFB9C2D6" },
+                    if ticked { crate::tokens::refer("warn") } else { crate::tokens::refer("text2") },
                 );
             }
             x += "</StackPanel>";

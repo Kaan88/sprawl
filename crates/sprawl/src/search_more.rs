@@ -697,10 +697,10 @@ impl State {
         let bg = self.row_bg(row, self.search.more.sel == Some((k, id)));
         let folder = ix.parent(i).map(|q| ix.path_of(q).display().to_string()).unwrap_or_default();
         let ext = name.rsplit_once('.').filter(|(a, b)| !a.is_empty() && !b.is_empty()).map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-        let (glyph, gc) = if ix.is_dir(i) { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&ext)) };
+        let (glyph, gc) = if ix.is_dir(i) { ("&#xE8B7;", crate::tokens::refer("folder")) } else { ("&#xE7C3;", self.ext_colour_hex(&ext)) };
         let saved = match p.as_of {
             Some(t) => format!(
-                r##"<Border Background="#33FFB547" CornerRadius="{{$rc3}}" Padding="5,0" VerticalAlignment="Center" ToolTipService.ToolTip="From a saved scan: how it was then, not checked now"><TextBlock Text="saved {}" FontSize="{{$fs11}}" Foreground="#FFFFB547"/></Border>"##,
+                r##"<Border Background="{{$warnwash}}" CornerRadius="{{$rc3}}" Padding="5,0" VerticalAlignment="Center" ToolTipService.ToolTip="From a saved scan: how it was then, not checked now"><TextBlock Text="saved {}" FontSize="{{$fs11}}" Foreground="{{$warn}}"/></Border>"##,
                 ui::esc(&fmt_time(t))
             ),
             None => String::new(),
@@ -822,10 +822,10 @@ impl State {
         let mut x = format!(r##"<StackPanel {} Spacing="2" Padding="8,4,8,6">"##, ui::NS);
         for (i, (kind, line, drive)) in entries.iter().enumerate() {
             let (glyph, colour) = match *kind {
-                "scan" => ("&#xE8B7;", "#FFB9C2D6"),
-                "saved" => ("&#xE81C;", "#FFFFB547"),
-                "failed" => ("&#xE783;", "#FFFF6B6B"),
-                _ => ("&#xEDA2;", "#FFB9C2D6"),
+                "scan" => ("&#xE8B7;", crate::tokens::refer("text2")),
+                "saved" => ("&#xE81C;", crate::tokens::refer("warn")),
+                "failed" => ("&#xE783;", crate::tokens::refer("fail")),
+                _ => ("&#xEDA2;", crate::tokens::refer("text2")),
             };
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
             if matches!(*kind, "reading" | "rereading") {
@@ -839,11 +839,11 @@ impl State {
                 x += &format!(r##"<Button x:Name="SxR{i}" Content="{label}" FontSize="{{$fs11}}" Padding="8,1" ToolTipService.ToolTip="Read this drive again: new files show, deleted ones go"/>"##);
             }
             if *kind == "rereading" {
-                x += r##"<TextBlock Text="reading again..." FontSize="{$fs12}" Foreground="#FF7A8296" VerticalAlignment="Center"/>"##;
+                x += r##"<TextBlock Text="reading again..." FontSize="{$fs12}" Foreground="{$faint}" VerticalAlignment="Center"/>"##;
             }
             x += "</StackPanel>";
         }
-        x += &format!(r##"<TextBlock x:Name="SxNote" Text="{}" FontSize="{{$fs11}}" Foreground="#FF7A8296" TextWrapping="Wrap"/>"##, ui::esc(&note));
+        x += &format!(r##"<TextBlock x:Name="SxNote" Text="{}" FontSize="{{$fs11}}" Foreground="{{$faint}}" TextWrapping="Wrap"/>"##, ui::esc(&note));
         x += "</StackPanel>";
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);

@@ -24,7 +24,7 @@ fn help_xaml(prefix: &str, intro: &str) -> String {
         x += r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" Spacing="4">"##;
         for (j, e) in examples.iter().enumerate() {
             x += &format!(
-                r##"<Button x:Name="{prefix}{i}_{j}" Padding="6,1" FontSize="{{$fs12}}" FontFamily="Consolas" Background="#1AFFFFFF" BorderThickness="0" ToolTipService.ToolTip="Put it in the search box"><TextBlock Text="{}"/></Button>"##,
+                r##"<Button x:Name="{prefix}{i}_{j}" Padding="6,1" FontSize="{{$fs12}}" FontFamily="Consolas" Background="{{$hover}}" BorderThickness="0" ToolTipService.ToolTip="Put it in the search box"><TextBlock Text="{}"/></Button>"##,
                 ui::esc(e)
             );
         }
@@ -215,13 +215,13 @@ impl State {
         let Some(s) = self.search.suggest.clone().filter(|_| shown) else { return };
         let mut x = format!(r##"<StackPanel {} Spacing="1">"##, ui::NS);
         for (i, (label, _)) in s.items.iter().enumerate() {
-            let bg = if self.search.highlight == Some(i) { "#FF2C3B63" } else { "Transparent" };
+            let bg = if self.search.highlight == Some(i) { crate::tokens::refer("selected") } else { "Transparent".to_string() };
             x += &format!(
                 r##"<Button x:Name="SxSug{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="8,3" FontSize="{{$fs12}}" BorderThickness="0" Background="{bg}" IsTabStop="False"><TextBlock Text="{}" FontFamily="Consolas"/></Button>"##,
                 ui::esc(label)
             );
         }
-        x += r##"<TextBlock Text="Up and Down pick, Enter or Tab takes it, Esc closes" FontSize="{$fs11}" Foreground="#FF7A8296" Margin="8,2,8,2"/></StackPanel>"##;
+        x += r##"<TextBlock Text="Up and Down pick, Enter or Tab takes it, Esc closes" FontSize="{$fs11}" Foreground="{$faint}" Margin="8,2,8,2"/></StackPanel>"##;
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
         let Ok(fe) = content.cast::<FrameworkElement>() else { return };
@@ -294,7 +294,7 @@ impl State {
         text(&self.root, "SearchHint", &hint);
         self.search_chips_state();
         if let Ok(t) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBlock>(&self.root, "SearchHint") {
-            let colour = if errors.is_empty() { "#FF8E97AA" } else { "#FFFFB547" };
+            let colour = if errors.is_empty() { crate::tokens::refer("text3") } else { crate::tokens::refer("warn") };
             if let Ok(b) = load::<crate::bindings::Microsoft::UI::Xaml::Media::Brush>(&format!(r##"<SolidColorBrush {} Color="{colour}"/>"##, ui::NS)) {
                 let _ = t.SetForeground(&b);
             }

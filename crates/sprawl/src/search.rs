@@ -478,7 +478,7 @@ impl State {
         // (a cut inside a character would panic on the window's thread: plain text instead)
         match q.highlight(name).filter(|&(a, b)| a <= b && name.is_char_boundary(a) && name.is_char_boundary(b)) {
             Some((a, b)) => format!(
-                r##"<Run Text="{}"/><Run Text="{}" FontWeight="Bold" Foreground="#FF7FD4FF"/><Run Text="{}"/>"##,
+                r##"<Run Text="{}"/><Run Text="{}" FontWeight="Bold" Foreground="{{$match}}"/><Run Text="{}"/>"##,
                 ui::esc(&name[..a]),
                 ui::esc(&name[a..b]),
                 ui::esc(&name[b..])
@@ -497,11 +497,11 @@ impl State {
         let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
-        let (glyph, gc) = if node.is_dir { ("&#xE8B7;", "#FFFFC83D".to_string()) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
+        let (glyph, gc) = if node.is_dir { ("&#xE8B7;", crate::tokens::refer("folder")) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
         let runs = self.name_runs(&node.name);
         let full = ui::esc(&t.path_of(n).display().to_string());
         let changed = if self.search.is_changed(self.tree_gen, n, node.parent) {
-            r##"<FontIcon Glyph="&#xE895;" FontSize="{$fs11}" Foreground="#FFFFB547" ToolTipService.ToolTip="Changed since the scan: check it is still there"/>"##
+            r##"<FontIcon Glyph="&#xE895;" FontSize="{$fs11}" Foreground="{$warn}" ToolTipService.ToolTip="Changed since the scan: check it is still there"/>"##
         } else {
             ""
         };

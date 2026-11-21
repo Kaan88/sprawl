@@ -221,14 +221,14 @@ pub(crate) fn col_defs(cols: &[Col]) -> String {
 }
 
 fn header(cols: &[Col], sort: (usize, bool)) -> String {
-    let mut s = format!(r##"<Grid {} Height="30" Background="#30000000">{}"##, ui::NS, col_defs(cols));
+    let mut s = format!(r##"<Grid {} Height="30" Background="{{$shade}}">{}"##, ui::NS, col_defs(cols));
     for (i, c) in cols.iter().enumerate() {
         if c.width == 0.0 { continue; }
         let align = if c.right { "Right" } else { "Left" };
         let arrow = if i == sort.0 { if sort.1 { "&#xE70D;" } else { "&#xE70E;" } } else { "" };
-        let colour = if i == sort.0 { "#FFE6EBF5" } else { "#FFB9C2D6" };
+        let colour = if i == sort.0 { crate::tokens::refer("rest") } else { crate::tokens::refer("text2") };
         s += &format!(
-            r##"<StackPanel Grid.Column="{i}" Orientation="Horizontal" Spacing="5" HorizontalAlignment="{align}" Margin="10,0,10,0"><TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{colour}" VerticalAlignment="Center"/><FontIcon Glyph="{arrow}" FontSize="{{$fs12}}" Foreground="#FF4CC2FF" VerticalAlignment="Center"/></StackPanel>"##,
+            r##"<StackPanel Grid.Column="{i}" Orientation="Horizontal" Spacing="5" HorizontalAlignment="{align}" Margin="10,0,10,0"><TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{colour}" VerticalAlignment="Center"/><FontIcon Glyph="{arrow}" FontSize="{{$fs12}}" Foreground="{{$accenttext}}" VerticalAlignment="Center"/></StackPanel>"##,
             ui::esc(c.title)
         );
     }
@@ -282,11 +282,13 @@ pub(crate) fn cell(col: usize, s: &str) -> String {
     format!(r##"<TextBlock Grid.Column="{col}" Text="{}" {} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>"##, ui::esc(s), crate::look::NUM)
 }
 
-pub(crate) fn pct_bar(col: usize, pct: f64, a: &str, b: &str) -> String {
+/// A percentage bar: the track, then the share in the accent. One colour, no gradient.
+pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
+    let fill = &crate::look::accent().fill;
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="{{$rc3}}" Background="{{$line1}}"/><Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="{a}" Offset="0"/><GradientStop Color="{b}" Offset="1"/></LinearGradientBrush></Border.Background></Border><TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="{{$rc3}}" Background="{{$line1}}"/><Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}"/><TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 
@@ -591,16 +593,16 @@ impl State {
         let has_kids = node.is_dir && !node.children.is_empty();
         let chevron = if !has_kids { "" } else if self.expanded.contains(&n) { "&#xE70D;" } else { "&#xE76C;" };
         let (glyph, gc) = if n == ROOT {
-            ("&#xEDA2;", "#FF9FB4FF".to_string())
+            ("&#xEDA2;", crate::tokens::refer("link"))
         } else if node.is_dir {
-            ("&#xE8B7;", "#FFFFC83D".to_string())
+            ("&#xE8B7;", crate::tokens::refer("folder"))
         } else {
             ("&#xE7C3;", self.ext_colour_hex(&node.extension()))
         };
         let items = if node.is_dir { thousands(node.items()) } else { String::new() };
         let files = if node.is_dir { thousands(node.files) } else { String::new() };
         let hidden = n != ROOT && (node.is_hidden() || node.is_system());
-        let fg = if hidden { "#FF7D8494" } else { "#FFFFFFFF" };
+        let fg = if hidden { crate::tokens::refer("faint") } else { crate::tokens::refer("text0") };
         let label = |n: usize| {
             let l = self.label(n);
             // the scanned folder's own name first: its long path is cut from the end
@@ -620,7 +622,7 @@ impl State {
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
             name = ui::esc(&name),
-            bar = pct_bar(1, pct, "#FF3A7BD5", "#FF00D2FF"),
+            bar = pct_bar(1, pct),
             c2 = cell(2, &self.size(node.size)),
             c3 = cell(3, &self.size(self.alloc[n])),
             c4 = if self.tables.compact_tree { String::new() } else { cell(4, &items) },
@@ -630,7 +632,7 @@ impl State {
                 // an uninstall mark where the app starts, when Sprawl knows where it is uninstalled
                 Some((name, inherited, can_uninstall)) => format!(
                     r##"<TextBlock Grid.Column="6" FontSize="{{$fs12}}" Margin="12,0,6,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{}">{}<Run Text="{}"/></TextBlock>"##,
-                    if inherited { "#FF8E97AA" } else { "#FFB9C2D6" },
+                    if inherited { crate::tokens::refer("text3") } else { crate::tokens::refer("text2") },
                     if can_uninstall && !inherited { r##"<Run Text="&#xE74D; " FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" FontSize="{$fs12}" Foreground="{$text3}"/>"## } else { "" },
                     ui::esc(&name),
                 ),
@@ -669,20 +671,20 @@ impl State {
             c = self.ext_colour_hex(&e.ext),
             ext = ui::esc(&shown),
             kind = ui::esc(&file_type(&e.ext)),
-            bar = pct_bar(3, e.percent, "#FF8E54E9", "#FFFF5E9C"),
+            bar = pct_bar(3, e.percent),
             c4 = cell(4, &self.size(e.size)),
             c5 = cell(5, &self.size(e.alloc)),
             c6 = cell(6, &thousands(e.files)),
         )
     }
 
-    pub(crate) fn row_bg(&self, k: usize, selected: bool) -> &'static str {
+    pub(crate) fn row_bg(&self, k: usize, selected: bool) -> String {
         if selected {
-            "#FF2C3B63"
+            crate::tokens::refer("selected")
         } else if k % 2 == 1 {
-            "#08FFFFFF"
+            crate::tokens::refer("stripe")
         } else {
-            "Transparent"
+            "Transparent".to_string()
         }
     }
 

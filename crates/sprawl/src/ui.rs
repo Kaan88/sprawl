@@ -124,7 +124,7 @@ pub(crate) fn markdown(text: &str, size: u32, colour: &str) -> String {
         if let Some(q) = t.strip_prefix('>') {
             flush(&mut out, &mut para);
             out.push_str(&format!(
-                r##"<Border BorderBrush="#44FFFFFF" BorderThickness="2,0,0,0" Padding="8,0,0,0"><TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="{size}" Foreground="{{$text2}}">{}</TextBlock></Border>"##,
+                r##"<Border BorderBrush="{{$edge}}" BorderThickness="2,0,0,0" Padding="8,0,0,0"><TextBlock TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="{size}" Foreground="{{$text2}}">{}</TextBlock></Border>"##,
                 inline(q.trim())
             ));
             continue;
@@ -562,7 +562,7 @@ pub(crate) fn shortcuts_xaml() -> String {
                     "PageDown" => "Page Down",
                     x => x,
                 };
-                format!(r##"<Border Padding="6,0,6,1" MinWidth="22" CornerRadius="{{$rc4}}" Background="#1FFFFFFF" BorderBrush="#30FFFFFF" BorderThickness="1,1,1,2"><TextBlock Text="{}" FontSize="{{$fs11}}" FontWeight="SemiBold" Foreground="#FFE4E8F2" HorizontalAlignment="Center"/></Border>"##, esc(p))
+                format!(r##"<Border Padding="6,0,6,1" MinWidth="22" CornerRadius="{{$rc4}}" Background="{{$keycap}}" BorderBrush="{{$edge}}" BorderThickness="1,1,1,2"><TextBlock Text="{}" FontSize="{{$fs11}}" FontWeight="SemiBold" Foreground="{{$rest}}" HorizontalAlignment="Center"/></Border>"##, esc(p))
             })
             .collect()
     };
@@ -638,9 +638,9 @@ fn radio_in(group: &str, name: &str, text: &str, checked: bool) -> String {
 
 const SEP: &str = "<MenuFlyoutSeparator/>";
 
-/// Glass surfaces over the acrylic window.
-const CARD: &str = r##"CornerRadius="{$rc8}" Background="#12FFFFFF" BorderBrush="#1CFFFFFF" BorderThickness="1""##;
-const PANE: &str = r##"CornerRadius="{$rc8}" Background="#0DFFFFFF" BorderBrush="{$line1}" BorderThickness="1""##;
+/// Glass surfaces over the ink ground.
+const CARD: &str = r##"CornerRadius="{$rc8}" Background="{$card}" BorderBrush="{$line1}" BorderThickness="1""##;
+const PANE: &str = r##"CornerRadius="{$rc8}" Background="{$card}" BorderBrush="{$line1}" BorderThickness="1""##;
 
 fn hud() -> String {
     let num = crate::look::NUM;
@@ -650,24 +650,23 @@ fn hud() -> String {
                 r##"<Grid x:Name="Lane{k}" Height="20" VerticalAlignment="Top" Opacity="0" ColumnSpacing="8">
   <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/><ColumnDefinition Width="70"/></Grid.ColumnDefinitions>
   <TextBlock x:Name="Lane{k}Name" FontSize="{{$fs12}}" VerticalAlignment="Center"/>
-  <Border x:Name="Lane{k}Bar" Grid.Column="1" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="2" Background="#FF4CC2FF"/>
-  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" {num} FontSize="{{$fs12}}" Foreground="#FFA8AFC1" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+  <Border x:Name="Lane{k}Bar" Grid.Column="1" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="2" Background="{{$accentmark}}"/>
+  <TextBlock x:Name="Lane{k}Val" Grid.Column="2" {num} FontSize="{{$fs12}}" Foreground="{{$label}}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
 </Grid>"##
             )
         })
         .collect();
     let stat = |label: &str, name: &str, col: u8, row: u8| {
         format!(
-            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="{{$fs12}}" Foreground="#FF7A8296"/><TextBlock x:Name="{name}" Text="0" {num} FontSize="{{$fs17}}" FontWeight="SemiBold"/></StackPanel>"##
+            r##"<StackPanel Grid.Column="{col}" Grid.Row="{row}"><TextBlock Text="{label}" FontSize="{{$fs12}}" Foreground="{{$faint}}"/><TextBlock x:Name="{name}" Text="0" {num} FontSize="{{$fs17}}" FontWeight="SemiBold"/></StackPanel>"##
         )
     };
     format!(
-        r##"<Border x:Name="Hud" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="14" Width="336" CornerRadius="{{$rc10}}" Padding="14,12" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed" Opacity="0" IsHitTestVisible="False">
-  <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
+        r##"<Border x:Name="Hud" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="14" Width="336" CornerRadius="{{$rc10}}" Padding="14,12" BorderBrush="{{$line2}}" BorderThickness="1" Background="{{$popup}}" Visibility="Collapsed" Opacity="0" IsHitTestVisible="False">
   <StackPanel Spacing="8">
     <Grid>
-      <TextBlock x:Name="HudMethod" Text="Reading" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="#FF7A8296" CharacterSpacing="60"/>
-      <TextBlock x:Name="HudPct" Text="0%" {num} FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="#FF4CC2FF" HorizontalAlignment="Right"/>
+      <TextBlock x:Name="HudMethod" Text="Reading" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$faint}}" CharacterSpacing="60"/>
+      <TextBlock x:Name="HudPct" Text="0%" {num} FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$accenttext}}" HorizontalAlignment="Right"/>
     </Grid>
     <Image x:Name="HudImage" Height="76" Stretch="Fill"/>
     <Grid ColumnSpacing="14" RowSpacing="6">
@@ -687,13 +686,14 @@ fn hud() -> String {
 
 pub fn page(drives: &[String]) -> String {
     let num = crate::look::NUM;
+    let accent = crate::look::accent().fill.clone();
     use crate::look::{pick, pick_drop, Pick};
     let (tab_on, tab_off) = (pick(Pick::Page, true), pick(Pick::Page, false));
     // a small count beside a tab's name, hidden while there is nothing to count
-    let badge = |name: &str| format!(r##"<Border x:Name="{name}" Visibility="Collapsed" Padding="6,0,6,1" MinWidth="20" CornerRadius="{{$rc9}}" Background="#334CC2FF" VerticalAlignment="Center"><TextBlock x:Name="{name}Text" Text="" FontSize="{{$fs11}}" HorizontalAlignment="Center" Foreground="{{$text1}}"/></Border>"##);
+    let badge = |name: &str| format!(r##"<Border x:Name="{name}" Visibility="Collapsed" Padding="6,0,6,1" MinWidth="20" CornerRadius="{{$rc9}}" Background="{{$accentchip}}" VerticalAlignment="Center"><TextBlock x:Name="{name}Text" Text="" FontSize="{{$fs11}}" HorizontalAlignment="Center" Foreground="{{$text1}}"/></Border>"##);
     let (adv_badge, cl_badge) = (badge("TabAdvisorCount"), badge("TabCleanersCount"));
     // the activity indicator: the selectable look on its own blue
-    let busy_style = r##"Style="{StaticResource SprawlPick}" Background="#332F6BFF""##;
+    let busy_style = r##"Style="{StaticResource SprawlPick}" Background="{$accentchip}""##;
     let (mode_on, mode_off, drop_off) = (pick(Pick::Mode, true), pick(Pick::Mode, false), pick_drop(Pick::Mode, false));
     let drive_items: String = drives
         .iter()
@@ -818,8 +818,7 @@ pub fn page(drives: &[String]) -> String {
     note_shortcut("Colours and Tweaks", "T", "Control");
     let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
     let tweaks = format!(r##"
-    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="{{$rc10}}" Padding="16,10,4,10" BorderBrush="#26FFFFFF" BorderThickness="1" Visibility="Collapsed">
-      <Border.Background><AcrylicBrush TintColor="#FF141620" TintOpacity="0.55" TintLuminosityOpacity="0.7" FallbackColor="#E8161822"/></Border.Background>
+    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="{{$rc10}}" Padding="16,10,4,10" BorderBrush="{{$line2}}" BorderThickness="1" Background="{{$popup}}" Visibility="Collapsed">
       <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Grid Margin="0,0,12,0">
           <TextBlock Text="Colours and Tweaks" FontSize="{{$fs13}}" FontWeight="SemiBold" VerticalAlignment="Center"/>
@@ -843,7 +842,7 @@ pub fn page(drives: &[String]) -> String {
     </Border>"##);
 
     format!(
-        r##"<Grid {NS} x:Name="Root" RequestedTheme="Dark" Background="Transparent">
+        r##"<Grid {NS} x:Name="Root" RequestedTheme="Dark" Background="{{$ground}}">
   <Grid.RowDefinitions>
     <RowDefinition Height="40"/>
     <RowDefinition Height="Auto"/>
@@ -871,7 +870,7 @@ pub fn page(drives: &[String]) -> String {
           <Rectangle Fill="White" RadiusX="0.4" RadiusY="0.4" Width="2.8" Height="4.3" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="9.2,0,0,0"/>
         </Grid>
       </Border>
-      <TextBlock x:Name="TitleText" Text="Sprawl" FontSize="{{$fs12}}" VerticalAlignment="Center" Foreground="#FFC9CFDC"/>
+      <TextBlock x:Name="TitleText" Text="Sprawl" FontSize="{{$fs12}}" VerticalAlignment="Center" Foreground="{{$text1}}"/>
     </StackPanel>
   </Grid>
 
@@ -908,20 +907,14 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock x:Name="HeadLabel" Text="Selected:" Foreground="{{$text3}}" FontSize="{{$fs12}}"/>
         <TextBlock x:Name="SelText" {num} Grid.Column="1" Grid.ColumnSpan="2" Text="-" FontWeight="SemiBold" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/>
         <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10">
-          <TextBlock x:Name="ScanInfo" {num} Text="Not scanned yet" FontSize="{{$fs12}}" Foreground="#FFC9CFDC" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+          <TextBlock x:Name="ScanInfo" {num} Text="Not scanned yet" FontSize="{{$fs12}}" Foreground="{{$text1}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
           <HyperlinkButton x:Name="CoverageDetails" Content="Details" Visibility="Collapsed" Padding="4,0" FontSize="{{$fs12}}" VerticalAlignment="Center" ToolTipService.ToolTip="What this scan covers: how it was read, what it couldn't read or skipped, and what isn't in it"/>
         </StackPanel>
         <TextBlock x:Name="DriveLabel" Text="Drive:" Grid.Row="2" Foreground="{{$text3}}" FontSize="{{$fs12}}"/>
-        <TextBlock x:Name="DriveText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontSize="{{$fs12}}" Foreground="#FFC9CFDC"/>
+        <TextBlock x:Name="DriveText" {num} Grid.Row="2" Grid.Column="1" Text="-" FontSize="{{$fs12}}" Foreground="{{$text1}}"/>
         <Grid Grid.Row="2" Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
           <Border x:Name="UsageTrack" Height="8" CornerRadius="{{$rc4}}" Background="{{$hover}}"/>
-          <Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0">
-            <Border.Background>
-              <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                <GradientStop Color="#FF4CC2FF" Offset="0"/><GradientStop Color="#FF9B7BFF" Offset="0.8"/><GradientStop Color="#FFFF6B8B" Offset="1"/>
-              </LinearGradientBrush>
-            </Border.Background>
-          </Border>
+          <Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{accent}"/>
         </Grid>
       </Grid>
     </Border>
@@ -940,8 +933,8 @@ pub fn page(drives: &[String]) -> String {
   <Button x:Name="BusyPill" Visibility="Collapsed" {busy_style} HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,352,0" Width="260" Height="32" Padding="10,0" HorizontalContentAlignment="Stretch" ToolTipService.ToolTip="What is running now. Click for the list; an entry opens its tab.">
     <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <ProgressRing IsActive="True" Width="14" Height="14" MinWidth="0" MinHeight="0" VerticalAlignment="Center"/>
-      <TextBlock x:Name="BusyText" Grid.Column="1" FontSize="{{$fs12}}" Foreground="#FFCFE0FF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-      <TextBlock x:Name="BusyMore" Grid.Column="2" {num} FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="#FFCFE0FF" VerticalAlignment="Center"/>
+      <TextBlock x:Name="BusyText" Grid.Column="1" FontSize="{{$fs12}}" Foreground="{{$seltext}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+      <TextBlock x:Name="BusyMore" Grid.Column="2" {num} FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$seltext}}" VerticalAlignment="Center"/>
     </Grid>
     <Button.Flyout><Flyout x:Name="BusyFly" Placement="BottomEdgeAlignedRight"><Border x:Name="BusyList" MinWidth="320" MaxWidth="520"/></Flyout></Button.Flyout>
   </Button>
@@ -991,7 +984,7 @@ pub fn page(drives: &[String]) -> String {
         </Grid>
         <Border x:Name="SearchNone" Grid.Row="2" Visibility="Collapsed" Padding="16,14" VerticalAlignment="Top" IsHitTestVisible="False" Canvas.ZIndex="5"><TextBlock x:Name="SearchNoneText" TextWrapping="Wrap" FontSize="{{$fs13}}" LineHeight="22" Foreground="{{$text2}}"/></Border>
         <Border x:Name="SearchEmpty" Grid.Row="2" Visibility="Collapsed" Background="Transparent"><ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="16,12"><Border x:Name="SearchEmptyHost"/></ScrollViewer></Border>
-        <Border x:Name="SearchSuggest" Grid.RowSpan="3" Canvas.ZIndex="20" Visibility="Collapsed" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,42,0,0" MinWidth="320" MaxWidth="640" Padding="4" CornerRadius="{{$rc6}}" Background="#F21C1F2A" BorderBrush="#33FFFFFF" BorderThickness="1"/>
+        <Border x:Name="SearchSuggest" Grid.RowSpan="3" Canvas.ZIndex="20" Visibility="Collapsed" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,42,0,0" MinWidth="320" MaxWidth="640" Padding="4" CornerRadius="{{$rc6}}" Background="{{$panel}}" BorderBrush="{{$edge}}" BorderThickness="1"/>
         <Border x:Name="TreeHeader" Grid.Row="1"/>
         <ScrollViewer x:Name="TreeScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled" IsTabStop="True" UseSystemFocusVisuals="False">
           <FlyoutBase.AttachedFlyout>
@@ -1007,7 +1000,7 @@ pub fn page(drives: &[String]) -> String {
               <MenuFlyoutItem x:Name="cCopyInfo" Text="Copy Name and Size"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE16F;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutSeparator/>
               <MenuFlyoutItem x:Name="cDelete" Text="Delete (to Recycle Bin)"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cDeleteForever" Text="Delete Permanently"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;" Foreground="#FFFF6B6B"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
+              <MenuFlyoutItem x:Name="cDeleteForever" Text="Delete Permanently"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;" Foreground="{{$fail}}"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
               <MenuFlyoutSeparator/>
               {shell_item}
             </MenuFlyout>
@@ -1072,19 +1065,19 @@ pub fn page(drives: &[String]) -> String {
     <TextBlock x:Name="FootLeft" {num} Text="" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
     <TextBlock x:Name="FootRight" {num} Text="" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" HorizontalAlignment="Right"/>
   </Grid>
-  <Border x:Name="DeleteCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="{{$rc8}}" Background="#F01A1D27" BorderBrush="#55FF7A45" BorderThickness="1" Width="400">
+  <Border x:Name="DeleteCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="{{$rc8}}" Background="{{$panel}}" BorderBrush="{{$alertline}}" BorderThickness="1" Width="400">
     <StackPanel Spacing="8"><TextBlock x:Name="DeleteTitle" Text="Deleting..." FontSize="{{$fs14}}" FontWeight="SemiBold"/>
-      <Border Height="6" CornerRadius="{{$rc3}}" Background="{{$pressed}}" Width="372" HorizontalAlignment="Left"><Border x:Name="DeleteBar" Width="0" HorizontalAlignment="Left" CornerRadius="{{$rc3}}" Background="#FFFF7A45"/></Border>
+      <Border Height="6" CornerRadius="{{$rc3}}" Background="{{$pressed}}" Width="372" HorizontalAlignment="Left"><Border x:Name="DeleteBar" Width="0" HorizontalAlignment="Left" CornerRadius="{{$rc3}}" Background="{{$alertmark}}"/></Border>
       <Grid><TextBlock x:Name="DeleteSub" {num} Text="" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,80,0"/><Button x:Name="DeleteStop" Content="Stop" HorizontalAlignment="Right"/></Grid>
       <TextBlock Text="You can keep using Sprawl meanwhile. Stop ends it after the item it is on." FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel>
   </Border>
-  <Border x:Name="UpdateCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="{{$rc8}}" Background="#F01A1D27" BorderBrush="#552F7BF6" BorderThickness="1" Width="400">
+  <Border x:Name="UpdateCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="{{$rc8}}" Background="{{$panel}}" BorderBrush="{{$accentline}}" BorderThickness="1" Width="400">
     <StackPanel Spacing="6"><TextBlock x:Name="UpdateTitle" FontSize="{{$fs14}}" FontWeight="SemiBold"/><TextBlock x:Name="UpdateSub" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>
       <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto" VerticalScrollMode="Enabled"><TextBlock x:Name="UpdateNotes" FontSize="{{$fs12}}" Foreground="{{$text1}}" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></ScrollViewer>
       <TextBlock x:Name="UpdateStatus" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap"/>
       <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="UpdateNow" Content="Update and restart" Style="{{StaticResource SprawlPrimary}}"/><Button x:Name="UpdateLater" Content="Later"/><Button x:Name="UpdateSkip" Content="Skip this version"/></StackPanel></StackPanel>
   </Border>
-  <Border x:Name="SetupOffer" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="{{$rc8}}" Background="#E61A1D27" BorderBrush="#552F7BF6" BorderThickness="1" MaxWidth="360">
+  <Border x:Name="SetupOffer" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="{{$rc8}}" Background="{{$panel}}" BorderBrush="{{$accentline}}" BorderThickness="1" MaxWidth="360">
     <StackPanel Spacing="8"><TextBlock Text="Set up Sprawl?" FontSize="{{$fs14}}" FontWeight="SemiBold"/><TextBlock Text="An AI to explain unknown folders, faster scans as administrator, and history to see what grows. All optional." FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>
       <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="SetupYes" Content="Set up" Style="{{StaticResource SprawlPrimary}}"/><Button x:Name="SetupNo" Content="Not now"/></StackPanel></StackPanel>
   </Border>
