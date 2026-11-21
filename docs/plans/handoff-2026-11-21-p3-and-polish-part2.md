@@ -195,3 +195,10 @@ the explanation helper (`ui::note`, fs13). 119 app tests green; screenshots in `
 Waiting on the user clicking a test build (hover / press feel cannot be judged from pictures). Part 3 left:
 white % text on a light accent bar, focus ring template, tick / switch motion, soft shadow. Then Part 4.
 The two `.claude/worktrees/agent-*` worktrees are merged and can be removed.
+
+## Update 5 (2026-11-22)
+
+- Merged: instant light/dark (restyle.rs), first-launch speed (d05ebca), Search multi-select + Delete + Show in Explorer fix, Delete for other-drive and saved-scan rows (cd9e774), Theme page in Settings (6fa6d69). 516 workspace tests pass; release build in target/alt2.
+- Theme page: presets Sprawl/Windows/Midnight/Paper/Custom, Customise tabs Colour/Shape/Feel/Text and space, Copy/Paste theme, Back to Sprawl's own; stored as `look.<key>` + `look.custom` in settings.ini; Save applies live.
+- Not pushed. Waiting on the user's click test (hover/press, Theme page, Search delete on throwaway folders). In the light dropdown screenshot the open popup has a black frame; check whether it shows in the real app or only in the capture.
+- Still open: Part 3 tick/switch motion, soft shadow, field focus ring; Part 4 tier 2/3 options (custom accent, strength, backdrop, risk colours via Fable queue, chips, tabs, density...); Part 5 checks and CHANGELOG pass; clean up merged worktrees.
