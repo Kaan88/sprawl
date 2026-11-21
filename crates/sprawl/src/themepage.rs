@@ -359,11 +359,12 @@ impl State {
         if let (Ok(host), Some(el)) = (find::<Border>(fe, "TmSample"), sample_element(&t.look, t.mode)) {
             let _ = host.SetChild(&el);
         }
-        if let (Ok(host), Ok(el)) = (find::<Border>(fe, "TmPresets"), crate::state::load::<UIElement>(&self.theme_presets())) {
+        if let (Ok(host), Ok(el)) = (find::<Border>(fe, "TmPresets"), crate::state::load::<FrameworkElement>(&self.theme_presets())) {
             let _ = host.SetChild(&el);
+            // the row was loaded on its own, so its names are found in it, not in the page
             for i in 0..PRESETS.len() {
                 let name = format!("TmPre{i}");
-                if let Ok(b) = find::<ButtonBase>(fe, &name) {
+                if let Ok(b) = find::<ButtonBase>(&el, &name) {
                     if let Ok(tok) = b.Click(move |_, _| {
                         let n = name.clone();
                         with(move |s| s.prefs_button(&n));
