@@ -1244,7 +1244,7 @@ impl State {
                 else if only_compress { format!("Compressing... {} of {} gone through, {} saved so far", self.size(through), self.size(total), self.size(freed)) }
                 else { format!("Cleaning up... {} freed so far", self.size(freed)) };
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                r##"<Border Padding="14,12" CornerRadius="8" Background="#142F7BF6" BorderBrush="#552F7BF6" BorderThickness="1"><StackPanel Spacing="8"><StackPanel Orientation="Horizontal" Spacing="10"><ProgressRing IsActive="True" Width="18" Height="18"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="AdvCleanStop" Content="Stop"/></StackPanel>"##,
                 ui::esc(&head),
                 num = crate::look::NUM
             );
@@ -1303,7 +1303,7 @@ impl State {
             let gone = done_words(d);
             let gone = gone.as_str();
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK" Padding="12,2" FontSize="12" CornerRadius="5"/></Grid><TextBlock Text="{gone} The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvCleanLog" Content="See what was removed" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                r##"<Border Padding="14,12" CornerRadius="8" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="16" Foreground="{colour}"/><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK"/></Grid><TextBlock Text="{gone} The tree, the map and the findings are updated.{}" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI"/><Button x:Name="AdvCleanLog" Content="See what was removed"/></StackPanel>"##,
                 ui::esc(&head),
                 self.tree.as_ref().and_then(|t| crate::win32::disk_space(&t.path_of(sprawl_core::ROOT))).map_or(String::new(), |(_, free)| ui::esc(&format!(" The disk now has {} free.", self.size(free)))),
                 num = crate::look::NUM
@@ -1311,7 +1311,7 @@ impl State {
             // a privacy set held because its browser was open leads somewhere
             if !d.privacy_open.is_empty() {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="AdvPvAgain" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="AdvPvAgain" Content="Check again"/></StackPanel>"##,
                     ui::esc(&close_then(&d.privacy_open))
                 );
             }
@@ -1365,11 +1365,11 @@ impl State {
             let options = if self.advisor.cleaners_tab_on() {
                 ""
             } else {
-                r##"<Button x:Name="AdvGoalOptions" Grid.Column="1" Content="Compare options for this goal" Padding="10,3" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/>"##
+                r##"<Button x:Name="AdvGoalOptions" Grid.Column="1" Content="Compare options for this goal" VerticalAlignment="Center"/>"##
             };
             return format!(
                 r##"<Border Padding="12,8" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-<StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><TextBlock Text="Nothing ticked" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>{options}</Grid></Border>"##
+<StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><TextBlock Text="Nothing ticked" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones"/><TextBlock Text="or tick enough for" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick"/></StackPanel>{options}</Grid></Border>"##
             );
         }
         // B2: what the ticked items take on disk now, and about what is left after
@@ -1386,9 +1386,9 @@ impl State {
         // to tick on the next, the explanation last
         let mut x = format!(
             r##"<Border Padding="12,10" CornerRadius="8" Background="#0FFFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1"><StackPanel Spacing="8">
-<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/><Button x:Name="AdvClean" Content="Review selection..." Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>{prev}<Border Width="1" Height="22" Margin="4,0" Background="#33FFFFFF" VerticalAlignment="Center"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" Padding="10,3" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/><Button x:Name="AdvSelNone" Content="Untick all" Padding="10,3" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/></StackPanel>
+<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0"/><Button x:Name="AdvClean" Content="Review selection..." Style="{{StaticResource SprawlPrimary}}" IsEnabled="{}"/>{prev}<Border Width="1" Height="22" Margin="4,0" Background="#33FFFFFF" VerticalAlignment="Center"/><Button x:Name="AdvSelSafe" Content="Tick the safe ones" VerticalAlignment="Center"/><Button x:Name="AdvSelNone" Content="Untick all" VerticalAlignment="Center"/></StackPanel>
 {sizes}
-<StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Or tick enough for" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>
+<StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="Or tick enough for" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><TextBox x:Name="AdvGoal" Width="64" PlaceholderText="{goal}"/><TextBlock Text="GB" FontSize="12" VerticalAlignment="Center" Foreground="#FFB9C2D6"/><Button x:Name="AdvSelGoal" Content="Tick"/></StackPanel>
 <TextBlock Text="{}" FontSize="12" Foreground="#FFA0A8B8" TextWrapping="Wrap"/>"##,
             match (picked.is_empty(), privacy) {
                 (true, 0) => "Nothing ticked".to_string(),
@@ -1400,7 +1400,7 @@ impl State {
             if self.advisor.cleanup.auto && !picked.is_empty() { "The safe ones are ticked. Change the ticks, then review them: nothing goes before you confirm." } else { "Review what is ticked: nothing goes before you confirm. Sprawl removes it itself and shows what was freed." },
             prev = if self.advisor.cleaners_tab_on() {
                 format!(
-                    r##"<Button x:Name="AdvClPrev" Content="Preview" Padding="14,6" FontSize="13" CornerRadius="6" IsEnabled="{}" ToolTipService.ToolTip="The exact files that would go, counted now. Nothing is deleted."/>"##,
+                    r##"<Button x:Name="AdvClPrev" Content="Preview" IsEnabled="{}" ToolTipService.ToolTip="The exact files that would go, counted now. Nothing is deleted."/>"##,
                     if picked.is_empty() || matches!(self.advisor.cl.preview, Some(crate::cleaners::PreviewRun::Counting(_))) { "False" } else { "True" }
                 )
             } else {
@@ -1408,10 +1408,10 @@ impl State {
             },
         );
         if admin_waiting {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7EF;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="Some items need administrator rights." FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvAdmin" Content="Restart as administrator"/></StackPanel>"##;
         }
         if !self.advisor.cleaners_tab_on() {
-            x += r##"<Button x:Name="AdvGoalOptions" Content="Compare options for this goal" Padding="10,3" FontSize="12" CornerRadius="5" HorizontalAlignment="Left"/>"##;
+            x += r##"<Button x:Name="AdvGoalOptions" Content="Compare options for this goal" HorizontalAlignment="Left"/>"##;
         }
         x += r##"<Button x:Name="AdvExport" Padding="0" FontSize="12" BorderThickness="0" Background="Transparent" Foreground="#FF8E97AA" Content="Save as a script instead..."/>"##;
         x += "</StackPanel></Border>";
@@ -1549,7 +1549,7 @@ impl State {
         // everything changed since the scan began stays: an old scan leaves most of it
         if let Some(age) = scan_age_words(self.active_began(), std::time::SystemTime::now()) {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE823;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="The scan is {age} old. What changed since it began is left alone, so this may free less than shown. Scan again first for a full clean-up." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" MaxWidth="760" VerticalAlignment="Center"/><Button x:Name="AdvRescanOld" Content="Scan again" Padding="10,2" FontSize="12" CornerRadius="5" VerticalAlignment="Center"/></StackPanel>"##
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE823;" FontSize="13" Foreground="#FFF5B342"/><TextBlock Text="The scan is {age} old. What changed since it began is left alone, so this may free less than shown. Scan again first for a full clean-up." FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" MaxWidth="760" VerticalAlignment="Center"/><Button x:Name="AdvRescanOld" Content="Scan again" VerticalAlignment="Center"/></StackPanel>"##
             );
         }
         for (_, f) in picked.iter().filter(|(_, f)| crate::advisor::gone_for_good(f) && !goes_to_bin(f, bin_on)) {
@@ -1600,7 +1600,7 @@ impl State {
             if !warn.is_empty() {
                 x += &format!(r##"<TextBlock Text="{} {} open: files in use are skipped." FontSize="12" Foreground="#FFB9A36A" TextWrapping="Wrap"/>"##, ui::esc(&warn.join(", ")), if warn.len() == 1 { "is" } else { "are" });
             }
-            x += r##"<Button x:Name="AdvClCheck" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##;
+            x += r##"<Button x:Name="AdvClCheck" Content="Check again"/></StackPanel>"##;
         }
         if own {
             // all of the user's own go to the bin: they can be brought back from there
@@ -1620,8 +1620,12 @@ impl State {
                 }
             );
         }
-        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="{}" Padding="16,6" FontSize="13" CornerRadius="6" Background="#FF2F7BF6" Foreground="White" IsEnabled="{}"/>"##, ui::esc(&final_action(&picked.iter().map(|(_, f)| outcome(f, bin_on)).collect::<Vec<_>>(), privacy.len())), if (picked.is_empty() && privacy.is_empty()) || (own && !self.advisor.cleanup.own_ok) || (!privacy.is_empty() && !self.advisor.cleanup.privacy_ok) { "False" } else { "True" });
-        x += r##"<Button x:Name="AdvReviewBack" Content="Back" Padding="14,6" FontSize="13" CornerRadius="6"/></StackPanel>"##;
+        let outcomes: Vec<Fate> = picked.iter().map(|(_, f)| outcome(f, bin_on)).collect();
+        // red when anything is deleted for good (privacy sets skip the Recycle Bin too), the
+        // accent when everything can be brought back or is a cleaner's own clean-up
+        let style = if outcomes.contains(&Fate::Gone) || !privacy.is_empty() { "SprawlDanger" } else { "SprawlPrimary" };
+        x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanNow" Content="{}" Style="{{StaticResource {style}}}" IsEnabled="{}"/>"##, ui::esc(&final_action(&outcomes, privacy.len())), if (picked.is_empty() && privacy.is_empty()) || (own && !self.advisor.cleanup.own_ok) || (!privacy.is_empty() && !self.advisor.cleanup.privacy_ok) { "False" } else { "True" });
+        x += r##"<Button x:Name="AdvReviewBack" Content="Back"/></StackPanel>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -1875,7 +1879,7 @@ impl State {
         x += &format!(r##"<TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, ui::esc(sprawl_advisor::privacy::DELETED_NOTE));
         if !open.is_empty() {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="AdvClCheck" Content="Check again" Padding="10,2" FontSize="12" CornerRadius="5"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="AdvClCheck" Content="Check again"/></StackPanel>"##,
                 ui::esc(&close_then(&open))
             );
         }

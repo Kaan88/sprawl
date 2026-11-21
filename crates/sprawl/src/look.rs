@@ -14,8 +14,65 @@ use crate::ui;
 /// same width, so the text doesn't shift sideways as it counts.
 pub(crate) const NUM: &str = r##"Typography.NumeralAlignment="Tabular""##;
 
-/// The background of the selected item, for every kind.
+/// The background of a selected row or tab (a list's line, the Settings sections). Chips and
+/// the map's modes take the accent instead ([`Pick::bg`]).
 pub(crate) const SELECTED: &str = "#FF2C3B63";
+
+/// A selectable item's text at rest, as the styles set it.
+const REST_TEXT: &str = "#FFE6EAF2";
+
+/// The Windows accent colour (Settings > Personalisation > Colours) the way WinUI's own accent
+/// buttons draw it: `fill` behind `on` text, and `text` for accent-coloured words on the page.
+/// Written "#RRGGBB" (six digits) on purpose: the light-mode rewrite in theme.rs turns only
+/// "#AARRGGBB" values around, and these are already the ones for the theme in use.
+pub(crate) struct Accent {
+    pub fill: String,
+    pub on: &'static str,
+    pub text: String,
+}
+
+/// The accent, read once.
+pub(crate) fn accent() -> &'static Accent {
+    static A: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
+    A.get_or_init(|| accent_from(palette(), crate::theme::light()))
+}
+
+/// Windows' accent palette, lightest first: Light3, Light2, Light1, the accent, Dark1, Dark2,
+/// Dark3 (WinUI's accent fills and text are made from these).
+fn palette() -> Option<[[u8; 3]; 7]> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
+    let mut buf = [0u8; 32];
+    let mut n = buf.len() as u32;
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            &HSTRING::from(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent"),
+            &HSTRING::from("AccentPalette"),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut n),
+        )
+    };
+    (r == ERROR_SUCCESS && n >= 28).then(|| std::array::from_fn(|i| [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]]))
+}
+
+/// The accent for a light or dark page, from the palette (Windows' own blue without one):
+/// dark pages fill with Light2 and write accent text in Light3, light pages Dark1 and Dark2.
+fn accent_from(p: Option<[[u8; 3]; 7]>, light: bool) -> Accent {
+    let p = p.unwrap_or([[0x99, 0xEB, 0xFF], [0x4C, 0xC2, 0xFF], [0x00, 0x91, 0xF8], [0x00, 0x78, 0xD4], [0x00, 0x67, 0xC0], [0x00, 0x3E, 0x92], [0x00, 0x1A, 0x68]]);
+    let hex = |c: [u8; 3]| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
+    if light {
+        Accent { fill: hex(p[4]), on: "#FFFFFF", text: hex(p[5]) }
+    } else {
+        Accent { fill: hex(p[1]), on: "#000000", text: hex(p[0]) }
+    }
+}
+
+/// The fill of a button that deletes for good (and of the dialogs that warn about it).
+pub(crate) const DANGER: &str = "#FFC42B1C";
 
 /// The families of selectable items: they differ only in their background at rest.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -30,8 +87,10 @@ pub(crate) enum Pick {
     Page,
 }
 
-/// The underline under the open page tab.
-pub(crate) const UNDERLINE: &str = "#FF4CC2FF";
+/// The underline under the open page tab: the accent.
+pub(crate) fn underline() -> &'static str {
+    &accent().fill
+}
 
 impl Pick {
     pub(crate) fn rest(self) -> &'static str {
@@ -43,12 +102,27 @@ impl Pick {
         }
     }
 
-    /// Its background, selected or not.
+    /// Its background, selected or not: a selected chip or map mode is filled with the accent,
+    /// like WinUI's toggle buttons; a selected row or tab is quieter, so its grey second line
+    /// stays readable.
     pub(crate) fn bg(self, on: bool) -> &'static str {
-        if on && self != Pick::Page {
-            SELECTED
-        } else {
-            self.rest()
+        match (self, on) {
+            (Pick::Chip | Pick::Mode, true) => &accent().fill,
+            (Pick::Tab, true) => SELECTED,
+            _ => self.rest(),
+        }
+    }
+
+    /// Its text colour when it differs from the style's: on the accent fill.
+    pub(crate) fn fg(self, on: bool) -> Option<&'static str> {
+        (on && matches!(self, Pick::Chip | Pick::Mode)).then(|| accent().on)
+    }
+
+    fn style(self) -> &'static str {
+        match self {
+            Pick::Chip => "SprawlChip",
+            Pick::Page => "SprawlPage",
+            _ => "SprawlPick",
         }
     }
 }
@@ -56,9 +130,10 @@ impl Pick {
 /// The attributes for a `<Button>` drawn as a selectable item.
 pub(crate) fn pick(kind: Pick, on: bool) -> String {
     if kind == Pick::Page {
-        return format!(r##"Style="{{StaticResource SprawlPage}}" Background="Transparent" BorderBrush="{}""##, if on { UNDERLINE } else { "Transparent" });
+        return format!(r##"Style="{{StaticResource SprawlPage}}" Background="Transparent" BorderBrush="{}""##, if on { underline() } else { "Transparent" });
     }
-    format!(r##"Style="{{StaticResource SprawlPick}}" Background="{}""##, kind.bg(on))
+    let fg = kind.fg(on).map(|c| format!(r#" Foreground="{c}""#)).unwrap_or_default();
+    format!(r##"Style="{{StaticResource {}}}" Background="{}"{fg}"##, kind.style(), kind.bg(on))
 }
 
 /// The same for a `<DropDownButton>` (its arrow is part of the look).
@@ -71,13 +146,19 @@ pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
     let Ok(c) = find::<Control>(root, name) else { return };
     if kind == Pick::Page {
         // the underline is the template's line, in the tab's BorderBrush
-        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { UNDERLINE } else { "#00000000" })) {
+        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { underline() } else { "#00000000" })) {
             let _ = c.SetBorderBrush(&br);
         }
         return;
     }
     if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, kind.bg(on))) {
         let _ = c.SetBackground(&br);
+    }
+    // the text follows: dark on the accent, the style's own colour off it
+    if matches!(kind, Pick::Chip | Pick::Mode) {
+        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, kind.fg(on).unwrap_or(REST_TEXT))) {
+            let _ = c.SetForeground(&br);
+        }
     }
 }
 
@@ -93,7 +174,7 @@ pub(crate) fn label(text: &str) -> String {
 /// only. So selected-and-pointer-over is the selected background with the faint wash, and a
 /// selected item the pointer has left is the selected background alone. With `line`: a 3 px
 /// line under the content in the BorderBrush (the page tabs; they have no border of their own).
-fn template_with(target: &str, arrow: bool, line: bool) -> String {
+fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> String {
     let (cols, arrow) = if arrow {
         (
             r##"<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>"##,
@@ -106,6 +187,13 @@ fn template_with(target: &str, arrow: bool, line: bool) -> String {
         ("", r##"<Border x:Name="Line" Grid.ColumnSpan="2" VerticalAlignment="Bottom" Height="3" Margin="12,0,12,0" CornerRadius="2" Background="{TemplateBinding BorderBrush}" IsHitTestVisible="False"/>"##)
     } else {
         (r##"BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}""##, "")
+    };
+    // a filled button (the red one) turns grey when it can't be pressed, as WinUI's do; the
+    // rest just fade
+    let disabled = if grey_off {
+        r##"<Setter Target="Root.Background" Value="#14FFFFFF"/><Setter Target="Content.Foreground" Value="#5CFFFFFF"/>"##
+    } else {
+        r##"<Setter Target="Content.Opacity" Value="0.4"/>"##
     };
     format!(
         r##"<ControlTemplate TargetType="{target}">
@@ -120,7 +208,7 @@ fn template_with(target: &str, arrow: bool, line: bool) -> String {
         <VisualState x:Name="Normal"/>
         <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="Wash.Opacity" Value="0.07"/></VisualState.Setters></VisualState>
         <VisualState x:Name="Pressed"><VisualState.Setters><Setter Target="Wash.Opacity" Value="0.12"/><Setter Target="Content.Opacity" Value="0.8"/></VisualState.Setters></VisualState>
-        <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="Content.Opacity" Value="0.4"/></VisualState.Setters></VisualState>
+        <VisualState x:Name="Disabled"><VisualState.Setters>{disabled}</VisualState.Setters></VisualState>
       </VisualStateGroup>
     </VisualStateManager.VisualStateGroups>
   </Grid>
@@ -128,38 +216,85 @@ fn template_with(target: &str, arrow: bool, line: bool) -> String {
     )
 }
 
-fn style(key: &str, target: &str, arrow: bool) -> String {
-    style_with(key, target, arrow, false)
+/// The size and colours a style sets; a button's own attributes still win.
+struct Geo {
+    padding: &'static str,
+    corner: &'static str,
+    size: &'static str,
+    weight: &'static str,
+    /// The border: its width and colour (a transparent one keeps the height of a WinUI button).
+    border: (&'static str, &'static str),
+    background: &'static str,
+    foreground: String,
 }
 
-fn style_with(key: &str, target: &str, arrow: bool, line: bool) -> String {
+impl Geo {
+    /// The selectable items as they were: small, no border.
+    fn small() -> Self {
+        Geo { padding: "10,3", corner: "6", size: "12", weight: "Normal", border: ("0", "Transparent"), background: "Transparent", foreground: REST_TEXT.into() }
+    }
+
+    /// A WinUI button's size: 14 px text, 4 px corners, 32 px high with its 1 px border.
+    fn button() -> Self {
+        Geo { padding: "11,5,11,6", corner: "4", size: "14", ..Geo::small() }.with_border("1", "Transparent")
+    }
+
+    fn with_border(mut self, width: &'static str, colour: &'static str) -> Self {
+        self.border = (width, colour);
+        self
+    }
+}
+
+fn style(key: &str, target: &str, arrow: bool) -> String {
+    style_with(key, target, arrow, false, false, Geo::small())
+}
+
+fn style_with(key: &str, target: &str, arrow: bool, line: bool, grey_off: bool, g: Geo) -> String {
     format!(
         r##"<Style x:Key="{key}" TargetType="{target}">
-  <Setter Property="Background" Value="Transparent"/>
-  <Setter Property="Foreground" Value="#FFE6EAF2"/>
-  <Setter Property="BorderThickness" Value="0"/>
-  <Setter Property="Padding" Value="10,3"/>
-  <Setter Property="CornerRadius" Value="6"/>
-  <Setter Property="FontSize" Value="12"/>
+  <Setter Property="Background" Value="{}"/>
+  <Setter Property="Foreground" Value="{}"/>
+  <Setter Property="BorderThickness" Value="{}"/>
+  <Setter Property="BorderBrush" Value="{}"/>
+  <Setter Property="Padding" Value="{}"/>
+  <Setter Property="CornerRadius" Value="{}"/>
+  <Setter Property="FontSize" Value="{}"/>
+  <Setter Property="FontWeight" Value="{}"/>
   <Setter Property="HorizontalContentAlignment" Value="Center"/>
   <Setter Property="VerticalContentAlignment" Value="Center"/>
   <Setter Property="UseSystemFocusVisuals" Value="True"/>
   <Setter Property="FocusVisualMargin" Value="-2"/>
   <Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter>
 </Style>"##,
-        template_with(target, arrow, line)
+        g.background,
+        g.foreground,
+        g.border.0,
+        g.border.1,
+        g.padding,
+        g.corner,
+        g.size,
+        g.weight,
+        template_with(target, arrow, line, grey_off)
     )
 }
 
 /// The styles, as a dictionary merged into the application's resources at start (so any
-/// XAML loaded later, the Advisor's or Search's included, can name them).
+/// XAML loaded later, the Advisor's or Search's included, can name them). The buttons follow
+/// WinUI: a plain `<Button>` with no size of its own is the standard one; `SprawlPrimary` is
+/// the one main action of a place, in the Windows accent; `SprawlDanger` deletes for good;
+/// `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
-        r##"<ResourceDictionary {}>{}{}{}</ResourceDictionary>"##,
+        r##"<ResourceDictionary {}>{}{}{}{}{}{}
+<Style x:Key="SprawlPrimary" TargetType="Button" BasedOn="{{StaticResource AccentButtonStyle}}"><Setter Property="FontWeight" Value="SemiBold"/></Style></ResourceDictionary>"##,
         ui::NS,
         style("SprawlPick", "Button", false),
         style("SprawlPickDrop", "DropDownButton", true),
-        style_with("SprawlPage", "Button", false, true)
+        style_with("SprawlPage", "Button", false, true, false, Geo::small()),
+        // chips: a WinUI button's size with its faint edge, filled with the accent when picked
+        style_with("SprawlChip", "Button", false, false, false, Geo::button().with_border("1", "#17FFFFFF")),
+        style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text.clone(), ..Geo::button() }),
+        style_with("SprawlDanger", "Button", false, false, true, Geo { background: DANGER, foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
     )
 }
 
@@ -585,25 +720,55 @@ mod tests {
     }
 
     #[test]
-    fn one_selected_look_for_every_kind() {
-        for k in [Pick::Tab, Pick::Chip, Pick::Mode] {
-            assert_eq!(k.bg(true), SELECTED);
-            assert_ne!(k.bg(false), SELECTED);
+    fn chips_and_modes_take_the_accent_and_rows_stay_quiet() {
+        for k in [Pick::Chip, Pick::Mode] {
+            assert_eq!(k.bg(true), accent().fill);
+            assert_eq!(k.fg(true), Some(accent().on));
+            assert_ne!(k.bg(false), accent().fill);
+            assert_eq!(k.fg(false), None);
+            assert!(pick(k, true).contains(&format!(r#"Foreground="{}""#, accent().on)));
         }
-        assert!(pick(Pick::Tab, true).contains("SprawlPick") && pick(Pick::Tab, true).contains(SELECTED));
+        // a selected row keeps its grey second line readable: no accent fill, no text colour
+        assert_eq!(Pick::Tab.bg(true), SELECTED);
+        assert_eq!(Pick::Tab.fg(true), None);
+        assert!(pick(Pick::Tab, true).contains("SprawlPick") && !pick(Pick::Tab, true).contains("Foreground"));
+        assert!(pick(Pick::Chip, false).contains("SprawlChip"));
         assert!(pick_drop(Pick::Mode, false).contains("SprawlPickDrop"));
+    }
+
+    #[test]
+    fn the_accent_follows_the_palette_and_skips_the_light_rewrite() {
+        let p = [[1, 2, 3], [0x97, 0xC8, 0xCE], [5, 6, 7], [8, 9, 10], [0x37, 0x63, 0x72], [0x23, 0x44, 0x52], [0, 0, 0]];
+        let dark = accent_from(Some(p), false);
+        assert_eq!((dark.fill.as_str(), dark.on, dark.text.as_str()), ("#97C8CE", "#000000", "#010203"));
+        let light = accent_from(Some(p), true);
+        assert_eq!((light.fill.as_str(), light.on, light.text.as_str()), ("#376372", "#FFFFFF", "#234452"));
+        // Windows' blue when there is no palette
+        assert_eq!(accent_from(None, false).fill, "#4CC2FF");
+        // six digits: the light page's rewrite leaves it as it is
+        let x = format!(r##"<Button Background="{}" Foreground="{}"/>"##, light.fill, light.on);
+        assert_eq!(crate::theme::to_light(&x), x);
     }
 
     #[test]
     fn the_styles_define_every_state_once() {
         let r = resources();
-        for s in ["\"Normal\"", "\"PointerOver\"", "\"Pressed\"", "\"Disabled\""] {
-            assert_eq!(r.matches(s).count(), 3, "{s}");
+        // the templated styles; SprawlPrimary builds on WinUI's own accent button
+        for s in ["Normal", "PointerOver", "Pressed", "Disabled"] {
+            assert_eq!(r.matches(&format!(r#"x:Name="{s}""#)).count(), 6, "{s}");
         }
-        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 3);
+        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 6);
+        for k in ["SprawlPick", "SprawlPickDrop", "SprawlPage", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
+            assert_eq!(r.matches(&format!(r#"x:Key="{k}""#)).count(), 1, "{k}");
+        }
+        assert!(r.contains(r#"BasedOn="{StaticResource AccentButtonStyle}""#));
+        // the red one greys out when it can't be pressed, as WinUI's filled buttons do
+        let danger = &r[r.find(r#"x:Key="SprawlDanger""#).unwrap()..];
+        let danger = &danger[..danger.find("</Style>").unwrap()];
+        assert!(danger.contains(DANGER) && danger.contains(r#"Target="Root.Background""#));
         // the page tabs: underlined, never filled
         assert!(r.contains("SprawlPage") && r.contains(r#"x:Name="Line""#));
         assert_eq!(Pick::Page.bg(true), "Transparent");
-        assert!(pick(Pick::Page, true).contains(UNDERLINE) && !pick(Pick::Page, false).contains(UNDERLINE));
+        assert!(pick(Pick::Page, true).contains(underline()) && !pick(Pick::Page, false).contains(underline()));
     }
 }

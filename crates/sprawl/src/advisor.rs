@@ -2308,7 +2308,7 @@ impl State {
             let msg = if self.job.is_some() { "Scanning the selected source. Advice will appear when it finishes." } else if self.advisor.running { "Looking for space to win back..." } else { self.advisor.note.unwrap_or("Scan a drive or folder, and the advisor shows what can be won back.") };
             x += &format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" Foreground="#FFB9C2D6" FontSize="13"/>"##, ui::esc(msg));
             if !self.advisor.running && self.tree.is_some() {
-                x += r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again"/>"##;
+                x += r##"<Button x:Name="AdvRefresh" Content="Check again"/>"##;
             }
             if self.tree.is_some() {
                 x += &self.chat_card();
@@ -2368,9 +2368,9 @@ impl State {
         x += &format!(
             r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 <TextBlock {} FontSize="15" TextWrapping="Wrap" VerticalAlignment="Center">{line}</TextBlock>
-<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="Check again"/></StackPanel></Grid>"##,
+<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Style="{{StaticResource SprawlSubtle}}" Content="Check again"/></StackPanel></Grid>"##,
             crate::look::NUM,
-            full.map_or(String::new(), |f| format!(r##"<Button x:Name="AdvGrowOpen" Padding="10,3" FontSize="12" CornerRadius="5" Content="{}" ToolTipService.ToolTip="At the rate this folder grew between scans: see Growth"/>"##, ui::esc(&f))),
+            full.map_or(String::new(), |f| format!(r##"<Button x:Name="AdvGrowOpen" Content="{}" ToolTipService.ToolTip="At the rate this folder grew between scans: see Growth"/>"##, ui::esc(&f))),
         );
         if total > 0 {
             let share = |v: u64| (v as f64 * 1000.0 / total as f64).max(if v > 0 { 4.0 } else { 0.0 });
@@ -2387,7 +2387,7 @@ impl State {
         let cleaners = self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count();
         let m = &self.advisor.memory;
         let tab = |name: &str, label: String, me: Section| {
-            format!(r##"<Button x:Name="{name}" Content="{}" {} Padding="12,4"/>"##, ui::esc(&label), crate::look::pick(crate::look::Pick::Chip, self.advisor.section == me))
+            format!(r##"<Button x:Name="{name}" Content="{}" {}/>"##, ui::esc(&label), crate::look::pick(crate::look::Pick::Chip, self.advisor.section == me))
         };
         // the cleaners are their own tab; here they are one group of the findings
         let _ = cleaners;
@@ -2425,19 +2425,19 @@ impl State {
         );
         x += r##"<ScrollViewer x:Name="FnScroll" HorizontalScrollBarVisibility="Disabled" Padding="0,0,12,0"><StackPanel Spacing="10">"##;
         if ai_off {
-            x += r##"<Border Padding="12,6" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list, and answer questions about this scan. Nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."><Run Text="AI is off" FontWeight="SemiBold" Foreground="#FFD5DBE8"/><Run Text="  ·  nothing is sent anywhere. With one, Sprawl can explain folders its rules don't know and answer questions about this scan."/></TextBlock><Button x:Name="AdvSetup" Grid.Column="1" Content="Set up AI" Padding="10,3" FontSize="12" CornerRadius="5"/></Grid></Border>"##;
+            x += r##"<Border Padding="12,6" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="With an AI, Sprawl can look into folders its rules don't know, explain what they are, add what it finds to your Findings list, and answer questions about this scan. Nothing is deleted until you review it and confirm. It can use your own Claude Code or Codex (no key needed), an Anthropic API key, or a local model (Ollama, LM Studio)."><Run Text="AI is off" FontWeight="SemiBold" Foreground="#FFD5DBE8"/><Run Text="  ·  nothing is sent anywhere. With one, Sprawl can explain folders its rules don't know and answer questions about this scan."/></TextBlock><Button x:Name="AdvSetup" Grid.Column="1" Content="Set up AI"/></Grid></Border>"##;
         }
         x += &self.findings_section(r);
         x += "</StackPanel></ScrollViewer>";
         if ai {
-            x += r##"<Grid Grid.Column="1" RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Button x:Name="AdvClAiFold" HorizontalAlignment="Right" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" Content="Hide the AI" ToolTipService.ToolTip="Fold the AI's column away"/><ScrollViewer x:Name="FnAiScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
+            x += r##"<Grid Grid.Column="1" RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Button x:Name="AdvClAiFold" HorizontalAlignment="Right" Padding="8,1" FontSize="12" CornerRadius="4" Style="{StaticResource SprawlSubtle}" Content="Hide the AI" ToolTipService.ToolTip="Fold the AI's column away"/><ScrollViewer x:Name="FnAiScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
             x += &self.ai_card(r);
             x += &self.fn_suggest_card(r);
             x += &self.ai_found_card(r);
             x += &self.chat_card();
             x += "</StackPanel></ScrollViewer></Grid>";
         } else if !ai_off {
-            x += r##"<Button x:Name="AdvClAiFold" Grid.Column="1" VerticalAlignment="Top" Padding="8,4" FontSize="12" CornerRadius="5" Content="AI" ToolTipService.ToolTip="Show the AI's column"/>"##;
+            x += r##"<Button x:Name="AdvClAiFold" Grid.Column="1" VerticalAlignment="Top" Content="AI" ToolTipService.ToolTip="Show the AI's column"/>"##;
         }
         x += "</Grid></Grid>";
         x
@@ -2481,7 +2481,7 @@ impl State {
             );
         }
         if safe > 0 {
-            x += &format!(r##"<Button x:Name="AdvAiTickSafe" Content="Tick the safe ones it found ({safe})" Padding="10,3" FontSize="12" CornerRadius="5" IsEnabled="{}" ToolTipService.ToolTip="The ones marked safe or worth a look; your own files are ticked one by one"/>"##, if running { "False" } else { "True" });
+            x += &format!(r##"<Button x:Name="AdvAiTickSafe" Content="Tick the safe ones it found ({safe})" IsEnabled="{}" ToolTipService.ToolTip="The ones marked safe or worth a look; your own files are ticked one by one"/>"##, if running { "False" } else { "True" });
         }
         x += "</StackPanel></Border>";
         x
@@ -2500,9 +2500,9 @@ impl State {
             let when = sprawl_core::local_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.when));
             let state = if gone { " · the folder is gone".to_string() } else { String::new() };
             let button = if gone {
-                format!(r##"<Button x:Name="AdvUncF{i}" Content="Forget" Padding="10,3" FontSize="12" CornerRadius="5"/>"##)
+                format!(r##"<Button x:Name="AdvUncF{i}" Content="Forget"/>"##)
             } else {
-                format!(r##"<Button x:Name="AdvUnc{i}" Content="Uncompress" Padding="10,3" FontSize="12" CornerRadius="5" IsEnabled="{}"/>"##, if busy { "False" } else { "True" })
+                format!(r##"<Button x:Name="AdvUnc{i}" Content="Uncompress" IsEnabled="{}"/>"##, if busy { "False" } else { "True" })
             };
             x += &format!(
                 r##"<Border Padding="10,7" CornerRadius="7" Background="#0CFFFFFF"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="13" TextTrimming="CharacterEllipsis"/><TextBlock Text="{} on {} · saved {} of {}{}" FontSize="12" Foreground="#FF8E97AA"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center">{button}</StackPanel></Grid></Border>"##,
@@ -2582,11 +2582,11 @@ impl State {
             if off && self.ai_off_line() {
                 x += "</StackPanel></Border>";
             } else {
-                x += &format!(r##"<Button x:Name="{}" Content="{}" Padding="10,3" FontSize="12" HorizontalAlignment="Left"/></StackPanel></Border>"##, if off { "AdvUnknownSetup" } else { "AdvExplainUnknown" }, if off { "Set up AI" } else { "Explain and propose recognisers" });
+                x += &format!(r##"<Button x:Name="{}" Content="{}" HorizontalAlignment="Left"/></StackPanel></Border>"##, if off { "AdvUnknownSetup" } else { "AdvExplainUnknown" }, if off { "Set up AI" } else { "Explain and propose recognisers" });
             }
         }
         let chip = |name: &str, label: &str, on: bool| {
-            format!(r##"<Button x:Name="{name}" Content="{label}" {} Padding="8,2" CornerRadius="10"/>"##, crate::look::pick(crate::look::Pick::Chip, on))
+            format!(r##"<Button x:Name="{name}" Content="{label}" {}/>"##, crate::look::pick(crate::look::Pick::Chip, on))
         };
         let (s, o) = (self.advisor.sort, self.advisor.only);
         x += &format!(
@@ -2607,7 +2607,7 @@ impl State {
                 ui::esc(s)
             ),
             None => format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Copies are confirmed byte for byte; hard links aren't copies."/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvDupes" Content="Find duplicate files" ToolTipService.ToolTip="Copies are confirmed byte for byte; hard links aren't copies."/><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextWrapping="Wrap"/></StackPanel>"##,
                 ui::esc(self.advisor.dupes_note.as_deref().unwrap_or(""))
             ),
         };
@@ -2670,7 +2670,7 @@ impl State {
             x += &self.cleaners_group(r);
         }
         if !r.quiet.is_empty() {
-            x += &format!(r##"<Button x:Name="AdvQuiet" Content="Not recommended again: {} ({})" HorizontalAlignment="Left" Padding="10,4" FontSize="12" CornerRadius="5"/><TextBlock Text="Refilled quickly or covered by a game-library preference. Automatic choices leave these out; Cleaners still works directly. Forget learning in Remembered restores recommendations." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, r.quiet.len(), if self.advisor.show_quiet { "hide" } else { "show" });
+            x += &format!(r##"<Button x:Name="AdvQuiet" Content="Not recommended again: {} ({})" HorizontalAlignment="Left"/><TextBlock Text="Refilled quickly or covered by a game-library preference. Automatic choices leave these out; Cleaners still works directly. Forget learning in Remembered restores recommendations." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##, r.quiet.len(), if self.advisor.show_quiet { "hide" } else { "show" });
             if self.advisor.show_quiet {
                 for i in (0..r.findings.len()).filter(|&i| r.quiet.contains(&crate::cleanup::key(&r.findings[i].path))).take(100) { x += &self.finding_row(r, i); }
             }
@@ -2757,7 +2757,7 @@ impl State {
         }
         if !r.held.is_empty() {
             x += &format!(
-                r##"<Button x:Name="AdvHeld" Padding="10,4" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} held back by the safety checks ({})"/>"##,
+                r##"<Button x:Name="AdvHeld" Style="{{StaticResource SprawlSubtle}}" Content="{} held back by the safety checks ({})"/>"##,
                 r.held.len(),
                 if self.advisor.show_held { "hide" } else { "show" }
             );
@@ -2829,7 +2829,7 @@ impl State {
             if !option.findings.is_empty() {
                 use sprawl_advisor::goal::Kind;
                 let name = match option.kind { Kind::Green => "AdvGoalGreen", Kind::Cleanup => "AdvGoalCleanup", Kind::Compression => "AdvGoalCompress", Kind::Moves => "AdvGoalMove" };
-                x += &format!(r##"<Button x:Name="{name}" Content="{}" Padding="10,3" FontSize="12" HorizontalAlignment="Left"/>"##,
+                x += &format!(r##"<Button x:Name="{name}" Content="{}" HorizontalAlignment="Left"/>"##,
                     if option.moves.is_empty() { "Tick this option for review" } else { "Tick its cleanup part for review" });
             }
             x += "</StackPanel>";
@@ -3490,9 +3490,9 @@ impl State {
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if !ok.is_empty() {
-            x += &format!(r##"<Button x:Name="AdvFnSugTick" Content="Tick all it suggested" Padding="12,3" FontSize="12" CornerRadius="5" IsEnabled="{}" ToolTipService.ToolTip="Adds these ticks. You still see the review before anything is deleted."/>"##, if running { "False" } else { "True" });
+            x += &format!(r##"<Button x:Name="AdvFnSugTick" Content="Tick all it suggested" IsEnabled="{}" ToolTipService.ToolTip="Adds these ticks. You still see the review before anything is deleted."/>"##, if running { "False" } else { "True" });
         }
-        x += r##"<Button x:Name="AdvFnSugNo" Content="Dismiss" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##;
+        x += r##"<Button x:Name="AdvFnSugNo" Content="Dismiss"/></StackPanel></StackPanel></Border>"##;
         x
     }
 
@@ -3815,7 +3815,7 @@ impl State {
             r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF" HorizontalAlignment="Stretch"><StackPanel Spacing="6"><Grid><TextBlock Text="{}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>{}</Grid>"##,
             if cleaning { "Ask the AI about cleaning" } else { "Ask your disk" },
             // only once there is something to start over from
-            if c.log.is_empty() && c.live.is_none() { "" } else { r##"<Button x:Name="AdvChatClear" HorizontalAlignment="Right" Content="New chat" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>"## }
+            if c.log.is_empty() && c.live.is_none() { "" } else { r##"<Button x:Name="AdvChatClear" HorizontalAlignment="Right" Content="New chat" Padding="8,1" FontSize="12" CornerRadius="4" Style="{StaticResource SprawlSubtle}"/>"## }
         );
         let last = c.log.len();
         for (n, (user, text)) in c.log.iter().enumerate().skip(last.saturating_sub(12)) {
@@ -3854,7 +3854,7 @@ impl State {
         }
         if let Some((q, _)) = &c.consent {
             x += &format!(
-                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="12" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebSession" Content="Allow for this session" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvWebDeny" Content="Don't search" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel></Border>"##,
+                r##"<Border Padding="10,8" CornerRadius="6" Background="#22F5B342"><StackPanel Spacing="6"><TextBlock TextWrapping="Wrap" FontSize="12"><Run Text="The AI wants to search the web for: "/><Run Text="{}" FontWeight="SemiBold"/></TextBlock><TextBlock Text="The search goes to DuckDuckGo. Nothing else is sent." FontSize="12" Foreground="#FF8E97AA"/><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvWebOnce" Content="Allow once"/><Button x:Name="AdvWebSession" Content="Allow for this session"/><Button x:Name="AdvWebDeny" Content="Don't search"/></StackPanel></StackPanel></Border>"##,
                 ui::esc(q)
             );
         }
@@ -3876,9 +3876,9 @@ impl State {
             if cleaning { "Ask about cleaning" } else { "Ask about this scan" }
         );
         x += if c.status.is_some() {
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatStop" Content="Stop" MinWidth="64" Padding="12,3" FontSize="12" CornerRadius="5"/><TextBlock Text="Enter asks the next question" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatStop" Content="Stop" MinWidth="64"/><TextBlock Text="Enter asks the next question" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
         } else {
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatSend" Content="Ask" MinWidth="64" Padding="12,3" FontSize="12" CornerRadius="5"/><TextBlock Text="or press Enter" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvChatSend" Content="Ask" MinWidth="64"/><TextBlock Text="or press Enter" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/></StackPanel>"##
         };
         x += "</StackPanel></Border>";
         x
@@ -3889,11 +3889,11 @@ impl State {
         let small = |name: String, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,1" FontSize="12" CornerRadius="4"/>"##);
         let mut x = String::new();
         if !m.learning.rules.is_empty() || !m.learning.cleaned.is_empty() || !m.learning.managed_libraries.is_empty() {
-            x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="5"><TextBlock Text="Learned on this PC" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{} rule histories, {} cleanup measurements, {} game-library preferences. This changes recommendations, never safety grades or permissions. Keep and Not now decisions are separate." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/><Button x:Name="AdvForgetLearning" Content="Forget learning" Padding="10,3" FontSize="12" HorizontalAlignment="Left"/></StackPanel></Border>"##, m.learning.rules.len(), m.learning.cleaned.len(), m.learning.managed_libraries.len());
+            x += &format!(r##"<Border Padding="12,10" CornerRadius="7" Background="#0CFFFFFF"><StackPanel Spacing="5"><TextBlock Text="Learned on this PC" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{} rule histories, {} cleanup measurements, {} game-library preferences. This changes recommendations, never safety grades or permissions. Keep and Not now decisions are separate." TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6"/><Button x:Name="AdvForgetLearning" Content="Forget learning" HorizontalAlignment="Left"/></StackPanel></Border>"##, m.learning.rules.len(), m.learning.cleaned.len(), m.learning.managed_libraries.len());
         }
         if !r.kept.is_empty() {
             x += &format!(
-                r##"<Button x:Name="AdvKeptShow" Padding="10,4" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} hidden by your choices ({})"/>"##,
+                r##"<Button x:Name="AdvKeptShow" Style="{{StaticResource SprawlSubtle}}" Content="{} hidden by your choices ({})"/>"##,
                 r.kept.len(),
                 if self.advisor.show_kept { "hide" } else { "show" }
             );
@@ -3947,14 +3947,14 @@ impl State {
             ui::esc(&crate::bridge::setup_command())
         );
         x += &format!(
-            r##"<Button x:Name="AdvMemShow" Padding="10,4" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="What the advisor remembers: {} preferences, {} folder labels ({})"/>"##,
+            r##"<Button x:Name="AdvMemShow" Style="{{StaticResource SprawlSubtle}}" Content="What the advisor remembers: {} preferences, {} folder labels ({})"/>"##,
             m.prefs.len(),
             m.labels.len(),
             if self.advisor.show_memory { "hide" } else { "show" }
         );
         if self.advisor.show_memory {
             x += r##"<StackPanel Spacing="4" Margin="10,0,0,0">"##;
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="AdvPrefText" Width="360" PlaceholderText="A preference, like: I still play my Steam games"/><Button x:Name="AdvPrefAdd" Content="Remember" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="AdvPrefText" Width="360" PlaceholderText="A preference, like: I still play my Steam games"/><Button x:Name="AdvPrefAdd" Content="Remember"/></StackPanel>"##;
             for (i, p) in m.prefs.iter().enumerate() {
                 let who = if p.from == memory::From::Model { " (from the AI)" } else { "" };
                 x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
@@ -4009,7 +4009,7 @@ impl State {
         x += &ai_row("Provider", &crate::models::combo("AdvAiProviderPick", &names, &current, 260), "");
         if e.provider == Provider::OpenAi {
             let known = !self.advisor.ai_custom_was.is_empty() && e.customs.iter().any(|c| c.name.eq_ignore_ascii_case(&self.advisor.ai_custom_was));
-            let remove = if known { r##"<Button x:Name="AdvAiRemove" Content="Remove" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Take this custom AI off the Provider list"/>"## } else { "" };
+            let remove = if known { r##"<Button x:Name="AdvAiRemove" Content="Remove" ToolTipService.ToolTip="Take this custom AI off the Provider list"/>"## } else { "" };
             x += &ai_row(
                 "Name",
                 &format!(r##"<TextBox x:Name="AdvAiName" Width="260" MaxLength="40" PlaceholderText="Name it to keep it in the Provider list" Text="{}"/>"##, ui::esc(&e.custom)),
@@ -4027,7 +4027,7 @@ impl State {
             };
             // a list that needs a key (or an address) is asked for on "Load models", beside the model
             let load = if matches!(e.provider, Provider::OpenAi | Provider::Anthropic) {
-                r##"<Button x:Name="AdvAiLoad" Content="Load models" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Ask for the list of models, with the key typed below (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/>"##
+                r##"<Button x:Name="AdvAiLoad" Content="Load models" ToolTipService.ToolTip="Ask for the list of models, with the key typed below (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/>"##
             } else {
                 ""
             };
@@ -4068,11 +4068,11 @@ impl State {
             x += &ai_row(
                 "Key",
                 &format!(r##"<PasswordBox x:Name="AdvAiKey" Width="260" ToolTipService.ToolTip="Kept in Windows Credential Manager, for this server only. A server on this PC (Ollama, LM Studio) needs none." PlaceholderText="{}"/>"##, if has { "A key is stored; leave empty to keep it" } else if e.provider == Provider::OpenAi { "API key, if the server needs one" } else { "Paste the API key" }),
-                if has { r##"<Button x:Name="AdvAiForget" Content="Forget key" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Delete the saved key from Windows Credential Manager now"/>"## } else { "" },
+                if has { r##"<Button x:Name="AdvAiForget" Content="Forget key" ToolTipService.ToolTip="Delete the saved key from Windows Credential Manager now"/>"## } else { "" },
             );
         }
         x += r##"<TextBlock Text="Your uninstaller app and the Claude Code setup are under Options &gt; Settings." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/>"##;
-        x += r##"<Button x:Name="AdvAiSave" Content="Save" Padding="12,3" FontSize="12" CornerRadius="5"/>"##;
+        x += r##"<Button x:Name="AdvAiSave" Content="Save"/>"##;
         x += "</StackPanel></Border>";
         x
     }
@@ -4212,7 +4212,7 @@ impl State {
             x += &format!(r##"<TextBlock Text="Not kept: {}: {}" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>"##, ui::esc(t), ui::esc(e));
         }
         if !ok.is_empty() {
-            x += r##"<Button x:Name="AdvGoApprove" Content="Review and approve" Padding="10,3" FontSize="12" CornerRadius="5" Margin="0,2,0,0" ToolTipService.ToolTip="Opens Remembered, where each proposal has Approve and Dismiss. Nothing is used until you approve it."/>"##;
+            x += r##"<Button x:Name="AdvGoApprove" Content="Review and approve" Margin="0,2,0,0" ToolTipService.ToolTip="Opens Remembered, where each proposal has Approve and Dismiss. Nothing is used until you approve it."/>"##;
         }
         x += "</StackPanel></Border>";
         x
@@ -4222,7 +4222,7 @@ impl State {
     fn ai_card(&self, _r: &Report) -> String {
         let cfg = AiConfig::load();
         // a long model name is cut short with "...", whole in the tooltip: the row's buttons stay whole
-        let btn = |name: &str, label: &str| format!(r##"<Button x:Name="{name}" Padding="10,3" FontSize="12" CornerRadius="5" MaxWidth="240" ToolTipService.ToolTip="{label}"><TextBlock Text="{label}" TextTrimming="CharacterEllipsis"/></Button>"##);
+        let btn = |name: &str, label: &str| format!(r##"<Button x:Name="{name}" MaxWidth="240" ToolTipService.ToolTip="{label}"><TextBlock Text="{label}" TextTrimming="CharacterEllipsis"/></Button>"##);
         let ask = match cfg.provider {
             Provider::Off => btn("AdvSetup", "Set up AI"),
             Provider::Anthropic => btn("AdvAsk", "Ask Claude"),
@@ -4234,7 +4234,7 @@ impl State {
         {
             let model = if cfg.model.is_empty() { cfg.provider.default_model().to_string() } else { cfg.model.clone() };
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{ask}<TextBlock Grid.Column="1" Text="{0}" ToolTipService.ToolTip="{0}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Grid.Column="2" Content="{1}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{ask}<TextBlock Grid.Column="1" Text="{0}" ToolTipService.ToolTip="{0}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA"/><Button x:Name="AdvAiEdit" Grid.Column="2" Content="{1}" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}"/></Grid>"##,
                 if cfg.provider == Provider::Off { "Off: nothing is sent anywhere".to_string() } else { format!("{} · {}", cfg.provider.label().split(" (").next().unwrap_or(""), ui::esc(&model)) },
                 if self.advisor.ai_edit.is_some() { "Close" } else { "Change" }
             );
@@ -4286,7 +4286,7 @@ impl State {
                 }
                 if !rejected.is_empty() {
                     x += &format!(
-                        r##"<Button x:Name="AdvRejected" Padding="10,2" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent" Content="{} claims didn't pass the checks ({})"/>"##,
+                        r##"<Button x:Name="AdvRejected" Style="{{StaticResource SprawlSubtle}}" Content="{} claims didn't pass the checks ({})"/>"##,
                         rejected.len(),
                         if self.advisor.show_rejected { "hide" } else { "show" }
                     );
@@ -4319,7 +4319,7 @@ impl State {
             }
         };
         format!(
-            r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvVerify" Grid.Column="1" Content="Check what it freed" Padding="10,3" FontSize="12" CornerRadius="5"/></Grid>"##,
+            r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" TextWrapping="Wrap" FontSize="12" Foreground="#FFB9C2D6" VerticalAlignment="Center"/><Button x:Name="AdvVerify" Grid.Column="1" Content="Check what it freed"/></Grid>"##,
             ui::esc(&line)
         )
     }
@@ -4483,7 +4483,7 @@ impl State {
                 );
             }
         }
-        x += r##"<Button x:Name="AdvAskFinding" Content="What is this?" HorizontalAlignment="Left" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+        x += r##"<Button x:Name="AdvAskFinding" Content="What is this?" HorizontalAlignment="Left"/>"##;
         if let Some(answer) = self.advisor.chat.row_answers.get(&crate::cleanup::key(&f.path)) {
             x += &ui::markdown(answer, 12, "#FFD5DBE8");
             x += UNCHECKED_LINE;
@@ -4530,20 +4530,20 @@ impl State {
                 let run = if sprawl_advisor::remedies::compresses(f) { "Compress this..." } else { "Clean up just this..." };
                 x += &format!(r##"<Button x:Name="AdvRun" Content="{run}" Padding="10,3" FontSize="12" CornerRadius="5" Background="#332F7BF6"/>"##);
             }
-            x += &format!(r##"<Button x:Name="AdvShowCmd" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/>"##, if self.advisor.show_cmd { "Hide the command" } else { "Show the command" });
+            x += &format!(r##"<Button x:Name="AdvShowCmd" Content="{}" Style="{{StaticResource SprawlSubtle}}"/>"##, if self.advisor.show_cmd { "Hide the command" } else { "Show the command" });
             if self.advisor.show_cmd {
-                x += r##"<Button x:Name="AdvCopy" Content="Copy it" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+                x += r##"<Button x:Name="AdvCopy" Content="Copy it"/>"##;
             }
         }
         if r.nodes[i].is_some() {
-            x += r##"<Button x:Name="AdvShow" Content="Show in tree" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvExplore" Content="Show in Explorer" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+            x += r##"<Button x:Name="AdvShow" Content="Show in tree"/><Button x:Name="AdvExplore" Content="Show in Explorer"/>"##;
         }
         // only where uninstalling is the suggestion, not on every cache an app owns
         let how = (f.remedy == Remedy::Uninstall).then(|| f.owner.as_ref().and_then(|o| r.apps.iter().position(|a| a == o)).and_then(|k| r.uninstall.get(k).cloned().flatten())).flatten();
         let own = self.uninstaller().filter(|_| f.remedy == Remedy::Uninstall && f.owner.is_some());
         if let (Some(exe), Some(o)) = (&own, &f.owner) {
             x += &format!(
-                r##"<Button x:Name="AdvUninstall" Content="Hand to {}..." ToolTipService.ToolTip="Hands {} to {}: that program uninstalls it, not Sprawl" Padding="10,3" FontSize="12" CornerRadius="5"/>"##,
+                r##"<Button x:Name="AdvUninstall" Content="Hand to {}..." ToolTipService.ToolTip="Hands {} to {}: that program uninstalls it, not Sprawl"/>"##,
                 ui::esc(&exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
                 ui::esc(o),
                 ui::esc(&exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
@@ -4553,13 +4553,13 @@ impl State {
                 sprawl_advisor::facts::Uninstall::Settings => ("Open Installed apps...", format!("Opens Windows' Installed apps, with {o} copied to search for. Sprawl doesn't uninstall anything itself.")),
                 sprawl_advisor::facts::Uninstall::Steam(_) => ("Open Steam's uninstall...", "Opens Steam's uninstall, which asks first".to_string()),
             };
-            x += &format!(r##"<Button x:Name="AdvUninstall" Content="{label}" ToolTipService.ToolTip="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(&tip));
+            x += &format!(r##"<Button x:Name="AdvUninstall" Content="{label}" ToolTipService.ToolTip="{}"/>"##, ui::esc(&tip));
         }
         let keep_tip = if matches!(f.remedy, Remedy::Info | Remedy::Move) { "Never show this suggestion again, and never clean it (what is inside may still be suggested)" } else { "Never suggest or clean this, or anything inside it" };
-        x += &format!(r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="{keep_tip}" Padding="10,3" FontSize="12" CornerRadius="5"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days" Padding="10,3" FontSize="12" CornerRadius="5"/>"##);
-        x += r##"</StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvStillUse" Content="I still use this" ToolTipService.ToolTip="Keep this path and learn to rank this kind later; changes no safety rule" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+        x += &format!(r##"<Button x:Name="AdvKeep" Content="Keep it" ToolTipService.ToolTip="{keep_tip}"/><Button x:Name="AdvLater" Content="Not now" ToolTipService.ToolTip="Hide it for 30 days"/>"##);
+        x += r##"</StackPanel><StackPanel Orientation="Horizontal" Spacing="6"><Button x:Name="AdvStillUse" Content="I still use this" ToolTipService.ToolTip="Keep this path and learn to rank this kind later; changes no safety rule"/>"##;
         if sprawl_advisor::learning::steam_library(&f.path).is_some() {
-            x += r##"<Button x:Name="AdvManageLibrary" Content="Manage this Steam library myself" ToolTipService.ToolTip="Stop recommending items under this library's common folder. They remain available under Not recommended again. Forget learning restores recommendations." Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+            x += r##"<Button x:Name="AdvManageLibrary" Content="Manage this Steam library myself" ToolTipService.ToolTip="Stop recommending items under this library's common folder. They remain available under Not recommended again. Forget learning restores recommendations."/>"##;
         }
         x += "</StackPanel></StackPanel></Border>";
         x

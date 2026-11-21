@@ -280,3 +280,20 @@ this from the start and was never reported.
   - Add, rename and remove in AI setup; the old single setup becomes the first entry on load.
 - Key handling changes, so it goes to the review queue.
 
+
+## J. UI lag (the user's request, 2026-11-21): not started
+
+- The report: switching tabs, expanding rows and similar actions have a short but noticeable
+  lag; the whole UI feels slightly behind. Goal: eliminate the delays, not just shorten them.
+- Measure first (SPRAWL_TIMING=1 logs to %TEMP%\sprawl-timing.log), on the user's real-size
+  scans, not only the fixture:
+  - tab switch: Tree View, File View, Advisor, Cleaners, Search;
+  - expanding and collapsing a tree row; sorting a column;
+  - Advisor actions that redraw a whole section (tick, chip, open a finding).
+- Places to look:
+  - whole sections rebuilt from a XAML string and parsed again (`load()`) on each click,
+    where only one element changed;
+  - work on the UI thread that could happen before the click or on a worker;
+  - layout passes on long lists without virtualisation.
+- Done when each of those actions shows its result on the next frame or two, checked with
+  timings before and after.

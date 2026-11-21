@@ -146,7 +146,7 @@ impl State {
 
         // the fast path, when it isn't on yet
         if !sprawl_core::is_elevated() {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE945;" FontSize="14" Foreground="#FFE8A33D"/><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" MaxWidth="640" Text="As administrator, Sprawl reads a whole NTFS drive's file table directly: a full drive in seconds instead of minutes."/><Button x:Name="WelAdmin" Content="Restart as administrator" Padding="10,3" FontSize="12" CornerRadius="5"/></StackPanel>"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE945;" FontSize="14" Foreground="#FFE8A33D"/><TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap" MaxWidth="640" Text="As administrator, Sprawl reads a whole NTFS drive's file table directly: a full drive in seconds instead of minutes."/><Button x:Name="WelAdmin" Content="Restart as administrator"/></StackPanel>"##;
         }
         x += "</StackPanel></ScrollViewer>";
 

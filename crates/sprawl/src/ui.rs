@@ -893,7 +893,7 @@ pub fn page(drives: &[String]) -> String {
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <TextBlock Text="Select:" VerticalAlignment="Center" Foreground="#FFB9C2D6"/>
           <ComboBox x:Name="DriveBox" Grid.Column="1" HorizontalAlignment="Stretch" SelectedIndex="0">{drive_items}</ComboBox>
-          <Button x:Name="ScanButton" Grid.Column="2" Style="{{StaticResource AccentButtonStyle}}" MinWidth="78">
+          <Button x:Name="ScanButton" Grid.Column="2" Style="{{StaticResource SprawlPrimary}}" MinWidth="78">
             <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon x:Name="ScanButtonIcon" Glyph="&#xE721;" FontSize="13"/><TextBlock x:Name="ScanButtonText" Text="Scan"/></StackPanel>
           </Button>
         </Grid>
@@ -984,7 +984,7 @@ pub fn page(drives: &[String]) -> String {
           </Button>
           <Border x:Name="SearchSaved" Grid.Column="2"/>
           <TextBlock x:Name="SearchInfo" Grid.Column="3" {num} VerticalAlignment="Center" FontSize="12" Foreground="#FF8E97AA" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
-          <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
+          <Button x:Name="SearchToFilter" Grid.Column="4" Content="Use as filter" ToolTipService.ToolTip="Narrow the whole analysis (tree, files, map) to this pattern"/>
           <ToggleButton x:Name="SearchMapBtn" Grid.Column="5" FontSize="12" Padding="10,4" ToolTipService.ToolTip="Show the map under the results, with the matches lit"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80A;" FontSize="12"/><TextBlock Text="Map"/></StackPanel></ToggleButton>
           <ScrollViewer Grid.Row="1" Grid.ColumnSpan="6" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled" VerticalScrollBarVisibility="Disabled" VerticalScrollMode="Disabled"><StackPanel Orientation="Horizontal" Spacing="18"><Border x:Name="SearchChips"/><Border x:Name="SearchDrives"/></StackPanel></ScrollViewer>
           <TextBlock x:Name="SearchHint" Grid.Row="2" Grid.ColumnSpan="6" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" MaxLines="3"/>
@@ -1045,17 +1045,17 @@ pub fn page(drives: &[String]) -> String {
   <Grid x:Name="MapBar" Grid.Row="5" Margin="12,6,12,6" ColumnSpacing="12">
     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
     <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" Padding="2" CornerRadius="7" Background="#14FFFFFF">
-      <Button x:Name="ModeMap" {mode_on} CornerRadius="5" ToolTipService.ToolTip="Treemap: wheel zooms, right-drag pans"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
-      <Button x:Name="ModeCity" {mode_off} CornerRadius="5" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="12"/><TextBlock Text="City" FontSize="12"/></StackPanel></Button>
-      <Button x:Name="ModeGalaxy" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
-      <DropDownButton x:Name="ViewMore" {drop_off} Padding="10,3,4,3" CornerRadius="5" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="12"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="12"/></StackPanel>
+      <Button x:Name="ModeMap" {mode_on} CornerRadius="4" ToolTipService.ToolTip="Treemap: wheel zooms, right-drag pans"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xF0E2;" FontSize="12"/><TextBlock Text="Treemap" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeCity" {mode_off} CornerRadius="4" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="12"/><TextBlock Text="City" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="ModeGalaxy" {mode_off} CornerRadius="4" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="12"/><TextBlock Text="Galaxy" FontSize="12"/></StackPanel></Button>
+      <DropDownButton x:Name="ViewMore" {drop_off} Padding="10,3,4,3" CornerRadius="4" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="12"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="12"/></StackPanel>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{view_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
-      <Button x:Name="ViewOnly" Visibility="Collapsed" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="12"/></Button>
-      <DropDownButton x:Name="ViewPaint" {drop_off} Padding="10,3,4,3" CornerRadius="5" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
+      <Button x:Name="ViewOnly" Visibility="Collapsed" {mode_off} CornerRadius="4" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="12"/></Button>
+      <DropDownButton x:Name="ViewPaint" {drop_off} Padding="10,3,4,3" CornerRadius="4" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="12"/>
         <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{paint_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
-      <Button x:Name="MapTweaks" {mode_off} CornerRadius="5" ToolTipService.ToolTip="Colours and Tweaks: the treemap's palette, tile lift, shading and tilt (Ctrl+T)"><Button.KeyboardAccelerators><KeyboardAccelerator Key="T" Modifiers="Control"/></Button.KeyboardAccelerators><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE790;" FontSize="12"/><TextBlock Text="Tweaks" FontSize="12"/></StackPanel></Button>
+      <Button x:Name="MapTweaks" {mode_off} CornerRadius="4" ToolTipService.ToolTip="Colours and Tweaks: the treemap's palette, tile lift, shading and tilt (Ctrl+T)"><Button.KeyboardAccelerators><KeyboardAccelerator Key="T" Modifiers="Control"/></Button.KeyboardAccelerators><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE790;" FontSize="12"/><TextBlock Text="Tweaks" FontSize="12"/></StackPanel></Button>
     </StackPanel>
-    <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="5" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
+    <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="4" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="12"/><TextBlock Text="History" FontSize="12"/></StackPanel></Button>
     <TextBlock x:Name="MapPath" Grid.Column="1" Text=" " HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="#FFB9C2D6" TextTrimming="CharacterEllipsis"/>
   </Grid>
   {welcome}
@@ -1075,18 +1075,18 @@ pub fn page(drives: &[String]) -> String {
   <Border x:Name="DeleteCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#55FF7A45" BorderThickness="1" Width="400">
     <StackPanel Spacing="8"><TextBlock x:Name="DeleteTitle" Text="Deleting..." FontSize="14" FontWeight="SemiBold"/>
       <Border Height="6" CornerRadius="3" Background="#22FFFFFF" Width="372" HorizontalAlignment="Left"><Border x:Name="DeleteBar" Width="0" HorizontalAlignment="Left" CornerRadius="3" Background="#FFFF7A45"/></Border>
-      <Grid><TextBlock x:Name="DeleteSub" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,80,0"/><Button x:Name="DeleteStop" Content="Stop" HorizontalAlignment="Right" Padding="12,3" FontSize="12" CornerRadius="5"/></Grid>
+      <Grid><TextBlock x:Name="DeleteSub" {num} Text="" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,80,0"/><Button x:Name="DeleteStop" Content="Stop" HorizontalAlignment="Right"/></Grid>
       <TextBlock Text="You can keep using Sprawl meanwhile. Stop ends it after the item it is on." FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel>
   </Border>
   <Border x:Name="UpdateCard" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="8" Background="#F01A1D27" BorderBrush="#552F7BF6" BorderThickness="1" Width="400">
     <StackPanel Spacing="6"><TextBlock x:Name="UpdateTitle" FontSize="14" FontWeight="SemiBold"/><TextBlock x:Name="UpdateSub" FontSize="12" Foreground="#FF8E97AA"/>
       <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto" VerticalScrollMode="Enabled"><TextBlock x:Name="UpdateNotes" FontSize="12" Foreground="#FFD5DBE8" TextWrapping="Wrap" IsTextSelectionEnabled="True"/></ScrollViewer>
       <TextBlock x:Name="UpdateStatus" FontSize="12" Foreground="#FFF5B342" TextWrapping="Wrap"/>
-      <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="UpdateNow" Content="Update and restart" Padding="12,3" FontSize="12" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="UpdateLater" Content="Later" Padding="12,3" FontSize="12" CornerRadius="5"/><Button x:Name="UpdateSkip" Content="Skip this version" Padding="12,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="UpdateNow" Content="Update and restart" Style="{{StaticResource SprawlPrimary}}"/><Button x:Name="UpdateLater" Content="Later"/><Button x:Name="UpdateSkip" Content="Skip this version"/></StackPanel></StackPanel>
   </Border>
   <Border x:Name="SetupOffer" Grid.RowSpan="8" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,36" Padding="14,10" CornerRadius="8" Background="#E61A1D27" BorderBrush="#552F7BF6" BorderThickness="1" MaxWidth="360">
     <StackPanel Spacing="8"><TextBlock Text="Set up Sprawl?" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="An AI to explain unknown folders, faster scans as administrator, and history to see what grows. All optional." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>
-      <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="SetupYes" Content="Set up" Padding="12,3" FontSize="12" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/><Button x:Name="SetupNo" Content="Not now" Padding="12,3" FontSize="12" CornerRadius="5"/></StackPanel></StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="SetupYes" Content="Set up" Style="{{StaticResource SprawlPrimary}}"/><Button x:Name="SetupNo" Content="Not now"/></StackPanel></StackPanel>
   </Border>
   {wizard}
   <Border x:Name="DlgHost" Grid.RowSpan="8" Canvas.ZIndex="100" Visibility="Collapsed"/>

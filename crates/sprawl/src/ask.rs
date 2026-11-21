@@ -85,11 +85,11 @@ impl State {
         let (max_w, max_h) = if p.rich.is_some() { (940, 720) } else { (560, 420) };
         let buttons = match &p.yes {
             Some(yes) => format!(
-                r##"<Button x:Name="DlgYes" Content="{}" Padding="16,5" CornerRadius="5" Background="{}" Foreground="White"/><Button x:Name="DlgNo" Content="No" Padding="16,5" CornerRadius="5"/>"##,
+                r##"<Button x:Name="DlgYes" Content="{}" Style="{{StaticResource {}}}"/><Button x:Name="DlgNo" Content="No"/>"##,
                 ui::esc(yes),
-                if p.danger { "#FFC4314B" } else { "#FF2F7BF6" }
+                if p.danger { "SprawlDanger" } else { "SprawlPrimary" }
             ),
-            None => r##"<Button x:Name="DlgNo" Content="OK" Padding="16,5" CornerRadius="5" Background="#FF2F7BF6" Foreground="White"/>"##.to_string(),
+            None => r##"<Button x:Name="DlgNo" Content="OK" Style="{StaticResource SprawlPrimary}"/>"##.to_string(),
         };
         let xaml = format!(
             r##"<Grid {ns} Background="#B8080A10"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="10" Background="#FF1C1F2A" BorderBrush="{edge}" BorderThickness="1">
@@ -97,7 +97,7 @@ impl State {
 <ScrollViewer MaxHeight="{max_h}" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">{buttons}</StackPanel></StackPanel></Border></Grid>"##,
             ns = ui::NS,
-            edge = if p.danger { "#88C4314B" } else { "#552F7BF6" },
+            edge = if p.danger { "#88C42B1C" } else { "#552F7BF6" },
             title = ui::esc(&p.title),
         );
         let Ok(el) = load::<UIElement>(&xaml) else {

@@ -5,6 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
+- Buttons follow Windows 11: the standard size (14 px text, 32 px high, 4 px corners), the one main action of each place in your Windows accent colour, and a red button for deleting for good, so it no longer looks like ticking the safe ones. Selected chips and map modes are filled with the accent; text actions are plain until you point at them.
 - Update and restart from a Sprawl running as administrator works with one click: the copy that reopens without administrator rights waits for the administrator one to close, instead of stopping with "could not be closed" until you click again.
 - After Setup (an update, or Install for all users), Sprawl opens without administrator rights unless Always Run as Administrator is on, and the older per-user copy is removed even when Sprawl opens as administrator.
 - The older per-user copy, started from its old shortcut after installing for all users, opens the copy in Program Files instead of offering to install again.

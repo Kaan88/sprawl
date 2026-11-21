@@ -56,7 +56,7 @@ fn combo(name: &str, items: &[&str], pick: usize) -> String {
 }
 
 fn button(name: &str, t: &str) -> String {
-    format!(r##"<Button x:Name="{name}" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, ui::esc(t))
+    format!(r##"<Button x:Name="{name}" Content="{}"/>"##, ui::esc(t))
 }
 
 fn page_title(glyph: &str, title: &str, sub: &str) -> String {
@@ -88,7 +88,7 @@ pub fn xaml() -> String {
         <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="12" Foreground="#FFF5B342" Margin="0,4,0,2" Text="{}"/>
         <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
         <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="https://api.openai.com/v1"/>{}</Grid></StackPanel>
-        <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" Padding="10,4" FontSize="12" CornerRadius="4" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
+        <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
         <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#FF8E97AA" Margin="0,10,0,0" Text="When the AI works, folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time."/>
         </StackPanel>"##,
         label("Provider"),
@@ -135,8 +135,8 @@ pub fn xaml() -> String {
         <Grid Grid.Row="2">
           <Button x:Name="WizSkip" Background="Transparent" BorderThickness="0" Foreground="#FF9AA3B8"><TextBlock x:Name="WizSkipText" Text="Skip setup"/></Button>
           <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-            <Button x:Name="WizBack" Content="Back" Padding="18,6" MinWidth="90"/>
-            <Button x:Name="WizNext" Padding="18,6" MinWidth="110" Background="#FF3A6FE0" Foreground="White"><TextBlock x:Name="WizNextText" Text="Next"/></Button>
+            <Button x:Name="WizBack" Content="Back" MinWidth="90"/>
+            <Button x:Name="WizNext" MinWidth="110" Style="{{StaticResource SprawlPrimary}}"><TextBlock x:Name="WizNextText" Text="Next"/></Button>
           </StackPanel>
         </Grid>
       </Grid>
@@ -559,7 +559,7 @@ impl State {
                     buttons.push(format!("PfB_unkeep{i}"));
                 }
                 x += &format!(
-                    r##"<Grid ColumnSpacing="8" Margin="0,4,0,0" MaxWidth="560" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="PfKeepPath" PlaceholderText="A folder or file to keep, like D:\Photos"/><Button x:Name="PfB_keepAdd" Grid.Column="1" Content="Add" Padding="10,3" FontSize="12" CornerRadius="5"/></Grid>"##
+                    r##"<Grid ColumnSpacing="8" Margin="0,4,0,0" MaxWidth="560" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="PfKeepPath" PlaceholderText="A folder or file to keep, like D:\Photos"/><Button x:Name="PfB_keepAdd" Grid.Column="1" Content="Add"/></Grid>"##
                 );
                 buttons.push("PfB_keepAdd".into());
             }

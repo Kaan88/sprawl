@@ -535,12 +535,12 @@ impl State {
         let left: usize = st.sources.iter().map(|s| s.left_out.len()).sum();
         x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
         if !off {
-            x += r##"<Button x:Name="AdvClUpd" Content="Fetch now" Padding="10,3" FontSize="12" CornerRadius="5"/>"##;
+            x += r##"<Button x:Name="AdvClUpd" Content="Fetch now"/>"##;
         }
-        x += &format!(r##"<Button x:Name="AdvClComm" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##, if off { "Turn on" } else { "Turn off" });
+        x += &format!(r##"<Button x:Name="AdvClComm" Content="{}"/>"##, if off { "Turn on" } else { "Turn off" });
         if left > 0 && !off {
             x += &format!(
-                r##"<Button x:Name="AdvClLeft" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" BorderThickness="0" Background="Transparent"/>"##,
+                r##"<Button x:Name="AdvClLeft" Content="{}" Style="{{StaticResource SprawlSubtle}}"/>"##,
                 ui::esc(&format!("{} {} entries left out", if self.advisor.cl.left_shown { "Hide the" } else { "Show the" }, crate::format::thousands(left as u64)))
             );
         }
@@ -1019,9 +1019,9 @@ impl State {
         }
         x += r##"<StackPanel Orientation="Horizontal" Spacing="6">"##;
         if !ok.is_empty() {
-            x += r##"<Button x:Name="AdvClSugTick" Content="Tick them" Padding="12,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Adds these ticks. You still see the review before anything is deleted."/>"##;
+            x += r##"<Button x:Name="AdvClSugTick" Content="Tick them" ToolTipService.ToolTip="Adds these ticks. You still see the review before anything is deleted."/>"##;
         }
-        x += r##"<Button x:Name="AdvClSugNo" Content="Not these" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="Turns these down: the AI won't suggest them again."/></StackPanel></StackPanel></Border>"##;
+        x += r##"<Button x:Name="AdvClSugNo" Content="Not these" ToolTipService.ToolTip="Turns these down: the AI won't suggest them again."/></StackPanel></StackPanel></Border>"##;
         x
     }
 
@@ -1226,7 +1226,7 @@ impl State {
                 if reading.is_some() || self.advisor.running { r##"<ProgressRing IsActive="True" Width="18" Height="18"/>"## } else { "" },
                 ui::esc(&msg),
                 crate::look::NUM,
-                if reading.is_none() && !self.advisor.running { r##"<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check"/>"## } else { "" }
+                if reading.is_none() && !self.advisor.running { r##"<Button x:Name="AdvRefresh" Content="Check"/>"## } else { "" }
             );
             return x;
         };
@@ -1264,7 +1264,7 @@ impl State {
             },
         };
         x += &format!(
-            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock {} FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Padding="10,3" FontSize="12" CornerRadius="5" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
+            r##"<Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock {} FontSize="15" TextWrapping="Wrap"><Run Text="{}" FontWeight="SemiBold"/><Run Text="{}" Foreground="#FFB9C2D6"/></TextBlock><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">{}<Button x:Name="AdvRefresh" Content="Check again" IsEnabled="{}"/></StackPanel></Grid>"##,
             crate::look::NUM,
             if total > 0 { self.size(total) } else { "Nothing to clean".into() },
             if total > 0 { format!(" in {apps} {}", if apps == 1 { "application" } else { "applications" }) } else { String::new() },
@@ -1286,11 +1286,11 @@ impl State {
         x += &self.cleaners_tab_side(r, &rows);
         x += "</StackPanel></ScrollViewer>";
         if ai {
-            x += r##"<Grid Grid.Column="2" RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Button x:Name="AdvClAiFold" HorizontalAlignment="Right" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" Content="Hide the AI" ToolTipService.ToolTip="Fold the AI's column away"/><ScrollViewer x:Name="ClAiScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
+            x += r##"<Grid Grid.Column="2" RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Button x:Name="AdvClAiFold" HorizontalAlignment="Right" Padding="8,1" FontSize="12" CornerRadius="4" Style="{StaticResource SprawlSubtle}" Content="Hide the AI" ToolTipService.ToolTip="Fold the AI's column away"/><ScrollViewer x:Name="ClAiScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel Spacing="10">"##;
             x += &self.ai_column(r);
             x += "</StackPanel></ScrollViewer></Grid>";
         } else {
-            x += r##"<Button x:Name="AdvClAiFold" Grid.Column="2" VerticalAlignment="Top" Padding="8,4" FontSize="12" CornerRadius="5" Content="AI" ToolTipService.ToolTip="Show the AI's column"/>"##;
+            x += r##"<Button x:Name="AdvClAiFold" Grid.Column="2" VerticalAlignment="Top" Content="AI" ToolTipService.ToolTip="Show the AI's column"/>"##;
         }
         x += "</Grid></Grid>";
         x
@@ -1305,7 +1305,7 @@ impl State {
     fn cleaners_tab_list(&self, r: &Report, rows: &[ClRow]) -> String {
         let mut x = String::new();
         if !self.usual_keys(r).is_empty() {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
+            x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvClUsual" Content="Tick my usual ones" ToolTipService.ToolTip="The parts that take time to get back which you cleaned last time"/></StackPanel>"##;
         }
         if rows.is_empty() {
             x += r##"<TextBlock Text="No application Sprawl knows is here." TextWrapping="Wrap" Foreground="#FFB9C2D6"/>"##;
@@ -1360,11 +1360,11 @@ impl State {
             };
             let side = match &c.presence {
                 _ if community => format!(
-                    r##"<Button x:Name="AdvClUse{ci}" Grid.Column="2" VerticalAlignment="Center" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
+                    r##"<Button x:Name="AdvClUse{ci}" Grid.Column="2" VerticalAlignment="Center" Content="{}" ToolTipService.ToolTip="A community cleaner does nothing until you turn it on. Read its parts first."/>"##,
                     if turned_on { "Stop using" } else { "Use this cleaner" }
                 ),
                 Presence::Elsewhere(drive) => format!(
-                    r##"<Button x:Name="AdvClScan{ci}" Grid.Column="2" VerticalAlignment="Center" Content="Scan {}" Padding="10,3" FontSize="12" CornerRadius="5"/>"##,
+                    r##"<Button x:Name="AdvClScan{ci}" Grid.Column="2" VerticalAlignment="Center" Content="Scan {}"/>"##,
                     ui::esc(drive.display().to_string().trim_end_matches('\\'))
                 ),
                 _ => String::new(),
@@ -1521,7 +1521,7 @@ impl State {
     fn ai_column(&self, r: &Report) -> String {
         let cfg = AiConfig::load();
         if cfg.provider == Provider::Off {
-            return r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><StackPanel Spacing="8"><TextBlock Text="AI" FontSize="13" FontWeight="SemiBold"/><Button x:Name="AdvClSetup" Content="Set up AI" Padding="12,4" FontSize="12" CornerRadius="5"/></StackPanel></Border>"##.into();
+            return r##"<Border Padding="14,12" CornerRadius="8" Background="#0AFFFFFF"><StackPanel Spacing="8"><TextBlock Text="AI" FontSize="13" FontWeight="SemiBold"/><Button x:Name="AdvClSetup" Content="Set up AI"/></StackPanel></Border>"##.into();
         }
         let mut x = self.suggest_card(r);
         x += &self.chat_card();
@@ -1564,7 +1564,7 @@ impl State {
         x += &label("Where");
         if self.part_left_out(r, c, p) {
             x += &body(&format!("In a large Windows folder the quick read leaves out. Its size, and the way to clean it, show after a scan of {}.", sys_drive()));
-            x += &format!(r##"<Button x:Name="AdvClScanSys" Content="{}" Padding="10,2" FontSize="12" CornerRadius="5"/>"##, ui::esc(&format!("Scan {}", sys_drive())));
+            x += &format!(r##"<Button x:Name="AdvClScanSys" Content="{}"/>"##, ui::esc(&format!("Scan {}", sys_drive())));
         } else if p.findings.is_empty() {
             x += &body("Nothing of it here now.");
         }
@@ -1595,11 +1595,11 @@ impl State {
         }
         if bytes > 0 {
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,6,0,0"><Button x:Name="AdvClS{n}" Content="{}" Padding="10,2" FontSize="12" CornerRadius="5"/>{}</StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="6" Margin="0,6,0,0"><Button x:Name="AdvClS{n}" Content="{}"/>{}</StackPanel>"##,
                 if self.advisor.cl.show.as_deref() == Some(p.key.as_str()) { "Hide the biggest files" } else { "Show the biggest files" },
                 // the "?" asks the AI about this part; its answer shows here
                 if AiConfig::load().provider != Provider::Off {
-                    format!(r##"<Button x:Name="AdvClQ{n}" Content="?" Padding="10,2" FontSize="12" CornerRadius="5" ToolTipService.ToolTip="What happens if I clean this? (asks the AI)" AutomationProperties.Name="What happens if I clean this?"/>"##)
+                    format!(r##"<Button x:Name="AdvClQ{n}" Content="?" ToolTipService.ToolTip="What happens if I clean this? (asks the AI)" AutomationProperties.Name="What happens if I clean this?"/>"##)
                 } else {
                     String::new()
                 }
@@ -1623,10 +1623,10 @@ impl State {
             let forget = if d.builtin || sprawl_advisor::community::is_community(&d.id) {
                 String::new()
             } else {
-                format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
+                format!(r##"<Button x:Name="AdvClF{ci}" Content="Forget this cleaner" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}" ToolTipService.ToolTip="Remove it from your rules (nothing on disk changes)"/>"##)
             };
             x += &format!(
-                r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" BorderThickness="0" Background="Transparent"/>{forget}</StackPanel>"##,
+                r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0"><TextBlock Text="{}" FontSize="12" Foreground="#FF8E97AA" VerticalAlignment="Center"/><Button x:Name="AdvClDef{ci}" Content="{}" Padding="8,1" FontSize="12" CornerRadius="4" Style="{{StaticResource SprawlSubtle}}"/>{forget}</StackPanel>"##,
                 ui::esc(&format!("From {}", d.pack)),
                 if showing { "Hide the definition" } else { "Show the definition" }
             );
@@ -1652,7 +1652,7 @@ impl State {
                 let bytes: u64 = items.iter().filter_map(|it| it.got.as_ref()).map(|g| g.bytes).sum();
                 let files: u64 = items.iter().filter_map(|it| it.got.as_ref()).map(|g| g.files).sum();
                 x += &format!(
-                    r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><Button x:Name="AdvClPrevX" Grid.Column="1" Content="Close" Padding="10,2" FontSize="12" CornerRadius="5"/></Grid>"##,
+                    r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/><Button x:Name="AdvClPrevX" Grid.Column="1" Content="Close"/></Grid>"##,
                     ui::esc(&format!("{} {} would go, {}", crate::format::thousands(files), if files == 1 { "file" } else { "files" }, self.size(bytes)))
                 );
                 x += r##"<TextBlock Text="Counted now by the clean-up's own tests: what is protected, kept by you, or new since the read stays. Nothing was deleted." FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>"##;
@@ -1876,7 +1876,7 @@ impl State {
             x += &format!(r##"<TextBlock Text="{hidden} more ticked in applications not listed here: see them in Cleaners." FontSize="12" Foreground="#FF8E97AA" Margin="34,2,0,0" TextWrapping="Wrap"/>"##);
         }
         x += &format!(
-            r##"<Button x:Name="AdvClAll" Content="{}" Padding="10,3" FontSize="12" CornerRadius="5" Margin="34,4,0,0"/></StackPanel>"##,
+            r##"<Button x:Name="AdvClAll" Content="{}" Margin="34,4,0,0"/></StackPanel>"##,
             if more > 0 { format!("See all in Cleaners ({more} more)") } else { "See all in Cleaners".to_string() }
         );
         x

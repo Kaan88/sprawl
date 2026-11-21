@@ -84,7 +84,7 @@ impl State {
                 .collect();
             x += &format!(
                 // one control per chip: the words and its arrow in one button, so the two can't differ in size
-                r##"<Button x:Name="Chip{k}" {off} Padding="10,3" MinHeight="26" CornerRadius="4" ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" FontSize="12" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="9" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
+                r##"<Button x:Name="Chip{k}" {off} ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="9" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
                 t = ui::esc(chip.title()),
                 off = crate::look::pick(crate::look::Pick::Chip, false),
             );

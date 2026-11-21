@@ -51,7 +51,7 @@ pub(crate) fn xaml() -> &'static str {
         <TextBlock x:Name="HistInfo" Text=" " FontSize="12" Foreground="#FFB9C2D6" TextWrapping="Wrap"/>
         <Grid ColumnSpacing="10" Margin="0,4,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-          <Button x:Name="HistPlay" AutomationProperties.Name="Play the history" Padding="10,6" CornerRadius="6" VerticalAlignment="Center" ToolTipService.ToolTip="Play through the history"><FontIcon x:Name="HistPlayIcon" Glyph="&#xE768;" FontSize="13"/></Button>
+          <Button x:Name="HistPlay" AutomationProperties.Name="Play the history" VerticalAlignment="Center" ToolTipService.ToolTip="Play through the history"><FontIcon x:Name="HistPlayIcon" Glyph="&#xE768;" FontSize="13"/></Button>
           <Slider x:Name="HistSlider" Grid.Column="1" Minimum="0" Maximum="1" Value="1" StepFrequency="1" TickFrequency="1" TickPlacement="Outside" SnapsTo="Ticks" VerticalAlignment="Center"/>
         </Grid>
         <TextBlock x:Name="HistGrew" Text=" " FontSize="12" Foreground="#FFE8EDF7" TextWrapping="Wrap"/>
