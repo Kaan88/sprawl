@@ -103,4 +103,23 @@ impl IApplicationOverrides_Impl for App_Impl {
     }
 }
 
+/// Sprawl's own styles made again for the theme now in use, in place of the ones merged at
+/// start (the last of the merged dictionaries; the controls' own stay). The tokens must have
+/// been reset first, so the styles are made from the new theme's values.
+pub(crate) fn refresh_resources() -> windows_core::Result<()> {
+    let Some(app) = APP.get() else { return Ok(()) };
+    let own: ResourceDictionary = crate::state::load(&crate::look::resources())?;
+    let merged = app.Resources()?.MergedDictionaries()?;
+    let n = merged.Size()?;
+    if n >= 2 {
+        merged.SetAt(n - 1, &own)?;
+    } else {
+        merged.Append(&own)?;
+    }
+    // WinUI refuses this once the app runs on some versions: the page's own RequestedTheme (on
+    // its root) is what the controls follow, so a refusal costs nothing
+    let _ = app.SetRequestedTheme(if crate::theme::light() { crate::bindings::Microsoft::UI::Xaml::ApplicationTheme::Light } else { crate::bindings::Microsoft::UI::Xaml::ApplicationTheme::Dark });
+    Ok(())
+}
+
 pub(crate) static APP: OnceLock<Application> = OnceLock::new();

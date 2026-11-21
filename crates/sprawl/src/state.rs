@@ -857,6 +857,11 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: the other theme, as saving it in Settings would (in memory: a screenshot run saves nothing)
+                    "theme" => {
+                        self.settings.set("theme", if crate::theme::light() { 2 } else { 1 });
+                        crate::restyle::request();
+                    }
                     // dev: the Delete card as it looks part way; nothing is deleted
                     "deletedemo" => {
                         self.advisor.delete_total = (3 << 30, true, 2);

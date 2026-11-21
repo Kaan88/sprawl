@@ -314,8 +314,11 @@ impl State {
                 let _ = c.save();
             }
             "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
-            // read once at start (the XAML is rewritten as it loads): it shows at the next start
-            "theme" => self.settings.set("theme", idx(crate::theme::CHOICES.len())),
+            // the page is made again for the new theme at the next frame (restyle.rs)
+            "theme" => {
+                self.settings.set("theme", idx(crate::theme::CHOICES.len()));
+                crate::restyle::request();
+            }
             "decimal" => {
                 self.settings.set_bool("decimal", yes);
                 crate::format::DECIMAL.store(yes, std::sync::atomic::Ordering::Relaxed);

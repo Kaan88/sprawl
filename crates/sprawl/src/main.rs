@@ -33,6 +33,7 @@ mod treemap;
 mod ui;
 mod look;
 mod reconcile;
+mod restyle;
 mod theme;
 mod tokens;
 mod win32;
@@ -275,252 +276,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         window.Activate()?;
     }
 
-    // Menu items and buttons all route to State::command by name.
-    for &name in COMMANDS {
-        if let Ok(item) = find::<MenuFlyoutItem>(&root, name) {
-            keep(item.Click(move |_, _| {
-                with(|s| s.command(name));
-            })?);
-        }
-    }
-    // the other views and their colour switch
-    for name in crate::views::ALL.iter().map(|v| v.1).chain(crate::views::PAINTS.iter().map(|p| p.1)) {
-        if let Ok(item) = find::<MenuFlyoutItem>(&root, name) {
-            keep(item.Click(move |_, _| {
-                with(|s| s.command(name));
-            })?);
-        }
-    }
-    for name in wizard::BUTTONS {
-        keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
-            with(|s| s.wizard_command(name));
-        })?);
-    }
-    keep(find::<Selector>(&root, "WizProvider")?.SelectionChanged(|_, _| {
-        with(|s| s.wizard_provider());
-    })?);
-    keep(find::<Selector>(&root, "WizUrlPreset")?.SelectionChanged(|_, _| {
-        with(|s| s.wizard_preset());
-    })?);
-    keep(find::<ButtonBase>(&root, "HistGrowth")?.Click(|_, _| {
-        with(|s| {
-            s.command("TabAdvisor");
-            s.advisor_command("AdvGrowOpen");
-        });
-    })?);
-    for name in ["HistClose", "HistPlay"] {
-        keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
-            with(|s| if name == "HistPlay" { s.hist_play() } else { s.hist_close() });
-        })?);
-    }
-    keep(find::<RangeBase>(&root, "HistSlider")?.ValueChanged(|_, e| {
-        let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
-        with(|st| {
-            if st.hist.as_ref().is_some_and(|h| h.pos != v.round() as usize) {
-                st.hist_seek(v.round().max(0.0) as usize);
-            }
-        });
-    })?);
-    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "MapTweaks", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip", "DeleteStop"] {
-        keep(find::<ButtonBase>(&root, name)?.Click(move |_, _| {
-            with(|s| s.command(name));
-        })?);
-    }
-    keep(find::<Selector>(&root, "DriveBox")?.SelectionChanged(|_, _| {
-        with(|s| {
-            let auto = find::<ToggleMenuFlyoutItem>(&s.root, "oAuto").and_then(|t| t.IsChecked()).unwrap_or(false);
-            if auto && s.shot.is_none() {
-                s.command("ScanSelectedDrive");
-            }
-        });
-    })?);
-    // The 3D treemap panel.
-    let panel: SwapChainPanel = find(&root, "MapPanel")?;
-    let map: UIElement = panel.cast()?;
-    keep(map.PointerMoved(move |s, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
-        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
-        let props = pt.Properties();
-        let left = props.as_ref().is_ok_and(|p| p.IsLeftButtonPressed().unwrap_or(false));
-        let pan = props.as_ref().is_ok_and(|p| p.IsMiddleButtonPressed().unwrap_or(false) || p.IsRightButtonPressed().unwrap_or(false));
-        if let Ok(p) = pt.Position() {
-            with(|st| st.map_hover(p.X as f64, p.Y as f64, left, pan));
-        }
-    })?);
-    keep(map.PointerPressed(move |s, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
-        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
-        if let Ok(p) = pt.Position() {
-            with(|st| st.map_press(p.X as f64, p.Y as f64));
-        }
-    })?);
-    keep(map.RightTapped(move |s, e| {
-        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-        let Ok(el) = s.cast::<UIElement>() else { return };
-        if let Ok(p) = e.GetPosition(&el) {
-            with(|st| st.map_menu(p.X as f64, p.Y as f64));
-        }
-    })?);
-    keep(map.PointerExited(|_, _| {
-        with(|st| st.map_leave());
-    })?);
-    keep(map.PointerWheelChanged(move |s, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
-        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
-        let delta = pt.Properties().and_then(|p| p.MouseWheelDelta()).unwrap_or(0);
-        if let Ok(p) = pt.Position() {
-            with(|st| st.map_wheel(p.X as f64, p.Y as f64, delta));
-        }
-        let _ = e.SetHandled(true);
-    })?);
-    keep(map.Tapped(|s, e| {
-        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-        let Ok(el) = s.cast::<UIElement>() else { return };
-        if let Ok(p) = e.GetPosition(&el) {
-            with(|st| st.map_click(p.X as f64, p.Y as f64));
-        }
-    })?);
-    keep(map.DoubleTapped(|s, e| {
-        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-        let Ok(el) = s.cast::<UIElement>() else { return };
-        if let Ok(p) = e.GetPosition(&el) {
-            with(|st| st.map_zoom_at(p.X as f64, p.Y as f64));
-        }
-    })?);
-
-    // The two tables. Positions are taken relative to the scrolled content (see tables::Rows).
-    let content_pos = |sv: &IInspectable, get: &dyn Fn(&UIElement) -> windows_core::Result<Point>| -> Option<(f64, f64)> {
-        let c = sv.cast::<ScrollViewer>().ok()?.Content().ok()?.cast::<UIElement>().ok()?;
-        let p = get(&c).ok()?;
-        Some((p.X as f64, p.Y as f64))
-    };
-    for (name, which) in [("TreeScroll", Which::Main), ("ExtScroll", Which::Exts)] {
-        let sv: ScrollViewer = find(&root, name)?;
-        keep(sv.Tapped(move |s, e| {
-            let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-            if let Some((x, y)) = content_pos(s, &|c| e.GetPosition(c)) {
-                with(|st| match which {
-                    Which::Main => st.row_tapped(x, y, false),
-                    Which::Exts => st.ext_tapped(y),
-                });
-            }
-        })?);
-        keep(sv.ViewChanged(move |_, _| {
-            with(|st| st.fill(which));
-        })?);
-        keep(sv.cast::<FrameworkElement>()?.SizeChanged(move |_, _| {
-            with(|st| st.fill(which));
-        })?);
-        let header: FrameworkElement = find(&root, if which == Which::Main { "TreeHeader" } else { "ExtHeader" })?;
-        keep(header.Tapped(move |s, e| {
-            let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-            let Ok(el) = s.cast::<UIElement>() else { return };
-            let w = s.cast::<FrameworkElement>().and_then(|f| f.ActualWidth()).unwrap_or(0.0);
-            if let Ok(p) = e.GetPosition(&el) {
-                with(|st| st.header_clicked(which, p.X as f64, w));
-            }
-        })?);
-    }
-    keep(find::<UIElement>(&root, "ExtScroll")?.KeyDown(|_, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Ok(k) = e.Key() else { return };
-        if with(|st| st.ext_key(k.0)).unwrap_or(false) {
-            let _ = e.SetHandled(true);
-        }
-    })?);
-    // a narrow window gives the tree more of the width beside the file types
-    keep(root.SizeChanged(|s, _| {
-        let Some(f) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
-        let (Ok(w), Ok(h)) = (f.ActualWidth(), f.ActualHeight()) else { return };
-        with(|st| st.fit_size(w, h));
-    })?);
-    let tree_sv: UIElement = find(&root, "TreeScroll")?;
-    keep(tree_sv.DoubleTapped(move |s, e| {
-        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-        if let Some((x, y)) = content_pos(s, &|c| e.GetPosition(c)) {
-            with(|st| st.row_tapped(x, y, true));
-        }
-    })?);
-    keep(tree_sv.RightTapped(move |s, e| {
-        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
-        let Some((_, y)) = content_pos(s, &|c| e.GetPosition(c)) else { return };
-        let Ok(at) = s.cast::<UIElement>().and_then(|el| e.GetPosition(&el)) else { return };
-        with(|st| st.row_menu(y, at));
-    })?);
-    keep(tree_sv.KeyDown(|_, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Ok(k) = e.Key() else { return };
-        if with(|st| st.table_key(k.0)).unwrap_or(false) {
-            let _ = e.SetHandled(true);
-        }
-    })?);
-    keep(find::<TextBox>(&root, "SearchBox")?.TextChanged(|s, _| {
-        let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
-        let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
-        let caret = t.SelectionStart().unwrap_or(i32::MAX).max(0) as usize;
-        with(|st| st.search_typed(v, caret));
-    })?);
-    // Enter or Down in the search box goes to the results; with suggestions showing, Up, Down,
-    // Enter, Tab and Esc may be theirs (search_query::box_key)
-    keep(find::<UIElement>(&root, "SearchBox")?.PreviewKeyDown(|_, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Ok(k) = e.Key() else { return };
-        if with(|st| st.search_box_key(k.0)).unwrap_or(false) {
-            let _ = e.SetHandled(true);
-        }
-    })?);
-    // a question open in Sprawl's own box has the keyboard (ask.rs dialog_key)
-    keep(root.cast::<UIElement>()?.PreviewKeyDown(|_, e| {
-        let Some(e) = e.as_ref() else { return };
-        let Ok(k) = e.Key() else { return };
-        if with(|st| st.dialog_key(k.0)).unwrap_or(false) {
-            let _ = e.SetHandled(true);
-        }
-    })?);
-    // Filter box and the Colours and Tweaks panel.
-    keep(find::<TextBox>(&root, "FilterBox")?.TextChanged(|s, _| {
-        let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
-        let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
-        with(|st| st.filter_changed(v));
-    })?);
-    for name in ["LiftSlider", "CushionSlider", "TiltSlider"] {
-        keep(find::<RangeBase>(&root, name)?.ValueChanged(move |_, e| {
-            let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
-            with(|st| st.tweak(name, v));
-        })?);
-    }
-    keep(find::<ToggleSwitch>(&root, "AnimSwitch")?.Toggled(|s, _| {
-        let on = s.as_ref().and_then(|s| s.cast::<ToggleSwitch>().ok()).and_then(|t| t.IsOn().ok()).unwrap_or(true);
-        with(|st| st.tweak("AnimSwitch", if on { 1.0 } else { 0.0 }));
-    })?);
-    keep(find::<Selector>(&root, "PaletteBox")?.SelectionChanged(|s, _| {
-        let i = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).unwrap_or(0);
-        with(|st| st.tweak("PaletteBox", i.max(0) as f64));
-    })?);
-    keep(find::<ButtonBase>(&root, "TweaksClose")?.Click(|_, _| {
-        with(|st| st.command("mTweaks"));
-    })?);
-
-    // The menu of a search row from another drive.
-    for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S'), ("sxShell", 'W')] {
-        if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {
-            keep(i.Click(move |_, _| {
-                with(|s| s.more_menu_pick(kind));
-            })?);
-        }
-    }
-
-    // The row menu's items reuse the File menu's commands.
-    for (item, cmd) in ROW_MENU {
-        if let Ok(i) = find::<MenuFlyoutItem>(&root, item) {
-            keep(i.Click(move |_, _| {
-                with(|s| s.command(cmd));
-            })?);
-        }
-    }
+    let panel = bind(&root)?;
 
     // Everything that moves (scan polling, the overlay, the treemap) runs once per frame.
     keep(CompositionTarget::Rendering(|_, _| {
@@ -622,6 +378,258 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Everything the page's controls do, wired to the state by name. Run on the page made at start
+/// and again on the one a theme change makes (`crate::restyle`); returns the map's panel.
+pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPanel> {
+    // Menu items and buttons all route to State::command by name.
+    for &name in COMMANDS {
+        if let Ok(item) = find::<MenuFlyoutItem>(root, name) {
+            keep(item.Click(move |_, _| {
+                with(|s| s.command(name));
+            })?);
+        }
+    }
+    // the other views and their colour switch
+    for name in crate::views::ALL.iter().map(|v| v.1).chain(crate::views::PAINTS.iter().map(|p| p.1)) {
+        if let Ok(item) = find::<MenuFlyoutItem>(root, name) {
+            keep(item.Click(move |_, _| {
+                with(|s| s.command(name));
+            })?);
+        }
+    }
+    for name in wizard::BUTTONS {
+        keep(find::<ButtonBase>(root, name)?.Click(move |_, _| {
+            with(|s| s.wizard_command(name));
+        })?);
+    }
+    keep(find::<Selector>(root, "WizProvider")?.SelectionChanged(|_, _| {
+        with(|s| s.wizard_provider());
+    })?);
+    keep(find::<Selector>(root, "WizUrlPreset")?.SelectionChanged(|_, _| {
+        with(|s| s.wizard_preset());
+    })?);
+    keep(find::<ButtonBase>(root, "HistGrowth")?.Click(|_, _| {
+        with(|s| {
+            s.command("TabAdvisor");
+            s.advisor_command("AdvGrowOpen");
+        });
+    })?);
+    for name in ["HistClose", "HistPlay"] {
+        keep(find::<ButtonBase>(root, name)?.Click(move |_, _| {
+            with(|s| if name == "HistPlay" { s.hist_play() } else { s.hist_close() });
+        })?);
+    }
+    keep(find::<RangeBase>(root, "HistSlider")?.ValueChanged(|_, e| {
+        let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
+        with(|st| {
+            if st.hist.as_ref().is_some_and(|h| h.pos != v.round() as usize) {
+                st.hist_seek(v.round().max(0.0) as usize);
+            }
+        });
+    })?);
+    for name in ["ScanButton", "CoverageDetails", "TabTree", "TabFiles", "TabSearch", "TabAdvisor", "TabCleaners", "SearchToFilter", "SearchMapBtn", "TabAbout", "ModeMap", "ModeCity", "ModeGalaxy", "ModeHist", "ViewOnly", "MapTweaks", "SetupYes", "SetupNo", "UpdateNow", "UpdateLater", "UpdateSkip", "DeleteStop"] {
+        keep(find::<ButtonBase>(root, name)?.Click(move |_, _| {
+            with(|s| s.command(name));
+        })?);
+    }
+    keep(find::<Selector>(root, "DriveBox")?.SelectionChanged(|_, _| {
+        with(|s| {
+            let auto = find::<ToggleMenuFlyoutItem>(&s.root, "oAuto").and_then(|t| t.IsChecked()).unwrap_or(false);
+            if auto && s.shot.is_none() {
+                s.command("ScanSelectedDrive");
+            }
+        });
+    })?);
+    // The 3D treemap panel.
+    let panel: SwapChainPanel = find(root, "MapPanel")?;
+    let map: UIElement = panel.cast()?;
+    keep(map.PointerMoved(move |s, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
+        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
+        let props = pt.Properties();
+        let left = props.as_ref().is_ok_and(|p| p.IsLeftButtonPressed().unwrap_or(false));
+        let pan = props.as_ref().is_ok_and(|p| p.IsMiddleButtonPressed().unwrap_or(false) || p.IsRightButtonPressed().unwrap_or(false));
+        if let Ok(p) = pt.Position() {
+            with(|st| st.map_hover(p.X as f64, p.Y as f64, left, pan));
+        }
+    })?);
+    keep(map.PointerPressed(move |s, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
+        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
+        if let Ok(p) = pt.Position() {
+            with(|st| st.map_press(p.X as f64, p.Y as f64));
+        }
+    })?);
+    keep(map.RightTapped(move |s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        let Ok(el) = s.cast::<UIElement>() else { return };
+        if let Ok(p) = e.GetPosition(&el) {
+            with(|st| st.map_menu(p.X as f64, p.Y as f64));
+        }
+    })?);
+    keep(map.PointerExited(|_, _| {
+        with(|st| st.map_leave());
+    })?);
+    keep(map.PointerWheelChanged(move |s, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Some(el) = s.as_ref().and_then(|s| s.cast::<UIElement>().ok()) else { return };
+        let Ok(pt) = e.GetCurrentPoint(&el) else { return };
+        let delta = pt.Properties().and_then(|p| p.MouseWheelDelta()).unwrap_or(0);
+        if let Ok(p) = pt.Position() {
+            with(|st| st.map_wheel(p.X as f64, p.Y as f64, delta));
+        }
+        let _ = e.SetHandled(true);
+    })?);
+    keep(map.Tapped(|s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        let Ok(el) = s.cast::<UIElement>() else { return };
+        if let Ok(p) = e.GetPosition(&el) {
+            with(|st| st.map_click(p.X as f64, p.Y as f64));
+        }
+    })?);
+    keep(map.DoubleTapped(|s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        let Ok(el) = s.cast::<UIElement>() else { return };
+        if let Ok(p) = e.GetPosition(&el) {
+            with(|st| st.map_zoom_at(p.X as f64, p.Y as f64));
+        }
+    })?);
+
+    // The two tables. Positions are taken relative to the scrolled content (see tables::Rows).
+    let content_pos = |sv: &IInspectable, get: &dyn Fn(&UIElement) -> windows_core::Result<Point>| -> Option<(f64, f64)> {
+        let c = sv.cast::<ScrollViewer>().ok()?.Content().ok()?.cast::<UIElement>().ok()?;
+        let p = get(&c).ok()?;
+        Some((p.X as f64, p.Y as f64))
+    };
+    for (name, which) in [("TreeScroll", Which::Main), ("ExtScroll", Which::Exts)] {
+        let sv: ScrollViewer = find(root, name)?;
+        keep(sv.Tapped(move |s, e| {
+            let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+            if let Some((x, y)) = content_pos(s, &|c| e.GetPosition(c)) {
+                with(|st| match which {
+                    Which::Main => st.row_tapped(x, y, false),
+                    Which::Exts => st.ext_tapped(y),
+                });
+            }
+        })?);
+        keep(sv.ViewChanged(move |_, _| {
+            with(|st| st.fill(which));
+        })?);
+        keep(sv.cast::<FrameworkElement>()?.SizeChanged(move |_, _| {
+            with(|st| st.fill(which));
+        })?);
+        let header: FrameworkElement = find(root, if which == Which::Main { "TreeHeader" } else { "ExtHeader" })?;
+        keep(header.Tapped(move |s, e| {
+            let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+            let Ok(el) = s.cast::<UIElement>() else { return };
+            let w = s.cast::<FrameworkElement>().and_then(|f| f.ActualWidth()).unwrap_or(0.0);
+            if let Ok(p) = e.GetPosition(&el) {
+                with(|st| st.header_clicked(which, p.X as f64, w));
+            }
+        })?);
+    }
+    keep(find::<UIElement>(root, "ExtScroll")?.KeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.ext_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
+    // a narrow window gives the tree more of the width beside the file types
+    keep(root.SizeChanged(|s, _| {
+        let Some(f) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
+        let (Ok(w), Ok(h)) = (f.ActualWidth(), f.ActualHeight()) else { return };
+        with(|st| st.fit_size(w, h));
+    })?);
+    let tree_sv: UIElement = find(root, "TreeScroll")?;
+    keep(tree_sv.DoubleTapped(move |s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        if let Some((x, y)) = content_pos(s, &|c| e.GetPosition(c)) {
+            with(|st| st.row_tapped(x, y, true));
+        }
+    })?);
+    keep(tree_sv.RightTapped(move |s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        let Some((_, y)) = content_pos(s, &|c| e.GetPosition(c)) else { return };
+        let Ok(at) = s.cast::<UIElement>().and_then(|el| e.GetPosition(&el)) else { return };
+        with(|st| st.row_menu(y, at));
+    })?);
+    keep(tree_sv.KeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.table_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
+    keep(find::<TextBox>(root, "SearchBox")?.TextChanged(|s, _| {
+        let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
+        let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
+        let caret = t.SelectionStart().unwrap_or(i32::MAX).max(0) as usize;
+        with(|st| st.search_typed(v, caret));
+    })?);
+    // Enter or Down in the search box goes to the results; with suggestions showing, Up, Down,
+    // Enter, Tab and Esc may be theirs (search_query::box_key)
+    keep(find::<UIElement>(root, "SearchBox")?.PreviewKeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.search_box_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
+    // a question open in Sprawl's own box has the keyboard (ask.rs dialog_key)
+    keep(root.cast::<UIElement>()?.PreviewKeyDown(|_, e| {
+        let Some(e) = e.as_ref() else { return };
+        let Ok(k) = e.Key() else { return };
+        if with(|st| st.dialog_key(k.0)).unwrap_or(false) {
+            let _ = e.SetHandled(true);
+        }
+    })?);
+    // Filter box and the Colours and Tweaks panel.
+    keep(find::<TextBox>(root, "FilterBox")?.TextChanged(|s, _| {
+        let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
+        let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
+        with(|st| st.filter_changed(v));
+    })?);
+    for name in ["LiftSlider", "CushionSlider", "TiltSlider"] {
+        keep(find::<RangeBase>(root, name)?.ValueChanged(move |_, e| {
+            let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
+            with(|st| st.tweak(name, v));
+        })?);
+    }
+    keep(find::<ToggleSwitch>(root, "AnimSwitch")?.Toggled(|s, _| {
+        let on = s.as_ref().and_then(|s| s.cast::<ToggleSwitch>().ok()).and_then(|t| t.IsOn().ok()).unwrap_or(true);
+        with(|st| st.tweak("AnimSwitch", if on { 1.0 } else { 0.0 }));
+    })?);
+    keep(find::<Selector>(root, "PaletteBox")?.SelectionChanged(|s, _| {
+        let i = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).unwrap_or(0);
+        with(|st| st.tweak("PaletteBox", i.max(0) as f64));
+    })?);
+    keep(find::<ButtonBase>(root, "TweaksClose")?.Click(|_, _| {
+        with(|st| st.command("mTweaks"));
+    })?);
+
+    // The menu of a search row from another drive.
+    for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S'), ("sxShell", 'W')] {
+        if let Ok(i) = find::<MenuFlyoutItem>(root, item) {
+            keep(i.Click(move |_, _| {
+                with(|s| s.more_menu_pick(kind));
+            })?);
+        }
+    }
+
+    // The row menu's items reuse the File menu's commands.
+    for (item, cmd) in ROW_MENU {
+        if let Ok(i) = find::<MenuFlyoutItem>(root, item) {
+            keep(i.Click(move |_, _| {
+                with(|s| s.command(cmd));
+            })?);
+        }
+    }
+    Ok(panel)
 }
 
 fn main() {

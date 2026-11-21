@@ -86,6 +86,11 @@ impl Default for Hud {
 }
 
 impl Hud {
+    /// The page was made again (the theme changed): its controls are looked up again.
+    pub(crate) fn restyle(&mut self) {
+        self.elements = None;
+    }
+
     pub(crate) fn reset(&mut self, expected_bytes: u64) {
         let els = self.elements.take();
         *self = Hud { expected_bytes, elements: els, ..Default::default() };

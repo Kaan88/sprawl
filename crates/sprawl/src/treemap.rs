@@ -223,6 +223,10 @@ impl State {
         let dt = (now - self.map.last).as_secs_f32().min(0.05);
         self.map.last = now;
 
+        // a theme change makes the page again; the rest of this frame waits for the next
+        if self.restyle_frame() {
+            return;
+        }
         self.poll();
         self.dialog_frame();
         self.ranks_poll(false);

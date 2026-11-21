@@ -99,6 +99,12 @@ pub(crate) struct More {
 }
 
 impl More {
+    /// The page was made again (the theme changed): the strip and the toggles are built again.
+    pub(crate) fn restyle(&mut self) {
+        self.toggles_shape.clear();
+        self.strip_shape.clear();
+    }
+
     /// The matches for the places as they are now (none while they changed under them).
     pub(crate) fn current_hits(&self) -> &[(usize, usize)] {
         if self.hits_gen == self.gen {

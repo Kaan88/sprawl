@@ -246,6 +246,11 @@ thread_local! {
     static TABLE: std::cell::RefCell<Option<HashMap<&'static str, String>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// The table is made again, for the theme now in use, the next time a value is asked for.
+pub(crate) fn reset() {
+    TABLE.with(|c| *c.borrow_mut() = None);
+}
+
 /// The look in use. Set once at start, before any XAML is loaded; until then, Sprawl's own.
 /// (Nothing calls this yet: the Theme page is what will.)
 #[allow(dead_code)]
