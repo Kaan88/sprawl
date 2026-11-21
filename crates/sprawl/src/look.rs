@@ -179,9 +179,34 @@ pub(crate) fn label(text: &str) -> String {
     format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
 }
 
+/// How long a state takes to arrive: 140 ms, or none when Windows' "Animation effects" is off
+/// (read when the styles are built, at start; the states still change, without the travel).
+fn state_time() -> &'static str {
+    if crate::win32::animations_on() { "0:0:0.14" } else { "0:0:0" }
+}
+
+/// One state's storyboard, shared by every button: the wash over the item, and the content's
+/// lift (negative Y is up) and scale. Ease-out, ExponentialEase with exponent 6, as close as
+/// WinUI gets to cubic-bezier(.2,.8,.2,1).
+fn states(wash: f64, lift: f64, scale: f64) -> String {
+    let d = state_time();
+    let ease = r##"<DoubleAnimation.EasingFunction><ExponentialEase EasingMode="EaseOut" Exponent="6"/></DoubleAnimation.EasingFunction>"##;
+    let one = |target: &str, prop: &str, to: f64| {
+        format!(r##"<DoubleAnimation Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}" To="{to}" Duration="{d}">{ease}</DoubleAnimation>"##)
+    };
+    let t = "(UIElement.RenderTransform).(CompositeTransform.";
+    format!(
+        "<Storyboard>{}{}{}{}</Storyboard>",
+        one("Wash", "Opacity", wash),
+        one("Content", &format!("{t}TranslateY)"), lift),
+        one("Content", &format!("{t}ScaleX)"), scale),
+        one("Content", &format!("{t}ScaleY)"), scale),
+    )
+}
+
 /// The template both selectable styles share: the item's own background (set by `paint` or
-/// `pick`: at rest or selected), a white wash over it for the pointer (pointer over: faint,
-/// pressed: a little more), and the system's focus rectangle, which shows for the keyboard
+/// `pick`: at rest or selected), a white wash over it for the pointer (pointer over: 10%,
+/// pressed: 20%, with the content up 1 px, then down 1 px and at 0.98), and the system's focus rectangle, which shows for the keyboard
 /// only. So selected-and-pointer-over is the selected background with the faint wash, and a
 /// selected item the pointer has left is the selected background alone. With `line`: a 3 px
 /// line under the content in the BorderBrush (the page tabs; they have no border of their own).
@@ -206,19 +231,20 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
     } else {
         r##"<Setter Target="Content.Opacity" Value="0.4"/>"##
     };
+    let (normal, over, pressed) = (states(0.0, 0.0, 1.0), states(0.10, -1.0, 1.0), states(0.20, 1.0, 0.98));
     format!(
         r##"<ControlTemplate TargetType="{target}">
   <Grid x:Name="Root" Background="{{TemplateBinding Background}}" CornerRadius="{{TemplateBinding CornerRadius}}" {border}>
     {cols}
     <Border x:Name="Wash" Grid.ColumnSpan="2" Background="{{$wash}}" Opacity="0" CornerRadius="{{TemplateBinding CornerRadius}}"/>
-    <ContentPresenter x:Name="Content" Content="{{TemplateBinding Content}}" ContentTemplate="{{TemplateBinding ContentTemplate}}" Padding="{{TemplateBinding Padding}}" HorizontalContentAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalContentAlignment="{{TemplateBinding VerticalContentAlignment}}" Foreground="{{TemplateBinding Foreground}}" FontSize="{{TemplateBinding FontSize}}" FontFamily="{{TemplateBinding FontFamily}}" FontWeight="{{TemplateBinding FontWeight}}"/>
+    <ContentPresenter x:Name="Content" RenderTransformOrigin="0.5,0.5" Content="{{TemplateBinding Content}}" ContentTemplate="{{TemplateBinding ContentTemplate}}" Padding="{{TemplateBinding Padding}}" HorizontalContentAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalContentAlignment="{{TemplateBinding VerticalContentAlignment}}" Foreground="{{TemplateBinding Foreground}}" FontSize="{{TemplateBinding FontSize}}" FontFamily="{{TemplateBinding FontFamily}}" FontWeight="{{TemplateBinding FontWeight}}"><ContentPresenter.RenderTransform><CompositeTransform/></ContentPresenter.RenderTransform></ContentPresenter>
     {arrow}
     {underline}
     <VisualStateManager.VisualStateGroups>
       <VisualStateGroup x:Name="CommonStates">
-        <VisualState x:Name="Normal"/>
-        <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="Wash.Opacity" Value="0.07"/></VisualState.Setters></VisualState>
-        <VisualState x:Name="Pressed"><VisualState.Setters><Setter Target="Wash.Opacity" Value="0.12"/><Setter Target="Content.Opacity" Value="0.8"/></VisualState.Setters></VisualState>
+        <VisualState x:Name="Normal"><VisualState.Storyboard>{normal}</VisualState.Storyboard></VisualState>
+        <VisualState x:Name="PointerOver"><VisualState.Storyboard>{over}</VisualState.Storyboard></VisualState>
+        <VisualState x:Name="Pressed"><VisualState.Storyboard>{pressed}</VisualState.Storyboard></VisualState>
         <VisualState x:Name="Disabled"><VisualState.Setters>{disabled}</VisualState.Setters></VisualState>
       </VisualStateGroup>
     </VisualStateManager.VisualStateGroups>
@@ -424,8 +450,9 @@ pub(crate) fn resources() -> String {
         style("SprawlPick", "Button", false),
         style("SprawlPickDrop", "DropDownButton", true),
         style_with("SprawlPage", "Button", false, true, false, Geo::small()),
-        // chips: a WinUI button's size with its faint edge, filled with the accent when picked
-        style_with("SprawlChip", "Button", false, false, false, Geo::button().with_border("1", crate::tokens::refer("line1"))),
+        // chips: pills (the corner is clamped to half the height), a WinUI button's size with its
+        // faint edge, filled with the accent when picked
+        style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcpill"), ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
         style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text.clone(), ..Geo::button() }),
         style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
     )
