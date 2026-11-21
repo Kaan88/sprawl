@@ -172,7 +172,7 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "rc14", what: "corner radius 14", value: "14", light: "14" },
     // A chip's pill: a radius past half the height, which the control clamps, so the ends are
     // round whatever the chip's height. Not a number of its own, hence the name.
-    Token { name: "rcpill", what: "the round ends of a chip", value: "999", light: "999" },
+    Token { name: "rcpill", what: "the round ends of a chip: half its height (WinUI makes a larger radius an oval)", value: "15", light: "15" },
 ];
 
 /// The selected row's background: the Windows accent mixed a quarter into the card, so a chosen

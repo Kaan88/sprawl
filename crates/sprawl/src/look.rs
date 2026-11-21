@@ -961,7 +961,7 @@ mod tests {
         // the chips are pills: a corner past half the height, which the control clamps
         let chip = &r[r.find(r#"x:Key="SprawlChip""#).unwrap()..];
         let chip = &chip[..chip.find("</Style>").unwrap()];
-        assert!(chip.contains(r#"<Setter Property="CornerRadius" Value="999"/>"#), "{chip}");
+        assert!(chip.contains(r#"<Setter Property="CornerRadius" Value="15"/>"#), "{chip}");
         assert!(chip.contains(r#"<Setter Property="BorderBrush" Value="{$line1}"/>"#));
         assert_eq!(Pick::Page.bg(true), "Transparent");
         assert!(pick(Pick::Page, true).contains(underline()) && !pick(Pick::Page, false).contains(underline()));
