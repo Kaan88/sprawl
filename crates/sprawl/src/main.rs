@@ -36,6 +36,7 @@ mod reconcile;
 mod restyle;
 mod theme;
 mod tokens;
+mod themepage;
 mod win32;
 mod welcome;
 mod wizard;
@@ -678,7 +679,10 @@ fn main() {
     }
     let result = Application::Start(&ApplicationInitializationCallback::new(|_| {
         let app = Application::compose(App { provider: OnceLock::new() })?;
-        crate::theme::init(crate::settings::Settings::load().get("theme"));
+        let stored = crate::settings::Settings::load();
+        crate::theme::init(stored.get("theme"));
+        // the look (the Theme page's options) is set before any XAML loads
+        crate::tokens::set(&crate::themepage::startup_look(&stored));
         app.SetRequestedTheme(if crate::theme::light() { ApplicationTheme::Light } else { ApplicationTheme::Dark })?;
         let _ = APP.set(app);
         Ok(())

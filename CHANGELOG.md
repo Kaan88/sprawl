@@ -6,7 +6,7 @@ in-app updater shows.
 ## Unreleased
 
 - Search: results from other drives and saved scans can be picked (Ctrl+click, Shift+click, Ctrl+A) and deleted, to the Recycle Bin with Del or for good with Shift+Del. Before anything goes, each item is checked on the disk as it is now: still there, still a file or a folder, not a link, not protected, and a file still the size and date the result showed (a changed one is left alone and listed). A folder is measured first, so the question shows what it holds now next to what the saved read said. Where a drive has no Recycle Bin, the question says so and only offers deleting for good. Results from the scan on screen and from other drives can't be picked together.
-
+- Settings has a Theme page: a sample that follows each pick, presets (Sprawl, Windows, Midnight, Paper, Custom), and under Customise the accent, surfaces, contrast, folder icons, corners, tick boxes, bars, motion and small text, with Copy theme and Paste theme to share a look. Light or dark moved there from General. Save applies the look without a restart.
 - Ticking or opening a row in the Advisor and Cleaners changes only that part of the panel: the row keeps its highlight instead of flashing again when the mouse moves, the panel no longer blinks, and clicks answer faster. An opened Advisor finding or Cleaners app row no longer flashes bright grey when the mouse leaves it.
 
 - Buttons follow Windows 11: the standard size (14 px text, 32 px high, 4 px corners), the one main action of each place in your Windows accent colour, and a red button for deleting for good, so it no longer looks like ticking the safe ones. Selected chips and map modes are filled with the accent; text actions are plain until you point at them.

@@ -1021,6 +1021,12 @@ pub(crate) fn refer(name: &str) -> String {
     format!("{{${name}}}")
 }
 
+/// `xaml` with its tokens filled in from a table of its own (the Theme page's sample, drawn for
+/// the look being picked rather than the look in use).
+pub(crate) fn expand_in(xaml: &str, table: &HashMap<&'static str, String>) -> String {
+    expand_with(xaml, table)
+}
+
 fn expand_with(xaml: &str, table: &HashMap<&'static str, String>) -> String {
     let b = xaml.as_bytes();
     let mut out = String::with_capacity(xaml.len() + 64);

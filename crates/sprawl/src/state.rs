@@ -994,6 +994,8 @@ impl State {
                         self.advisor_redraw();
                     }
                     a if a.starts_with("Adv") => self.advisor_command(a),
+                    // dev: the Theme page in a state (ThemeMore, ThemeTab=1, ThemePre=2, ThemeDrop=accent)
+                    t if t.starts_with("Theme") => self.theme_dev(t),
                     // dev: a Settings section or a wizard button
                     w if w.starts_with("PfSec") || w.starts_with("Wiz") => self.wizard_command(w),
                     _ => self.command(&c),

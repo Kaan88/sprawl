@@ -8,6 +8,7 @@ use sprawl_advisor::tuning::{self, Knob};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sec {
     General,
+    Theme,
     Ai,
     Network,
     Scanning,
@@ -19,11 +20,12 @@ pub enum Sec {
 }
 
 impl Sec {
-    pub const ALL: [Sec; 9] = [Sec::General, Sec::Ai, Sec::Network, Sec::Scanning, Sec::Search, Sec::Map, Sec::Cleaning, Sec::Advisor, Sec::History];
+    pub const ALL: [Sec; 10] = [Sec::General, Sec::Theme, Sec::Ai, Sec::Network, Sec::Scanning, Sec::Search, Sec::Map, Sec::Cleaning, Sec::Advisor, Sec::History];
 
     pub fn title(self) -> &'static str {
         match self {
             Sec::General => "General",
+            Sec::Theme => "Theme",
             Sec::Ai => "AI and privacy",
             Sec::Network => "Network",
             Sec::Scanning => "Scanning",
@@ -38,6 +40,7 @@ impl Sec {
     pub fn glyph(self) -> &'static str {
         match self {
             Sec::General => "&#xE713;",
+            Sec::Theme => "&#xE771;",
             Sec::Ai => "&#xE945;",
             Sec::Network => "&#xE774;",
             Sec::Scanning => "&#xEDA2;",
@@ -109,7 +112,7 @@ pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", 
 pub static PREFS: [Pref; 61] = [
     // General
     p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons, for example D:\\Games; C:\\Work\\Private. New app, Search, Cleaners and MCP scans omit them. Fast MFT scans still work: skipped folders are left out as the tree is built. Cleanup actions covering a skipped folder are refused. Existing History and CSV imports remain unchanged; rescan to replace old results.", Kind::Text("D:\\Games; C:\\Work\\Private")),
-    p("theme", Sec::General, "Theme", "Light or dark. Like Windows follows Settings > Personalisation > Colours. A change shows as soon as you save.", Kind::Choice(&crate::theme::CHOICES, 0)),
+    p("theme", Sec::Theme, "Light or dark", "Light or dark. Like Windows follows Settings > Personalisation > Colours. A change shows as soon as you save.", Kind::Choice(&crate::theme::CHOICES, 0)),
     p("units", Sec::General, "Sizes in", "Best fit or a fixed unit. The base below determines GB versus GiB. Search sizes, goals and alert thresholds keep their stated binary meaning.", Kind::Choice(&UNITS, 0)),
     p("decimal", Sec::General, "Use decimal sizes (GB)", "Off: binary sizes, 1 GiB = 1,024 MiB. On: decimal sizes, 1 GB = 1,000 MB. Changes size displays, not byte counts or search and cleanup thresholds.", Kind::Switch(false)),
     p(

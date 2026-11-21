@@ -17,7 +17,7 @@ use crate::ui;
 pub const PAGES: usize = WIZARD.len();
 
 /// Every control of the overlay that is wired once: buttons, then the sections.
-pub const BUTTONS: [&str; 14] = ["WizBack", "WizNext", "WizSkip", "WizLoadModels", "WizUseDetected", "PfSec0", "PfSec1", "PfSec2", "PfSec3", "PfSec4", "PfSec5", "PfSec6", "PfSec7", "PfSec8"];
+pub const BUTTONS: [&str; 15] = ["WizBack", "WizNext", "WizSkip", "WizLoadModels", "WizUseDetected", "PfSec0", "PfSec1", "PfSec2", "PfSec3", "PfSec4", "PfSec5", "PfSec6", "PfSec7", "PfSec8", "PfSec9"];
 
 /// The overlay's state while it is open.
 #[derive(Default)]
@@ -25,18 +25,20 @@ pub(crate) struct PrefUi {
     /// The Settings section shown.
     pub(crate) sec: usize,
     /// The values as chosen so far (key: value as text), and as they were when it opened.
-    draft: HashMap<&'static str, String>,
+    pub(crate) draft: HashMap<&'static str, String>,
     orig: HashMap<&'static str, String>,
     /// The settings on the page shown, read back into the draft before it changes.
     shown: Vec<&'static str>,
     /// The page's loaded content (its controls are found in it).
-    fe: Option<FrameworkElement>,
+    pub(crate) fe: Option<FrameworkElement>,
     /// The fixed drives offered for Search, in the order shown.
     drives: Vec<String>,
     /// "Clear history" was pressed once: the next press clears.
     clear_armed: bool,
     /// What the last action said, shown at the top of the page.
-    note: Option<String>,
+    pub(crate) note: Option<String>,
+    /// The Theme page's picks (themepage.rs).
+    pub(crate) theme: crate::themepage::ThemeUi,
 }
 
 fn label(t: &str) -> String {
@@ -227,6 +229,7 @@ impl State {
         self.prefs.draft = draft;
         self.prefs.note = None;
         self.prefs.clear_armed = false;
+        self.theme_begin();
         // AI: what was saved (Off at first); what is installed is only offered, one click away
         let det = Detected::probe();
         let offer = det.suggest();
@@ -406,10 +409,14 @@ impl State {
     }
 
     /// Build the rows of the page shown.
-    fn prefs_render(&mut self) {
+    pub(crate) fn prefs_render(&mut self) {
         let (top, keys): (String, Vec<&'static str>) = if self.wizard_all {
             let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
-            let keys: Vec<&'static str> = PREFS.iter().filter(|p| p.sec == sec && !p.advanced).chain(PREFS.iter().filter(|p| p.sec == sec && p.advanced)).map(|p| p.key).collect();
+            let mut keys: Vec<&'static str> = PREFS.iter().filter(|p| p.sec == sec && !p.advanced).chain(PREFS.iter().filter(|p| p.sec == sec && p.advanced)).map(|p| p.key).collect();
+            // the Theme page is built by themepage.rs, with its own controls
+            if sec == Sec::Theme {
+                keys.clear();
+            }
             (page_title(sec.glyph(), sec.title(), ""), keys)
         } else {
             let (title, glyph, sub, keys) = WIZARD[self.wizard_page.min(PAGES - 1)];
@@ -444,7 +451,12 @@ impl State {
             }
             x += &self.pref_row(p, &mut buttons);
         }
-        if self.wizard_all {
+        let theme_page = self.wizard_all && Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)] == Sec::Theme;
+        if theme_page {
+            let (tx, tb) = self.theme_page();
+            x += &tx;
+            buttons.extend(tb);
+        } else if self.wizard_all {
             x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,16,0,0">{}</StackPanel>"##, button("PfB_reset", "Reset this section"));
             buttons.push("PfB_reset".to_string());
         }
@@ -464,6 +476,9 @@ impl State {
                         keep(t);
                     }
                 }
+            }
+            if theme_page {
+                self.theme_wire(fe);
             }
             // "Work offline" greys what it stops, at once
             if let Ok(t) = find::<ToggleSwitch>(fe, "Pf_offline") {
@@ -634,13 +649,14 @@ impl State {
     }
 
     /// A button inside a page.
-    fn prefs_button(&mut self, name: &str) {
+    pub(crate) fn prefs_button(&mut self, name: &str) {
         self.prefs_harvest();
         self.prefs.note = None;
         if name != "PfB_histClear" {
             self.prefs.clear_armed = false;
         }
         match name {
+            n if n.starts_with("Tm") => self.theme_button(n),
             "PfB_reset" | "PfB_resetAll" => {
                 let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
                 // the administrator switches only change where they can be saved: elevated
@@ -648,6 +664,9 @@ impl State {
                     if let Some(d) = p.default_value() {
                         self.prefs.draft.insert(p.key, d);
                     }
+                }
+                if name == "PfB_resetAll" {
+                    self.theme_reset();
                 }
                 if name == "PfB_resetAll" || sec == Sec::Ai {
                     select(self, "WizProvider", 0);
@@ -905,6 +924,7 @@ impl State {
             }
             self.pref_apply(p, &v);
         }
+        self.theme_commit();
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
         if exclusions_changed { self.advisor_refresh(); }
