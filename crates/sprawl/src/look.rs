@@ -419,6 +419,14 @@ fn stock() -> String {
     ] {
         x += &brush(key, token);
     }
+    // the keyboard's focus ring, which WinUI draws in two strokes: the accent outside, the page
+    // inside it (generic.xaml's own names for the pair)
+    for (key, token) in [
+        ("SystemControlFocusVisualPrimaryBrush", "accent"),
+        ("SystemControlFocusVisualSecondaryBrush", "ground"),
+    ] {
+        x += &brush(key, token);
+    }
     // a plain button: a row's fill, a step up under the pointer, a card while pressed
     for (key, token) in [
         ("ButtonBackground", "row"),
@@ -938,6 +946,13 @@ mod tests {
         assert_eq!(r.matches("<Thickness x:Key=\"TextControlBorderThemeThickness").count(), 2);
         // and the check box's tick is drawn on the accent
         assert!(expanded.contains(&format!(r##"<SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="{}"/>"##, crate::tokens::get("onaccent"))));
+        // the keyboard's focus ring: the accent outside, the page inside it
+        for (key, token) in [("SystemControlFocusVisualPrimaryBrush", "accent"), ("SystemControlFocusVisualSecondaryBrush", "ground")] {
+            assert!(
+                expanded.contains(&format!(r##"<SolidColorBrush x:Key="{key}" Color="{}"/>"##, crate::tokens::get(token))),
+                "{key} is not {token}"
+            );
+        }
     }
 
     #[test]

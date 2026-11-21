@@ -282,13 +282,14 @@ pub(crate) fn cell(col: usize, s: &str) -> String {
     format!(r##"<TextBlock Grid.Column="{col}" Text="{}" {} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>"##, ui::esc(s), crate::look::NUM)
 }
 
-/// A percentage bar: the track, then the share in the accent. One colour, no gradient.
+/// A percentage bar: the track, then the share in the accent, washed so the figure on it reads
+/// whichever accent Windows is set to. One colour, no gradient.
 pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
     let fill = &crate::look::accent().fill;
     format!(
-        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="{{$rc3}}" Background="{{$line1}}"/><Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}"/><TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
+        r##"<Grid Grid.Column="{col}" Margin="6,4,6,4"><Border CornerRadius="{{$rc3}}" Background="{{$line1}}"/><Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}" Opacity="0.45"/><TextBlock Text="{pct:.1} %" {num} FontSize="{{$fs12}}" Foreground="{{$text1}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>"##
     )
 }
 
@@ -1137,6 +1138,22 @@ mod tests {
 
     use super::*;
     use sprawl_core::Node;
+
+    /// The percentage bar's figure sits on a washed accent, so it reads on whatever accent
+    /// Windows is set to: the fill at 45% over the track, the text in the page's brightest.
+    #[test]
+    fn a_percentage_reads_on_a_washed_accent() {
+        let b = pct_bar(1, 42.0);
+        assert!(b.contains(&format!(r##"Background="{}" Opacity="0.45""##, crate::look::accent().fill)), "{b}");
+        assert!(b.contains(r#"Foreground="{$text1}""#), "{b}");
+        assert!(b.contains(r#"Background="{$line1}""#), "{b}");
+        // the track still fills the cell, the fill its share of it
+        assert!(b.contains(r##"Width="42.0""##) && b.contains("42.0 %"), "{b}");
+        // and the bar loads as XAML with the tokens filled in
+        let x = crate::tokens::expand(&b);
+        let open = format!("{}{}", '{', '$');
+        assert!(!x.contains(&open), "{x}");
+    }
 
     /// C:\T with folders b, A, a b, a (and a\x), each holding a file or two.
     fn sample() -> Tree {
