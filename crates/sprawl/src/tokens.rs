@@ -1456,4 +1456,18 @@ mod tests {
         assert_eq!(l.len(), 7, "{l}");
         assert!(l.starts_with('#') && l[1..].bytes().all(|b| b.is_ascii_hexdigit()), "{l}");
     }
+
+    /// A table cleared for a live theme change is made again from the look in use, not from
+    /// Sprawl's own: the user's options survive the reset.
+    #[test]
+    fn a_table_made_again_keeps_the_look_in_use() {
+        let page = r#"<Border CornerRadius="{$rc4}"/>"#;
+        set(&Look { corners: Corners::Pills, ..Look::default() });
+        let before = expand(page).into_owned();
+        assert_ne!(before, r#"<Border CornerRadius="4"/>"#, "the pills' radius is not today's 4");
+        reset();
+        assert_eq!(expand(page), before, "the look in use, not Sprawl's own");
+        set(&Look::default());
+        assert_eq!(expand(page), r#"<Border CornerRadius="4"/>"#);
+    }
 }
