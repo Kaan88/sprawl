@@ -1,5 +1,4 @@
-//! The Theme page of Settings: a sample that follows each pick, the presets, and (under
-//! Customise) the options in four groups. A preset is only a set of option values; Custom is the
+//! The Theme page of Settings: a sample that follows each pick, the presets, and the options in four groups. A preset is only a set of option values; Custom is the
 //! user's own picks, kept apart so a preset tried and left does not lose them. The options are
 //! kept in `settings.ini` as one `look.<option>` key each (a missing key is Sprawl's own value),
 //! read before any XAML loads, and applied live on Save through [`crate::restyle::apply_look`].
@@ -258,8 +257,6 @@ pub(crate) struct ThemeUi {
     /// The options when Settings opened, and the custom set then, to tell what changed.
     pub(crate) orig: Look,
     orig_custom: Option<(Look, usize)>,
-    /// Customise was pressed: the groups are shown.
-    open: bool,
     /// The group shown.
     tab: usize,
 }
@@ -280,7 +277,6 @@ impl State {
         t.mode = mode;
         t.custom = custom.clone();
         t.orig_custom = custom;
-        t.open = false;
         t.tab = 0;
     }
 
@@ -292,16 +288,14 @@ impl State {
         x += &format!(r##"<Border x:Name="TmSample"/>"##);
         x += &ui::note_text(r#"Margin="0,2,0,0""#, "The sample follows each pick. Press Save to use it in Sprawl.");
         x += r##"<Border x:Name="TmPresets"/>"##;
-        let more = if t.open { "Hide options" } else { "Customise" };
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="6">{}{}{}{}</StackPanel>"##,
-            button("TmMore", more, false),
+            r##"<StackPanel Orientation="Horizontal" Spacing="6">{}{}{}</StackPanel>"##,
             button("TmCopy", "Copy theme", false),
             button("TmPaste", "Paste theme", false),
             button("TmBack", "Back to Sprawl's own", false)
         );
-        buttons.extend(["TmMore", "TmCopy", "TmPaste", "TmBack"].map(String::from));
-        if t.open {
+        buttons.extend(["TmCopy", "TmPaste", "TmBack"].map(String::from));
+        {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="2" Margin="0,6,0,0">"##;
             for (g, name) in GROUPS.iter().enumerate() {
                 x += &format!(
@@ -401,7 +395,6 @@ impl State {
     pub(crate) fn theme_button(&mut self, name: &str) {
         let t = &mut self.prefs.theme;
         match name {
-            "TmMore" => t.open = !t.open,
             "TmCopy" => {
                 let text = line(&t.look, t.mode);
                 crate::win32::copy_text(self.hwnd, &text);
@@ -480,14 +473,12 @@ impl State {
     pub(crate) fn theme_dev(&mut self, step: &str) {
         let (cmd, arg) = step.split_once('=').unwrap_or((step, ""));
         match cmd {
-            "ThemeMore" => self.prefs.theme.open = true,
+            "ThemeMore" => {}
             "ThemeTab" => {
-                self.prefs.theme.open = true;
                 self.prefs.theme.tab = arg.parse().unwrap_or(0).min(GROUPS.len() - 1);
             }
             "ThemePre" => self.theme_button(&format!("TmPre{arg}")),
             "ThemeDrop" => {
-                self.prefs.theme.open = true;
                 if let Some(o) = opt(arg) {
                     self.prefs.theme.tab = o.group;
                 }
