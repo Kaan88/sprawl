@@ -162,3 +162,28 @@ hand-written literals first and expands tokens after; `reconcile` diffs the toke
 token through `tokens::resolve`. `warnmark` / `goodmark` are the fill versions of warn / good. Light screens
 match the previous run within noise (`target/qw/shots/tokens-light`). Still to do: the raw-colour test, which
 waits for the colour long tail (Part 3).
+
+## Update 3 (2026-11-21, evening): Part 3 under way, session stopped for an MCP restart
+
+Committed: d1c7d88 (Ink pass 1: every colour a token, opaque ground, popup panels, accent bars).
+
+Open work, none of it merged:
+1. **Main checkout, uncommitted** (Flash): `look.rs` `stock()` = 54 WinUI lightweight-styling brush keys +
+   ControlCornerRadius 4 / OverlayCornerRadius 8 + TextControl thicknesses; `tokens.rs` adds computed `accent` /
+   `onaccent` tokens, `tokens::get()` for element content, and corner values rc5/rc6 -> 4, rc7/rc9 -> 8.
+   Flash reported 119 tests green and a release build; Opus has NOT reviewed or re-run it yet. Review the
+   diff, run `cargo test -p sprawl -j 1`, screenshot dark and light (`target/qw/shots.ps1`), then commit.
+2. **Branch `worktree-agent-ad283dac3cda264f2`, commit e00658f** (Sonnet, Part 3.6): `ui::note` / `note_with` /
+   `note_text` = explanation text at 13 px text2 with semibold text1 lead words; used by every Settings note
+   (`wizard.rs` `help()`), the AI step paragraphs, the clean-up bar explanation and Search's empty-state intro.
+   **Based on 6d0e70b**, so merging into main conflicts with the token commits: resolve to tokens, and change
+   the literal `FontSize="13"` in `note_with` to `{$fs13}`. Not yet seen on screen: check no clipping.
+3. **Branch `worktree-agent-ae6ed21a38b28d968`, commit 7b700ff** (Sonnet, Part 3.4, finished): `look.rs` only.
+   `template_with` states are storyboards (Normal reset; hover wash 0.10, Content up 1 px; pressed wash 0.20,
+   down 1 px, scale 0.98), ExponentialEase EaseOut 6, 140 ms, 0 s when `win32::animations_on()` is false (read
+   once at start). The transform is on Content only (arrow and tab underline stay put). `SprawlChip` corner is a
+   literal "999" (pills): add a pill corner token at merge. Shadow skipped. 110 tests green on its base.
+   **Based on 6d0e70b**: merge after item 1, resolving `look.rs` against the token commits and `stock()`.
+
+Still to do in Part 3 after that: noticed in screenshots, white % text on a light accent bar reads poorly;
+the focus ring (accent outline + 3 px ring) needs a template; tick drawing / switch slide motion. Then Part 4.

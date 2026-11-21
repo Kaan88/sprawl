@@ -88,8 +88,10 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "text2", what: "what is being read", value: "#FFB9C2D6", light: "#FF3A4258" },
     Token { name: "text3", what: "labels, units and hints", value: "#FF8791A8", light: "#FF5B647A" },
     // Written for the tests and for a table built before the accent is read; `table()` computes
-    // it from the Windows accent and the card (see `selected`).
+    // them from the Windows accent and the card (see `selected`, `accent`, `onaccent`).
     Token { name: "selected", what: "the background of a selected row or tab", value: "#FF133453", light: "#FFB6D6F2" },
+    Token { name: "accent", what: "the Windows accent as a fill: a check, a switch turned on", value: "#FF0078D4", light: "#FF0078D4" },
+    Token { name: "onaccent", what: "a glyph or text on the accent fill", value: "#FFFFFFFF", light: "#FFFFFFFF" },
     Token { name: "rest", what: "a selectable item's text at rest", value: "#FFEEF1F8", light: "#FF141824" },
     Token { name: "warn", what: "a caution: a held clean-up, a thing to read before pressing", value: "#FFF5B342", light: "#FFB8780A" },
     Token { name: "good", what: "something that went well, or is safe", value: "#FF4CC38A", light: "#FF319163" },
@@ -139,7 +141,9 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "match", what: "the part of a name a search matched", value: "#FF7FD4FF", light: "#FF0081C2" },
     Token { name: "folder", what: "a folder icon's amber", value: "#FFFFC83D", light: "#FFC28B00" },
     // Text sizes and corner radii are named by their value: `fs12` is the 12 px text the page
-    // already sets, `fs12_5` the 12.5, `rc4` a 4 px corner. The value is what was on the page.
+    // already sets, `fs12_5` the 12.5, `rc4` a 4 px corner. A text size is what was on the page;
+    // a corner's name is the radius it was written with, and the look draws it at the look's
+    // size (`rc5` and `rc6` at 4, `rc7` and `rc9` at 8).
     Token { name: "fs8", what: "text size 8", value: "8", light: "8" },
     Token { name: "fs9", what: "text size 9", value: "9", light: "9" },
     Token { name: "fs10", what: "text size 10", value: "10", light: "10" },
@@ -158,11 +162,11 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "rc2", what: "corner radius 2", value: "2", light: "2" },
     Token { name: "rc3", what: "corner radius 3", value: "3", light: "3" },
     Token { name: "rc4", what: "corner radius 4", value: "4", light: "4" },
-    Token { name: "rc5", what: "corner radius 5", value: "5", light: "5" },
-    Token { name: "rc6", what: "corner radius 6", value: "6", light: "6" },
-    Token { name: "rc7", what: "corner radius 7", value: "7", light: "7" },
+    Token { name: "rc5", what: "corner radius written as 5, drawn at 4", value: "4", light: "4" },
+    Token { name: "rc6", what: "corner radius written as 6, drawn at 4", value: "4", light: "4" },
+    Token { name: "rc7", what: "corner radius written as 7, drawn at 8", value: "8", light: "8" },
     Token { name: "rc8", what: "corner radius 8", value: "8", light: "8" },
-    Token { name: "rc9", what: "corner radius 9", value: "9", light: "9" },
+    Token { name: "rc9", what: "corner radius written as 9, drawn at 8", value: "8", light: "8" },
     Token { name: "rc10", what: "corner radius 10", value: "10", light: "10" },
     Token { name: "rc12", what: "corner radius 12", value: "12", light: "12" },
     Token { name: "rc14", what: "corner radius 14", value: "14", light: "14" },
@@ -179,12 +183,38 @@ fn selected(light: bool) -> String {
     format!("#FF{:02X}{:02X}{:02X}", mix(16), mix(8), mix(0))
 }
 
+/// The Windows accent, and the colour WinUI draws on it, as colour tokens: `#FF` and the
+/// accent's six digits, the way a colour token is written. Read from `look::accent`, which
+/// already holds the values for the theme in use.
+fn accent() -> String {
+    format!("#FF{}", crate::look::accent().fill.trim_start_matches('#'))
+}
+
+fn onaccent() -> String {
+    format!("#FF{}", crate::look::accent().on.trim_start_matches('#'))
+}
+
 /// The values for a look: the light page's when `light`, the dark page's otherwise.
 pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
     let Look { surfaces: Surfaces::Washed, corners: Corners::AsWritten, text: TextSizes::AsWritten } = look;
     let mut t: HashMap<&'static str, String> = TOKENS.iter().map(|t| (t.name, if light { t.light } else { t.value }.to_string())).collect();
     t.insert("selected", selected(light));
+    t.insert("accent", accent());
+    t.insert("onaccent", onaccent());
     t
+}
+
+/// A token's value in the look in use, for XAML that takes it as element CONTENT rather than as
+/// an attribute value (`<CornerRadius x:Key="ControlCornerRadius">4</CornerRadius>`), where a
+/// token cannot be written. A name in the table is required: a wrong one is a bug here, not a
+/// loading error on a page.
+pub(crate) fn get(name: &str) -> String {
+    debug_assert!(TOKENS.iter().any(|t| t.name == name), "no token {name}");
+    TABLE.with(|c| {
+        let mut borrow = c.borrow_mut();
+        let table = borrow.get_or_insert_with(|| table(&Look::default(), crate::theme::light()));
+        table.get(name).cloned().unwrap_or_default()
+    })
 }
 
 /// The token for a text size, by value: `{$fs12}` for 12, `{$fs12_5}` for 12.5. For the XAML
@@ -324,10 +354,10 @@ mod tests {
         for token in TOKENS {
             assert!(seen.insert(token.name), "{} is in the list twice", token.name);
             assert!(!token.what.is_empty(), "{} says nothing", token.name);
-            // `selected` is computed from the accent; the table's value is a colour like any other
-            if token.name == "selected" {
+            // computed from the accent rather than written down; the table's value is a colour
+            if matches!(token.name, "selected" | "accent" | "onaccent") {
                 let v = &t[token.name];
-                assert!(v.len() == 9 && v.starts_with('#'), "selected: {v}");
+                assert!(v.len() == 9 && v.starts_with('#'), "{}: {v}", token.name);
                 continue;
             }
             assert_eq!(t.get(token.name).map(String::as_str), Some(token.value));
@@ -336,17 +366,22 @@ mod tests {
     }
 
     /// Every value is written the one way the page reads it: a colour as eight digits
-    /// (`#AARRGGBB`) on both pages, a size as the number its name says (`fs12_5` is 12.5),
-    /// the same number either way.
+    /// (`#AARRGGBB`) on both pages, a text size as the number its name says (`fs12_5` is 12.5),
+    /// the same number either way. A corner's name is the radius it was written with, before the
+    /// look moved the drawings (`rc6` is drawn at 4 today), so it is only checked to be a number.
     #[test]
     fn every_value_is_written_the_way_the_page_reads_it() {
         for token in TOKENS {
             let v = token.value;
-            if let Some(suffix) = token.name.strip_prefix("fs").or_else(|| token.name.strip_prefix("rc")) {
+            if let Some(suffix) = token.name.strip_prefix("fs") {
                 assert_eq!(v, suffix.replace('_', "."), "{}", token.name);
                 let n: f64 = v.parse().unwrap_or_else(|_| panic!("{}: {v}", token.name));
                 assert!(n > 0.0 && n.is_finite(), "{}: {v}", token.name);
                 assert_eq!(token.light, v, "{}: a size is the same on both pages", token.name);
+            } else if token.name.starts_with("rc") {
+                let n: f64 = v.parse().unwrap_or_else(|_| panic!("{}: {v}", token.name));
+                assert!(n > 0.0 && n.is_finite(), "{}: {v}", token.name);
+                assert_eq!(token.light, v, "{}: a radius is the same on both pages", token.name);
             } else {
                 assert_eq!(v.len(), 9, "{}: {v}", token.name);
                 assert_eq!(token.light.len(), 9, "{}: {}", token.name, token.light);
@@ -488,6 +523,29 @@ mod tests {
         assert_eq!(fs(13.5), "13.5");
         assert_eq!(rc(4.0), "{$rc4}");
         assert_eq!(rc(11.0), "11");
+    }
+
+    /// A value taken as element content rather than as an attribute value (a corner radius a
+    /// resource dictionary holds): the table's value, for the theme in use.
+    #[test]
+    fn a_token_can_be_read_for_element_content() {
+        assert_eq!(get("rc4"), "4");
+        assert_eq!(get("fs12"), "12");
+        assert_eq!(get("text3"), "#FF8791A8");
+        // the look draws a written 6 at 4
+        assert_eq!(get("rc6"), "4");
+    }
+
+    /// The accent and the colour on it are computed from the user's accent, as a colour token is
+    /// written: eight digits, from the palette's six.
+    #[test]
+    fn the_accent_is_a_colour_token_both_ways() {
+        for (name, six) in [("accent", crate::look::accent().fill.as_str()), ("onaccent", crate::look::accent().on)] {
+            let v = get(name);
+            assert_eq!(v.len(), 9, "{name}: {v}");
+            assert!(v.starts_with("#FF"), "{name}: {v}");
+            assert_eq!(&v[3..], six.trim_start_matches('#'), "{name}: {v}");
+        }
     }
 
     #[test]

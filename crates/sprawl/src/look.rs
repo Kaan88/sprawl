@@ -289,16 +289,138 @@ fn style_with(key: &str, target: &str, arrow: bool, line: bool, grey_off: bool, 
     )
 }
 
+/// A stock control's themed brush, replaced by one of the look's colours. WinUI draws the control
+/// from these keys; a key of the same name in a dictionary merged after `XamlControlsResources`
+/// wins over both of its pages, so one value is enough and no ThemeDictionaries is needed.
+fn brush(key: &str, token: &str) -> String {
+    format!(r#"<SolidColorBrush x:Key="{key}" Color="{}"/>"#, crate::tokens::refer(token))
+}
+
+/// A stock control's corner radius, from one of the look's radius tokens. The radius is element
+/// content, where a token cannot be written, so it is read from the table as it stands.
+fn corner(key: &str, token: &str) -> String {
+    format!(r#"<CornerRadius x:Key="{key}">{}</CornerRadius>"#, crate::tokens::get(token))
+}
+
+/// A stock control's thickness, likewise element content: one pixel on every side.
+fn thickness(key: &str) -> String {
+    format!(r#"<Thickness x:Key="{key}">1</Thickness>"#)
+}
+
+/// The stock controls (a text box, a combo box, a flyout, a check box, a switch, a button) drawn
+/// with the look's colours instead of WinUI's greys: the key names are WinUI 3's own, checked
+/// against the Windows App SDK's generic.xaml. A key the system does not know would simply do
+/// nothing, so each one is here for a control the app actually shows.
+fn stock() -> String {
+    let mut x = String::new();
+    // the corners of every stock control, and of the panels that float over the page
+    for (key, token) in [("ControlCornerRadius", "rc4"), ("OverlayCornerRadius", "rc8")] {
+        x += &corner(key, token);
+    }
+    // a text box: the page's ground under it, a hairline that firms up under the pointer and
+    // takes the accent with the focus; its placeholder is the dimmest text
+    for (key, token) in [
+        ("TextControlBackground", "ground"),
+        ("TextControlBackgroundPointerOver", "ground"),
+        ("TextControlBackgroundFocused", "ground"),
+        ("TextControlBorderBrush", "line2"),
+        ("TextControlBorderBrushPointerOver", "edge"),
+        ("TextControlBorderBrushFocused", "accent"),
+        ("TextControlForeground", "text1"),
+        ("TextControlForegroundPointerOver", "text1"),
+        ("TextControlForegroundFocused", "text1"),
+        ("TextControlPlaceholderForeground", "text3"),
+        ("TextControlPlaceholderForegroundPointerOver", "text3"),
+        ("TextControlPlaceholderForegroundFocused", "text3"),
+    ] {
+        x += &brush(key, token);
+    }
+    // and it keeps a 1 px line whether or not it has the focus (WinUI draws 2 px under it)
+    for key in ["TextControlBorderThemeThickness", "TextControlBorderThemeThicknessFocused"] {
+        x += &thickness(key);
+    }
+    // a combo box: the field on the ground, its list on the popup's
+    for (key, token) in [
+        ("ComboBoxBackground", "ground"),
+        ("ComboBoxBackgroundPointerOver", "row"),
+        ("ComboBoxBackgroundPressed", "card"),
+        ("ComboBoxBorderBrush", "line2"),
+        ("ComboBoxBorderBrushPointerOver", "edge"),
+        ("ComboBoxForeground", "text1"),
+        ("ComboBoxDropDownBackground", "popup"),
+        ("ComboBoxDropDownBorderBrush", "line1"),
+    ] {
+        x += &brush(key, token);
+    }
+    // flyouts, menus and tooltips: the popup's ground inside a hairline
+    for (key, token) in [
+        ("FlyoutPresenterBackground", "popup"),
+        ("FlyoutBorderThemeBrush", "line1"),
+        ("MenuFlyoutPresenterBackground", "popup"),
+        ("MenuFlyoutPresenterBorderBrush", "line1"),
+        ("MenuFlyoutItemBackgroundPointerOver", "hover"),
+        ("MenuFlyoutItemBackgroundPressed", "pressed"),
+        ("ToolTipBackground", "popup"),
+        ("ToolTipBorderBrush", "line1"),
+        ("ToolTipForeground", "text1"),
+    ] {
+        x += &brush(key, token);
+    }
+    // a check box: the accent behind the tick, its glyph on the accent, a hairline when unchecked
+    for (key, token) in [
+        ("CheckBoxCheckBackgroundFillChecked", "accent"),
+        ("CheckBoxCheckBackgroundFillCheckedPointerOver", "accent"),
+        ("CheckBoxCheckBackgroundFillCheckedPressed", "accent"),
+        ("CheckBoxCheckBackgroundStrokeUnchecked", "line2"),
+        ("CheckBoxCheckBackgroundStrokeUncheckedPointerOver", "edge"),
+        ("CheckBoxCheckGlyphForegroundChecked", "onaccent"),
+        ("CheckBoxCheckGlyphForegroundCheckedPointerOver", "onaccent"),
+        ("CheckBoxCheckGlyphForegroundCheckedPressed", "onaccent"),
+    ] {
+        x += &brush(key, token);
+    }
+    // a switch: the track on a row, its knob in the second text colour; the accent when on
+    for (key, token) in [
+        ("ToggleSwitchFillOff", "row"),
+        ("ToggleSwitchStrokeOff", "line2"),
+        ("ToggleSwitchKnobFillOff", "text2"),
+        ("ToggleSwitchFillOn", "accent"),
+        ("ToggleSwitchFillOnPointerOver", "accent"),
+        ("ToggleSwitchFillOnPressed", "accent"),
+        ("ToggleSwitchKnobFillOn", "onaccent"),
+        ("ToggleSwitchKnobFillOnPointerOver", "onaccent"),
+        ("ToggleSwitchKnobFillOnPressed", "onaccent"),
+    ] {
+        x += &brush(key, token);
+    }
+    // a plain button: a row's fill, a step up under the pointer, a card while pressed
+    for (key, token) in [
+        ("ButtonBackground", "row"),
+        ("ButtonBackgroundPointerOver", "rowopen"),
+        ("ButtonBackgroundPressed", "card"),
+        ("ButtonBorderBrush", "line2"),
+        ("ButtonBorderBrushPointerOver", "edge"),
+        ("ButtonForeground", "text1"),
+        ("ButtonForegroundPointerOver", "text1"),
+        ("ButtonForegroundPressed", "text1"),
+    ] {
+        x += &brush(key, token);
+    }
+    x
+}
+
 /// The styles, as a dictionary merged into the application's resources at start (so any
-/// XAML loaded later, the Advisor's or Search's included, can name them). The buttons follow
-/// WinUI: a plain `<Button>` with no size of its own is the standard one; `SprawlPrimary` is
-/// the one main action of a place, in the Windows accent; `SprawlDanger` deletes for good;
-/// `SprawlSubtle` is a text action with no fill until the pointer is over it.
+/// XAML loaded later, the Advisor's or Search's included, can name them). The stock controls'
+/// own keys come first, so a text box, a menu or a check box matches the look; then the buttons,
+/// which follow WinUI: a plain `<Button>` with no size of its own is the standard one;
+/// `SprawlPrimary` is the one main action of a place, in the Windows accent; `SprawlDanger`
+/// deletes for good; `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
-        r##"<ResourceDictionary {}>{}{}{}{}{}{}
+        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}
 <Style x:Key="SprawlPrimary" TargetType="Button" BasedOn="{{StaticResource AccentButtonStyle}}"><Setter Property="FontWeight" Value="SemiBold"/></Style></ResourceDictionary>"##,
         ui::NS,
+        stock(),
         style("SprawlPick", "Button", false),
         style("SprawlPickDrop", "DropDownButton", true),
         style_with("SprawlPage", "Button", false, true, false, Geo::small()),
@@ -759,6 +881,36 @@ mod tests {
         // six digits: the light page's rewrite leaves it as it is
         let x = format!(r##"<Button Background="{}" Foreground="{}"/>"##, light.fill, light.on);
         assert_eq!(crate::theme::to_light(&x), x);
+    }
+
+    /// The stock controls' overrides are loaded as XAML like the styles: every token written in
+    /// them is one the look knows, in a whole attribute value, and `state::load`'s expansion
+    /// leaves none of them behind. The radii are element content, read from the table.
+    #[test]
+    fn the_stock_overrides_are_the_looks_values() {
+        let r = resources();
+        let known: std::collections::HashSet<&str> = crate::tokens::TOKENS.iter().map(|t| t.name).collect();
+        let open = format!("{}{}", '{', '$');
+        let mut i = 0;
+        let mut seen = 0;
+        while let Some(at) = r[i..].find(&open) {
+            let start = i + at;
+            let end = r[start + 2..].find('}').map(|p| start + 2 + p).unwrap_or(r.len());
+            let name = &r[start + 2..end];
+            assert!(known.contains(name), "not a token: {name}");
+            seen += 1;
+            i = end + 1;
+        }
+        assert!(seen > 50, "the stock overrides were not found: {seen}");
+        let expanded = crate::tokens::expand(&r);
+        assert!(!expanded.contains(&open), "a token was left unexpanded");
+        // the corners come from the radius tokens: 4 for a control, 8 for a panel over the page
+        assert!(r.contains(r#"<CornerRadius x:Key="ControlCornerRadius">4</CornerRadius>"#));
+        assert!(r.contains(r#"<CornerRadius x:Key="OverlayCornerRadius">8</CornerRadius>"#));
+        // a text box keeps one pixel of line, focused or not
+        assert_eq!(r.matches("<Thickness x:Key=\"TextControlBorderThemeThickness").count(), 2);
+        // and the check box's tick is drawn on the accent
+        assert!(expanded.contains(&format!(r##"<SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="{}"/>"##, crate::tokens::get("onaccent"))));
     }
 
     #[test]
