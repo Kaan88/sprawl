@@ -46,6 +46,10 @@ extern "system" {
     fn EmptyClipboard() -> i32;
     fn SetClipboardData(format: u32, mem: isize) -> isize;
     fn CloseClipboard() -> i32;
+    fn GetClipboardData(format: u32) -> isize;
+    fn EnumWindows(f: unsafe extern "system" fn(HWND, isize) -> i32, l: isize) -> i32;
+    fn IsWindowVisible(h: HWND) -> i32;
+    fn GetWindowThreadProcessId(h: HWND, pid: *mut u32) -> u32;
 }
 
 #[link(name = "gdi32")]
@@ -56,6 +60,7 @@ extern "system" {
     fn GetDIBits(dc: isize, bmp: isize, start: u32, lines: u32, bits: *mut c_void, info: *mut BITMAPINFOHEADER, usage: u32) -> i32;
     fn DeleteObject(obj: isize) -> i32;
     fn DeleteDC(dc: isize) -> i32;
+    fn BitBlt(dst: isize, x: i32, y: i32, w: i32, h: i32, src: isize, sx: i32, sy: i32, rop: u32) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -283,6 +288,36 @@ pub fn copy_text(owner: HWND, text: &str) -> bool {
     }
 }
 
+/// The text on the clipboard (Unicode text), if there is some. Outside text: a caller takes
+/// only what it knows from it.
+pub fn paste_text(owner: HWND) -> Option<String> {
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return None;
+        }
+        let mem = GetClipboardData(13);
+        let text = if mem != 0 {
+            let p = GlobalLock(mem) as *const u16;
+            let t = if p.is_null() {
+                None
+            } else {
+                // at most 64 KB of text is read, and it ends at the first NUL
+                let mut n = 0;
+                while n < 32768 && *p.add(n) != 0 {
+                    n += 1;
+                }
+                Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)))
+            };
+            GlobalUnlock(mem);
+            t
+        } else {
+            None
+        };
+        CloseClipboard();
+        text
+    }
+}
+
 /// The Explorer command line that shows `path` selected: `/select,"C:\a b\c.txt"`.
 ///
 /// Explorer parses this line itself rather than argv, and it splits the path at the first
@@ -348,6 +383,29 @@ pub fn capture(h: HWND) -> Option<(u32, u32, Vec<u8>)> {
         let bmp = CreateCompatibleBitmap(screen, w, hgt);
         let old = SelectObject(dc, bmp);
         let ok = PrintWindow(h, dc, 2) != 0; // PW_RENDERFULLCONTENT
+        // dev: SPRAWL_SHOT_POPUPS puts the app's own popup windows (an open dropdown) in the
+        // picture: PrintWindow of the main window leaves them out
+        if std::env::var_os("SPRAWL_SHOT_POPUPS").is_some() {
+            let mut found: Vec<HWND> = Vec::new();
+            EnumWindows(collect_own, &mut found as *mut Vec<HWND> as isize);
+            for p in found.into_iter().filter(|&p| p != h) {
+                let mut pr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                GetWindowRect(p, &mut pr);
+                let (pw, ph) = (pr.right - pr.left, pr.bottom - pr.top);
+                if pw <= 0 || ph <= 0 {
+                    continue;
+                }
+                let pdc = CreateCompatibleDC(screen);
+                let pbmp = CreateCompatibleBitmap(screen, pw, ph);
+                let pold = SelectObject(pdc, pbmp);
+                if PrintWindow(p, pdc, 2) != 0 {
+                    BitBlt(dc, pr.left - r.left, pr.top - r.top, pw, ph, pdc, 0, 0, 0x00CC_0020);
+                }
+                SelectObject(pdc, pold);
+                DeleteObject(pbmp);
+                DeleteDC(pdc);
+            }
+        }
         let mut info = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: w,
@@ -376,6 +434,36 @@ pub fn capture(h: HWND) -> Option<(u32, u32, Vec<u8>)> {
         }
         Some((w as u32, hgt as u32, px))
     }
+}
+
+/// dev (screenshot runs): EnumWindows callback gathering the visible windows of this process.
+unsafe extern "system" fn collect_own(h: HWND, l: isize) -> i32 {
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(h, &mut pid);
+    if pid == std::process::id() && IsWindowVisible(h) != 0 {
+        (*(l as *mut Vec<HWND>)).push(h);
+    }
+    1
+}
+
+/// dev (screenshot runs): open the dropdown whose AutomationId (its x:Name) is `id`, through
+/// UI Automation, as a screen reader would; the popup is part of the picture then.
+pub fn expand_dropdown(h: HWND, id: &str) -> bool {
+    use windows::core::BSTR;
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationExpandCollapsePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_ExpandCollapsePatternId};
+    let run = || -> windows::core::Result<()> {
+        unsafe {
+            let ua: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let root = ua.ElementFromHandle(windows::Win32::Foundation::HWND(h as *mut _))?;
+            let cond = ua.CreatePropertyCondition(UIA_AutomationIdPropertyId, &VARIANT::from(BSTR::from(id)))?;
+            let found = root.FindFirst(TreeScope_Descendants, &cond)?;
+            let pattern: IUIAutomationExpandCollapsePattern = windows::core::Interface::cast(&found.GetCurrentPattern(UIA_ExpandCollapsePatternId)?)?;
+            pattern.Expand()
+        }
+    };
+    run().is_ok()
 }
 
 /// Give the window the app's icon (resource 1, embedded by build.rs) for the title bar,

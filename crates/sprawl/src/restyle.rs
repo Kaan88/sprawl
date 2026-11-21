@@ -41,7 +41,6 @@ pub(crate) fn request() {
 /// The Theme page's own options changed: the look is set, and the page made again at the next
 /// frame. The look is not the light/dark theme, so [`State::restyle_frame`] is told to rebuild
 /// even when the theme itself stays the same.
-#[allow(dead_code)] // the Theme page is what will call it; until then nothing does
 pub(crate) fn apply_look(look: crate::tokens::Look) {
     LOOK_WAS.with(|old| *old.borrow_mut() = Some(crate::tokens::current()));
     crate::tokens::set(&look);
