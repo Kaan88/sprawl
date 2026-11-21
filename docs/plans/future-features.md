@@ -249,6 +249,23 @@ Also for this pass, from the audit: the Animations switch clipped in Colours and
 - It replaces the old "Start in" choice (which picked the map view, not the tab) that the wizard is dropping.
 - Done when: the chosen tab is the one shown at start, with no scan started by the setting itself, and the three exceptions above still behave as written.
 
+**First launch speed** (asked for by the user on 2026-11-22). Target: the window is usable at once, like an
+app that is already open.
+
+- What the user sees: with Search as the start tab, Sprawl shows a black window for about 2 seconds before
+  anything is drawn.
+- Measure first, with `SPRAWL_TIMING=1` (it logs to %TEMP%\sprawl-timing.log), for each start tab and for a
+  cold and a warm start: process start, the elevation relaunch (this PC always runs as administrator, so the
+  first process starts a second one), XAML load of the page, the resource dictionary, the first frame, and
+  whatever the start tab reads before drawing (Search: remembered drives or a saved scan).
+- Likely work: draw the window and the tab's frame first and fill it in afterwards (the rule Cleaners already
+  follows); move any file, registry or index reads off the UI thread or after the first frame; load the page in
+  pieces if one XAML load is the cost; paint the window's ground colour at once so even the first moment is
+  not black; look at what the elevation relaunch costs and whether the unelevated first process can show
+  something while it waits.
+- Done when: from a double-click the window shows the chosen tab's frame without a black stage, Search is
+  usable without waiting, and timings before and after are written down.
+
 ---
 
 ## Left out on purpose
