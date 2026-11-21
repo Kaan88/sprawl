@@ -25,18 +25,27 @@ fn rest_text() -> String {
     crate::tokens::refer("rest")
 }
 
-/// The Windows accent colour (Settings > Personalisation > Colours) the way WinUI's own accent
-/// buttons draw it: `fill` behind `on` text, and `text` for accent-coloured words on the page.
-/// Written "#RRGGBB" (six digits) on purpose: the light-mode rewrite in theme.rs turns only
-/// "#AARRGGBB" values around, and these are already the ones for the theme in use.
+/// An accent the look draws with, the way WinUI's own accent buttons draw it: `fill` behind `on`
+/// text, and `text` for accent-coloured words on the page. Written "#RRGGBB" (six digits) on
+/// purpose: the light-mode rewrite in theme.rs turns only "#AARRGGBB" values around, and these
+/// are already the ones for the theme in use.
 pub(crate) struct Accent {
     pub fill: String,
-    pub on: &'static str,
+    pub on: String,
     pub text: String,
 }
 
-/// The accent for the theme in use, read once per theme (the theme can change while Sprawl runs).
-pub(crate) fn accent() -> &'static Accent {
+/// The accent the look's tokens carry: the Theme page's choice, Windows' own by default.
+pub(crate) fn accent() -> Accent {
+    // a token holds an opaque alpha, and a value that is already the theme's must not be turned
+    // around again by the light page's rewrite, so six digits like `windows_accent`
+    let six = |v: String| v.strip_prefix("#FF").map(|c| format!("#{c}")).unwrap_or(v);
+    Accent { fill: six(crate::tokens::get("accent")), on: six(crate::tokens::get("onaccent")), text: six(crate::tokens::get("accenttext")) }
+}
+
+/// The Windows accent colour (Settings > Personalisation > Colours), read once per theme (the
+/// theme can change while Sprawl runs).
+pub(crate) fn windows_accent() -> &'static Accent {
     static DARK: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
     static LIGHT: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
     let light = crate::theme::light();
@@ -71,9 +80,9 @@ fn accent_from(p: Option<[[u8; 3]; 7]>, light: bool) -> Accent {
     let p = p.unwrap_or([[0x99, 0xEB, 0xFF], [0x4C, 0xC2, 0xFF], [0x00, 0x91, 0xF8], [0x00, 0x78, 0xD4], [0x00, 0x67, 0xC0], [0x00, 0x3E, 0x92], [0x00, 0x1A, 0x68]]);
     let hex = |c: [u8; 3]| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
     if light {
-        Accent { fill: hex(p[4]), on: "#FFFFFF", text: hex(p[5]) }
+        Accent { fill: hex(p[4]), on: "#FFFFFF".to_string(), text: hex(p[5]) }
     } else {
-        Accent { fill: hex(p[1]), on: "#000000", text: hex(p[0]) }
+        Accent { fill: hex(p[1]), on: "#000000".to_string(), text: hex(p[0]) }
     }
 }
 
@@ -81,10 +90,10 @@ fn accent_from(p: Option<[[u8; 3]; 7]>, light: bool) -> Accent {
 /// right. Both stops are six digits, so the light page's rewrite of eight-digit literals leaves
 /// them as they are.
 pub(crate) fn accent_gradient() -> String {
-    let fill = &accent().fill;
+    let fill = accent().fill;
     format!(
         r##"<LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5"><GradientStop Color="{fill}" Offset="0"/><GradientStop Color="{}" Offset="1"/></LinearGradientBrush>"##,
-        crate::tokens::lighter(fill)
+        crate::tokens::lighter(&fill)
     )
 }
 
@@ -107,8 +116,8 @@ pub(crate) enum Pick {
 }
 
 /// The underline under the open page tab: the accent.
-pub(crate) fn underline() -> &'static str {
-    &accent().fill
+pub(crate) fn underline() -> String {
+    accent().fill
 }
 
 impl Pick {
@@ -126,7 +135,7 @@ impl Pick {
     /// stays readable.
     pub(crate) fn bg(self, on: bool) -> String {
         match (self, on) {
-            (Pick::Chip | Pick::Mode, true) => accent().fill.clone(),
+            (Pick::Chip | Pick::Mode, true) => accent().fill,
             (Pick::Tab, true) => selected(),
             _ => self.rest(),
         }
@@ -134,7 +143,7 @@ impl Pick {
 
     /// Its text colour when it differs from the style's: on the accent fill.
     pub(crate) fn fg(self, on: bool) -> Option<String> {
-        (on && matches!(self, Pick::Chip | Pick::Mode)).then(|| accent().on.to_string())
+        (on && matches!(self, Pick::Chip | Pick::Mode)).then(|| accent().on)
     }
 
     fn style(self) -> &'static str {
@@ -149,7 +158,7 @@ impl Pick {
 /// The attributes for a `<Button>` drawn as a selectable item.
 pub(crate) fn pick(kind: Pick, on: bool) -> String {
     if kind == Pick::Page {
-        return format!(r##"Style="{{StaticResource SprawlPage}}" Background="Transparent" BorderBrush="{}""##, if on { underline() } else { "Transparent" });
+        return format!(r##"Style="{{StaticResource SprawlPage}}" Background="Transparent" BorderBrush="{}""##, if on { underline() } else { "Transparent".to_string() });
     }
     // written off too, so a chip picked or unpicked is changed in place (an attribute that goes
     // has the control loaded again: see reconcile.rs)
@@ -170,7 +179,7 @@ pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
     let Ok(c) = find::<Control>(root, name) else { return };
     if kind == Pick::Page {
         // the underline is the template's line, in the tab's BorderBrush
-        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { underline() } else { "#00000000" })) {
+        if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { underline() } else { "#00000000".to_string() })) {
             let _ = c.SetBorderBrush(&br);
         }
         return;
@@ -483,6 +492,31 @@ fn stock() -> String {
     ] {
         x += &brush(key, token);
     }
+    // (AccentButtonStyle's own setters are read where WinUI defines them and never see these,
+    // so SprawlPrimary sets its colours itself; its pointer and press states do read them.)
+    // WinUI's own accent brushes, so a primary button, a progress bar and accent-coloured words take the look's accent rather than Windows'
+    for (key, token) in [
+        ("AccentButtonBackground", "accent"),
+        ("AccentButtonBackgroundPointerOver", "accent"),
+        ("AccentButtonBackgroundPressed", "accent"),
+        ("AccentButtonBorderBrush", "accent"),
+        ("AccentButtonBorderBrushPointerOver", "accent"),
+        ("AccentButtonBorderBrushPressed", "accent"),
+        ("AccentButtonForeground", "onaccent"),
+        ("AccentButtonForegroundPointerOver", "onaccent"),
+        ("AccentButtonForegroundPressed", "onaccent"),
+        ("AccentFillColorDefaultBrush", "accent"),
+        ("AccentFillColorSecondaryBrush", "accent"),
+        ("AccentFillColorTertiaryBrush", "accent"),
+        ("TextOnAccentFillColorPrimaryBrush", "onaccent"),
+        ("TextOnAccentFillColorSecondaryBrush", "onaccent"),
+        ("AccentTextFillColorPrimaryBrush", "accenttext"),
+        ("AccentTextFillColorSecondaryBrush", "accenttext"),
+        ("AccentTextFillColorTertiaryBrush", "accenttext"),
+        ("ProgressBarForeground", "accent"),
+    ] {
+        x += &brush(key, token);
+    }
     // a round tick box: WinUI's check box binds its box's RadiusX/RadiusY to the control's own
     // CornerRadius (generic.xaml), and its box is 20 px, so half of it is 10. BasedOn keeps the
     // stock template; an implicit style alone would replace it.
@@ -497,12 +531,12 @@ fn stock() -> String {
 /// XAML loaded later, the Advisor's or Search's included, can name them). The stock controls'
 /// own keys come first, so a text box, a menu or a check box matches the look; then the buttons,
 /// which follow WinUI: a plain `<Button>` with no size of its own is the standard one;
-/// `SprawlPrimary` is the one main action of a place, in the Windows accent; `SprawlDanger`
+/// `SprawlPrimary` is the one main action of a place, in the accent; `SprawlDanger`
 /// deletes for good; `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
         r##"<ResourceDictionary {}>{}{}{}{}{}{}{}
-<Style x:Key="SprawlPrimary" TargetType="Button" BasedOn="{{StaticResource AccentButtonStyle}}"><Setter Property="FontWeight" Value="SemiBold"/></Style></ResourceDictionary>"##,
+<Style x:Key="SprawlPrimary" TargetType="Button" BasedOn="{{StaticResource AccentButtonStyle}}"><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Background" Value="{{$accent}}"/><Setter Property="BorderBrush" Value="{{$accent}}"/><Setter Property="Foreground" Value="{{$onaccent}}"/></Style></ResourceDictionary>"##,
         ui::NS,
         stock(),
         style("SprawlPick", "Button", false),
@@ -511,7 +545,7 @@ pub(crate) fn resources() -> String {
         // chips: pills (the corner is clamped to half the height), a WinUI button's size with its
         // faint edge, filled with the accent when picked
         style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcpill"), ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
-        style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text.clone(), ..Geo::button() }),
+        style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text, ..Geo::button() }),
         style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
     )
 }
@@ -948,12 +982,16 @@ mod tests {
 
     #[test]
     fn chips_and_modes_take_the_accent_and_rows_stay_quiet() {
+        let a = accent();
+        // six digits with the hash: the value is a brush colour in XAML
+        assert!(a.fill.starts_with('#') && a.fill.len() == 7, "{}", a.fill);
+        assert!(a.on.starts_with('#') && a.text.starts_with('#'));
         for k in [Pick::Chip, Pick::Mode] {
-            assert_eq!(k.bg(true), accent().fill);
-            assert_eq!(k.fg(true), Some(accent().on.to_string()));
-            assert_ne!(k.bg(false), accent().fill);
+            assert_eq!(k.bg(true), a.fill);
+            assert_eq!(k.fg(true), Some(a.on.clone()));
+            assert_ne!(k.bg(false), a.fill);
             assert_eq!(k.fg(false), None);
-            assert!(pick(k, true).contains(&format!(r#"Foreground="{}""#, accent().on)));
+            assert!(pick(k, true).contains(&format!(r#"Foreground="{}""#, a.on)));
         }
         // a selected row keeps its grey second line readable: no accent fill, no text colour
         assert_eq!(Pick::Tab.bg(true), selected());
@@ -963,13 +1001,31 @@ mod tests {
         assert!(pick_drop(Pick::Mode, false).contains("SprawlPickDrop"));
     }
 
+    /// The accent is the look's choice, not Windows' own: with Sunset picked, the selected chip,
+    /// the page tab's underline and WinUI's accent button all take the token table's fill.
+    #[test]
+    fn the_accent_is_the_looks_choice() {
+        use crate::tokens::{Accent as Choice, Look};
+        crate::tokens::set(&Look { accent: Choice::Sunset, ..Look::default() });
+        let fill = format!("#{}", crate::tokens::get("accent").trim_start_matches("#FF"));
+        let on = format!("#{}", crate::tokens::get("onaccent").trim_start_matches("#FF"));
+        assert_eq!(accent().fill, fill);
+        assert_eq!(Pick::Chip.bg(true), fill);
+        assert_eq!(Pick::Chip.fg(true), Some(on));
+        assert_eq!(underline(), fill);
+        assert!(pick(Pick::Mode, true).contains(&format!(r#"Background="{fill}""#)), "{}", pick(Pick::Mode, true));
+        // WinUI's accent button takes the same token, so a primary button is the look's too
+        assert!(resources().contains(r#"x:Key="AccentButtonBackground" Color="{$accent}""#));
+        crate::tokens::set(&Look::default());
+    }
+
     #[test]
     fn the_accent_follows_the_palette_and_skips_the_light_rewrite() {
         let p = [[1, 2, 3], [0x97, 0xC8, 0xCE], [5, 6, 7], [8, 9, 10], [0x37, 0x63, 0x72], [0x23, 0x44, 0x52], [0, 0, 0]];
         let dark = accent_from(Some(p), false);
-        assert_eq!((dark.fill.as_str(), dark.on, dark.text.as_str()), ("#97C8CE", "#000000", "#010203"));
+        assert_eq!((dark.fill.as_str(), dark.on.as_str(), dark.text.as_str()), ("#97C8CE", "#000000", "#010203"));
         let light = accent_from(Some(p), true);
-        assert_eq!((light.fill.as_str(), light.on, light.text.as_str()), ("#376372", "#FFFFFF", "#234452"));
+        assert_eq!((light.fill.as_str(), light.on.as_str(), light.text.as_str()), ("#376372", "#FFFFFF", "#234452"));
         // Windows' blue when there is no palette
         assert_eq!(accent_from(None, false).fill, "#4CC2FF");
         // six digits: the light page's rewrite leaves it as it is
@@ -1003,6 +1059,8 @@ mod tests {
         assert!(r.contains(r#"<CornerRadius x:Key="OverlayCornerRadius">8</CornerRadius>"#));
         // a text box keeps one pixel of line, focused or not
         assert_eq!(r.matches("<Thickness x:Key=\"TextControlBorderThemeThickness").count(), 2);
+        // WinUI's accent button and the rest of its accent brushes are the look's accent
+        assert!(r.contains(r#"x:Key="AccentButtonBackground""#), "{r}");
         // and the check box's tick is drawn on the accent
         assert!(expanded.contains(&format!(r##"<SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="{}"/>"##, crate::tokens::get("onaccent"))));
         // the keyboard's focus ring: the accent outside, the page inside it
@@ -1038,7 +1096,7 @@ mod tests {
         assert!(chip.contains(r#"<Setter Property="CornerRadius" Value="15"/>"#), "{chip}");
         assert!(chip.contains(r#"<Setter Property="BorderBrush" Value="{$line1}"/>"#));
         assert_eq!(Pick::Page.bg(true), "Transparent");
-        assert!(pick(Pick::Page, true).contains(underline()) && !pick(Pick::Page, false).contains(underline()));
+        assert!(pick(Pick::Page, true).contains(&underline()) && !pick(Pick::Page, false).contains(&underline()));
     }
 
     /// The time and the travel each motion asks for, and the styles they make when Windows'

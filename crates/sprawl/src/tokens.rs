@@ -41,7 +41,7 @@ pub(crate) struct Look {
 #[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Accent {
-    /// The accent Windows is set to (read by [`crate::look::accent`]).
+    /// The accent Windows is set to (read by [`crate::look::windows_accent`]).
     #[default]
     Windows,
     Azure,
@@ -201,9 +201,9 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "text2", what: "what is being read", value: "#FFB9C2D6", light: "#FF3A4258" },
     Token { name: "text3", what: "labels, units and hints", value: "#FF8791A8", light: "#FF5B647A" },
     // Written for the tests and for a table built before the accent is read; `table()` computes
-    // them from the Windows accent and the card (see `selected`, `accent`, `onaccent`).
+    // them from the accent in use and the card (see `selected`, `accent`, `onaccent`).
     Token { name: "selected", what: "the background of a selected row or tab", value: "#FF133453", light: "#FFB6D6F2" },
-    Token { name: "accent", what: "the Windows accent as a fill: a check, a switch turned on", value: "#FF0078D4", light: "#FF0078D4" },
+    Token { name: "accent", what: "the accent as a fill: a check, a switch turned on", value: "#FF0078D4", light: "#FF0078D4" },
     Token { name: "onaccent", what: "a glyph or text on the accent fill", value: "#FFFFFFFF", light: "#FFFFFFFF" },
     Token { name: "rest", what: "a selectable item's text at rest", value: "#FFEEF1F8", light: "#FF141824" },
     Token { name: "warn", what: "a caution: a held clean-up, a thing to read before pressing", value: "#FFF5B342", light: "#FFB8780A" },
@@ -249,7 +249,7 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "ailine", what: "the AI's violet edge", value: "#55A97BF6", light: "#55A97BF6" },
     Token { name: "aichip", what: "the AI's violet badge, an AI-ticked row", value: "#33A97BF6", light: "#33A97BF6" },
     Token { name: "aitext", what: "the word on the AI's violet badge", value: "#FFC9B4FF", light: "#FF3600C2" },
-    Token { name: "accenttext", what: "the fixed accent blue as text: a percentage, a sort arrow", value: "#FF4CC2FF", light: "#FF0080C2" },
+    Token { name: "accenttext", what: "the accent as text: a percentage, a sort arrow", value: "#FF4CC2FF", light: "#FF0080C2" },
     Token { name: "accentmark", what: "the fixed accent blue as a fill (a gauge bar)", value: "#FF4CC2FF", light: "#FF4CC2FF" },
     Token { name: "match", what: "the part of a name a search matched", value: "#FF7FD4FF", light: "#FF0081C2" },
     Token { name: "folder", what: "a folder icon's amber", value: "#FFFFC83D", light: "#FFC28B00" },
@@ -388,13 +388,13 @@ fn from_hsl(h: f64, s: f64, l: f64, alpha: u32) -> u32 {
 #[allow(dead_code)] // The Theme page will read the names; until it exists, the tests are the only caller.
 impl Accent {
     /// The fill on the page: Windows' own accent (already the page's, read by
-    /// [`crate::look::accent`]), or the preset's dark or light pair.
+    /// [`crate::look::windows_accent`]), or the preset's dark or light pair.
     fn fill(self, light: bool) -> u32 {
         match self {
             // Windows' accent is written with six digits (the light page's rewrite leaves it
             // alone), so it is given the opaque alpha a colour token carries.
             Accent::Windows => {
-                let six = crate::look::accent().fill.trim_start_matches('#').to_string();
+                let six = crate::look::windows_accent().fill.trim_start_matches('#').to_string();
                 u32::from_str_radix(&six, 16).map(|c| c | 0xFF00_0000).unwrap_or(0xFF00_78D4)
             }
             Accent::Azure => if light { 0xFF00_5FB8 } else { 0xFF60_CDFF },
@@ -1289,7 +1289,7 @@ mod tests {
     #[test]
     fn the_accent_is_a_colour_token_both_ways() {
         let accent = get("accent");
-        assert_eq!(accent, format!("#FF{}", crate::look::accent().fill.trim_start_matches('#')));
+        assert_eq!(accent, format!("#FF{}", crate::look::windows_accent().fill.trim_start_matches('#')));
         let fill = argb(&accent).unwrap();
         let on = get("onaccent");
         let better = if ratio(0xFF00_0000, fill) >= ratio(0xFFFF_FFFF, fill) { "#FF000000" } else { "#FFFFFFFF" };
@@ -1332,7 +1332,7 @@ mod tests {
             assert_eq!(light[token.name], token.light, "{} (light)", token.name);
         }
         // the accent, the colour on it, and the selected row, as they were worked out before
-        let fill = argb(&format!("#FF{}", crate::look::accent().fill.trim_start_matches('#'))).unwrap();
+        let fill = argb(&format!("#FF{}", crate::look::windows_accent().fill.trim_start_matches('#'))).unwrap();
         assert_eq!(dark["accent"], hex(fill));
         assert_eq!(light["accent"], hex(fill));
         let better = if ratio(0xFF00_0000, fill) >= ratio(0xFFFF_FFFF, fill) { "#FF000000" } else { "#FFFFFFFF" };
@@ -1465,7 +1465,7 @@ mod tests {
     fn the_lighter_accent_is_six_digits() {
         assert_eq!(lighter("#000000"), "#595959");
         assert_eq!(lighter("#FFFFFF"), "#FFFFFF");
-        let l = lighter(&crate::look::accent().fill);
+        let l = lighter(&crate::look::windows_accent().fill);
         assert_eq!(l.len(), 7, "{l}");
         assert!(l.starts_with('#') && l[1..].bytes().all(|b| b.is_ascii_hexdigit()), "{l}");
     }

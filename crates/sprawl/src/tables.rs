@@ -291,12 +291,12 @@ pub(crate) fn cell(col: usize, s: &str) -> String {
 }
 
 /// A percentage bar: the track, then the share in the accent, washed so the figure on it reads
-/// whichever accent Windows is set to. The look's `bars` option decides whether the fill is one
+/// whichever accent the look uses. The look's `bars` option decides whether the fill is one
 /// colour, a gradient to a lighter accent, or a 4 px line along the bottom.
 pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
-    let fill = &crate::look::accent().fill;
+    let fill = crate::look::accent().fill;
     let bars = crate::tokens::current().bars;
     let (track, fill_border) = match bars {
         crate::tokens::Bars::Thin => (
@@ -1199,7 +1199,7 @@ mod tests {
     use sprawl_core::Node;
 
     /// The percentage bar's figure sits on a washed accent, so it reads on whatever accent
-    /// Windows is set to: the fill at 45% over the track, the text in the page's brightest.
+    /// the look uses: the fill at 45% over the track, the text in the page's brightest.
     #[test]
     fn a_percentage_reads_on_a_washed_accent() {
         let b = pct_bar(1, 42.0);
@@ -1219,7 +1219,7 @@ mod tests {
     #[test]
     fn the_percentage_bar_follows_the_bars_option() {
         use crate::tokens::{Bars, Look};
-        let fill = crate::look::accent().fill.clone();
+        let fill = crate::look::accent().fill;
 
         let solid = pct_bar(1, 42.0);
         assert!(solid.contains(&format!(r##"Background="{fill}" Opacity="0.45""##)), "{solid}");
