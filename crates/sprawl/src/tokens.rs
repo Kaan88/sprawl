@@ -21,27 +21,85 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Every option of the Theme page, with the values Sprawl's own look has. One field per option;
-/// the table is made from it. Today it holds the one look there is; the options of the Theme
-/// page are added here as each is built.
+/// the table is made from it. The first variant of every option is Sprawl's own, so the default
+/// `Look` is the look the app has today.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Look {
+    pub accent: Accent,
     pub surfaces: Surfaces,
+    pub contrast: Contrast,
+    pub folders: Folders,
     pub corners: Corners,
     pub text: TextSizes,
 }
 
+/// The accent: Windows' own, or one of the presets the Theme page offers.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Surfaces {
-    /// Today's: white washes over the window's backdrop.
+pub(crate) enum Accent {
+    /// The accent Windows is set to (read by [`crate::look::accent`]).
     #[default]
-    Washed,
+    Windows,
+    Azure,
+    Iris,
+    Violet,
+    Sunset,
 }
 
+/// The page's surfaces: an opaque ground, a card above it, a row inside the card and a popup
+/// over it, with their hairlines and text.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Surfaces {
+    /// Today's: a near-black page with its own opaque ground, and a light page made from white.
+    #[default]
+    Ink,
+    /// Neutral greys, from #1C1C1C on the dark page.
+    Graphite,
+    /// Ink with a breath of the accent in each surface.
+    Tinted,
+    /// True black in dark, true white in light.
+    Black,
+    /// A blue-grey, lighter than Ink.
+    Slate,
+    /// A brown-leaning grey.
+    WarmGrey,
+}
+
+/// How firmly the hairlines and the quieter text are drawn.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Contrast {
+    #[default]
+    Normal,
+    /// Firmer hairlines, and the second and third text colours a step closer to the first.
+    Strong,
+}
+
+/// The colour of a folder icon.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Folders {
+    /// Today's amber.
+    #[default]
+    Classic,
+    /// The accent, as text on the page.
+    Accent,
+    /// The quiet text colour.
+    Grey,
+}
+
+/// How round every corner is, as three sizes: a bar, a control, a card.
+#[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Corners {
-    /// Today's sizes, kept as they are.
+    /// Today's: 2 for a bar, 4 for a control, 8 for a card.
     #[default]
-    AsWritten,
+    Four8,
+    Six10,
+    Eight14,
+    Pills,
+    Square,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -175,35 +233,526 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "rcpill", what: "the round ends of a chip: half its height (WinUI makes a larger radius an oval)", value: "15", light: "15" },
 ];
 
-/// The selected row's background: the Windows accent mixed a quarter into the card, so a chosen
-/// row reads as chosen without losing the card's tone. Computed rather than written down: the
-/// accent is the user's, and it already differs by theme (`look::accent` reads both).
-fn selected(light: bool) -> String {
-    let card = if light { 0x00F6_F7FC } else { 0x0019_1C26 };
-    let accent = crate::look::accent().fill.trim_start_matches('#');
-    let accent = u32::from_str_radix(accent, 16).unwrap_or(0x0078_D4);
-    let mix = |shift: u32| ((accent >> shift & 0xFF) * 26 + (card >> shift & 0xFF) * 74 + 50) / 100;
-    format!("#FF{:02X}{:02X}{:02X}", mix(16), mix(8), mix(0))
+// ---------------------------------------------------------------- the options, as values
+
+/// A colour token's `#AARRGGBB` as a number.
+fn argb(s: &str) -> Option<u32> {
+    u32::from_str_radix(s.strip_prefix('#')?, 16).ok()
 }
 
-/// The Windows accent, and the colour WinUI draws on it, as colour tokens: `#FF` and the
-/// accent's six digits, the way a colour token is written. Read from `look::accent`, which
-/// already holds the values for the theme in use.
-fn accent() -> String {
-    format!("#FF{}", crate::look::accent().fill.trim_start_matches('#'))
+/// The `#AARRGGBB` a colour is written as.
+fn hex(c: u32) -> String {
+    format!("#{c:08X}")
 }
 
-fn onaccent() -> String {
-    format!("#FF{}", crate::look::accent().on.trim_start_matches('#'))
+/// One channel of a colour: 16 red, 8 green, 0 blue.
+fn channel(c: u32, shift: u32) -> u32 {
+    c >> shift & 0xFF
 }
 
-/// The values for a look: the light page's when `light`, the dark page's otherwise.
+/// A colour's WCAG relative luminance, from its red, green and blue (alpha ignored: every text
+/// colour this reads is opaque).
+fn luminance(c: u32) -> f64 {
+    let linear = |shift: u32| {
+        let v = channel(c, shift) as f64 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0)
+}
+
+/// The contrast between two colours as WCAG writes it: 1 at the same colour, 21 at black and
+/// white.
+fn ratio(a: u32, b: u32) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// `a` moved `p` per cent of the way to `b`, channel by channel, keeping `a`'s alpha. Whole per
+/// cents on purpose: the selected row's 26 is the arithmetic the table has always used.
+fn mix(a: u32, b: u32, p: u32) -> u32 {
+    let at = |shift: u32| (channel(a, shift) * (100 - p) + channel(b, shift) * p + 50) / 100;
+    (a & 0xFF00_0000) | (at(16) << 16) | (at(8) << 8) | at(0)
+}
+
+/// A hairline's alpha multiplied, capped so a firmer line stays a line.
+fn firmer(c: u32, factor: f64, cap: u32) -> u32 {
+    let a = ((c >> 24) as f64 * factor).round().min(cap as f64) as u32;
+    (a << 24) | (c & 0x00FF_FFFF)
+}
+
+/// A colour's hue in degrees, and its saturation and lightness (0..1).
+fn hsl(c: u32) -> (f64, f64, f64) {
+    let (r, g, b) = (channel(c, 16) as f64 / 255.0, channel(c, 8) as f64 / 255.0, channel(c, 0) as f64 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d == 0.0 {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    (h, s, l)
+}
+
+/// The colour a hue, saturation and lightness are drawn as, with `alpha`.
+fn from_hsl(h: f64, s: f64, l: f64, alpha: u32) -> u32 {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let at = |v: f64| ((v + l - c / 2.0) * 255.0).round().clamp(0.0, 255.0) as u32;
+    (alpha << 24) | (at(r) << 16) | (at(g) << 8) | at(b)
+}
+
+#[allow(dead_code)] // The Theme page will read the names; until it exists, the tests are the only caller.
+impl Accent {
+    /// The fill on the page: Windows' own accent (already the page's, read by
+    /// [`crate::look::accent`]), or the preset's dark or light pair.
+    fn fill(self, light: bool) -> u32 {
+        match self {
+            // Windows' accent is written with six digits (the light page's rewrite leaves it
+            // alone), so it is given the opaque alpha a colour token carries.
+            Accent::Windows => {
+                let six = crate::look::accent().fill.trim_start_matches('#').to_string();
+                u32::from_str_radix(&six, 16).map(|c| c | 0xFF00_0000).unwrap_or(0xFF00_78D4)
+            }
+            Accent::Azure => if light { 0xFF00_5FB8 } else { 0xFF60_CDFF },
+            Accent::Iris => if light { 0xFF4F_46E5 } else { 0xFFA5_B4FC },
+            Accent::Violet => if light { 0xFF7C_3AED } else { 0xFFC4_A5FF },
+            Accent::Sunset => if light { 0xFFC2_410C } else { 0xFFFF_B38A },
+        }
+    }
+
+    /// Its name in a copied theme.
+    fn name(self) -> &'static str {
+        match self {
+            Accent::Windows => "windows",
+            Accent::Azure => "azure",
+            Accent::Iris => "iris",
+            Accent::Violet => "violet",
+            Accent::Sunset => "sunset",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "windows" => Accent::Windows,
+            "azure" => Accent::Azure,
+            "iris" => Accent::Iris,
+            "violet" => Accent::Violet,
+            "sunset" => Accent::Sunset,
+            _ => return None,
+        })
+    }
+}
+
+/// Black or white, whichever reads better on `fill`: the one rule every accent is held to, so
+/// no pick can make a button's text unreadable.
+fn on_accent(fill: u32) -> u32 {
+    if ratio(0xFF00_0000, fill) >= ratio(0xFFFF_FFFF, fill) {
+        0xFF00_0000
+    } else {
+        0xFFFF_FFFF
+    }
+}
+
+/// The accent as text on the page: `fill` when it already reaches 4.5:1 against the card,
+/// otherwise its HSL lightness stepped a little at a time towards the page's end (lighter on the
+/// dark page, darker on the light) until it does.
+fn accent_text(fill: u32, card: u32, light: bool) -> u32 {
+    let (h, s, mut l) = hsl(fill);
+    let mut c = fill;
+    for _ in 0..=100 {
+        if ratio(c, card) >= 4.5 {
+            return c;
+        }
+        l = if light { (l - 0.01).max(0.0) } else { (l + 0.01).min(1.0) };
+        c = from_hsl(h, s, l, fill >> 24);
+    }
+    c
+}
+
+/// The colours a surfaces family writes down, before the ones derived from them: the page's
+/// ground, the card above it, a row inside the card and a popup over it, the hairlines, and the
+/// three text colours.
+#[derive(Clone, Copy)]
+struct Base {
+    ground: u32,
+    card: u32,
+    row: u32,
+    popup: u32,
+    line1: u32,
+    line2: u32,
+    text1: u32,
+    text2: u32,
+    text3: u32,
+}
+
+/// Ink, as the tokens have always written it.
+fn ink(light: bool) -> Base {
+    Base {
+        ground: if light { 0xFFE9_ECF4 } else { 0xFF11_131A },
+        card: if light { 0xFFF6_F7FC } else { 0xFF19_1C26 },
+        row: if light { 0xFFFF_FFFF } else { 0xFF21_2533 },
+        popup: if light { 0xFFFF_FFFF } else { 0xFF1E_2230 },
+        line1: if light { 0x261B_2A60 } else { 0x1FA0_B4FF },
+        line2: if light { 0x401B_2A60 } else { 0x33A0_B4FF },
+        text1: if light { 0xFF14_1824 } else { 0xFFEE_F1F8 },
+        text2: if light { 0xFF3A_4258 } else { 0xFFB9_C2D6 },
+        text3: if light { 0xFF5B_647A } else { 0xFF87_91A8 },
+    }
+}
+
+/// Neutral greys: hairlines are white on the dark page and black on the light one, and the text
+/// runs from #F2F2F2 to #9A9A9A (from #1A1A1A to #616161).
+fn graphite(light: bool) -> Base {
+    Base {
+        ground: if light { 0xFFF3_F3F3 } else { 0xFF1C_1C1C },
+        card: if light { 0xFFFB_FBFB } else { 0xFF26_2626 },
+        row: if light { 0xFFFF_FFFF } else { 0xFF2E_2E2E },
+        popup: if light { 0xFFFF_FFFF } else { 0xFF2B_2B2B },
+        line1: if light { 0x1A00_0000 } else { 0x1AFF_FFFF },
+        line2: if light { 0x2900_0000 } else { 0x2EFF_FFFF },
+        text1: if light { 0xFF1A_1A1A } else { 0xFFF2_F2F2 },
+        text2: if light { 0xFF40_4040 } else { 0xFFC5_C5C5 },
+        text3: if light { 0xFF61_6161 } else { 0xFF9A_9A9A },
+    }
+}
+
+/// A family's colours for the page, or None for Ink, whose values are the table's own.
+fn surfaces_base(surfaces: Surfaces, light: bool, accent: u32) -> Option<Base> {
+    Some(match surfaces {
+        Surfaces::Ink => return None,
+        Surfaces::Tinted => {
+            let b = ink(light);
+            Base {
+                ground: mix(b.ground, accent, 6),
+                card: mix(b.card, accent, 6),
+                row: mix(b.row, accent, 6),
+                popup: mix(b.popup, accent, 6),
+                ..b
+            }
+        }
+        Surfaces::Graphite => graphite(light),
+        Surfaces::Black => Base {
+            ground: if light { 0xFFFF_FFFF } else { 0xFF00_0000 },
+            card: if light { 0xFFFF_FFFF } else { 0xFF0D_0D0F },
+            row: if light { 0xFFF5_F6F8 } else { 0xFF16_161A },
+            popup: if light { 0xFFFF_FFFF } else { 0xFF14_1417 },
+            ..graphite(light)
+        },
+        Surfaces::Slate => Base {
+            ground: if light { 0xFFDD_E3EE } else { 0xFF1B_2030 },
+            card: if light { 0xFFED_F1F7 } else { 0xFF23_2A3D },
+            row: if light { 0xFFFF_FFFF } else { 0xFF2C_3449 },
+            popup: if light { 0xFFFF_FFFF } else { 0xFF28_3045 },
+            ..ink(light)
+        },
+        Surfaces::WarmGrey => Base {
+            ground: if light { 0xFFEF_ECE8 } else { 0xFF1A_1816 },
+            card: if light { 0xFFF8_F6F3 } else { 0xFF24_211E },
+            row: if light { 0xFFFF_FFFF } else { 0xFF2D_2A26 },
+            popup: if light { 0xFFFF_FFFF } else { 0xFF2A_2723 },
+            line1: if light { 0x243A_2A1A } else { 0x1FFF_F0E0 },
+            line2: if light { 0x3D3A_2A1A } else { 0x33FF_F0E0 },
+            text1: if light { 0xFF1F_1A15 } else { 0xFFF3_EEE8 },
+            text2: if light { 0xFF4A_4239 } else { 0xFFCF_C6BC },
+            text3: if light { 0xFF6E_655B } else { 0xFFA3_9A90 },
+        },
+    })
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Surfaces {
+    /// Its name in a copied theme.
+    fn name(self) -> &'static str {
+        match self {
+            Surfaces::Ink => "ink",
+            Surfaces::Graphite => "graphite",
+            Surfaces::Tinted => "tinted",
+            Surfaces::Black => "black",
+            Surfaces::Slate => "slate",
+            Surfaces::WarmGrey => "warmgrey",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "ink" => Surfaces::Ink,
+            "graphite" => Surfaces::Graphite,
+            "tinted" => Surfaces::Tinted,
+            "black" => Surfaces::Black,
+            "slate" => Surfaces::Slate,
+            "warmgrey" => Surfaces::WarmGrey,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Contrast {
+    fn name(self) -> &'static str {
+        match self {
+            Contrast::Normal => "normal",
+            Contrast::Strong => "strong",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "normal" => Contrast::Normal,
+            "strong" => Contrast::Strong,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Folders {
+    fn name(self) -> &'static str {
+        match self {
+            Folders::Classic => "classic",
+            Folders::Accent => "accent",
+            Folders::Grey => "grey",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "classic" => Folders::Classic,
+            "accent" => Folders::Accent,
+            "grey" => Folders::Grey,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Corners {
+    fn name(self) -> &'static str {
+        match self {
+            Corners::Four8 => "four8",
+            Corners::Six10 => "six10",
+            Corners::Eight14 => "eight14",
+            Corners::Pills => "pills",
+            Corners::Square => "square",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "four8" => Corners::Four8,
+            "six10" => Corners::Six10,
+            "eight14" => Corners::Eight14,
+            "pills" => Corners::Pills,
+            "square" => Corners::Square,
+            _ => return None,
+        })
+    }
+
+    /// The radius each group is drawn at: bars (`rc2`, `rc3`), controls (`rc4`..`rc6`), cards
+    /// (`rc7`..`rc9`, `rc10`, `rc12`, `rc14`).
+    fn sizes(self) -> (u32, u32, u32) {
+        match self {
+            Corners::Four8 => (2, 4, 8),
+            Corners::Six10 => (3, 6, 10),
+            Corners::Eight14 => (4, 8, 14),
+            Corners::Pills => (3, 12, 16),
+            Corners::Square => (0, 0, 0),
+        }
+    }
+
+    /// The radius a token is drawn at, or None for a token that is not a radius.
+    fn of(self, token: &str) -> Option<u32> {
+        let (bars, controls, cards) = self.sizes();
+        Some(match token {
+            "rc2" | "rc3" => bars,
+            "rc4" | "rc5" | "rc6" => controls,
+            "rc7" | "rc8" | "rc9" | "rc10" | "rc12" | "rc14" => cards,
+            "rcpill" => {
+                if self == Corners::Square {
+                    0
+                } else {
+                    15
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl TextSizes {
+    fn name(self) -> &'static str {
+        match self {
+            TextSizes::AsWritten => "aswritten",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "aswritten" => TextSizes::AsWritten,
+            _ => return None,
+        })
+    }
+}
+
+#[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
+impl Look {
+    /// The options as one line, for Copy theme: `accent=iris;surfaces=slate;...`, lowercase.
+    pub(crate) fn to_kv(&self) -> String {
+        format!(
+            "accent={};surfaces={};contrast={};folders={};corners={};text={}",
+            self.accent.name(),
+            self.surfaces.name(),
+            self.contrast.name(),
+            self.folders.name(),
+            self.corners.name(),
+            self.text.name(),
+        )
+    }
+
+    /// A line as Copy theme wrote it: only known keys with known values are taken, everything
+    /// else is ignored, and the rest starts from Sprawl's own look. It is text from outside.
+    pub(crate) fn from_kv(s: &str) -> Look {
+        let mut look = Look::default();
+        for part in s.split(';') {
+            let Some((key, value)) = part.split_once('=') else { continue };
+            let value = value.trim();
+            match key.trim() {
+                "accent" => {
+                    if let Some(v) = Accent::from_name(value) {
+                        look.accent = v;
+                    }
+                }
+                "surfaces" => {
+                    if let Some(v) = Surfaces::from_name(value) {
+                        look.surfaces = v;
+                    }
+                }
+                "contrast" => {
+                    if let Some(v) = Contrast::from_name(value) {
+                        look.contrast = v;
+                    }
+                }
+                "folders" => {
+                    if let Some(v) = Folders::from_name(value) {
+                        look.folders = v;
+                    }
+                }
+                "corners" => {
+                    if let Some(v) = Corners::from_name(value) {
+                        look.corners = v;
+                    }
+                }
+                "text" => {
+                    if let Some(v) = TextSizes::from_name(value) {
+                        look.text = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+        look
+    }
+}
+
+/// A colour already in the table, for the values derived from it. A name that isn't there is a
+/// bug here, not a loading error on a page.
+fn colour(t: &HashMap<&'static str, String>, name: &str) -> u32 {
+    argb(&t[name]).unwrap_or(0)
+}
+
+/// The values for a look on a page: today's written values, then whatever its options change —
+/// the surfaces family, the contrast, the accent (and the selected row and accent text built
+/// from it), the folder icons and the corner radii.
 pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
-    let Look { surfaces: Surfaces::Washed, corners: Corners::AsWritten, text: TextSizes::AsWritten } = look;
     let mut t: HashMap<&'static str, String> = TOKENS.iter().map(|t| (t.name, if light { t.light } else { t.value }.to_string())).collect();
-    t.insert("selected", selected(light));
-    t.insert("accent", accent());
-    t.insert("onaccent", onaccent());
+    let fill = look.accent.fill(light);
+
+    if let Some(b) = surfaces_base(look.surfaces, light, fill) {
+        let entries = [
+            ("ground", b.ground),
+            ("card", b.card),
+            ("row", b.row),
+            ("popup", b.popup),
+            // the floating panels sit on the popup's colour; an open row is a step above the row
+            ("panel", b.popup),
+            ("rowopen", mix(b.row, b.text1, 6)),
+            ("line1", b.line1),
+            ("line2", b.line2),
+            ("edge", b.line2),
+            // the brightest text, and the two between the written three
+            ("text0", if light { mix(b.text1, 0xFF00_0000, 40) } else { 0xFFFF_FFFF }),
+            ("text1", b.text1),
+            ("text2", b.text2),
+            ("text3", b.text3),
+            ("rest", b.text1),
+            ("label", mix(b.text2, b.text3, 50)),
+            ("faint", mix(b.text3, b.ground, 25)),
+        ];
+        for (name, c) in entries {
+            t.insert(name, hex(c));
+        }
+    }
+
+    if look.contrast == Contrast::Strong {
+        for name in ["line1", "line2", "edge"] {
+            t.insert(name, hex(firmer(colour(&t, name), 1.8, 0x66)));
+        }
+        let text2 = mix(colour(&t, "text2"), colour(&t, "text1"), 40);
+        let text3 = mix(colour(&t, "text3"), text2, 50);
+        let label = mix(colour(&t, "label"), text2, 40);
+        let faint = mix(colour(&t, "faint"), text2, 50);
+        t.insert("text2", hex(text2));
+        t.insert("text3", hex(text3));
+        t.insert("label", hex(label));
+        t.insert("faint", hex(faint));
+    }
+
+    // The selected row is the accent mixed a quarter into the card; a glyph on the accent is
+    // black or white, whichever reads; accent text on the page is the fill, moved until it reads.
+    let card = colour(&t, "card");
+    t.insert("accent", hex(fill));
+    t.insert("onaccent", hex(on_accent(fill)));
+    t.insert("accenttext", hex(accent_text(fill, card, light)));
+    t.insert("selected", hex(mix(card, fill, 26)));
+
+    match look.folders {
+        Folders::Classic => {}
+        Folders::Accent => {
+            let text = t["accenttext"].clone();
+            t.insert("folder", text);
+        }
+        Folders::Grey => {
+            let text = t["text3"].clone();
+            t.insert("folder", text);
+        }
+    }
+
+    for token in TOKENS {
+        if let Some(n) = look.corners.of(token.name) {
+            t.insert(token.name, n.to_string());
+        }
+    }
     t
 }
 
@@ -215,7 +764,7 @@ pub(crate) fn get(name: &str) -> String {
     debug_assert!(TOKENS.iter().any(|t| t.name == name), "no token {name}");
     TABLE.with(|c| {
         let mut borrow = c.borrow_mut();
-        let table = borrow.get_or_insert_with(|| table(&Look::default(), crate::theme::light()));
+        let table = borrow.get_or_insert_with(|| table(&current(), crate::theme::light()));
         table.get(name).cloned().unwrap_or_default()
     })
 }
@@ -244,14 +793,23 @@ fn sized(prefix: &str, n: f64) -> String {
 
 thread_local! {
     static TABLE: std::cell::RefCell<Option<HashMap<&'static str, String>>> = const { std::cell::RefCell::new(None) };
+    /// The look the table was built from, so a table cleared and built again (a live theme
+    /// change) keeps the user's options rather than falling back to Sprawl's own.
+    static LOOK: std::cell::RefCell<Option<Look>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The look in use. Set once at start, before any XAML is loaded; until then, Sprawl's own.
-/// (Nothing calls this yet: the Theme page is what will.)
+/// The look in use. Set at start, and again when the Theme page saves; until then, Sprawl's own.
 #[allow(dead_code)]
 pub(crate) fn set(look: &Look) {
     let t = table(look, crate::theme::light());
     TABLE.with(|c| *c.borrow_mut() = Some(t));
+    LOOK.with(|c| *c.borrow_mut() = Some(look.clone()));
+}
+
+/// The look in use, for a rebuild of the table.
+#[allow(dead_code)]
+pub(crate) fn current() -> Look {
+    LOOK.with(|c| c.borrow().clone()).unwrap_or_default()
 }
 
 /// `xaml` with every `="{$name}"` replaced by its value. A name that isn't in the table is left
@@ -263,7 +821,7 @@ pub(crate) fn expand(xaml: &str) -> Cow<'_, str> {
     }
     TABLE.with(|c| {
         let mut borrow = c.borrow_mut();
-        let table = borrow.get_or_insert_with(|| table(&Look::default(), crate::theme::light()));
+        let table = borrow.get_or_insert_with(|| table(&current(), crate::theme::light()));
         Cow::Owned(expand_with(xaml, table))
     })
 }
@@ -277,7 +835,7 @@ pub(crate) fn resolve(raw: &str) -> Cow<'_, str> {
     };
     TABLE.with(|c| {
         let mut borrow = c.borrow_mut();
-        let table = borrow.get_or_insert_with(|| table(&Look::default(), crate::theme::light()));
+        let table = borrow.get_or_insert_with(|| table(&current(), crate::theme::light()));
         match table.get(name) {
             Some(value) => Cow::Owned(value.clone()),
             None => Cow::Borrowed(raw),
@@ -357,10 +915,15 @@ mod tests {
         for token in TOKENS {
             assert!(seen.insert(token.name), "{} is in the list twice", token.name);
             assert!(!token.what.is_empty(), "{} says nothing", token.name);
-            // computed from the accent rather than written down; the table's value is a colour
-            if matches!(token.name, "selected" | "accent" | "onaccent") {
+            // computed from the accent, or drawn at the corner option's size, rather than written
+            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext") {
                 let v = &t[token.name];
                 assert!(v.len() == 9 && v.starts_with('#'), "{}: {v}", token.name);
+                continue;
+            }
+            if token.name.starts_with("rc") {
+                let v = &t[token.name];
+                assert!(v.parse::<u32>().is_ok(), "{}: {v}", token.name);
                 continue;
             }
             assert_eq!(t.get(token.name).map(String::as_str), Some(token.value));
@@ -539,16 +1102,16 @@ mod tests {
         assert_eq!(get("rc6"), "4");
     }
 
-    /// The accent and the colour on it are computed from the user's accent, as a colour token is
-    /// written: eight digits, from the palette's six.
+    /// The accent is the user's, eight digits the way a colour token is written; the colour on
+    /// it is black or white, whichever reads better on the fill.
     #[test]
     fn the_accent_is_a_colour_token_both_ways() {
-        for (name, six) in [("accent", crate::look::accent().fill.as_str()), ("onaccent", crate::look::accent().on)] {
-            let v = get(name);
-            assert_eq!(v.len(), 9, "{name}: {v}");
-            assert!(v.starts_with("#FF"), "{name}: {v}");
-            assert_eq!(&v[3..], six.trim_start_matches('#'), "{name}: {v}");
-        }
+        let accent = get("accent");
+        assert_eq!(accent, format!("#FF{}", crate::look::accent().fill.trim_start_matches('#')));
+        let fill = argb(&accent).unwrap();
+        let on = get("onaccent");
+        let better = if ratio(0xFF00_0000, fill) >= ratio(0xFFFF_FFFF, fill) { "#FF000000" } else { "#FFFFFFFF" };
+        assert_eq!(on, better);
     }
 
     #[test]
@@ -569,5 +1132,124 @@ mod tests {
         let t = table(&Look::default(), false);
         assert_eq!(expand_with(r#"<Border Background="{$surface2"/>"#, &t), r#"<Border Background="{$surface2"/>"#);
         assert_eq!(expand_with("{$", &t), "{$");
+    }
+
+    /// Sprawl's own look is the values the app has drawn with: every written token is unchanged,
+    /// the accent pair and the selected row are the ones the accent made before, and the corners
+    /// are Four8's. Only the light page's accent text moves, to reach its contrast (the old
+    /// #0080C2 is 4.03:1 on the card).
+    #[test]
+    fn the_default_look_is_todays_look() {
+        let dark = table(&Look::default(), false);
+        let light = table(&Look::default(), true);
+        for token in TOKENS {
+            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext") || token.name.starts_with("rc") {
+                continue;
+            }
+            assert_eq!(dark[token.name], token.value, "{} (dark)", token.name);
+            assert_eq!(light[token.name], token.light, "{} (light)", token.name);
+        }
+        // the accent, the colour on it, and the selected row, as they were worked out before
+        let fill = argb(&format!("#FF{}", crate::look::accent().fill.trim_start_matches('#'))).unwrap();
+        assert_eq!(dark["accent"], hex(fill));
+        assert_eq!(light["accent"], hex(fill));
+        let better = if ratio(0xFF00_0000, fill) >= ratio(0xFFFF_FFFF, fill) { "#FF000000" } else { "#FFFFFFFF" };
+        assert_eq!(dark["onaccent"], better);
+        let card = 0x0019_1C26u32;
+        let old = |shift: u32| (channel(fill, shift) * 26 + channel(card, shift) * 74 + 50) / 100;
+        assert_eq!(dark["selected"], format!("#FF{:02X}{:02X}{:02X}", old(16), old(8), old(0)));
+        // Four8 carries today's written sizes, except the cards the group moves to 8
+        for (name, n) in [
+            ("rc2", "2"),
+            ("rc3", "2"),
+            ("rc4", "4"),
+            ("rc5", "4"),
+            ("rc6", "4"),
+            ("rc7", "8"),
+            ("rc8", "8"),
+            ("rc9", "8"),
+            ("rc10", "8"),
+            ("rc12", "8"),
+            ("rc14", "8"),
+            ("rcpill", "15"),
+        ] {
+            assert_eq!(dark[name], n, "{name} (dark)");
+            assert_eq!(light[name], n, "{name} (light)");
+        }
+    }
+
+    /// The default look and every single-option change from it, on both pages: every colour is a
+    /// valid token, and the text on each surface, the glyph on the accent and the accent text on
+    /// the card all reach the contrast the Theme page promises.
+    #[test]
+    fn every_option_keeps_its_contrast() {
+        let mut looks = vec![Look::default()];
+        for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
+            looks.push(Look { accent, ..Look::default() });
+        }
+        for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
+            looks.push(Look { surfaces, ..Look::default() });
+        }
+        for contrast in [Contrast::Normal, Contrast::Strong] {
+            looks.push(Look { contrast, ..Look::default() });
+        }
+        for folders in [Folders::Classic, Folders::Accent, Folders::Grey] {
+            looks.push(Look { folders, ..Look::default() });
+        }
+        for corners in [Corners::Four8, Corners::Six10, Corners::Eight14, Corners::Pills, Corners::Square] {
+            looks.push(Look { corners, ..Look::default() });
+        }
+        for look in looks {
+            for light in [false, true] {
+                let page = if light { "light" } else { "dark" };
+                let t = table(&look, light);
+                let c = |name: &str| argb(&t[name]).unwrap_or_else(|| panic!("{page} {}: {name} is {}", look.to_kv(), t[name]));
+                let on = |a: &str, b: &str| ratio(c(a), c(b));
+                for token in TOKENS.iter().filter(|t| t.value.starts_with('#')) {
+                    let v = &t[token.name];
+                    assert!(
+                        v.len() == 9 && v.starts_with('#') && v[1..].bytes().all(|b| b.is_ascii_hexdigit()),
+                        "{page} {}: {} is {v}",
+                        look.to_kv(),
+                        token.name
+                    );
+                }
+                for surface in ["ground", "card", "row"] {
+                    let need = [("text1", 7.0), ("text2", 4.5), ("text3", 3.0)];
+                    for (text, least) in need {
+                        let got = on(text, surface);
+                        assert!(got >= least, "{page} {}: {text} on {surface} is {got:.2} to 1, needs {least}", look.to_kv());
+                    }
+                }
+                let got = on("onaccent", "accent");
+                assert!(got >= 4.5, "{page} {}: onaccent on accent is {got:.2} to 1", look.to_kv());
+                let got = on("accenttext", "card");
+                assert!(got >= 4.5, "{page} {}: accenttext on card is {got:.2} to 1", look.to_kv());
+            }
+        }
+    }
+
+    /// The options as one line of text, and back: every combination of the five options, and the
+    /// line read from outside takes only known keys with known values.
+    #[test]
+    fn a_look_survives_a_round_trip_and_ignores_junk() {
+        assert_eq!(Look::default().to_kv(), "accent=windows;surfaces=ink;contrast=normal;folders=classic;corners=four8;text=aswritten");
+        for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
+            for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
+                for contrast in [Contrast::Normal, Contrast::Strong] {
+                    for folders in [Folders::Classic, Folders::Accent, Folders::Grey] {
+                        for corners in [Corners::Four8, Corners::Six10, Corners::Eight14, Corners::Pills, Corners::Square] {
+                            let look = Look { accent, surfaces, contrast, folders, corners, text: TextSizes::AsWritten };
+                            assert_eq!(Look::from_kv(&look.to_kv()), look, "{}", look.to_kv());
+                        }
+                    }
+                }
+            }
+        }
+        // only known keys with known values: an unknown key, an unknown value, a wrong case, an
+        // empty part and a broken part are all left behind
+        let junk = Look::from_kv("accent=iris;surfaces=slate;contrast=loud;nope=1;;corners=SQUARE;folders=accent;text=aswritten;more junk");
+        assert_eq!(junk, Look { accent: Accent::Iris, surfaces: Surfaces::Slate, folders: Folders::Accent, ..Look::default() });
+        assert_eq!(Look::from_kv(""), Look::default());
     }
 }
