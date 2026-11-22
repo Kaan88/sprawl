@@ -230,7 +230,7 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
         ),
         Bars::Gradient => (
             r##"<Border CornerRadius="{$rc3}" Background="{$line1}"/>"##.to_string(),
-            format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w}" Opacity="0.45" Background="{{$accent}}"><Border.Background><LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5"><GradientStop Color="{{$accent}}" Offset="0"/><GradientStop Color="{bar_end}" Offset="1"/></LinearGradientBrush></Border.Background></Border>"##),
+            format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w}" Opacity="0.45"><Border.Background><LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5"><GradientStop Color="#{}" Offset="0"/><GradientStop Color="{bar_end}" Offset="1"/></LinearGradientBrush></Border.Background></Border>"##, &accent[3..]),
         ),
         Bars::Solid => (
             r##"<Border CornerRadius="{$rc3}" Background="{$line1}"/>"##.to_string(),
@@ -717,6 +717,29 @@ mod tests {
             for mode in [1, 2] {
                 let x = sample(&look, mode);
                 assert!(!x.contains('$'), "a token is left in the sample: {x}");
+            }
+        }
+    }
+
+    /// XAML refuses an element that sets a property twice, and the whole sample went blank when
+    /// the gradient bar had a `Background` attribute and a `Border.Background` element both. A tag
+    /// followed by its own property element must not carry that attribute, and a gradient stop's
+    /// colour is a literal colour.
+    #[test]
+    fn the_gradient_bar_in_the_sample_sets_its_background_once() {
+        for bars in ["gradient", "solid", "thin"] {
+            for mode in [1, 2] {
+                let x = sample(&Look::from_kv(&format!("bars={bars}")), mode);
+                for (at, _) in x.match_indices("<Border.Background>") {
+                    let tag = &x[x[..at].rfind('<').unwrap()..at];
+                    assert!(!tag.contains(" Background="), "{bars}: {tag}");
+                }
+                for (at, _) in x.match_indices("<GradientStop Color=\"") {
+                    let c = &x[at + 21..];
+                    let c = &c[..c.find('"').unwrap()];
+                    assert!(c.starts_with('#') && c[1..].chars().all(|h| h.is_ascii_hexdigit()), "{bars}: stop colour {c}");
+                }
+                assert_eq!(x.contains("<LinearGradientBrush"), bars == "gradient", "{bars}");
             }
         }
     }
