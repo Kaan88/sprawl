@@ -25,8 +25,9 @@ use windows_core::{Interface, HSTRING};
 
 /// The tab buttons the line can sit under.
 const TABS: [&str; 6] = ["TabTree", "TabFiles", "TabAdvisor", "TabCleaners", "TabSearch", "TabAbout"];
-/// How far the line is in from the tab's edges, each side.
-const INSET: f32 = 12.0;
+/// How far the line is in from the tab's edges, each side: the tabs' own padding, so the line is
+/// exactly as wide as the tab's text, as the mockup's is.
+const INSET: f32 = 14.0;
 const HEIGHT: f32 = 3.0;
 
 /// A cubic bezier easing, CSS's `cubic-bezier(x1, y1, x2, y2)`.

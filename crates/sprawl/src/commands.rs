@@ -123,15 +123,19 @@ impl State {
     }
 
     /// The counts on the Advisor and Cleaners tabs: the findings listed, and the cleaners with
-    /// something to clean. Hidden with no report, or nothing to count.
+    /// something to clean. Hidden with no report, or nothing to count. The findings are always
+    /// the scan's: on the Cleaners tab `advice()` may be that tab's own read of the cleaners'
+    /// folders, which has none, and the Advisor count would vanish (shifting the tabs after it).
     pub(crate) fn tab_counts(&self) {
         use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
-        let (findings, cleaners) = match self.advice() {
-            Some(r) if !self.advisor.running => (
-                (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project()).count(),
-                self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count(),
-            ),
-            _ => (0, 0),
+        let scan = if self.job.is_some() || self.tree.is_none() { None } else { self.advisor.report.as_ref().filter(|r| r.tree == self.tree_gen) };
+        let findings = match scan {
+            Some(r) if !self.advisor.running => (0..r.findings.len()).filter(|&i| r.in_findings_list(i) && !r.findings[i].in_active_project()).count(),
+            _ => 0,
+        };
+        let cleaners = match self.advice() {
+            Some(r) if !self.advisor.running => self.cleaner_layout(r).iter().filter(|c| c.parts.iter().any(|p| p.bytes(r) > 0)).count(),
+            _ => 0,
         };
         for (name, n) in [("TabAdvisorCount", findings), ("TabCleanersCount", cleaners)] {
             crate::state::text(&self.root, &format!("{name}Text"), &n.to_string());
