@@ -283,6 +283,9 @@ this from the start and was never reported.
 
 ## J. UI lag (the user's request, 2026-11-21): not started
 
+- **Priority (the user, 2026-11-22):** first launch and time to first paint matter most. The
+  Search tab must show its search box at once; results and the rest fill in after. Do these first.
+
 - The report: switching tabs, expanding rows and similar actions have a short but noticeable
   lag; the whole UI feels slightly behind. Goal: eliminate the delays, not just shorten them.
 - Measure first (SPRAWL_TIMING=1 logs to %TEMP%\sprawl-timing.log), on the user's real-size
