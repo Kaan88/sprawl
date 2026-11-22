@@ -790,6 +790,8 @@ fn hud() -> String {
 }
 
 pub fn page(drives: &[String]) -> String {
+    // the soft shadow under each card and pane (look.rs), in the cell before the card
+    let shadow = crate::look::shadow(&crate::tokens::rc(8.0), 1);
     let num = crate::look::NUM;
     let accent = crate::look::accent().fill.clone();
     // the drive's usage bar: the accent solid, running to a lighter shade, or a 4 px line
@@ -1004,7 +1006,7 @@ pub fn page(drives: &[String]) -> String {
       <ColumnDefinition Width="*"/>
       <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
-    <Border {CARD} Padding="12,10">
+    <Grid>{shadow}<Border {CARD} Padding="12,10">
       <StackPanel Spacing="8">
         <Grid ColumnSpacing="8">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -1017,8 +1019,8 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock x:Name="StatusText" {num} TextTrimming="CharacterEllipsis" Text="Ready. Pick a drive or folder and press Scan." FontSize="{{$fs12}}" Foreground="{{$text2}}"/>
         <ProgressBar x:Name="Progress" Value="0" Maximum="100" Height="4" CornerRadius="{{$rc2}}"/>
       </StackPanel>
-    </Border>
-    <Border Grid.Column="1" {CARD} Padding="14,10">
+    </Border></Grid>
+    <Grid Grid.Column="1">{shadow}<Border {CARD} Padding="14,10">
       <Grid ColumnSpacing="14" RowSpacing="7" VerticalAlignment="Center">
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
@@ -1035,8 +1037,8 @@ pub fn page(drives: &[String]) -> String {
           {usage_bar}
         </Grid>
       </Grid>
-    </Border>
-    <Border x:Name="BrandCard" Grid.Column="2" {CARD} Padding="16,10,22,10">
+    </Border></Grid>
+    <Grid x:Name="BrandCard" Grid.Column="2">{shadow}<Border {CARD} Padding="16,10,22,10">
       <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
         {logo_small}
         <StackPanel VerticalAlignment="Center" Spacing="2">
@@ -1044,7 +1046,7 @@ pub fn page(drives: &[String]) -> String {
           <TextBlock Text="Disk space analyser" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>
         </StackPanel>
       </StackPanel>
-    </Border>
+    </Border></Grid>
   </Grid>
 
   <Grid Grid.Row="3" Margin="12,0,12,6" MinHeight="32">
@@ -1072,7 +1074,7 @@ pub fn page(drives: &[String]) -> String {
       <ColumnDefinition x:Name="TreeCol" Width="1.4*"/>
       <ColumnDefinition x:Name="TypesCol" Width="1*"/>
     </Grid.ColumnDefinitions>
-    <Border {PANE}>
+    <Grid>{shadow}<Border {PANE}>
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Border x:Name="SearchMore" Grid.Row="3" Visibility="Collapsed" BorderBrush="{{$line2}}" BorderThickness="0,1,0,0">
@@ -1143,15 +1145,15 @@ pub fn page(drives: &[String]) -> String {
           </StackPanel>
         </ScrollViewer>
       </Grid>
-    </Border>
-    <Border x:Name="TypesPanel" Grid.Column="1" {PANE}>
+    </Border></Grid>
+    <Grid x:Name="TypesPanel" Grid.Column="1">{shadow}<Border {PANE}>
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Border x:Name="ExtHeader"/>
         <ScrollViewer x:Name="ExtScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled"/>
         {types_hint}
       </Grid>
-    </Border>
+    </Border></Grid>
   </Grid>
 
   <Grid x:Name="MapBar" Grid.Row="5" Margin="12,6,12,6" ColumnSpacing="12">

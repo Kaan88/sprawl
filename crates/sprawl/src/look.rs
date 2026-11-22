@@ -201,6 +201,19 @@ pub(crate) fn label(text: &str) -> String {
     format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
 }
 
+/// A soft shadow under a card, as three borders of the shadow colour (`lift`), each wider and
+/// fainter than the last, to put in the card's own cell BEFORE the card. WinUI's ThemeShadow draws
+/// one colour only and needs a receiver, so it could not tint or soften this; borders cost nothing
+/// per frame. They reach past the cell without moving anything, and the card covers the middle.
+/// `corner` is the card's corner token, `k` how far the shadow reaches (1 for a pane, 2 for a
+/// dialog).
+pub(crate) fn shadow(corner: &str, k: i32) -> String {
+    let layer = |side: i32, top: i32, bottom: i32, opacity: f64| {
+        format!(r##"<Border Margin="{},{top},{},{bottom}" CornerRadius="{corner}" Background="{{$lift}}" Opacity="{opacity}" IsHitTestVisible="False"/>"##, -side, -side)
+    };
+    format!("{}{}{}", layer(k, k, -2 * k, 1.0), layer(3 * k, k, -5 * k, 0.6), layer(6 * k, 2 * k, -9 * k, 0.35))
+}
+
 /// The motion the buttons are drawn with: Windows' "Animation effects" off wins over the look.
 fn motion() -> crate::tokens::Motion {
     if crate::win32::animations_on() {
@@ -262,7 +275,7 @@ fn states_with(motion: crate::tokens::Motion, wash: f64, lift: f64, scale: f64) 
 /// only. So selected-and-pointer-over is the selected background with the faint wash, and a
 /// selected item the pointer has left is the selected background alone. With `line`: a 3 px
 /// line under the content in the BorderBrush (the page tabs; they have no border of their own).
-fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> String {
+fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bool) -> String {
     let (cols, arrow) = if arrow {
         (
             r##"<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>"##,
@@ -272,20 +285,46 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
         ("", "")
     };
     let (border, underline) = if line {
-        ("", r##"<Border x:Name="Line" Grid.ColumnSpan="2" VerticalAlignment="Bottom" Height="3" Margin="12,0,12,0" CornerRadius="{$rc2}" Background="{TemplateBinding BorderBrush}" IsHitTestVisible="False"/>"##)
+        // the line is the tab's BorderBrush: opening a tab swaps it for the accent, closing it for
+        // nothing, and the brush fades from one to the other (nothing when motion is off)
+        let fade = match motion() {
+            crate::tokens::Motion::None => String::new(),
+            m => format!(r##"<Border.BackgroundTransition><BrushTransition Duration="{}"/></Border.BackgroundTransition>"##, line_time(m)),
+        };
+        ("", format!(r##"<Border x:Name="Line" Grid.ColumnSpan="2" VerticalAlignment="Bottom" Height="3" Margin="12,0,12,0" CornerRadius="{{$rc2}}" Background="{{TemplateBinding BorderBrush}}" IsHitTestVisible="False">{fade}</Border>"##))
     } else {
-        (r##"BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}""##, "")
+        (r##"BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}""##, String::new())
     };
     // a filled button (the red one) turns grey when it can't be pressed, as WinUI's do; the
     // rest just fade
-    let disabled = if grey_off {
-        r##"<Setter Target="Root.Background" Value="{$hover}"/><Setter Target="Content.Foreground" Value="{$disabled}"/>"##
+    let mut disabled = if grey_off {
+        r##"<Setter Target="Root.Background" Value="{$hover}"/><Setter Target="Content.Foreground" Value="{$disabled}"/>"##.to_string()
     } else {
-        r##"<Setter Target="Content.Opacity" Value="0.4"/>"##
+        r##"<Setter Target="Content.Opacity" Value="0.4"/>"##.to_string()
     };
-    let (normal, over, pressed) = (states(0.0, 0.0, 1.0), states(0.10, -1.0, 1.0), states(0.20, 1.0, 0.98));
+    let (mut normal, mut over, mut pressed) = (states(0.0, 0.0, 1.0), states(0.10, -1.0, 1.0), states(0.20, 1.0, 0.98));
+    // the main button's accent shadow: soft at rest, fuller under the pointer, gone while pressed
+    // or disabled, on the same time and curve as the lift
+    let (shade_open, shade_close) = if glow {
+        let to = |s: &mut String, v: f64| s.insert_str(s.len() - "</Storyboard>".len(), &glow_to(v));
+        to(&mut normal, 0.55);
+        to(&mut over, 1.0);
+        to(&mut pressed, 0.0);
+        disabled += r##"<Setter Target="Glow.Opacity" Value="0"/>"##;
+        (
+            r##"<Grid>
+  <Grid x:Name="Glow" Opacity="0.55" IsHitTestVisible="False">
+    <Border Margin="-1,3,-1,-4" CornerRadius="{$rc6}" Background="{$glow}" Opacity="0.7"/>
+    <Border Margin="-4,5,-4,-9" CornerRadius="{$rc8}" Background="{$glow}" Opacity="0.4"/>
+  </Grid>"##,
+            "</Grid>",
+        )
+    } else {
+        ("", "")
+    };
     format!(
         r##"<ControlTemplate TargetType="{target}">
+  {shade_open}
   <Grid x:Name="Root" Background="{{TemplateBinding Background}}" CornerRadius="{{TemplateBinding CornerRadius}}" {border}>
     {cols}
     <Border x:Name="Wash" Grid.ColumnSpan="2" Background="{{$wash}}" Opacity="0" CornerRadius="{{TemplateBinding CornerRadius}}"/>
@@ -301,7 +340,25 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool) -> Strin
       </VisualStateGroup>
     </VisualStateManager.VisualStateGroups>
   </Grid>
+  {shade_close}
 </ControlTemplate>"##
+    )
+}
+
+/// How long the tab line takes to change hands, a little longer than a button's state.
+fn line_time(motion: crate::tokens::Motion) -> &'static str {
+    match motion {
+        crate::tokens::Motion::Subtle => "0:0:0.16",
+        crate::tokens::Motion::Lively => "0:0:0.24",
+        crate::tokens::Motion::None => "0:0:0",
+    }
+}
+
+/// An animation of the button's accent shadow to `to`, for a state's storyboard.
+fn glow_to(to: f64) -> String {
+    let d = state_time(motion());
+    format!(
+        r##"<DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="Opacity" To="{to}" Duration="{d}"><DoubleAnimation.EasingFunction><ExponentialEase EasingMode="EaseOut" Exponent="6"/></DoubleAnimation.EasingFunction></DoubleAnimation>"##
     )
 }
 
@@ -315,12 +372,14 @@ struct Geo {
     border: (&'static str, String),
     background: String,
     foreground: String,
+    /// The main button: an accent shadow under it.
+    glow: bool,
 }
 
 impl Geo {
     /// The selectable items as they were: small, no border.
     fn small() -> Self {
-        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent".to_string()), background: "Transparent".to_string(), foreground: rest_text() }
+        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent".to_string()), background: "Transparent".to_string(), foreground: rest_text(), glow: false }
     }
 
     /// A WinUI button's size: 14 px text, 4 px corners, 32 px high with its 1 px border.
@@ -363,7 +422,7 @@ fn style_with(key: &str, target: &str, arrow: bool, line: bool, grey_off: bool, 
         g.corner,
         g.size,
         g.weight,
-        template_with(target, arrow, line, grey_off)
+        template_with(target, arrow, line, grey_off, g.glow)
     )
 }
 
@@ -427,6 +486,10 @@ fn stock() -> String {
         ("ComboBoxForeground", "text1"),
         ("ComboBoxDropDownBackground", "menu"),
         ("ComboBoxDropDownBorderBrush", "line1"),
+        // WinUI's own halo behind a focused combo box (stroke and fill, 4 px out), in the ring's
+        // colour: the soft ring, with no template of ours
+        ("ComboBoxBackgroundFocused", "ring"),
+        ("ComboBoxBackgroundBorderBrushFocused", "ring"),
     ] {
         x += &brush(key, token);
     }
@@ -524,6 +587,13 @@ fn stock() -> String {
         let half = 10;
         x += &format!(r#"<Style TargetType="CheckBox" BasedOn="{{StaticResource DefaultCheckBoxStyle}}"><Setter Property="CornerRadius" Value="{half}"/></Style>"#);
     }
+    // a text box with the focus gets a soft 3 px ring outside its accent line. A key cannot draw
+    // that, so this is WinUI's own template (generic.xaml) with one border added, `Ring`, shown
+    // by the Focused state; the ring lies outside the box, so nothing moves.
+    x += &format!(
+        r#"<Style TargetType="TextBox" BasedOn="{{StaticResource DefaultTextBoxStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#,
+        include_str!("textbox.xaml")
+    );
     x
 }
 
@@ -535,8 +605,7 @@ fn stock() -> String {
 /// deletes for good; `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
-        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}
-<Style x:Key="SprawlPrimary" TargetType="Button" BasedOn="{{StaticResource AccentButtonStyle}}"><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Background" Value="{{$accent}}"/><Setter Property="BorderBrush" Value="{{$accent}}"/><Setter Property="Foreground" Value="{{$onaccent}}"/></Style></ResourceDictionary>"##,
+        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
         ui::NS,
         stock(),
         style("SprawlPick", "Button", false),
@@ -547,6 +616,8 @@ pub(crate) fn resources() -> String {
         style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcpill"), ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
         style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text, ..Geo::button() }),
         style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
+        // the one main action: the accent, semibold, with its soft accent shadow
+        style_with("SprawlPrimary", "Button", false, false, true, Geo { background: crate::tokens::refer("accent"), foreground: crate::tokens::refer("onaccent"), weight: "SemiBold", glow: true, ..Geo::button().with_border("1", crate::tokens::refer("accent")) }),
     )
 }
 
@@ -1077,13 +1148,21 @@ mod tests {
         let r = resources();
         // the templated styles; SprawlPrimary builds on WinUI's own accent button
         for s in ["Normal", "PointerOver", "Pressed", "Disabled"] {
-            assert_eq!(r.matches(&format!(r#"x:Name="{s}""#)).count(), 6, "{s}");
+            // the seven templated styles (pick, drop, page, chip, subtle, danger, primary) each
+            // have it, and so does the text box's template
+            assert!(r.matches(&format!(r#"x:Name="{s}""#)).count() >= 7, "{s}");
         }
-        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 6);
+        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 7);
         for k in ["SprawlPick", "SprawlPickDrop", "SprawlPage", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
             assert_eq!(r.matches(&format!(r#"x:Key="{k}""#)).count(), 1, "{k}");
         }
-        assert!(r.contains(r#"BasedOn="{StaticResource AccentButtonStyle}""#));
+        // the main button has its own template, with the accent's shadow
+        let primary = &r[r.find(r#"x:Key="SprawlPrimary""#).unwrap()..];
+        let primary = &primary[..primary.find("</Style>").unwrap()];
+        assert!(primary.contains(r#"x:Name="Glow""#) && primary.contains(r#"Background="{$glow}""#));
+        assert!(!r[..r.find(r#"x:Key="SprawlPrimary""#).unwrap()].contains(r#"x:Name="Glow""#), "only the main button glows");
+        // a text box with the focus shows the ring, outside its edge
+        assert!(r.contains(r#"x:Name="Ring""#) && r.contains(r#"<Setter Target="Ring.Opacity" Value="1"/>"#) && r.contains(r#"BorderBrush="{$ring}""#));
         // the red one greys out when it can't be pressed, as WinUI's filled buttons do
         let danger = &r[r.find(r#"x:Key="SprawlDanger""#).unwrap()..];
         let danger = &danger[..danger.find("</Style>").unwrap()];

@@ -118,10 +118,12 @@ pub fn xaml() -> String {
             )
         })
         .collect();
+    // the card's soft shadow, in a cell of its own with the card (the card's size is set by name)
+    let shadow = crate::look::shadow(&crate::tokens::rc(14.0), 2);
     format!(
         r##"
   <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="{{$scrim}}">
-    <Border x:Name="WizCard" Width="640" Height="610" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="{{$rc14}}" BorderBrush="{{$edge}}" BorderThickness="1" Background="{{$popup}}" Padding="28,22,28,20">
+    <Grid HorizontalAlignment="Center" VerticalAlignment="Center">{shadow}<Border x:Name="WizCard" Width="640" Height="610" CornerRadius="{{$rc14}}" BorderBrush="{{$edge}}" BorderThickness="1" Background="{{$popup}}" Padding="28,22,28,20">
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid>
@@ -143,7 +145,7 @@ pub fn xaml() -> String {
           </StackPanel>
         </Grid>
       </Grid>
-    </Border>
+    </Border></Grid>
   </Grid>"##
     )
 }

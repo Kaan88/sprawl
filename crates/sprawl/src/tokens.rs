@@ -222,6 +222,10 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "keycap", what: "a keyboard key cap's fill", value: "#1FFFFFFF", light: "#1F000000" },
     Token { name: "stripe", what: "every other row of a table", value: "#08FFFFFF", light: "#08000000" },
     Token { name: "edge", what: "a firmer edge: a popup's, a rule between parts", value: "#33A0B4FF", light: "#401B2A60" },
+    // The soft depth: the focus ring, the main button's glow and a card's shadow.
+    Token { name: "ring", what: "the soft ring round a field that has the focus: the accent at 32%", value: "#520078D4", light: "#520078D4" },
+    Token { name: "glow", what: "the accent's soft shadow under the main button", value: "#400078D4", light: "#400078D4" },
+    Token { name: "lift", what: "the soft shadow under a card", value: "#33000000", light: "#261B2A60" },
     Token { name: "disabled", what: "text on a greyed filled button", value: "#5CFFFFFF", light: "#5C000000" },
     // The opaque panels that sit on the ink page.
     Token { name: "panel", what: "an opaque card or foot on the page", value: "#FF1E2230", light: "#FFFFFFFF" },
@@ -900,6 +904,9 @@ pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
     t.insert("onaccent", hex(on_accent(fill)));
     t.insert("accenttext", hex(accent_text(fill, card, light)));
     t.insert("selected", hex(mix(card, fill, 26)));
+    // the focus ring is the accent at 32%, the main button's shadow at 25%
+    t.insert("ring", hex(fill & 0x00FF_FFFF | 0x5200_0000));
+    t.insert("glow", hex(fill & 0x00FF_FFFF | 0x4000_0000));
     // Menus, dropdown lists and tooltips take a little of the page: on a light page the card's
     // colour, and on either a touch of the accent, so each look's menus are its own instead of
     // plain white or grey. Dialogs and floating panels keep the popup's own colour: a tint over
@@ -1098,7 +1105,7 @@ mod tests {
             assert!(seen.insert(token.name), "{} is in the list twice", token.name);
             assert!(!token.what.is_empty(), "{} says nothing", token.name);
             // computed from the accent, or drawn at the corner option's size, rather than written
-            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu") {
+            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu" | "ring" | "glow") {
                 let v = &t[token.name];
                 assert!(v.len() == 9 && v.starts_with('#'), "{}: {v}", token.name);
                 continue;
@@ -1325,7 +1332,7 @@ mod tests {
         let dark = table(&Look::default(), false);
         let light = table(&Look::default(), true);
         for token in TOKENS {
-            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu") || token.name.starts_with("rc") {
+            if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu" | "ring" | "glow") || token.name.starts_with("rc") {
                 continue;
             }
             assert_eq!(dark[token.name], token.value, "{} (dark)", token.name);

@@ -857,6 +857,12 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: give the control focus (focus=FilterBox), for the focus ring's picture
+                    f if f.starts_with("focus=") => {
+                        if let Ok(e) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, &f[6..]) {
+                            let _ = e.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+                        }
+                    }
                     // dev: the other theme, as saving it in Settings would (in memory: a screenshot run saves nothing)
                     "theme" => {
                         self.settings.set("theme", if crate::theme::light() { 2 } else { 1 });
