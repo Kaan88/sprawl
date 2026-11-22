@@ -23,8 +23,18 @@
 //! `SizeChanged` comes after its template is applied, even for a button first loaded inside a
 //! collapsed panel. That shadow then follows the template's CommonStates (Normal, PointerOver,
 //! Pressed, Disabled) with Composition animations on the Press option's time and CSS's `ease`.
+//!
+//! What a flyout shows is walked too (a `Button.Flyout` or an attached `Flyout`'s content), and
+//! the flyouts and dropdowns are kept inside the window, so their own popups are drawn with the
+//! page. Each frame [`popups`] looks at the window's open popups: a menu, a flyout or a dropdown
+//! list gets the mockup's menu shadow (`0 10px 28px #00000099`) in place of WinUI's ThemeShadow.
+//!
+//! Every shadow made is listed ([`repaint`]): a theme change (the accent, light or dark) gives
+//! the ones still on screen their new colours at once.
 
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use windows_core::{implement, interface, Interface, HRESULT, HSTRING};
 use windows_reference::IReference;
@@ -32,8 +42,8 @@ use windows_reference::IReference;
 use crate::bindings::Microsoft::UI::Composition::{
     CompositionPath, CompositionPathGeometry, CompositionRoundedRectangleGeometry, CompositionVisualSurface, Compositor, DropShadow, ICompositionSurface, ShapeVisual, SpriteVisual,
 };
-use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ButtonBase;
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, ContentControl, Control, Panel, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, FlyoutBase, Popup};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Button, ComboBox, ContentControl, Control, Flyout, FlyoutPresenter, MenuFlyoutPresenter, Panel, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview;
 use crate::bindings::Microsoft::UI::Xaml::Media::{CompositionTarget, SolidColorBrush, VisualTreeHelper};
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, VisualStateManager};
@@ -49,6 +59,8 @@ pub(crate) enum Kind {
     Card,
     /// A dialog's card over the page, as the mockup's floating menu: `0 10px 28px #00000099`.
     Dialog,
+    /// A menu, a flyout or a dropdown's list: the mockup's `.menu`, `0 10px 28px #00000099`.
+    Menu,
     /// A button with a face: `0 1px 2px #0000004d`, under the pointer `0 6px 14px #00000066`.
     Button,
     /// The main button, in the accent: `0 3px 10px` at 45%, under the pointer `0 6px 16px` at
@@ -91,6 +103,7 @@ impl Kind {
         Some(match tag.strip_prefix("shade:")? {
             "card" => Kind::Card,
             "dialog" => Kind::Dialog,
+            "menu" => Kind::Menu,
             "button" => Kind::Button,
             "primary" => Kind::Primary,
             "row" => Kind::Row,
@@ -103,7 +116,7 @@ impl Kind {
     pub(crate) fn rest(self) -> Cast {
         match self {
             Kind::Card => Cast::css(8.0, 22.0, 0x52),
-            Kind::Dialog => Cast::css(10.0, 28.0, 0x99),
+            Kind::Dialog | Kind::Menu => Cast::css(10.0, 28.0, 0x99),
             Kind::Button => Cast::css(1.0, 2.0, 0x4d),
             // color-mix(in srgb, accent 45%, transparent)
             Kind::Primary => Cast { dy: 3.0, blur: 10.0, alpha: 0.45 },
@@ -118,7 +131,7 @@ impl Kind {
             Kind::Button => Cast::css(6.0, 14.0, 0x66),
             Kind::Primary => Cast { dy: 6.0, blur: 16.0, alpha: 0.48 },
             Kind::Row => Cast::css(5.0, 12.0, 0x59),
-            Kind::Card | Kind::Dialog | Kind::Knob => self.rest(),
+            Kind::Card | Kind::Dialog | Kind::Menu | Kind::Knob => self.rest(),
         }
     }
 
@@ -149,13 +162,36 @@ pub(crate) fn colour(hex: &str) -> Option<Color> {
     Some(Color { A: (v >> 24) as u8, R: (v >> 16) as u8, G: (v >> 8) as u8, B: v as u8 })
 }
 
-/// The shadow's colour, opaque, and how strong the page's shadows are (the `shadow` token's
-/// alpha: full on the dark page, softer on the light one). The main button's is its accent.
-fn paint(kind: Kind) -> (Color, f32) {
-    let shadow = colour(&crate::tokens::get("shadow")).unwrap_or(Color { A: 255, R: 0, G: 0, B: 0 });
-    let strength = shadow.A as f32 / 255.0;
-    let base = if kind == Kind::Primary { colour(&crate::tokens::get("accent")).unwrap_or(shadow) } else { shadow };
-    (Color { A: 255, ..base }, strength)
+/// The two colours shadows are drawn in: the `shadow` token (its alpha is how strong the page's
+/// shadows are) and the accent (the main button's glow).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Tones {
+    pub shadow: Color,
+    pub accent: Color,
+}
+
+impl Tones {
+    const BLACK: Color = Color { A: 255, R: 0, G: 0, B: 0 };
+
+    /// The look in use, as the page is drawn now.
+    pub(crate) fn now() -> Tones {
+        let shadow = colour(&crate::tokens::get("shadow")).unwrap_or(Self::BLACK);
+        Tones { shadow, accent: colour(&crate::tokens::get("accent")).unwrap_or(shadow) }
+    }
+
+    /// A table of tokens of its own (the Theme page's sample, drawn for the look being picked).
+    pub(crate) fn of(table: &std::collections::HashMap<&'static str, String>) -> Tones {
+        let shadow = table.get("shadow").and_then(|v| colour(v)).unwrap_or(Self::BLACK);
+        Tones { shadow, accent: table.get("accent").and_then(|v| colour(v)).unwrap_or(shadow) }
+    }
+
+    /// The shadow's colour, opaque, and how strong the page's shadows are (the `shadow` token's
+    /// alpha: full on the dark page, softer on the light one). The main button's is its accent.
+    fn paint(self, kind: Kind) -> (Color, f32) {
+        let strength = self.shadow.A as f32 / 255.0;
+        let base = if kind == Kind::Primary { self.accent } else { self.shadow };
+        (Color { A: 255, ..base }, strength)
+    }
 }
 
 /// One shadow, hung on its host.
@@ -168,13 +204,65 @@ struct Shade {
     geometry: CompositionRoundedRectangleGeometry,
     shadow: DropShadow,
     radius: f32,
-    strength: f32,
+    /// Colours of its own (the Theme page's sample); `None` follows the look in use, read again
+    /// by [`repaint`].
+    tones: Option<Tones>,
+    /// The page's shadow strength, as an `f32`'s bits (changed by [`repaint`]).
+    strength: AtomicU32,
+    /// The shadow shown now (or being run to), for [`repaint`] to show again in new colours.
+    cast: Mutex<Cast>,
+}
+
+thread_local! {
+    /// Every shadow made, while its host lives (a host's handlers own its shade).
+    static LIVE: RefCell<Live<Shade>> = const { RefCell::new(Live::new()) };
+}
+
+/// Weak references to what is made, swept of the dead as the list grows (a page made again
+/// drops hundreds at once).
+struct Live<T> {
+    items: Vec<Weak<T>>,
+    /// The list is swept when it grows to this.
+    sweep_at: usize,
+}
+
+impl<T> Live<T> {
+    const fn new() -> Self {
+        Live { items: Vec::new(), sweep_at: 64 }
+    }
+
+    fn add(&mut self, s: &Arc<T>) {
+        if self.items.len() >= self.sweep_at {
+            self.items.retain(|w| w.strong_count() > 0);
+            self.sweep_at = (self.items.len() * 2).max(64);
+        }
+        self.items.push(Arc::downgrade(s));
+    }
+
+    /// The ones still alive (the dead are swept out).
+    fn alive(&mut self) -> Vec<Arc<T>> {
+        self.items.retain(|w| w.strong_count() > 0);
+        self.items.iter().filter_map(Weak::upgrade).collect()
+    }
+}
+
+/// The theme changed (the accent, light or dark): every shadow still on screen takes the new
+/// colours at once, as a shadow made now would. The Theme page's sample keeps its own.
+pub(crate) fn repaint() {
+    let live = LIVE.with(|l| l.borrow_mut().alive());
+    if live.is_empty() {
+        return;
+    }
+    let now = Tones::now();
+    for s in live {
+        let _ = s.repaint(now);
+    }
 }
 
 impl Shade {
-    fn new(host: &UIElement, kind: Kind, radius: f32) -> windows_core::Result<Shade> {
+    fn new(host: &UIElement, kind: Kind, radius: f32, tones: Option<Tones>) -> windows_core::Result<Arc<Shade>> {
         let c: Compositor = CompositionTarget::GetCompositorForCurrentThread()?;
-        let (tint, strength) = paint(kind);
+        let (tint, strength) = tones.unwrap_or_else(Tones::now).paint(kind);
         // the mask: the host's rounded rectangle, drawn by a shape visual into a surface
         let geometry = c.CreateRoundedRectangleGeometry()?;
         let fill = c.CreateSpriteShapeWithGeometry(&geometry)?;
@@ -193,7 +281,19 @@ impl Shade {
         let clip = c.CreatePathGeometryWithPath(&hole(0.0, 0.0, 0.0, kind.reach())?)?;
         sprite.SetClip(&c.CreateGeometricClipWithGeometry(&clip)?)?;
         ElementCompositionPreview::SetElementChildVisual(host, &sprite)?;
-        Ok(Shade { kind, clip, sprite, shape, surface, geometry, shadow, radius, strength })
+        let shade = Arc::new(Shade { kind, clip, sprite, shape, surface, geometry, shadow, radius, tones, strength: AtomicU32::new(strength.to_bits()), cast: Mutex::new(Cast::NONE) });
+        LIVE.with(|l| l.borrow_mut().add(&shade));
+        Ok(shade)
+    }
+
+    /// The look's colours now (`now`, unless the shade has its own): the colour and strength
+    /// change and the shadow in place is shown again in them, at once.
+    fn repaint(&self, now: Tones) -> windows_core::Result<()> {
+        let (tint, strength) = self.tones.unwrap_or(now).paint(self.kind);
+        self.shadow.SetColor(tint)?;
+        self.strength.store(strength.to_bits(), Ordering::Relaxed);
+        let cast = self.cast.lock().map(|c| *c).unwrap_or(Cast::NONE);
+        self.show(cast, 0)
     }
 
     /// The host is `w` by `h` now: the sprite, the mask and its surface take that size, and
@@ -213,7 +313,11 @@ impl Shade {
 
     /// Show `cast`, over `ms` milliseconds on CSS's `ease` (at once for 0).
     fn show(&self, cast: Cast, ms: u32) -> windows_core::Result<()> {
-        let (opacity, blur, offset) = (cast.alpha * self.strength, cast.blur * BLUR, Vector3 { x: 0.0, y: cast.dy, z: 0.0 });
+        if let Ok(mut c) = self.cast.lock() {
+            *c = cast;
+        }
+        let strength = f32::from_bits(self.strength.load(Ordering::Relaxed));
+        let (opacity, blur, offset) = (cast.alpha * strength, cast.blur * BLUR, Vector3 { x: 0.0, y: cast.dy, z: 0.0 });
         let (o, b, f) = (HSTRING::from("Opacity"), HSTRING::from("BlurRadius"), HSTRING::from("Offset"));
         if ms == 0 {
             for p in [&o, &b, &f] {
@@ -249,45 +353,108 @@ fn tag(el: &FrameworkElement) -> Option<String> {
 /// the tagged borders, and the hosts in the templates of the buttons. Each waits for its first
 /// `SizeChanged`, so a shadow is made only for what is laid out, once.
 pub(crate) fn watch(root: &UIElement) {
-    walk(root, 0);
+    walk(root, None, 0);
 }
 
-fn walk(el: &UIElement, depth: u32) {
+/// [`watch`], for XAML drawn in colours of its own (the Theme page's sample): its shadows keep
+/// `tones` whatever the look in use.
+pub(crate) fn watch_with(root: &UIElement, tones: Tones) {
+    walk(root, Some(tones), 0);
+}
+
+fn walk(el: &UIElement, tones: Option<Tones>, depth: u32) {
     // a page is far shallower; this only guards a loop
     if depth > 256 {
         return;
     }
     if el.cast::<ButtonBase>().is_ok() {
-        follow_button(el);
+        follow_button(el, tones);
+        // what the button's flyout shows (a DropDownButton's menu, a Flyout's content)
+        if let Ok(f) = el.cast::<Button>().and_then(|b| b.Flyout()) {
+            flyout(&f, tones, depth);
+        }
     } else if el.cast::<ToggleSwitch>().is_ok() {
-        follow_switch(el);
+        follow_switch(el, tones);
+    } else if el.cast::<ComboBox>().is_ok() {
+        follow_combo(el);
     } else if let Ok(fe) = el.cast::<FrameworkElement>() {
         if let Some(kind) = tag(&fe).as_deref().and_then(Kind::from_tag) {
-            follow_host(&fe, kind);
+            follow_host(&fe, kind, tones);
+        }
+        // a menu or flyout attached to a pane (the rows' menu, Search's More menu)
+        if let Ok(f) = FlyoutBase::GetAttachedFlyout(&fe) {
+            flyout(&f, tones, depth);
         }
     }
     if let Ok(p) = el.cast::<Panel>() {
         if let Ok(kids) = p.Children() {
             for i in 0..kids.Size().unwrap_or(0) {
                 if let Ok(k) = kids.GetAt(i) {
-                    walk(&k, depth + 1);
+                    walk(&k, tones, depth + 1);
                 }
             }
         }
     } else if let Ok(b) = el.cast::<Border>() {
         if let Ok(c) = b.Child() {
-            walk(&c, depth + 1);
+            walk(&c, tones, depth + 1);
         }
     } else if let Ok(c) = el.cast::<ContentControl>() {
         if let Ok(c) = c.Content().and_then(|c| c.cast::<UIElement>()) {
-            walk(&c, depth + 1);
+            walk(&c, tones, depth + 1);
         }
     }
 }
 
+/// A flyout found on the page: drawn inside the window (a popup in a window of its own would cut
+/// the menu shadow [`popups`] hangs on it at that window's edge), and what a `Flyout` shows
+/// walked like the page, so its buttons get their shadows too.
+fn flyout(f: &FlyoutBase, tones: Option<Tones>, depth: u32) {
+    let _ = f.SetShouldConstrainToRootBounds(true);
+    if let Ok(c) = f.cast::<Flyout>().and_then(|f| f.Content()) {
+        walk(&c, tones, depth + 1);
+    }
+}
+
+/// A combo box: its list is a popup in its template, there by its first size; kept inside the
+/// window as a flyout is.
+fn follow_combo(el: &UIElement) {
+    let Ok(fe) = el.cast::<FrameworkElement>() else { return };
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let Ok(handle) = fe.SizeChanged(move |s, _| {
+        if done.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
+        if let Some(p) = first::<Popup>(&fe, 0) {
+            let _ = p.SetShouldConstrainToRootBounds(true);
+        }
+    }) else {
+        return;
+    };
+    keep(handle);
+}
+
+/// The first element of type `T` under `el` in the visual tree.
+fn first<T: Interface>(el: &FrameworkElement, depth: u32) -> Option<T> {
+    if depth > 16 {
+        return None;
+    }
+    let n = VisualTreeHelper::GetChildrenCount(el).ok()?;
+    for i in 0..n {
+        let Ok(k) = VisualTreeHelper::GetChild(el, i) else { continue };
+        if let Ok(t) = k.cast::<T>() {
+            return Some(t);
+        }
+        if let Some(found) = k.cast::<FrameworkElement>().ok().and_then(|k| first::<T>(&k, depth + 1)) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// A tagged border: its shadow is made at its first size and kept to its size after.
-fn follow_host(host: &FrameworkElement, kind: Kind) {
-    let made: Arc<Mutex<Option<Shade>>> = Arc::new(Mutex::new(None));
+fn follow_host(host: &FrameworkElement, kind: Kind, tones: Option<Tones>) {
+    let made: Arc<Mutex<Option<Arc<Shade>>>> = Arc::new(Mutex::new(None));
     let Ok(handle) = host.SizeChanged(move |s, _| {
         let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
         let (Ok(w), Ok(h)) = (fe.ActualWidth(), fe.ActualHeight()) else { return };
@@ -295,7 +462,7 @@ fn follow_host(host: &FrameworkElement, kind: Kind) {
         if made.is_none() {
             let radius = fe.cast::<Border>().and_then(|b| b.CornerRadius()).map(|c| c.TopLeft as f32).unwrap_or(0.0);
             let Ok(el) = fe.cast::<UIElement>() else { return };
-            let Ok(shade) = Shade::new(&el, kind, radius) else { return };
+            let Ok(shade) = Shade::new(&el, kind, radius, tones) else { return };
             let _ = shade.show(kind.rest(), 0);
             *made = Some(shade);
         }
@@ -310,7 +477,7 @@ fn follow_host(host: &FrameworkElement, kind: Kind) {
 
 /// A button: at its first size its template is there, and with it the host (`Shade`, a tagged
 /// border first in the template's outer grid) and the states the shadow follows.
-fn follow_button(el: &UIElement) {
+fn follow_button(el: &UIElement, tones: Option<Tones>) {
     let Ok(fe) = el.cast::<FrameworkElement>() else { return };
     // None: not looked yet; Some(None): looked, no shadow
     let made: Arc<Mutex<Option<Option<Arc<Shade>>>>> = Arc::new(Mutex::new(None));
@@ -319,7 +486,7 @@ fn follow_button(el: &UIElement) {
         let (Ok(w), Ok(h)) = (fe.ActualWidth(), fe.ActualHeight()) else { return };
         let Ok(mut made) = made.lock() else { return };
         if made.is_none() {
-            *made = Some(button_shade(&fe));
+            *made = Some(button_shade(&fe, tones));
         }
         if let Some(Some(shade)) = made.as_ref() {
             let _ = shade.resize(w as f32, h as f32);
@@ -332,32 +499,128 @@ fn follow_button(el: &UIElement) {
 
 /// A switch: its knob's host is in its template (look.rs's `switch_template`), there by its first
 /// size. The knob slides and the switch sinks by render transforms, which carry the shadow along.
-fn follow_switch(el: &UIElement) {
+fn follow_switch(el: &UIElement, tones: Option<Tones>) {
     let Ok(fe) = el.cast::<FrameworkElement>() else { return };
-    let made: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    // None: not looked yet; Some(None): looked, no shadow. The shade is kept with the switch, for
+    // a theme change to reach it (the knob's size never changes).
+    let made: Arc<Mutex<Option<Option<Arc<Shade>>>>> = Arc::new(Mutex::new(None));
     let Ok(handle) = fe.SizeChanged(move |s, _| {
         let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
         let Ok(mut made) = made.lock() else { return };
-        if *made {
+        if made.is_some() {
             return;
         }
-        *made = true;
-        // the outlined (Windows stock) switch has no host: its knob casts nothing
-        let Some(host) = tagged(&fe, "shade:knob", 0) else { return };
-        // the knob's size is written in the template, laid out or not
-        let (Ok(w), Ok(h)) = (host.Width(), host.Height()) else { return };
-        let radius = host.cast::<Border>().and_then(|b| b.CornerRadius()).map(|c| c.TopLeft as f32).unwrap_or(0.0);
-        let Ok(el) = host.cast::<UIElement>() else { return };
-        let Ok(shade) = Shade::new(&el, Kind::Knob, radius) else { return };
-        let _ = shade.show(Kind::Knob.rest(), 0);
-        let _ = shade.resize(w as f32, h as f32);
-        // the composition objects live on as the host's child visual; the shade is not needed
-        // again (the knob's size never changes)
-        drop(shade);
+        *made = Some((|| {
+            // the outlined (Windows stock) switch has no host: its knob casts nothing
+            let host = tagged(&fe, "shade:knob", 0)?;
+            // the knob's size is written in the template, laid out or not
+            let (w, h) = (host.Width().ok()?, host.Height().ok()?);
+            let radius = host.cast::<Border>().and_then(|b| b.CornerRadius()).map(|c| c.TopLeft as f32).unwrap_or(0.0);
+            let shade = Shade::new(&host.cast::<UIElement>().ok()?, Kind::Knob, radius, tones).ok()?;
+            let _ = shade.show(Kind::Knob.rest(), 0);
+            let _ = shade.resize(w as f32, h as f32);
+            Some(shade)
+        })());
     }) else {
         return;
     };
     keep(handle);
+}
+
+// ---------------------------------------------------------------- menus, flyouts and lists
+
+/// Called each frame: every popup open in the window whose content is a menu, a flyout or a
+/// dropdown's list gets the menu shadow, once, in place of WinUI's own ThemeShadow (turned off
+/// there: no doubled shadow). A popup in a window of its own (one this app could not keep inside
+/// the window) keeps WinUI's shadow: a shadow of ours would be cut at that window's edge.
+pub(crate) fn popups(root: &UIElement) {
+    let Ok(xr) = root.XamlRoot() else { return };
+    let Ok(open) = VisualTreeHelper::GetOpenPopupsForXamlRoot(&xr) else { return };
+    for i in 0..open.Size().unwrap_or(0) {
+        let Ok(p) = open.GetAt(i) else { continue };
+        let Ok(content) = p.Child() else { continue };
+        let Some((what, host, body)) = surface(&content) else { continue };
+        // done already: the shade is the host's child visual. A list is placed again, each
+        // frame: a combo box puts its list where its picked item lines up, open after open.
+        if let Ok(sprite) = ElementCompositionPreview::GetElementChildVisual(&host) {
+            if what == Surface::List {
+                let _ = body.ActualOffset().and_then(|o| sprite.SetOffset(Vector3 { z: 0.0, ..o }));
+            }
+            continue;
+        }
+        // A MenuFlyout opens in a window of its own whatever ShouldConstrainToRootBounds says,
+        // and that window is only about 10 px wider than the menu each way, at any lift: the
+        // menu shadow's 28 px blur would be cut square. WinUI's ThemeShadow stays there.
+        if !p.IsConstrainedToRootBounds().unwrap_or(false) {
+            continue;
+        }
+        let t0 = std::time::Instant::now();
+        let made = hang_menu(&host, &body, what);
+        crate::state::timing(&format!("menu shadow on a {what:?}: {}", if made.is_ok() { "made" } else { "failed" }), t0);
+    }
+}
+
+/// What a popup's content is, when the menu shadow goes under it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Surface {
+    Menu,
+    Flyout,
+    /// A combo box's list (its template's `PopupBorder`).
+    List,
+}
+
+/// What a popup's content is, the element the shadow hangs on, and the surface it is cast by:
+/// a menu's or flyout's presenter, both. A combo box's list is a border on a canvas, after the
+/// canvas that catches a click outside it; the shadow hangs on that outer canvas, placed at the
+/// border (hung on the border itself, it is made but never drawn).
+fn surface(content: &UIElement) -> Option<(Surface, UIElement, UIElement)> {
+    if content.cast::<MenuFlyoutPresenter>().is_ok() {
+        return Some((Surface::Menu, content.clone(), content.clone()));
+    }
+    if content.cast::<FlyoutPresenter>().is_ok() {
+        return Some((Surface::Flyout, content.clone(), content.clone()));
+    }
+    let kids = content.cast::<Panel>().ok()?.Children().ok()?;
+    let n = kids.Size().ok()?;
+    let border = (0..n).rev().filter_map(|i| kids.GetAt(i).ok()).find(|k| k.cast::<Border>().is_ok())?;
+    Some((Surface::List, content.clone(), border))
+}
+
+/// WinUI's shadow off, and ours on `host`, kept to `body`'s size and place.
+fn hang_menu(host: &UIElement, body: &UIElement, what: Surface) -> windows_core::Result<()> {
+    match what {
+        Surface::Menu => body.cast::<MenuFlyoutPresenter>()?.SetIsDefaultShadowEnabled(false)?,
+        Surface::Flyout => body.cast::<FlyoutPresenter>()?.SetIsDefaultShadowEnabled(false)?,
+        Surface::List => {}
+    }
+    let child = body;
+    // the ThemeShadow WinUI casts, and the lift (Translation's z) that sizes it
+    child.SetShadow(None::<&crate::bindings::Microsoft::UI::Xaml::Media::Shadow>)?;
+    let t = child.Translation()?;
+    if t.z != 0.0 {
+        child.SetTranslation(Vector3 { z: 0.0, ..t })?;
+    }
+    let fe: FrameworkElement = child.cast()?;
+    let radius = match child.cast::<Control>() {
+        Ok(c) => c.CornerRadius()?.TopLeft,
+        Err(_) => child.cast::<Border>()?.CornerRadius()?.TopLeft,
+    } as f32;
+    let shade = Shade::new(host, Kind::Menu, radius, None)?;
+    if host != body {
+        let o = body.ActualOffset()?;
+        shade.sprite.SetOffset(Vector3 { z: 0.0, ..o })?;
+    }
+    shade.show(Kind::Menu.rest(), 0)?;
+    let (w, h) = (fe.ActualWidth()?, fe.ActualHeight()?);
+    if w > 0.0 && h > 0.0 {
+        shade.resize(w as f32, h as f32)?;
+    }
+    keep(fe.SizeChanged(move |s, _| {
+        let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
+        let (Ok(w), Ok(h)) = (fe.ActualWidth(), fe.ActualHeight()) else { return };
+        let _ = shade.resize(w as f32, h as f32);
+    })?);
+    Ok(())
 }
 
 /// The first element under `el` in the visual tree whose `Tag` is `want`.
@@ -390,7 +653,7 @@ fn has_face(button: &FrameworkElement) -> bool {
     }
 }
 
-fn button_shade(button: &FrameworkElement) -> Option<Arc<Shade>> {
+fn button_shade(button: &FrameworkElement, tones: Option<Tones>) -> Option<Arc<Shade>> {
     let root: FrameworkElement = VisualTreeHelper::GetChild(button, 0).ok()?.cast().ok()?;
     let n = VisualTreeHelper::GetChildrenCount(&root).ok()?;
     let (host, mut kind) = (0..n.min(2)).find_map(|i| {
@@ -409,7 +672,7 @@ fn button_shade(button: &FrameworkElement) -> Option<Arc<Shade>> {
         return None;
     }
     let radius = button.cast::<Control>().and_then(|c| c.CornerRadius()).map(|c| c.TopLeft as f32).unwrap_or(0.0);
-    let shade = Arc::new(Shade::new(&host.cast().ok()?, kind, radius).ok()?);
+    let shade = Shade::new(&host.cast().ok()?, kind, radius, tones).ok()?;
     let (lift, _) = crate::look::shadow_motion();
     let mut followed = false;
     if let Ok(groups) = VisualStateManager::GetVisualStateGroups(&root) {
@@ -578,6 +841,61 @@ mod tests {
         // the clip reaches past the furthest the shadow goes
         assert!(Kind::Card.reach() >= 8.0 + 22.0 * BLUR);
         assert!(Kind::Primary.reach() >= 6.0 + 16.0 * BLUR);
+    }
+
+    /// Menus, flyouts and dropdown lists: the mockup's `.menu`, 0 10px 28px #00000099, still
+    /// under the pointer.
+    #[test]
+    fn a_menu_casts_the_mockups_menu_shadow() {
+        assert_eq!(Kind::Menu.rest(), Cast { dy: 10.0, blur: 28.0, alpha: 0x99 as f32 / 255.0 });
+        assert_eq!(Kind::Menu.over(), Kind::Menu.rest());
+        assert_eq!(Kind::from_tag("shade:menu"), Some(Kind::Menu));
+        assert!(Kind::Menu.reach() >= 10.0 + 28.0 * BLUR);
+    }
+
+    /// The colours come from the tokens given: the glow in the accent, the rest in the shadow
+    /// colour; the strength is the shadow token's alpha (softer on the light page).
+    #[test]
+    fn a_shadow_is_painted_from_its_tones() {
+        let dark: std::collections::HashMap<&'static str, String> = [("shadow", "#FF000000".to_string()), ("accent", "#FF8AB4FF".to_string())].into_iter().collect();
+        let t = Tones::of(&dark);
+        assert_eq!(t.paint(Kind::Primary), (Color { A: 255, R: 0x8A, G: 0xB4, B: 0xFF }, 1.0));
+        assert_eq!(t.paint(Kind::Card), (Color { A: 255, R: 0, G: 0, B: 0 }, 1.0));
+        let light: std::collections::HashMap<&'static str, String> = [("shadow", "#8C1B2A60".to_string()), ("accent", "#FF0078D4".to_string())].into_iter().collect();
+        let (tint, strength) = Tones::of(&light).paint(Kind::Menu);
+        assert_eq!(tint, Color { A: 255, R: 0x1B, G: 0x2A, B: 0x60 });
+        assert!((strength - 0x8C as f32 / 255.0).abs() < 1e-6);
+        // another accent is another glow, the same shadow under everything else
+        let other: std::collections::HashMap<&'static str, String> = [("shadow", "#FF000000".to_string()), ("accent", "#FFF04E7A".to_string())].into_iter().collect();
+        assert_ne!(Tones::of(&other).paint(Kind::Primary), t.paint(Kind::Primary));
+        assert_eq!(Tones::of(&other).paint(Kind::Button), t.paint(Kind::Button));
+        // the look's own tables carry both tokens, in both themes
+        for light in [false, true] {
+            let table = crate::tokens::table(&crate::tokens::Look::default(), light);
+            let t = Tones::of(&table);
+            assert_eq!(Some(t.shadow), colour(&table["shadow"]));
+            assert_eq!(Some(t.accent), colour(&table["accent"]));
+        }
+    }
+
+    /// The list of shadows forgets the dead and keeps the living, however many come and go.
+    #[test]
+    fn the_list_of_shadows_keeps_only_the_living() {
+        let mut live: Live<u32> = Live::new();
+        let mut kept = Vec::new();
+        for i in 0..1000u32 {
+            let a = Arc::new(i);
+            live.add(&a);
+            if i % 10 == 0 {
+                kept.push(a);
+            }
+        }
+        assert!(live.items.len() < 1000, "swept on the way: {}", live.items.len());
+        let alive: Vec<u32> = live.alive().iter().map(|a| **a).collect();
+        assert_eq!(alive, (0..1000).step_by(10).collect::<Vec<u32>>());
+        assert_eq!(live.items.len(), 100);
+        drop(kept);
+        assert!(live.alive().is_empty());
     }
 
     #[test]

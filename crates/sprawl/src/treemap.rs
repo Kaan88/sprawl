@@ -227,6 +227,10 @@ impl State {
         if self.restyle_frame() {
             return;
         }
+        // a menu, flyout or dropdown list just opened: its shadow, before it is first drawn
+        if let Ok(root) = self.root.cast::<crate::bindings::Microsoft::UI::Xaml::UIElement>() {
+            crate::shade::popups(&root);
+        }
         self.poll();
         self.dialog_frame();
         self.ranks_poll(false);

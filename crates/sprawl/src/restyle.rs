@@ -247,6 +247,8 @@ impl State {
             // (kept per theme), the brushes reconcile made, and the app's own styles
             crate::tokens::reset();
             crate::reconcile::forget_brushes();
+            // the shadows on screen: the accent's glow and the shadows' strength, at once
+            crate::shade::repaint();
         };
         set_theme(setting.as_deref());
         let made = (|| -> windows_core::Result<(FrameworkElement, windows_core::Result<crate::bindings::Microsoft::UI::Xaml::Controls::SwapChainPanel>)> {
@@ -271,6 +273,7 @@ impl State {
                     crate::tokens::reset();
                 }
                 crate::reconcile::forget_brushes();
+                crate::shade::repaint();
                 let _ = crate::app::refresh_resources();
                 return Err(e);
             }
