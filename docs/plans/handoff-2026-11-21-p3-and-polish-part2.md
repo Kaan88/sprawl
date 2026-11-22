@@ -244,3 +244,28 @@ banded stacked borders (`look::shadow`, the primary button's `Glow`). Findings:
 
 Then: the rest of the audit list, tier 3 (text size, density, custom accent), Part 5, 1.0.6.
 Merged worktrees under .claude/worktrees/ can be cleaned up.
+
+## Update 7 (2026-11-22, overnight; the user asleep, told me to decide and note)
+
+Done: real composition shadows, e014c89, fast-forwarded into main (local, not pushed).
+- crates/sprawl/src/shade.rs: per host a SpriteVisual with only a DropShadow, masked by a
+  rounded-rectangle ShapeVisual surface, clipped to outside the item (D2D path through an
+  IGeometrySource2DInterop written in Rust). Hosts are empty Borders tagged `shade:<kind>`
+  (look::shade_host); state::load walks new XAML and attaches on first SizeChanged.
+- Plain buttons get a copy of WinUI's Button template (button.xaml) with the host inside;
+  shadows follow CommonStates (lift on hover, none on press) with Composition animations.
+- Kept from 5c394f4: press wash, exact timings, sink overshoot, top highlights, Flat drops all.
+  Dropped: gradient/9-slice shadow, Glow grid, shd*/glw* tokens.
+
+Decisions I made (reasons):
+1. Kept the Opus agent on it after the delegation change: risky and important, fits the rule.
+2. Light-mode shadow colour is a soft navy (token `shadow`, #8C1B2A60), the agent's choice: the
+   mockup is dark only; I checked it at 4x and it reads finished, not grey.
+3. Composition blur = 2 x CSS blur: measured by the agent against Edge's render of the mockup CSS.
+4. Accepted without a fix: a live accent change reaches shadows only on the next page rebuild;
+   buttons in flyouts/popups get no shadow; the Settings dialog's shadow is faint on dark.
+   None is a visible flaw in what I reviewed; listed here for the audit.
+5. Merged after my review (diff read, crops at 4x dark and light, Flat compared). Not pushed.
+
+Not verified: hover and press feel (needs your clicks). Test exe: target\alt\release\sprawl.exe.
+Next, unchanged: the rest of the audit list in plan-polish.md, tier 3, Part 5, 1.0.6.
