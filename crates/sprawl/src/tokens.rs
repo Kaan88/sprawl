@@ -35,6 +35,15 @@ pub(crate) struct Look {
     pub small_text: SmallText,
     pub ticks: Ticks,
     pub text: TextSizes,
+    pub backdrop: Backdrop,
+    pub strength: Strength,
+    pub risks: Risks,
+    pub chips: Chips,
+    pub tabs: Tabs,
+    pub controls: Controls,
+    pub selection: Selection,
+    pub press: Press,
+    pub finish: Finish,
 }
 
 /// The accent: Windows' own, or one of the presets the Theme page offers.
@@ -155,6 +164,146 @@ pub(crate) enum Ticks {
     /// A round box: WinUI's check box takes the control's own corner radius.
     Round,
 }
+
+/// What the window is made of behind the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Backdrop {
+    /// Today's: an opaque ground.
+    #[default]
+    Solid,
+    /// Windows 11's Mica behind a ground that is a little see-through.
+    Mica,
+    /// Frosted glass behind a ground that is a little see-through.
+    Acrylic,
+}
+
+/// How firmly the accent is drawn against the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Strength {
+    /// The accent as Windows gives it.
+    #[default]
+    AsWindows,
+    /// The shade that stands out most from the card while its text still reads.
+    Stronger,
+}
+
+/// The colours of the risk marks and the cautions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Risks {
+    /// Green, amber, orange and red.
+    #[default]
+    Standard,
+    /// Blue, orange, vermillion and purple (Okabe and Ito's set), and a shape for each risk.
+    Safe,
+}
+
+/// The ends of a chip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Chips {
+    /// Round ends.
+    #[default]
+    Pills,
+    /// A corner of 10, between a pill and a box.
+    Soft,
+    /// The control's own corner.
+    Rect,
+}
+
+/// How the open page tab is marked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Tabs {
+    /// A line under it.
+    #[default]
+    Underline,
+    /// Filled with the accent, like a picked chip.
+    Pills,
+}
+
+/// How a text box or a dropdown is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Controls {
+    /// A 1 px outline and a darker fill.
+    #[default]
+    Outlined,
+    /// The row's fill and no outline until the pointer or the focus is there.
+    Soft,
+    /// WinUI's own.
+    Stock,
+}
+
+/// How the selected row is marked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Selection {
+    /// A tint of the accent behind the row.
+    #[default]
+    Fill,
+    /// A 3 px accent line at its left edge.
+    Bar,
+    /// Both.
+    Both,
+}
+
+impl Selection {
+    /// Whether the selected row has the tint.
+    pub(crate) fn fill(self) -> bool {
+        self != Selection::Bar
+    }
+
+    /// Whether the selected row has the line.
+    pub(crate) fn bar(self) -> bool {
+        self != Selection::Fill
+    }
+}
+
+/// What a button does under the pointer and when pressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Press {
+    /// Up 1 px with a wash, down 1 px at 0.98 when pressed.
+    #[default]
+    LiftSink,
+    /// No lift under the pointer, the sink when pressed.
+    PressIn,
+    /// No movement: only the wash fades in.
+    Fade,
+    /// A very small wash and nothing else.
+    Faint,
+}
+
+/// Whether cards and the main button have a shadow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Finish {
+    /// A soft shadow under cards and an accent glow under the main button.
+    #[default]
+    Soft,
+    /// No shadows.
+    Flat,
+}
+
+/// A choice's name in a copied theme, and the parse back: `named!(Chips { Pills => "pills" })`.
+macro_rules! named {
+    ($t:ident { $($v:ident => $n:literal),+ $(,)? }) => {
+        #[allow(dead_code)] // The Theme page reads the names through to_kv.
+        impl $t {
+            fn name(self) -> &'static str {
+                match self { $($t::$v => $n),+ }
+            }
+
+            fn from_name(name: &str) -> Option<Self> {
+                Some(match name { $($n => $t::$v,)+ _ => return None })
+            }
+        }
+    };
+}
+
+named!(Backdrop { Solid => "solid", Mica => "mica", Acrylic => "acrylic" });
+named!(Strength { AsWindows => "aswindows", Stronger => "stronger" });
+named!(Risks { Standard => "standard", Safe => "safe" });
+named!(Chips { Pills => "pills", Soft => "soft", Rect => "rect" });
+named!(Tabs { Underline => "underline", Pills => "pills" });
+named!(Controls { Outlined => "outlined", Soft => "soft", Stock => "stock" });
+named!(Selection { Fill => "fill", Bar => "bar", Both => "both" });
+named!(Press { LiftSink => "liftsink", PressIn => "pressin", Fade => "fade", Faint => "faint" });
+named!(Finish { Soft => "soft", Flat => "flat" });
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum TextSizes {
@@ -290,6 +439,14 @@ pub(crate) const TOKENS: &[Token] = &[
     // A chip's pill: a radius past half the height, which the control clamps, so the ends are
     // round whatever the chip's height. Not a number of its own, hence the name.
     Token { name: "rcpill", what: "the round ends of a chip: half its height (WinUI makes a larger radius an oval)", value: "15", light: "15" },
+    // The corner of a chip and of a pill tab: the pill, a soft corner, or the control's own.
+    Token { name: "rcchip", what: "the corner of a chip, by the Chips option", value: "15", light: "15" },
+    // The four risks as a mark (a dot, a triangle, a square, a diamond): written for Standard as
+    // the colours the marks have always had; the colour-blind safe set replaces them.
+    Token { name: "riskgreen", what: "the mark of a safe-to-delete finding", value: "#FF4CC38A", light: "#FF4CC38A" },
+    Token { name: "riskamber", what: "the mark of a finding that takes time to get back", value: "#FFF5B342", light: "#FFF5B342" },
+    Token { name: "riskorange", what: "the mark of a finding that is the user's own files", value: "#FFFF7A45", light: "#FFFF7A45" },
+    Token { name: "riskred", what: "the mark of a finding that is never touched", value: "#FFE5484D", light: "#FFE5484D" },
 ];
 
 // ---------------------------------------------------------------- the options, as values
@@ -393,7 +550,25 @@ fn from_hsl(h: f64, s: f64, l: f64, alpha: u32) -> u32 {
 impl Accent {
     /// The fill on the page: Windows' own accent (already the page's, read by
     /// [`crate::look::windows_accent`]), or the preset's dark or light pair.
-    fn fill(self, light: bool) -> u32 {
+    fn fill(self, light: bool, strength: Strength, card: u32) -> u32 {
+        let fill = self.plain_fill(light);
+        if strength == Strength::AsWindows {
+            return fill;
+        }
+        // Stronger: Windows' own takes the shade of its palette that stands out most from the
+        // card with its text still reading; a preset moves a step more saturated and further from
+        // the card (lighter on the dark page, darker on the light)
+        if self == Accent::Windows {
+            let shades = crate::look::palette_colours();
+            return stronger_shade(&shades, card).unwrap_or(fill);
+        }
+        let (h, s, l) = hsl(fill);
+        let l = if light { (l - 0.08).max(0.15) } else { (l + 0.08).min(0.85) };
+        from_hsl(h, (s + 0.12).min(1.0), l, 0xFF)
+    }
+
+    /// The accent as it is given, with no strength.
+    fn plain_fill(self, light: bool) -> u32 {
         match self {
             // Windows' accent is written with six digits (the light page's rewrite leaves it
             // alone), so it is given the opaque alpha a colour token carries.
@@ -445,10 +620,22 @@ fn on_accent(fill: u32) -> u32 {
 /// otherwise its HSL lightness stepped a little at a time towards the page's end (lighter on the
 /// dark page, darker on the light) until it does.
 fn accent_text(fill: u32, card: u32, light: bool) -> u32 {
+    reach(fill, card, light, 4.5)
+}
+
+/// The shade among `shades` that contrasts most with `card` while black or white text on it still
+/// reaches 4.5:1 (always true of the better of the two, but kept as the rule), or None.
+fn stronger_shade(shades: &[u32], card: u32) -> Option<u32> {
+    shades.iter().copied().filter(|&c| ratio(on_accent(c), c) >= 4.5).max_by(|&a, &b| ratio(a, card).total_cmp(&ratio(b, card)))
+}
+
+/// `fill`, its HSL lightness stepped a little at a time towards the page's end until it reaches
+/// `least`:1 against `card`.
+fn reach(fill: u32, card: u32, light: bool, least: f64) -> u32 {
     let (h, s, mut l) = hsl(fill);
     let mut c = fill;
     for _ in 0..=100 {
-        if ratio(c, card) >= 4.5 {
+        if ratio(c, card) >= least {
             return c;
         }
         l = if light { (l - 0.01).max(0.0) } else { (l + 0.01).min(1.0) };
@@ -765,7 +952,7 @@ impl Look {
     /// The options as one line, for Copy theme: `accent=iris;surfaces=slate;...`, lowercase.
     pub(crate) fn to_kv(&self) -> String {
         format!(
-            "accent={};surfaces={};contrast={};folders={};corners={};motion={};bars={};smalltext={};ticks={};text={}",
+            "accent={};surfaces={};contrast={};folders={};corners={};motion={};bars={};smalltext={};ticks={};text={};backdrop={};strength={};risks={};chips={};tabs={};controls={};selection={};press={};finish={}",
             self.accent.name(),
             self.surfaces.name(),
             self.contrast.name(),
@@ -776,6 +963,15 @@ impl Look {
             self.small_text.name(),
             self.ticks.name(),
             self.text.name(),
+            self.backdrop.name(),
+            self.strength.name(),
+            self.risks.name(),
+            self.chips.name(),
+            self.tabs.name(),
+            self.controls.name(),
+            self.selection.name(),
+            self.press.name(),
+            self.finish.name(),
         )
     }
 
@@ -837,11 +1033,100 @@ impl Look {
                         look.text = v;
                     }
                 }
+                "backdrop" => {
+                    if let Some(v) = Backdrop::from_name(value) {
+                        look.backdrop = v;
+                    }
+                }
+                "strength" => {
+                    if let Some(v) = Strength::from_name(value) {
+                        look.strength = v;
+                    }
+                }
+                "risks" => {
+                    if let Some(v) = Risks::from_name(value) {
+                        look.risks = v;
+                    }
+                }
+                "chips" => {
+                    if let Some(v) = Chips::from_name(value) {
+                        look.chips = v;
+                    }
+                }
+                "tabs" => {
+                    if let Some(v) = Tabs::from_name(value) {
+                        look.tabs = v;
+                    }
+                }
+                "controls" => {
+                    if let Some(v) = Controls::from_name(value) {
+                        look.controls = v;
+                    }
+                }
+                "selection" => {
+                    if let Some(v) = Selection::from_name(value) {
+                        look.selection = v;
+                    }
+                }
+                "press" => {
+                    if let Some(v) = Press::from_name(value) {
+                        look.press = v;
+                    }
+                }
+                "finish" => {
+                    if let Some(v) = Finish::from_name(value) {
+                        look.finish = v;
+                    }
+                }
                 _ => {}
             }
         }
         look
     }
+}
+
+/// The card of a surfaces family before the accent is mixed in (Tinted starts from Ink's): the
+/// colour the accent's strength is measured against.
+fn plain_card(surfaces: Surfaces, light: bool) -> u32 {
+    surfaces_base(surfaces, light, 0).map_or_else(|| ink(light).card, |b| if surfaces == Surfaces::Tinted { ink(light).card } else { b.card })
+}
+
+/// The colour-blind safe risks (Okabe and Ito: blue, orange, vermillion and reddish purple), each
+/// moved until its text reads on the card at 4.5:1 and its mark at 3:1. They replace the greens,
+/// ambers, oranges and reds of the cautions and the marks. The words never change; only colour.
+fn safe_risks(t: &mut HashMap<&'static str, String>, light: bool, card: u32) {
+    // the row is a step lighter than the card on the dark page and the other way on the light:
+    // each colour is moved against it too, so it reads on both
+    let row = colour(t, "row");
+    let fit = |c: u32, least: f64| reach(reach(c, card, light, least), row, light, least);
+    // the dark page starts from sky blue: the blue itself is too dark there to be moved far
+    let blue = if light { 0xFF00_72B2 } else { 0xFF56_B4E9 };
+    let (orange, vermillion, purple, failed) = (0xFFE6_9F00, 0xFFD5_5E00, 0xFFCC_79A7, 0xFFD5_3F00);
+    let wash = |c: u32, a: u32| (c & 0x00FF_FFFF) | (a << 24);
+    for (text, mark, line, tint, base) in [
+        ("good", "goodmark", "goodline", Some("goodwash"), blue),
+        ("warn", "warnmark", "warnline", Some("warnwash"), orange),
+        ("alert", "alertmark", "alertline", None, vermillion),
+    ] {
+        let fill = fit(base, 3.0);
+        t.insert(text, hex(fit(base, 4.5)));
+        t.insert(mark, hex(fill));
+        t.insert(line, hex(wash(fill, 0x55)));
+        if let Some(tint) = tint {
+            t.insert(tint, hex(wash(fill, 0x14)));
+        }
+    }
+    // the quieter ones: the caution a step towards the page's own text
+    let text2 = colour(t, "text2");
+    for (quiet, from) in [("warnquiet", "warn"), ("alertquiet", "alert")] {
+        t.insert(quiet, hex(fit(mix(colour(t, from), text2, 35), 4.5)));
+    }
+    t.insert("fail", hex(fit(failed, 4.5)));
+    let (green, amber, orange_mark) = (t["goodmark"].clone(), t["warnmark"].clone(), t["alertmark"].clone());
+    t.insert("riskgreen", green);
+    t.insert("riskamber", amber);
+    t.insert("riskorange", orange_mark);
+    t.insert("riskred", hex(fit(purple, 3.0)));
 }
 
 /// A colour already in the table, for the values derived from it. A name that isn't there is a
@@ -855,7 +1140,7 @@ fn colour(t: &HashMap<&'static str, String>, name: &str) -> u32 {
 /// from it), the folder icons and the corner radii.
 pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
     let mut t: HashMap<&'static str, String> = TOKENS.iter().map(|t| (t.name, if light { t.light } else { t.value }.to_string())).collect();
-    let fill = look.accent.fill(light);
+    let fill = look.accent.fill(light, look.strength, plain_card(look.surfaces, light));
 
     if let Some(b) = surfaces_base(look.surfaces, light, fill) {
         let entries = [
@@ -900,6 +1185,14 @@ pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
     // The selected row is the accent mixed a quarter into the card; a glyph on the accent is
     // black or white, whichever reads; accent text on the page is the fill, moved until it reads.
     let card = colour(&t, "card");
+    // Mica and Acrylic: the ground lets the desktop show a little (the cards stay opaque)
+    if look.backdrop != Backdrop::Solid {
+        let alpha = if light { 0xD9 } else { 0xCC };
+        t.insert("ground", hex(colour(&t, "ground") & 0x00FF_FFFF | alpha << 24));
+    }
+    if look.risks == Risks::Safe {
+        safe_risks(&mut t, light, card);
+    }
     t.insert("accent", hex(fill));
     t.insert("onaccent", hex(on_accent(fill)));
     t.insert("accenttext", hex(accent_text(fill, card, light)));
@@ -931,6 +1224,15 @@ pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
             t.insert(token.name, n.to_string());
         }
     }
+    // a chip's corner: the pill, a soft corner, or the control's own (all of them square when
+    // the corners are)
+    let chip = match look.chips {
+        Chips::Pills => t["rcpill"].clone(),
+        Chips::Soft if look.corners == Corners::Square => "0".to_string(),
+        Chips::Soft => "10".to_string(),
+        Chips::Rect => t["rc4"].clone(),
+    };
+    t.insert("rcchip", chip);
     t
 }
 
@@ -1367,11 +1669,8 @@ mod tests {
         }
     }
 
-    /// The default look and every single-option change from it, on both pages: every colour is a
-    /// valid token, and the text on each surface, the glyph on the accent and the accent text on
-    /// the card all reach the contrast the Theme page promises.
-    #[test]
-    fn every_option_keeps_its_contrast() {
+    /// Sprawl's own look first, then each choice of each option on its own over it.
+    fn all_single_changes() -> Vec<Look> {
         let mut looks = vec![Look::default()];
         for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
             looks.push(Look { accent, ..Look::default() });
@@ -1388,6 +1687,48 @@ mod tests {
         for corners in [Corners::Four8, Corners::Six10, Corners::Eight14, Corners::Pills, Corners::Square] {
             looks.push(Look { corners, ..Look::default() });
         }
+        for backdrop in [Backdrop::Solid, Backdrop::Mica, Backdrop::Acrylic] {
+            looks.push(Look { backdrop, ..Look::default() });
+        }
+        for strength in [Strength::AsWindows, Strength::Stronger] {
+            looks.push(Look { strength, ..Look::default() });
+        }
+        for risks in [Risks::Standard, Risks::Safe] {
+            looks.push(Look { risks, ..Look::default() });
+        }
+        for chips in [Chips::Pills, Chips::Soft, Chips::Rect] {
+            looks.push(Look { chips, ..Look::default() });
+        }
+        for tabs in [Tabs::Underline, Tabs::Pills] {
+            looks.push(Look { tabs, ..Look::default() });
+        }
+        for controls in [Controls::Outlined, Controls::Soft, Controls::Stock] {
+            looks.push(Look { controls, ..Look::default() });
+        }
+        for selection in [Selection::Fill, Selection::Bar, Selection::Both] {
+            looks.push(Look { selection, ..Look::default() });
+        }
+        for press in [Press::LiftSink, Press::PressIn, Press::Fade, Press::Faint] {
+            looks.push(Look { press, ..Look::default() });
+        }
+        for finish in [Finish::Soft, Finish::Flat] {
+            looks.push(Look { finish, ..Look::default() });
+        }
+        // the options that move the accent, together, on every surface family
+        for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
+            for surfaces in [Surfaces::Ink, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey, Surfaces::Graphite] {
+                looks.push(Look { accent, surfaces, strength: Strength::Stronger, risks: Risks::Safe, backdrop: Backdrop::Mica, ..Look::default() });
+            }
+        }
+        looks
+    }
+
+    /// The default look and every single-option change from it, on both pages: every colour is a
+    /// valid token, and the text on each surface, the glyph on the accent and the accent text on
+    /// the card all reach the contrast the Theme page promises.
+    #[test]
+    fn every_option_keeps_its_contrast() {
+        let looks = all_single_changes();
         for look in looks {
             for light in [false, true] {
                 let page = if light { "light" } else { "dark" };
@@ -1414,7 +1755,76 @@ mod tests {
                 assert!(got >= 4.5, "{page} {}: onaccent on accent is {got:.2} to 1", look.to_kv());
                 let got = on("accenttext", "card");
                 assert!(got >= 4.5, "{page} {}: accenttext on card is {got:.2} to 1", look.to_kv());
+                let got = on("text1", "selected");
+                assert!(got >= 4.5, "{page} {}: text1 on the selected row is {got:.2} to 1", look.to_kv());
+                // the colour-blind safe risks: their words read on the card, their marks stand out
+                if look.risks == Risks::Safe {
+                    for name in ["good", "warn", "alert", "fail", "warnquiet", "alertquiet"] {
+                        let got = on(name, "card");
+                        assert!(got >= 4.5, "{page} {}: {name} on card is {got:.2} to 1", look.to_kv());
+                        let got = on(name, "row");
+                        assert!(got >= 4.0, "{page} {}: {name} on a row is {got:.2} to 1", look.to_kv());
+                    }
+                    let marks = ["riskgreen", "riskamber", "riskorange", "riskred"];
+                    for name in marks {
+                        let got = on(name, "card");
+                        assert!(got >= 3.0, "{page} {}: {name} on card is {got:.2} to 1", look.to_kv());
+                    }
+                    // four marks, four colours
+                    for (i, a) in marks.iter().enumerate() {
+                        for b in &marks[i + 1..] {
+                            assert_ne!(t[*a], t[*b], "{page} {}: {a} and {b} are one colour", look.to_kv());
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    /// Stronger takes the accent further from the card than the accent as given, on every
+    /// surface family and both pages.
+    #[test]
+    fn a_stronger_accent_stands_out_more() {
+        for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
+            for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
+                for light in [false, true] {
+                    let plain = table(&Look { accent, surfaces, ..Look::default() }, light);
+                    let strong = table(&Look { accent, surfaces, strength: Strength::Stronger, ..Look::default() }, light);
+                    let card = plain_card(surfaces, light);
+                    let (a, b) = (ratio(argb(&plain["accent"]).unwrap(), card), ratio(argb(&strong["accent"]).unwrap(), card));
+                    assert!(b >= a, "{accent:?} on {surfaces:?} ({}): {b:.2} to 1 is not more than {a:.2}", if light { "light" } else { "dark" });
+                }
+            }
+        }
+    }
+
+    /// Mica and Acrylic make the ground a little see-through and nothing else: the cards, rows
+    /// and popups stay opaque.
+    #[test]
+    fn a_backdrop_makes_only_the_ground_see_through() {
+        for backdrop in [Backdrop::Mica, Backdrop::Acrylic] {
+            for light in [false, true] {
+                let solid = table(&Look::default(), light);
+                let t = table(&Look { backdrop, ..Look::default() }, light);
+                assert!(t["ground"].starts_with(if light { "#D9" } else { "#CC" }), "{}", t["ground"]);
+                assert_eq!(t["ground"][3..], solid["ground"][3..], "the colour is the same, only the alpha moves");
+                for name in ["card", "row", "popup", "menu", "panel"] {
+                    assert!(t[name].starts_with("#FF"), "{name} is {}", t[name]);
+                }
+            }
+        }
+        assert!(table(&Look::default(), false)["ground"].starts_with("#FF"));
+    }
+
+    /// A chip's corner follows the Chips option, and is square when the corners are.
+    #[test]
+    fn a_chip_has_the_corner_its_option_gives() {
+        let at = |look: Look| table(&look, false)["rcchip"].clone();
+        assert_eq!(at(Look::default()), "15");
+        assert_eq!(at(Look { chips: Chips::Soft, ..Look::default() }), "10");
+        assert_eq!(at(Look { chips: Chips::Rect, ..Look::default() }), "4");
+        for chips in [Chips::Pills, Chips::Soft, Chips::Rect] {
+            assert_eq!(at(Look { chips, corners: Corners::Square, ..Look::default() }), "0", "{chips:?}");
         }
     }
 
@@ -1424,7 +1834,7 @@ mod tests {
     fn a_look_survives_a_round_trip_and_ignores_junk() {
         assert_eq!(
             Look::default().to_kv(),
-            "accent=windows;surfaces=ink;contrast=normal;folders=classic;corners=four8;motion=subtle;bars=solid;smalltext=leadwords;ticks=square;text=aswritten"
+            "accent=windows;surfaces=ink;contrast=normal;folders=classic;corners=four8;motion=subtle;bars=solid;smalltext=leadwords;ticks=square;text=aswritten;backdrop=solid;strength=aswindows;risks=standard;chips=pills;tabs=underline;controls=outlined;selection=fill;press=liftsink;finish=soft"
         );
         for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
             for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
@@ -1435,7 +1845,7 @@ mod tests {
                                 for bars in [Bars::Solid, Bars::Gradient, Bars::Thin] {
                                     for small_text in [SmallText::LeadWords, SmallText::Plain, SmallText::Grey12] {
                                         for ticks in [Ticks::Square, Ticks::Round] {
-                                            let look = Look { accent, surfaces, contrast, folders, corners, motion, bars, small_text, ticks, text: TextSizes::AsWritten };
+                                            let look = Look { accent, surfaces, contrast, folders, corners, motion, bars, small_text, ticks, ..Look::default() };
                                             assert_eq!(Look::from_kv(&look.to_kv()), look, "{}", look.to_kv());
                                         }
                                     }
@@ -1465,6 +1875,15 @@ mod tests {
             }
         );
         assert_eq!(Look::from_kv(""), Look::default());
+        // the nine newer options: every choice of each comes back, and a wrong one is left behind
+        for look in all_single_changes().into_iter().skip(1) {
+            assert_eq!(Look::from_kv(&look.to_kv()), look, "{}", look.to_kv());
+        }
+        let got = Look::from_kv("backdrop=glass;strength=stronger;risks=safe;chips=rect;tabs=pills;controls=stock;selection=both;press=fade;finish=flat;press=");
+        assert_eq!(
+            got,
+            Look { strength: Strength::Stronger, risks: Risks::Safe, chips: Chips::Rect, tabs: Tabs::Pills, controls: Controls::Stock, selection: Selection::Both, press: Press::Fade, finish: Finish::Flat, ..Look::default() }
+        );
     }
 
     /// The gradient's far stop is six digits: the light page's rewrite leaves it alone.

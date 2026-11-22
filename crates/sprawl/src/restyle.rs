@@ -279,6 +279,8 @@ impl State {
         self.window.SetContent(&root.cast::<UIElement>()?)?;
         self.window.SetTitleBar(&find::<UIElement>(&root, "TitleBar")?)?;
         caption_buttons(&self.window);
+        // Mica, Acrylic or none, by the look now in use
+        crate::look::apply_backdrop(&self.window);
         self.root = root;
         // the map: its panel is the new page's, so its swap chain is made again for it
         self.map.panel = panel;

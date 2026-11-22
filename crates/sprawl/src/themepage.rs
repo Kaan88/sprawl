@@ -13,7 +13,8 @@ use crate::bindings::Microsoft::UI::Xaml::Markup::XamlReader;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
 use crate::settings::Settings;
 use crate::state::{find, keep, with, State};
-use crate::tokens::{self, Bars, Look, SmallText, Ticks};
+use crate::tokens::{self, Bars, Controls, Finish, Look, SmallText, Tabs, Ticks};
+use sprawl_advisor::Risk;
 use crate::ui;
 
 /// One option on the page: its key in a copied theme, its label, and its choices as (name in a
@@ -29,16 +30,25 @@ pub(crate) struct Opt {
 pub(crate) const GROUPS: [&str; 4] = ["Colour", "Shape", "Feel", "Text and space"];
 
 /// Only options that exist are here; each group holds at most eight.
-pub(crate) const OPTS: [Opt; 10] = [
+pub(crate) const OPTS: [Opt; 19] = [
     Opt { key: "mode", label: "Light or dark", group: 0, choices: &[("like", "Like Windows"), ("light", "Light"), ("dark", "Dark")] },
     Opt { key: "accent", label: "Accent", group: 0, choices: &[("windows", "Windows accent"), ("azure", "Azure"), ("iris", "Iris"), ("violet", "Violet"), ("sunset", "Sunset")] },
+    Opt { key: "strength", label: "Accent strength", group: 0, choices: &[("aswindows", "As Windows gives it"), ("stronger", "Stronger")] },
     Opt { key: "surfaces", label: "Surfaces", group: 0, choices: &[("ink", "Ink"), ("graphite", "Graphite"), ("tinted", "Tinted"), ("black", "Black"), ("slate", "Slate"), ("warmgrey", "Warm grey")] },
+    Opt { key: "backdrop", label: "Backdrop", group: 0, choices: &[("solid", "Solid"), ("mica", "Mica"), ("acrylic", "Acrylic")] },
     Opt { key: "contrast", label: "Contrast", group: 0, choices: &[("normal", "Normal"), ("strong", "Strong")] },
+    Opt { key: "risks", label: "Risk colours", group: 0, choices: &[("standard", "Standard"), ("safe", "Colour-blind safe")] },
     Opt { key: "folders", label: "Folder icons", group: 0, choices: &[("classic", "Classic yellow"), ("accent", "Accent"), ("grey", "Grey")] },
     Opt { key: "corners", label: "Corners", group: 1, choices: &[("four8", "4 / 8"), ("six10", "6 / 10"), ("eight14", "8 / 14"), ("pills", "Pills"), ("square", "Square")] },
+    Opt { key: "chips", label: "Chips", group: 1, choices: &[("pills", "Pills"), ("soft", "Soft pills"), ("rect", "Rectangles")] },
+    Opt { key: "tabs", label: "Tabs", group: 1, choices: &[("underline", "Underline"), ("pills", "Pills")] },
+    Opt { key: "controls", label: "Controls", group: 1, choices: &[("outlined", "Outlined"), ("soft", "Soft filled"), ("stock", "Windows stock")] },
     Opt { key: "ticks", label: "Tick boxes", group: 1, choices: &[("square", "Square"), ("round", "Round")] },
     Opt { key: "bars", label: "Bars", group: 1, choices: &[("solid", "Solid"), ("gradient", "Gradient"), ("thin", "Thin line")] },
+    Opt { key: "selection", label: "Selection", group: 1, choices: &[("fill", "Fill"), ("bar", "Accent bar"), ("both", "Both")] },
+    Opt { key: "press", label: "Press feedback", group: 2, choices: &[("liftsink", "Lift and sink"), ("pressin", "Press-in"), ("fade", "Clear fade"), ("faint", "Faint")] },
     Opt { key: "motion", label: "Motion", group: 2, choices: &[("subtle", "Subtle"), ("lively", "Lively"), ("none", "None")] },
+    Opt { key: "finish", label: "Finish", group: 2, choices: &[("soft", "Soft depth"), ("flat", "Flat")] },
     Opt { key: "smalltext", label: "Small text", group: 3, choices: &[("leadwords", "13 px, lead words"), ("plain", "13 px"), ("grey12", "12 px, grey")] },
 ];
 
@@ -80,12 +90,29 @@ pub(crate) fn with_pick(look: &Look, mode: usize, key: &str, i: usize) -> (Look,
 /// The values of preset `i`, and the light/dark choice it sets (None: leaves it as it is).
 /// Custom (the last) has none: it is the user's own.
 pub(crate) fn preset(i: usize) -> Option<(Look, Option<usize>)> {
-    use tokens::{Accent, Motion, Surfaces};
+    use tokens::{Accent, Backdrop, Chips, Controls, Finish, Motion, Press, Selection, Strength, Surfaces};
     Some(match i {
         0 => (Look::default(), Some(0)),
-        1 => (Look { surfaces: Surfaces::Graphite, motion: Motion::None, small_text: SmallText::Plain, ..Look::default() }, None),
-        2 => (Look { surfaces: Surfaces::Black, accent: Accent::Iris, ..Look::default() }, Some(2)),
-        3 => (Look { surfaces: Surfaces::Graphite, motion: Motion::None, ..Look::default() }, Some(1)),
+        // Windows: Mica, rectangles, WinUI's own fields, flat, a fade, the fill and the bar
+        1 => (
+            Look {
+                surfaces: Surfaces::Graphite,
+                motion: Motion::None,
+                small_text: SmallText::Plain,
+                backdrop: Backdrop::Mica,
+                chips: Chips::Rect,
+                controls: Controls::Stock,
+                selection: Selection::Both,
+                press: Press::Fade,
+                finish: Finish::Flat,
+                ..Look::default()
+            },
+            None,
+        ),
+        // Midnight: a black page and a bolder iris
+        2 => (Look { surfaces: Surfaces::Black, accent: Accent::Iris, strength: Strength::Stronger, ..Look::default() }, Some(2)),
+        // Paper: flat and still
+        3 => (Look { surfaces: Surfaces::Graphite, motion: Motion::None, finish: Finish::Flat, press: Press::Faint, ..Look::default() }, Some(1)),
         _ => return None,
     })
 }
@@ -183,7 +210,7 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
     let lead_style = if lead { r#" FontWeight="SemiBold" Foreground="{$text1}""# } else { "" };
     let chip = |text: &str, on: bool| {
         let (bg, fg) = if on { (tokens::refer("accent"), tokens::refer("onaccent")) } else { (tokens::refer("surface3"), tokens::refer("text2")) };
-        format!(r##"<Border CornerRadius="{{$rcpill}}" Padding="10,2" Background="{bg}" BorderBrush="{{$line1}}" BorderThickness="1"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{fg}"/></Border>"##, ui::esc(text))
+        format!(r##"<Border CornerRadius="{{$rcchip}}" Padding="10,2" Background="{bg}" BorderBrush="{{$line1}}" BorderThickness="1"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{fg}"/></Border>"##, ui::esc(text))
     };
     let tick_radius = t[if look.ticks == Ticks::Round { "rcpill" } else { "rc4" }].clone();
     // a 190 px bar, 62 % full, as the tables draw it: washed, so the figure on it reads
@@ -202,6 +229,23 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
             format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w}" Background="{{$accent}}" Opacity="0.45"/>"##),
         ),
     };
+    // the page tabs: the open one underlined, or a picked chip
+    let tab = |text: &str, on: bool| {
+        let (bg, fg) = if on && look.tabs == Tabs::Pills { (tokens::refer("accent"), tokens::refer("onaccent")) } else { ("Transparent".to_string(), tokens::refer(if on { "text1" } else { "text2" })) };
+        let line = if on && look.tabs == Tabs::Underline { r##"<Border Height="3" CornerRadius="{$rc2}" Background="{$accent}" VerticalAlignment="Bottom" Margin="8,0"/>"## } else { "" };
+        format!(r##"<Grid><Border CornerRadius="{{$rcchip}}" Padding="12,3" Background="{bg}"><TextBlock Text="{}" FontSize="{{$fs13}}" Foreground="{fg}"/></Border>{line}</Grid>"##, ui::esc(text))
+    };
+    // the four risks, each as the marks are drawn for this look
+    let marks: String = [Risk::Green, Risk::Amber, Risk::Orange, Risk::Red].map(|r| crate::advisor::risk_mark_in(look.risks, r, 9, crate::advisor::MID)).concat();
+    // a field, drawn as the Controls option has it: the page's ground in an outline, the row's
+    // fill with none, or WinUI's own grey
+    let (field_bg, field_line) = match look.controls {
+        Controls::Outlined => (tokens::refer("ground"), tokens::refer("line2")),
+        Controls::Soft => (tokens::refer("row"), "Transparent".to_string()),
+        Controls::Stock => (tokens::refer("surface3"), tokens::refer("line1")),
+    };
+    // a selected row: the tint, the accent line, or both
+    let (row_bg, row_bar) = (if look.selection.fill() { tokens::refer("selected") } else { "Transparent".to_string() }, if look.selection.bar() { r##"<Border Width="3" Margin="1,3,0,3" HorizontalAlignment="Left" CornerRadius="{$rc2}" Background="{$accent}"/>"## } else { "" });
     let xaml = format!(
         r##"<Border {ns} Background="{{$ground}}" CornerRadius="{{$rc10}}" BorderBrush="{{$line1}}" BorderThickness="1" Padding="10">
   <Border Background="{{$card}}" CornerRadius="{{$rc8}}" BorderBrush="{{$line1}}" BorderThickness="1" Padding="14,10">
@@ -215,10 +259,12 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
         </StackPanel>
         <TextBlock FontSize="{size}" Foreground="{colour}" TextWrapping="Wrap"><Run Text="Installers you ran once." {lead_style}/><Run Text=" This is how an explanation reads."/></TextBlock>
         <StackPanel Orientation="Horizontal" Spacing="6">{c1}{c2}{c3}</StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="4">{t1}{t2}</StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="12">{marks}<TextBlock Text="Safe, slow, yours, never" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/></StackPanel>
       </StackPanel>
       <StackPanel Grid.Column="1" Spacing="8">
         <StackPanel Orientation="Horizontal" Spacing="6">
-          <Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$accent}}"><TextBlock Text="Scan" FontSize="{{$fs13}}" FontWeight="SemiBold" Foreground="{{$onaccent}}"/></Border>
+          <Grid>{glow}<Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$accent}}"><TextBlock Text="Scan" FontSize="{{$fs13}}" FontWeight="SemiBold" Foreground="{{$onaccent}}"/></Border></Grid>
           <Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$surface3}}" BorderBrush="{{$line2}}" BorderThickness="1"><TextBlock Text="Cancel" FontSize="{{$fs13}}" Foreground="{{$text1}}"/></Border>
         </StackPanel>
         <StackPanel Orientation="Horizontal" Spacing="8">
@@ -226,6 +272,8 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
           <TextBlock Text="Keep a copy" FontSize="{{$fs13}}" Foreground="{{$text1}}" VerticalAlignment="Center"/>
         </StackPanel>
         <Grid Width="190" Height="20" HorizontalAlignment="Left">{track}{fill}<TextBlock Text="62.0 %" FontSize="{{$fs12}}" Foreground="{{$text1}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>
+        <Border Width="190" HorizontalAlignment="Left" Padding="8,4" CornerRadius="{{$rc4}}" Background="{field_bg}" BorderBrush="{field_line}" BorderThickness="1"><TextBlock Text="Search for a file" FontSize="{{$fs13}}" Foreground="{{$text3}}"/></Border>
+        <Grid Width="190" Height="24" HorizontalAlignment="Left"><Border Background="{row_bg}" CornerRadius="{{$rc2}}"/>{row_bar}<TextBlock Text="Selected row" FontSize="{{$fs12}}" Foreground="{{$text0}}" VerticalAlignment="Center" Margin="10,0,0,0"/></Grid>
       </StackPanel>
     </Grid>
   </Border>
@@ -234,6 +282,9 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
         c1 = chip("Folders", false),
         c2 = chip("Files", true),
         c3 = chip("Caches", false),
+        t1 = tab("Tree View", true),
+        t2 = tab("Advisor", false),
+        glow = if look.finish == Finish::Soft { r##"<Border Margin="-1,3,-1,-4" CornerRadius="{$rc4}" Background="{$glow}" Opacity="0.7"/>"## } else { "" },
     );
     tokens::expand_in(&xaml, &t)
 }
@@ -554,10 +605,20 @@ mod tests {
         assert_eq!((w.surfaces, w.corners, w.motion, w.bars, w.small_text), (Surfaces::Graphite, tokens::Corners::Four8, Motion::None, Bars::Solid, SmallText::Plain));
         assert_eq!((w.accent, w.contrast, w.ticks), (Accent::Windows, tokens::Contrast::Normal, Ticks::Square));
         assert_eq!(m, None);
+        // Windows: Mica, rectangles, WinUI's own fields, flat, a fade
+        assert_eq!(
+            (w.backdrop, w.chips, w.controls, w.finish, w.press, w.selection),
+            (tokens::Backdrop::Mica, tokens::Chips::Rect, tokens::Controls::Stock, tokens::Finish::Flat, tokens::Press::Fade, tokens::Selection::Both)
+        );
         let (mid, m) = preset(2).unwrap();
         assert_eq!((mid.surfaces, mid.accent, m), (Surfaces::Black, Accent::Iris, Some(2)));
         let (paper, m) = preset(3).unwrap();
         assert_eq!((paper.surfaces, paper.motion, m), (Surfaces::Graphite, Motion::None, Some(1)));
+        assert_eq!((paper.finish, paper.press, mid.strength), (tokens::Finish::Flat, tokens::Press::Faint, tokens::Strength::Stronger));
+        // no preset touches the risk colours
+        for i in 0..CUSTOM {
+            assert_eq!(preset(i).unwrap().0.risks, tokens::Risks::Standard, "preset {i}");
+        }
         assert_eq!(preset(CUSTOM), None);
         // the picks name the preset they match; anything else is Custom
         assert_eq!(which(&Look::default(), 0), 0);
@@ -572,13 +633,14 @@ mod tests {
 
     #[test]
     fn the_settings_round_trip() {
-        let look = Look::from_kv("accent=sunset;surfaces=slate;contrast=strong;folders=grey;corners=pills;motion=lively;bars=thin;smalltext=grey12;ticks=round");
+        let look = Look::from_kv("accent=sunset;surfaces=slate;contrast=strong;folders=grey;corners=pills;motion=lively;bars=thin;smalltext=grey12;ticks=round;backdrop=acrylic;strength=stronger;risks=safe;chips=soft;tabs=pills;controls=soft;selection=bar;press=pressin;finish=flat");
         let mut s = Settings::default();
         // a missing key is Sprawl's own
         assert_eq!(read(&s), Look::default());
         write(&mut s, &look);
         assert_eq!(s.get("look.surfaces"), Some("slate"));
         assert_eq!(s.get("look.smalltext"), Some("grey12"));
+        assert_eq!((s.get("look.risks"), s.get("look.backdrop"), s.get("look.press")), (Some("safe"), Some("acrylic"), Some("pressin")));
         assert_eq!(read(&s), look);
         // one key missing or junk: only that option is Sprawl's own
         s.set("look.corners", "wobbly");
@@ -618,7 +680,10 @@ mod tests {
     #[test]
     fn the_sample_loads_for_every_pick() {
         // every token the sample writes is in the table: none is left unfilled
-        for look in [Look::default(), Look::from_kv("bars=thin;ticks=round;smalltext=grey12"), Look::from_kv("bars=gradient;corners=square;surfaces=slate")] {
+        for look in [Look::default(), Look::from_kv("bars=thin;ticks=round;smalltext=grey12"), Look::from_kv("bars=gradient;corners=square;surfaces=slate"),
+            Look::from_kv("risks=safe;tabs=pills;controls=soft;selection=both;finish=flat;chips=rect;strength=stronger"),
+            Look::from_kv("controls=stock;selection=bar;chips=soft;backdrop=mica"),
+        ] {
             for mode in [1, 2] {
                 let x = sample(&look, mode);
                 assert!(!x.contains('$'), "a token is left in the sample: {x}");

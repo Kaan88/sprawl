@@ -14,6 +14,21 @@ use crate::ui;
 /// same width, so the text doesn't shift sideways as it counts.
 pub(crate) const NUM: &str = r##"Typography.NumeralAlignment="Tabular""##;
 
+/// What the window sits on, by the Backdrop option: nothing (the page's own opaque ground), Mica
+/// or Acrylic (the ground is a little see-through then, see `tokens::table`). Set at start and
+/// again whenever the page is made again, so a pick shows at once.
+pub(crate) fn apply_backdrop(window: &crate::bindings::Microsoft::UI::Xaml::Window) {
+    use crate::bindings::Microsoft::UI::Xaml::Media::{DesktopAcrylicBackdrop, MicaBackdrop, SystemBackdrop};
+    use crate::tokens::Backdrop;
+    let made = match crate::tokens::current().backdrop {
+        Backdrop::Solid => None,
+        Backdrop::Mica => MicaBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()).ok(),
+        Backdrop::Acrylic => DesktopAcrylicBackdrop::new().and_then(|b| b.cast::<SystemBackdrop>()).ok(),
+    };
+    // a backdrop that could not be made leaves the window as it is, on its opaque-enough ground
+    let _ = window.SetSystemBackdrop(made.as_ref());
+}
+
 /// The background of a selected row or tab (a list's line, the Settings sections). Chips and
 /// the map's modes take the accent instead ([`Pick::bg`]).
 pub(crate) fn selected() -> String {
@@ -74,10 +89,20 @@ fn palette() -> Option<[[u8; 3]; 7]> {
     (r == ERROR_SUCCESS && n >= 28).then(|| std::array::from_fn(|i| [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]]))
 }
 
+/// Windows' own blue, for a PC that gives no palette.
+const DEFAULT_PALETTE: [[u8; 3]; 7] = [[0x99, 0xEB, 0xFF], [0x4C, 0xC2, 0xFF], [0x00, 0x91, 0xF8], [0x00, 0x78, 0xD4], [0x00, 0x67, 0xC0], [0x00, 0x3E, 0x92], [0x00, 0x1A, 0x68]];
+
+/// The seven shades of Windows' accent as opaque `#AARRGGBB` numbers, lightest first (Accent
+/// strength picks among them).
+pub(crate) fn palette_colours() -> [u32; 7] {
+    let p = palette().unwrap_or(DEFAULT_PALETTE);
+    std::array::from_fn(|i| 0xFF00_0000 | (p[i][0] as u32) << 16 | (p[i][1] as u32) << 8 | p[i][2] as u32)
+}
+
 /// The accent for a light or dark page, from the palette (Windows' own blue without one):
 /// dark pages fill with Light2 and write accent text in Light3, light pages Dark1 and Dark2.
 fn accent_from(p: Option<[[u8; 3]; 7]>, light: bool) -> Accent {
-    let p = p.unwrap_or([[0x99, 0xEB, 0xFF], [0x4C, 0xC2, 0xFF], [0x00, 0x91, 0xF8], [0x00, 0x78, 0xD4], [0x00, 0x67, 0xC0], [0x00, 0x3E, 0x92], [0x00, 0x1A, 0x68]]);
+    let p = p.unwrap_or(DEFAULT_PALETTE);
     let hex = |c: [u8; 3]| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
     if light {
         Accent { fill: hex(p[4]), on: "#FFFFFF".to_string(), text: hex(p[5]) }
@@ -113,6 +138,11 @@ pub(crate) enum Pick {
     Mode,
     /// The page tabs (Tree View ... Search): plain text, the open one underlined.
     Page,
+}
+
+/// The page tabs are drawn as pills (the Tabs option) rather than with a line under them.
+fn pill_tabs() -> bool {
+    crate::tokens::current().tabs == crate::tokens::Tabs::Pills
 }
 
 /// The underline under the open page tab: the accent.
@@ -157,6 +187,11 @@ impl Pick {
 
 /// The attributes for a `<Button>` drawn as a selectable item.
 pub(crate) fn pick(kind: Pick, on: bool) -> String {
+    if kind == Pick::Page && pill_tabs() {
+        // a picked chip: the accent behind its text, nothing under it
+        let (bg, fg) = if on { (accent().fill, accent().on) } else { ("Transparent".to_string(), rest_text()) };
+        return format!(r##"Style="{{StaticResource SprawlPagePill}}" Background="{bg}" Foreground="{fg}" BorderBrush="Transparent""##);
+    }
     if kind == Pick::Page {
         return format!(r##"Style="{{StaticResource SprawlPage}}" Background="Transparent" BorderBrush="{}""##, if on { underline() } else { "Transparent".to_string() });
     }
@@ -177,6 +212,15 @@ pub(crate) fn pick_drop(kind: Pick, on: bool) -> String {
 /// Light or unlight the selectable item `name` (a tab, a mode) that is already on screen.
 pub(crate) fn paint(root: &FrameworkElement, name: &str, kind: Pick, on: bool) {
     let Ok(c) = find::<Control>(root, name) else { return };
+    if kind == Pick::Page && pill_tabs() {
+        let (bg, fg) = if on { (accent().fill, accent().on) } else { ("#00000000".to_string(), rest_text()) };
+        for (fill, set) in [(bg, true), (fg, false)] {
+            if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{fill}"/>"##, ui::NS)) {
+                let _ = if set { c.SetBackground(&br) } else { c.SetForeground(&br) };
+            }
+        }
+        return;
+    }
     if kind == Pick::Page {
         // the underline is the template's line, in the tab's BorderBrush
         if let Ok(br) = load::<Brush>(&format!(r##"<SolidColorBrush {} Color="{}"/>"##, ui::NS, if on { underline() } else { "#00000000".to_string() })) {
@@ -208,10 +252,18 @@ pub(crate) fn label(text: &str) -> String {
 /// `corner` is the card's corner token, `k` how far the shadow reaches (1 for a pane, 2 for a
 /// dialog).
 pub(crate) fn shadow(corner: &str, k: i32) -> String {
+    if flat() {
+        return String::new();
+    }
     let layer = |side: i32, top: i32, bottom: i32, opacity: f64| {
         format!(r##"<Border Margin="{},{top},{},{bottom}" CornerRadius="{corner}" Background="{{$lift}}" Opacity="{opacity}" IsHitTestVisible="False"/>"##, -side, -side)
     };
     format!("{}{}{}", layer(k, k, -2 * k, 1.0), layer(3 * k, k, -5 * k, 0.6), layer(6 * k, 2 * k, -9 * k, 0.35))
+}
+
+/// The Finish option is Flat: no shadow under a card, no glow under the main button.
+fn flat() -> bool {
+    crate::tokens::current().finish == crate::tokens::Finish::Flat
 }
 
 /// The motion the buttons are drawn with: Windows' "Animation effects" off wins over the look.
@@ -239,6 +291,18 @@ fn travel(motion: crate::tokens::Motion, lift: f64, scale: f64) -> (f64, f64) {
         crate::tokens::Motion::Subtle => (lift, scale),
         crate::tokens::Motion::Lively => (lift * 2.0, if scale < 1.0 { 0.96 } else { 1.0 }),
         crate::tokens::Motion::None => (0.0, 1.0),
+    }
+}
+
+/// What the Press option does: the wash, the lift (negative Y is up) and the scale of the
+/// pointer-over state, then of the pressed state. Lift and sink is today's.
+fn press_feel(press: crate::tokens::Press) -> ((f64, f64, f64), (f64, f64, f64)) {
+    use crate::tokens::Press;
+    match press {
+        Press::LiftSink => ((0.10, -1.0, 1.0), (0.20, 1.0, 0.98)),
+        Press::PressIn => ((0.10, 0.0, 1.0), (0.20, 1.0, 0.98)),
+        Press::Fade => ((0.10, 0.0, 1.0), (0.20, 0.0, 1.0)),
+        Press::Faint => ((0.04, 0.0, 1.0), (0.08, 0.0, 1.0)),
     }
 }
 
@@ -302,10 +366,11 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bo
     } else {
         r##"<Setter Target="Content.Opacity" Value="0.4"/>"##.to_string()
     };
-    let (mut normal, mut over, mut pressed) = (states(0.0, 0.0, 1.0), states(0.10, -1.0, 1.0), states(0.20, 1.0, 0.98));
+    let ((ow, oy, os), (pw, py, ps)) = press_feel(crate::tokens::current().press);
+    let (mut normal, mut over, mut pressed) = (states(0.0, 0.0, 1.0), states(ow, oy, os), states(pw, py, ps));
     // the main button's accent shadow: soft at rest, fuller under the pointer, gone while pressed
     // or disabled, on the same time and curve as the lift
-    let (shade_open, shade_close) = if glow {
+    let (shade_open, shade_close) = if glow && !flat() {
         let to = |s: &mut String, v: f64| s.insert_str(s.len() - "</Storyboard>".len(), &glow_to(v));
         to(&mut normal, 0.55);
         to(&mut over, 1.0);
@@ -430,7 +495,9 @@ fn style_with(key: &str, target: &str, arrow: bool, line: bool, grey_off: bool, 
 /// from these keys; a key of the same name in a dictionary merged after `XamlControlsResources`
 /// wins over both of its pages, so one value is enough and no ThemeDictionaries is needed.
 fn brush(key: &str, token: &str) -> String {
-    format!(r#"<SolidColorBrush x:Key="{key}" Color="{}"/>"#, crate::tokens::refer(token))
+    // "none" is no colour at all: a line that is not drawn
+    let colour = if token == "none" { "Transparent".to_string() } else { crate::tokens::refer(token) };
+    format!(r#"<SolidColorBrush x:Key="{key}" Color="{colour}"/>"#)
 }
 
 /// A stock control's corner radius, from one of the look's radius tokens. The radius is element
@@ -454,14 +521,20 @@ fn stock() -> String {
     for (key, token) in [("ControlCornerRadius", "rc4"), ("OverlayCornerRadius", "rc8")] {
         x += &corner(key, token);
     }
+    // the Controls option: outlined (the page's ground under a field, a hairline round it), soft
+    // (the row's fill and no line until the pointer or the focus comes), or WinUI's own, where
+    // none of the field keys below, nor the text box's template, is ours
+    let controls = crate::tokens::current().controls;
+    let (field, edge, hover) = if controls == crate::tokens::Controls::Soft { ("row", "none", "line2") } else { ("ground", "line2", "edge") };
+    let fields = controls != crate::tokens::Controls::Stock;
     // a text box: the page's ground under it, a hairline that firms up under the pointer and
     // takes the accent with the focus; its placeholder is the dimmest text
     for (key, token) in [
-        ("TextControlBackground", "ground"),
-        ("TextControlBackgroundPointerOver", "ground"),
-        ("TextControlBackgroundFocused", "ground"),
-        ("TextControlBorderBrush", "line2"),
-        ("TextControlBorderBrushPointerOver", "edge"),
+        ("TextControlBackground", field),
+        ("TextControlBackgroundPointerOver", field),
+        ("TextControlBackgroundFocused", field),
+        ("TextControlBorderBrush", edge),
+        ("TextControlBorderBrushPointerOver", hover),
         ("TextControlBorderBrushFocused", "accent"),
         ("TextControlForeground", "text1"),
         ("TextControlForegroundPointerOver", "text1"),
@@ -470,19 +543,23 @@ fn stock() -> String {
         ("TextControlPlaceholderForegroundPointerOver", "text3"),
         ("TextControlPlaceholderForegroundFocused", "text3"),
     ] {
-        x += &brush(key, token);
+        if fields {
+            x += &brush(key, token);
+        }
     }
     // and it keeps a 1 px line whether or not it has the focus (WinUI draws 2 px under it)
     for key in ["TextControlBorderThemeThickness", "TextControlBorderThemeThicknessFocused"] {
-        x += &thickness(key);
+        if fields {
+            x += &thickness(key);
+        }
     }
     // a combo box: the field on the ground, its list on the menu colour
     for (key, token) in [
-        ("ComboBoxBackground", "ground"),
-        ("ComboBoxBackgroundPointerOver", "row"),
+        ("ComboBoxBackground", field),
+        ("ComboBoxBackgroundPointerOver", if field == "row" { "rowopen" } else { "row" }),
         ("ComboBoxBackgroundPressed", "card"),
-        ("ComboBoxBorderBrush", "line2"),
-        ("ComboBoxBorderBrushPointerOver", "edge"),
+        ("ComboBoxBorderBrush", edge),
+        ("ComboBoxBorderBrushPointerOver", hover),
         ("ComboBoxForeground", "text1"),
         ("ComboBoxDropDownBackground", "menu"),
         ("ComboBoxDropDownBorderBrush", "line1"),
@@ -491,7 +568,9 @@ fn stock() -> String {
         ("ComboBoxBackgroundFocused", "ring"),
         ("ComboBoxBackgroundBorderBrushFocused", "ring"),
     ] {
-        x += &brush(key, token);
+        if fields {
+            x += &brush(key, token);
+        }
     }
     // flyouts, menus and tooltips: the menu colour inside a hairline
     for (key, token) in [
@@ -590,10 +669,12 @@ fn stock() -> String {
     // a text box with the focus gets a soft 3 px ring outside its accent line. A key cannot draw
     // that, so this is WinUI's own template (generic.xaml) with one border added, `Ring`, shown
     // by the Focused state; the ring lies outside the box, so nothing moves.
-    x += &format!(
-        r#"<Style TargetType="TextBox" BasedOn="{{StaticResource DefaultTextBoxStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#,
-        include_str!("textbox.xaml")
-    );
+    if fields {
+        x += &format!(
+            r#"<Style TargetType="TextBox" BasedOn="{{StaticResource DefaultTextBoxStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#,
+            include_str!("textbox.xaml")
+        );
+    }
     x
 }
 
@@ -605,7 +686,7 @@ fn stock() -> String {
 /// deletes for good; `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
-        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
+        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
         ui::NS,
         stock(),
         style("SprawlPick", "Button", false),
@@ -613,7 +694,9 @@ pub(crate) fn resources() -> String {
         style_with("SprawlPage", "Button", false, true, false, Geo::small()),
         // chips: pills (the corner is clamped to half the height), a WinUI button's size with its
         // faint edge, filled with the accent when picked
-        style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcpill"), ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
+        style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcchip"), ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
+        // a page tab drawn as a picked chip (the Tabs option): the same corner, no edge
+        style_with("SprawlPagePill", "Button", false, false, false, Geo { corner: crate::tokens::get("rcchip"), padding: "12,4", ..Geo::small() }),
         style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text, ..Geo::button() }),
         style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
         // the one main action: the accent, semibold, with its soft accent shadow
@@ -1152,8 +1235,8 @@ mod tests {
             // have it, and so does the text box's template
             assert!(r.matches(&format!(r#"x:Name="{s}""#)).count() >= 7, "{s}");
         }
-        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 7);
-        for k in ["SprawlPick", "SprawlPickDrop", "SprawlPage", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
+        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 8);
+        for k in ["SprawlPick", "SprawlPickDrop", "SprawlPage", "SprawlPagePill", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
             assert_eq!(r.matches(&format!(r#"x:Key="{k}""#)).count(), 1, "{k}");
         }
         // the main button has its own template, with the accent's shadow
@@ -1222,6 +1305,59 @@ mod tests {
             r.contains(r#"<Style TargetType="CheckBox" BasedOn="{StaticResource DefaultCheckBoxStyle}"><Setter Property="CornerRadius" Value="10"/></Style>"#),
             "{r}"
         );
+        crate::tokens::set(&Look::default());
+    }
+
+    /// Each newer option reaches the styles it names: the press states, the finish, the chip's
+    /// corner, the page tabs, and the fields' keys.
+    #[test]
+    fn the_newer_options_reach_the_styles() {
+        use crate::tokens::{Chips, Controls, Finish, Look, Press, Tabs};
+        // press feedback: the values each option gives the pointer-over and the pressed state
+        assert_eq!(press_feel(Press::LiftSink), ((0.10, -1.0, 1.0), (0.20, 1.0, 0.98)));
+        assert_eq!(press_feel(Press::PressIn).0 .1, 0.0, "no lift under the pointer");
+        assert_eq!(press_feel(Press::PressIn).1 .1, 1.0, "but it sinks when pressed");
+        assert_eq!(press_feel(Press::Fade), ((0.10, 0.0, 1.0), (0.20, 0.0, 1.0)));
+        assert!(press_feel(Press::Faint).0 .0 < 0.10 && press_feel(Press::Faint).1 .1 == 0.0);
+
+        // finish: Flat has no shadow under a card and no glow under the main button
+        assert!(shadow(&crate::tokens::rc(8.0), 1).contains(&crate::tokens::refer("lift")));
+        crate::tokens::set(&Look { finish: Finish::Flat, ..Look::default() });
+        assert_eq!(shadow(&crate::tokens::rc(8.0), 1), "");
+        assert!(!resources().contains(r#"x:Name="Glow""#));
+        crate::tokens::set(&Look::default());
+        assert!(resources().contains(r#"x:Name="Glow""#));
+
+        // chips: the corner follows the option
+        for (chips, corner) in [(Chips::Pills, "15"), (Chips::Soft, "10"), (Chips::Rect, "4")] {
+            crate::tokens::set(&Look { chips, ..Look::default() });
+            let r = resources();
+            let chip = &r[r.find(r#"x:Key="SprawlChip""#).unwrap()..];
+            let chip = &chip[..chip.find("</Style>").unwrap()];
+            assert!(chip.contains(&format!(r#"<Setter Property="CornerRadius" Value="{corner}"/>"#)), "{chips:?}: {chip}");
+        }
+
+        // tabs: pills are a picked chip, the underline is the border brush
+        crate::tokens::set(&Look::default());
+        assert!(pick(Pick::Page, true).contains("SprawlPage}") && pick(Pick::Page, true).contains(&underline()));
+        crate::tokens::set(&Look { tabs: Tabs::Pills, ..Look::default() });
+        let (on, off) = (pick(Pick::Page, true), pick(Pick::Page, false));
+        assert!(on.contains("SprawlPagePill") && on.contains(&format!(r#"Background="{}""#, accent().fill)) && on.contains(&format!(r#"Foreground="{}""#, accent().on)), "{on}");
+        assert!(off.contains(r#"Background="Transparent""#) && !off.contains(&accent().fill), "{off}");
+
+        // controls: outlined is today's, soft draws no line at rest, stock leaves WinUI's own
+        crate::tokens::set(&Look::default());
+        let r = resources();
+        assert!(r.contains(r#"x:Key="TextControlBorderBrush" Color="{$line2}""#) && r.contains(r#"x:Key="ComboBoxBackground" Color="{$ground}""#));
+        assert!(r.contains(r#"x:Name="Ring""#));
+        crate::tokens::set(&Look { controls: Controls::Soft, ..Look::default() });
+        let r = resources();
+        assert!(r.contains(r#"x:Key="TextControlBorderBrush" Color="Transparent""#) && r.contains(r#"x:Key="ComboBoxBackground" Color="{$row}""#));
+        assert!(r.contains(r#"x:Key="TextControlBorderBrushFocused" Color="{$accent}""#), "the focus still shows the accent");
+        crate::tokens::set(&Look { controls: Controls::Stock, ..Look::default() });
+        let r = resources();
+        assert!(!r.contains("TextControlBackground") && !r.contains("ComboBoxBackground") && !r.contains(r#"x:Name="Ring""#) && !r.contains("TextControlBorderThemeThickness"), "{r}");
+        assert!(r.contains("ControlCornerRadius"), "the corner is still the look's");
         crate::tokens::set(&Look::default());
     }
 }
