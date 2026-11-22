@@ -2,7 +2,9 @@
 //! one, changing width as it goes (the mockup's `.uline`, docs/mockups/polish-2026-11-21:
 //! `transition: left, width` over the motion time and its easing).
 //!
-//! The XAML has an empty border, `TabLine`, along the bottom of the tab row (`TabRow`). Once the
+//! A [`Row`] says which row it is: the main page tabs ([`MAIN`]) and the Theme page's groups
+//! ([`THEME`], whose page is made again on each switch, so its new line starts where the old one
+//! was). The XAML has an empty border, `TabLine`, along the bottom of the tab row (`TabRow`). Once the
 //! row is in the window the line is made as that border's child visual: a `ShapeVisual` holding
 //! one rounded rectangle. Opening a tab ([`select`], from `paint_tabs`) starts two Composition
 //! animations on that rectangle, its `Offset` and its geometry's `Size`, from where the line is
@@ -23,11 +25,25 @@ use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibili
 use crate::state::{find, keep};
 use windows_core::{Interface, HSTRING};
 
-/// The tab buttons the line can sit under.
-const TABS: [&str; 6] = ["TabTree", "TabFiles", "TabAdvisor", "TabCleaners", "TabSearch", "TabAbout"];
-/// How far the line is in from the tab's edges, each side: the tabs' own padding, so the line is
-/// exactly as wide as the tab's text, as the mockup's is.
-const INSET: f32 = 14.0;
+/// A row of tabs with a line under it: the border that holds the line (along the bottom of the
+/// row, over the same cell as its buttons), the buttons' names, and how far the line is in from
+/// a tab's edges, each side: the tabs' own padding, so the line is exactly as wide as the tab's
+/// text, as the mockup's is.
+pub(crate) struct Row {
+    host: &'static str,
+    tabs: &'static [&'static str],
+    inset: f32,
+    /// The row is made again with its page (Settings' sub-tabs are): a line made again starts
+    /// where the old one was, and slides from there when another tab is lit.
+    carry: bool,
+}
+
+/// The main page tabs (Tree View ... About).
+pub(crate) static MAIN: Row = Row { host: "TabLine", tabs: &["TabTree", "TabFiles", "TabAdvisor", "TabCleaners", "TabSearch", "TabAbout"], inset: 14.0, carry: false };
+/// The Theme page's four groups (Colour ... Text and space); its page is made again on each switch.
+pub(crate) static THEME: Row = Row { host: "TmTabLine", tabs: &["TmTab0", "TmTab1", "TmTab2", "TmTab3"], inset: THEME_INSET, carry: true };
+/// The Theme sub-tabs' left and right padding.
+pub(crate) const THEME_INSET: f32 = 12.0;
 const HEIGHT: f32 = 3.0;
 
 /// A cubic bezier easing, CSS's `cubic-bezier(x1, y1, x2, y2)`.
@@ -84,6 +100,7 @@ impl Slide {
 }
 
 struct Line {
+    row: &'static Row,
     host: FrameworkElement,
     tabs: Vec<(&'static str, FrameworkElement)>,
     visual: ShapeVisual,
@@ -93,17 +110,33 @@ struct Line {
     /// Where the line was last put (its target, when sliding); None while it has no tab.
     at: Option<Span>,
     slide: Option<Slide>,
+    /// Where the line of this row's last page ended, until this one has a place to slide from.
+    carry: Option<Span>,
+}
+
+/// One row's line, and the tab lit, which is kept across the page being made again.
+struct Slot {
+    row: &'static Row,
+    lit: Option<&'static str>,
+    line: Option<Line>,
 }
 
 thread_local! {
-    static LINE: RefCell<Option<Line>> = const { RefCell::new(None) };
-    /// The lit tab, kept across the page being made again.
-    static LIT: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+    static SLOTS: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The slot of `row`, made at first use.
+fn slot<'a>(slots: &'a mut Vec<Slot>, row: &'static Row) -> &'a mut Slot {
+    let i = slots.iter().position(|s| std::ptr::eq(s.row, row)).unwrap_or_else(|| {
+        slots.push(Slot { row, lit: None, line: None });
+        slots.len() - 1
+    });
+    &mut slots[i]
 }
 
 impl Line {
-    fn new(root: &FrameworkElement) -> windows_core::Result<Line> {
-        let host: FrameworkElement = find(root, "TabLine")?;
+    fn new(root: &FrameworkElement, row: &'static Row) -> windows_core::Result<Line> {
+        let host: FrameworkElement = find(root, row.host)?;
         let c: Compositor = CompositionTarget::GetCompositorForCurrentThread()?;
         let geometry = c.CreateRoundedRectangleGeometry()?;
         geometry.SetCornerRadius(Vector2 { x: 1.5, y: 1.5 })?;
@@ -113,14 +146,14 @@ impl Line {
         let visual = c.CreateShapeVisual()?;
         visual.Shapes()?.Append(&rect)?;
         ElementCompositionPreview::SetElementChildVisual(&host.cast::<UIElement>()?, &visual)?;
-        let tabs = TABS.iter().filter_map(|n| Some((*n, find::<FrameworkElement>(root, n).ok()?))).collect();
-        let line = Line { host, tabs, visual, rect, geometry, brush, at: None, slide: None };
+        let tabs = row.tabs.iter().filter_map(|n| Some((*n, find::<FrameworkElement>(root, n).ok()?))).collect();
+        let line = Line { row, host, tabs, visual, rect, geometry, brush, at: None, slide: None, carry: None };
         // a layout change moves the line without a slide: the host's width (the window), a tab's
         // width (a badge came or went)
         let mut watched: Vec<&FrameworkElement> = line.tabs.iter().map(|t| &t.1).collect();
         watched.push(&line.host);
         for fe in watched {
-            if let Ok(h) = fe.SizeChanged(|_, _| settle()) {
+            if let Ok(h) = fe.SizeChanged(move |_, _| settle(row)) {
                 keep(h);
             }
         }
@@ -133,8 +166,8 @@ impl Line {
         if tab.cast::<UIElement>().ok()?.Visibility().ok()? != Visibility::Visible {
             return None;
         }
-        let w = tab.ActualWidth().ok()? as f32 - 2.0 * INSET;
-        let x = tab.cast::<UIElement>().ok()?.ActualOffset().ok()?.x + INSET;
+        let w = tab.ActualWidth().ok()? as f32 - 2.0 * self.row.inset;
+        let x = tab.cast::<UIElement>().ok()?.ActualOffset().ok()?.x + self.row.inset;
         (w > 0.0).then_some((x, w))
     }
 
@@ -188,11 +221,10 @@ impl Line {
         self.visual.SetSize(Vector2 { x: w, y: h })
     }
 
-    /// Bring the line to the lit tab. With `animate` it slides when it can: it has a place now,
-    /// the tab has one, and the motion is not None.
-    fn go(&mut self, animate: bool) {
+    /// Bring the line to the tab `lit`. With `animate` it slides when it can: it has a place now
+    /// (or the last page's line had one), the tab has one, and the motion is not None.
+    fn go(&mut self, lit: Option<&str>, animate: bool) {
         let _ = self.dress();
-        let lit = LIT.with(|l| *l.borrow());
         let to = self.target(lit);
         if self.at == to && self.slide.as_ref().is_none_or(|s| s.done()) {
             if self.slide.as_ref().is_some_and(|s| s.done()) {
@@ -201,9 +233,13 @@ impl Line {
             return;
         }
         let (ms, curve) = timing(crate::look::motion());
-        let from = self.slide.as_ref().map(|s| s.now()).or(self.at);
+        let mut from = self.slide.as_ref().map(|s| s.now()).or(self.at);
+        // the first place of a line made again: where the last page's line was, once
+        if from.is_none() && to.is_some() {
+            from = self.carry.take();
+        }
         let _ = match (animate && ms > 0, from, to) {
-            (true, Some(from), Some(to)) => self.slide_to(from, to, ms, curve),
+            (true, Some(from), Some(to)) if from != to => self.slide_to(from, to, ms, curve),
             _ => self.jump(to),
         };
     }
@@ -214,38 +250,61 @@ fn windows_ui_black() -> crate::bindings::Windows::UI::Color {
 }
 
 /// The layout changed: put the line on its tab at once.
-fn settle() {
+fn settle(row: &'static Row) {
     // a handler can run while the line is borrowed (setting a size lays out again): skip it,
     // the call that holds it ends with the line placed
-    LINE.with(|l| {
+    SLOTS.with(|l| {
         if let Ok(mut l) = l.try_borrow_mut() {
-            if let Some(line) = l.as_mut() {
+            let s = slot(&mut l, row);
+            let lit = s.lit;
+            if let Some(line) = s.line.as_mut() {
                 // a slide on its way (a badge came or went as the tab opened) goes on to the
-                // tab's new place; a line at rest is put on its tab at once
-                let sliding = line.slide.as_ref().is_some_and(|s| !s.done());
-                line.go(sliding);
+                // tab's new place, and so does a line made again with a place to start from; a
+                // line at rest is put on its tab at once
+                let sliding = line.slide.as_ref().is_some_and(|s| !s.done()) || line.carry.is_some();
+                line.go(lit, sliding);
             }
         }
     });
 }
 
-/// Open the tab named `lit` (None: no tab is lit): the line slides to it. The line is made at
-/// the first call for a page, and a page made again (a new theme or look) gets a new one, put
-/// straight on its tab.
-pub(crate) fn select(root: &FrameworkElement, lit: Option<&str>) {
-    LIT.with(|l| *l.borrow_mut() = lit.and_then(|n| TABS.iter().copied().find(|t| *t == n)));
-    let Ok(host) = find::<FrameworkElement>(root, "TabLine") else { return };
+/// Forget `row`'s line and lit tab: its page is new (Settings was opened again), so the line
+/// starts on its tab, with no slide from where it was last time.
+pub(crate) fn forget(row: &'static Row) {
+    SLOTS.with(|l| {
+        if let Ok(mut l) = l.try_borrow_mut() {
+            let s = slot(&mut l, row);
+            s.lit = None;
+            s.line = None;
+        }
+    });
+}
+
+/// Open the tab named `lit` (None: no tab is lit) in `row`: the line slides to it. The line is
+/// made at the first call for a page, and a page made again (a new theme or look) gets a new
+/// one, put straight on its tab; a row that `carry`s starts its new line where the old one was,
+/// when another tab is lit.
+pub(crate) fn select(root: &FrameworkElement, row: &'static Row, lit: Option<&str>) {
+    let lit = lit.and_then(|n| row.tabs.iter().copied().find(|t| *t == n));
+    let Ok(host) = find::<FrameworkElement>(root, row.host) else { return };
     // the pills option has no line
     let pills = crate::tokens::current().tabs == crate::tokens::Tabs::Pills;
     let _ = host.cast::<UIElement>().and_then(|h| h.SetVisibility(if pills { Visibility::Collapsed } else { Visibility::Visible }));
-    LINE.with(|l| {
+    SLOTS.with(|l| {
         let Ok(mut l) = l.try_borrow_mut() else { return };
-        let same = l.as_ref().is_some_and(|line| line.host.as_raw() == host.as_raw());
+        let s = slot(&mut l, row);
+        let changed = s.lit != lit;
+        s.lit = lit;
+        let same = s.line.as_ref().is_some_and(|line| line.host.as_raw() == host.as_raw());
         if !same {
-            *l = Line::new(root).ok();
+            let carry = s.line.as_ref().filter(|_| row.carry && changed).and_then(|line| line.at);
+            s.line = Line::new(root, row).ok().map(|mut line| {
+                line.carry = carry;
+                line
+            });
         }
-        if let Some(line) = l.as_mut() {
-            line.go(same);
+        if let Some(line) = s.line.as_mut() {
+            line.go(lit, same || line.carry.is_some());
         }
     });
 }
@@ -270,6 +329,17 @@ mod tests {
         let (ms, lively) = timing(crate::tokens::Motion::Lively);
         assert_eq!(ms, 340);
         assert!((0..=100).any(|i| ease(lively, i as f32 / 100.0) > 1.05), "it passes the mark");
+    }
+
+    /// The Theme row names one button per group, and the page's tabs are the names it holds.
+    #[test]
+    fn the_theme_row_has_a_tab_per_group() {
+        assert_eq!(THEME.tabs.len(), crate::themepage::GROUPS.len());
+        for (g, n) in THEME.tabs.iter().enumerate() {
+            assert_eq!(*n, format!("TmTab{g}"));
+        }
+        assert_eq!((MAIN.host, THEME.host), ("TabLine", "TmTabLine"));
+        assert!(THEME.carry && !MAIN.carry && THEME.inset == THEME_INSET);
     }
 
     #[test]

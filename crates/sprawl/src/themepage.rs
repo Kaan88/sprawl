@@ -1,4 +1,4 @@
-//! The Theme page of Settings: a sample that follows each pick, the presets, and the options in four groups of labelled dropdowns, three to a row. A preset is only a set of option values; Custom is the
+//! The Theme page of Settings: a sample that follows each pick, the presets, and the options in four groups of labelled dropdowns, two to a row. A preset is only a set of option values; Custom is the
 //! user's own picks, kept apart so a preset tried and left does not lose them. The options are
 //! kept in `settings.ini` as one `look.<option>` key each (a missing key is Sprawl's own value),
 //! read before any XAML loads, and applied live on Save through [`crate::restyle::apply_look`].
@@ -28,6 +28,8 @@ pub(crate) struct Opt {
 }
 
 pub(crate) const GROUPS: [&str; 4] = ["Colour", "Shape", "Feel", "Text and space"];
+/// The dropdowns sit in two columns, as the mockup's grid does.
+const COLUMNS: usize = 2;
 
 /// Only options that exist are here; each group holds at most eight.
 pub(crate) const OPTS: [Opt; 19] = [
@@ -334,6 +336,8 @@ impl State {
         t.custom = custom.clone();
         t.orig_custom = custom;
         t.tab = 0;
+        // a new page: its line starts on its tab, not where it was last time
+        crate::tabline::forget(&crate::tabline::THEME);
     }
 
     /// The page's XAML, and the names of its buttons.
@@ -352,27 +356,31 @@ impl State {
         );
         buttons.extend(["TmCopy", "TmPaste", "TmBack"].map(String::from));
         {
-            x += r##"<StackPanel Orientation="Horizontal" Spacing="2" Margin="0,6,0,0">"##;
+            // the groups, with one line under them that slides (tabline.rs): the line is a border
+            // over the same cell as the buttons, and the buttons' padding is the line's inset
+            let pad = if crate::tokens::current().tabs == Tabs::Pills { String::new() } else { format!(r#" Padding="{0},4,{0},7""#, crate::tabline::THEME_INSET) };
+            x += r##"<Grid HorizontalAlignment="Left" Margin="0,6,0,0"><StackPanel Orientation="Horizontal" Spacing="2">"##;
             for (g, name) in GROUPS.iter().enumerate() {
                 x += &format!(
-                    r##"<Button x:Name="TmTab{g}" {}><TextBlock Text="{}" FontSize="{{$fs13}}"/></Button>"##,
-                    crate::look::pick(crate::look::Pick::Page, g == t.tab),
+                    r##"<Button x:Name="TmTab{g}" {}{pad}><TextBlock Text="{}" FontSize="{{$fs13}}"/></Button>"##,
+                    crate::look::pick_nav(g == t.tab),
                     ui::esc(name)
                 );
                 buttons.push(format!("TmTab{g}"));
             }
-            x += "</StackPanel>";
+            x += r##"</StackPanel><Border x:Name="TmTabLine" Height="3" VerticalAlignment="Bottom" IsHitTestVisible="False"/></Grid>"##;
             let in_group: Vec<&Opt> = OPTS.iter().filter(|o| o.group == t.tab).collect();
-            let rows = r##"<RowDefinition Height="Auto"/>"##.repeat(in_group.len().div_ceil(3));
+            let rows = r##"<RowDefinition Height="Auto"/>"##.repeat(in_group.len().div_ceil(COLUMNS));
             x += &format!(
-                r##"<Grid ColumnSpacing="16" RowSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions>{rows}</Grid.RowDefinitions>"##
+                r##"<Grid ColumnSpacing="16" RowSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions>{rows}</Grid.RowDefinitions>"##
             );
             for (n, o) in in_group.iter().enumerate() {
                 let items: String = o.choices.iter().map(|(_, l)| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(l))).collect();
                 x += &format!(
-                    r##"<StackPanel Grid.Row="{}" Grid.Column="{}"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" Margin="0,0,0,2"/><ComboBox x:Name="TmPick_{}" HorizontalAlignment="Stretch" SelectedIndex="{}">{items}</ComboBox></StackPanel>"##,
-                    n / 3,
-                    n % 3,
+                    // a labelled row: the name in a column of its own, the dropdown filling the rest
+                    r##"<Grid Grid.Row="{}" Grid.Column="{}" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="102"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" VerticalAlignment="Center" TextWrapping="Wrap"/><ComboBox x:Name="TmPick_{}" Grid.Column="1" HorizontalAlignment="Stretch" SelectedIndex="{}">{items}</ComboBox></Grid>"##,
+                    n / COLUMNS,
+                    n % COLUMNS,
                     ui::esc(o.label),
                     o.key,
                     index(&t.look, t.mode, o.key)
@@ -407,6 +415,8 @@ impl State {
             }
         }
         self.theme_refresh(fe);
+        // the line under the groups slides to the lit one
+        crate::tabline::select(fe, &crate::tabline::THEME, Some(&format!("TmTab{}", self.prefs.theme.tab)));
     }
 
     /// The sample and the presets, made again for the picks (the dropdowns stay as they are).
