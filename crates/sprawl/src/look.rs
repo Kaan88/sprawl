@@ -352,8 +352,95 @@ struct Feel {
     over: Pose,
     down: Pose,
     ms: u32,
-    spline: &'static str,
+    /// The content's movement: CSS's cubic-bezier (x1, y1, x2, y2). Press in's goes past 1 to
+    /// overshoot, which a XAML KeySpline can't take, so [`pieces`] cuts it where it turns.
+    spline: [f64; 4],
     shadow: bool,
+}
+
+/// CSS's `ease`, which the mockup's washes take whatever the press option is.
+const EASE: [f64; 4] = [0.25, 0.1, 0.25, 1.0];
+
+/// A number for XAML: at most four decimals, no trailing zeros.
+fn num(v: f64) -> String {
+    let s = format!("{:.4}", v);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".to_string() } else { s.to_string() }
+}
+
+fn spline_text(s: [f64; 4]) -> String {
+    format!("{},{},{},{}", num(s[0]), num(s[1]), num(s[2]), num(s[3]))
+}
+
+/// A point on the cubic bezier from (0,0) to (1,1) with control points `s`, at parameter `t`.
+fn bezier_at(s: [f64; 4], t: f64) -> (f64, f64) {
+    let u = 1.0 - t;
+    let f = |a: f64, b: f64| 3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t;
+    (f(s[0], s[2]), f(s[1], s[3]))
+}
+
+/// The curve `s` as consecutive KeySpline pieces that each stay inside 0..1, as XAML requires:
+/// (where the piece ends in time, 0..1; where it ends in value, past 1 at an overshoot; its own
+/// spline). A curve that stays inside is one piece. One that overshoots (or undershoots) is cut
+/// where it turns, which is exact: the pieces together are the same curve (de Casteljau).
+fn pieces(s: [f64; 4]) -> Vec<(f64, f64, [f64; 4])> {
+    let inside = |v: f64| (0.0..=1.0).contains(&v);
+    if inside(s[1]) && inside(s[3]) {
+        return vec![(1.0, 1.0, s)];
+    }
+    // where dy/dt is 0: (3y1 - 3y2 + 1)t² + (2y2 - 4y1)t + y1 = 0
+    let (y1, y2) = (s[1], s[3]);
+    let (a, b, c) = (3.0 * y1 - 3.0 * y2 + 1.0, 2.0 * y2 - 4.0 * y1, y1);
+    let mut turns: Vec<f64> = if a.abs() < 1e-12 {
+        if b.abs() < 1e-12 { vec![] } else { vec![-c / b] }
+    } else {
+        let d = b * b - 4.0 * a * c;
+        if d < 0.0 { vec![] } else { vec![(-b - d.sqrt()) / (2.0 * a), (-b + d.sqrt()) / (2.0 * a)] }
+    };
+    turns.retain(|t| *t > 1e-6 && *t < 1.0 - 1e-6 && !inside(bezier_at(s, *t).1));
+    turns.sort_by(|a, b| a.total_cmp(b));
+    // split the control polygon at each turn, in the original curve's coordinates
+    let lerp = |p: (f64, f64), q: (f64, f64), t: f64| (p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t);
+    let mut rest = [(0.0, 0.0), (s[0], s[1]), (s[2], s[3]), (1.0, 1.0)];
+    let mut done = 0.0;
+    let mut out = Vec::new();
+    for t in turns.into_iter().chain(std::iter::once(1.0)) {
+        let local = (t - done) / (1.0 - done);
+        let [p0, p1, p2, p3] = rest;
+        let (a1, b1, c1) = (lerp(p0, p1, local), lerp(p1, p2, local), lerp(p2, p3, local));
+        let (a2, b2) = (lerp(a1, b1, local), lerp(b1, c1, local));
+        let m = lerp(a2, b2, local);
+        let piece = [p0, a1, a2, m];
+        rest = [m, b2, c1, p3];
+        done = t;
+        // the piece in its own box: time and value from its start to its end
+        let (x0, v0, x1, v1) = (piece[0].0, piece[0].1, piece[3].0, piece[3].1);
+        let nx = |x: f64| ((x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+        let ny = |y: f64| ((y - v0) / (v1 - v0)).clamp(0.0, 1.0);
+        out.push((x1, v1, [nx(piece[1].0), ny(piece[1].1), nx(piece[2].0), ny(piece[2].1)]));
+    }
+    out
+}
+
+/// `s` with its values held inside 0..1, for a storyboard that doesn't know where it starts from
+/// (a state's own): the overshoot itself is played by the transitions between known states.
+fn safe(s: [f64; 4]) -> [f64; 4] {
+    [s[0], s[1].clamp(0.0, 1.0), s[2], s[3].clamp(0.0, 1.0)]
+}
+
+/// The key frames that take a value from `from` to `to` in `ms` along `s`, overshoot included.
+fn frames(from: f64, to: f64, ms: u32, s: [f64; 4]) -> String {
+    pieces(s)
+        .into_iter()
+        .map(|(x, v, sp)| {
+            format!(
+                r##"<SplineDoubleKeyFrame KeyTime="0:0:{:.3}" Value="{}" KeySpline="{}"/>"##,
+                x * f64::from(ms) / 1000.0,
+                num(from + (to - from) * v),
+                spline_text(sp)
+            )
+        })
+        .collect()
 }
 
 fn press_feel(press: crate::tokens::Press) -> Feel {
@@ -361,13 +448,13 @@ fn press_feel(press: crate::tokens::Press) -> Feel {
     let state = |white: f64, black: f64, lift: f64, scale: f64| Pose { white, black, lift, scale };
     match press {
         // up 1 px with a shadow under the pointer, down 1 px at 0.98 when pressed
-        Press::LiftSink => Feel { over: state(0.10, 0.0, -1.0, 1.0), down: state(0.0, 0.20, 1.0, 0.98), ms: 140, spline: "0.2,0.8,0.2,1", shadow: true },
+        Press::LiftSink => Feel { over: state(0.10, 0.0, -1.0, 1.0), down: state(0.0, 0.20, 1.0, 0.98), ms: 140, spline: [0.2, 0.8, 0.2, 1.0], shadow: true },
         // no lift, and a sink to 0.95 that overshoots a little
-        Press::PressIn => Feel { over: state(0.13, 0.0, 0.0, 1.0), down: state(0.0, 0.22, 0.0, 0.95), ms: 130, spline: "0.2,0.9,0.3,1.35", shadow: false },
+        Press::PressIn => Feel { over: state(0.13, 0.0, 0.0, 1.0), down: state(0.0, 0.22, 0.0, 0.95), ms: 130, spline: [0.2, 0.9, 0.3, 1.35], shadow: false },
         // no movement: only the wash fades in
-        Press::Fade => Feel { over: state(0.13, 0.0, 0.0, 1.0), down: state(0.0, 0.22, 0.0, 1.0), ms: 90, spline: "0.25,0.1,0.25,1", shadow: false },
+        Press::Fade => Feel { over: state(0.13, 0.0, 0.0, 1.0), down: state(0.0, 0.22, 0.0, 1.0), ms: 90, spline: EASE, shadow: false },
         // a very small wash, white both ways, at once
-        Press::Faint => Feel { over: state(0.07, 0.0, 0.0, 1.0), down: state(0.12, 0.0, 0.0, 1.0), ms: 0, spline: "0,0,1,1", shadow: false },
+        Press::Faint => Feel { over: state(0.07, 0.0, 0.0, 1.0), down: state(0.12, 0.0, 0.0, 1.0), ms: 0, spline: [0.0, 0.0, 1.0, 1.0], shadow: false },
     }
 }
 
@@ -393,15 +480,51 @@ fn states_with(motion: crate::tokens::Motion, feel: &Feel, state: Pose) -> Strin
     let d = state_time(motion, feel.ms);
     let (lift, scale) = travel(motion, state.lift, state.scale);
     let t = "(UIElement.RenderTransform).(CompositeTransform.";
-    let one = |target: &str, prop: &str, to: f64| animate(target, prop, to, &d, feel.spline);
+    // the washes fade on CSS's ease, as the mockup's do; the content moves on the press's curve
+    let (wash, moves) = (spline_text(EASE), spline_text(safe(feel.spline)));
     format!(
         "<Storyboard>{}{}{}{}{}</Storyboard>",
-        one("Wash", "Opacity", state.white),
-        one("WashDown", "Opacity", state.black),
-        one("Content", &format!("{t}TranslateY)"), lift),
-        one("Content", &format!("{t}ScaleX)"), scale),
-        one("Content", &format!("{t}ScaleY)"), scale),
+        animate("Wash", "Opacity", state.white, &d, &wash),
+        animate("WashDown", "Opacity", state.black, &d, &wash),
+        animate("Content", &format!("{t}TranslateY)"), lift, &d, &moves),
+        animate("Content", &format!("{t}ScaleX)"), scale, &d, &moves),
+        animate("Content", &format!("{t}ScaleY)"), scale, &d, &moves),
     )
+}
+
+/// The transitions between the pointer states, for a press curve that overshoots: a state's own
+/// storyboard doesn't know where it starts from, so the overshoot (a value past where it ends) is
+/// played here, between two known states, as [`frames`]. Nothing for a curve that stays inside,
+/// or with no motion.
+fn transitions_with(motion: crate::tokens::Motion, feel: &Feel, poses: &[(&str, Pose)]) -> String {
+    let ms = state_ms(motion, feel.ms);
+    if ms == 0 || pieces(feel.spline).len() == 1 {
+        return String::new();
+    }
+    let d = state_time(motion, feel.ms);
+    let wash = spline_text(EASE);
+    let t = "(UIElement.RenderTransform).(CompositeTransform.";
+    let mut out = String::new();
+    for (from_name, from) in poses {
+        for (to_name, to) in poses {
+            let (a, b) = (travel(motion, from.lift, from.scale), travel(motion, to.lift, to.scale));
+            if from_name == to_name || a == b {
+                continue;
+            }
+            let moving = |prop: &str, x: f64, y: f64| {
+                format!(r##"<DoubleAnimationUsingKeyFrames Storyboard.TargetName="Content" Storyboard.TargetProperty="{t}{prop})">{}</DoubleAnimationUsingKeyFrames>"##, frames(x, y, ms, feel.spline))
+            };
+            out += &format!(
+                r##"<VisualTransition From="{from_name}" To="{to_name}"><Storyboard>{}{}{}{}{}</Storyboard></VisualTransition>"##,
+                animate("Wash", "Opacity", to.white, &d, &wash),
+                animate("WashDown", "Opacity", to.black, &d, &wash),
+                moving("TranslateY", a.0, b.0),
+                moving("ScaleX", a.1, b.1),
+                moving("ScaleY", a.1, b.1),
+            );
+        }
+    }
+    format!("<VisualStateGroup.Transitions>{out}</VisualStateGroup.Transitions>")
 }
 
 /// What a style adds to a button's flat look.
@@ -473,12 +596,14 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, depth: D
         _ => String::new(),
     };
     let rest = Pose { white: 0.0, black: 0.0, lift: 0.0, scale: 1.0 };
+    let moves = transitions_with(motion(), &feel, &[("Normal", rest), ("PointerOver", over), ("Pressed", down)]);
     let (normal, over, pressed) = (states(&feel, rest), states(&feel, over), states(&feel, down));
     // WinUI runs a template's states only from its outermost element: Root, or the grid that
     // holds the shadow's host and Root
     let vsm = format!(
         r##"<VisualStateManager.VisualStateGroups>
       <VisualStateGroup x:Name="CommonStates">
+        {moves}
         <VisualState x:Name="Normal"><VisualState.Storyboard>{normal}</VisualState.Storyboard></VisualState>
         <VisualState x:Name="PointerOver"><VisualState.Storyboard>{over}</VisualState.Storyboard></VisualState>
         <VisualState x:Name="Pressed"><VisualState.Storyboard>{pressed}</VisualState.Storyboard></VisualState>
@@ -1428,6 +1553,58 @@ mod tests {
         crate::tokens::set(&Look::default());
     }
 
+    /// WinUI throws on a KeySpline outside 0..1 (Press in crashed the app this way): every one
+    /// the styles carry, under each press option and motion, stays inside.
+    #[test]
+    fn every_key_spline_is_one_winui_accepts() {
+        use crate::tokens::{Look, Motion, Press};
+        for press in [Press::LiftSink, Press::PressIn, Press::Fade, Press::Faint] {
+            for motion in [Motion::Subtle, Motion::Lively, Motion::None] {
+                crate::tokens::set(&Look { press, motion, ..Look::default() });
+                let r = resources();
+                let mut seen = 0;
+                for part in r.split(r#"KeySpline=""#).skip(1) {
+                    let text = &part[..part.find('"').unwrap()];
+                    let v: Vec<f64> = text.split(',').map(|n| n.parse().unwrap()).collect();
+                    assert!(v.len() == 4 && v.iter().all(|n| (0.0..=1.0).contains(n)), "{press:?} {motion:?}: {text}");
+                    seen += 1;
+                }
+                assert!(seen > 0);
+            }
+        }
+        crate::tokens::set(&Look::default());
+    }
+
+    /// Press in's curve cut at its turn is the same curve: each piece, put back in the whole's
+    /// box, lands on the original, and the overshoot is the mockup's (about 12 % past, at 60 %).
+    #[test]
+    fn an_overshooting_curve_is_cut_exactly() {
+        let s = [0.2, 0.9, 0.3, 1.35];
+        let p = pieces(s);
+        assert_eq!(p.len(), 2);
+        let (x, v, _) = p[0];
+        assert!((x - 0.6031).abs() < 1e-3 && (v - 1.1188).abs() < 1e-3, "{x} {v}");
+        assert_eq!((p[1].0, p[1].1), (1.0, 1.0));
+        let (mut x0, mut v0) = (0.0, 0.0);
+        for (x1, v1, sp) in p {
+            assert!(sp.iter().all(|n| (0.0..=1.0).contains(n)), "{sp:?}");
+            for i in 0..=20 {
+                let (px, py) = bezier_at(sp, f64::from(i) / 20.0);
+                let (gx, gy) = (x0 + (x1 - x0) * px, v0 + (v1 - v0) * py);
+                // the original curve's value at that time
+                let (mut lo, mut hi) = (0.0, 1.0);
+                for _ in 0..60 {
+                    let m = (lo + hi) / 2.0;
+                    if bezier_at(s, m).0 < gx { lo = m } else { hi = m }
+                }
+                assert!((bezier_at(s, lo).1 - gy).abs() < 1e-6, "at {gx}");
+            }
+            (x0, v0) = (x1, v1);
+        }
+        // a curve inside 0..1 is left whole
+        assert_eq!(pieces(EASE), vec![(1.0, 1.0, EASE)]);
+    }
+
     /// Each newer option reaches the styles it names: the press states, the finish, the chip's
     /// corner, the page tabs, and the fields' keys.
     #[test]
@@ -1437,10 +1614,10 @@ mod tests {
         // as the mockup's four modes (the wash is white under the pointer and black pressed)
         let lift = press_feel(Press::LiftSink);
         assert_eq!((lift.over.white, lift.over.lift, lift.down.black, lift.down.lift, lift.down.scale, lift.ms), (0.10, -1.0, 0.20, 1.0, 0.98, 140));
-        assert!(lift.shadow && lift.spline == "0.2,0.8,0.2,1");
+        assert!(lift.shadow && lift.spline == [0.2, 0.8, 0.2, 1.0]);
         let sink = press_feel(Press::PressIn);
         assert_eq!((sink.over.white, sink.over.lift, sink.down.black, sink.down.scale, sink.ms), (0.13, 0.0, 0.22, 0.95, 130));
-        assert!(!sink.shadow && sink.spline == "0.2,0.9,0.3,1.35", "the sink overshoots");
+        assert!(!sink.shadow && sink.spline == [0.2, 0.9, 0.3, 1.35], "the sink overshoots");
         let clear = press_feel(Press::Fade);
         assert_eq!((clear.over.white, clear.down.black, clear.down.scale, clear.over.lift, clear.ms), (0.13, 0.22, 1.0, 0.0, 90));
         let faint = press_feel(Press::Faint);
@@ -1451,7 +1628,11 @@ mod tests {
             let r = resources();
             let primary = &r[r.find(r#"x:Key="SprawlPrimary""#).unwrap()..];
             let primary = &primary[..primary.find("</Style>").unwrap()];
-            assert!(primary.contains(&format!(r#"KeySpline="{}""#, press_feel(press).spline)), "{press:?}");
+            assert!(primary.contains(&format!(r#"KeySpline="{}""#, spline_text(safe(press_feel(press).spline)))), "{press:?}");
+            // the washes fade on CSS's ease whatever the press is, as the mockup's do
+            assert!(primary.contains(r#"TargetName="Wash" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame"#) && primary.contains(r#"KeySpline="0.25,0.1,0.25,1""#), "{press:?}");
+            // only Press in's overshoot needs transitions between the states
+            assert_eq!(primary.contains("<VisualTransition "), press == Press::PressIn, "{press:?}");
             // the shadow grows under the pointer and goes while pressed for Lift only (shade.rs
             // reads this), on the press's own time
             assert_eq!(shadow_motion(), (press == Press::LiftSink, state_ms(motion(), press_feel(press).ms)), "{press:?}");
