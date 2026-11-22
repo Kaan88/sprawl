@@ -312,3 +312,15 @@ tools/write-hub-txt.ps1). Left for later:
   does not there; Sprawl uses pwsh. Fix in the Hub repository's original.
 - Releases now need PowerShell 7 (`pwsh`); build checks it first.
 - Never run for real: at 1.0.6, check hub.txt is among the release assets.
+
+## L. One-time theme reset: in 1.0.7, out in the release after
+
+The user's word (2026-11-23): the next release resets theming to the defaults, and the release
+after removes that code.
+- 1.0.7: `Settings::reset_look_once` (settings.rs) drops every `look.*` key and `theme` once,
+  keeping `look.custom`, and writes `lookReset107=1`. Called in main.rs at the first settings
+  load (saved there unless a screenshot run) and again before the look is set at app start.
+  A new install (empty file) is only marked in memory, so `keep_old_defaults` still sees it as new.
+- The release after 1.0.7: remove `reset_look_once`, its two calls in main.rs (marked
+  "ONE-TIME, 1.0.7 only") and the `look_resets_once` test. Leave the `lookReset107` key in
+  users' files; nothing reads it after that. No CHANGELOG line needed for the removal.

@@ -3,6 +3,10 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- The theme goes back to the defaults once, so everyone gets the new look of 1.0.6 and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.
+
 ## 1.0.6 — 2026-11-23
 
 - A new look by default: surfaces with a touch of your accent, slightly rounder corners (6 / 10), quieter 12 px explanations, rectangular chips and a flat finish. A look you picked on the Theme page stays as it is; the Midnight and Paper presets are unchanged.
