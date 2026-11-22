@@ -1628,9 +1628,36 @@ pub(crate) fn map_share(search: bool, height: f64) -> f64 {
     }
 }
 
+/// The window's smallest size in view pixels (see [`State::min_size`]).
+pub(crate) const MIN_WINDOW: (f64, f64) = (1000.0, 600.0);
+
+/// [`MIN_WINDOW`] in screen pixels at `scale`, rounded up so the view never gets less.
+pub(crate) fn min_window_px(scale: f64) -> (i32, i32) {
+    ((MIN_WINDOW.0 * scale).ceil() as i32, (MIN_WINDOW.1 * scale).ceil() as i32)
+}
+
+#[cfg(test)]
+mod min_window_tests {
+    use super::*;
+
+    /// The smallest window holds the Settings card at full width with its margins, and its
+    /// screen size follows the display scale, never rounding the view below the minimum.
+    #[test]
+    fn the_smallest_window_holds_settings_at_every_scale() {
+        let (card_w, _) = crate::wizard::card_size(true, MIN_WINDOW.0, MIN_WINDOW.1);
+        let (full_w, _) = crate::wizard::card_size(true, 0.0, 0.0);
+        assert_eq!(card_w, full_w, "Settings keeps its full width in the smallest window");
+        assert_eq!(min_window_px(1.0), (1000, 600));
+        assert_eq!(min_window_px(1.5), (1500, 900));
+        let (w, h) = min_window_px(1.25);
+        assert!(f64::from(w) / 1.25 >= MIN_WINDOW.0 && f64::from(h) / 1.25 >= MIN_WINDOW.1);
+    }
+}
+
 impl State {
     /// The window's size changed.
     pub(crate) fn fit_size(&mut self, w: f64, h: f64) {
+        self.min_size();
         self.fit_width(w);
         if (w - self.win_w).abs() >= 1.0 {
             self.win_w = w;
@@ -1640,6 +1667,24 @@ impl State {
             self.win_h = h;
             self.wizard_fit();
             self.map_room();
+        }
+    }
+
+    /// The smallest the window can be made, [`MIN_WINDOW`] in view pixels: the Settings card at
+    /// its full width with its margins, and the main window's header and panels without
+    /// anything cut off. Windows takes it in screen pixels, so it is set again whenever the
+    /// window's scale changes (another monitor, another display scale).
+    pub(crate) fn min_size(&self) {
+        use crate::bindings::Microsoft::UI::Windowing::OverlappedPresenter;
+        thread_local! { static SCALE: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }
+        let Ok(scale) = self.root.XamlRoot().and_then(|r| r.RasterizationScale()) else { return };
+        if scale <= 0.0 || SCALE.with(|s| s.get()) == scale {
+            return;
+        }
+        let Ok(p) = self.window.AppWindow().and_then(|a| a.Presenter()).and_then(|p| p.cast::<OverlappedPresenter>()) else { return };
+        let (w, h) = min_window_px(scale);
+        if p.SetPreferredMinimumWidth(Some(w)).and_then(|_| p.SetPreferredMinimumHeight(Some(h))).is_ok() {
+            SCALE.with(|s| s.set(scale));
         }
     }
 

@@ -4592,6 +4592,16 @@ pub mod Microsoft {
                 windows_core::IInspectable
             );
             impl AppWindow {
+                pub fn Presenter(&self) -> windows_core::Result<AppWindowPresenter> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).Presenter)(
+                            windows_core::Interface::as_raw(self),
+                            &mut result__,
+                        )
+                        .and_then(|| windows_core::imp::Type::from_abi(result__))
+                    }
+                }
                 pub fn TitleBar(&self) -> windows_core::Result<AppWindowTitleBar> {
                     unsafe {
                         let mut result__ = core::mem::zeroed();
@@ -4638,6 +4648,28 @@ pub mod Microsoft {
             }
             unsafe impl Send for AppWindow {}
             unsafe impl Sync for AppWindow {}
+            #[repr(transparent)]
+            #[derive(Clone, Debug, Eq, PartialEq)]
+            pub struct AppWindowPresenter(windows_core::IUnknown);
+            windows_core::imp::interface_hierarchy!(
+                AppWindowPresenter,
+                windows_core::IUnknown,
+                windows_core::IInspectable
+            );
+            impl windows_core::RuntimeType for AppWindowPresenter {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_class::<Self, IAppWindowPresenter>();
+            }
+            unsafe impl windows_core::Interface for AppWindowPresenter {
+                type Vtable = <IAppWindowPresenter as windows_core::Interface>::Vtable;
+                const IID: windows_core::GUID =
+                    <IAppWindowPresenter as windows_core::Interface>::IID;
+            }
+            impl windows_core::RuntimeName for AppWindowPresenter {
+                const NAME: &'static str = "Microsoft.UI.Windowing.AppWindowPresenter";
+            }
+            unsafe impl Send for AppWindowPresenter {}
+            unsafe impl Sync for AppWindowPresenter {}
             #[repr(transparent)]
             #[derive(Clone, Debug, Eq, PartialEq)]
             pub struct AppWindowTitleBar(windows_core::IUnknown);
@@ -4706,7 +4738,10 @@ pub mod Microsoft {
                 IsVisible: usize,
                 OwnerWindowId: usize,
                 Position: usize,
-                Presenter: usize,
+                pub Presenter: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut *mut core::ffi::c_void,
+                ) -> windows_core::HRESULT,
                 Size: usize,
                 Title: usize,
                 SetTitle: usize,
@@ -4729,6 +4764,23 @@ pub mod Microsoft {
                 SetPresenterByKind: usize,
                 pub Show:
                     unsafe extern "system" fn(*mut core::ffi::c_void) -> windows_core::HRESULT,
+            }
+            windows_core::imp::define_interface!(
+                IAppWindowPresenter,
+                IAppWindowPresenter_Vtbl,
+                0xbc3042c2_c6c6_5632_8989_ff0ec6d3b40d
+            );
+            impl windows_core::RuntimeType for IAppWindowPresenter {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_interface::<Self>();
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Windowing.IAppWindowPresenter",
+                    );
+            }
+            #[repr(C)]
+            pub struct IAppWindowPresenter_Vtbl {
+                pub base__: windows_core::IInspectable_Vtbl,
             }
             windows_core::imp::define_interface!(
                 IAppWindowTitleBar,
@@ -4774,6 +4826,139 @@ pub mod Microsoft {
                 )
                     -> windows_core::HRESULT,
             }
+            windows_core::imp::define_interface!(
+                IOverlappedPresenter,
+                IOverlappedPresenter_Vtbl,
+                0x21693970_4f4c_5172_9e9d_682a2d174884
+            );
+            impl windows_core::RuntimeType for IOverlappedPresenter {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_interface::<Self>();
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Windowing.IOverlappedPresenter",
+                    );
+            }
+            #[repr(C)]
+            pub struct IOverlappedPresenter_Vtbl {
+                pub base__: windows_core::IInspectable_Vtbl,
+            }
+            windows_core::imp::define_interface!(
+                IOverlappedPresenter3,
+                IOverlappedPresenter3_Vtbl,
+                0x55d26138_4c38_57e7_a0c1_d467b774db8c
+            );
+            impl windows_core::RuntimeType for IOverlappedPresenter3 {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_interface::<Self>();
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Windowing.IOverlappedPresenter3",
+                    );
+            }
+            #[repr(C)]
+            pub struct IOverlappedPresenter3_Vtbl {
+                pub base__: windows_core::IInspectable_Vtbl,
+                pub PreferredMinimumHeight: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut *mut core::ffi::c_void,
+                )
+                    -> windows_core::HRESULT,
+                pub SetPreferredMinimumHeight: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut core::ffi::c_void,
+                )
+                    -> windows_core::HRESULT,
+                pub PreferredMinimumWidth: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut *mut core::ffi::c_void,
+                )
+                    -> windows_core::HRESULT,
+                pub SetPreferredMinimumWidth: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut core::ffi::c_void,
+                )
+                    -> windows_core::HRESULT,
+            }
+            #[repr(transparent)]
+            #[derive(Clone, Debug, Eq, PartialEq)]
+            pub struct OverlappedPresenter(windows_core::IUnknown);
+            windows_core::imp::interface_hierarchy!(
+                OverlappedPresenter,
+                windows_core::IUnknown,
+                windows_core::IInspectable
+            );
+            windows_core::imp::required_hierarchy!(OverlappedPresenter, AppWindowPresenter);
+            impl OverlappedPresenter {
+                pub fn PreferredMinimumHeight(&self) -> windows_core::Result<i32> {
+                    let this = &windows_core::Interface::cast::<IOverlappedPresenter3>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).PreferredMinimumHeight)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        .and_then(|r__: windows_reference::IReference<i32>| r__.Value())
+                    }
+                }
+                pub fn SetPreferredMinimumHeight(
+                    &self,
+                    value: Option<i32>,
+                ) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<IOverlappedPresenter3>(self)?;
+                    let value__ = value.map(<windows_reference::IReference<i32> as From<_>>::from);
+                    unsafe {
+                        (windows_core::Interface::vtable(this).SetPreferredMinimumHeight)(
+                            windows_core::Interface::as_raw(this),
+                            windows_core::Param::param(value__.as_ref()).abi(),
+                        )
+                        .ok()
+                    }
+                }
+                pub fn PreferredMinimumWidth(&self) -> windows_core::Result<i32> {
+                    let this = &windows_core::Interface::cast::<IOverlappedPresenter3>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).PreferredMinimumWidth)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .and_then(|| windows_core::imp::Type::from_abi(result__))
+                        .and_then(|r__: windows_reference::IReference<i32>| r__.Value())
+                    }
+                }
+                pub fn SetPreferredMinimumWidth(
+                    &self,
+                    value: Option<i32>,
+                ) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<IOverlappedPresenter3>(self)?;
+                    let value__ = value.map(<windows_reference::IReference<i32> as From<_>>::from);
+                    unsafe {
+                        (windows_core::Interface::vtable(this).SetPreferredMinimumWidth)(
+                            windows_core::Interface::as_raw(this),
+                            windows_core::Param::param(value__.as_ref()).abi(),
+                        )
+                        .ok()
+                    }
+                }
+
+
+            }
+            impl windows_core::RuntimeType for OverlappedPresenter {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_class::<Self, IOverlappedPresenter>();
+            }
+            unsafe impl windows_core::Interface for OverlappedPresenter {
+                type Vtable = <IOverlappedPresenter as windows_core::Interface>::Vtable;
+                const IID: windows_core::GUID =
+                    <IOverlappedPresenter as windows_core::Interface>::IID;
+            }
+            impl windows_core::RuntimeName for OverlappedPresenter {
+                const NAME: &'static str = "Microsoft.UI.Windowing.OverlappedPresenter";
+            }
+            unsafe impl Send for OverlappedPresenter {}
+            unsafe impl Sync for OverlappedPresenter {}
             #[repr(transparent)]
             #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
             pub struct TitleBarTheme(pub i32);
@@ -6817,6 +7002,13 @@ pub mod Microsoft {
             #[repr(C)]
             pub struct IXamlRoot_Vtbl {
                 pub base__: windows_core::IInspectable_Vtbl,
+                Content: usize,
+                Size: usize,
+                pub RasterizationScale: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut f64,
+                )
+                    -> windows_core::HRESULT,
             }
             #[repr(transparent)]
             #[derive(Clone, Debug, Eq, PartialEq)]
@@ -8230,6 +8422,18 @@ pub mod Microsoft {
                 windows_core::IUnknown,
                 windows_core::IInspectable
             );
+            impl XamlRoot {
+                pub fn RasterizationScale(&self) -> windows_core::Result<f64> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).RasterizationScale)(
+                            windows_core::Interface::as_raw(self),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
+            }
             impl windows_core::RuntimeType for XamlRoot {
                 const SIGNATURE: windows_core::imp::ConstBuffer =
                     windows_core::imp::ConstBuffer::for_class::<Self, IXamlRoot>();

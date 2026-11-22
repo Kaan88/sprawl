@@ -245,3 +245,9 @@ Microsoft.UI.Xaml.UIElement::Translation
 Microsoft.UI.Xaml.Controls.ComboBox::IsDropDownOpen
 Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::GetElementChildVisual
 Microsoft.UI.Composition.Visual::Offset
+
+# --- a minimum window size (look.rs fit_size) ---
+Microsoft.UI.Windowing.AppWindow::Presenter
+Microsoft.UI.Windowing.OverlappedPresenter::PreferredMinimumWidth
+Microsoft.UI.Windowing.OverlappedPresenter::PreferredMinimumHeight
+Microsoft.UI.Xaml.XamlRoot::RasterizationScale
