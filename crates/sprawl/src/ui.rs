@@ -566,28 +566,30 @@ mod esc_tests {
     #[test]
     fn explanations_follow_the_small_text_option() {
         use crate::tokens::{Look, SmallText};
+        crate::tokens::set(&Look::classic());
         let lead = super::note("Lead words", "and the rest.");
         assert!(lead.contains(r#"FontSize="{$fs13}""#) && lead.contains(r#"Foreground="{$text2}""#), "{lead}");
         assert!(lead.contains(r#"<Run Text="Lead words" FontWeight="SemiBold" Foreground="{$text1}"/>"#), "{lead}");
 
-        crate::tokens::set(&Look { small_text: SmallText::Plain, ..Look::default() });
+        crate::tokens::set(&Look { small_text: SmallText::Plain, ..Look::classic() });
         let plain = super::note("Lead words", "and the rest.");
         assert!(plain.contains(r#"FontSize="{$fs13}""#) && plain.contains(r#"Foreground="{$text2}""#), "{plain}");
         assert!(!plain.contains("SemiBold"), "{plain}");
         assert_eq!(plain.matches("<Run ").count(), 1, "one style, one run: {plain}");
         assert!(plain.contains(r#"<Run Text="Lead words and the rest."/>"#), "{plain}");
 
-        crate::tokens::set(&Look { small_text: SmallText::Grey12, ..Look::default() });
+        crate::tokens::set(&Look { small_text: SmallText::Grey12, ..Look::classic() });
         let grey = super::note("Lead words", "and the rest.");
         assert!(grey.contains(r#"FontSize="{$fs12}""#) && grey.contains(r#"Foreground="{$text3}""#), "{grey}");
         assert!(!grey.contains("SemiBold") && grey.contains("Lead words and the rest."), "{grey}");
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
 
     /// The drive's usage bar: the accent solid, its gradient, or a 4 px line.
     #[test]
     fn the_usage_bar_follows_the_bars_option() {
         use crate::tokens::{Bars, Look};
+        crate::tokens::set(&Look::classic());
         let fill = crate::look::accent().fill.clone();
         let p = super::page(&[]);
         assert!(
@@ -596,7 +598,7 @@ mod esc_tests {
         );
         assert!(p.contains(r##"BorderThickness="0,1,0,0" BorderBrush="{$hlbar}""##), "with its lit top edge");
 
-        crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::default() });
+        crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::classic() });
         let p = super::page(&[]);
         let at = p.find(r#"x:Name="UsageBar""#).unwrap();
         let bar = &p[at..(at + 700).min(p.len())];
@@ -604,10 +606,10 @@ mod esc_tests {
         assert!(bar.contains(&format!(r##"GradientStop Color="{fill}" Offset="0""##)), "{bar}");
         assert!(bar.contains(&format!(r##"GradientStop Color="{}" Offset="1""##, crate::tokens::lighter(&fill))), "{bar}");
 
-        crate::tokens::set(&Look { bars: Bars::Thin, ..Look::default() });
+        crate::tokens::set(&Look { bars: Bars::Thin, ..Look::classic() });
         let p = super::page(&[]);
         assert!(p.contains(r##"<Border x:Name="UsageBar" Height="4" CornerRadius="{$rc4}""##), "the thin bar is 4 px");
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
 }
 

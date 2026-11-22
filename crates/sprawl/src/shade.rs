@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(Tones::of(&other).paint(Kind::Button), t.paint(Kind::Button));
         // the look's own tables carry both tokens, in both themes
         for light in [false, true] {
-            let table = crate::tokens::table(&crate::tokens::Look::default(), light);
+            let table = crate::tokens::table(&crate::tokens::Look::classic(), light);
             let t = Tones::of(&table);
             assert_eq!(Some(t.shadow), colour(&table["shadow"]));
             assert_eq!(Some(t.accent), colour(&table["accent"]));

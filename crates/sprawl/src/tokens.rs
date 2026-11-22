@@ -65,11 +65,11 @@ pub(crate) enum Accent {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Surfaces {
     /// Today's: a near-black page with its own opaque ground, and a light page made from white.
-    #[default]
     Ink,
     /// Neutral greys, from #1C1C1C on the dark page.
     Graphite,
     /// Ink with a breath of the accent in each surface.
+    #[default]
     Tinted,
     /// True black in dark, true white in light.
     Black,
@@ -107,8 +107,8 @@ pub(crate) enum Folders {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Corners {
     /// Today's: 2 for a bar, 4 for a control, 8 for a card.
-    #[default]
     Four8,
+    #[default]
     Six10,
     Eight14,
     Pills,
@@ -146,11 +146,11 @@ pub(crate) enum Bars {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SmallText {
     /// Today's: 13 px in the second text colour, the opening words semibold in the first.
-    #[default]
     LeadWords,
     /// 13 px in the second text colour, the lead in the same style.
     Plain,
     /// The old look: 12 px in the labels' colour, no lead.
+    #[default]
     Grey12,
 }
 
@@ -201,11 +201,11 @@ pub(crate) enum Risks {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Chips {
     /// Round ends.
-    #[default]
     Pills,
     /// A corner of 10, between a pill and a box.
     Soft,
     /// The control's own corner.
+    #[default]
     Rect,
 }
 
@@ -273,9 +273,9 @@ pub(crate) enum Press {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Finish {
     /// Smooth shadows under cards and buttons, a lit top edge, an accent glow under the main button.
-    #[default]
     Soft,
     /// No shadows and no lit edges.
+    #[default]
     Flat,
 }
 
@@ -976,6 +976,15 @@ impl TextSizes {
     }
 }
 
+impl Look {
+    /// Sprawl's own look before the user chose a new default (2026-11-23): the tests that check
+    /// one option's values start from it, so they keep checking what they were written for.
+    #[cfg(test)]
+    pub(crate) fn classic() -> Look {
+        Look { surfaces: Surfaces::Ink, corners: Corners::Four8, small_text: SmallText::LeadWords, chips: Chips::Pills, finish: Finish::Soft, ..Look::default() }
+    }
+}
+
 #[allow(dead_code)] // The Theme page will read these; until it exists, the tests are the only caller.
 impl Look {
     /// The options as one line, for Copy theme: `accent=iris;surfaces=slate;...`, lowercase.
@@ -1398,7 +1407,7 @@ mod tests {
 
     #[test]
     fn a_whole_attribute_value_is_the_only_token() {
-        let t = table(&Look::default(), false);
+        let t = table(&Look::classic(), false);
         let one = |x: &str| expand_with(x, &t);
         assert_eq!(one(r#"<Border Background="{$surface2}"/>"#), r##"<Border Background="#0CFFFFFF"/>"##);
         assert_eq!(one(r#"<TextBlock Foreground="{$text3}" Background="{$hover}"/>"#), r##"<TextBlock Foreground="#FF8791A8" Background="#1AFFFFFF"/>"##);
@@ -1415,7 +1424,7 @@ mod tests {
     #[test]
     fn text_of_the_users_can_never_be_a_token() {
         // every piece of text Sprawl shows goes through `esc`, which breaks a leading brace
-        let t = table(&Look::default(), false);
+        let t = table(&Look::classic(), false);
         let name = crate::ui::esc("{$text1}");
         assert_eq!(name, "{}{$text1}");
         let x = format!(r#"<TextBlock Text="{name}"/>"#);
@@ -1429,7 +1438,7 @@ mod tests {
 
     #[test]
     fn every_token_is_named_once_and_says_what_it_is_for() {
-        let t = table(&Look::default(), false);
+        let t = table(&Look::classic(), false);
         let mut seen = std::collections::HashSet::new();
         for token in TOKENS {
             assert!(seen.insert(token.name), "{} is in the list twice", token.name);
@@ -1548,8 +1557,8 @@ mod tests {
     /// otherwise; sizes don't change.
     #[test]
     fn the_table_can_hold_the_light_page() {
-        let dark = table(&Look::default(), false);
-        let light = table(&Look::default(), true);
+        let dark = table(&Look::classic(), false);
+        let light = table(&Look::classic(), true);
         assert_eq!(dark["surface2"], "#0CFFFFFF");
         assert_eq!(light["surface2"], "#0C000000");
         assert_eq!(dark["text3"], "#FF8791A8");
@@ -1614,6 +1623,7 @@ mod tests {
     /// resource dictionary holds): the table's value, for the theme in use.
     #[test]
     fn a_token_can_be_read_for_element_content() {
+        set(&Look::classic());
         assert_eq!(get("rc4"), "4");
         assert_eq!(get("fs12"), "12");
         assert_eq!(get("text3"), "#FF8791A8");
@@ -1636,8 +1646,8 @@ mod tests {
     #[test]
     fn a_reference_is_resolved_by_the_page_it_is_written_for() {
         assert_eq!(refer("text1"), "{$text1}");
-        let dark = table(&Look::default(), false);
-        let light = table(&Look::default(), true);
+        let dark = table(&Look::classic(), false);
+        let light = table(&Look::classic(), true);
         // the caller puts a reference in as a whole Foreground value, as every site does
         let fg = |name: &str| format!(r#"<TextBlock Foreground="{}"/>"#, refer(name));
         assert_eq!(expand_with(&fg("text1"), &dark), r##"<TextBlock Foreground="#FFEEF1F8"/>"##);
@@ -1648,7 +1658,7 @@ mod tests {
 
     #[test]
     fn an_unclosed_token_leaves_the_string_alone() {
-        let t = table(&Look::default(), false);
+        let t = table(&Look::classic(), false);
         assert_eq!(expand_with(r#"<Border Background="{$surface2"/>"#, &t), r#"<Border Background="{$surface2"/>"#);
         assert_eq!(expand_with("{$", &t), "{$");
     }
@@ -1659,8 +1669,8 @@ mod tests {
     /// #0080C2 is 4.03:1 on the card).
     #[test]
     fn the_default_look_is_todays_look() {
-        let dark = table(&Look::default(), false);
-        let light = table(&Look::default(), true);
+        let dark = table(&Look::classic(), false);
+        let light = table(&Look::classic(), true);
         for token in TOKENS {
             if matches!(token.name, "selected" | "accent" | "onaccent" | "accenttext" | "menu" | "ring") || token.name.starts_with("rc") {
                 continue;
@@ -1851,11 +1861,11 @@ mod tests {
     #[test]
     fn a_chip_has_the_corner_its_option_gives() {
         let at = |look: Look| table(&look, false)["rcchip"].clone();
-        assert_eq!(at(Look::default()), "15");
-        assert_eq!(at(Look { chips: Chips::Soft, ..Look::default() }), "10");
-        assert_eq!(at(Look { chips: Chips::Rect, ..Look::default() }), "4");
+        assert_eq!(at(Look::classic()), "15");
+        assert_eq!(at(Look { chips: Chips::Soft, ..Look::classic() }), "10");
+        assert_eq!(at(Look { chips: Chips::Rect, ..Look::classic() }), "4");
         for chips in [Chips::Pills, Chips::Soft, Chips::Rect] {
-            assert_eq!(at(Look { chips, corners: Corners::Square, ..Look::default() }), "0", "{chips:?}");
+            assert_eq!(at(Look { chips, corners: Corners::Square, ..Look::classic() }), "0", "{chips:?}");
         }
     }
 
@@ -1865,7 +1875,7 @@ mod tests {
     fn a_look_survives_a_round_trip_and_ignores_junk() {
         assert_eq!(
             Look::default().to_kv(),
-            "accent=windows;surfaces=ink;contrast=normal;folders=classic;corners=four8;motion=subtle;bars=solid;smalltext=leadwords;ticks=square;text=aswritten;backdrop=solid;strength=aswindows;risks=standard;chips=pills;tabs=underline;controls=outlined;selection=fill;press=liftsink;finish=soft"
+            "accent=windows;surfaces=tinted;contrast=normal;folders=classic;corners=six10;motion=subtle;bars=solid;smalltext=grey12;ticks=square;text=aswritten;backdrop=solid;strength=aswindows;risks=standard;chips=rect;tabs=underline;controls=outlined;selection=fill;press=liftsink;finish=flat"
         );
         for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
             for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
@@ -1932,12 +1942,12 @@ mod tests {
     #[test]
     fn a_table_made_again_keeps_the_look_in_use() {
         let page = r#"<Border CornerRadius="{$rc4}"/>"#;
-        set(&Look { corners: Corners::Pills, ..Look::default() });
+        set(&Look { corners: Corners::Pills, ..Look::classic() });
         let before = expand(page).into_owned();
         assert_ne!(before, r#"<Border CornerRadius="4"/>"#, "the pills' radius is not today's 4");
         reset();
         assert_eq!(expand(page), before, "the look in use, not Sprawl's own");
-        set(&Look::default());
+        set(&Look::classic());
         assert_eq!(expand(page), r#"<Border CornerRadius="4"/>"#);
     }
 }

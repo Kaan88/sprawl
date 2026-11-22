@@ -453,6 +453,7 @@ mod tests {
 
     #[test]
     fn the_focus_is_the_mockups_for_each_controls_option() {
+        crate::tokens::set(&crate::tokens::Look::classic());
         // Outlined: the accent line and a 3 px ring of the accent at 32 %, outside the 4 px corner
         let c = field(COMBO_BOX, Controls::Outlined, Motion::Subtle, true).unwrap();
         let ring = format!(r#"<Border x:Name="Ring" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="-3" CornerRadius="{}" BorderBrush="{{$ring}}" BorderThickness="3""#, 7);
@@ -485,6 +486,7 @@ mod tests {
 
     #[test]
     fn the_text_box_takes_the_same_focus_as_the_other_fields() {
+        crate::tokens::set(&crate::tokens::Look::classic());
         let outline = r#"x:Name="Outline" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" "#;
         for (controls, width, brush, outline_paint) in [
             (Controls::Outlined, 3, r#"BorderBrush="{$ring}""#, r#"Background="Transparent" BorderBrush="{$accent}""#),

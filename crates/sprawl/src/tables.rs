@@ -1320,14 +1320,14 @@ mod tests {
         let solid = pct_bar(1, 42.0);
         assert!(solid.contains(&format!(r##"Background="{fill}" Opacity="0.45""##)), "{solid}");
 
-        crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::default() });
+        crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::classic() });
         let g = pct_bar(1, 42.0);
         assert!(g.contains("<LinearGradientBrush StartPoint=\"0,0.5\" EndPoint=\"1,0.5\">"), "{g}");
         assert!(g.contains(&format!(r##"GradientStop Color="{fill}" Offset="0""##)), "{g}");
         assert!(g.contains(&format!(r##"GradientStop Color="{}" Offset="1""##, crate::tokens::lighter(&fill))), "{g}");
         assert!(g.contains(r##"Opacity="0.45""##) && g.contains("42.0 %"), "{g}");
 
-        crate::tokens::set(&Look { bars: Bars::Thin, ..Look::default() });
+        crate::tokens::set(&Look { bars: Bars::Thin, ..Look::classic() });
         let t = pct_bar(1, 42.0);
         assert_eq!(t.matches(r#"VerticalAlignment="Bottom" Height="4""#).count(), 2, "{t}");
         // the figure keeps its place in the cell
@@ -1337,7 +1337,7 @@ mod tests {
             let x = crate::tokens::expand(&b);
             assert!(!x.contains(&format!("{}{}", '{', '$')), "{x}");
         }
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
 
     /// C:\T with folders b, A, a b, a (and a\x), each holding a file or two.

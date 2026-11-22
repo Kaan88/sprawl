@@ -18,7 +18,7 @@ use sprawl_advisor::Risk;
 use crate::ui;
 
 /// One option on the page: its key in a copied theme, its label, and its choices as (name in a
-/// copied theme, words on the page), Sprawl's own first. `mode` (light or dark) is not in
+/// copied theme, words on the page), in the order the dropdown lists them. `mode` (light or dark) is not in
 /// [`Look`]: it is the Theme setting that was there before this page.
 pub(crate) struct Opt {
     pub key: &'static str,
@@ -92,7 +92,10 @@ pub(crate) fn with_pick(look: &Look, mode: usize, key: &str, i: usize) -> (Look,
 /// The values of preset `i`, and the light/dark choice it sets (None: leaves it as it is).
 /// Custom (the last) has none: it is the user's own.
 pub(crate) fn preset(i: usize) -> Option<(Look, Option<usize>)> {
-    use tokens::{Accent, Backdrop, Chips, Controls, Finish, Motion, Press, Selection, Strength, Surfaces};
+    use tokens::{Accent, Backdrop, Chips, Controls, Corners, Finish, Motion, Press, Selection, Strength, Surfaces};
+    // Midnight and Paper keep the corners, small text and chips they had before the default
+    // look moved (4 / 8, lead words, pills), so they stay the presets they were.
+    let was = |look: Look| Look { corners: Corners::Four8, small_text: SmallText::LeadWords, chips: Chips::Pills, ..look };
     Some(match i {
         0 => (Look::default(), Some(0)),
         // Windows: Mica, rectangles, WinUI's own fields, flat, a fade, the fill and the bar
@@ -107,14 +110,16 @@ pub(crate) fn preset(i: usize) -> Option<(Look, Option<usize>)> {
                 selection: Selection::Both,
                 press: Press::Fade,
                 finish: Finish::Flat,
+                corners: Corners::Four8,
                 ..Look::default()
             },
             None,
         ),
         // Midnight: a black page and a bolder iris
-        2 => (Look { surfaces: Surfaces::Black, accent: Accent::Iris, strength: Strength::Stronger, ..Look::default() }, Some(2)),
+        // (the black page and the iris were never the default, so they and Soft depth are set here)
+        2 => (was(Look { surfaces: Surfaces::Black, accent: Accent::Iris, strength: Strength::Stronger, finish: Finish::Soft, ..Look::default() }), Some(2)),
         // Paper: flat and still
-        3 => (Look { surfaces: Surfaces::Graphite, motion: Motion::None, finish: Finish::Flat, press: Press::Faint, ..Look::default() }, Some(1)),
+        3 => (was(Look { surfaces: Surfaces::Graphite, motion: Motion::None, finish: Finish::Flat, press: Press::Faint, ..Look::default() }), Some(1)),
         _ => return None,
     })
 }
@@ -602,7 +607,8 @@ mod tests {
                 let (look, mode) = with_pick(&Look::default(), 0, o.key, i);
                 assert_eq!(index(&look, mode, o.key), i, "{} {i}", o.key);
                 if o.key != "mode" {
-                    assert_eq!(look == Look::default(), i == 0, "the first choice of {} is Sprawl's own", o.key);
+                    let own = name_of(&Look::default(), o.key).unwrap();
+                    assert_eq!(look == Look::default(), o.choices[i].0 == own, "the choice of {} that is Sprawl's own", o.key);
                 }
             }
         }
@@ -611,7 +617,7 @@ mod tests {
         for part in all.split(';') {
             let (k, v) = part.split_once('=').unwrap();
             if let Some(o) = opt(k) {
-                assert_eq!(o.choices[0].0, v, "{k}: the default is the first choice");
+                assert_eq!(o.choices.iter().filter(|c| c.0 == v).count(), 1, "{k}: the default is one of the choices");
             }
         }
     }
@@ -634,6 +640,11 @@ mod tests {
         let (paper, m) = preset(3).unwrap();
         assert_eq!((paper.surfaces, paper.motion, m), (Surfaces::Graphite, Motion::None, Some(1)));
         assert_eq!((paper.finish, paper.press, mid.strength), (tokens::Finish::Flat, tokens::Press::Faint, tokens::Strength::Stronger));
+        // Midnight and Paper are as they were before the default look moved: 4 / 8, lead words, pills; Midnight keeps Soft depth
+        for p in [&mid, &paper] {
+            assert_eq!((p.corners, p.small_text, p.chips), (tokens::Corners::Four8, SmallText::LeadWords, tokens::Chips::Pills));
+        }
+        assert_eq!(mid.finish, tokens::Finish::Soft);
         // no preset touches the risk colours
         for i in 0..CUSTOM {
             assert_eq!(preset(i).unwrap().0.risks, tokens::Risks::Standard, "preset {i}");
@@ -664,7 +675,7 @@ mod tests {
         // one key missing or junk: only that option is Sprawl's own
         s.set("look.corners", "wobbly");
         let got = read(&s);
-        assert_eq!(got.corners, tokens::Corners::Four8);
+        assert_eq!(got.corners, Look::default().corners);
         assert_eq!(got.surfaces, tokens::Surfaces::Slate);
         // Custom is kept apart, with its light or dark choice
         write_custom(&mut s, Some(&(look.clone(), 2)));

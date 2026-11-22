@@ -1822,7 +1822,7 @@ mod tests {
     #[test]
     fn the_accent_is_the_looks_choice() {
         use crate::tokens::{Accent as Choice, Look};
-        crate::tokens::set(&Look { accent: Choice::Sunset, ..Look::default() });
+        crate::tokens::set(&Look { accent: Choice::Sunset, ..Look::classic() });
         let fill = format!("#{}", crate::tokens::get("accent").trim_start_matches("#FF"));
         let on = format!("#{}", crate::tokens::get("onaccent").trim_start_matches("#FF"));
         assert_eq!(accent().fill, fill);
@@ -1832,7 +1832,7 @@ mod tests {
         assert!(pick(Pick::Mode, true).contains(&format!(r#"Background="{fill}""#)), "{}", pick(Pick::Mode, true));
         // WinUI's accent button takes the same token, so a primary button is the look's too
         assert!(resources().contains(r#"x:Key="AccentButtonBackground" Color="{$accent}""#));
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
 
     #[test]
@@ -1854,6 +1854,7 @@ mod tests {
     /// leaves none of them behind. The radii are element content, read from the table.
     #[test]
     fn the_stock_overrides_are_the_looks_values() {
+        crate::tokens::set(&crate::tokens::Look::classic());
         let r = resources();
         let known: std::collections::HashSet<&str> = crate::tokens::TOKENS.iter().map(|t| t.name).collect();
         let open = format!("{}{}", '{', '$');
@@ -1891,6 +1892,7 @@ mod tests {
 
     #[test]
     fn the_styles_define_every_state_once() {
+        crate::tokens::set(&crate::tokens::Look::classic());
         let r = resources();
         // the templated styles; SprawlPrimary builds on WinUI's own accent button
         for s in ["Normal", "PointerOver", "Pressed", "Disabled"] {
@@ -1941,7 +1943,7 @@ mod tests {
         assert_eq!(Pick::Page.bg(true), "Transparent");
         assert!(pick(Pick::Page, true).contains(&underline()) && !pick(Pick::Page, false).contains(&underline()));
         // the main tabs have no line of their own: the row's shared one slides (tabline.rs)
-        crate::tokens::set(&crate::tokens::Look::default());
+        crate::tokens::set(&crate::tokens::Look::classic());
         assert!(pick_nav(true).contains("SprawlNav") && !pick_nav(true).contains(&underline()) && pick_nav(true) == pick_nav(false));
         let r = resources();
         let nav = &r[r.find(r#"x:Key="SprawlNav""#).unwrap()..];
@@ -1961,7 +1963,7 @@ mod tests {
         assert_eq!(travel(Motion::None, -1.0, 0.98), (0.0, 1.0));
 
         if crate::win32::animations_on() {
-            crate::tokens::set(&Look { motion: Motion::Lively, ..Look::default() });
+            crate::tokens::set(&Look { motion: Motion::Lively, ..Look::classic() });
             let r = resources();
             assert!(r.contains(r#"KeyTime="0:0:0.220""#), "Lively's time");
         }
@@ -1986,10 +1988,10 @@ mod tests {
         assert!(still.contains(r#"TargetName="Wash" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="0""#), "{still}");
 
         // Square is the controls' small corner; Round is half of the 18 px box
-        crate::tokens::set(&Look { ticks: Ticks::Round, ..Look::default() });
+        crate::tokens::set(&Look { ticks: Ticks::Round, ..Look::classic() });
         let r = resources();
         assert!(r.contains(&cr(r#"<Border x:Name="Fill" CR="9""#)), "{r}");
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
 
     /// WinUI throws on a KeySpline outside 0..1 (Press in crashed the app this way): every one
@@ -1999,7 +2001,7 @@ mod tests {
         use crate::tokens::{Look, Motion, Press};
         for press in [Press::LiftSink, Press::PressIn, Press::Fade, Press::Faint] {
             for motion in [Motion::Subtle, Motion::Lively, Motion::None] {
-                crate::tokens::set(&Look { press, motion, ..Look::default() });
+                crate::tokens::set(&Look { press, motion, ..Look::classic() });
                 let r = resources();
                 let mut seen = 0;
                 for part in r.split(r#"KeySpline=""#).skip(1) {
@@ -2014,7 +2016,7 @@ mod tests {
                 assert!(seen > 0);
             }
         }
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
 
     /// Press in's curve cut at its turn is the same curve: each piece, put back in the whole's
@@ -2066,7 +2068,7 @@ mod tests {
         assert_eq!((faint.over.white, faint.down.white, faint.down.black, faint.ms), (0.07, 0.12, 0.0, 0));
         // each reaches the main button's template: its spline, and the shadow only for Lift
         for press in [Press::LiftSink, Press::PressIn, Press::Fade, Press::Faint] {
-            crate::tokens::set(&Look { press, ..Look::default() });
+            crate::tokens::set(&Look { press, ..Look::classic() });
             let r = resources();
             let primary = &r[r.find(r#"x:Key="SprawlPrimary""#).unwrap()..];
             let primary = &primary[..primary.find("</Style>").unwrap()];
@@ -2079,15 +2081,15 @@ mod tests {
             // reads this), on the press's own time
             assert_eq!(shadow_motion(), (press == Press::LiftSink, state_ms(motion(), press_feel(press).ms)), "{press:?}");
         }
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
 
         // finish: Flat has no shadow under a card, no shadow under a button and no lit edge
         assert_eq!(shadow(false), shade_host("card", &crate::tokens::rc(8.0)));
         assert!(shadow(true).contains(r#"Tag="shade:dialog""#));
         let page = |flat: bool| {
-            crate::tokens::set(&Look { finish: if flat { Finish::Flat } else { Finish::Soft }, ..Look::default() });
+            crate::tokens::set(&Look { finish: if flat { Finish::Flat } else { Finish::Soft }, ..Look::classic() });
             let all = format!("{}{}{}", crate::ui::page(&[]), resources(), crate::wizard::xaml());
-            crate::tokens::set(&Look::default());
+            crate::tokens::set(&Look::classic());
             all
         };
         // (token names are written without the opening brace: a bare one in a string would be
@@ -2106,14 +2108,14 @@ mod tests {
         }
         // the one shadow Flat keeps is the switch's knob, as the mockup's flat switch has it
         assert_eq!(flat_page.matches("shade:").count(), flat_page.matches("shade:knob").count(), "Flat still has a shadow");
-        crate::tokens::set(&Look { finish: Finish::Flat, ..Look::default() });
+        crate::tokens::set(&Look { finish: Finish::Flat, ..Look::classic() });
         assert_eq!(shadow(false), "");
         assert_eq!(top_light("hlcard", &crate::tokens::rc(8.0), false), "");
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
 
         // chips: the corner follows the option
         for (chips, corner) in [(Chips::Pills, "15"), (Chips::Soft, "10"), (Chips::Rect, "4")] {
-            crate::tokens::set(&Look { chips, ..Look::default() });
+            crate::tokens::set(&Look { chips, ..Look::classic() });
             let r = resources();
             let chip = &r[r.find(r#"x:Key="SprawlChip""#).unwrap()..];
             let chip = &chip[..chip.find("</Style>").unwrap()];
@@ -2121,27 +2123,27 @@ mod tests {
         }
 
         // tabs: pills are a picked chip, the underline is the border brush
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
         assert!(pick(Pick::Page, true).contains("SprawlPage}") && pick(Pick::Page, true).contains(&underline()));
-        crate::tokens::set(&Look { tabs: Tabs::Pills, ..Look::default() });
+        crate::tokens::set(&Look { tabs: Tabs::Pills, ..Look::classic() });
         let (on, off) = (pick(Pick::Page, true), pick(Pick::Page, false));
         assert!(on.contains("SprawlPagePill") && on.contains(&format!(r#"Background="{}""#, accent().fill)) && on.contains(&format!(r#"Foreground="{}""#, accent().on)), "{on}");
         assert!(off.contains(r#"Background="Transparent""#) && !off.contains(&accent().fill), "{off}");
 
         // controls: outlined is today's, soft draws no line at rest, stock leaves WinUI's own
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
         let r = resources();
         assert!(r.contains(r#"x:Key="TextControlBorderBrush" Color="{$line2}""#) && r.contains(r#"x:Key="ComboBoxBackground" Color="{$ground}""#));
         assert!(r.contains(r#"x:Name="Ring""#));
-        crate::tokens::set(&Look { controls: Controls::Soft, ..Look::default() });
+        crate::tokens::set(&Look { controls: Controls::Soft, ..Look::classic() });
         let r = resources();
         assert!(r.contains(r#"x:Key="TextControlBorderBrush" Color="Transparent""#) && r.contains(r#"x:Key="ComboBoxBackground" Color="{$row}""#));
         assert!(r.contains(r#"x:Key="TextControlBorderBrushFocused" Color="{$accent}""#), "the focus still shows the accent");
-        crate::tokens::set(&Look { controls: Controls::Stock, ..Look::default() });
+        crate::tokens::set(&Look { controls: Controls::Stock, ..Look::classic() });
         let r = resources();
         assert!(!r.contains("TextControlBackground") && !r.contains("ComboBoxBackground") && !r.contains(r#"x:Name="Ring""#) && !r.contains("TextControlBorderThemeThickness"), "{r}");
         assert!(r.contains("ControlCornerRadius"), "the corner is still the look's");
-        crate::tokens::set(&Look::default());
+        crate::tokens::set(&Look::classic());
     }
     /// A test's expected XAML with `CR=` for `CornerRadius=`, so the scanner that keeps corner
     /// numbers out of the app's XAML (tokens.rs) does not read the expectations as XAML.
@@ -2166,11 +2168,11 @@ mod tests {
         let tick = |look: Look| {
             crate::tokens::set(&look);
             let r = resources();
-            crate::tokens::set(&Look::default());
+            crate::tokens::set(&Look::classic());
             assert_eq!(r.matches(r#"<Style TargetType="CheckBox""#).count(), 1);
             implicit(&r, "CheckBox").to_string()
         };
-        let chk = tick(Look::default());
+        let chk = tick(Look::classic());
         assert!(chk.contains(r#"BasedOn="{StaticResource DefaultCheckBoxStyle}""#), "WinUI's size, padding and focus are kept");
         for mark in ["Unchecked", "Checked", "Indeterminate"] {
             for pointer in ["Normal", "PointerOver", "Pressed", "Disabled"] {
@@ -2205,9 +2207,9 @@ mod tests {
             let over = &chk[chk.find(r#"<VisualState x:Name="CheckedPointerOver">"#).unwrap()..];
             assert!(over[..over.find("</VisualState>").unwrap()].contains(r#"KeyTime="0:0:0.160" Value="0" KeySpline="0.25,0.1,0.25,1""#));
             // Lively draws the tick in 340 ms
-            assert!(tick(Look { motion: Motion::Lively, ..Look::default() }).contains(r#"KeyTime="0:0:0.340" Value="0" KeySpline="0.25,0.1,0.25,1""#));
+            assert!(tick(Look { motion: Motion::Lively, ..Look::classic() }).contains(r#"KeyTime="0:0:0.340" Value="0" KeySpline="0.25,0.1,0.25,1""#));
             // Press in sinks the box to 0.9 and springs it back past 1
-            let press_in = tick(Look { press: Press::PressIn, ..Look::default() });
+            let press_in = tick(Look { press: Press::PressIn, ..Look::classic() });
             assert!(press_in.contains(r#"TargetName="BoxScale" Storyboard.TargetProperty="ScaleX""#) && press_in.contains(r#"Value="0.9""#));
             assert!(press_in.contains(r#"<VisualTransition From="UncheckedPressed" To="CheckedPointerOver">"#), "the click's way back overshoots");
         }
@@ -2215,18 +2217,18 @@ mod tests {
         assert!(!chk.contains(r#"TargetName="BoxScale""#), "Lift and sink leaves the box still");
 
         // Windows stock: a 1 px line; soft: none, a faint fill instead
-        let stock = tick(Look { controls: Controls::Stock, ..Look::default() });
+        let stock = tick(Look { controls: Controls::Stock, ..Look::classic() });
         assert!(stock.contains(&cr(r#"<Border x:Name="Edge" CR="4" BorderThickness="1" BorderBrush="{$tickedge}"/>"#)), "{stock}");
-        let soft = tick(Look { controls: Controls::Soft, ..Look::default() });
+        let soft = tick(Look { controls: Controls::Soft, ..Look::classic() });
         assert!(!soft.contains(r#"x:Name="Edge""#) && soft.contains(&cr(r#"<Border x:Name="Well" CR="4" Background="{$tickwell}"/>"#)), "{soft}");
         for (corners, c) in [(Corners::Six10, "5"), (Corners::Eight14, "6"), (Corners::Pills, "7"), (Corners::Square, "0")] {
-            assert!(tick(Look { corners, ..Look::default() }).contains(&format!(r#"<Border x:Name="Fill" CornerRadius="{c}""#)), "{corners:?}");
+            assert!(tick(Look { corners, ..Look::classic() }).contains(&format!(r#"<Border x:Name="Fill" CornerRadius="{c}""#)), "{corners:?}");
         }
-        assert!(tick(Look { ticks: Ticks::Round, controls: Controls::Soft, ..Look::default() }).contains(&cr(r#"<Border x:Name="Fill" CR="9""#)));
+        assert!(tick(Look { ticks: Ticks::Round, controls: Controls::Soft, ..Look::classic() }).contains(&cr(r#"<Border x:Name="Fill" CR="9""#)));
         // Flat: no lit edge
-        assert!(!tick(Look { finish: Finish::Flat, ..Look::default() }).contains("hlon"));
+        assert!(!tick(Look { finish: Finish::Flat, ..Look::classic() }).contains("hlon"));
         // no motion: nothing takes time and no transition is made
-        let still = tick(Look { motion: Motion::None, press: Press::PressIn, ..Look::default() });
+        let still = tick(Look { motion: Motion::None, press: Press::PressIn, ..Look::classic() });
         assert!(!still.contains("<VisualTransition") && !still.contains("KeySpline") && !still.contains(r#"Value="0.9""#), "{still}");
     }
 
@@ -2239,11 +2241,11 @@ mod tests {
         let switch = |look: Look| {
             crate::tokens::set(&look);
             let r = resources();
-            crate::tokens::set(&Look::default());
+            crate::tokens::set(&Look::classic());
             assert_eq!(r.matches(r#"<Style TargetType="ToggleSwitch""#).count(), 1);
             implicit(&r, "ToggleSwitch").to_string()
         };
-        let filled = switch(Look::default());
+        let filled = switch(Look::classic());
         assert!(filled.contains(r#"BasedOn="{StaticResource DefaultToggleSwitchStyle}""#));
         for part in ["SwitchKnobBounds", "SwitchKnob", "KnobTranslateTransform", "SwitchThumb", "HeaderContentPresenter", "OffContentPresenter", "OnContentPresenter"] {
             assert!(filled.contains(&format!(r#"x:Name="{part}""#)), "WinUI's part {part}");
@@ -2265,16 +2267,16 @@ mod tests {
             // sliding on the motion's curve when flipped
             assert!(filled.contains(r#"<VisualTransition From="Off" To="On"><Storyboard><DoubleAnimationUsingKeyFrames Storyboard.TargetName="KnobTranslateTransform" Storyboard.TargetProperty="X"><SplineDoubleKeyFrame KeyTime="0:0:0.160" Value="18" KeySpline="0.2,0.8,0.2,1"/>"#), "{filled}");
             // Lively's curve overshoots: the knob goes past 18 and comes back, in curves WinUI takes
-            let lively = switch(Look { motion: Motion::Lively, ..Look::default() });
+            let lively = switch(Look { motion: Motion::Lively, ..Look::classic() });
             let t = &lively[lively.find(r#"<VisualTransition From="Off" To="On">"#).unwrap()..];
             let t = &t[..t.find("</DoubleAnimationUsingKeyFrames>").unwrap()];
             assert_eq!(t.matches("<SplineDoubleKeyFrame").count(), 2, "{t}");
             assert!(t.contains(r#"KeyTime="0:0:0.340" Value="18""#), "{t}");
             // Press in sinks the pill and springs it back
-            assert!(switch(Look { press: Press::PressIn, ..Look::default() }).contains(r#"<VisualTransition From="Pressed" To="PointerOver">"#));
+            assert!(switch(Look { press: Press::PressIn, ..Look::classic() }).contains(r#"<VisualTransition From="Pressed" To="PointerOver">"#));
         }
         // Windows stock: outlined, a 12 px knob, no shadow
-        let stock = switch(Look { controls: Controls::Stock, ..Look::default() });
+        let stock = switch(Look { controls: Controls::Stock, ..Look::classic() });
         assert!(stock.contains(r#"Fill="Transparent" Stroke="{$trackedge}" StrokeThickness="1""#) && stock.contains(&cr(r#"Width="12" Height="12" CR="6" Background="{$knoboff}""#)), "{stock}");
         assert!(stock.contains(r#"Background="{$onaccent}" Opacity="0""#) && !stock.contains("shade:"));
         if crate::win32::animations_on() {
@@ -2282,10 +2284,10 @@ mod tests {
             assert!(stock.contains(r#"TargetName="OuterBorder" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.160" Value="0" KeySpline="0.25,0.1,0.25,1"/>"#), "{stock}");
         }
         // Flat keeps the knob's shadow and drops the lit edge
-        let flat = switch(Look { finish: Finish::Flat, ..Look::default() });
+        let flat = switch(Look { finish: Finish::Flat, ..Look::classic() });
         assert!(flat.contains("shade:knob") && !flat.contains("hlon"));
         // no motion makes everything instant
-        let still = switch(Look { motion: Motion::None, press: Press::PressIn, ..Look::default() });
+        let still = switch(Look { motion: Motion::None, press: Press::PressIn, ..Look::classic() });
         assert!(!still.contains("<VisualTransition") && !still.contains("KeySpline"), "{still}");
     }
 }
