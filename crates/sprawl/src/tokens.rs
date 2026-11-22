@@ -555,12 +555,12 @@ impl Accent {
         if strength == Strength::AsWindows {
             return fill;
         }
-        // Stronger: Windows' own takes the shade of its palette that stands out most from the
-        // card with its text still reading; a preset moves a step more saturated and further from
+        // Stronger: Windows' own takes the most vivid shade of its palette that still stands out
+        // from the card (3:1, as a control's edge must) with its text reading; a preset moves a step more saturated and further from
         // the card (lighter on the dark page, darker on the light)
         if self == Accent::Windows {
             let shades = crate::look::palette_colours();
-            return stronger_shade(&shades, card).unwrap_or(fill);
+            return stronger_shade(&shades, card).filter(|&c| chroma(c) >= chroma(fill)).unwrap_or(fill);
         }
         let (h, s, l) = hsl(fill);
         let l = if light { (l - 0.08).max(0.15) } else { (l + 0.08).min(0.85) };
@@ -623,10 +623,17 @@ fn accent_text(fill: u32, card: u32, light: bool) -> u32 {
     reach(fill, card, light, 4.5)
 }
 
-/// The shade among `shades` that contrasts most with `card` while black or white text on it still
-/// reaches 4.5:1 (always true of the better of the two, but kept as the rule), or None.
+/// The most vivid shade among `shades` that still reaches 3:1 against `card` while black or white
+/// text on it reaches 4.5:1, or None. The shade furthest from the card would be the palette's
+/// darkest on the light page and its palest on the dark one: further, but no stronger to the eye.
 fn stronger_shade(shades: &[u32], card: u32) -> Option<u32> {
-    shades.iter().copied().filter(|&c| ratio(on_accent(c), c) >= 4.5).max_by(|&a, &b| ratio(a, card).total_cmp(&ratio(b, card)))
+    shades.iter().copied().filter(|&c| ratio(on_accent(c), c) >= 4.5 && ratio(c, card) >= 3.0).max_by_key(|&c| chroma(c))
+}
+
+/// How vivid a colour is: its largest channel less its smallest.
+fn chroma(c: u32) -> u32 {
+    let ch = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+    ch.iter().max().unwrap_or(&0) - ch.iter().min().unwrap_or(&0)
 }
 
 /// `fill`, its HSL lightness stepped a little at a time towards the page's end until it reaches
@@ -1781,8 +1788,8 @@ mod tests {
         }
     }
 
-    /// Stronger takes the accent further from the card than the accent as given, on every
-    /// surface family and both pages.
+    /// Stronger is at least as vivid as the accent as given and still stands out from the card
+    /// (3:1) on every surface family and both pages; a preset accent also moves further from it.
     #[test]
     fn a_stronger_accent_stands_out_more() {
         for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
@@ -1791,8 +1798,11 @@ mod tests {
                     let plain = table(&Look { accent, surfaces, ..Look::default() }, light);
                     let strong = table(&Look { accent, surfaces, strength: Strength::Stronger, ..Look::default() }, light);
                     let card = plain_card(surfaces, light);
-                    let (a, b) = (ratio(argb(&plain["accent"]).unwrap(), card), ratio(argb(&strong["accent"]).unwrap(), card));
-                    assert!(b >= a, "{accent:?} on {surfaces:?} ({}): {b:.2} to 1 is not more than {a:.2}", if light { "light" } else { "dark" });
+                    let (pa, sa) = (argb(&plain["accent"]).unwrap(), argb(&strong["accent"]).unwrap());
+                    assert!(accent != Accent::Windows || chroma(sa) >= chroma(pa), "{accent:?} on {surfaces:?}: less vivid");
+                    assert!(ratio(sa, card) >= 3.0 || sa == pa, "{accent:?} on {surfaces:?}: under 3:1");
+                    let (a, b) = (ratio(pa, card), ratio(sa, card));
+                    assert!(accent == Accent::Windows || b >= a, "{accent:?} on {surfaces:?} ({}): {b:.2} to 1 is not more than {a:.2}", if light { "light" } else { "dark" });
                 }
             }
         }
