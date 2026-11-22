@@ -301,7 +301,7 @@ fn flat() -> bool {
 }
 
 /// The motion the buttons are drawn with: Windows' "Animation effects" off wins over the look.
-fn motion() -> crate::tokens::Motion {
+pub(crate) fn motion() -> crate::tokens::Motion {
     if crate::win32::animations_on() {
         crate::tokens::current().motion
     } else {
@@ -359,16 +359,16 @@ struct Feel {
 }
 
 /// CSS's `ease`, which the mockup's washes take whatever the press option is.
-const EASE: [f64; 4] = [0.25, 0.1, 0.25, 1.0];
+pub(crate) const EASE: [f64; 4] = [0.25, 0.1, 0.25, 1.0];
 
 /// A number for XAML: at most four decimals, no trailing zeros.
-fn num(v: f64) -> String {
+pub(crate) fn num(v: f64) -> String {
     let s = format!("{:.4}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" { "0".to_string() } else { s.to_string() }
 }
 
-fn spline_text(s: [f64; 4]) -> String {
+pub(crate) fn spline_text(s: [f64; 4]) -> String {
     format!("{},{},{},{}", num(s[0]), num(s[1]), num(s[2]), num(s[3]))
 }
 
@@ -383,7 +383,7 @@ fn bezier_at(s: [f64; 4], t: f64) -> (f64, f64) {
 /// (where the piece ends in time, 0..1; where it ends in value, past 1 at an overshoot; its own
 /// spline). A curve that stays inside is one piece. One that overshoots (or undershoots) is cut
 /// where it turns, which is exact: the pieces together are the same curve (de Casteljau).
-fn pieces(s: [f64; 4]) -> Vec<(f64, f64, [f64; 4])> {
+pub(crate) fn pieces(s: [f64; 4]) -> Vec<(f64, f64, [f64; 4])> {
     let inside = |v: f64| (0.0..=1.0).contains(&v);
     if inside(s[1]) && inside(s[3]) {
         return vec![(1.0, 1.0, s)];
@@ -429,7 +429,7 @@ fn safe(s: [f64; 4]) -> [f64; 4] {
 }
 
 /// The key frames that take a value from `from` to `to` in `ms` along `s`, overshoot included.
-fn frames(from: f64, to: f64, ms: u32, s: [f64; 4]) -> String {
+pub(crate) fn frames(from: f64, to: f64, ms: u32, s: [f64; 4]) -> String {
     pieces(s)
         .into_iter()
         .map(|(x, v, sp)| {
@@ -776,10 +776,7 @@ fn stock() -> String {
         ("ComboBoxForeground", "text1"),
         ("ComboBoxDropDownBackground", "menu"),
         ("ComboBoxDropDownBorderBrush", "line1"),
-        // WinUI's own halo behind a focused combo box (stroke and fill, 4 px out), in the ring's
-        // colour: the soft ring, with no template of ours
-        ("ComboBoxBackgroundFocused", "ring"),
-        ("ComboBoxBackgroundBorderBrushFocused", "ring"),
+        // (the focus is not a key: popups.rs's template draws it)
     ] {
         if fields {
             x += &brush(key, token);
@@ -888,6 +885,10 @@ fn stock() -> String {
             include_str!("textbox.xaml")
         );
     }
+    // a dropdown and the API key box take the field's focus (the ring), and a menu or a
+    // dropdown's list fades in from just above: popups.rs, WinUI's own templates changed
+    x += &crate::popups::fields(controls);
+    x += &crate::popups::menu();
     // a plain button sits on a soft shadow (the Soft finish): WinUI's own template (generic.xaml),
     // its states moved to a grid round it, with the shadow's host behind it. A button that has
     // no face of its own (a transparent one) gets no shadow: shade.rs looks before it draws one.
@@ -1565,6 +1566,9 @@ mod tests {
                 let mut seen = 0;
                 for part in r.split(r#"KeySpline=""#).skip(1) {
                     let text = &part[..part.find('"').unwrap()];
+                    if text.starts_with('{') {
+                        continue; // WinUI's own named curve, kept in the combo box's stock overlay storyboards
+                    }
                     let v: Vec<f64> = text.split(',').map(|n| n.parse().unwrap()).collect();
                     assert!(v.len() == 4 && v.iter().all(|n| (0.0..=1.0).contains(n)), "{press:?} {motion:?}: {text}");
                     seen += 1;

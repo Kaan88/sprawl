@@ -212,3 +212,13 @@ Microsoft.UI.Composition.CompositionShadow
 Microsoft.UI.Composition.CompositionClip
 Microsoft.UI.Composition.CompositionColorBrush
 Windows.Graphics.IGeometrySource2D
+# --- menus and dropdowns opening (popups.rs) ---
+Microsoft.UI.Xaml.Media.VisualTreeHelper::GetOpenPopupsForXamlRoot
+Microsoft.UI.Xaml.UIElement::XamlRoot
+Microsoft.UI.Xaml.XamlRoot
+Microsoft.UI.Xaml.Controls.Primitives.Popup::Child
+Microsoft.UI.Xaml.Controls.MenuFlyoutPresenter
+Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::GetElementVisual
+Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::SetIsTranslationEnabled
+Microsoft.UI.Composition.Visual::Scale
+Microsoft.UI.Composition.Visual::Opacity

@@ -32,6 +32,7 @@ mod watch;
 mod treemap;
 mod ui;
 mod look;
+mod popups;
 mod reconcile;
 mod restyle;
 mod theme;
@@ -284,6 +285,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 
     // Everything that moves (scan polling, the overlay, the treemap) runs once per frame.
     keep(CompositionTarget::Rendering(|_, _| {
+        // a menu that has just opened plays its opening before it is drawn (popups.rs)
+        crate::popups::watch();
         with(|s| s.frame());
     })?);
 
