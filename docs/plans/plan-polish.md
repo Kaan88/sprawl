@@ -196,3 +196,33 @@ What each new one means:
   once (direction 2), and press feel cannot be judged from pictures.
 - `cargo test --workspace -j 1`. `look.rs`'s tests assert today's style list: update them.
 - CHANGELOG under Unreleased.
+
+## Audit: shortcuts taken in Parts 3 and 4 (noted 2026-11-22)
+
+The user found the card and button shadows were stacked-border imitations, merged although the
+stepping showed in a screenshot, and said "no shortcuts from now on". Before 1.0.6, go back over
+what Parts 3 and 4 settled for less than the mockup (`docs/mockups/polish-2026-11-21/index.html`),
+compare each against it at zoom in dark and light, and build the real thing or ask the user:
+
+- **Shadows and glow:** stacked borders (`look::shadow`, the primary button's `Glow`). Being
+  replaced with real blur now; check the result, not the report.
+- **Tab line:** fades between tabs; the mockup slides it (`.uline` transition on left and width).
+  The agent said a slide needs Storyboard/VisualTreeHelper bindings. Measure that, don't assume.
+- **Tick and switch motion:** I called them covered by WinUI's stock animation without looking.
+  The mockup draws the tick (stroke-dashoffset) and has a 16 px white knob with a shadow on a
+  filled track. Check stock against it.
+- **Combo box focus:** reuses WinUI's halo (4 px, no accent outline, stock accent pill still
+  shown); the mockup is a 1 px accent outline plus a 3 px ring at 32%. Never seen in light mode or
+  on Settings' dropdowns in a screenshot.
+- **API key box (PasswordBox):** no focus ring; skipped as "another template copy".
+- **Light top edge on cards and buttons:** skipped as optional; it is part of Soft depth.
+- **Menus:** the mockup fades them in from 5 px with scale .97; ours are stock.
+- **Press feedback:** the four styles were never judged by eye; the pressed wash was white where
+  the mockup's is black.
+- **Theme page:** three dropdowns per row instead of the plan's two (to fit); the open dropdown
+  could not be captured in screenshots, so it was never checked.
+- **Backdrop:** Mica and Acrylic only checked over a dark desktop.
+- **Search delete and the instant theme:** built and tested in code, never clicked by anyone yet.
+
+Each item: either matches the mockup, is rebuilt properly, or goes to the user as a choice with
+the cost stated. Nothing is "minor" by my judgement alone.
