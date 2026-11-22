@@ -907,6 +907,15 @@ impl State {
                             self.map_menu(x.parse().unwrap_or(0.0), y.parse().unwrap_or(0.0));
                         }
                     }
+                    // dev: a control in one of its visual states, as the pointer or a press would
+                    // put it (pose=ScanBtn=PointerOver), for the shadows' pictures
+                    p if p.starts_with("pose=") => {
+                        if let Some((n, s)) = p[5..].split_once('=') {
+                            if let Ok(c) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, n) {
+                                let _ = crate::bindings::Microsoft::UI::Xaml::VisualStateManager::GoToState(&c, &s.into(), false);
+                            }
+                        }
+                    }
                     // dev: the pointer onto the menu bar's title k while a menu is open (hover=1)
                     h if h.starts_with("hover=") => crate::menubar::dev_hover(h[6..].parse().unwrap_or(0)),
                     // dev: the pointer said to rest on a menu's row by its x:Name (point=BarSub3),
@@ -1100,6 +1109,59 @@ impl State {
         let early = std::env::var("SPRAWL_SHOT_EARLY").ok().and_then(|v| v.parse::<u32>().ok());
         let due = early.map_or(180u32.max(steps * 30 + 60), |n| steps * 30 + n);
         if self.shot_ticks < due {
+            return;
+        }
+        // dev: SPRAWL_SHOT_SEQ=n pictures a menu opening frame by frame: from then on each frame
+        // is taken, and from the first one with a popup open, that frame, the two before it and
+        // the n-3 after are saved (out-f00.png, ...), each with the open popups in the timing log
+        if let Some(n) = std::env::var("SPRAWL_SHOT_SEQ").ok().and_then(|v| v.parse::<u32>().ok()) {
+            thread_local! {
+                /// The last frames taken (picture, log line), and how many have been saved.
+                static SEQ: std::cell::RefCell<(std::collections::VecDeque<(Option<(u32, u32, Vec<u8>)>, String)>, Option<u32>)> = std::cell::RefCell::new((std::collections::VecDeque::new(), None));
+            }
+            let t0 = std::time::Instant::now();
+            let report = self.root.cast::<crate::bindings::Microsoft::UI::Xaml::UIElement>().map(|r| crate::popups::dev_report(&r)).unwrap_or_default();
+            let shot = win32::capture(self.hwnd);
+            let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let save = |i: u32, shot: Option<(u32, u32, Vec<u8>)>, report: &str| {
+                if let Some((w, h, px)) = shot {
+                    let out = path.with_file_name(format!("{stem}-f{i:02}.png"));
+                    if let Some(dir) = out.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    let _ = std::fs::write(&out, paint::png(w, h, &px));
+                }
+                crate::state::timing(&format!("frame {i}: {report}"), t0);
+            };
+            let done = SEQ.with(|q| {
+                let mut q = q.borrow_mut();
+                match q.1 {
+                    None if report != "no popup" => {
+                        let before: Vec<_> = q.0.drain(..).collect();
+                        let mut i = 0;
+                        for (s, r) in before {
+                            save(i, s, &r);
+                            i += 1;
+                        }
+                        save(i, shot, &report);
+                        q.1 = Some(i + 1);
+                    }
+                    None => {
+                        q.0.push_back((shot, report));
+                        if q.0.len() > 2 {
+                            q.0.pop_front();
+                        }
+                    }
+                    Some(i) => {
+                        save(i, shot, &report);
+                        q.1 = Some(i + 1);
+                    }
+                }
+                q.1.is_some_and(|i| i >= n) || self.shot_ticks > due + 600
+            });
+            if done {
+                std::process::exit(0);
+            }
             return;
         }
         if let Some((w, h, px)) = win32::capture(self.hwnd) {

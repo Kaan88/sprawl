@@ -293,6 +293,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         // the menus: the bar's titles, the pointer moving over them, a menu's first item (menu.rs)
         crate::menu::tick();
         with(|s| s.frame());
+        // a menu opened by this frame's own work (the bar's menu reopened where it belongs, a
+        // sub-menu after the pointer rested, a step of a screenshot run): caught before the
+        // frame is laid out and drawn, invisible and with its shadow from its first frame
+        crate::popups::settle();
     })?);
 
     let shot = a.shot.clone();
