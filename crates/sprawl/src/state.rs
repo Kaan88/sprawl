@@ -269,7 +269,7 @@ pub(crate) fn timing(what: &str, since: Instant) {
 /// string the app loads, `reconcile`'s one-attribute loads included; `reconcile` compares the
 /// strings as they are written and lets `set` resolve a token for a value it reads itself.
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
-    let made = XamlReader::Load(&HSTRING::from(&*crate::tokens::expand(&crate::theme::themed(xaml))))?;
+    let made = XamlReader::Load(&HSTRING::from(&*crate::popups::menus(&crate::tokens::expand(&crate::theme::themed(xaml)))))?;
     // the drop shadows it marks are hung on once it is laid out (shade.rs)
     if let Ok(el) = made.cast::<crate::bindings::Microsoft::UI::Xaml::UIElement>() {
         crate::shade::watch(&el);
@@ -862,11 +862,21 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
-                    // dev: give the control focus (focus=FilterBox), for the focus ring's picture
+                    // dev: give the control the keyboard's focus (focus=FilterBox), for the focus ring's picture
+                    // (Keyboard, not Programmatic: a combo box only draws its ring for the first)
                     f if f.starts_with("focus=") => {
                         if let Ok(e) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, &f[6..]) {
-                            let _ = e.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+                            let _ = e.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Keyboard);
                         }
+                    }
+                    // dev: open a dropdown by its x:Name (drop=PaletteBox), or a menu or any
+                    // expandable thing by its name (menu=File), as a screen reader would; the
+                    // open popup is in the picture with SPRAWL_SHOT_POPUPS
+                    d if d.starts_with("drop=") => {
+                        crate::win32::expand_by(self.hwnd, &d[5..], true);
+                    }
+                    d if d.starts_with("menu=") => {
+                        crate::win32::expand_by(self.hwnd, &d[5..], false);
                     }
                     // dev: the other theme, as saving it in Settings would (in memory: a screenshot run saves nothing)
                     "theme" => {
@@ -1016,7 +1026,11 @@ impl State {
         // Let the finish wave and morphs play out first (about 3 s at 60 frames a second).
         // ...and every SPRAWL_SWITCH step its 30 frames, plus a second for the last one to settle
         let steps = std::env::var("SPRAWL_SWITCH").map_or(0, |v| v.split(',').count() as u32);
-        if self.shot_ticks < 180u32.max(steps * 30 + 60) {
+        // dev: SPRAWL_SHOT_EARLY=n takes the picture n frames after the last step instead, to
+        // catch a menu or a dropdown part way through opening
+        let early = std::env::var("SPRAWL_SHOT_EARLY").ok().and_then(|v| v.parse::<u32>().ok());
+        let due = early.map_or(180u32.max(steps * 30 + 60), |n| steps * 30 + n);
+        if self.shot_ticks < due {
             return;
         }
         if let Some((w, h, px)) = win32::capture(self.hwnd) {

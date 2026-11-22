@@ -449,15 +449,35 @@ unsafe extern "system" fn collect_own(h: HWND, l: isize) -> i32 {
 /// dev (screenshot runs): open the dropdown whose AutomationId (its x:Name) is `id`, through
 /// UI Automation, as a screen reader would; the popup is part of the picture then.
 pub fn expand_dropdown(h: HWND, id: &str) -> bool {
+    expand_by_here(h, id, true)
+}
+
+/// [`expand_dropdown`] for anything that expands: by AutomationId (`by_id`, a dropdown's or a
+/// button's x:Name) or by its name as a screen reader reads it (the File menu's "File").
+pub fn expand_by(h: HWND, key: &str, by_id: bool) -> bool {
+    // a menu keeps the call until it closes, and the window's own thread is the one that
+    // would have to answer it: from another thread, the window carries on
+    let key = key.to_string();
+    std::thread::spawn(move || {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+        }
+        expand_by_here(h, &key, by_id);
+    });
+    true
+}
+
+fn expand_by_here(h: HWND, key: &str, by_id: bool) -> bool {
     use windows::core::BSTR;
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
-    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationExpandCollapsePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_ExpandCollapsePatternId};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationExpandCollapsePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_ExpandCollapsePatternId, UIA_NamePropertyId};
+    let id = key;
     let run = || -> windows::core::Result<()> {
         unsafe {
             let ua: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
             let root = ua.ElementFromHandle(windows::Win32::Foundation::HWND(h as *mut _))?;
-            let cond = ua.CreatePropertyCondition(UIA_AutomationIdPropertyId, &VARIANT::from(BSTR::from(id)))?;
+            let cond = ua.CreatePropertyCondition(if by_id { UIA_AutomationIdPropertyId } else { UIA_NamePropertyId }, &VARIANT::from(BSTR::from(id)))?;
             let found = root.FindFirst(TreeScope_Descendants, &cond)?;
             let pattern: IUIAutomationExpandCollapsePattern = windows::core::Interface::cast(&found.GetCurrentPattern(UIA_ExpandCollapsePatternId)?)?;
             pattern.Expand()

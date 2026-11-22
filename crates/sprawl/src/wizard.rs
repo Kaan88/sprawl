@@ -815,6 +815,12 @@ impl State {
 
     pub(crate) fn wizard_command(&mut self, name: &str) {
         match name {
+            // dev (screenshot runs): WizProvider=1 picks the provider by its place in the list
+            // (1 is Anthropic, which asks for a key), as choosing it from the dropdown does
+            p if p.starts_with("WizProvider=") => {
+                select(self, "WizProvider", p["WizProvider=".len()..].parse().unwrap_or(0));
+                self.wizard_provider();
+            }
             "WizBack" => {
                 self.prefs_harvest();
                 self.wizard_page = self.wizard_page.saturating_sub(1);

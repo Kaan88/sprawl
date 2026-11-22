@@ -377,6 +377,7 @@ pub(crate) const TOKENS: &[Token] = &[
     // is how strong every shadow is on the page: the mockup's own on the dark one, softer and a
     // deep blue on the light one, where black reads as dirt.
     Token { name: "ring", what: "the soft ring round a field that has the focus: the accent at 32%", value: "#520078D4", light: "#520078D4" },
+    Token { name: "fieldfocus", what: "the dark wash behind a field that has the focus, in the Soft controls (the mockup's #00000040)", value: "#40000000", light: "#14000000" },
     Token { name: "shadow", what: "a drop shadow's colour; its alpha is how strong the page's shadows are", value: "#FF000000", light: "#8C1B2A60" },
     // The top highlight of the Soft finish: a 1 px light line along the top edge, as if lit from
     // above. A step per kind of thing, and brighter on the light page, where a faint white
