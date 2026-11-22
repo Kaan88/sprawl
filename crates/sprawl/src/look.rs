@@ -816,33 +816,7 @@ fn stock() -> String {
     ] {
         x += &brush(key, token);
     }
-    // a check box: the accent behind the tick, its glyph on the accent, a hairline when unchecked
-    for (key, token) in [
-        ("CheckBoxCheckBackgroundFillChecked", "accent"),
-        ("CheckBoxCheckBackgroundFillCheckedPointerOver", "accent"),
-        ("CheckBoxCheckBackgroundFillCheckedPressed", "accent"),
-        ("CheckBoxCheckBackgroundStrokeUnchecked", "line2"),
-        ("CheckBoxCheckBackgroundStrokeUncheckedPointerOver", "edge"),
-        ("CheckBoxCheckGlyphForegroundChecked", "onaccent"),
-        ("CheckBoxCheckGlyphForegroundCheckedPointerOver", "onaccent"),
-        ("CheckBoxCheckGlyphForegroundCheckedPressed", "onaccent"),
-    ] {
-        x += &brush(key, token);
-    }
-    // a switch: the track on a row, its knob in the second text colour; the accent when on
-    for (key, token) in [
-        ("ToggleSwitchFillOff", "row"),
-        ("ToggleSwitchStrokeOff", "line2"),
-        ("ToggleSwitchKnobFillOff", "text2"),
-        ("ToggleSwitchFillOn", "accent"),
-        ("ToggleSwitchFillOnPointerOver", "accent"),
-        ("ToggleSwitchFillOnPressed", "accent"),
-        ("ToggleSwitchKnobFillOn", "onaccent"),
-        ("ToggleSwitchKnobFillOnPointerOver", "onaccent"),
-        ("ToggleSwitchKnobFillOnPressed", "onaccent"),
-    ] {
-        x += &brush(key, token);
-    }
+    // (a check box and a switch are templates of the look's own, below: no WinUI brush draws them)
     // the keyboard's focus ring, which WinUI draws in two strokes: the accent outside, the page
     // inside it (generic.xaml's own names for the pair)
     for (key, token) in [
@@ -889,13 +863,10 @@ fn stock() -> String {
     ] {
         x += &brush(key, token);
     }
-    // a round tick box: WinUI's check box binds its box's RadiusX/RadiusY to the control's own
-    // CornerRadius (generic.xaml), and its box is 20 px, so half of it is 10. BasedOn keeps the
-    // stock template; an implicit style alone would replace it.
-    if crate::tokens::current().ticks == crate::tokens::Ticks::Round {
-        let half = 10;
-        x += &format!(r#"<Style TargetType="CheckBox" BasedOn="{{StaticResource DefaultCheckBoxStyle}}"><Setter Property="CornerRadius" Value="{half}"/></Style>"#);
-    }
+    // the tick box and the switch, drawn as the mockup draws them: WinUI's own style (its size,
+    // padding and focus) with a template of the look's (see `tick_template`, `switch_template`)
+    x += &format!(r#"<Style TargetType="CheckBox" BasedOn="{{StaticResource DefaultCheckBoxStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#, tick_template());
+    x += &format!(r#"<Style TargetType="ToggleSwitch" BasedOn="{{StaticResource DefaultToggleSwitchStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#, switch_template());
     // a text box with the focus gets a soft 3 px ring outside its accent line. A key cannot draw
     // that, so this is WinUI's own template (generic.xaml) with one border added, `Ring`, shown
     // by the Focused state; the ring lies outside the box, so nothing moves.
@@ -917,6 +888,407 @@ fn stock() -> String {
         );
     }
     x
+}
+
+// ---------------------------------------------------------------- the tick box and the switch
+//
+// As the mockup draws them (docs/mockups/polish-2026-11-21, `.chk` and `.sw`): an 18 px box whose
+// tick is drawn in along its stroke, and a 38 by 20 pill whose knob slides. Each value a state
+// changes is set at once in the state itself, because the state a control is first drawn in is
+// one of them and nothing may move as a page appears; what the mockup eases is eased by the
+// transitions into a state (and by the pointer's states, which a control never starts in).
+
+/// The mockup's `--m` and `--me`, by the motion in use: how long a tick takes to draw and a knob
+/// to slide, and the curve the knob slides on (the tick and the edges take CSS's `ease`).
+/// Lively's curve overshoots, which [`frames`] plays between two known places.
+fn glide(motion: crate::tokens::Motion) -> (u32, [f64; 4]) {
+    use crate::tokens::Motion;
+    match motion {
+        Motion::Subtle => (160, [0.2, 0.8, 0.2, 1.0]),
+        Motion::Lively => (340, [0.3, 1.55, 0.5, 1.0]),
+        Motion::None => (0, [0.0, 0.0, 1.0, 1.0]),
+    }
+}
+
+/// How far a tick box or a switch sinks while it is pressed: the mockup's `scale(.9)` for Press
+/// in (and nothing for the other presses), none when the motion is None.
+fn sink(press: crate::tokens::Press, motion: crate::tokens::Motion) -> f64 {
+    if press == crate::tokens::Press::PressIn {
+        travel(motion, 0.0, 0.9).1
+    } else {
+        1.0
+    }
+}
+
+/// The tick box's corner: half the box when the Ticks option is Round; otherwise the mockup's
+/// `--rx`, a step under the controls' own corner (4, 5, 6 and 7 for 4/8, 6/10, 8/14 and Pills,
+/// none when square), and 4 for the Windows stock controls, as their box has.
+pub(crate) fn tick_corner(look: &crate::tokens::Look) -> f64 {
+    use crate::tokens::{Controls, Corners, Ticks};
+    if look.ticks == Ticks::Round {
+        return TICK / 2.0;
+    }
+    match (look.corners, look.controls) {
+        (Corners::Square, _) => 0.0,
+        (_, Controls::Stock) | (Corners::Four8, _) => 4.0,
+        (Corners::Six10, _) => 5.0,
+        (Corners::Eight14, _) => 6.0,
+        (Corners::Pills, _) => 7.0,
+    }
+}
+
+/// The tick box's size.
+const TICK: f64 = 18.0;
+/// The tick's stroke, and its dash: the mockup's `stroke-dasharray:16`, longer than the tick, so
+/// an offset of 16 hides it and 0 shows it whole. XAML counts a dash in strokes, not pixels.
+const STROKE: f64 = 2.2;
+const DASH: f64 = 16.0 / STROKE;
+/// The gap after the dash, longer than the tick too, so no part of the dash before it reaches
+/// the tick's start while it is hidden.
+const GAP: f64 = 20.0 / STROKE;
+/// The offset that hides the tick: the dash's end a twentieth of a pixel before the tick's start.
+/// At exactly 16 Direct2D draws the dash's round end there, a dot that Edge does not draw.
+const HIDDEN: f64 = 16.05 / STROKE;
+/// How far the switch's knob travels: the mockup's `left` from 1 px to 19 px.
+const KNOB_TRAVEL: f64 = 18.0;
+
+/// `target`'s `prop` set to `to` at once.
+fn at_once(target: &str, prop: &str, to: f64, dependent: bool) -> String {
+    let dep = if dependent { r#" EnableDependentAnimation="True""# } else { "" };
+    format!(r##"<DoubleAnimation Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}" To="{}" Duration="0"{dep}/>"##, num(to))
+}
+
+/// `target`'s `prop` taken from wherever it is to `to` in `ms` along `spline` (one that stays in
+/// 0..1); at once for 0. `dependent`: a property the compositor cannot animate (a stroke's dash).
+fn ease_to(target: &str, prop: &str, to: f64, ms: u32, spline: [f64; 4], dependent: bool) -> String {
+    if ms == 0 {
+        return at_once(target, prop, to, dependent);
+    }
+    let dep = if dependent { r#" EnableDependentAnimation="True""# } else { "" };
+    format!(
+        r##"<DoubleAnimationUsingKeyFrames Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}"{dep}><SplineDoubleKeyFrame KeyTime="0:0:{:.3}" Value="{}" KeySpline="{}"/></DoubleAnimationUsingKeyFrames>"##,
+        f64::from(ms) / 1000.0,
+        num(to),
+        spline_text(spline)
+    )
+}
+
+/// `target`'s `prop` from `from` to `to` in `ms` along `spline`, overshoot included ([`frames`]).
+fn travel_to(target: &str, prop: &str, from: f64, to: f64, ms: u32, spline: [f64; 4]) -> String {
+    if ms == 0 {
+        return at_once(target, prop, to, false);
+    }
+    format!(r##"<DoubleAnimationUsingKeyFrames Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}">{}</DoubleAnimationUsingKeyFrames>"##, frames(from, to, ms, spline))
+}
+
+/// A brush of WinUI's own, set at once (a disabled control's text).
+fn brush_at_once(target: &str, prop: &str, key: &str) -> String {
+    format!(r##"<ObjectAnimationUsingKeyFrames Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}"><DiscreteObjectKeyFrame KeyTime="0" Value="{{ThemeResource {key}}}"/></ObjectAnimationUsingKeyFrames>"##)
+}
+
+/// A control's press: the scale it sinks to (1: none), and the press's time and curve.
+#[derive(Clone, Copy)]
+struct Sink {
+    to: f64,
+    ms: u32,
+    spline: [f64; 4],
+}
+
+impl Sink {
+    fn now() -> Sink {
+        let feel = press_feel(crate::tokens::Press::PressIn);
+        let m = motion();
+        Sink { to: sink(crate::tokens::current().press, m), ms: state_ms(m, feel.ms), spline: feel.spline }
+    }
+
+    fn moves(self) -> bool {
+        self.to != 1.0
+    }
+
+    /// The sink's curve overshoots, so leaving the pressed state is played between known scales.
+    fn overshoots(self) -> bool {
+        self.moves() && self.ms > 0 && pieces(self.spline).len() > 1
+    }
+
+    /// `target` (a ScaleTransform) to the scale of a pressed (`down`) or released control: from
+    /// a known scale (`from`), overshoot included, or from wherever it is.
+    fn scale(self, target: &str, down: bool, from: Option<f64>, timed: bool) -> String {
+        if !self.moves() {
+            return String::new();
+        }
+        let to = if down { self.to } else { 1.0 };
+        let ms = if timed { self.ms } else { 0 };
+        ["ScaleX", "ScaleY"]
+            .iter()
+            .map(|p| match from {
+                Some(f) => travel_to(target, p, f, to, ms, self.spline),
+                None => ease_to(target, p, to, ms, safe(self.spline), false),
+            })
+            .collect()
+    }
+}
+
+/// What a tick box shows: no mark, the tick, or the dash of a box that is partly ticked.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Mark {
+    Unchecked,
+    Checked,
+    Indeterminate,
+}
+
+const MARKS: [(&str, Mark); 3] = [("Unchecked", Mark::Unchecked), ("Checked", Mark::Checked), ("Indeterminate", Mark::Indeterminate)];
+
+/// Which of the box's optional parts a template has: an edge (not the soft one), the lit edge
+/// (not when Flat).
+#[derive(Clone, Copy)]
+struct TickParts {
+    edge: bool,
+    light: bool,
+}
+
+/// One state of the tick box (its mark, and the pointer: Normal, PointerOver, Pressed,
+/// Disabled). With `timed`, what the mockup eases takes its time: the tick drawn in (or back)
+/// along its stroke and the edge fading, both on `ease` over `--m`, and the press's sink;
+/// the fill comes and goes at once, as the mockup's background does. `from`: the scale the box
+/// starts from when it is known, for the sink's overshoot.
+fn tick_story(mark: Mark, pointer: &str, parts: TickParts, timed: bool, from: Option<f64>) -> String {
+    let (m, _) = glide(motion());
+    let m = if timed { m } else { 0 };
+    let on = if mark == Mark::Unchecked { 0.0 } else { 1.0 };
+    let mut s = at_once("Fill", "Opacity", on, false);
+    if parts.light {
+        s += &at_once("Light", "Opacity", on, false);
+    }
+    if parts.edge {
+        s += &ease_to("Edge", "Opacity", 1.0 - on, m, EASE, false);
+    }
+    s += &ease_to("Tick", "StrokeDashOffset", if mark == Mark::Checked { 0.0 } else { HIDDEN }, m, EASE, true);
+    s += &ease_to("Dash", "StrokeDashOffset", if mark == Mark::Indeterminate { 0.0 } else { HIDDEN }, m, EASE, true);
+    s += &Sink::now().scale("BoxScale", pointer == "Pressed", from, timed);
+    let disabled = pointer == "Disabled";
+    s += &at_once("Box", "Opacity", if disabled { 0.4 } else { 1.0 }, false);
+    if disabled {
+        let name = MARKS.iter().find(|(_, k)| *k == mark).map(|(n, _)| *n).unwrap_or("Unchecked");
+        s += &brush_at_once("ContentPresenter", "Foreground", &format!("CheckBoxForeground{name}Disabled"));
+    }
+    format!("<Storyboard>{s}</Storyboard>")
+}
+
+/// The tick box's template: WinUI's (generic.xaml's DefaultCheckBoxStyle), its twelve combined
+/// states kept, with the box drawn as the mockup's `.chk`: 18 px in WinUI's 20 px cell (so
+/// nothing beside it moves), its edge by the Controls option (Windows stock: a 1 px line;
+/// outlined: 1.5 px in the labels' colour; soft: no line, a faint fill), the accent behind a
+/// tick drawn as a stroke, and the Soft finish's lit top edge when ticked.
+fn tick_template() -> String {
+    use crate::tokens::Controls;
+    let look = crate::tokens::current();
+    let corner = tick_corner(&look);
+    let c = num(corner);
+    let (width, edge, well) = match look.controls {
+        Controls::Stock => (1.0, Some("tickedge"), None),
+        Controls::Outlined => (1.5, Some("text3"), None),
+        Controls::Soft => (1.0, None, Some("tickwell")),
+    };
+    let well = well.map(|t| format!(r##"<Border x:Name="Well" CornerRadius="{c}" Background="{}"/>"##, crate::tokens::refer(t))).unwrap_or_default();
+    let edge_xaml = edge.map(|t| format!(r##"<Border x:Name="Edge" CornerRadius="{c}" BorderThickness="{}" BorderBrush="{}"/>"##, num(width), crate::tokens::refer(t))).unwrap_or_default();
+    // the lit edge is the mockup's inset shadow, inside the box's (see-through) border
+    let light = top_light("hlon", &num((corner - width).max(0.0)), true).replacen("<Border ", &format!(r#"<Border x:Name="Light" Margin="{}" Opacity="0" "#, num(width)), 1);
+    let parts = TickParts { edge: edge.is_some(), light: !light.is_empty() };
+    // the mockup's 12 px svg, centred in the box: its path, and a dash for a box partly ticked
+    let stroke = |name: &str, data: &str| {
+        format!(
+            r##"<Path x:Name="{name}" Margin="3" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Top" Data="{data}" Stroke="{}" StrokeThickness="{}" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeDashCap="Round" StrokeLineJoin="Round" StrokeDashArray="{} {}" StrokeDashOffset="{}" IsHitTestVisible="False"/>"##,
+            crate::tokens::refer("onaccent"),
+            num(STROKE),
+            num(DASH),
+            num(GAP),
+            num(HIDDEN)
+        )
+    };
+    let (tick, dash) = (stroke("Tick", "M2.5,6.2 L5,8.6 L9.6,3.6"), stroke("Dash", "M3,6 L9,6"));
+    let (m, _) = glide(motion());
+    let sink = Sink::now();
+    // the transitions: into a Normal state (a tick set from code, or the pointer gone) from
+    // wherever it is, and out of a press, whose sink overshoots on its way back
+    let mut moves = String::new();
+    if m > 0 || sink.ms > 0 {
+        for (name, mark) in MARKS {
+            moves += &format!(r##"<VisualTransition To="{name}Normal">{}</VisualTransition>"##, tick_story(mark, "Normal", parts, true, None));
+        }
+    }
+    if sink.overshoots() {
+        for (from, _) in MARKS {
+            for (to, mark) in MARKS {
+                moves += &format!(r##"<VisualTransition From="{from}Pressed" To="{to}PointerOver">{}</VisualTransition>"##, tick_story(mark, "PointerOver", parts, true, Some(sink.to)));
+            }
+        }
+    }
+    let moves = if moves.is_empty() { moves } else { format!("<VisualStateGroup.Transitions>{moves}</VisualStateGroup.Transitions>") };
+    let mut states = String::new();
+    for (name, mark) in MARKS {
+        for pointer in ["Normal", "PointerOver", "Pressed", "Disabled"] {
+            // a Normal or Disabled state can be the first a box is drawn in: set at once
+            let timed = matches!(pointer, "PointerOver" | "Pressed");
+            let from = (pointer == "Pressed").then_some(1.0);
+            states += &format!(r##"<VisualState x:Name="{name}{pointer}"><VisualState.Storyboard>{}</VisualState.Storyboard></VisualState>"##, tick_story(mark, pointer, parts, timed, from));
+        }
+    }
+    let size = num(TICK);
+    format!(
+        r##"<ControlTemplate TargetType="CheckBox">
+<Grid x:Name="RootGrid" Background="{{TemplateBinding Background}}" BorderBrush="{{TemplateBinding BorderBrush}}" BorderThickness="{{TemplateBinding BorderThickness}}" CornerRadius="{{TemplateBinding CornerRadius}}">
+<VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CombinedStates">{moves}{states}</VisualStateGroup></VisualStateManager.VisualStateGroups>
+<Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+<Grid x:Name="Box" Width="{size}" Height="{size}" Margin="1" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+<Grid.RenderTransform><ScaleTransform x:Name="BoxScale"/></Grid.RenderTransform>
+{well}{edge_xaml}<Border x:Name="Fill" CornerRadius="{c}" Background="{}" Opacity="0"/>{light}{tick}{dash}
+</Grid>
+<ContentPresenter x:Name="ContentPresenter" Grid.Column="1" ContentTemplate="{{TemplateBinding ContentTemplate}}" ContentTransitions="{{TemplateBinding ContentTransitions}}" Content="{{TemplateBinding Content}}" Foreground="{{TemplateBinding Foreground}}" Margin="{{TemplateBinding Padding}}" HorizontalAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalAlignment="{{TemplateBinding VerticalContentAlignment}}" AutomationProperties.AccessibilityView="Raw" TextWrapping="Wrap"/>
+</Grid>
+</ControlTemplate>"##,
+        crate::tokens::refer("accent")
+    )
+}
+
+/// How the switch's knob gets to where a state puts it: at once, from a known place along the
+/// mockup's `--me` (overshoot included), or from wherever a drag left it.
+#[derive(Clone, Copy, PartialEq)]
+enum Slide {
+    AtOnce,
+    From(f64),
+    FromHere,
+}
+
+/// One of the switch's toggle states, on or off. The track's fill and the knob's colour change
+/// at once; the knob slides on `--me` over `--m`; the outlined switch's line fades on `ease`.
+fn switch_story(on: bool, slide: Slide, filled: bool, light: bool) -> String {
+    let (m, me) = glide(motion());
+    let m = if slide == Slide::AtOnce { 0 } else { m };
+    let (x, v) = if on { (KNOB_TRAVEL, 1.0) } else { (0.0, 0.0) };
+    let mut s = match slide {
+        Slide::From(from) => travel_to("KnobTranslateTransform", "X", from, x, m, me),
+        _ => ease_to("KnobTranslateTransform", "X", x, m, safe(me), false),
+    };
+    s += &at_once("SwitchKnobBounds", "Opacity", v, false);
+    if light {
+        s += &at_once("Light", "Opacity", v, false);
+    }
+    if filled {
+        s += &at_once("OuterBorder", "Opacity", 1.0 - v, false);
+    } else {
+        s += &ease_to("OuterBorder", "Opacity", 1.0 - v, m, EASE, false);
+        s += &at_once("SwitchKnobOn", "Opacity", v, false);
+        s += &at_once("SwitchKnobOff", "Opacity", 1.0 - v, false);
+    }
+    format!("<Storyboard>{s}</Storyboard>")
+}
+
+/// The switch's template: WinUI's (generic.xaml's DefaultToggleSwitchStyle), its parts and its
+/// three groups of states kept, with the switch drawn as the mockup's `.sw`. Filled (the
+/// outlined and soft controls): a 38 by 20 pill, a faint track off and the accent on, and a
+/// white 16 px knob on a real shadow (`shade:knob`, 0 1px 3px). Windows stock: the track
+/// outlined, a 12 px knob, in the colour drawn on the accent when on. It keeps WinUI's 40 px column,
+/// so the On and Off words stay where they were.
+fn switch_template() -> String {
+    let filled = crate::tokens::current().controls != crate::tokens::Controls::Stock;
+    let (knob, track) = if filled { (16.0, format!(r##"Fill="{}""##, crate::tokens::refer("track"))) } else { (12.0, format!(r##"Fill="Transparent" Stroke="{}" StrokeThickness="1""##, crate::tokens::refer("trackedge"))) };
+    let (k, r) = (num(knob), num(knob / 2.0));
+    let knobs = if filled {
+        format!(
+            r##"{}<Border x:Name="SwitchKnobOff" Width="{k}" Height="{k}" CornerRadius="{r}" Background="{}"/>"##,
+            shade_host("knob", &r).replacen("<Border ", &format!(r#"<Border x:Name="KnobShade" Width="{k}" Height="{k}" "#), 1),
+            crate::tokens::refer("knob")
+        )
+    } else {
+        format!(
+            r##"<Border x:Name="SwitchKnobOff" Width="{k}" Height="{k}" CornerRadius="{r}" Background="{}"/><Border x:Name="SwitchKnobOn" Width="{k}" Height="{k}" CornerRadius="{r}" Background="{}" Opacity="0"/>"##,
+            crate::tokens::refer("knoboff"),
+            crate::tokens::refer("onaccent")
+        )
+    };
+    // the lit edge inside the pill's 1 px (see-through) border
+    let light = top_light("hlon", &num(9.0), true).replacen("<Border ", r#"<Border x:Name="Light" Margin="1" Opacity="0" "#, 1);
+    let lit = !light.is_empty();
+    let (m, _) = glide(motion());
+    let toggles = if m > 0 {
+        format!(
+            r##"<VisualStateGroup.Transitions><VisualTransition From="Off" To="On">{}</VisualTransition><VisualTransition From="On" To="Off">{}</VisualTransition><VisualTransition From="Dragging" To="On">{}</VisualTransition><VisualTransition From="Dragging" To="Off">{}</VisualTransition></VisualStateGroup.Transitions>"##,
+            switch_story(true, Slide::From(0.0), filled, lit),
+            switch_story(false, Slide::From(KNOB_TRAVEL), filled, lit),
+            switch_story(true, Slide::FromHere, filled, lit),
+            switch_story(false, Slide::FromHere, filled, lit)
+        )
+    } else {
+        String::new()
+    };
+    // the press: the whole pill sinks (the mockup's `.sw:active`), and comes back past 1
+    let sink = Sink::now();
+    let mut common = String::new();
+    if sink.overshoots() {
+        for to in ["Normal", "PointerOver"] {
+            common += &format!(r##"<VisualTransition From="Pressed" To="{to}"><Storyboard>{}</Storyboard></VisualTransition>"##, sink.scale("SwitchScale", false, Some(sink.to), true));
+        }
+        common = format!("<VisualStateGroup.Transitions>{common}</VisualStateGroup.Transitions>");
+    }
+    // the scale is 1 when a switch is first drawn, so these may take their time
+    for (state, down) in [("Normal", false), ("PointerOver", false), ("Pressed", true)] {
+        let from = down.then_some(1.0);
+        common += &format!(r##"<VisualState x:Name="{state}"><VisualState.Storyboard><Storyboard>{}</Storyboard></VisualState.Storyboard></VisualState>"##, sink.scale("SwitchScale", down, from, true));
+    }
+    common += &format!(
+        r##"<VisualState x:Name="Disabled"><VisualState.Storyboard><Storyboard>{}{}{}{}</Storyboard></VisualState.Storyboard></VisualState>"##,
+        at_once("Switch", "Opacity", 0.4, false),
+        brush_at_once("HeaderContentPresenter", "Foreground", "ToggleSwitchHeaderForegroundDisabled"),
+        brush_at_once("OffContentPresenter", "Foreground", "ToggleSwitchContentForegroundDisabled"),
+        brush_at_once("OnContentPresenter", "Foreground", "ToggleSwitchContentForegroundDisabled")
+    );
+    let content = |name: &str| {
+        format!(
+            r##"<VisualState x:Name="{name}"><VisualState.Storyboard><Storyboard><DoubleAnimation Storyboard.TargetName="{name}Presenter" Storyboard.TargetProperty="Opacity" To="1" Duration="0"/><ObjectAnimationUsingKeyFrames Storyboard.TargetName="{name}Presenter" Storyboard.TargetProperty="IsHitTestVisible"><DiscreteObjectKeyFrame KeyTime="0"><DiscreteObjectKeyFrame.Value><x:Boolean>True</x:Boolean></DiscreteObjectKeyFrame.Value></DiscreteObjectKeyFrame></ObjectAnimationUsingKeyFrames></Storyboard></VisualState.Storyboard></VisualState>"##
+        )
+    };
+    let presenter = |name: &str, content: &str| {
+        format!(
+            r##"<ContentPresenter x:Name="{name}" Grid.RowSpan="3" Grid.Column="2" Opacity="0" Foreground="{{TemplateBinding Foreground}}" IsHitTestVisible="False" Content="{{TemplateBinding {content}}}" ContentTemplate="{{TemplateBinding {content}Template}}" HorizontalAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalAlignment="{{TemplateBinding VerticalContentAlignment}}" AutomationProperties.AccessibilityView="Raw"/>"##
+        )
+    };
+    format!(
+        r##"<ControlTemplate TargetType="ToggleSwitch">
+<Grid Background="{{TemplateBinding Background}}" BorderBrush="{{TemplateBinding BorderBrush}}" BorderThickness="{{TemplateBinding BorderThickness}}" CornerRadius="{{TemplateBinding CornerRadius}}">
+<VisualStateManager.VisualStateGroups>
+<VisualStateGroup x:Name="CommonStates">{common}</VisualStateGroup>
+<VisualStateGroup x:Name="ToggleStates">{toggles}<VisualState x:Name="Dragging"/><VisualState x:Name="Off"><VisualState.Storyboard>{}</VisualState.Storyboard></VisualState><VisualState x:Name="On"><VisualState.Storyboard>{}</VisualState.Storyboard></VisualState></VisualStateGroup>
+<VisualStateGroup x:Name="ContentStates">{}{}</VisualStateGroup>
+</VisualStateManager.VisualStateGroups>
+<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+<ContentPresenter x:Name="HeaderContentPresenter" x:DeferLoadStrategy="Lazy" Grid.Row="0" Content="{{TemplateBinding Header}}" ContentTemplate="{{TemplateBinding HeaderTemplate}}" Foreground="{{ThemeResource ToggleSwitchHeaderForeground}}" IsHitTestVisible="False" Margin="{{ThemeResource ToggleSwitchTopHeaderMargin}}" TextWrapping="Wrap" VerticalAlignment="Top" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>
+<Grid Grid.Row="1" HorizontalAlignment="Left" VerticalAlignment="Top">
+<Grid.RowDefinitions><RowDefinition Height="{{ThemeResource ToggleSwitchPreContentMargin}}"/><RowDefinition Height="Auto"/><RowDefinition Height="{{ThemeResource ToggleSwitchPostContentMargin}}"/></Grid.RowDefinitions>
+<Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12" MaxWidth="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+<Grid x:Name="SwitchAreaGrid" Grid.RowSpan="3" Grid.ColumnSpan="3" Margin="0,5" CornerRadius="{{TemplateBinding CornerRadius}}" Control.IsTemplateFocusTarget="True" Background="{{ThemeResource ToggleSwitchContainerBackground}}"/>
+{}{}
+<Grid x:Name="Switch" Grid.Row="1" Width="38" Height="20" Margin="0,0,2,0" HorizontalAlignment="Left" RenderTransformOrigin="0.5,0.5">
+<Grid.RenderTransform><ScaleTransform x:Name="SwitchScale"/></Grid.RenderTransform>
+<Rectangle x:Name="OuterBorder" RadiusX="10" RadiusY="10" {track}/>
+<Rectangle x:Name="SwitchKnobBounds" RadiusX="10" RadiusY="10" Fill="{}" Opacity="0"/>
+{light}
+<Grid x:Name="SwitchKnob" HorizontalAlignment="Left" Width="20" Height="20">
+<Grid.RenderTransform><TranslateTransform x:Name="KnobTranslateTransform"/></Grid.RenderTransform>
+{knobs}
+</Grid>
+</Grid>
+<Thumb x:Name="SwitchThumb" AutomationProperties.AccessibilityView="Raw" Grid.RowSpan="3" Grid.ColumnSpan="3"><Thumb.Template><ControlTemplate TargetType="Thumb"><Rectangle Fill="Transparent"/></ControlTemplate></Thumb.Template></Thumb>
+</Grid>
+</Grid>
+</ControlTemplate>"##,
+        switch_story(false, Slide::AtOnce, filled, lit),
+        switch_story(true, Slide::AtOnce, filled, lit),
+        content("OffContent"),
+        content("OnContent"),
+        presenter("OffContentPresenter", "OffContent"),
+        presenter("OnContentPresenter", "OnContent"),
+        crate::tokens::refer("accent")
+    )
 }
 
 /// The styles, as a dictionary merged into the application's resources at start (so any
@@ -1460,8 +1832,9 @@ mod tests {
         assert_eq!(r.matches("<Thickness x:Key=\"TextControlBorderThemeThickness").count(), 2);
         // WinUI's accent button and the rest of its accent brushes are the look's accent
         assert!(r.contains(r#"x:Key="AccentButtonBackground""#), "{r}");
-        // and the check box's tick is drawn on the accent
-        assert!(expanded.contains(&format!(r##"<SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="{}"/>"##, crate::tokens::get("onaccent"))));
+        // and the check box's tick is drawn on the accent, in the colour that reads on it
+        assert!(expanded.contains(&format!(r##"Data="M2.5,6.2 L5,8.6 L9.6,3.6" Stroke="{}""##, crate::tokens::get("onaccent"))));
+        assert!(!r.contains("CheckBoxCheckBackground") && !r.contains("ToggleSwitchFill"), "no WinUI brush draws them now");
         // the keyboard's focus ring: the accent outside, the page inside it
         for (key, token) in [("SystemControlFocusVisualPrimaryBrush", "accent"), ("SystemControlFocusVisualSecondaryBrush", "ground")] {
             assert!(
@@ -1566,15 +1939,10 @@ mod tests {
         assert!(still.contains(r#"TargetName="WashDown" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="0.2""#), "{still}");
         assert!(still.contains(r#"TargetName="Wash" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="0""#), "{still}");
 
-        // Square is WinUI's own box; Round is the check box's CornerRadius, half of its 20 px
-        crate::tokens::set(&Look { motion: Motion::Subtle, ..Look::default() });
-        assert!(!resources().contains(r#"<Style TargetType="CheckBox""#));
+        // Square is the controls' small corner; Round is half of the 18 px box
         crate::tokens::set(&Look { ticks: Ticks::Round, ..Look::default() });
         let r = resources();
-        assert!(
-            r.contains(r#"<Style TargetType="CheckBox" BasedOn="{StaticResource DefaultCheckBoxStyle}"><Setter Property="CornerRadius" Value="10"/></Style>"#),
-            "{r}"
-        );
+        assert!(r.contains(&cr(r#"<Border x:Name="Fill" CR="9""#)), "{r}");
         crate::tokens::set(&Look::default());
     }
 
@@ -1684,9 +2052,11 @@ mod tests {
             assert!(!soft.contains(old), "{old}");
         }
         let flat_page = page(true);
-        for token in ["shade:", "$hlcard", "$hlbtn", "$hlpri", "$hlon", "$hlbar", "x:Name=\"Shade\"", "x:Name=\"Light\"", "BasedOn=\"{StaticResource DefaultButtonStyle}\""] {
+        for token in ["$hlcard", "$hlbtn", "$hlpri", "$hlon", "$hlbar", "x:Name=\"Shade\"", "x:Name=\"Light\"", "BasedOn=\"{StaticResource DefaultButtonStyle}\""] {
             assert!(!flat_page.contains(token), "Flat still has {token}");
         }
+        // the one shadow Flat keeps is the switch's knob, as the mockup's flat switch has it
+        assert_eq!(flat_page.matches("shade:").count(), flat_page.matches("shade:knob").count(), "Flat still has a shadow");
         crate::tokens::set(&Look { finish: Finish::Flat, ..Look::default() });
         assert_eq!(shadow(false), "");
         assert_eq!(top_light("hlcard", &crate::tokens::rc(8.0), false), "");
@@ -1723,5 +2093,150 @@ mod tests {
         assert!(!r.contains("TextControlBackground") && !r.contains("ComboBoxBackground") && !r.contains(r#"x:Name="Ring""#) && !r.contains("TextControlBorderThemeThickness"), "{r}");
         assert!(r.contains("ControlCornerRadius"), "the corner is still the look's");
         crate::tokens::set(&Look::default());
+    }
+    /// A test's expected XAML with `CR=` for `CornerRadius=`, so the scanner that keeps corner
+    /// numbers out of the app's XAML (tokens.rs) does not read the expectations as XAML.
+    fn cr(s: &str) -> String {
+        s.replace("CR=", "CornerRadius=")
+    }
+
+    /// The part of the resources that is one implicit style (`<Style TargetType="{target}" ...`).
+    fn implicit<'a>(r: &'a str, target: &str) -> &'a str {
+        let at = r.find(&format!(r#"<Style TargetType="{target}" BasedOn"#)).unwrap_or_else(|| panic!("no {target} style"));
+        let rest = &r[at..];
+        &rest[..rest.find("</Style>").unwrap()]
+    }
+
+    /// The tick box is the mockup's `.chk`: an 18 px box whose edge and corner follow the Controls
+    /// and Ticks options, the accent behind a tick that is a stroke drawn in by its dash, and
+    /// WinUI's twelve states. Nothing in a Normal or Disabled state takes time (a box is first
+    /// drawn in one of them); the transitions into them do.
+    #[test]
+    fn the_tick_box_is_the_mockups() {
+        use crate::tokens::{Controls, Corners, Finish, Look, Motion, Press, Ticks};
+        let tick = |look: Look| {
+            crate::tokens::set(&look);
+            let r = resources();
+            crate::tokens::set(&Look::default());
+            assert_eq!(r.matches(r#"<Style TargetType="CheckBox""#).count(), 1);
+            implicit(&r, "CheckBox").to_string()
+        };
+        let chk = tick(Look::default());
+        assert!(chk.contains(r#"BasedOn="{StaticResource DefaultCheckBoxStyle}""#), "WinUI's size, padding and focus are kept");
+        for mark in ["Unchecked", "Checked", "Indeterminate"] {
+            for pointer in ["Normal", "PointerOver", "Pressed", "Disabled"] {
+                assert_eq!(chk.matches(&format!(r#"<VisualState x:Name="{mark}{pointer}">"#)).count(), 1, "{mark}{pointer}");
+            }
+        }
+        // 18 px, in WinUI's 20 px cell
+        assert!(chk.contains(r#"<Grid x:Name="Box" Width="18" Height="18" Margin="1""#));
+        // the tick: the mockup's path, stroke 2.2 with round ends, its dash 16 px long (in
+        // strokes), hidden by an offset just past the dash and drawn in to 0
+        let d = num(16.0 / 2.2);
+        assert!(chk.contains(r#"Data="M2.5,6.2 L5,8.6 L9.6,3.6""#) && chk.contains(r#"StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeDashCap="Round""#));
+        assert!(chk.contains(&format!(r#"StrokeDashArray="{d} {}" StrokeDashOffset="{}""#, num(20.0 / 2.2), num(16.05 / 2.2))), "{chk}");
+        // the outlined edge: 1.5 px in the labels' colour, the mockup's --rx (4 at 4/8)
+        assert!(chk.contains(&cr(r#"<Border x:Name="Edge" CR="4" BorderThickness="1.5" BorderBrush="{$text3}"/>"#)), "{chk}");
+        // the soft finish lights the ticked box's top edge, inside its line
+        assert!(chk.contains(&cr(r#"<Border x:Name="Light" Margin="1.5" Opacity="0" CR="2.5" BorderThickness="0,1,0,0" BorderBrush="{$hlon}""#)), "{chk}");
+        // the state a box can be first drawn in sets it all at once
+        let state = &chk[chk.find(r#"<VisualState x:Name="CheckedNormal">"#).unwrap()..];
+        let state = &state[..state.find("</VisualState>").unwrap()];
+        assert!(!state.contains("KeySpline") && state.contains(r#"TargetName="Tick" Storyboard.TargetProperty="StrokeDashOffset" To="0" Duration="0""#), "{state}");
+
+        if crate::win32::animations_on() {
+            // ticked from code: the accent fill at once, the tick drawn in on ease over 160 ms
+            let into = &chk[chk.find(r#"<VisualTransition To="CheckedNormal">"#).expect("a tick set from code is drawn in")..];
+            let into = &into[..into.find("</VisualTransition>").unwrap()];
+            assert!(into.contains(r#"TargetName="Fill" Storyboard.TargetProperty="Opacity" To="1" Duration="0""#), "{into}");
+            assert!(into.contains(r#"Storyboard.TargetName="Tick" Storyboard.TargetProperty="StrokeDashOffset" EnableDependentAnimation="True"><SplineDoubleKeyFrame KeyTime="0:0:0.160" Value="0" KeySpline="0.25,0.1,0.25,1"/>"#), "{into}");
+            // the edge fades as the mockup's border-color does
+            assert!(into.contains(r#"TargetName="Edge" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.160" Value="0""#), "{into}");
+            // ticked by the pointer: the same, from the pressed state
+            let over = &chk[chk.find(r#"<VisualState x:Name="CheckedPointerOver">"#).unwrap()..];
+            assert!(over[..over.find("</VisualState>").unwrap()].contains(r#"KeyTime="0:0:0.160" Value="0" KeySpline="0.25,0.1,0.25,1""#));
+            // Lively draws the tick in 340 ms
+            assert!(tick(Look { motion: Motion::Lively, ..Look::default() }).contains(r#"KeyTime="0:0:0.340" Value="0" KeySpline="0.25,0.1,0.25,1""#));
+            // Press in sinks the box to 0.9 and springs it back past 1
+            let press_in = tick(Look { press: Press::PressIn, ..Look::default() });
+            assert!(press_in.contains(r#"TargetName="BoxScale" Storyboard.TargetProperty="ScaleX""#) && press_in.contains(r#"Value="0.9""#));
+            assert!(press_in.contains(r#"<VisualTransition From="UncheckedPressed" To="CheckedPointerOver">"#), "the click's way back overshoots");
+        }
+        // the other presses leave the box where it is
+        assert!(!chk.contains(r#"TargetName="BoxScale""#), "Lift and sink leaves the box still");
+
+        // Windows stock: a 1 px line; soft: none, a faint fill instead
+        let stock = tick(Look { controls: Controls::Stock, ..Look::default() });
+        assert!(stock.contains(&cr(r#"<Border x:Name="Edge" CR="4" BorderThickness="1" BorderBrush="{$tickedge}"/>"#)), "{stock}");
+        let soft = tick(Look { controls: Controls::Soft, ..Look::default() });
+        assert!(!soft.contains(r#"x:Name="Edge""#) && soft.contains(&cr(r#"<Border x:Name="Well" CR="4" Background="{$tickwell}"/>"#)), "{soft}");
+        for (corners, c) in [(Corners::Six10, "5"), (Corners::Eight14, "6"), (Corners::Pills, "7"), (Corners::Square, "0")] {
+            assert!(tick(Look { corners, ..Look::default() }).contains(&format!(r#"<Border x:Name="Fill" CornerRadius="{c}""#)), "{corners:?}");
+        }
+        assert!(tick(Look { ticks: Ticks::Round, controls: Controls::Soft, ..Look::default() }).contains(&cr(r#"<Border x:Name="Fill" CR="9""#)));
+        // Flat: no lit edge
+        assert!(!tick(Look { finish: Finish::Flat, ..Look::default() }).contains("hlon"));
+        // no motion: nothing takes time and no transition is made
+        let still = tick(Look { motion: Motion::None, press: Press::PressIn, ..Look::default() });
+        assert!(!still.contains("<VisualTransition") && !still.contains("KeySpline") && !still.contains(r#"Value="0.9""#), "{still}");
+    }
+
+    /// The switch is the mockup's `.sw`: a 38 by 20 pill (filled for the outlined and soft
+    /// controls, outlined for Windows stock), its knob 18 px across when on, on the motion's
+    /// curve, and a real shadow under the filled switch's white knob.
+    #[test]
+    fn the_switch_is_the_mockups() {
+        use crate::tokens::{Controls, Finish, Look, Motion, Press};
+        let switch = |look: Look| {
+            crate::tokens::set(&look);
+            let r = resources();
+            crate::tokens::set(&Look::default());
+            assert_eq!(r.matches(r#"<Style TargetType="ToggleSwitch""#).count(), 1);
+            implicit(&r, "ToggleSwitch").to_string()
+        };
+        let filled = switch(Look::default());
+        assert!(filled.contains(r#"BasedOn="{StaticResource DefaultToggleSwitchStyle}""#));
+        for part in ["SwitchKnobBounds", "SwitchKnob", "KnobTranslateTransform", "SwitchThumb", "HeaderContentPresenter", "OffContentPresenter", "OnContentPresenter"] {
+            assert!(filled.contains(&format!(r#"x:Name="{part}""#)), "WinUI's part {part}");
+        }
+        for state in ["Normal", "PointerOver", "Pressed", "Disabled", "Dragging", "Off", "On", "OffContent", "OnContent"] {
+            assert_eq!(filled.matches(&format!(r#"<VisualState x:Name="{state}""#)).count(), 1, "{state}");
+        }
+        // 38 by 20 in WinUI's 40 px column; the track faint, the knob white on a real shadow
+        assert!(filled.contains(r#"<Grid x:Name="Switch" Grid.Row="1" Width="38" Height="20" Margin="0,0,2,0""#));
+        assert!(filled.contains(r#"<Rectangle x:Name="OuterBorder" RadiusX="10" RadiusY="10" Fill="{$track}"/>"#), "{filled}");
+        assert!(filled.contains(&cr(r#"<Border x:Name="KnobShade" Width="16" Height="16" Tag="shade:knob" CR="8" IsHitTestVisible="False"/>"#)), "{filled}");
+        assert!(filled.contains(&cr(r#"<Border x:Name="SwitchKnobOff" Width="16" Height="16" CR="8" Background="{$knob}"/>"#)));
+        assert!(filled.find("KnobShade") < filled.find(r#"x:Name="SwitchKnobOff""#), "the shadow is behind the knob");
+        assert!(filled.contains(&cr(r#"<Border x:Name="Light" Margin="1" Opacity="0" CR="9" BorderThickness="0,1,0,0" BorderBrush="{$hlon}""#)));
+        // on: at once in the state (a switch may be drawn on), 18 px across
+        let on = &filled[filled.find(r#"<VisualState x:Name="On">"#).unwrap()..];
+        assert!(on.contains(r#"TargetName="KnobTranslateTransform" Storyboard.TargetProperty="X" To="18" Duration="0""#), "{on}");
+        if crate::win32::animations_on() {
+            // sliding on the motion's curve when flipped
+            assert!(filled.contains(r#"<VisualTransition From="Off" To="On"><Storyboard><DoubleAnimationUsingKeyFrames Storyboard.TargetName="KnobTranslateTransform" Storyboard.TargetProperty="X"><SplineDoubleKeyFrame KeyTime="0:0:0.160" Value="18" KeySpline="0.2,0.8,0.2,1"/>"#), "{filled}");
+            // Lively's curve overshoots: the knob goes past 18 and comes back, in curves WinUI takes
+            let lively = switch(Look { motion: Motion::Lively, ..Look::default() });
+            let t = &lively[lively.find(r#"<VisualTransition From="Off" To="On">"#).unwrap()..];
+            let t = &t[..t.find("</DoubleAnimationUsingKeyFrames>").unwrap()];
+            assert_eq!(t.matches("<SplineDoubleKeyFrame").count(), 2, "{t}");
+            assert!(t.contains(r#"KeyTime="0:0:0.340" Value="18""#), "{t}");
+            // Press in sinks the pill and springs it back
+            assert!(switch(Look { press: Press::PressIn, ..Look::default() }).contains(r#"<VisualTransition From="Pressed" To="PointerOver">"#));
+        }
+        // Windows stock: outlined, a 12 px knob, no shadow
+        let stock = switch(Look { controls: Controls::Stock, ..Look::default() });
+        assert!(stock.contains(r#"Fill="Transparent" Stroke="{$trackedge}" StrokeThickness="1""#) && stock.contains(&cr(r#"Width="12" Height="12" CR="6" Background="{$knoboff}""#)), "{stock}");
+        assert!(stock.contains(r#"Background="{$onaccent}" Opacity="0""#) && !stock.contains("shade:"));
+        if crate::win32::animations_on() {
+            // its line fades as the mockup's border-color does
+            assert!(stock.contains(r#"TargetName="OuterBorder" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.160" Value="0" KeySpline="0.25,0.1,0.25,1"/>"#), "{stock}");
+        }
+        // Flat keeps the knob's shadow and drops the lit edge
+        let flat = switch(Look { finish: Finish::Flat, ..Look::default() });
+        assert!(flat.contains("shade:knob") && !flat.contains("hlon"));
+        // no motion makes everything instant
+        let still = switch(Look { motion: Motion::None, press: Press::PressIn, ..Look::default() });
+        assert!(!still.contains("<VisualTransition") && !still.contains("KeySpline"), "{still}");
     }
 }

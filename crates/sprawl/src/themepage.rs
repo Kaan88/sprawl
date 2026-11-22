@@ -13,7 +13,7 @@ use crate::bindings::Microsoft::UI::Xaml::Markup::XamlReader;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
 use crate::settings::Settings;
 use crate::state::{find, keep, with, State};
-use crate::tokens::{self, Bars, Controls, Finish, Look, SmallText, Tabs, Ticks};
+use crate::tokens::{self, Bars, Controls, Finish, Look, SmallText, Tabs};
 use sprawl_advisor::Risk;
 use crate::ui;
 
@@ -212,7 +212,8 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
         let (bg, fg) = if on { (tokens::refer("accent"), tokens::refer("onaccent")) } else { (tokens::refer("surface3"), tokens::refer("text2")) };
         format!(r##"<Border CornerRadius="{{$rcchip}}" Padding="10,2" Background="{bg}" BorderBrush="{{$line1}}" BorderThickness="1"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{fg}"/></Border>"##, ui::esc(text))
     };
-    let tick_radius = t[if look.ticks == Ticks::Round { "rcpill" } else { "rc4" }].clone();
+    // the tick box as the app draws it (look.rs's tick_template): its corner, and the tick a stroke
+    let tick_radius = crate::look::tick_corner(look);
     // a 190 px bar, 62 % full, as the tables draw it: washed, so the figure on it reads
     let w = 118;
     let (track, fill) = match look.bars {
@@ -268,7 +269,7 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
           <Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$surface3}}" BorderBrush="{{$line2}}" BorderThickness="1"><TextBlock Text="Cancel" FontSize="{{$fs13}}" Foreground="{{$text1}}"/></Border>
         </StackPanel>
         <StackPanel Orientation="Horizontal" Spacing="8">
-          <Border Width="18" Height="18" CornerRadius="{tick_radius}" Background="{{$accent}}"><FontIcon Glyph="&#xE73E;" FontSize="{{$fs12}}" Foreground="{{$onaccent}}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+          <Border Width="18" Height="18" CornerRadius="{tick_radius}" Background="{{$accent}}"><Path Margin="3" Width="12" Height="12" Data="M2.5,6.2 L5,8.6 L9.6,3.6" Stroke="{{$onaccent}}" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/></Border>
           <TextBlock Text="Keep a copy" FontSize="{{$fs13}}" Foreground="{{$text1}}" VerticalAlignment="Center"/>
         </StackPanel>
         <Grid Width="190" Height="20" HorizontalAlignment="Left">{track}{fill}<TextBlock Text="62.0 %" FontSize="{{$fs12}}" Foreground="{{$text1}}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"/></Grid>
@@ -578,6 +579,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::Ticks;
 
     #[test]
     fn every_choice_round_trips_and_every_group_fits() {
