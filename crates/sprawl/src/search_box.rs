@@ -385,6 +385,18 @@ impl State {
             eprintln!("saved searches: {e:?}");
         }
         for (i, (_, act)) in items.into_iter().enumerate() {
+            // the history's check, however it is flipped (a click, Enter, Space, a screen
+            // reader's Toggle), sets keeping to match it: once, and not when it is so already
+            if matches!(act, SavedAct::Keep) {
+                let _ = crate::menu::on_mark(&fe, &format!("SxSv{i}"), |on| {
+                    with(|s| {
+                        if s.search_keeps_history() != on {
+                            s.search_saved_pick(SavedAct::Keep);
+                        }
+                    });
+                });
+                continue;
+            }
             if let Ok(m) = find::<ButtonBase>(&fe, &format!("SxSv{i}")) {
                 if let Ok(t) = m.Click(move |_, _| {
                     let act = act.clone();

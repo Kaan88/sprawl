@@ -521,12 +521,22 @@ pub(crate) enum InMenu {
     Hold,
 }
 
+/// Where an open menu is, for the Left and Right keys.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Place {
+    /// One of the bar's own menus: its place on the bar and the bar's length.
+    Bar(usize, usize),
+    /// A sub-menu: Left goes back to its row.
+    Sub,
+    /// A right-click or a button's menu: Left has nowhere to go.
+    Top,
+}
+
 /// A key in an open menu, before its rows see it: `at` is the row with the focus (none: the
 /// focus is on none of its rows), `kinds` and `enabled` its rows (enabled: on and shown), and
-/// `top` the menu's place on the bar and the bar's length, for one of the bar's own menus. As
-/// WinUI's menus: Up and Down go round the ends, skipping what can't take the focus; Enter and
-/// Space are the rows' own.
-pub(crate) fn menu_key(key: Key, at: Option<usize>, kinds: &[Kind], enabled: &[bool], top: Option<(usize, usize)>) -> InMenu {
+/// `place` where the menu is. As WinUI's menus: Up and Down go round the ends, skipping what
+/// can't take the focus; Enter and Space are the rows' own.
+pub(crate) fn menu_key(key: Key, at: Option<usize>, kinds: &[Kind], enabled: &[bool], place: Place) -> InMenu {
     let n = kinds.len();
     let can = |i: usize| enabled.get(i).copied().unwrap_or(true);
     let walk = |from: Option<usize>, forward: bool| -> Option<usize> {
@@ -547,9 +557,17 @@ pub(crate) fn menu_key(key: Key, at: Option<usize>, kinds: &[Kind], enabled: &[b
         Key::End => moved(walk(None, false)),
         Key::Right => match at {
             Some(r) if kinds.get(r) == Some(&Kind::Sub) && can(r) => InMenu::OpenSub(r),
-            _ => top.map_or(InMenu::Hold, |(i, len)| InMenu::Bar(Act::Switch(step(i, len, true)))),
+            _ => match place {
+                Place::Bar(i, len) => InMenu::Bar(Act::Switch(step(i, len, true))),
+                Place::Sub | Place::Top => InMenu::Hold,
+            },
         },
-        Key::Left => top.map_or(InMenu::Close, |(i, len)| InMenu::Bar(Act::Switch(step(i, len, false)))),
+        Key::Left => match place {
+            Place::Bar(i, len) => InMenu::Bar(Act::Switch(step(i, len, false))),
+            Place::Sub => InMenu::Close,
+            // (WinUI's MenuFlyout keeps Left in a menu that is no sub-menu)
+            Place::Top => InMenu::Hold,
+        },
         Key::Escape => InMenu::Close,
         Key::Letter(_) | Key::Other => InMenu::None,
     }
@@ -795,6 +813,26 @@ pub(crate) fn reset(root: &UIElement) {
     });
 }
 
+/// A check or a dot outside the bar changed its mark: the menus close, as on any row that runs
+/// something. (These menus' marks are never set by the code: a menu is made again from what its
+/// marks stand for instead, so a change is always the user's.)
+fn marked_row(name: &str) {
+    dev(&format!("row {name} marked"));
+    close_all();
+}
+
+/// Run `run` with the new mark whenever check row `name` (in `scope`, a menu outside the bar)
+/// changes it, however it changed: a click, Enter, Space, or a screen reader's Toggle, which
+/// clicks nothing. `run` is told which way, and must do nothing when that is so already: then
+/// the mark and what it stands for can't part, and nothing runs twice.
+pub(crate) fn on_mark(scope: &FrameworkElement, name: &str, run: impl Fn(bool) + Clone + Send + 'static) -> windows_core::Result<()> {
+    let t: ToggleButton = find(scope, name)?;
+    let r = run.clone();
+    keep(t.Checked(move |_, _| r(true))?);
+    keep(t.Unchecked(move |_, _| run(false))?);
+    Ok(())
+}
+
 /// Wire set `set`'s menus, made by [`xaml`] (or the bar's), found by name in `scope` once they are
 /// loaded; a set bound before is closed and forgotten first. The menus' own keys, pointer and
 /// focus are done here; what a row runs is bound by its menu's code afterwards (a row that runs
@@ -880,9 +918,18 @@ pub(crate) fn bind(scope: &FrameworkElement, set: &str, how: How) -> windows_cor
             }
         })?);
         // a row that runs something closes the menus first, as WinUI's do, before its
-        // command (bound after this) runs
+        // command (bound after this) runs. A check or a dot outside the bar does when its mark
+        // changes, however it changed (a click, Enter, Space, or a screen reader's Toggle, which
+        // clicks nothing), as its command does ([`on_mark`]); the bar's own close in
+        // menubar.rs's `marked`
         for (r, c) in shape.rows.iter().zip(&rows) {
-            if r.kind != Kind::Sub {
+            if how != How::Bar && matches!(r.kind, Kind::Toggle | Kind::Radio) {
+                let t: ToggleButton = c.cast()?;
+                let name = r.name.clone();
+                keep(t.Checked(move |_, _| marked_row(&name))?);
+                let name = r.name.clone();
+                keep(t.Unchecked(move |_, _| marked_row(&name))?);
+            } else if r.kind != Kind::Sub {
                 let name = r.name.clone();
                 keep(c.cast::<ButtonBase>()?.Click(move |_, _| {
                     dev(&format!("row {name} clicked"));
@@ -1155,8 +1202,11 @@ fn opened(m: usize) {
             b.placing = None;
         }
         // opened by a key (Down, Enter, Space, Alt+F, Left or Right, the menu key): its first
-        // item takes the focus, as in any menu opened from the keyboard
-        if b.key_recent() || b.keyed == Some(m) {
+        // item takes the focus, as in any menu opened from the keyboard. A right-click menu goes
+        // by how show_at opened it only: a right-click with Ctrl held, or just after an arrow
+        // key, is still the pointer's
+        let context = b.get(m).is_some_and(|x| x.opener == Opener::Context);
+        if b.keyed == Some(m) || (!context && b.key_recent()) {
             b.first_item = Some((m, 10));
         }
         b.keyed = None;
@@ -1315,8 +1365,9 @@ fn list_key(m: usize, e: &KeyRoutedEventArgs) {
         let menu = b.get(m)?;
         let kinds: Vec<Kind> = menu.shape.rows.iter().map(|r| r.kind).collect();
         let top = match menu.opener {
-            Opener::Bar(i) => Some((i, crate::menubar::MENUS.len())),
-            _ => None,
+            Opener::Bar(i) => Place::Bar(i, crate::menubar::MENUS.len()),
+            Opener::Sub => Place::Sub,
+            Opener::Button | Opener::Context => Place::Top,
         };
         Some((at, b.open.last().copied(), kinds, menu.rows.clone(), top))
     }) else {
@@ -1675,18 +1726,18 @@ mod tests {
     fn up_and_down_go_round_a_menu_skipping_what_is_off() {
         let kinds = [It, It, Toggle, It];
         let all = [true; 4];
-        assert_eq!(menu_key(Key::Down, None, &kinds, &all, None), InMenu::Move(0), "nothing focused: the first");
-        assert_eq!(menu_key(Key::Up, None, &kinds, &all, None), InMenu::Move(3), "nothing focused: the last");
-        assert_eq!(menu_key(Key::Down, Some(1), &kinds, &all, None), InMenu::Move(2));
-        assert_eq!(menu_key(Key::Down, Some(3), &kinds, &all, None), InMenu::Move(0), "round the end");
-        assert_eq!(menu_key(Key::Up, Some(0), &kinds, &all, None), InMenu::Move(3), "round the start");
-        assert_eq!(menu_key(Key::Home, Some(2), &kinds, &all, None), InMenu::Move(0));
-        assert_eq!(menu_key(Key::End, Some(0), &kinds, &all, None), InMenu::Move(3));
+        assert_eq!(menu_key(Key::Down, None, &kinds, &all, Place::Sub), InMenu::Move(0), "nothing focused: the first");
+        assert_eq!(menu_key(Key::Up, None, &kinds, &all, Place::Sub), InMenu::Move(3), "nothing focused: the last");
+        assert_eq!(menu_key(Key::Down, Some(1), &kinds, &all, Place::Sub), InMenu::Move(2));
+        assert_eq!(menu_key(Key::Down, Some(3), &kinds, &all, Place::Sub), InMenu::Move(0), "round the end");
+        assert_eq!(menu_key(Key::Up, Some(0), &kinds, &all, Place::Sub), InMenu::Move(3), "round the start");
+        assert_eq!(menu_key(Key::Home, Some(2), &kinds, &all, Place::Sub), InMenu::Move(0));
+        assert_eq!(menu_key(Key::End, Some(0), &kinds, &all, Place::Sub), InMenu::Move(3));
         let some = [true, false, true, true];
-        assert_eq!(menu_key(Key::Down, Some(0), &kinds, &some, None), InMenu::Move(2), "the one that is off is skipped");
-        assert_eq!(menu_key(Key::Up, Some(2), &kinds, &some, None), InMenu::Move(0));
-        assert_eq!(menu_key(Key::Down, Some(0), &[It], &[true], None), InMenu::Move(0), "alone: stays");
-        assert_eq!(menu_key(Key::Down, None, &[It, It], &[false, false], None), InMenu::Hold);
+        assert_eq!(menu_key(Key::Down, Some(0), &kinds, &some, Place::Sub), InMenu::Move(2), "the one that is off is skipped");
+        assert_eq!(menu_key(Key::Up, Some(2), &kinds, &some, Place::Sub), InMenu::Move(0));
+        assert_eq!(menu_key(Key::Down, Some(0), &[It], &[true], Place::Sub), InMenu::Move(0), "alone: stays");
+        assert_eq!(menu_key(Key::Down, None, &[It, It], &[false, false], Place::Sub), InMenu::Hold);
     }
 
     #[test]
@@ -1694,27 +1745,31 @@ mod tests {
         let kinds = [It, Sub, It];
         let all = [true; 3];
         // in a sub-menu, or a menu not on the bar
-        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &all, None), InMenu::OpenSub(1));
-        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, None), InMenu::Hold, "kept from the row: a dot would pick the next");
-        assert_eq!(menu_key(Key::Left, Some(0), &kinds, &all, None), InMenu::Close);
-        assert_eq!(menu_key(Key::Escape, Some(2), &kinds, &all, None), InMenu::Close);
-        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &[true, false, true], None), InMenu::Hold, "an item that is off opens nothing");
+        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &all, Place::Sub), InMenu::OpenSub(1));
+        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, Place::Sub), InMenu::Hold, "kept from the row: a dot would pick the next");
+        assert_eq!(menu_key(Key::Left, Some(0), &kinds, &all, Place::Sub), InMenu::Close, "a sub-menu: back to its row");
+        assert_eq!(menu_key(Key::Left, Some(0), &kinds, &all, Place::Top), InMenu::Hold, "a right-click or button's menu stays");
+        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, Place::Top), InMenu::Hold);
+        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &all, Place::Top), InMenu::OpenSub(1));
+        assert_eq!(menu_key(Key::Escape, Some(0), &kinds, &all, Place::Top), InMenu::Close);
+        assert_eq!(menu_key(Key::Escape, Some(2), &kinds, &all, Place::Sub), InMenu::Close);
+        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &[true, false, true], Place::Sub), InMenu::Hold, "an item that is off opens nothing");
     }
 
     #[test]
     fn in_one_of_the_bars_menus_left_and_right_switch_menus_but_right_opens_a_sub_menu() {
         let kinds = [It, Sub, It];
         let all = [true; 3];
-        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, Some((0, 3))), InMenu::Bar(Act::Switch(1)));
-        assert_eq!(menu_key(Key::Left, Some(0), &kinds, &all, Some((0, 3))), InMenu::Bar(Act::Switch(2)));
-        assert_eq!(menu_key(Key::Right, Some(2), &kinds, &all, Some((2, 3))), InMenu::Bar(Act::Switch(0)));
-        assert_eq!(menu_key(Key::Right, None, &kinds, &all, Some((1, 3))), InMenu::Bar(Act::Switch(2)));
+        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, Place::Bar(0, 3)), InMenu::Bar(Act::Switch(1)));
+        assert_eq!(menu_key(Key::Left, Some(0), &kinds, &all, Place::Bar(0, 3)), InMenu::Bar(Act::Switch(2)));
+        assert_eq!(menu_key(Key::Right, Some(2), &kinds, &all, Place::Bar(2, 3)), InMenu::Bar(Act::Switch(0)));
+        assert_eq!(menu_key(Key::Right, None, &kinds, &all, Place::Bar(1, 3)), InMenu::Bar(Act::Switch(2)));
         // Right on "Show >" opens the sub-menu instead; Left on it still moves on
-        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &all, Some((1, 3))), InMenu::OpenSub(1));
-        assert_eq!(menu_key(Key::Left, Some(1), &kinds, &all, Some((1, 3))), InMenu::Bar(Act::Switch(0)));
-        assert_eq!(menu_key(Key::Escape, Some(1), &kinds, &all, Some((1, 3))), InMenu::Close);
-        assert_eq!(menu_key(Key::Letter('S'), Some(1), &kinds, &all, Some((1, 3))), InMenu::None);
-        assert_eq!(menu_key(Key::Other, Some(1), &kinds, &all, Some((1, 3))), InMenu::None, "Enter and Space are the row's own");
+        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &all, Place::Bar(1, 3)), InMenu::OpenSub(1));
+        assert_eq!(menu_key(Key::Left, Some(1), &kinds, &all, Place::Bar(1, 3)), InMenu::Bar(Act::Switch(0)));
+        assert_eq!(menu_key(Key::Escape, Some(1), &kinds, &all, Place::Bar(1, 3)), InMenu::Close);
+        assert_eq!(menu_key(Key::Letter('S'), Some(1), &kinds, &all, Place::Bar(1, 3)), InMenu::None);
+        assert_eq!(menu_key(Key::Other, Some(1), &kinds, &all, Place::Bar(1, 3)), InMenu::None, "Enter and Space are the row's own");
     }
 
     #[test]

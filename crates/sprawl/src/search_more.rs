@@ -1048,15 +1048,18 @@ impl State {
         if let Err(e) = crate::menu::bind(&fe, "SxDrivesFly", crate::menu::How::Button) {
             eprintln!("search in: {e:?}");
         }
+        // a drive's check, however it is flipped (a click, Enter, Space, a screen reader's
+        // Toggle), switches the drive to match it: once, and not at all when it is so already
         for d in &offer {
             let letter = d.chars().next().unwrap_or('C');
-            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ButtonBase>(&fe, &format!("SxD{letter}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| s.more_drive(letter));
-                }) {
-                    keep(t);
-                }
-            }
+            let root = d.clone();
+            let _ = crate::menu::on_mark(&fe, &format!("SxD{letter}"), move |on| {
+                with(|s| {
+                    if s.search.more.drives_on.contains(&root) != on {
+                        s.more_drive(letter);
+                    }
+                });
+            });
         }
     }
 }

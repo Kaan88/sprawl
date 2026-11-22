@@ -864,6 +864,27 @@ impl State {
         true
     }
 
+    /// The scan's node `n` is about to get the row menu (a right-click on its row or its tile on
+    /// the map): the menu's commands act on it, as [`menu_pick`] leaves the picks, and the
+    /// Windows menu is on only when it would act on what the others do.
+    pub(crate) fn menu_on_node(&mut self, n: usize) {
+        let search = self.view == View::Search;
+        menu_pick(&mut self.marked, &mut self.search.more.sel, &mut self.search.more.picks, search, n);
+        self.selected = Some(n);
+        self.refresh_rows();
+        self.show_selection();
+        // with several rows picked the Windows menu is off: it would act on one of them only
+        if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "cShell") {
+            // ...nor during a clean-up, nor as administrator unless Settings > Scanning allows it
+            let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
+            let _ = i.SetIsEnabled(self.picked_nodes().len() <= 1 && self.advisor.cleanup.running.is_none() && admin_ok);
+        }
+        // "Show in the tree" only where the tree isn't on screen
+        if let Ok(i) = find::<UIElement>(&self.root, "cInTree") {
+            let _ = i.SetVisibility(if search { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
+        }
+    }
+
     /// Right-click on a row: select it and open the row menu at the pointer (`by_key`: the menu
     /// key or Shift+F10, at the row: [`State::row_menu_by_key`]).
     pub(crate) fn row_menu(&mut self, y_content: f64, at: Point, by_key: bool) {
@@ -887,31 +908,14 @@ impl State {
                 self.more_menu(d - 1, n, at, by_key);
                 return;
             }
-            self.search.more.sel = None;
-            self.search.more.picks.clear();
         }
-        // right-click outside the picked rows picks just that row
-        if !self.marked.contains(&n) {
-            self.marked.clear();
-        }
-        self.selected = Some(n);
-        self.refresh_rows();
-        self.show_selection();
-        // with several rows picked the Windows menu is off: it would act on one of them only
-        if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "cShell") {
-            // ...nor during a clean-up, nor as administrator unless Settings > Scanning allows it
-            let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
-            let _ = i.SetIsEnabled(self.picked_nodes().len() <= 1 && self.advisor.cleanup.running.is_none() && admin_ok);
-        }
+        self.menu_on_node(n);
         // Shift+right-click: straight to the Windows menu (Shift+F10 is the keyboard's menu key)
         if !by_key && crate::win32::ctrl_shift_down().1 && self.picked_nodes().len() <= 1 {
             if let Some(p) = self.selected_path() {
                 self.shell_menu(p, true);
                 return;
             }
-        }
-        if let Ok(i) = find::<UIElement>(&self.root, "cInTree") {
-            let _ = i.SetVisibility(if self.view == View::Search { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
         }
         // the table takes the focus, as a list does under a right-click: it is where the focus
         // goes back to when the menu closes
@@ -1180,6 +1184,63 @@ impl State {
         if let (Some(t), Some(n)) = (&self.tree, self.selected) {
             text(&self.root, "FootLeft", &format!("{}   -   {}", t.path_of(n).display(), self.size(t.nodes[n].size)));
         }
+    }
+}
+
+/// What the row menu's commands (Delete among them) act on after a right-click on the scan's node
+/// `n`, by its row or its tile on the map: in Search, never a row from another drive picked
+/// before (`more_sel`, `picks`); and `n` alone unless it is one of the rows picked already.
+pub(crate) fn menu_pick(marked: &mut std::collections::BTreeSet<usize>, more_sel: &mut Option<(usize, usize)>, picks: &mut crate::search_delete::Picks, search: bool, n: usize) {
+    if search {
+        *more_sel = None;
+        picks.clear();
+    }
+    if !marked.contains(&n) {
+        marked.clear();
+    }
+}
+
+#[cfg(test)]
+mod menu_pick_tests {
+    use super::menu_pick;
+    use crate::search_delete::{Pick, Picks};
+    use std::collections::BTreeSet;
+
+    fn picks() -> Picks {
+        let mut p = Picks::default();
+        p.add(Pick { path: r"D:\other\a.bin".into(), is_dir: false, size: 1, secs: None, place: 0, id: 1, gen: 0 });
+        p
+    }
+
+    #[test]
+    fn a_node_outside_the_picked_rows_is_acted_on_alone() {
+        let (mut marked, mut sel, mut p) = (BTreeSet::from([3, 4]), None, Picks::default());
+        menu_pick(&mut marked, &mut sel, &mut p, false, 7);
+        assert!(marked.is_empty());
+    }
+
+    #[test]
+    fn a_node_among_the_picked_rows_keeps_them() {
+        let (mut marked, mut sel, mut p) = (BTreeSet::from([3, 4]), None, Picks::default());
+        menu_pick(&mut marked, &mut sel, &mut p, false, 4);
+        assert_eq!(marked, BTreeSet::from([3, 4]));
+    }
+
+    #[test]
+    fn in_search_another_drives_pick_goes() {
+        let (mut marked, mut sel, mut p) = (BTreeSet::new(), Some((0, 9)), picks());
+        menu_pick(&mut marked, &mut sel, &mut p, true, 2);
+        assert_eq!(sel, None);
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn outside_search_another_drives_pick_is_left_alone() {
+        // (not on screen there; Search's own right-click clears it when it opens)
+        let (mut marked, mut sel, mut p) = (BTreeSet::new(), Some((0, 9)), picks());
+        menu_pick(&mut marked, &mut sel, &mut p, false, 2);
+        assert_eq!(sel, Some((0, 9)));
+        assert_eq!(p.len(), 1);
     }
 }
 
