@@ -892,6 +892,9 @@ impl State {
                     "barlog" => crate::menubar::dev_report(),
                     // dev: the pointer onto the menu bar's title k while a menu is open (hover=1)
                     h if h.starts_with("hover=") => crate::menubar::dev_hover(h[6..].parse().unwrap_or(0)),
+                    // dev: the pointer said to rest on a menu's row by its x:Name (point=BarSub3),
+                    // for the bar to find there as it finds the real pointer
+                    p if p.starts_with("point=") => crate::menubar::dev_point(&p[6..]),
                     // dev: the menu bar as UI Automation sees it, in the timing log
                     "uia" => crate::win32::uia_report(self.hwnd),
                     // dev: the other theme, as saving it in Settings would (in memory: a screenshot run saves nothing)

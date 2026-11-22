@@ -7,7 +7,7 @@ use sprawl_core::ROOT;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
-use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleMenuFlyoutItem, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, GridLength, GridUnitType, UIElement, Visibility};
 use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, text, State, Units, View};
@@ -61,7 +61,7 @@ impl State {
         // left Remembered for the main window: a check its approvals owe runs now
         self.recheck_if_owed();
         // the Advisor and Search take the whole width; the types pane comes back as the user left it
-        let types = !matches!(v, View::Advisor | View::Search) && find::<ToggleMenuFlyoutItem>(&self.root, "oTypes").and_then(|t| t.IsChecked()).unwrap_or(true);
+        let types = !matches!(v, View::Advisor | View::Search) && crate::menubar::checked(&self.root, "oTypes").unwrap_or(true);
         // Search has its own box: the Filter box beside it would be a second one
         if let Ok(e) = find::<UIElement>(&self.root, "FilterBox") {
             let _ = e.SetVisibility(vis(v != View::Search));
@@ -89,7 +89,7 @@ impl State {
     /// The map and its bar: shown when the Treemap option is on, folded away while the Advisor
     /// or Cleaners tab is open (their lists take the height).
     pub(crate) fn map_room(&self) {
-        let map_on = find::<ToggleMenuFlyoutItem>(&self.root, "oTreemap").and_then(|t| t.IsChecked()).unwrap_or(true);
+        let map_on = crate::menubar::checked(&self.root, "oTreemap").unwrap_or(true);
         // in Search the map shows only on request (its Map button): the results take the room
         let room = self.view != View::Advisor && (self.view != View::Search || self.search.map) && !self.welcome_page();
         let shown = map_on && room;
@@ -279,7 +279,7 @@ impl State {
                 }
             }
             "oExplorer" => {
-                let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(false);
+                let on = crate::menubar::checked(&self.root, name).unwrap_or(false);
                 let msg = match (dialogs::set_explorer_menu(on), on) {
                     (true, true) => "Added \"Scan with Sprawl\" to the right-click menu of folders and drives.",
                     (true, false) => "Removed \"Scan with Sprawl\" from Explorer.",
@@ -446,7 +446,7 @@ impl State {
                 }
             }
             "oHeader" | "oTypes" | "oTreemap" => {
-                let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
+                let on = crate::menubar::checked(&self.root, name).unwrap_or(true);
                 let vis = if on { Visibility::Visible } else { Visibility::Collapsed };
                 match name {
                     "oHeader" => {
@@ -469,7 +469,7 @@ impl State {
                 }
             }
             "oAlloc" | "oCushion" | "oNames" | "oTilt" | "oFree" | "oMirror" => {
-                let on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
+                let on = crate::menubar::checked(&self.root, name).unwrap_or(true);
                 match name {
                     "oAlloc" => self.map.by_alloc = on,
                     "oFree" => self.map.show_free = on,
@@ -500,7 +500,7 @@ impl State {
                 self.settings.save();
             }
             "oPulses" => {
-                self.pulses_on = find::<ToggleMenuFlyoutItem>(&self.root, name).and_then(|t| t.IsChecked()).unwrap_or(true);
+                self.pulses_on = crate::menubar::checked(&self.root, name).unwrap_or(true);
                 self.watch();
             }
             v if v.starts_with("View") && crate::views::ALL.iter().any(|a| a.1 == v) => {
@@ -568,11 +568,11 @@ impl State {
 
     pub(crate) fn save_settings(&mut self) {
         for &t in TOGGLES {
-            if let Ok(on) = find::<ToggleMenuFlyoutItem>(&self.root, t).and_then(|x| x.IsChecked()) {
+            if let Ok(on) = crate::menubar::checked(&self.root, t) {
                 self.settings.set_bool(t, on);
             }
         }
-        if let Some(u) = UNITS.iter().find(|u| find::<ToggleMenuFlyoutItem>(&self.root, u).and_then(|x| x.IsChecked()).unwrap_or(false)) {
+        if let Some(u) = UNITS.iter().find(|u| crate::menubar::checked(&self.root, u).unwrap_or(false)) {
             self.settings.set("units", u);
         }
         self.settings.set("palette", paint::palette());
@@ -649,23 +649,19 @@ impl State {
             let _ = b.SetSelectedIndex(palette as i32);
         }
         for (t, on) in toggles {
-            if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, t) {
-                if x.IsChecked().unwrap_or(on) != on {
-                    let _ = x.SetIsChecked(on);
+            if let Ok(was) = crate::menubar::checked(&self.root, t) {
+                if was != on {
+                    let _ = crate::menubar::set_checked(&self.root, t, on);
                     self.command(t);
                 }
             }
         }
         if let Some(u) = units.filter(|u| UNITS.contains(&u.as_str())) {
-            if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, &u) {
-                let _ = x.SetIsChecked(true);
-            }
+            let _ = crate::menubar::set_checked(&self.root, &u, true);
             self.command(&u);
         }
         if let Some(a) = self.settings.get("aa").map(str::to_string).filter(|a| ["aaOff", "aaLow", "aaMedium", "aaHigh"].contains(&a.as_str())) {
-            if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, &a) {
-                let _ = x.SetIsChecked(true);
-            }
+            let _ = crate::menubar::set_checked(&self.root, &a, true);
             self.command(&a);
         }
         // only a view name: the settings file must never be able to run another command
@@ -675,9 +671,9 @@ impl State {
         if let Some(p) = self.settings.get("paint").filter(|p| crate::views::PAINTS.iter().any(|a| a.1 == *p)).map(str::to_string) {
             self.command(&p);
         }
-        if let Ok(x) = find::<ToggleMenuFlyoutItem>(&self.root, "oExplorer") {
+        if crate::menubar::checked(&self.root, "oExplorer").is_ok() {
             dialogs::migrate_explorer_menu();
-            let _ = x.SetIsChecked(dialogs::explorer_menu_installed());
+            let _ = crate::menubar::set_checked(&self.root, "oExplorer", dialogs::explorer_menu_installed());
         }
     }
 
@@ -687,7 +683,7 @@ impl State {
             "LiftSlider" => self.map.scene.lift_scale = (v / 100.0) as f32,
             "CushionSlider" => {
                 self.map.cushion_strength = (v / 100.0) as f32;
-                let on = find::<ToggleMenuFlyoutItem>(&self.root, "oCushion").and_then(|t| t.IsChecked()).unwrap_or(true);
+                let on = crate::menubar::checked(&self.root, "oCushion").unwrap_or(true);
                 self.map.scene.cushion = if on { self.map.cushion_strength } else { 0.0 };
             }
             "TiltSlider" => self.map.scene.tilt_amount = (v / 100.0 * 0.8) as f32,

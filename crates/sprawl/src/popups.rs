@@ -277,7 +277,9 @@ fn watch_in(root: &UIElement) -> windows_core::Result<()> {
 
 fn open_menu(popup: &Popup) -> windows_core::Result<()> {
     let child = popup.Child()?;
-    if child.cast::<MenuFlyoutPresenter>().is_err() {
+    // a menu, or the flyout a menu-bar menu is drawn in (menubar.rs: tagged "menu")
+    let tagged = || child.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>().and_then(|f| f.Tag()).and_then(|t| t.cast::<windows_reference::IReference<HSTRING>>()).and_then(|r| r.Value()).is_ok_and(|t| t == "menu");
+    if child.cast::<MenuFlyoutPresenter>().is_err() && !tagged() {
         return Ok(());
     }
     let Some(o) = opening(motion()) else { return Ok(()) };

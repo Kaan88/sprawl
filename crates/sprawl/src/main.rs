@@ -69,7 +69,7 @@ use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use bindings::Windows::Foundation::Point;
 use tables::Which;
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
-use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
+use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleSwitch};
 use bindings::Microsoft::UI::Xaml::Media::CompositionTarget;
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
@@ -399,9 +399,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPanel> {
     // the menu bar: File, Options and Help, and what WinUI's MenuBar did on its own
     crate::menubar::bind(root)?;
-    // Menu items and buttons all route to State::command by name.
+    // The menu bar's rows all route to State::command by name.
     for &name in COMMANDS {
-        if let Ok(item) = find::<MenuFlyoutItem>(root, name) {
+        if let Ok(item) = find::<ButtonBase>(root, name) {
             keep(item.Click(move |_, _| {
                 with(|s| s.command(name));
             })?);
@@ -452,7 +452,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
     }
     keep(find::<Selector>(root, "DriveBox")?.SelectionChanged(|_, _| {
         with(|s| {
-            let auto = find::<ToggleMenuFlyoutItem>(&s.root, "oAuto").and_then(|t| t.IsChecked()).unwrap_or(false);
+            let auto = crate::menubar::checked(&s.root, "oAuto").unwrap_or(false);
             if auto && s.shot.is_none() {
                 s.command("ScanSelectedDrive");
             }

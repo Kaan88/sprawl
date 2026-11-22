@@ -206,6 +206,17 @@ pub fn animations_on() -> bool {
     on != 0
 }
 
+/// How long the pointer rests on a menu's item before its sub-menu opens (Windows' own
+/// setting, SPI_GETMENUSHOWDELAY), in milliseconds: 400 when Windows can't say.
+pub fn menu_show_delay() -> u32 {
+    const SPI_GETMENUSHOWDELAY: u32 = 0x006A;
+    let mut ms = 400u32;
+    if unsafe { SystemParametersInfoW(SPI_GETMENUSHOWDELAY, 0, (&mut ms as *mut u32).cast(), 0) } == 0 {
+        return 400;
+    }
+    ms
+}
+
 fn placement(h: HWND) -> Option<Placement> {
     let mut p = Placement { length: std::mem::size_of::<Placement>() as u32, flags: 0, show: 0, min: [0; 2], max: [0; 2], normal: RECT { left: 0, top: 0, right: 0, bottom: 0 }, device: RECT { left: 0, top: 0, right: 0, bottom: 0 } };
     (unsafe { GetWindowPlacement(h, &mut p) } != 0).then_some(p)
@@ -568,7 +579,9 @@ fn vk_of(name: &str) -> Option<u16> {
         "esc" => 0x1B,
         "space" => 0x20,
         "tab" => 0x09,
-        "f10" => 0x79,
+        "home" => 0x24,
+        "end" => 0x23,
+        f if f.len() > 1 && f.starts_with('f') && f[1..].parse::<u16>().is_ok_and(|n| (1..=12).contains(&n)) => 0x6F + f[1..].parse::<u16>().unwrap_or(1),
         k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => u16::from(k.as_bytes()[0].to_ascii_uppercase()),
         _ => return None,
     })

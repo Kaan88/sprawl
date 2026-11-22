@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use windows_core::{Interface, HSTRING};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{RangeBase, Selector};
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ToggleButton;
 use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, Control, FontIcon, PasswordBox, RowDefinition, TextBlock, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibility};
 use crate::scene::Mode;
@@ -137,6 +138,12 @@ fn carry(old: &FrameworkElement, new: &FrameworkElement, names: &[&str]) {
         if let (Ok(a), Ok(b)) = (o.cast::<ToggleMenuFlyoutItem>(), n.cast::<ToggleMenuFlyoutItem>()) {
             if let Ok(v) = a.IsChecked() {
                 let _ = b.SetIsChecked(v);
+            }
+        }
+        // the menu bar's checks and dots (menubar.rs)
+        if let (Ok(a), Ok(b)) = (o.cast::<ToggleButton>(), n.cast::<ToggleButton>()) {
+            if let Ok(v) = a.IsChecked() {
+                let _ = b.SetIsChecked(Some(v));
             }
         }
         if let (Ok(a), Ok(b)) = (o.cast::<ToggleSwitch>(), n.cast::<ToggleSwitch>()) {
