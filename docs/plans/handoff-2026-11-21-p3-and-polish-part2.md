@@ -205,6 +205,12 @@ The two `.claude/worktrees/agent-*` worktrees are merged and can be removed.
 
 ## Update 6 (2026-11-22, paused here)
 
+**Start here, in this order:**
+1. Find how bindings are generated (crates/bindgen, tools/setup.ps1; details below).
+2. Composition shadows (agent): real `DropShadow`s, no imitations.
+3. Review at zoom against the mockup, dark and light.
+4. Merge, test, relaunch.
+
 Main is at 0f19180 plus this note; nothing pushed. Merged since Update 5: Theme options always shown
 and preset buttons fixed; menus/lists/tooltips tinted (token `menu`), dialogs not; every accent
 follows the chosen one (`look::accent()` reads tokens, `windows_accent()` is the registry);
