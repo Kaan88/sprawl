@@ -7,9 +7,8 @@ use std::cmp::Ordering;
 use sprawl_core::{Tree, ROOT};
 use windows_core::Interface;
 
-use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{FlyoutBase, FlyoutShowOptions};
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, ScrollViewer};
-use crate::bindings::Microsoft::UI::Xaml::{DependencyObject, FocusState, FrameworkElement, UIElement};
+use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement};
 use crate::bindings::Windows::Foundation::Point;
 use crate::format::{file_type, fmt_time, thousands};
 use crate::state::{find, load, text, State, View, ROW_H};
@@ -865,13 +864,14 @@ impl State {
         true
     }
 
-    /// Right-click on a row: select it and open the row menu at the pointer.
-    pub(crate) fn row_menu(&mut self, y_content: f64, at: Point) {
+    /// Right-click on a row: select it and open the row menu at the pointer (`by_key`: the menu
+    /// key or Shift+F10, at the row: [`State::row_menu_by_key`]).
+    pub(crate) fn row_menu(&mut self, y_content: f64, at: Point, by_key: bool) {
         let k = self.rows_now(Which::Main).at(y_content);
         let Some(&(n, d)) = self.rows.get(k) else { return };
         if self.view == View::Search {
             if d > 0 {
-                if crate::win32::ctrl_shift_down().1 {
+                if !by_key && crate::win32::ctrl_shift_down().1 {
                     if let Some((ix, i)) = self.search.more.item(d - 1, n) {
                         let p = ix.path_of(i);
                         self.search.more.sel = Some((d - 1, n));
@@ -884,7 +884,7 @@ impl State {
                         return;
                     }
                 }
-                self.more_menu(d - 1, n, at);
+                self.more_menu(d - 1, n, at, by_key);
                 return;
             }
             self.search.more.sel = None;
@@ -903,8 +903,8 @@ impl State {
             let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
             let _ = i.SetIsEnabled(self.picked_nodes().len() <= 1 && self.advisor.cleanup.running.is_none() && admin_ok);
         }
-        // Shift+right-click: straight to the Windows menu
-        if crate::win32::ctrl_shift_down().1 && self.picked_nodes().len() <= 1 {
+        // Shift+right-click: straight to the Windows menu (Shift+F10 is the keyboard's menu key)
+        if !by_key && crate::win32::ctrl_shift_down().1 && self.picked_nodes().len() <= 1 {
             if let Some(p) = self.selected_path() {
                 self.shell_menu(p, true);
                 return;
@@ -913,16 +913,34 @@ impl State {
         if let Ok(i) = find::<UIElement>(&self.root, "cInTree") {
             let _ = i.SetVisibility(if self.view == View::Search { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
         }
-        let shown = || -> windows_core::Result<()> {
-            let menu: FlyoutBase = find(&self.root, "RowMenu")?;
-            let target: DependencyObject = find(&self.root, "TreeScroll")?;
-            let opts = FlyoutShowOptions::new()?;
-            opts.SetPosition(Some(at))?;
-            menu.ShowAtWithOptions(&target, &opts)
-        };
-        if let Err(e) = shown() {
-            eprintln!("row menu: {e:?}");
+        // the table takes the focus, as a list does under a right-click: it is where the focus
+        // goes back to when the menu closes
+        if let Ok(target) = find::<UIElement>(&self.root, "TreeScroll") {
+            if !by_key {
+                let _ = target.Focus(FocusState::Pointer);
+            }
+            crate::menu::show_at("RowMenu", &target, at, by_key);
         }
+    }
+
+    /// The menu key or Shift+F10 on the table: the menu of the keyboard's row, its top left
+    /// corner under the row, in from its left edge (where the name starts).
+    pub(crate) fn row_menu_by_key(&mut self) {
+        if self.rows.is_empty() || (self.tree.is_none() && self.view != View::Search) {
+            return;
+        }
+        let k = self.key_row().min(self.rows.len() - 1);
+        let r = self.rows_now(Which::Main);
+        // the row in view first, as the arrow keys leave it
+        if let Some(off) = r.off_to_show(k) {
+            if let Ok(sv) = find::<ScrollViewer>(&self.root, "TreeScroll") {
+                let _ = sv.ChangeView(None, Some(off), None);
+            }
+        }
+        let r = Rows { off: r.off_to_show(k).unwrap_or(r.off), ..r };
+        let y = r.y_of(k);
+        let at = Point { X: 32.0, Y: (y - r.off + ROW_H) as f32 };
+        self.row_menu(y + ROW_H / 2.0, at, true);
     }
 
     /// Arrow keys and friends in the main table. Returns true when the key was used.

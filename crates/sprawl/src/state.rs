@@ -890,13 +890,28 @@ impl State {
                         let presses: Vec<&str> = k[3..].split('.').collect();
                         crate::win32::post_keys(self.hwnd, &presses);
                     }
-                    // dev: what has the focus, and which menu of the bar is open, in the timing log
-                    "barlog" => crate::menubar::dev_report(),
+                    // dev: what has the focus, and which menus are open, in the timing log
+                    "barlog" => crate::menu::dev_report(),
+                    // dev: a right-click on row k of the main table (ctx=3), the menu key on the
+                    // keyboard's row (ctxkey), a right-click on the map at x,y (mapctx=300x200)
+                    c if c.starts_with("ctx=") => {
+                        let k: usize = c[4..].parse().unwrap_or(0);
+                        let r = self.rows_now(crate::tables::Which::Main);
+                        let y = r.y_of(k);
+                        let at = crate::bindings::Windows::Foundation::Point { X: 60.0, Y: (y - r.off + ROW_H / 2.0) as f32 };
+                        self.row_menu(y + ROW_H / 2.0, at, false);
+                    }
+                    "ctxkey" => self.row_menu_by_key(),
+                    m if m.starts_with("mapctx=") => {
+                        if let Some((x, y)) = m[7..].split_once('x') {
+                            self.map_menu(x.parse().unwrap_or(0.0), y.parse().unwrap_or(0.0));
+                        }
+                    }
                     // dev: the pointer onto the menu bar's title k while a menu is open (hover=1)
                     h if h.starts_with("hover=") => crate::menubar::dev_hover(h[6..].parse().unwrap_or(0)),
                     // dev: the pointer said to rest on a menu's row by its x:Name (point=BarSub3),
                     // for the bar to find there as it finds the real pointer
-                    p if p.starts_with("point=") => crate::menubar::dev_point(&p[6..]),
+                    p if p.starts_with("point=") => crate::menu::dev_point(&p[6..]),
                     // dev: a screen reader's Toggle or Select on a menu's check or dot (uiamark=oAuto)
                     u if u.starts_with("uiamark=") => crate::win32::toggle_or_select_by(self.hwnd, &u[8..]),
                     // dev: the menu bar as UI Automation sees it, in the timing log

@@ -33,6 +33,7 @@ mod treemap;
 mod ui;
 mod look;
 mod popups;
+mod menu;
 mod menubar;
 mod reconcile;
 mod restyle;
@@ -69,7 +70,7 @@ use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use bindings::Windows::Foundation::Point;
 use tables::Which;
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
-use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleSwitch};
+use bindings::Microsoft::UI::Xaml::Controls::{ScrollViewer, SwapChainPanel, TextBox, ToggleSwitch};
 use bindings::Microsoft::UI::Xaml::Media::CompositionTarget;
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
@@ -289,8 +290,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     keep(CompositionTarget::Rendering(|_, _| {
         // a menu that has just opened plays its opening before it is drawn (popups.rs)
         crate::popups::watch();
-        // the menu bar's titles, and the pointer moving from one to another (menubar.rs)
-        crate::menubar::tick();
+        // the menus: the bar's titles, the pointer moving over them, a menu's first item (menu.rs)
+        crate::menu::tick();
         with(|s| s.frame());
     })?);
 
@@ -398,8 +399,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 /// Everything the page's controls do, wired to the state by name. Run on the page made at start
 /// and again on the one a theme change makes (`crate::restyle`); returns the map's panel.
 pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPanel> {
-    // the menu bar: File, Options and Help, and what WinUI's MenuBar did on its own
+    // the menu bar: File, Options and Help, and what WinUI's MenuBar did on its own (the page's
+    // menus start again here)
     crate::menubar::bind(root)?;
+    // the page's other menus, drawn and run as the bar's are (menu.rs): the right-click menus
+    // and the map bar's dropdowns
+    for (set, how) in [("RowMenu", menu::How::Context), ("MoreMenu", menu::How::Context), ("ViewMoreFly", menu::How::Button), ("ViewPaintFly", menu::How::Button)] {
+        crate::menu::bind(root, set, how)?;
+    }
     // The menu bar's rows all route to State::command by name (its checks and dots when their
     // mark changes, in menubar.rs).
     for &name in COMMANDS {
@@ -414,7 +421,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
     }
     // the other views and their colour switch
     for name in crate::views::ALL.iter().map(|v| v.1).chain(crate::views::PAINTS.iter().map(|p| p.1)) {
-        if let Ok(item) = find::<MenuFlyoutItem>(root, name) {
+        if let Ok(item) = find::<ButtonBase>(root, name) {
             keep(item.Click(move |_, _| {
                 with(|s| s.command(name));
             })?);
@@ -577,7 +584,18 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
         let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
         let Some((_, y)) = content_pos(s, &|c| e.GetPosition(c)) else { return };
         let Ok(at) = s.cast::<UIElement>().and_then(|el| e.GetPosition(&el)) else { return };
-        with(|st| st.row_menu(y, at));
+        with(|st| st.row_menu(y, at, false));
+    })?);
+    // the menu key or Shift+F10 on the table: the row menu of the keyboard's row (a right-click
+    // raises this too, with a point: that one is RightTapped's)
+    keep(tree_sv.ContextRequested(|s, e| {
+        let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+        let mut at = Point::default();
+        if e.TryGetPosition(s, &mut at).unwrap_or(false) {
+            return;
+        }
+        let _ = e.SetHandled(true);
+        with(|st| st.row_menu_by_key());
     })?);
     keep(tree_sv.KeyDown(|_, e| {
         let Some(e) = e.as_ref() else { return };
@@ -635,7 +653,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
 
     // The menu of a search row from another drive.
     for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S'), ("sxShell", 'W')] {
-        if let Ok(i) = find::<MenuFlyoutItem>(root, item) {
+        if let Ok(i) = find::<ButtonBase>(root, item) {
             keep(i.Click(move |_, _| {
                 with(|s| s.more_menu_pick(kind));
             })?);
@@ -644,7 +662,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
 
     // The row menu's items reuse the File menu's commands.
     for (item, cmd) in ROW_MENU {
-        if let Ok(i) = find::<MenuFlyoutItem>(root, item) {
+        if let Ok(i) = find::<ButtonBase>(root, item) {
             keep(i.Click(move |_, _| {
                 with(|s| s.command(cmd));
             })?);

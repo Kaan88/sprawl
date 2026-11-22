@@ -868,6 +868,9 @@ fn stock() -> String {
     // dropdown's list fades in from just above: popups.rs, WinUI's own templates changed
     x += &crate::popups::fields(controls);
     x += &crate::popups::menu();
+    // every menu's frame and rows, drawn as WinUI draws a menu but in a plain flyout (menu.rs):
+    // here, so the menus loaded after the page (Search's) find them too
+    x += &crate::menu::styles();
     // a plain button sits on a soft shadow (the Soft finish): WinUI's own template (generic.xaml),
     // its states moved to a grid round it, with the shadow's host behind it. A button that has
     // no face of its own (a transparent one) gets no shadow: shade.rs looks before it draws one.
@@ -1895,7 +1898,8 @@ mod tests {
             // have it, and so does the text box's template
             assert!(r.matches(&format!(r#"x:Name="{s}""#)).count() >= 7, "{s}");
         }
-        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 10);
+        // (and the four menu rows' styles, menu.rs: an item, a check, a dot, a sub-menu's row)
+        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 10 + 4);
         for k in ["SprawlPick", "SprawlMode", "SprawlPickDrop", "SprawlPage", "SprawlNav", "SprawlPagePill", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
             assert_eq!(r.matches(&format!(r#"x:Key="{k}""#)).count(), 1, "{k}");
         }

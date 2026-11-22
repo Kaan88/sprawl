@@ -560,16 +560,8 @@ impl State {
         self.selected = Some(n);
         self.refresh_rows();
         self.show_selection();
-        let shown = || -> windows_core::Result<()> {
-            use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{FlyoutBase, FlyoutShowOptions};
-            let menu: FlyoutBase = crate::state::find(&self.root, "RowMenu")?;
-            let target: crate::bindings::Microsoft::UI::Xaml::DependencyObject = crate::state::find(&self.root, "MapPanel")?;
-            let opts = FlyoutShowOptions::new()?;
-            opts.SetPosition(Some(crate::bindings::Windows::Foundation::Point { X: x as f32, Y: y as f32 }))?;
-            menu.ShowAtWithOptions(&target, &opts)
-        };
-        if let Err(e) = shown() {
-            eprintln!("map menu: {e:?}");
+        if let Ok(target) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "MapPanel") {
+            crate::menu::show_at("RowMenu", &target, crate::bindings::Windows::Foundation::Point { X: x as f32, Y: y as f32 }, false);
         }
     }
 
