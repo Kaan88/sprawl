@@ -525,8 +525,54 @@ pub(crate) fn risk_hex(r: Risk) -> &'static str {
     }
 }
 
-/// Lens tile colours by risk code (linear-ish, like the palette).
+/// A mark centred beside a line of text.
+pub(crate) const MID: &str = r#"VerticalAlignment="Center""#;
+
+/// A risk's mark in front of a row, `size` px: a dot of the risk's colour. With the colour-blind
+/// safe risks (the Risks option) each risk has its own shape too, so the colour is never the only
+/// sign: a dot, a triangle, a square, a diamond. Only the mark changes: the words beside it, and
+/// what is ticked, are the same.
+pub(crate) fn risk_mark(r: Risk, size: u32, attrs: &str) -> String {
+    risk_mark_in(crate::tokens::current().risks, r, size, attrs)
+}
+
+/// [`risk_mark`] for a given Risks option (the Theme page's sample draws the one being picked).
+pub(crate) fn risk_mark_in(risks: crate::tokens::Risks, r: Risk, size: u32, attrs: &str) -> String {
+    if risks != crate::tokens::Risks::Safe {
+        return format!(r##"<Ellipse Width="{size}" Height="{size}" Fill="{}" {attrs}/>"##, risk_hex(r));
+    }
+    let fill = crate::tokens::refer(match r {
+        Risk::Green => "riskgreen",
+        Risk::Amber => "riskamber",
+        Risk::Orange => "riskorange",
+        Risk::Red => "riskred",
+    });
+    // a triangle and a diamond fill less of their box than a dot does, so they are drawn a pixel larger
+    let (tag, shape, size) = match r {
+        Risk::Green => ("Ellipse", "", size),
+        Risk::Amber => ("Polygon", r#" Points="0,1 0.5,0 1,1" Stretch="Fill""#, size + 1),
+        Risk::Orange => ("Rectangle", r#" RadiusX="1" RadiusY="1""#, size - 1),
+        Risk::Red => ("Polygon", r#" Points="0.5,0 1,0.5 0.5,1 0,0.5" Stretch="Fill""#, size + 1),
+    };
+    format!(r##"<{tag} Width="{size}" Height="{size}" Fill="{fill}"{shape} {attrs}/>"##)
+}
+
+/// The mark of a tip, which removes nothing: a quiet dot, whatever the risks look like.
+pub(crate) fn tip_mark(size: u32, attrs: &str) -> String {
+    format!(r##"<Ellipse Width="{size}" Height="{size}" Fill="{}" {attrs}/>"##, crate::tokens::refer("text3"))
+}
+
+/// Lens tile colours by risk code (linear-ish, like the palette). The colour-blind safe risks
+/// (blue, orange, vermillion) replace the first three.
 pub(crate) fn lens_colour(code: u8) -> [f32; 3] {
+    if crate::tokens::current().risks == crate::tokens::Risks::Safe {
+        match code {
+            1 => return [0.20, 0.58, 0.88],
+            2 => return [0.90, 0.62, 0.0],
+            3 => return [0.84, 0.37, 0.0],
+            _ => {}
+        }
+    }
     match code {
         1 => [0.20, 0.72, 0.42],
         2 => [0.95, 0.62, 0.16],
@@ -3981,9 +4027,9 @@ impl State {
             x += r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="{$surface2}"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="{$fs13}" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$text3}"/>"##;
             for (i, p) in m.proposals.iter().enumerate() {
                 x += &format!(
-                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text3}}"/></StackPanel>"##,
+                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8">{}<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text3}}"/></StackPanel>"##,
                     // a local rule's deletes are at least amber, whatever it proposes
-                    risk_hex(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }),
+                    risk_mark(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }, 8, MID),
                     ui::esc(&p.title),
                     remedy_label(p.remedy),
                     small(format!("AdvApprove{i}"), "Approve"),
@@ -4432,7 +4478,7 @@ impl State {
         x += &format!(
             r##"<Grid><Border CornerRadius="{{$rc7}}" Background="{bg}"/><Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="{{$rc7}}" BorderThickness="0" Background="Transparent">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="118"/></Grid.ColumnDefinitions>
-<Ellipse Width="9" Height="9" Fill="{dot}" VerticalAlignment="Center"/>
+{dot}
 <StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}{remedy}</StackPanel>
 <TextBlock Grid.Column="3" Text="{size}" {num} FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
@@ -4445,7 +4491,7 @@ impl State {
             } else {
                 crate::tokens::refer("surface2")
             },
-            dot = if kind == "Tip" { crate::tokens::refer("text3") } else { risk_hex(f.risk).to_string() },
+            dot = if kind == "Tip" { tip_mark(9, MID) } else { risk_mark(f.risk, 9, MID) },
             title = ui::esc(&f.title),
             sub = ui::esc(&sub),
             remedy = crate::look::label(if yours {

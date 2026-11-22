@@ -656,8 +656,8 @@ impl State {
             );
             for part in &c.parts {
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="12,0,0,0"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap" MaxWidth="600"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="28,0,0,0"/>"##,
-                    crate::advisor::risk_hex(part.risk),
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="12,0,0,0">{}<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap" MaxWidth="600"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="28,0,0,0"/>"##,
+                    crate::advisor::risk_mark(part.risk, 8, crate::advisor::MID),
                     ui::esc(&format!("{}: {}", part.title, part.why)),
                     ui::esc(&part.paths.join("   "))
                 );
@@ -1456,10 +1456,10 @@ impl State {
         let (true_bytes, counted) = self.part_true(r, p);
         format!(
             r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>{tick}<Button x:Name="AdvClP{n}" Grid.Column="1" {bg} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8,4" CornerRadius="{{$rc6}}" AutomationProperties.Name="{title}: details">
-<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{dot}" VerticalAlignment="Top" Margin="0,6,0,0"/><StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{dot}<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
             op = if bytes > 0 { "1" } else { "0.55" },
             bg = crate::look::pick(crate::look::Pick::Tab, sel),
-            dot = if p.info { crate::tokens::refer("text3") } else { crate::advisor::risk_hex(p.risk).to_string() },
+            dot = if p.info { crate::advisor::tip_mark(8, r#"VerticalAlignment="Top" Margin="0,6,0,0""#) } else { crate::advisor::risk_mark(p.risk, 8, r#"VerticalAlignment="Top" Margin="0,6,0,0""#) },
             title = ui::esc(&p.title),
             sub = ui::esc(&sub),
             size = match (bytes, counted) {
@@ -1929,11 +1929,11 @@ impl State {
                     None => {}
                 }
                 x += &format!(
-                    r##"<Grid ColumnSpacing="6" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvPvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="{}"/><StackPanel Grid.Column="1" Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs13}}" ToolTipService.ToolTip="{}"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{}" TextWrapping="Wrap"/></StackPanel></Grid>"##,
+                    r##"<Grid ColumnSpacing="6" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><CheckBox x:Name="AdvPvT{i}" MinWidth="0" Padding="0" VerticalAlignment="Top" IsChecked="{}" IsEnabled="{}" AutomationProperties.Name="{}"/><StackPanel Grid.Column="1" Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8">{}<TextBlock Text="{}" FontSize="{{$fs13}}" ToolTipService.ToolTip="{}"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{}" TextWrapping="Wrap"/></StackPanel></Grid>"##,
                     if ticked { "True" } else { "False" },
                     if running { "False" } else { "True" },
                     ui::esc(&f.title),
-                    crate::advisor::risk_hex(f.risk),
+                    crate::advisor::risk_mark(f.risk, 8, crate::advisor::MID),
                     ui::esc(part.map_or(f.title.as_str(), |p| p.title)),
                     ui::esc(part.map_or("", |p| p.why)),
                     ui::esc(&sub),

@@ -494,7 +494,8 @@ impl State {
         }
         let t = self.tree.as_ref().unwrap();
         let node = &t.nodes[n];
-        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
+        let sel = Some(n) == self.selected || self.marked.contains(&n);
+        let (bg, sel_bar) = (self.row_bg(k, sel), crate::tables::row_bar(sel));
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         let (glyph, gc) = if node.is_dir { ("&#xE8B7;", crate::tokens::refer("folder")) } else { ("&#xE7C3;", self.ext_colour_hex(&node.extension())) };
@@ -506,7 +507,7 @@ impl State {
             ""
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = crate::tables::col_defs(COLS),
             c1 = cell(1, &self.size(node.size)),

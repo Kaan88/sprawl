@@ -293,6 +293,18 @@ pub(crate) fn cell(col: usize, s: &str) -> String {
 /// A percentage bar: the track, then the share in the accent, washed so the figure on it reads
 /// whichever accent the look uses. The look's `bars` option decides whether the fill is one
 /// colour, a gradient to a lighter accent, or a 4 px line along the bottom.
+/// The selected row's accent line (the Selection option's Accent bar and Both): 3 px, rounded,
+/// at the row's left edge. Every row has one, shown or collapsed, so a row picked or unpicked is
+/// changed in place (an element that came or went would load the row again: see reconcile.rs).
+/// Nothing at all when the option is the tint alone.
+pub(crate) fn row_bar(selected: bool) -> String {
+    if !crate::tokens::current().selection.bar() {
+        return String::new();
+    }
+    let shown = if selected { "Visible" } else { "Collapsed" };
+    format!(r##"<Border Width="3" Margin="1,4,0,4" HorizontalAlignment="Left" CornerRadius="{{$rc2}}" Background="{{$accent}}" Visibility="{shown}" IsHitTestVisible="False"/>"##)
+}
+
 pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
     let w = pct.clamp(0.0, 100.0);
     let num = crate::look::NUM;
@@ -616,7 +628,8 @@ impl State {
         let t = self.tree.as_ref().unwrap();
         let (n, d) = self.rows[k];
         let node = &t.nodes[n];
-        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
+        let sel = Some(n) == self.selected || self.marked.contains(&n);
+        let (bg, sel_bar) = (self.row_bg(k, sel), row_bar(sel));
         let pct = t.percent_of_parent(n);
         let has_kids = node.is_dir && !node.children.is_empty();
         let chevron = if !has_kids { "" } else if self.expanded.contains(&n) { "&#xE70D;" } else { "&#xE76C;" };
@@ -645,7 +658,7 @@ impl State {
         };
         let name = if node.is_compressed() { format!("{} · compressed", label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", label(n)) } else { label(n) };
         format!(
-            r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="{{$fs12}}" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="{{$fs14}}" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}{sel_bar}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="{{$fs12}}" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="{{$fs14}}" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(self.main_cols().0),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
@@ -673,11 +686,12 @@ impl State {
         let t = self.tree.as_ref().unwrap();
         let n = self.rows[k].0;
         let node = &t.nodes[n];
-        let bg = self.row_bg(k, Some(n) == self.selected || self.marked.contains(&n));
+        let sel = Some(n) == self.selected || self.marked.contains(&n);
+        let (bg, sel_bar) = (self.row_bg(k, sel), row_bar(sel));
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         format!(
-            r##"<Grid x:Name="FRow{n}" Height="24" Background="{bg}">{cols}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="{{$fs13}}" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid x:Name="FRow{n}" Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="{{$fs13}}" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = col_defs(FILES),
             fc = self.ext_colour_hex(&node.extension()),
@@ -691,10 +705,11 @@ impl State {
 
     fn ext_row(&self, k: usize) -> String {
         let e = &self.exts[k];
-        let bg = self.row_bg(k, self.ext_selected.as_deref() == Some(e.ext.as_str()));
+        let sel = self.ext_selected.as_deref() == Some(e.ext.as_str());
+        let (bg, sel_bar) = (self.row_bg(k, sel), row_bar(sel));
         let shown = if e.ext == "(none)" { String::new() } else { format!(".{}", e.ext) };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}<Border Width="12" Height="12" CornerRadius="{{$rc3}}" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="{{$fs12}}" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<Border Width="12" Height="12" CornerRadius="{{$rc3}}" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="{{$fs12}}" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
             cols = col_defs(EXTS),
             c = self.ext_colour_hex(&e.ext),
             ext = ui::esc(&shown),
@@ -707,7 +722,7 @@ impl State {
     }
 
     pub(crate) fn row_bg(&self, k: usize, selected: bool) -> String {
-        if selected {
+        if selected && crate::tokens::current().selection.fill() {
             crate::tokens::refer("selected")
         } else if k % 2 == 1 {
             crate::tokens::refer("stripe")

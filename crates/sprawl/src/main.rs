@@ -234,6 +234,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     let root: FrameworkElement = load(&ui::page(&labels))?;
     window.SetContent(&root.cast::<UIElement>()?)?;
     window.SetTitle(&HSTRING::from("Sprawl"))?;
+    look::apply_backdrop(&window);
     window.SetExtendsContentIntoTitleBar(true)?;
     window.SetTitleBar(&find::<UIElement>(&root, "TitleBar")?)?;
     // dev: SPRAWL_SIZE=1280x800 sets the window's size for a screenshot

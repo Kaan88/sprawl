@@ -258,7 +258,7 @@ fn settable(tag: &str, attr: &str) -> bool {
         "Background" => control || tag == "Border" || kind_of(tag) == Kind::Panel,
         "Foreground" => control || matches!(tag, "TextBlock" | "FontIcon"),
         "BorderBrush" => control || tag == "Border",
-        "Fill" => matches!(tag, "Ellipse" | "Rectangle"),
+        "Fill" => matches!(tag, "Ellipse" | "Rectangle" | "Polygon"),
         "Content" => content,
         "Glyph" => tag == "FontIcon",
         "Value" | "Maximum" | "IsIndeterminate" => tag == "ProgressBar",

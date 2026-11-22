@@ -1528,8 +1528,8 @@ impl State {
             // a command is shown whole (R7): what runs is never cut short
             let wrap = if matches!(clean::action(f), Some((Action::Tool { .. }, _))) { r#"TextWrapping="Wrap" IsTextSelectionEnabled="True""# } else { r#"TextTrimming="CharacterEllipsis""# };
             x += &format!(
-                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Ellipse Width="8" Height="8" Fill="{}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="{{$fs12}}" Foreground="{{$text3}}" {wrap}/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid>"##,
-                crate::advisor::risk_hex(f.risk),
+                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="{{$fs12}}" Foreground="{{$text3}}" {wrap}/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid>"##,
+                crate::advisor::risk_mark(f.risk, 8, ""),
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
                     Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
@@ -1881,8 +1881,8 @@ impl State {
                 }
             }
             x += &format!(
-                r##"<StackPanel Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8"><Ellipse Width="8" Height="8" Fill="{}" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs13}}"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap" Margin="16,0,0,0"/>"##,
-                crate::advisor::risk_hex(f.risk),
+                r##"<StackPanel Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8">{}<TextBlock Text="{}" FontSize="{{$fs13}}"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap" Margin="16,0,0,0"/>"##,
+                crate::advisor::risk_mark(f.risk, 8, crate::advisor::MID),
                 ui::esc(&f.title),
                 ui::esc(part.map_or("", |p| p.cost))
             );
