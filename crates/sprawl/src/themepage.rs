@@ -1,4 +1,4 @@
-//! The Theme page of Settings: a sample that follows each pick, the presets, and the options in four groups. A preset is only a set of option values; Custom is the
+//! The Theme page of Settings: a sample that follows each pick, the presets, and the options in four groups of labelled dropdowns, three to a row. A preset is only a set of option values; Custom is the
 //! user's own picks, kept apart so a preset tried and left does not lose them. The options are
 //! kept in `settings.ini` as one `look.<option>` key each (a missing key is Sprawl's own value),
 //! read before any XAML loads, and applied live on Save through [`crate::restyle::apply_look`].
@@ -358,16 +358,16 @@ impl State {
             }
             x += "</StackPanel>";
             let in_group: Vec<&Opt> = OPTS.iter().filter(|o| o.group == t.tab).collect();
-            let rows = r##"<RowDefinition Height="Auto"/>"##.repeat(in_group.len().div_ceil(2));
+            let rows = r##"<RowDefinition Height="Auto"/>"##.repeat(in_group.len().div_ceil(3));
             x += &format!(
-                r##"<Grid ColumnSpacing="16" RowSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions>{rows}</Grid.RowDefinitions>"##
+                r##"<Grid ColumnSpacing="16" RowSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions>{rows}</Grid.RowDefinitions>"##
             );
             for (n, o) in in_group.iter().enumerate() {
                 let items: String = o.choices.iter().map(|(_, l)| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(l))).collect();
                 x += &format!(
                     r##"<StackPanel Grid.Row="{}" Grid.Column="{}"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" Margin="0,0,0,2"/><ComboBox x:Name="TmPick_{}" HorizontalAlignment="Stretch" SelectedIndex="{}">{items}</ComboBox></StackPanel>"##,
-                    n / 2,
-                    n % 2,
+                    n / 3,
+                    n % 3,
                     ui::esc(o.label),
                     o.key,
                     index(&t.look, t.mode, o.key)
