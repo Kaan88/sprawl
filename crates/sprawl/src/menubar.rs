@@ -686,6 +686,15 @@ struct Bar {
     /// Each sub-menu's menu that the pointer goes through to (the one it opened from, or one
     /// further up while the pointer is over that).
     through: Vec<Option<usize>>,
+    /// What had the focus outside the bar and its menus, and how it got it, while no menu was
+    /// open: where the focus goes back when the menus close, as WinUI's MenuBar does.
+    outside: Option<(UIElement, FocusState)>,
+    /// The menus have all closed: the focus goes back to [`Bar::outside`] in this many frames
+    /// (a menu opening again in the meantime, switching menus, keeps it on the bar).
+    refocus: Option<u8>,
+    /// Esc closed one of the bar's menus: the focus stays on its title (the bar is left with
+    /// a second Esc).
+    esc_to_title: bool,
 }
 
 thread_local! {
@@ -841,6 +850,9 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<()> {
             closing: Vec::new(),
             foreground: false,
             through,
+            outside: None,
+            refocus: None,
+            esc_to_title: false,
         })
     });
     Ok(())
@@ -956,7 +968,8 @@ fn leave(before: Option<UIElement>) {
 }
 
 fn run(act: Act) {
-    let Some((titles, top, before)) = bar(|b| (titles(b), b.open.first().copied(), b.before.clone())) else { return };
+    // (Esc off the bar: back to what had the focus before Alt, or before the menu opened)
+    let Some((titles, top, before)) = bar(|b| (titles(b), b.open.first().copied(), b.before.clone().or_else(|| b.outside.as_ref().map(|o| o.0.clone())))) else { return };
     match act {
         Act::None => {}
         Act::Focus(j) => {
@@ -1125,6 +1138,13 @@ fn closed(m: usize) {
         };
         let kids = under(m, &b.open, &parents(&b.menus));
         b.open.retain(|&o| o != m);
+        if b.open.is_empty() && b.rejected != Some(m) && b.again != Some(m) {
+            if std::mem::take(&mut b.esc_to_title) {
+                b.refocus = None;
+            } else {
+                b.refocus = Some(2);
+            }
+        }
         (ours, kids, b.menus[m].shape.parent.is_some())
     }) else {
         return;
@@ -1288,7 +1308,15 @@ fn list_key(m: usize, e: &KeyRoutedEventArgs) {
             show(k);
         }
         InMenu::Close => {
-            let Some(owner) = bar(|b| b.menus[m].owner.clone()) else { return };
+            let Some(owner) = bar(|b| {
+                // one of the bar's: the focus stays on its title
+                if b.menus[m].shape.parent.is_none() {
+                    b.esc_to_title = true;
+                }
+                b.menus[m].owner.clone()
+            }) else {
+                return;
+            };
             close_from(m);
             let _ = owner.Focus(FocusState::Keyboard);
         }
@@ -1297,6 +1325,59 @@ fn list_key(m: usize, e: &KeyRoutedEventArgs) {
             run(a);
         }
     }
+}
+
+/// Whether `el` is one of the bar's titles or one of its menus' rows.
+fn on_bar(b: &Bar, el: &UIElement) -> bool {
+    titles(b).iter().any(|t| t.cast::<UIElement>().is_ok_and(|t| &t == el)) || row_of(&b.menus, el).is_some()
+}
+
+/// Each frame: with no menu open, what has the focus outside the bar is noted; the menus all
+/// closed a moment ago, the focus goes back to it, with the focus state it had (gone from the
+/// page: to the tree). Unless the focus has gone somewhere else meanwhile: a dialog, Settings,
+/// or wherever the command that closed the menus put it.
+fn refocus() {
+    let Some(Some(back)) = bar(|b| {
+        if !b.open.is_empty() || b.placing.is_some() || b.again.is_some() {
+            b.refocus = None;
+            return None;
+        }
+        let now = focused(&b.root);
+        let free = now.as_ref().is_none_or(|f| on_bar(b, f));
+        match b.refocus {
+            Some(0) => {
+                b.refocus = None;
+                // still on the bar (or nowhere): back where it was
+                free.then(|| b.outside.clone())
+            }
+            Some(n) => {
+                b.refocus = Some(n - 1);
+                None
+            }
+            None => {
+                if !free {
+                    if let Some(f) = now {
+                        let state = f.FocusState().unwrap_or(FocusState::Programmatic);
+                        b.outside = Some((f, state));
+                    }
+                }
+                None
+            }
+        }
+    }) else {
+        return;
+    };
+    let went = back.as_ref().is_some_and(|(el, state)| {
+        let state = if *state == FocusState::Unfocused { FocusState::Programmatic } else { *state };
+        el.XamlRoot().is_ok() && el.Focus(state).unwrap_or(false)
+    });
+    if !went {
+        if let Some(tree) = bar(|b| b.root.cast::<FrameworkElement>().ok()).flatten().and_then(|r| find::<UIElement>(&r, "TreeScroll").ok()) {
+            let _ = tree.Focus(FocusState::Programmatic);
+        }
+    }
+    bar(|b| b.before = None);
+    dev(&format!("focus back {}", if went { "where it was" } else { "on the tree" }));
 }
 
 /// Called once per frame: a menu to open again where it belongs, the first item of a menu opened
@@ -1317,6 +1398,7 @@ pub(crate) fn tick() {
         }
         b.foreground = fg;
     });
+    refocus();
     if let Some(Some(m)) = bar(|b| b.again.take()) {
         show(m);
     }
