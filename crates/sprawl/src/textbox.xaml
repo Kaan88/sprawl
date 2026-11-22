@@ -54,9 +54,9 @@ Duration="0" />
 </Grid.Resources>
 <VisualStateManager.VisualStateGroups>
 <VisualStateGroup x:Name="CommonStates">
-<VisualState x:Name="Normal" />
+<VisualState x:Name="Normal"><Storyboard>@FOCUS_OUT@</Storyboard></VisualState>
 <VisualState x:Name="Disabled">
-<Storyboard>
+<Storyboard>@FOCUS_OUT@
 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="HeaderContentPresenter" Storyboard.TargetProperty="Foreground">
 <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextControlHeaderForegroundDisabled}" />
 </ObjectAnimationUsingKeyFrames>
@@ -75,7 +75,7 @@ Duration="0" />
 </Storyboard>
 </VisualState>
 <VisualState x:Name="PointerOver">
-<Storyboard>
+<Storyboard>@FOCUS_OUT@
 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="BorderElement" Storyboard.TargetProperty="BorderBrush">
 <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextControlBorderBrushPointerOver}" />
 </ObjectAnimationUsingKeyFrames>
@@ -90,25 +90,17 @@ Duration="0" />
 </ObjectAnimationUsingKeyFrames>
 </Storyboard>
 </VisualState>
-<VisualState x:Name="Focused"><VisualState.Setters><Setter Target="Ring.Opacity" Value="1"/></VisualState.Setters>
-<Storyboard>
+<VisualState x:Name="Focused"><Storyboard>@FOCUS_IN@
 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="PlaceholderTextContentPresenter" Storyboard.TargetProperty="Foreground">
 <DiscreteObjectKeyFrame KeyTime="0" Value="{Binding PlaceholderForeground, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue={ThemeResource TextControlPlaceholderForegroundFocused}}" />
 </ObjectAnimationUsingKeyFrames>
 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="BorderElement" Storyboard.TargetProperty="Background">
 <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextControlBackgroundFocused}" />
 </ObjectAnimationUsingKeyFrames>
-<ObjectAnimationUsingKeyFrames Storyboard.TargetName="BorderElement" Storyboard.TargetProperty="BorderBrush">
-<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextControlBorderBrushFocused}" />
-</ObjectAnimationUsingKeyFrames>
-<ObjectAnimationUsingKeyFrames Storyboard.TargetName="BorderElement" Storyboard.TargetProperty="BorderThickness">
-<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextControlBorderThemeThicknessFocused}" />
-</ObjectAnimationUsingKeyFrames>
 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentElement" Storyboard.TargetProperty="Foreground">
 <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextControlForegroundFocused}" />
 </ObjectAnimationUsingKeyFrames>
-</Storyboard>
-</VisualState>
+</Storyboard></VisualState>
 </VisualStateGroup>
 <VisualStateGroup x:Name="ButtonStates">
 <VisualState x:Name="ButtonVisible">
@@ -135,8 +127,9 @@ Duration="0" />
 <ColumnDefinition Width="Auto" />
 </Grid.ColumnDefinitions>
 <ContentPresenter x:Name="HeaderContentPresenter" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="{TemplateBinding Header}" ContentTemplate="{TemplateBinding HeaderTemplate}" FontWeight="Normal" Foreground="{ThemeResource TextControlHeaderForeground}" Margin="{ThemeResource TextBoxTopHeaderMargin}" TextWrapping="Wrap" VerticalAlignment="Top" Visibility="Collapsed" x:DeferLoadStrategy="Lazy" />
-<Border x:Name="Ring" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="-3" CornerRadius="{$rc8}" BorderBrush="{$ring}" BorderThickness="3" Opacity="0" IsHitTestVisible="False"/>
+<Border x:Name="Ring" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Margin="@RING_MARGIN@" CornerRadius="@RING_CORNER@" BorderBrush="@RING_BRUSH@" BorderThickness="@RING_WIDTH@" Opacity="0" IsHitTestVisible="False"/>
 <Border x:Name="BorderElement" Grid.Row="1" Grid.Column="0" Grid.RowSpan="1" Grid.ColumnSpan="2" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Control.IsTemplateFocusTarget="True" MinWidth="{TemplateBinding MinWidth}" MinHeight="{TemplateBinding MinHeight}" />
+<Border x:Name="Outline" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Background="@OUTLINE_FILL@" BorderBrush="@OUTLINE_LINE@" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Opacity="0" IsHitTestVisible="False" />
 <ScrollViewer x:Name="ContentElement" Grid.Row="1" Grid.Column="0" HorizontalScrollMode="{TemplateBinding ScrollViewer.HorizontalScrollMode}" HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}" VerticalScrollMode="{TemplateBinding ScrollViewer.VerticalScrollMode}" VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}" IsHorizontalRailEnabled="{TemplateBinding ScrollViewer.IsHorizontalRailEnabled}" IsVerticalRailEnabled="{TemplateBinding ScrollViewer.IsVerticalRailEnabled}" IsDeferredScrollingEnabled="{TemplateBinding ScrollViewer.IsDeferredScrollingEnabled}" Margin="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" Foreground="{TemplateBinding Foreground}" IsTabStop="False" AutomationProperties.AccessibilityView="Raw" ZoomMode="Disabled" />
 <TextBlock x:Name="PlaceholderTextContentPresenter" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Foreground="{Binding PlaceholderForeground, RelativeSource={RelativeSource TemplatedParent}, TargetNullValue={ThemeResource TextControlPlaceholderForeground}}" Margin="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" Text="{TemplateBinding PlaceholderText}" TextAlignment="{TemplateBinding TextAlignment}" TextWrapping="{TemplateBinding TextWrapping}" IsHitTestVisible="False" />
 <Button x:Name="DeleteButton" Grid.Row="1" Grid.Column="1" Style="{StaticResource DeleteButtonStyle}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{ThemeResource HelperButtonThemePadding}" IsTabStop="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw" FontSize="{TemplateBinding FontSize}" Width="30" VerticalAlignment="Stretch" />
