@@ -387,6 +387,19 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bo
     } else {
         ("", "")
     };
+    // WinUI runs a template's states only from its outermost element: Root, or the grid that
+    // holds the main button's glow around it
+    let vsm = format!(
+        r##"<VisualStateManager.VisualStateGroups>
+      <VisualStateGroup x:Name="CommonStates">
+        <VisualState x:Name="Normal"><VisualState.Storyboard>{normal}</VisualState.Storyboard></VisualState>
+        <VisualState x:Name="PointerOver"><VisualState.Storyboard>{over}</VisualState.Storyboard></VisualState>
+        <VisualState x:Name="Pressed"><VisualState.Storyboard>{pressed}</VisualState.Storyboard></VisualState>
+        <VisualState x:Name="Disabled"><VisualState.Setters>{disabled}</VisualState.Setters></VisualState>
+      </VisualStateGroup>
+    </VisualStateManager.VisualStateGroups>"##
+    );
+    let (inner_states, outer_states) = if glow { (String::new(), vsm) } else { (vsm, String::new()) };
     format!(
         r##"<ControlTemplate TargetType="{target}">
   {shade_open}
@@ -396,15 +409,9 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bo
     <ContentPresenter x:Name="Content" RenderTransformOrigin="0.5,0.5" Content="{{TemplateBinding Content}}" ContentTemplate="{{TemplateBinding ContentTemplate}}" Padding="{{TemplateBinding Padding}}" HorizontalContentAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalContentAlignment="{{TemplateBinding VerticalContentAlignment}}" Foreground="{{TemplateBinding Foreground}}" FontSize="{{TemplateBinding FontSize}}" FontFamily="{{TemplateBinding FontFamily}}" FontWeight="{{TemplateBinding FontWeight}}"><ContentPresenter.RenderTransform><CompositeTransform/></ContentPresenter.RenderTransform></ContentPresenter>
     {arrow}
     {underline}
-    <VisualStateManager.VisualStateGroups>
-      <VisualStateGroup x:Name="CommonStates">
-        <VisualState x:Name="Normal"><VisualState.Storyboard>{normal}</VisualState.Storyboard></VisualState>
-        <VisualState x:Name="PointerOver"><VisualState.Storyboard>{over}</VisualState.Storyboard></VisualState>
-        <VisualState x:Name="Pressed"><VisualState.Storyboard>{pressed}</VisualState.Storyboard></VisualState>
-        <VisualState x:Name="Disabled"><VisualState.Setters>{disabled}</VisualState.Setters></VisualState>
-      </VisualStateGroup>
-    </VisualStateManager.VisualStateGroups>
+    {inner_states}
   </Grid>
+  {outer_states}
   {shade_close}
 </ControlTemplate>"##
     )
@@ -1243,6 +1250,9 @@ mod tests {
         let primary = &r[r.find(r#"x:Key="SprawlPrimary""#).unwrap()..];
         let primary = &primary[..primary.find("</Style>").unwrap()];
         assert!(primary.contains(r#"x:Name="Glow""#) && primary.contains(r#"Background="{$glow}""#));
+        // its states sit on the outer grid, after Root closes: WinUI runs only the outermost's
+        let vsm = primary.find("VisualStateManager.VisualStateGroups").unwrap();
+        assert_eq!(primary[vsm..].matches("</Grid>").count(), 1, "the main button's states are inside Root");
         assert!(!r[..r.find(r#"x:Key="SprawlPrimary""#).unwrap()].contains(r#"x:Name="Glow""#), "only the main button glows");
         // a text box with the focus shows the ring, outside its edge
         assert!(r.contains(r#"x:Name="Ring""#) && r.contains(r#"<Setter Target="Ring.Opacity" Value="1"/>"#) && r.contains(r#"BorderBrush="{$ring}""#));
