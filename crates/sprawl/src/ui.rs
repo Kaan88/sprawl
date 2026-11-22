@@ -1,5 +1,7 @@
 //! XAML markup for the window and the table rows (loaded with XamlReader at run time).
 
+use crate::menubar::Row;
+
 pub const NS: &str = r##"xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml""##;
 
 /// Text for a XAML attribute value. File names are anyone's choice, so besides the XML
@@ -710,39 +712,33 @@ pub(crate) fn shortcuts() -> Vec<(String, String)> {
     SHORTCUTS.with(|s| s.borrow().clone())
 }
 
-fn item(name: &str, text: &str, key: &str, mods: &str) -> String {
+/// A menu-bar row that runs a command (menubar.rs draws it as WinUI draws a menu item).
+fn item(name: &str, text: &str, key: &str, mods: &str) -> Row {
     note_shortcut(text, key, mods);
-    let acc = if key.is_empty() {
-        String::new()
-    } else if mods.is_empty() {
-        format!(r##"<MenuFlyoutItem.KeyboardAccelerators><KeyboardAccelerator Key="{key}"/></MenuFlyoutItem.KeyboardAccelerators>"##)
-    } else {
-        format!(r##"<MenuFlyoutItem.KeyboardAccelerators><KeyboardAccelerator Key="{key}" Modifiers="{mods}"/></MenuFlyoutItem.KeyboardAccelerators>"##)
-    };
-    format!(r##"<MenuFlyoutItem x:Name="{name}" Text="{text}">{acc}</MenuFlyoutItem>"##)
+    Row::Item { name: name.into(), text: text.into(), key: key.into(), mods: mods.into() }
 }
 
-fn toggle(name: &str, text: &str, checked: bool, key: &str, mods: &str) -> String {
+/// A row with a check mark.
+fn toggle(name: &str, text: &str, checked: bool, key: &str, mods: &str) -> Row {
     note_shortcut(text, key, mods);
-    let acc = if key.is_empty() {
-        String::new()
-    } else if mods.is_empty() {
-        format!(r##"<ToggleMenuFlyoutItem.KeyboardAccelerators><KeyboardAccelerator Key="{key}"/></ToggleMenuFlyoutItem.KeyboardAccelerators>"##)
-    } else {
-        format!(r##"<ToggleMenuFlyoutItem.KeyboardAccelerators><KeyboardAccelerator Key="{key}" Modifiers="{mods}"/></ToggleMenuFlyoutItem.KeyboardAccelerators>"##)
-    };
-    format!(r##"<ToggleMenuFlyoutItem x:Name="{name}" Text="{text}" IsChecked="{checked}">{acc}</ToggleMenuFlyoutItem>"##)
+    Row::Toggle { name: name.into(), text: text.into(), checked, key: key.into(), mods: mods.into() }
 }
 
-fn radio(name: &str, text: &str, checked: bool) -> String {
+fn radio(name: &str, text: &str, checked: bool) -> Row {
     radio_in("units", name, text, checked)
 }
 
-fn radio_in(group: &str, name: &str, text: &str, checked: bool) -> String {
-    format!(r##"<RadioMenuFlyoutItem x:Name="{name}" Text="{text}" GroupName="{group}" IsChecked="{checked}"/>"##)
+/// One of a group of rows of which one is picked (a dot beside it).
+fn radio_in(group: &str, name: &str, text: &str, checked: bool) -> Row {
+    Row::Radio { group: group.into(), name: name.into(), text: text.into(), checked }
 }
 
-const SEP: &str = "<MenuFlyoutSeparator/>";
+/// A row that opens a menu of its own.
+fn sub(text: &str, rows: Vec<Row>) -> Row {
+    Row::Sub { text: text.into(), rows }
+}
+
+const SEP: Row = Row::Sep;
 
 /// Glass surfaces over the ink ground.
 const CARD: &str = r##"CornerRadius="{$rc8}" Background="{$card}" BorderBrush="{$line1}" BorderThickness="1""##;
@@ -824,14 +820,14 @@ pub fn page(drives: &[String]) -> String {
         .iter()
         .map(|d| format!(r##"<ComboBoxItem Content="{}"/>"##, esc(d)))
         .collect();
-    let file_menu = [
+    let file_menu = vec![
         item("mScan", "Scan Again", "F5", ""),
         item("mSelectFolder", "Select Folder...", "F3", ""),
         item("mSelectMultiple", "Select Multiple Folders...", "F3", "Shift"),
         item("mSelectCsv", "Open CSV File...", "O", "Control"),
         item("mStop", "Stop Scan", "Escape", ""),
         item("mNewInstance", "New Instance", "N", "Control"),
-        SEP.to_string(),
+        SEP,
         item("mReset", "Reset tree expansion", "F4", ""),
         item("mExpandAll", "Expand All", "F4", "Shift"),
         item("mParent", "Select Parent", "F6", ""),
@@ -841,73 +837,80 @@ pub fn page(drives: &[String]) -> String {
         item("mSavePng", "Save Treemap Image as .png file", "S", "Control"),
         item("mSearch", "Search Names...", "F", "Control"),
         item("mFilter", "Filter...", "F", "Control,Shift"),
-        SEP.to_string(),
+        SEP,
         item("mExplore", "Explore Folder", "E", "Control"),
         item("mCmd", "Command Prompt Here", "P", "Control"),
         item("mCopyPath", "Copy Path", "P", "Control,Shift"),
-        SEP.to_string(),
+        SEP,
         item("mDelete", "Delete (to Recycle Bin)", "Delete", ""),
         item("mDeleteForever", "Delete (No undelete possible)", "Delete", "Shift"),
-        SEP.to_string(),
+        SEP,
         item("mExportCsv", "Export to .CSV file...", "E", "Control,Shift"),
         item("mCopyInfo", "Copy file and size info to clipboard", "C", "Control,Shift"),
         item("mExportTypes", "Export File Types to CSV file...", "X", "Control,Shift"),
-        SEP.to_string(),
+        SEP,
         item("mExit", "Exit", "F4", "Menu"),
-    ]
-    .concat();
-    let options_menu = [
+    ];
+    let options_menu = vec![
         item("mSettings", "Settings...", "S", "Control,Shift"),
-        SEP.to_string(),
-        format!(
-            r##"<MenuFlyoutSubItem Text="Show">{}{}{}</MenuFlyoutSubItem>"##,
-            toggle("oHeader", "Header", true, "H", "Control"),
-            toggle("oTypes", "File Types", true, "F8", ""),
-            toggle("oTreemap", "Map", true, "F9", ""),
+        SEP,
+        sub(
+            "Show",
+            vec![
+                toggle("oHeader", "Header", true, "H", "Control"),
+                toggle("oTypes", "File Types", true, "F8", ""),
+                toggle("oTreemap", "Map", true, "F9", ""),
+            ],
         ),
-        format!(
-            r##"<MenuFlyoutSubItem Text="Sizes in">{}{}{}{}{}{}</MenuFlyoutSubItem>"##,
-            radio("uDyn", "Best fit", true),
-            radio("uB", "Bytes", false),
-            radio("uKB", "KB", false),
-            radio("uMB", "MB", false),
-            radio("uGB", "GB", false),
-            radio("uTB", "TB", false),
+        sub(
+            "Sizes in",
+            vec![
+                radio("uDyn", "Best fit", true),
+                radio("uB", "Bytes", false),
+                radio("uKB", "KB", false),
+                radio("uMB", "MB", false),
+                radio("uGB", "GB", false),
+                radio("uTB", "TB", false),
+            ],
         ),
-        format!(
-            r##"<MenuFlyoutSubItem Text="Map">{}{}{}{}{}{}{}{}</MenuFlyoutSubItem>"##,
-            toggle("oTilt", "3D", true, "T", "Control,Shift"),
-            toggle("oNames", "Folder and File Names", true, "N", "Control,Shift"),
-            toggle("oAlloc", "Allocated Size", false, "", ""),
-            toggle("oCushion", "Cushion Shading", true, "", ""),
-            toggle("oFree", "Free Space", false, "", ""),
-            toggle("oMirror", "Mirror Floor", true, "", ""),
-            toggle("oPulses", "Live Change Pulses", true, "", ""),
-            format!(
-                r##"<MenuFlyoutSubItem Text="3D Antialiasing">{}{}{}{}</MenuFlyoutSubItem>"##,
-                radio_in("aa", "aaOff", "Off", false),
-                radio_in("aa", "aaLow", "Low (2x)", false),
-                radio_in("aa", "aaMedium", "Medium (4x)", true),
-                radio_in("aa", "aaHigh", "High (8x)", false),
-            ),
+        sub(
+            "Map",
+            vec![
+                toggle("oTilt", "3D", true, "T", "Control,Shift"),
+                toggle("oNames", "Folder and File Names", true, "N", "Control,Shift"),
+                toggle("oAlloc", "Allocated Size", false, "", ""),
+                toggle("oCushion", "Cushion Shading", true, "", ""),
+                toggle("oFree", "Free Space", false, "", ""),
+                toggle("oMirror", "Mirror Floor", true, "", ""),
+                toggle("oPulses", "Live Change Pulses", true, "", ""),
+                sub(
+                    "3D Antialiasing",
+                    vec![
+                        radio_in("aa", "aaOff", "Off", false),
+                        radio_in("aa", "aaLow", "Low (2x)", false),
+                        radio_in("aa", "aaMedium", "Medium (4x)", true),
+                        radio_in("aa", "aaHigh", "High (8x)", false),
+                    ],
+                ),
+            ],
         ),
         toggle("oAuto", "Scan as Soon as a Drive Is Picked", true, "", ""),
-        SEP.to_string(),
+        SEP,
         item("mAdmin", "Restart as Administrator", "", ""),
         toggle("oAlwaysAdmin", "Always Run as Administrator", false, "", ""),
         toggle("oExplorer", "Add &quot;Scan with Sprawl&quot; to Explorer", false, "", ""),
-        SEP.to_string(),
+        SEP,
         item("mWizard", "Setup Wizard...", "", ""),
-    ]
-    .concat();
-    let help_menu = [
+    ];
+    let help_menu = vec![
         item("mShortcuts", "Keyboard Shortcuts", "F1", ""),
         item("mUpdate", "Check for Updates", "", ""),
         toggle("oUpdates", "Check for Updates Automatically", true, "", ""),
-        SEP.to_string(),
+        SEP,
         item("mAbout", "About Sprawl", "", ""),
-    ]
-    .concat();
+    ];
+    // File, Options and Help: titles with menus, drawn as WinUI's MenuBar and its menus (menubar.rs)
+    let menu_bar = crate::menubar::xaml([file_menu, options_menu, help_menu]);
     let hud = hud();
     let welcome = crate::welcome::xaml();
     let item = |k: crate::views::Kind| {
@@ -999,11 +1002,7 @@ pub fn page(drives: &[String]) -> String {
     </StackPanel>
   </Grid>
 
-  <MenuBar Grid.Row="1" Margin="6,0,0,0">
-    <MenuBarItem Title="File">{file_menu}</MenuBarItem>
-    <MenuBarItem Title="Options">{options_menu}</MenuBarItem>
-    <MenuBarItem Title="Help">{help_menu}</MenuBarItem>
-  </MenuBar>
+  {menu_bar}
 
   <Grid x:Name="Header" Grid.Row="2" Margin="12,4,12,8" ColumnSpacing="10">
     <Grid.ColumnDefinitions>

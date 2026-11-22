@@ -18,7 +18,6 @@ use sprawl_advisor::llm::http;
 use sprawl_install::setup::{clean_stage, remove_old, swap_in, STAGE};
 use sprawl_install::{newer, verify, FileEntry, MANIFEST, PUBLIC_KEYS, REPO, SIGNATURE};
 
-use crate::bindings::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem;
 use crate::bindings::Microsoft::UI::Xaml::{UIElement, Visibility};
 use crate::state::{find, text, State};
 
@@ -324,7 +323,7 @@ impl State {
 
     /// The automatic check may run: the switch is on, not offline, not a screenshot run.
     fn update_auto(&self) -> bool {
-        let on = find::<ToggleMenuFlyoutItem>(&self.root, "oUpdates").and_then(|t| t.IsChecked()).unwrap_or(true);
+        let on = crate::menubar::checked(&self.root, "oUpdates").unwrap_or(true);
         on && !sprawl_advisor::offline() && self.shot.is_none() && !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
     }
 

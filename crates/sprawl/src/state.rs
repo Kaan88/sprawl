@@ -839,6 +839,10 @@ impl State {
                 self.hist_seek(p);
             }
         }
+        // dev: a `kb=` step's Alt is let go of a few frames after its keys were read
+        if self.shot_ticks % 30 == 10 && std::env::var("SPRAWL_SWITCH").is_ok_and(|v| v.contains("kb=")) {
+            crate::win32::alt_state(false);
+        }
         // dev: SPRAWL_SWITCH=ModeCity,ModeGalaxy,... runs those commands 30 frames apart,
         // hovering the map in between
         if self.shot_ticks % 30 == 0 {
@@ -880,6 +884,23 @@ impl State {
                     d if d.starts_with("menu=") => {
                         crate::win32::expand_by(self.hwnd, &d[5..], false);
                     }
+                    // dev: keys pressed in this window only, as its own input (kb=alt.right,
+                    // kb=alt+f): nothing outside the process sees them
+                    k if k.starts_with("kb=") => {
+                        let presses: Vec<&str> = k[3..].split('.').collect();
+                        crate::win32::post_keys(self.hwnd, &presses);
+                    }
+                    // dev: what has the focus, and which menu of the bar is open, in the timing log
+                    "barlog" => crate::menubar::dev_report(),
+                    // dev: the pointer onto the menu bar's title k while a menu is open (hover=1)
+                    h if h.starts_with("hover=") => crate::menubar::dev_hover(h[6..].parse().unwrap_or(0)),
+                    // dev: the pointer said to rest on a menu's row by its x:Name (point=BarSub3),
+                    // for the bar to find there as it finds the real pointer
+                    p if p.starts_with("point=") => crate::menubar::dev_point(&p[6..]),
+                    // dev: a screen reader's Toggle or Select on a menu's check or dot (uiamark=oAuto)
+                    u if u.starts_with("uiamark=") => crate::win32::toggle_or_select_by(self.hwnd, &u[8..]),
+                    // dev: the menu bar as UI Automation sees it, in the timing log
+                    "uia" => crate::win32::uia_report(self.hwnd),
                     // dev: the other theme, as saving it in Settings would (in memory: a screenshot run saves nothing)
                     "theme" => {
                         self.settings.set("theme", if crate::theme::light() { 2 } else { 1 });

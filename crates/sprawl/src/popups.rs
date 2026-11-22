@@ -251,10 +251,9 @@ thread_local! {
 /// presenter's Loaded never runs in WinUI 3), so this finds the popups newly open and plays the
 /// animation on the presenter's Composition visual: opacity, scale (the visual's origin is its
 /// top left) and `Translation`, which layout never writes. WinUI's own entrance (a clip reveal
-/// and slide) is turned off in the flyouts the app builds ([`menus`]); it cannot be in the
-/// menu bar's (File, Options, Help), whose flyout WinUI keeps to itself, so those menus still
-/// show it as well. The dropdown of a combo box is not done here: its template has the states
-/// for it ([`reveal`]).
+/// and slide) is turned off in every flyout the app builds ([`menus`]), the menu bar's
+/// (File, Options, Help: [`crate::menubar`]) among them. The dropdown of a combo box is not
+/// done here: its template has the states for it ([`reveal`]).
 pub(crate) fn watch() {
     if let Some(Ok(root)) = crate::state::with(|s| s.root.cast::<UIElement>()) {
         let _ = watch_in(&root);
@@ -278,7 +277,9 @@ fn watch_in(root: &UIElement) -> windows_core::Result<()> {
 
 fn open_menu(popup: &Popup) -> windows_core::Result<()> {
     let child = popup.Child()?;
-    if child.cast::<MenuFlyoutPresenter>().is_err() {
+    // a menu, or the flyout a menu-bar menu is drawn in (menubar.rs: tagged "menu")
+    let tagged = || child.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>().and_then(|f| f.Tag()).and_then(|t| t.cast::<windows_reference::IReference<HSTRING>>()).and_then(|r| r.Value()).is_ok_and(|t| t == "menu");
+    if child.cast::<MenuFlyoutPresenter>().is_err() && !tagged() {
         return Ok(());
     }
     let Some(o) = opening(motion()) else { return Ok(()) };

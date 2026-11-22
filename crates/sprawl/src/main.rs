@@ -33,6 +33,7 @@ mod treemap;
 mod ui;
 mod look;
 mod popups;
+mod menubar;
 mod reconcile;
 mod restyle;
 mod theme;
@@ -68,7 +69,7 @@ use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use bindings::Windows::Foundation::Point;
 use tables::Which;
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
-use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
+use bindings::Microsoft::UI::Xaml::Controls::{MenuFlyoutItem, ScrollViewer, SwapChainPanel, TextBox, ToggleSwitch};
 use bindings::Microsoft::UI::Xaml::Media::CompositionTarget;
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
@@ -288,6 +289,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     keep(CompositionTarget::Rendering(|_, _| {
         // a menu that has just opened plays its opening before it is drawn (popups.rs)
         crate::popups::watch();
+        // the menu bar's titles, and the pointer moving from one to another (menubar.rs)
+        crate::menubar::tick();
         with(|s| s.frame());
     })?);
 
@@ -395,9 +398,15 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 /// Everything the page's controls do, wired to the state by name. Run on the page made at start
 /// and again on the one a theme change makes (`crate::restyle`); returns the map's panel.
 pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPanel> {
-    // Menu items and buttons all route to State::command by name.
+    // the menu bar: File, Options and Help, and what WinUI's MenuBar did on its own
+    crate::menubar::bind(root)?;
+    // The menu bar's rows all route to State::command by name (its checks and dots when their
+    // mark changes, in menubar.rs).
     for &name in COMMANDS {
-        if let Ok(item) = find::<MenuFlyoutItem>(root, name) {
+        if !crate::menubar::runs_on_click(name) {
+            continue;
+        }
+        if let Ok(item) = find::<ButtonBase>(root, name) {
             keep(item.Click(move |_, _| {
                 with(|s| s.command(name));
             })?);
@@ -448,7 +457,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
     }
     keep(find::<Selector>(root, "DriveBox")?.SelectionChanged(|_, _| {
         with(|s| {
-            let auto = find::<ToggleMenuFlyoutItem>(&s.root, "oAuto").and_then(|t| t.IsChecked()).unwrap_or(false);
+            let auto = crate::menubar::checked(&s.root, "oAuto").unwrap_or(false);
             if auto && s.shot.is_none() {
                 s.command("ScanSelectedDrive");
             }
