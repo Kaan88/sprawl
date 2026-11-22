@@ -118,7 +118,7 @@ impl State {
             }
         }
         // the one line under the row slides to the lit tab
-        crate::tabline::select(&self.root, lit);
+        crate::tabline::select(&self.root, &crate::tabline::MAIN, lit);
         self.tab_counts();
     }
 
