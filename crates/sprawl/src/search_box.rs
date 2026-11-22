@@ -5,7 +5,8 @@
 use sprawl_core::query::Query;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, FlyoutBase};
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, MenuFlyout, MenuFlyoutItem, TextBox};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, TextBox};
+use crate::menu::{Item, Row};
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
 use crate::search_query as sq;
 use crate::state::{find, keep, load, text, with, State, View};
@@ -76,15 +77,12 @@ impl State {
         let today = sq::today();
         let mut x = format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="6">"##, ui::NS);
         for (k, chip) in sq::CHIPS.iter().enumerate() {
-            let items: String = chip
-                .options(&today)
-                .iter()
-                .enumerate()
-                .map(|(i, (label, _))| format!(r##"<MenuFlyoutItem x:Name="Ck{k}_{i}" Text="{}"/>"##, ui::esc(label)))
-                .collect();
+            // its options: a menu drawn and run as every menu (menu.rs)
+            let rows: Vec<Row> = chip.options(&today).iter().enumerate().map(|(i, (label, _))| Row::Item(Item::new(&format!("Ck{k}_{i}"), &ui::esc(label)))).collect();
+            let items = crate::menu::xaml(&format!("ChipFly{k}"), &format!("Chip{k}"), "Bottom", &rows);
             x += &format!(
                 // one control per chip: the words and its arrow in one button, so the two can't differ in size
-                r##"<Button x:Name="Chip{k}" {off} ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout><MenuFlyout x:Name="ChipFly{k}" Placement="Bottom">{items}</MenuFlyout></FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="{{$fs9}}" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
+                r##"<Button x:Name="Chip{k}" {off} ToolTipService.ToolTip="Pick a filter: its words go into the search box. Lit: click to take them out again."><FlyoutBase.AttachedFlyout>{items}</FlyoutBase.AttachedFlyout><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="ChipText{k}" Text="{t}" MaxWidth="280" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><FontIcon x:Name="ChipArrow{k}" Glyph="&#xE70D;" FontSize="{{$fs9}}" VerticalAlignment="Center" Margin="0,1,0,0"/></StackPanel></Button>"##,
                 t = ui::esc(chip.title()),
                 off = crate::look::pick(crate::look::Pick::Chip, false),
             );
@@ -94,6 +92,9 @@ impl State {
         let _ = host.SetChild(&content);
         let Ok(fe) = content.cast::<FrameworkElement>() else { return };
         for (k, chip) in sq::CHIPS.iter().enumerate() {
+            if let Err(e) = crate::menu::bind(&fe, &format!("ChipFly{k}"), crate::menu::How::Button) {
+                eprintln!("chip {k}: {e:?}");
+            }
             for (name, open) in [(format!("Chip{k}"), false), (format!("ChipMenu{k}"), true)] {
                 if let Ok(b) = find::<ButtonBase>(&fe, &name) {
                     if let Ok(t) = b.Click(move |_, _| {
@@ -104,7 +105,7 @@ impl State {
                 }
             }
             for i in 0..chip.options(&today).len() {
-                if let Ok(m) = find::<MenuFlyoutItem>(&fe, &format!("Ck{k}_{i}")) {
+                if let Ok(m) = find::<ButtonBase>(&fe, &format!("Ck{k}_{i}")) {
                     if let Ok(t) = m.Click(move |_, _| {
                         with(|s| s.search_chip_pick(k, i));
                     }) {
@@ -128,7 +129,7 @@ impl State {
             return;
         }
         let Some(fe) = self.search.chips.clone() else { return };
-        if let (Ok(m), Ok(b)) = (find::<MenuFlyout>(&fe, &format!("ChipFly{k}")), find::<FrameworkElement>(&fe, &format!("Chip{k}"))) {
+        if let (Ok(m), Ok(b)) = (find::<FlyoutBase>(&fe, &format!("ChipFly{k}")), find::<FrameworkElement>(&fe, &format!("Chip{k}"))) {
             let _ = m.ShowAt(&b);
         }
     }
@@ -342,48 +343,61 @@ impl State {
         self.search.saved_shape = shape;
         // (label, what it does)
         let mut items: Vec<(String, SavedAct)> = Vec::new();
-        let mut x = format!(
-            r##"<Button {} x:Name="SxSaved" Height="32" Padding="10,3" ToolTipService.ToolTip="Saved and recent searches"><FontIcon Glyph="&#xE81C;" FontSize="{{$fs14}}"/><Button.Flyout><MenuFlyout x:Name="SxSavedFly" Placement="BottomEdgeAlignedRight">"##,
-            ui::NS
-        );
-        let mut item = |x: &mut String, label: String, act: SavedAct, icon: &str, enabled: bool| {
+        // its menu: drawn and run as every menu (menu.rs)
+        let mut rows: Vec<Row> = Vec::new();
+        let mut item = |rows: &mut Vec<Row>, label: String, act: SavedAct, icon: &str, enabled: bool| {
             let i = items.len();
-            let icon = if icon.is_empty() { String::new() } else { format!(r##"<MenuFlyoutItem.Icon><FontIcon Glyph="{icon}"/></MenuFlyoutItem.Icon>"##) };
-            *x += &format!(r##"<MenuFlyoutItem x:Name="SxSv{i}" Text="{}" IsEnabled="{}">{icon}</MenuFlyoutItem>"##, ui::esc(&label), if enabled { "True" } else { "False" });
+            rows.push(Row::Item(Item::new(&format!("SxSv{i}"), &ui::esc(&label)).icon(icon).off(!enabled)));
             items.push((label, act));
         };
         for p in &h.pinned {
-            item(&mut x, p.clone(), SavedAct::Use(p.clone()), "&#xE718;", true);
+            item(&mut rows, p.clone(), SavedAct::Use(p.clone()), "&#xE718;", true);
         }
         if !h.pinned.is_empty() && !h.recent.is_empty() {
-            x += "<MenuFlyoutSeparator/>";
+            rows.push(Row::Sep);
         }
         for r in &h.recent {
-            item(&mut x, r.clone(), SavedAct::Use(r.clone()), "&#xE81C;", true);
+            item(&mut rows, r.clone(), SavedAct::Use(r.clone()), "&#xE81C;", true);
         }
         if h.pinned.is_empty() && h.recent.is_empty() {
             let none = if keep_on { "No saved or recent searches yet" } else { "No saved searches" };
-            item(&mut x, none.into(), SavedAct::Nothing, "", false);
+            item(&mut rows, none.into(), SavedAct::Nothing, "", false);
         }
-        x += "<MenuFlyoutSeparator/>";
+        rows.push(Row::Sep);
         if pinned {
-            item(&mut x, "Unpin this search".into(), SavedAct::Unpin(q.clone()), "&#xE77A;", true);
+            item(&mut rows, "Unpin this search".into(), SavedAct::Unpin(q.clone()), "&#xE77A;", true);
         } else {
-            item(&mut x, "Pin this search".into(), SavedAct::Pin(q.clone()), "&#xE718;", !q.is_empty());
+            item(&mut rows, "Pin this search".into(), SavedAct::Pin(q.clone()), "&#xE718;", !q.is_empty());
         }
-        item(&mut x, "Clear recent searches".into(), SavedAct::Clear, "&#xE74D;", !h.recent.is_empty());
+        item(&mut rows, "Clear recent searches".into(), SavedAct::Clear, "&#xE74D;", !h.recent.is_empty());
         let i = items.len();
-        x += &format!(
-            r##"<ToggleMenuFlyoutItem x:Name="SxSv{i}" Text="Keep a history of searches" IsChecked="{}"/>"##,
-            if keep_on { "True" } else { "False" }
-        );
+        rows.push(Row::Toggle { name: format!("SxSv{i}"), text: "Keep a history of searches".into(), checked: keep_on, key: String::new(), mods: String::new(), tip: String::new() });
         items.push((String::new(), SavedAct::Keep));
-        x += "</MenuFlyout></Button.Flyout></Button>";
+        let x = format!(
+            r##"<Button {} x:Name="SxSaved" Height="32" Padding="10,3" ToolTipService.ToolTip="Saved and recent searches"><FontIcon Glyph="&#xE81C;" FontSize="{{$fs14}}"/><Button.Flyout>{}</Button.Flyout></Button>"##,
+            ui::NS,
+            crate::menu::xaml("SxSavedFly", "SxSaved", "BottomEdgeAlignedRight", &rows)
+        );
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
         let Ok(fe) = content.cast::<FrameworkElement>() else { return };
+        if let Err(e) = crate::menu::bind(&fe, "SxSavedFly", crate::menu::How::Button) {
+            eprintln!("saved searches: {e:?}");
+        }
         for (i, (_, act)) in items.into_iter().enumerate() {
-            if let Ok(m) = find::<MenuFlyoutItem>(&fe, &format!("SxSv{i}")) {
+            // the history's check, however it is flipped (a click, Enter, Space, a screen
+            // reader's Toggle), sets keeping to match it: once, and not when it is so already
+            if matches!(act, SavedAct::Keep) {
+                let _ = crate::menu::on_mark(&fe, &format!("SxSv{i}"), |on| {
+                    with(|s| {
+                        if s.search_keeps_history() != on {
+                            s.search_saved_pick(SavedAct::Keep);
+                        }
+                    });
+                });
+                continue;
+            }
+            if let Ok(m) = find::<ButtonBase>(&fe, &format!("SxSv{i}")) {
                 if let Ok(t) = m.Click(move |_, _| {
                     let act = act.clone();
                     with(|s| s.search_saved_pick(act));
@@ -399,7 +413,7 @@ impl State {
         eprintln!("saved searches: {:?}", self.search.history);
         let Ok(host) = find::<Border>(&self.root, "SearchSaved") else { return };
         let Some(fe) = host.Child().ok().and_then(|c| c.cast::<FrameworkElement>().ok()) else { return };
-        if let (Ok(m), Ok(b)) = (find::<MenuFlyout>(&fe, "SxSavedFly"), find::<FrameworkElement>(&fe, "SxSaved")) {
+        if let (Ok(m), Ok(b)) = (find::<FlyoutBase>(&fe, "SxSavedFly"), find::<FrameworkElement>(&fe, "SxSaved")) {
             let _ = m.ShowAt(&b);
         }
     }

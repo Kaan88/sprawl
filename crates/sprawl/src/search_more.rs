@@ -25,6 +25,7 @@ use crate::bindings::Microsoft::UI::Xaml::Controls::Border;
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ButtonBase;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibility};
 use crate::format::{fmt_time, thousands};
+use crate::menu::{Item, Row};
 use crate::state::{find, keep, load, with, State, View};
 use crate::ui;
 
@@ -790,8 +791,9 @@ impl State {
         }
     }
 
-    /// Right-click on a row from another drive: what can be done with it.
-    pub(crate) fn more_menu(&mut self, k: usize, id: usize, at: crate::bindings::Windows::Foundation::Point) {
+    /// Right-click on a row from another drive (or the menu key on it: `by_key`): what can be
+    /// done with it.
+    pub(crate) fn more_menu(&mut self, k: usize, id: usize, at: crate::bindings::Windows::Foundation::Point, by_key: bool) {
         if self.search.more.item(k, id).is_none() {
             return;
         }
@@ -805,16 +807,11 @@ impl State {
             let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
             let _ = i.SetIsEnabled(self.advisor.cleanup.running.is_none() && admin_ok);
         }
-        let shown = || -> windows_core::Result<()> {
-            use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{FlyoutBase, FlyoutShowOptions};
-            let menu: FlyoutBase = find(&self.root, "MoreMenu")?;
-            let target: crate::bindings::Microsoft::UI::Xaml::DependencyObject = find(&self.root, "TreeScroll")?;
-            let opts = FlyoutShowOptions::new()?;
-            opts.SetPosition(Some(at))?;
-            menu.ShowAtWithOptions(&target, &opts)
-        };
-        if let Err(e) = shown() {
-            eprintln!("search menu: {e:?}");
+        if let Ok(target) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "TreeScroll") {
+            if !by_key {
+                let _ = target.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Pointer);
+            }
+            crate::menu::show_at("MoreMenu", &target, at, by_key);
         }
     }
 
@@ -1018,39 +1015,51 @@ impl State {
             (false, false) => on.join(", "),
             (false, true) => "nothing yet".to_string(),
         };
-        let mut items = String::new();
+        // drawn and run as every menu (menu.rs); a drive's check is its click's to flip
+        let mut rows = Vec::new();
         if self.tree.is_some() {
-            items += r##"<MenuFlyoutItem Text="This scan: always searched" IsEnabled="False"/><MenuFlyoutSeparator/>"##;
+            rows.push(Row::Item(Item::new("", "This scan: always searched").off(true)));
+            rows.push(Row::Sep);
         }
         for d in &offer {
             let letter = d.chars().next().unwrap_or('C');
-            items += &format!(
-                r##"<ToggleMenuFlyoutItem x:Name="SxD{letter}" IsChecked="{on}" Text="Also drive {letter}:" ToolTipService.ToolTip="Search {root} too: it is read now and kept in memory until Sprawl closes (remembered for next time). Choose again to leave it out."/>"##,
-                on = if m.drives_on.contains(d) { "True" } else { "False" },
-                root = ui::esc(d),
-            );
+            rows.push(Row::Toggle {
+                name: format!("SxD{letter}"),
+                text: format!("Also drive {letter}:"),
+                checked: m.drives_on.contains(d),
+                key: String::new(),
+                mods: String::new(),
+                tip: format!("Search {} too: it is read now and kept in memory until Sprawl closes (remembered for next time). Choose again to leave it out.", ui::esc(d)),
+            });
         }
         if offer.is_empty() {
-            items += r##"<MenuFlyoutItem Text="No other fixed drive to add" IsEnabled="False"/>"##;
+            rows.push(Row::Item(Item::new("", "No other fixed drive to add").off(true)));
         }
         let x = format!(
-            r##"<DropDownButton {} FontSize="{{$fs12}}" Padding="10,3,6,3" ToolTipService.ToolTip="Where Search looks: this scan, and the other drives you switch on"><TextBlock Text="Search in: {}" FontSize="{{$fs12}}"/><DropDownButton.Flyout><MenuFlyout Placement="Bottom">{items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>"##,
+            r##"<DropDownButton {} x:Name="SxDrives" FontSize="{{$fs12}}" Padding="10,3,6,3" ToolTipService.ToolTip="Where Search looks: this scan, and the other drives you switch on"><TextBlock Text="Search in: {}" FontSize="{{$fs12}}"/><DropDownButton.Flyout>{}</DropDownButton.Flyout></DropDownButton>"##,
             ui::NS,
-            ui::esc(&label)
+            ui::esc(&label),
+            crate::menu::xaml("SxDrivesFly", "SxDrives", "Bottom", &rows)
         );
         let Ok(content) = load::<UIElement>(&x) else { return };
         let _ = host.SetChild(&content);
         self.search.more.toggles_shape = shape;
         let Ok(fe) = content.cast::<FrameworkElement>() else { return };
+        if let Err(e) = crate::menu::bind(&fe, "SxDrivesFly", crate::menu::How::Button) {
+            eprintln!("search in: {e:?}");
+        }
+        // a drive's check, however it is flipped (a click, Enter, Space, a screen reader's
+        // Toggle), switches the drive to match it: once, and not at all when it is so already
         for d in &offer {
             let letter = d.chars().next().unwrap_or('C');
-            if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>(&fe, &format!("SxD{letter}")) {
-                if let Ok(t) = b.Click(move |_, _| {
-                    with(|s| s.more_drive(letter));
-                }) {
-                    keep(t);
-                }
-            }
+            let root = d.clone();
+            let _ = crate::menu::on_mark(&fe, &format!("SxD{letter}"), move |on| {
+                with(|s| {
+                    if s.search.more.drives_on.contains(&root) != on {
+                        s.more_drive(letter);
+                    }
+                });
+            });
         }
     }
 }

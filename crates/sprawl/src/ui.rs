@@ -1,6 +1,6 @@
 //! XAML markup for the window and the table rows (loaded with XamlReader at run time).
 
-use crate::menubar::Row;
+use crate::menu::{Item, Row};
 
 pub const NS: &str = r##"xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml""##;
 
@@ -715,13 +715,13 @@ pub(crate) fn shortcuts() -> Vec<(String, String)> {
 /// A menu-bar row that runs a command (menubar.rs draws it as WinUI draws a menu item).
 fn item(name: &str, text: &str, key: &str, mods: &str) -> Row {
     note_shortcut(text, key, mods);
-    Row::Item { name: name.into(), text: text.into(), key: key.into(), mods: mods.into() }
+    Row::Item(Item::new(name, text).keys(key, mods))
 }
 
 /// A row with a check mark.
 fn toggle(name: &str, text: &str, checked: bool, key: &str, mods: &str) -> Row {
     note_shortcut(text, key, mods);
-    Row::Toggle { name: name.into(), text: text.into(), checked, key: key.into(), mods: mods.into() }
+    Row::Toggle { name: name.into(), text: text.into(), checked, key: key.into(), mods: mods.into(), tip: String::new() }
 }
 
 fn radio(name: &str, text: &str, checked: bool) -> Row {
@@ -913,30 +913,64 @@ pub fn page(drives: &[String]) -> String {
     let menu_bar = crate::menubar::xaml([file_menu, options_menu, help_menu]);
     let hud = hud();
     let welcome = crate::welcome::xaml();
-    let item = |k: crate::views::Kind| {
+    // the map bar's dropdowns and the right-click menus: drawn as the menu bar's are (menu.rs)
+    let view = |k: crate::views::Kind| {
         let (_, cmd, name, _) = crate::views::ALL.iter().find(|a| a.0 == k).copied().unwrap();
-        format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}: {}" ToolTipService.ToolTip="{}"/>"##, crate::ui::esc(k.short()), crate::ui::esc(k.hint()))
+        Row::Item(Item::new(cmd, &format!("{name}: {}", crate::ui::esc(k.short()))).tip(&crate::ui::esc(k.hint())))
     };
-    let mut view_items = String::new();
+    let mut view_rows = Vec::new();
     for (g, (group, kinds)) in crate::views::GROUPS.iter().enumerate() {
         if g + 1 == crate::views::GROUPS.len() {
-            view_items += &format!(r##"<MenuFlyoutSeparator/><MenuFlyoutSubItem Text="{group}">{}</MenuFlyoutSubItem>"##, kinds.iter().map(|&k| item(k)).collect::<String>());
+            view_rows.push(SEP);
+            view_rows.push(sub(group, kinds.iter().map(|&k| view(k)).collect()));
         } else {
             if g > 0 {
-                view_items += "<MenuFlyoutSeparator/>";
+                view_rows.push(SEP);
             }
-            view_items += &format!(r##"<MenuFlyoutItem Text="{group}" IsEnabled="False" FontSize="{{$fs12}}"/>"##);
-            view_items += &kinds.iter().map(|&k| item(k)).collect::<String>();
+            // the group's name: a row that is off, in smaller type
+            view_rows.push(Row::Item(Item::new("", group).off(true).size(&crate::tokens::get("fs12"))));
+            view_rows.extend(kinds.iter().map(|&k| view(k)));
         }
     }
-    let paint_items: String = crate::views::PAINTS.iter().map(|(_, cmd, name)| format!(r##"<MenuFlyoutItem x:Name="{cmd}" Text="{name}"/>"##)).collect();
+    let view_menu = crate::menu::xaml("ViewMoreFly", "ViewMore", "Bottom", &view_rows);
+    let paint_rows: Vec<Row> = crate::views::PAINTS.iter().map(|(_, cmd, name)| Row::Item(Item::new(cmd, name))).collect();
+    let paint_menu = crate::menu::xaml("ViewPaintFly", "ViewPaint", "Bottom", &paint_rows);
     let tree_hint = crate::welcome::tree_hint();
     // Explorer's own menu (as administrator only when allowed in Settings > Scanning: crate::admin)
     let shell = |name: &str| {
         let tip = if sprawl_core::is_elevated() { "Explorer's own right-click menu (or Shift+right-click). As administrator it is off unless you allow it in Settings > Scanning." } else { "Explorer's own right-click menu (or Shift+right-click). What it does is not checked by Sprawl." };
-        format!(r##"<MenuFlyoutItem x:Name="{name}" Text="Windows menu..." ToolTipService.ToolTip="{tip}"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE7C4;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>"##)
+        Row::Item(Item::new(name, "Windows menu...").icon("&#xE7C4;").tip(tip))
     };
-    let (shell_item, shell_more) = (shell("cShell"), shell("sxShell"));
+    let icon = |name: &str, text: &str, glyph: &str| Row::Item(Item::new(name, text).icon(glyph));
+    // a row's menu (the tree's, the files', the treemap's); "Show in the Tree" is shown in Search only
+    let row_menu = crate::menu::xaml(
+        "RowMenu",
+        "",
+        "BottomEdgeAlignedLeft",
+        &[
+            icon("cOpen", "Open", "&#xE8E5;"),
+            Row::Item(Item::new("cInTree", "Show in the Tree (Ctrl+Enter)").icon("&#xE8A9;").hidden()),
+            icon("cExplore", "Show in Explorer", "&#xEC50;"),
+            icon("cCmd", "Command Prompt Here", "&#xE756;"),
+            icon("cCopyPath", "Copy Path", "&#xE8C8;"),
+            SEP,
+            icon("cMapHere", "Show on Treemap", "&#xE80A;"),
+            icon("cExpandAll", "Expand All", "&#xE8A9;"),
+            icon("cCopyInfo", "Copy Name and Size", "&#xE16F;"),
+            SEP,
+            icon("cDelete", "Delete (to Recycle Bin)", "&#xE74D;"),
+            Row::Item(Item::new("cDeleteForever", "Delete Permanently").icon("&#xE74D;").icon_fg(&crate::tokens::refer("fail"))),
+            SEP,
+            shell("cShell"),
+        ],
+    );
+    // a search result's from another drive
+    let more_menu = crate::menu::xaml(
+        "MoreMenu",
+        "",
+        "BottomEdgeAlignedLeft",
+        &[icon("sxExplore", "Show in Explorer", "&#xEC50;"), icon("sxCopy", "Copy Path", "&#xE8C8;"), icon("sxScan", "Scan This Folder", "&#xE721;"), SEP, shell("sxShell")],
+    );
     let types_hint = crate::welcome::types_hint();
     let wizard = crate::wizard::xaml();
     let hist = crate::history::xaml();
@@ -1085,15 +1119,7 @@ pub fn page(drives: &[String]) -> String {
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Border x:Name="SearchMore" Grid.Row="3" Visibility="Collapsed" BorderBrush="{{$line2}}" BorderThickness="0,1,0,0">
-          <FlyoutBase.AttachedFlyout>
-            <MenuFlyout x:Name="MoreMenu">
-              <MenuFlyoutItem x:Name="sxExplore" Text="Show in Explorer"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEC50;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="sxCopy" Text="Copy Path"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8C8;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="sxScan" Text="Scan This Folder"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE721;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutSeparator/>
-              {shell_more}
-            </MenuFlyout>
-          </FlyoutBase.AttachedFlyout>
+          <FlyoutBase.AttachedFlyout>{more_menu}</FlyoutBase.AttachedFlyout>
         </Border>
         <Grid x:Name="SearchBar" Visibility="Collapsed" Margin="8,8,8,6" ColumnSpacing="8" RowSpacing="6">
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -1115,24 +1141,7 @@ pub fn page(drives: &[String]) -> String {
         <Border x:Name="SearchSuggest" Grid.RowSpan="3" Canvas.ZIndex="20" Visibility="Collapsed" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,42,0,0" MinWidth="320" MaxWidth="640" Padding="4" CornerRadius="{{$rc6}}" Background="{{$panel}}" BorderBrush="{{$edge}}" BorderThickness="1"/>
         <Border x:Name="TreeHeader" Grid.Row="1"/>
         <ScrollViewer x:Name="TreeScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled" IsTabStop="True" UseSystemFocusVisuals="False">
-          <FlyoutBase.AttachedFlyout>
-            <MenuFlyout x:Name="RowMenu">
-              <MenuFlyoutItem x:Name="cOpen" Text="Open"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8E5;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cInTree" Text="Show in the Tree (Ctrl+Enter)" Visibility="Collapsed"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A9;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cExplore" Text="Show in Explorer"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEC50;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cCmd" Text="Command Prompt Here"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE756;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cCopyPath" Text="Copy Path"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8C8;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutSeparator/>
-              <MenuFlyoutItem x:Name="cMapHere" Text="Show on Treemap"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE80A;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cExpandAll" Text="Expand All"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A9;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cCopyInfo" Text="Copy Name and Size"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE16F;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutSeparator/>
-              <MenuFlyoutItem x:Name="cDelete" Text="Delete (to Recycle Bin)"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutItem x:Name="cDeleteForever" Text="Delete Permanently"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74D;" Foreground="{{$fail}}"/></MenuFlyoutItem.Icon></MenuFlyoutItem>
-              <MenuFlyoutSeparator/>
-              {shell_item}
-            </MenuFlyout>
-          </FlyoutBase.AttachedFlyout>
+          <FlyoutBase.AttachedFlyout>{row_menu}</FlyoutBase.AttachedFlyout>
         </ScrollViewer>
         {tree_hint}
         <Grid x:Name="AdvisorPanel" Grid.RowSpan="4" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer x:Name="AdvScroll" HorizontalScrollBarVisibility="Disabled"><Border x:Name="AdvHost"/></ScrollViewer><Border x:Name="ClHost" Visibility="Collapsed"/><Border x:Name="AdvFoot" Grid.Row="1"/></Grid>
@@ -1170,10 +1179,10 @@ pub fn page(drives: &[String]) -> String {
       <Button x:Name="ModeCity" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="City skyline: footprint is size, height is item count, windows show how recently it changed. Drag to turn."><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE80F;" FontSize="{{$fs12}}"/><TextBlock Text="City" FontSize="{{$fs12}}"/></StackPanel></Button>
       <Button x:Name="ModeGalaxy" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Galaxy: folders are star systems, planets are their biggest files"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE7FC;" FontSize="{{$fs12}}"/><TextBlock Text="Galaxy" FontSize="{{$fs12}}"/></StackPanel></Button>
       <DropDownButton x:Name="ViewMore" {drop_off} Padding="10,3,4,3" CornerRadius="{{$rc4}}" ToolTipService.ToolTip="More ways to see the scan"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8A9;" FontSize="{{$fs12}}"/><TextBlock x:Name="ViewMoreText" Text="More views" FontSize="{{$fs12}}"/></StackPanel>
-        <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{view_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
+        <DropDownButton.Flyout>{view_menu}</DropDownButton.Flyout></DropDownButton>
       <Button x:Name="ViewOnly" Visibility="Collapsed" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="{{$fs12}}"/></Button>
       <DropDownButton x:Name="ViewPaint" {drop_off} Padding="10,3,4,3" CornerRadius="{{$rc4}}" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="{{$fs12}}"/>
-        <DropDownButton.Flyout><MenuFlyout Placement="Bottom">{paint_items}</MenuFlyout></DropDownButton.Flyout></DropDownButton>
+        <DropDownButton.Flyout>{paint_menu}</DropDownButton.Flyout></DropDownButton>
       <Button x:Name="MapTweaks" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Colours and Tweaks: the treemap's palette, tile lift, shading and tilt (Ctrl+T)"><Button.KeyboardAccelerators><KeyboardAccelerator Key="T" Modifiers="Control"/></Button.KeyboardAccelerators><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE790;" FontSize="{{$fs12}}"/><TextBlock Text="Tweaks" FontSize="{{$fs12}}"/></StackPanel></Button>
     </StackPanel>
     <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="{{$fs12}}"/><TextBlock Text="History" FontSize="{{$fs12}}"/></StackPanel></Button>

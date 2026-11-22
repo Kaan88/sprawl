@@ -6011,6 +6011,40 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn ContextRequested<F>(
+                    &self,
+                    handler: F,
+                ) -> windows_core::Result<windows_core::EventRevoker>
+                where
+                    F: Fn(
+                            windows_core::Ref<UIElement>,
+                            windows_core::Ref<Input::ContextRequestedEventArgs>,
+                        ) + Send
+                        + 'static,
+                {
+                    let this = &windows_core::Interface::cast::<IUIElement>(self)?;
+                    let handler = <super::super::super::Windows::Foundation::TypedEventHandler<
+                        UIElement,
+                        Input::ContextRequestedEventArgs,
+                    >>::new(move |a0, a1| {
+                        handler(a0, a1);
+                        Ok(())
+                    });
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                            windows_core::Interface::as_raw(this),
+                            windows_core::Interface::as_raw(&handler),
+                            &mut result__,
+                        )
+                        .map(|| result__)?;
+                        Ok(windows_core::EventRevoker::new(
+                            this.clone(),
+                            token__,
+                            windows_core::Interface::vtable(this).RemoveContextRequested,
+                        ))
+                    }
+                }
                 pub fn RightTapped<F>(
                     &self,
                     handler: F,
@@ -6880,8 +6914,14 @@ pub mod Microsoft {
                     unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
                 Holding: usize,
                 RemoveHolding: usize,
-                ContextRequested: usize,
-                RemoveContextRequested: usize,
+                pub ContextRequested: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut core::ffi::c_void,
+                    *mut i64,
+                )
+                    -> windows_core::HRESULT,
+                pub RemoveContextRequested:
+                    unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
                 ContextCanceled: usize,
                 RemoveContextCanceled: usize,
                 pub RightTapped: unsafe extern "system" fn(
@@ -8025,6 +8065,39 @@ pub mod Microsoft {
                             self.clone(),
                             token__,
                             windows_core::Interface::vtable(self).RemoveDoubleTapped,
+                        ))
+                    }
+                }
+                pub fn ContextRequested<F>(
+                    &self,
+                    handler: F,
+                ) -> windows_core::Result<windows_core::EventRevoker>
+                where
+                    F: Fn(
+                            windows_core::Ref<Self>,
+                            windows_core::Ref<Input::ContextRequestedEventArgs>,
+                        ) + Send
+                        + 'static,
+                {
+                    let handler = <super::super::super::Windows::Foundation::TypedEventHandler<
+                        Self,
+                        Input::ContextRequestedEventArgs,
+                    >>::new(move |a0, a1| {
+                        handler(a0, a1);
+                        Ok(())
+                    });
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        let token__ = (windows_core::Interface::vtable(self).ContextRequested)(
+                            windows_core::Interface::as_raw(self),
+                            windows_core::Interface::as_raw(&handler),
+                            &mut result__,
+                        )
+                        .map(|| result__)?;
+                        Ok(windows_core::EventRevoker::new(
+                            self.clone(),
+                            token__,
+                            windows_core::Interface::vtable(self).RemoveContextRequested,
                         ))
                     }
                 }
@@ -9732,6 +9805,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -10838,6 +10946,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -11764,6 +11907,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -12912,6 +13090,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -13940,6 +14153,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -14931,6 +15179,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -16041,6 +16324,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -17354,6 +17672,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -18269,6 +18622,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -19169,6 +19557,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -21378,6 +21801,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -22278,6 +22736,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -23283,6 +23776,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -24574,6 +25102,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -25578,6 +26141,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -26609,6 +27207,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -27633,6 +28266,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -28529,6 +29197,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -29594,6 +30297,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -30693,6 +31431,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -31914,6 +32687,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -33051,6 +33859,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -33975,6 +34818,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -35061,6 +35939,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -36250,6 +37163,41 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
+                            ))
+                        }
+                    }
                     pub fn RightTapped<F>(
                         &self,
                         handler: F,
@@ -37318,6 +38266,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }
@@ -38865,6 +39848,38 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                                ))
+                            }
+                        }
+                        pub fn ContextRequested<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<super::super::UIElement>,
+                                    windows_core::Ref<
+                                        super::super::Input::ContextRequestedEventArgs,
+                                    >,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::TypedEventHandler < super::super::UIElement , super::super::Input::ContextRequestedEventArgs > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .ContextRequested)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveContextRequested,
                                 ))
                             }
                         }
@@ -40802,6 +41817,38 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn ContextRequested<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<super::super::UIElement>,
+                                    windows_core::Ref<
+                                        super::super::Input::ContextRequestedEventArgs,
+                                    >,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::TypedEventHandler < super::super::UIElement , super::super::Input::ContextRequestedEventArgs > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .ContextRequested)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveContextRequested,
+                                ))
+                            }
+                        }
                         pub fn RightTapped<F>(
                             &self,
                             handler: F,
@@ -41973,6 +43020,38 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                                ))
+                            }
+                        }
+                        pub fn ContextRequested<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<super::super::UIElement>,
+                                    windows_core::Ref<
+                                        super::super::Input::ContextRequestedEventArgs,
+                                    >,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::TypedEventHandler < super::super::UIElement , super::super::Input::ContextRequestedEventArgs > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .ContextRequested)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveContextRequested,
                                 ))
                             }
                         }
@@ -43282,6 +44361,38 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn ContextRequested<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<super::super::UIElement>,
+                                    windows_core::Ref<
+                                        super::super::Input::ContextRequestedEventArgs,
+                                    >,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::TypedEventHandler < super::super::UIElement , super::super::Input::ContextRequestedEventArgs > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .ContextRequested)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveContextRequested,
+                                ))
+                            }
+                        }
                         pub fn RightTapped<F>(
                             &self,
                             handler: F,
@@ -44551,6 +45662,38 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn ContextRequested<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<super::super::UIElement>,
+                                    windows_core::Ref<
+                                        super::super::Input::ContextRequestedEventArgs,
+                                    >,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::TypedEventHandler < super::super::UIElement , super::super::Input::ContextRequestedEventArgs > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(this)
+                                    .ContextRequested)(
+                                    windows_core::Interface::as_raw(this),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveContextRequested,
+                                ))
+                            }
+                        }
                         pub fn RightTapped<F>(
                             &self,
                             handler: F,
@@ -44886,6 +46029,88 @@ pub mod Microsoft {
                 }
             }
             pub mod Input {
+                #[repr(transparent)]
+                #[derive(Clone, Debug, Eq, PartialEq)]
+                pub struct ContextRequestedEventArgs(windows_core::IUnknown);
+                windows_core::imp::interface_hierarchy!(
+                    ContextRequestedEventArgs,
+                    windows_core::IUnknown,
+                    windows_core::IInspectable
+                );
+                windows_core::imp::required_hierarchy!(
+                    ContextRequestedEventArgs,
+                    super::RoutedEventArgs
+                );
+                impl ContextRequestedEventArgs {
+                    pub fn new() -> windows_core::Result<Self> {
+                        Self::IActivationFactory(|f| f.ActivateInstance::<Self>())
+                    }
+                    fn IActivationFactory<
+                        R,
+                        F: FnOnce(&windows_core::imp::IGenericFactory) -> windows_core::Result<R>,
+                    >(
+                        callback: F,
+                    ) -> windows_core::Result<R> {
+                        static SHARED: windows_core::imp::FactoryCache<
+                            ContextRequestedEventArgs,
+                            windows_core::imp::IGenericFactory,
+                        > = windows_core::imp::FactoryCache::new();
+                        SHARED.call(callback)
+                    }
+                    pub fn Handled(&self) -> windows_core::Result<bool> {
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(self).Handled)(
+                                windows_core::Interface::as_raw(self),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
+                    pub fn SetHandled(&self, value: bool) -> windows_core::Result<()> {
+                        unsafe {
+                            (windows_core::Interface::vtable(self).SetHandled)(
+                                windows_core::Interface::as_raw(self),
+                                value,
+                            )
+                            .ok()
+                        }
+                    }
+                    pub fn TryGetPosition<P0>(
+                        &self,
+                        relativeto: P0,
+                        point: &mut super::super::super::super::Windows::Foundation::Point,
+                    ) -> windows_core::Result<bool>
+                    where
+                        P0: windows_core::Param<super::UIElement>,
+                    {
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(self).TryGetPosition)(
+                                windows_core::Interface::as_raw(self),
+                                relativeto.param().abi(),
+                                point,
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
+                }
+                impl windows_core::RuntimeType for ContextRequestedEventArgs {
+                    const SIGNATURE: windows_core::imp::ConstBuffer =
+                        windows_core::imp::ConstBuffer::for_class::<Self, IContextRequestedEventArgs>(
+                        );
+                }
+                unsafe impl windows_core::Interface for ContextRequestedEventArgs {
+                    type Vtable = <IContextRequestedEventArgs as windows_core::Interface>::Vtable;
+                    const IID: windows_core::GUID =
+                        <IContextRequestedEventArgs as windows_core::Interface>::IID;
+                }
+                impl windows_core::RuntimeName for ContextRequestedEventArgs {
+                    const NAME: &'static str = "Microsoft.UI.Xaml.Input.ContextRequestedEventArgs";
+                }
+                unsafe impl Send for ContextRequestedEventArgs {}
+                unsafe impl Sync for ContextRequestedEventArgs {}
                 windows_core::imp::define_interface!(
                     DoubleTappedEventHandler,
                     DoubleTappedEventHandler_Vtbl,
@@ -45106,6 +46331,40 @@ pub mod Microsoft {
                 }
                 unsafe impl Send for FocusManager {}
                 unsafe impl Sync for FocusManager {}
+                windows_core::imp::define_interface!(
+                    IContextRequestedEventArgs,
+                    IContextRequestedEventArgs_Vtbl,
+                    0xbcedcb98_77b5_53c0_802e_fd52f3806e51
+                );
+                impl windows_core::RuntimeType for IContextRequestedEventArgs {
+                    const SIGNATURE: windows_core::imp::ConstBuffer =
+                        windows_core::imp::ConstBuffer::for_interface::<Self>();
+                    const NAME: windows_core::imp::ConstBuffer =
+                        windows_core::imp::ConstBuffer::from_slice(
+                            b"Microsoft.UI.Xaml.Input.IContextRequestedEventArgs",
+                        );
+                }
+                #[repr(C)]
+                pub struct IContextRequestedEventArgs_Vtbl {
+                    pub base__: windows_core::IInspectable_Vtbl,
+                    pub Handled: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut bool,
+                    )
+                        -> windows_core::HRESULT,
+                    pub SetHandled: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        bool,
+                    )
+                        -> windows_core::HRESULT,
+                    pub TryGetPosition: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut core::ffi::c_void,
+                        *mut super::super::super::super::Windows::Foundation::Point,
+                        *mut bool,
+                    )
+                        -> windows_core::HRESULT,
+                }
                 windows_core::imp::define_interface!(
                     IDoubleTappedRoutedEventArgs,
                     IDoubleTappedRoutedEventArgs_Vtbl,
@@ -48275,6 +49534,41 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveDoubleTapped,
+                            ))
+                        }
+                    }
+                    pub fn ContextRequested<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<super::UIElement>,
+                                windows_core::Ref<super::Input::ContextRequestedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        let handler =
+                            <super::super::super::super::Windows::Foundation::TypedEventHandler<
+                                super::UIElement,
+                                super::Input::ContextRequestedEventArgs,
+                            >>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).ContextRequested)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveContextRequested,
                             ))
                         }
                     }

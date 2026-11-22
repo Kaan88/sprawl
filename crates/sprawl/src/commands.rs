@@ -155,6 +155,8 @@ impl State {
         if self.dialogs.open() {
             return;
         }
+        // dev: each command once in the timing log, for the screenshot runs that drive the menus
+        crate::state::timing(&format!("command {name}"), std::time::Instant::now());
         let has_tree = self.tree.is_some();
         match name {
             // while scanning the button is Stop

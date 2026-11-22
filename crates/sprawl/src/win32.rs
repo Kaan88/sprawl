@@ -586,6 +586,8 @@ fn vk_of(name: &str) -> Option<u16> {
         "space" => 0x20,
         "tab" => 0x09,
         "home" => 0x24,
+        // the menu key (a context menu for the keyboard)
+        "apps" => 0x5D,
         "end" => 0x23,
         f if f.len() > 1 && f.starts_with('f') && f[1..].parse::<u16>().is_ok_and(|n| (1..=12).contains(&n)) => 0x6F + f[1..].parse::<u16>().unwrap_or(1),
         k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => u16::from(k.as_bytes()[0].to_ascii_uppercase()),
