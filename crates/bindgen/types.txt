@@ -228,3 +228,24 @@ Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::GetElementVisual
 Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::SetIsTranslationEnabled
 Microsoft.UI.Composition.Visual::Scale
 Microsoft.UI.Composition.Visual::Opacity
+# --- the menu bar: File, Options, Help as buttons with menus (menubar.rs) ---
+Microsoft.UI.Xaml.Controls.DropDownButton
+Microsoft.UI.Xaml.Controls.Button::Flyout
+Microsoft.UI.Xaml.Controls.MenuFlyout::Items
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::Opened
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::Closed
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::IsOpen
+Microsoft.UI.Xaml.Controls.Primitives.ButtonBase::IsPointerOver
+Microsoft.UI.Xaml.Controls.Primitives.ButtonBase::IsPressed
+Microsoft.UI.Xaml.VisualStateManager::GoToState
+Microsoft.UI.Xaml.Media.VisualTreeHelper::GetParent
+Microsoft.UI.Xaml.UIElement::TransformToVisual
+Microsoft.UI.Xaml.Media.GeneralTransform::TransformPoint
+Microsoft.UI.Xaml.Input.FocusManager::GetFocusedElementWithRoot
+Microsoft.UI.Xaml.XamlRoot::RasterizationScale
+Microsoft.UI.Xaml.FrameworkElement::Name
+Microsoft.UI.Xaml.UIElement::PreviewKeyUp
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::Placement
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions::ExclusionRect
+Microsoft.UI.Xaml.Controls.MenuFlyoutSubItem
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::Opening

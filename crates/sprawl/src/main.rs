@@ -33,6 +33,7 @@ mod treemap;
 mod ui;
 mod look;
 mod popups;
+mod menubar;
 mod reconcile;
 mod restyle;
 mod theme;
@@ -288,6 +289,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     keep(CompositionTarget::Rendering(|_, _| {
         // a menu that has just opened plays its opening before it is drawn (popups.rs)
         crate::popups::watch();
+        // the menu bar's titles, and the pointer moving from one to another (menubar.rs)
+        crate::menubar::tick();
         with(|s| s.frame());
     })?);
 
@@ -394,6 +397,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 /// Everything the page's controls do, wired to the state by name. Run on the page made at start
 /// and again on the one a theme change makes (`crate::restyle`); returns the map's panel.
 pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPanel> {
+    // the menu bar: File, Options and Help, and what WinUI's MenuBar did on its own
+    crate::menubar::bind(root)?;
     // Menu items and buttons all route to State::command by name.
     for &name in COMMANDS {
         if let Ok(item) = find::<MenuFlyoutItem>(root, name) {

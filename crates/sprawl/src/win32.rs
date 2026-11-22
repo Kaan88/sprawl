@@ -50,6 +50,40 @@ extern "system" {
     fn EnumWindows(f: unsafe extern "system" fn(HWND, isize) -> i32, l: isize) -> i32;
     fn IsWindowVisible(h: HWND) -> i32;
     fn GetWindowThreadProcessId(h: HWND, pid: *mut u32) -> u32;
+    fn PostMessageW(h: HWND, msg: u32, w: usize, l: isize) -> i32;
+    fn EnumChildWindows(parent: HWND, f: unsafe extern "system" fn(HWND, isize) -> i32, l: isize) -> i32;
+    fn GetClassNameW(h: HWND, name: *mut u16, len: i32) -> i32;
+    fn GetKeyboardState(state: *mut u8) -> i32;
+    fn SetKeyboardState(state: *const u8) -> i32;
+    fn MapVirtualKeyW(code: u32, kind: u32) -> u32;
+    fn GetCursorPos(p: *mut POINT) -> i32;
+    fn ScreenToClient(h: HWND, p: *mut POINT) -> i32;
+    fn WindowFromPoint(p: POINT) -> HWND;
+    fn GetAncestor(h: HWND, flags: u32) -> HWND;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct POINT {
+    x: i32,
+    y: i32,
+}
+
+/// Where the pointer is, in the client pixels of window `h`, when it is over that window (not
+/// over another one in front of it).
+pub fn cursor_in(h: HWND) -> Option<(i32, i32)> {
+    unsafe {
+        let mut p = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut p) == 0 {
+            return None;
+        }
+        let under = WindowFromPoint(p);
+        if under == 0 || GetAncestor(under, 2) != h {
+            return None; // GA_ROOT
+        }
+        ScreenToClient(h, &mut p);
+        Some((p.x, p.y))
+    }
 }
 
 #[link(name = "gdi32")]
@@ -446,6 +480,100 @@ unsafe extern "system" fn collect_own(h: HWND, l: isize) -> i32 {
     1
 }
 
+/// dev (screenshot runs): EnumChildWindows callback gathering every child window.
+unsafe extern "system" fn collect_children(h: HWND, l: isize) -> i32 {
+    (*(l as *mut Vec<HWND>)).push(h);
+    1
+}
+
+/// dev (screenshot runs): the window class of `h`.
+fn class_of(h: HWND) -> String {
+    let mut buf = [0u16; 128];
+    let n = unsafe { GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32) };
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// dev (screenshot runs): the window WinUI reads the keyboard from: the content's input site
+/// (a child of the window), or the window itself when there is none.
+fn key_target(h: HWND) -> HWND {
+    let mut kids: Vec<HWND> = Vec::new();
+    unsafe { EnumChildWindows(h, collect_children, &mut kids as *mut Vec<HWND> as isize) };
+    let classes: Vec<String> = kids.iter().map(|&k| class_of(k)).collect();
+    crate::state::timing(&format!("child windows: {classes:?}"), std::time::Instant::now());
+    kids.iter().zip(&classes).find(|(_, c)| c.contains("InputSite")).or_else(|| kids.iter().zip(&classes).last()).map_or(h, |(&k, _)| k)
+}
+
+/// dev (screenshot runs): key presses posted to this window's own input, in this process only
+/// (nothing reaches the rest of the desktop, and the window is not brought forward). Each
+/// press is `alt`, `right`, `f`, ... or `alt+f` (Alt held round the key); the keyboard state of
+/// this thread says Alt is down for an Alt press, until [`keys_release`].
+pub fn post_keys(h: HWND, presses: &[&str]) {
+    const VK_MENU: u16 = 0x12;
+    let target = key_target(h);
+    let post = |msg: u32, vk: u16, up: bool, alt: bool| {
+        let scan = unsafe { MapVirtualKeyW(u32::from(vk), 0) } as isize;
+        let mut l: isize = 1 | (scan << 16);
+        if alt {
+            l |= 1 << 29;
+        }
+        if up {
+            l |= (1 << 30) | (1 << 31);
+        }
+        unsafe { PostMessageW(target, msg, usize::from(vk), l) };
+    };
+    for press in presses {
+        let (alt, key) = match press.strip_prefix("alt+") {
+            Some(k) => (true, k),
+            None => (false, *press),
+        };
+        let Some(vk) = vk_of(key) else { continue };
+        if vk == VK_MENU {
+            alt_state(true);
+            post(0x104, VK_MENU, false, true); // WM_SYSKEYDOWN
+            post(0x105, VK_MENU, true, false); // WM_SYSKEYUP
+        } else if alt {
+            alt_state(true);
+            post(0x104, VK_MENU, false, true);
+            post(0x104, vk, false, true);
+            post(0x105, vk, true, true);
+            post(0x105, VK_MENU, true, false);
+        } else {
+            post(0x100, vk, false, false); // WM_KEYDOWN
+            post(0x101, vk, true, false); // WM_KEYUP
+        }
+    }
+}
+
+/// dev (screenshot runs): this thread's keyboard state with Alt down (or up again).
+pub fn alt_state(down: bool) {
+    let mut s = [0u8; 256];
+    unsafe {
+        GetKeyboardState(s.as_mut_ptr());
+        for k in [0x12usize, 0xA4] {
+            s[k] = if down { 0x80 } else { 0 };
+        }
+        SetKeyboardState(s.as_ptr());
+    }
+}
+
+/// dev: a key's virtual key code by a short name.
+fn vk_of(name: &str) -> Option<u16> {
+    Some(match name {
+        "alt" => 0x12,
+        "left" => 0x25,
+        "up" => 0x26,
+        "right" => 0x27,
+        "down" => 0x28,
+        "enter" => 0x0D,
+        "esc" => 0x1B,
+        "space" => 0x20,
+        "tab" => 0x09,
+        "f10" => 0x79,
+        k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphanumeric() => u16::from(k.as_bytes()[0].to_ascii_uppercase()),
+        _ => return None,
+    })
+}
+
 /// dev (screenshot runs): open the dropdown whose AutomationId (its x:Name) is `id`, through
 /// UI Automation, as a screen reader would; the popup is part of the picture then.
 pub fn expand_dropdown(h: HWND, id: &str) -> bool {
@@ -484,6 +612,51 @@ fn expand_by_here(h: HWND, key: &str, by_id: bool) -> bool {
         }
     };
     run().is_ok()
+}
+
+/// dev (screenshot runs): the menu bar as UI Automation (a screen reader) sees it, in the timing
+/// log: each menu bar and menu item, its name, AutomationId, access key, parent, and whether it
+/// expands and collapses (and is expanded now).
+pub fn uia_report(h: HWND) {
+    std::thread::spawn(move || {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+        }
+        if let Err(e) = uia_report_here(h) {
+            crate::state::timing(&format!("uia: {e:?}"), std::time::Instant::now());
+        }
+    });
+}
+
+fn uia_report_here(h: HWND) -> windows::core::Result<()> {
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationExpandCollapsePattern, UIA_ExpandCollapsePatternId, UIA_InvokePatternId};
+    unsafe {
+        let ua: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+        let root = ua.ElementFromHandle(windows::Win32::Foundation::HWND(h as *mut _))?;
+        let walker = ua.ControlViewWalker()?;
+        fn walk(ua: &IUIAutomation, walker: &windows::Win32::UI::Accessibility::IUIAutomationTreeWalker, e: &IUIAutomationElement, depth: u32, parent: &str) -> windows::core::Result<()> {
+            if depth > 16 {
+                return Ok(());
+            }
+            let mut c = unsafe { walker.GetFirstChildElement(e) }.ok();
+            while let Some(el) = c {
+                let (ct, name, id, ak) = unsafe { (el.CurrentControlType()?.0, el.CurrentName()?.to_string(), el.CurrentAutomationId()?.to_string(), el.CurrentAccessKey()?.to_string()) };
+                // 50010 menu bar, 50011 menu item, 50009 menu
+                if matches!(ct, 50009 | 50010 | 50011) || id.starts_with("Menu") {
+                    let expand: Option<IUIAutomationExpandCollapsePattern> = unsafe { el.GetCurrentPattern(UIA_ExpandCollapsePatternId) }.ok().and_then(|p| windows::core::Interface::cast(&p).ok());
+                    let state = expand.as_ref().and_then(|p| unsafe { p.CurrentExpandCollapseState() }.ok()).map(|s| s.0);
+                    let invoke = unsafe { el.GetCurrentPattern(UIA_InvokePatternId) }.is_ok();
+                    crate::state::timing(&format!("uia: {}type {ct} name {name:?} id {id:?} accesskey {ak:?} parent {parent:?} expandcollapse {state:?} invoke {invoke}", "  ".repeat(depth as usize)), std::time::Instant::now());
+                }
+                let label = format!("{ct}:{name}");
+                walk(ua, walker, &el, depth + 1, &label)?;
+                c = unsafe { walker.GetNextSiblingElement(&el) }.ok();
+            }
+            Ok(())
+        }
+        walk(&ua, &walker, &root, 0, "window")
+    }
 }
 
 /// Give the window the app's icon (resource 1, embedded by build.rs) for the title bar,

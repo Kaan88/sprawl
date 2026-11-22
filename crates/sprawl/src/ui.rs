@@ -908,6 +908,8 @@ pub fn page(drives: &[String]) -> String {
         item("mAbout", "About Sprawl", "", ""),
     ]
     .concat();
+    // File, Options and Help: titles with menus, drawn as WinUI's MenuBar (menubar.rs)
+    let menu_bar = crate::menubar::xaml([&file_menu, &options_menu, &help_menu]);
     let hud = hud();
     let welcome = crate::welcome::xaml();
     let item = |k: crate::views::Kind| {
@@ -999,11 +1001,7 @@ pub fn page(drives: &[String]) -> String {
     </StackPanel>
   </Grid>
 
-  <MenuBar Grid.Row="1" Margin="6,0,0,0">
-    <MenuBarItem Title="File">{file_menu}</MenuBarItem>
-    <MenuBarItem Title="Options">{options_menu}</MenuBarItem>
-    <MenuBarItem Title="Help">{help_menu}</MenuBarItem>
-  </MenuBar>
+  {menu_bar}
 
   <Grid x:Name="Header" Grid.Row="2" Margin="12,4,12,8" ColumnSpacing="10">
     <Grid.ColumnDefinitions>
