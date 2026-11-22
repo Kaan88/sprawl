@@ -93,9 +93,9 @@ impl State {
         };
         let xaml = format!(
             r##"<Grid {ns} Background="{{$scrim}}"><Border HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="380" MaxWidth="{max_w}" Margin="24" Padding="22,18" CornerRadius="{{$rc10}}" Background="{{$popup}}" BorderBrush="{edge}" BorderThickness="1">
-<StackPanel Spacing="14"><TextBlock Text="{title}" FontSize="{{$fs17}}" FontWeight="SemiBold" TextWrapping="Wrap"/>
-<ScrollViewer MaxHeight="{max_h}" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
-<StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">{buttons}</StackPanel></StackPanel></Border></Grid>"##,
+<Grid RowSpacing="14"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="{title}" FontSize="{{$fs17}}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+<ScrollViewer Grid.Row="1" MaxHeight="{max_h}" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="2">{body}</StackPanel></ScrollViewer>
+<StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">{buttons}</StackPanel></Grid></Border></Grid>"##,
             ns = ui::NS,
             edge = if p.danger { crate::tokens::refer("dangerline") } else { crate::tokens::refer("accentline") },
             title = ui::esc(&p.title),

@@ -337,6 +337,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         own_deletes: Vec::new(),
         shell_rescans: None,
         win_h: 0.0,
+        win_w: 0.0,
         pulses_on: true,
         map_root: ROOT,
         map: treemap::MapView::new(panel),

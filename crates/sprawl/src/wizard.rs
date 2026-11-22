@@ -151,6 +151,15 @@ pub fn xaml() -> String {
     )
 }
 
+/// The card's size: 940x680 for Settings and 640x610 for the wizard, but never more than the
+/// window less a margin each side (0 = the window isn't laid out yet: the usual size).
+pub(crate) fn card_size(settings: bool, win_w: f64, win_h: f64) -> (f64, f64) {
+    const MARGIN: f64 = 24.0;
+    let (w, h) = if settings { (940.0, 680.0) } else { (640.0, 610.0) };
+    let cap = |want: f64, win: f64| if win > 0.0 { want.min((win - 2.0 * MARGIN).max(240.0)) } else { want };
+    (cap(w, win_w), cap(h, win_h))
+}
+
 fn shown(s: &State, name: &str, on: bool) {
     if let Ok(e) = find::<UIElement>(&s.root, name) {
         let _ = e.SetVisibility(if on { Visibility::Visible } else { Visibility::Collapsed });
@@ -378,14 +387,20 @@ impl State {
         }
     }
 
+    /// Size the card: its usual size when the window has room, else the window less a margin.
+    pub(crate) fn wizard_fit(&self) {
+        let (w, h) = card_size(self.wizard_all, self.win_w, self.win_h);
+        if let Ok(c) = find::<FrameworkElement>(&self.root, "WizCard") {
+            let _ = c.SetWidth(w);
+            let _ = c.SetHeight(h);
+        }
+    }
+
     /// Show the page or section the overlay is on.
     pub(crate) fn wizard_show(&mut self) {
         let settings = self.wizard_all;
         shown(self, "PfNav", settings);
-        if let Ok(c) = find::<FrameworkElement>(&self.root, "WizCard") {
-            let _ = c.SetWidth(if settings { 940.0 } else { 640.0 });
-            let _ = c.SetHeight(if settings { 680.0 } else { 610.0 });
-        }
+        self.wizard_fit();
         if settings {
             text(&self.root, "WizStep", "Settings");
             text(&self.root, "WizDots", "Changes apply when you press Save; the buttons in a section act at once.");
@@ -983,5 +998,21 @@ impl State {
             (Some(i), Some(list)) => usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).unwrap_or(typed),
             _ => typed,
         }
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::card_size;
+
+    #[test]
+    fn the_card_keeps_its_size_with_room_and_shrinks_without() {
+        assert_eq!(card_size(true, 1680.0, 1080.0), (940.0, 680.0));
+        assert_eq!(card_size(false, 1680.0, 1080.0), (640.0, 610.0));
+        assert_eq!(card_size(true, 0.0, 0.0), (940.0, 680.0));
+        assert_eq!(card_size(true, 1000.0, 560.0), (940.0, 512.0));
+        assert_eq!(card_size(true, 760.0, 520.0), (712.0, 472.0));
+        assert_eq!(card_size(false, 500.0, 300.0), (452.0, 252.0));
+        assert_eq!(card_size(true, 100.0, 100.0), (240.0, 240.0));
     }
 }

@@ -1632,8 +1632,13 @@ impl State {
     /// The window's size changed.
     pub(crate) fn fit_size(&mut self, w: f64, h: f64) {
         self.fit_width(w);
+        if (w - self.win_w).abs() >= 1.0 {
+            self.win_w = w;
+            self.wizard_fit();
+        }
         if (h - self.win_h).abs() >= 1.0 {
             self.win_h = h;
+            self.wizard_fit();
             self.map_room();
         }
     }
