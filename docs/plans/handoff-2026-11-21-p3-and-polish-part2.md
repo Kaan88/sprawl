@@ -269,3 +269,33 @@ Decisions I made (reasons):
 
 Not verified: hover and press feel (needs your clicks). Test exe: target\alt\release\sprawl.exe.
 Next, unchanged: the rest of the audit list in plan-polish.md, tier 3, Part 5, 1.0.6.
+
+## Update 8 (2026-11-22, audit list)
+
+Merged on main (local, not pushed): Press-in crash fix; sliding tab line (tabline.rs) on main
+and Theme tabs; drawn tick and switch knob; focus rings on ComboBox/PasswordBox/TextBox; menu
+open motion for app MenuFlyouts and the ComboBox list; mockup shadow on dropdowns, flyouts and
+dialogs; Settings card and dialogs cap to the window (a3c5cf8); smallest window 1000 x 600 at
+every scale (eac6fc1); rebuilt menu bar (e8d76fa).
+
+Menu bar (menubar.rs): File, Options, Help are title buttons with plain Flyouts holding our own
+rows (copies of WinUI's item, check, radio, sub-item templates), so they fade in with the menu
+shadow. Keyboard, access keys, accelerators, hover switching, sub-menu delay, UIA roles and focus
+return are reimplemented. A Fable review found 7 defects (Settings read the old rows, UIA toggle
+ran no command, Alt latch, clipped hit-testing, nested pass-through, rest timer, Right on a dot);
+all fixed. Decisions: F10 stays Zoom in Treemap (Alt alone focuses the bar); rows' parent is a
+Pane in UIA; sub-menus with shortcuts are ~19 px wider than WinUI's.
+
+Known, not fixed: Settings takes no focus when it opens (focus stays on the tree behind it,
+also via Ctrl+Shift+S). Screenshot runs exit with 0xC000041D after writing the image; 1.0.5
+does the same, so not a regression. Dropdown lists keep Windows' placement over the field.
+
+Needs hands: hover/press feel for all press styles; tab-line slide and rapid switching; tick and
+knob motion; focus rings; menus by real mouse (title hover switch, sub-menu delay, click outside,
+click on a parent row with a sub-menu open, first click with two sub-menu levels open, narrow
+padding), Alt tap and Alt+F/O/H, Alt+Tab away and back, Narrator on rows, a non-100% DPI, a short
+window where File scrolls; animations off; dropdown black box; Theme sub-tab slide; Search
+delete; theme Cancel/Save; Mica/Acrylic over a light desktop.
+
+Open choice for the user: convert the right-click menus the same way.
+Next: tier 3 (text size, density, custom accent), Part 5, 1.0.6.
