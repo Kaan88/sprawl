@@ -292,3 +292,22 @@ Microsoft.UI.Xaml.Controls.Primitives.ToggleButton::Unchecked
 Microsoft.UI.Xaml.UIElement::ContextRequested
 Microsoft.UI.Xaml.Input.ContextRequestedEventArgs::TryGetPosition
 Microsoft.UI.Xaml.Input.ContextRequestedEventArgs::Handled
+# --- shade.rs: antialiased shadow corners (a mask brush over the shadow, drawn offscreen) ---
+Microsoft.UI.Composition.Compositor::CreateContainerVisual
+Microsoft.UI.Composition.ContainerVisual::Children
+Microsoft.UI.Composition.VisualCollection::InsertAtTop
+Microsoft.UI.Composition.Compositor::CreateMaskBrush
+Microsoft.UI.Composition.CompositionMaskBrush::Source
+Microsoft.UI.Composition.CompositionMaskBrush::Mask
+Microsoft.UI.Composition.CompositionVisualSurface::SourceOffset
+Microsoft.UI.Composition.SpriteVisual::Brush
+Microsoft.UI.Composition.CompositionBrush
+Microsoft.UI.Composition.Compositor::CreateRadialGradientBrush
+Microsoft.UI.Composition.Compositor::CreateColorGradientStopWithOffsetAndColor
+Microsoft.UI.Composition.CompositionRadialGradientBrush::EllipseCenter
+Microsoft.UI.Composition.CompositionRadialGradientBrush::EllipseRadius
+Microsoft.UI.Composition.CompositionGradientBrush::ColorStops
+Microsoft.UI.Composition.CompositionGradientBrush::MappingMode
+Microsoft.UI.Composition.CompositionColorGradientStopCollection::Append
+Microsoft.UI.Composition.CompositionColorGradientStopCollection::Clear
+Microsoft.UI.Composition.CompositionMappingMode

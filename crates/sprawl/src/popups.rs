@@ -255,9 +255,34 @@ thread_local! {
 /// (File, Options, Help: [`crate::menubar`]) among them. The dropdown of a combo box is not
 /// done here: its template has the states for it ([`reveal`]).
 pub(crate) fn watch() {
+    if !old() {
+        crate::menu::dress_new();
+    }
     if let Some(Ok(root)) = crate::state::with(|s| s.root.cast::<UIElement>()) {
         let _ = watch_in(&root);
     }
+}
+
+/// Called last in each frame, after the work that may open a menu ([`crate::menu::tick`], the
+/// frame's own): the menus that work opened are dressed for this opening, start their opening
+/// and get their shadow before the frame is laid out and drawn, as one opened between frames
+/// does: their first frame is invisible, at their own place and size. (dev: `SPRAWL_MENU_OLD=1`
+/// leaves them to the next frame, as before, for the frame-by-frame pictures.)
+pub(crate) fn settle() {
+    if old() {
+        return;
+    }
+    crate::menu::dress_new();
+    if let Some(Ok(root)) = crate::state::with(|s| s.root.cast::<UIElement>()) {
+        let _ = watch_in(&root);
+        crate::shade::popups(&root);
+    }
+}
+
+/// dev: `SPRAWL_MENU_OLD=1`, the menus opened as before [`settle`] (the frame-by-frame pictures).
+fn old() -> bool {
+    thread_local! { static OLD: bool = std::env::var_os("SPRAWL_MENU_OLD").is_some(); }
+    OLD.with(|o| *o)
 }
 
 fn watch_in(root: &UIElement) -> windows_core::Result<()> {
@@ -273,6 +298,30 @@ fn watch_in(root: &UIElement) -> windows_core::Result<()> {
     }
     OPEN.with(|o| *o.borrow_mut() = now);
     Ok(())
+}
+
+/// dev: the open popups as they stand (SPRAWL_SHOT_SEQ's log): each one's content, its size and
+/// place, its visual's opacity, and whether a shadow hangs on it.
+pub(crate) fn dev_report(root: &UIElement) -> String {
+    let Ok(popups) = root.XamlRoot().and_then(|x| VisualTreeHelper::GetOpenPopupsForXamlRoot(&x)) else { return String::new() };
+    let mut out = String::new();
+    for i in 0..popups.Size().unwrap_or(0) {
+        let Ok(p) = popups.GetAt(i) else { continue };
+        let Ok(child) = p.Child() else { continue };
+        let Ok(fe) = child.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>() else { continue };
+        let at = fe.ActualOffset().map(|o| (o.x, o.y)).unwrap_or_default();
+        let opacity = ElementCompositionPreview::GetElementVisual(&child).and_then(|v| v.Opacity()).unwrap_or(-1.0);
+        let shadow = ElementCompositionPreview::GetElementChildVisual(&child).is_ok();
+        out += &format!(
+            "[popup {i} content at {:.1},{:.1} size {:.1}x{:.1} opacity {opacity} shadow {shadow} new {}] ",
+            at.0,
+            at.1,
+            fe.ActualWidth().unwrap_or(0.0),
+            fe.ActualHeight().unwrap_or(0.0),
+            !OPEN.with(|o| o.borrow().contains(&(p.as_raw() as usize))),
+        );
+    }
+    if out.is_empty() { "no popup".into() } else { out }
 }
 
 fn open_menu(popup: &Popup) -> windows_core::Result<()> {

@@ -667,6 +667,8 @@ struct Menu {
     /// For a sub-menu: the menu the pointer goes through to (the one it opened from, or one
     /// further up while the pointer is over that).
     through: Option<usize>,
+    /// Its rows are in the states this opening gives them ([`dress`]).
+    dressed: bool,
 }
 
 struct Menus {
@@ -943,7 +945,7 @@ pub(crate) fn bind(scope: &FrameworkElement, set: &str, how: How) -> windows_cor
             r.sub = r.sub.map(|k| base + k);
         }
         let through = shape.parent.map(|p| p.0);
-        made.push(Menu { set: set.to_string(), opener, flyout, owner, list, rows, els, shape, sub_shown: "", through });
+        made.push(Menu { set: set.to_string(), opener, flyout, owner, list, rows, els, shape, sub_shown: "", through, dressed: false });
     }
     st(|b| {
         for (i, menu) in made.into_iter().enumerate() {
@@ -1135,6 +1137,8 @@ fn opening(m: usize) {
     // Alt+F's Alt, let go after the menu opened, is not Alt alone
     crate::menubar::alt_reset();
     let Some(Some(reject)) = st(|b| {
+        // its rows are dressed again for this opening (the padding goes by how it opened)
+        b.get_mut(m)?.dressed = false;
         let menu = b.get(m)?;
         let (opener, owner, flyout) = (menu.opener, menu.owner.clone(), menu.flyout.clone());
         let key = b.key_recent();
@@ -1312,7 +1316,30 @@ fn dress(m: usize) {
             let _ = k.SetMinWidth(w);
         }
     }
+    st(|b| {
+        if let Some(x) = b.get_mut(m) {
+            x.dressed = true;
+        }
+    });
     dev(&format!("menu {m} dressed ({}, {room})", if narrow { "narrow" } else { "wide" }));
+}
+
+/// Called last in each frame ([`crate::popups::settle`]): a menu opened since, not yet dressed
+/// (its panel's `Loaded` comes after its first frame is drawn, when it is opened during a frame:
+/// one of the bar's opened again where it belongs, a sub-menu), is dressed now, so that frame
+/// lays it out at its own size, with its padding and its shortcut column.
+pub(crate) fn dress_new() {
+    let Some(new) = st(|b| {
+        let placing = b.placing;
+        (0..b.menus.len()).filter(|&m| b.get(m).is_some_and(|x| !x.dressed && (placing == Some(m) || x.flyout.IsOpen().unwrap_or(false)))).filter_map(|m| Some((m, b.get(m)?.list.clone()))).collect::<Vec<_>>()
+    }) else {
+        return;
+    };
+    for (m, list) in new {
+        // its rows' templates, for their states
+        let _ = list.UpdateLayout();
+        dress(m);
+    }
 }
 
 /// The element named `name` in `el`'s template.

@@ -11,10 +11,13 @@
 //!   blur, offset, opacity);
 //! - the shadow's mask: a `ShapeVisual` filling the host's rounded rectangle, drawn into a
 //!   `CompositionVisualSurface`, so the shadow follows the corners;
-//! - a clip on the sprite to everything OUTSIDE the host's rounded rectangle: a CSS box-shadow
+//! - a clip on the sprite to everything OUTSIDE the host's square rectangle: a CSS box-shadow
 //!   is never drawn under its own box, so a see-through row or button shows what is behind it,
-//!   not its shadow. The clip is a Direct2D path (a large rectangle with the rounded rectangle
-//!   cut out of it) that Composition reads through `IGeometrySource2DInterop`.
+//!   not its shadow. The clip is a Direct2D path (a large rectangle with the host's cut out of
+//!   it) that Composition reads through `IGeometrySource2DInterop`;
+//! - the rounded corners, outside the arc and inside the square, drawn antialiased by
+//!   [`Corners`]: the shadow there through a gradient mask that follows the arc. (Clipped by the
+//!   path, the arcs drew a stepped dark ring where the glow meets the main button.)
 //!
 //! (A `LayerVisual` casting the shadow from its content looked simpler, but Composition drew
 //! its shadow and content cut off by rectangles round the cards.)
@@ -40,7 +43,7 @@ use windows_core::{implement, interface, Interface, HRESULT, HSTRING};
 use windows_reference::IReference;
 
 use crate::bindings::Microsoft::UI::Composition::{
-    CompositionPath, CompositionPathGeometry, CompositionRoundedRectangleGeometry, CompositionVisualSurface, Compositor, DropShadow, ICompositionSurface, ShapeVisual, SpriteVisual,
+    CompositionMappingMode, CompositionPath, CompositionPathGeometry, CompositionRadialGradientBrush, CompositionRoundedRectangleGeometry, CompositionVisualSurface, Compositor, ContainerVisual, DropShadow, ICompositionSurface, ShapeVisual, SpriteVisual,
 };
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, FlyoutBase, Popup};
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Button, ComboBox, ContentControl, Control, Flyout, FlyoutPresenter, MenuFlyoutPresenter, Panel, ToggleSwitch};
@@ -197,13 +200,20 @@ impl Tones {
 /// One shadow, hung on its host.
 struct Shade {
     kind: Kind,
+    /// The host's child visual: the shadow and its four corners.
+    root: ContainerVisual,
     clip: CompositionPathGeometry,
     sprite: SpriteVisual,
     shape: ShapeVisual,
     surface: CompositionVisualSurface,
     geometry: CompositionRoundedRectangleGeometry,
-    shadow: DropShadow,
+    /// The shadow on the page, and its twin under the copy the corners are drawn from: the same
+    /// values, always set together.
+    shadow: [DropShadow; 2],
+    corners: Corners,
     radius: f32,
+    /// The host's size, for a new display scale.
+    size: Mutex<(f32, f32)>,
     /// Colours of its own (the Theme page's sample); `None` follows the look in use, read again
     /// by [`repaint`].
     tones: Option<Tones>,
@@ -259,6 +269,165 @@ pub(crate) fn repaint() {
     }
 }
 
+/// The four rounded corners of a shadow's host. The page's shadow is clipped to outside the
+/// host's square rectangle, whose straight edges lie on the host's own, on whole pixels. A clip
+/// can't follow an arc as the face's own antialiased edge needs ([`arc_stops`]: clipped along the
+/// arc, the corner drew a stepped dark ring). What a rounded corner leaves outside the rounded rectangle, inside the square, is drawn here: a copy
+/// of the shadow, drawn offscreen into a surface at the display's scale (a pixel of the surface to
+/// a pixel of the screen), shown through a mask that is a radial gradient about the corner's
+/// centre: clear inside the corner's arc, opaque outside it, with a soft step just inside the arc
+/// ([`arc_stops`]). A gradient is drawn at the screen's own pixels, so the edge is as fine at
+/// 150 % as at 100 %. (A shape drawn into a surface is not antialiased.)
+struct Corners {
+    /// The copy: a sprite casting the twin shadow, in a container at the display's scale.
+    copy: SpriteVisual,
+    lens: ContainerVisual,
+    /// Each corner: what shows it, the copy's part there, and its mask.
+    each: Vec<(SpriteVisual, CompositionVisualSurface, CompositionRadialGradientBrush)>,
+}
+
+impl Corners {
+    fn new(c: &Compositor, root: &ContainerVisual, shadow: &DropShadow) -> windows_core::Result<Corners> {
+        // the surfaces draw this tree, which is on no page
+        let copy = c.CreateSpriteVisual()?;
+        copy.SetShadow(shadow)?;
+        let lens = c.CreateContainerVisual()?;
+        lens.Children()?.InsertAtTop(&copy)?;
+        let copy_root = c.CreateContainerVisual()?;
+        copy_root.Children()?.InsertAtTop(&lens)?;
+        let mut each = Vec::with_capacity(4);
+        for _ in 0..4 {
+            let part = c.CreateVisualSurface()?;
+            part.SetSourceVisual(&copy_root)?;
+            let mask = c.CreateRadialGradientBrush()?;
+            mask.SetMappingMode(CompositionMappingMode::Absolute)?;
+            let brush = c.CreateMaskBrush()?;
+            brush.SetSource(&c.CreateSurfaceBrushWithSurface(&part.cast::<ICompositionSurface>()?)?)?;
+            brush.SetMask(&mask)?;
+            let sprite = c.CreateSpriteVisual()?;
+            sprite.SetBrush(&brush)?;
+            root.Children()?.InsertAtTop(&sprite)?;
+            each.push((sprite, part, mask));
+        }
+        Ok(Corners { copy, lens, each })
+    }
+
+    /// The host is `w` by `h` with corners of radius `r`, on a display at scale `k`.
+    fn resize(&self, w: f32, h: f32, r: f32, k: f32) -> windows_core::Result<()> {
+        self.copy.SetSize(Vector2 { x: w, y: h })?;
+        self.lens.SetScale(Vector3 { x: k, y: k, z: 1.0 })?;
+        let r = if r > 0.0 && mode() == Mode::Corners { r } else { 0.0 };
+        // each corner's square, and its arc's centre inside it
+        let squares = [((0.0, 0.0), (r, r)), ((w - r, 0.0), (0.0, r)), ((w - r, h - r), (0.0, 0.0)), ((0.0, h - r), (r, 0.0))];
+        for ((sprite, part, mask), ((x, y), centre)) in self.each.iter().zip(squares) {
+            sprite.SetOffset(Vector3 { x, y, z: 0.0 })?;
+            sprite.SetSize(Vector2 { x: r, y: r })?;
+            part.SetSourceOffset(Vector2 { x: x * k, y: y * k })?;
+            part.SetSourceSize(Vector2 { x: r * k, y: r * k })?;
+            if r > 0.0 {
+                arc_mask(mask, centre, r, k)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Where a corner's mask steps from clear to opaque, as fractions of the gradient's radius (`r`,
+/// the arc's). The host's own face is antialiased along the arc: a pixel there is part face, part
+/// what lies behind. Were the shadow taken away behind it too (as the clip does, and a mask
+/// centred on the arc would half do), that pixel would show the face over the bare page, darker
+/// than the shadow beside it and the face inside it: a dark ring of stairs round the corner,
+/// worst under the main button's glow. So, as along the straight edges, where no pixel is part
+/// face, the shadow is taken away only behind pixels the face covers whole: the step lies half a
+/// screen pixel (`0.5 / k` view pixels) inside the arc, half a screen pixel wide.
+fn arc_stops(r: f32, k: f32) -> (f32, f32, f32) {
+    let px = 1.0 / k.max(1.0);
+    (((r - px * 0.75) / r).max(0.0), ((r - px * 0.25) / r).max(0.0), r)
+}
+
+fn arc_mask(mask: &CompositionRadialGradientBrush, centre: (f32, f32), r: f32, k: f32) -> windows_core::Result<()> {
+    let c = mask.Compositor()?;
+    let (clear, opaque, reach) = arc_stops(r, k);
+    mask.SetEllipseCenter(Vector2 { x: centre.0, y: centre.1 })?;
+    mask.SetEllipseRadius(Vector2 { x: reach, y: reach })?;
+    let stops = mask.ColorStops()?;
+    stops.Clear()?;
+    stops.Append(&c.CreateColorGradientStopWithOffsetAndColor(clear, Color { A: 0, R: 0, G: 0, B: 0 })?)?;
+    stops.Append(&c.CreateColorGradientStopWithOffsetAndColor(opaque, Color { A: 255, R: 0, G: 0, B: 0 })?)
+}
+
+/// dev: how a shadow is cut round its host (`SPRAWL_SHADE`, for screenshot runs that compare
+/// them): `old`, the rounded rectangle clipped away (aliased); `noclip`, nothing clipped away.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Mode {
+    Corners,
+    Old,
+    NoClip,
+}
+
+fn mode() -> Mode {
+    thread_local! {
+        static MODE: Mode = match std::env::var("SPRAWL_SHADE").as_deref() {
+            Ok("old") => Mode::Old,
+            Ok("noclip") => Mode::NoClip,
+            _ => Mode::Corners,
+        };
+    }
+    MODE.with(|m| *m)
+}
+
+thread_local! {
+    /// The display's scale (XamlRoot.RasterizationScale), 0 before the first frame.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// dev: `SPRAWL_SCALE=1.5` draws the page magnified, as a display at that scale would, and the
+/// shadows' corners for that scale (a screenshot run on a 100 % display).
+fn scale_override() -> Option<f32> {
+    thread_local! {
+        static OVER: Option<f32> = std::env::var("SPRAWL_SCALE").ok().and_then(|v| v.parse::<f32>().ok()).filter(|k| *k >= 1.0);
+    }
+    OVER.with(|o| *o)
+}
+
+fn scale_of(el: &UIElement) -> f32 {
+    if let Some(k) = scale_override() {
+        return k;
+    }
+    let known = SCALE.with(|s| s.get());
+    if known > 0.0 {
+        return known;
+    }
+    el.XamlRoot().and_then(|x| x.RasterizationScale()).map(|k| k as f32).unwrap_or(1.0)
+}
+
+/// Called each frame: on a new display scale (another monitor, another setting), every shadow's
+/// corners are drawn again for it.
+pub(crate) fn track_scale(root: &UIElement) {
+    let k = match scale_override() {
+        Some(k) => {
+            thread_local! { static MAGNIFIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+            if !MAGNIFIED.with(|m| m.replace(true)) {
+                let _ = ElementCompositionPreview::GetElementVisual(root).and_then(|v| v.SetScale(Vector3 { x: k, y: k, z: 1.0 }));
+            }
+            k
+        }
+        None => match root.XamlRoot().and_then(|x| x.RasterizationScale()) {
+            Ok(k) if k > 0.0 => k as f32,
+            _ => return,
+        },
+    };
+    if SCALE.with(|s| s.replace(k)) == k {
+        return;
+    }
+    for s in LIVE.with(|l| l.borrow_mut().alive()) {
+        let (w, h) = s.size.lock().map(|s| *s).unwrap_or((0.0, 0.0));
+        if w > 0.0 && h > 0.0 {
+            let _ = s.resize_at(w, h, k);
+        }
+    }
+}
+
 impl Shade {
     fn new(host: &UIElement, kind: Kind, radius: f32, tones: Option<Tones>) -> windows_core::Result<Arc<Shade>> {
         let c: Compositor = CompositionTarget::GetCompositorForCurrentThread()?;
@@ -271,17 +440,45 @@ impl Shade {
         shape.Shapes()?.Append(&fill)?;
         let surface = c.CreateVisualSurface()?;
         surface.SetSourceVisual(&shape)?;
-        let shadow = c.CreateDropShadow()?;
-        shadow.SetColor(tint)?;
         // cast by the mask's alpha (the rounded rectangle), not by the sprite's square bounds
-        shadow.SetMask(&c.CreateSurfaceBrushWithSurface(&surface.cast::<ICompositionSurface>()?)?)?;
+        let cast_by = c.CreateSurfaceBrushWithSurface(&surface.cast::<ICompositionSurface>()?)?;
+        let twin = || -> windows_core::Result<DropShadow> {
+            let shadow = c.CreateDropShadow()?;
+            shadow.SetColor(tint)?;
+            shadow.SetMask(&cast_by)?;
+            Ok(shadow)
+        };
+        let shadow = [twin()?, twin()?];
         // the sprite has no brush of its own: only its shadow is drawn
         let sprite = c.CreateSpriteVisual()?;
-        sprite.SetShadow(&shadow)?;
+        sprite.SetShadow(&shadow[0])?;
         let clip = c.CreatePathGeometryWithPath(&hole(0.0, 0.0, 0.0, kind.reach())?)?;
-        sprite.SetClip(&c.CreateGeometricClipWithGeometry(&clip)?)?;
-        ElementCompositionPreview::SetElementChildVisual(host, &sprite)?;
-        let shade = Arc::new(Shade { kind, clip, sprite, shape, surface, geometry, shadow, radius, tones, strength: AtomicU32::new(strength.to_bits()), cast: Mutex::new(Cast::NONE) });
+        if mode() != Mode::NoClip {
+            sprite.SetClip(&c.CreateGeometricClipWithGeometry(&clip)?)?;
+        }
+        let root = c.CreateContainerVisual()?;
+        root.Children()?.InsertAtTop(&sprite)?;
+        let corners = Corners::new(&c, &root, &shadow[1])?;
+        ElementCompositionPreview::SetElementChildVisual(host, &root)?;
+        let shade = Arc::new(Shade {
+            kind,
+            root,
+            clip,
+            sprite,
+            shape,
+            surface,
+            geometry,
+            shadow,
+            corners,
+            radius,
+            size: Mutex::new((0.0, 0.0)),
+            tones,
+            strength: AtomicU32::new(strength.to_bits()),
+            cast: Mutex::new(Cast::NONE),
+        });
+        if SCALE.with(|s| s.get()) == 0.0 {
+            SCALE.with(|s| s.set(scale_of(host)));
+        }
         LIVE.with(|l| l.borrow_mut().add(&shade));
         Ok(shade)
     }
@@ -290,16 +487,25 @@ impl Shade {
     /// change and the shadow in place is shown again in them, at once.
     fn repaint(&self, now: Tones) -> windows_core::Result<()> {
         let (tint, strength) = self.tones.unwrap_or(now).paint(self.kind);
-        self.shadow.SetColor(tint)?;
+        for s in &self.shadow {
+            s.SetColor(tint)?;
+        }
         self.strength.store(strength.to_bits(), Ordering::Relaxed);
         let cast = self.cast.lock().map(|c| *c).unwrap_or(Cast::NONE);
         self.show(cast, 0)
     }
 
-    /// The host is `w` by `h` now: the sprite, the mask and its surface take that size, and
-    /// the clip reaches as far round them as the shadow can, less the host's own rounded
-    /// rectangle.
+    /// The host is `w` by `h` now: the sprite, the mask and its surface take that size, the clip
+    /// reaches as far round them as the shadow can, less the host's square, and the corners
+    /// take the rest of what lies outside its rounded rectangle.
     fn resize(&self, w: f32, h: f32) -> windows_core::Result<()> {
+        self.resize_at(w, h, SCALE.with(|s| s.get()).max(1.0))
+    }
+
+    fn resize_at(&self, w: f32, h: f32, k: f32) -> windows_core::Result<()> {
+        if let Ok(mut s) = self.size.lock() {
+            *s = (w, h);
+        }
         let m = self.kind.reach();
         let r = self.radius.min(w / 2.0).min(h / 2.0).max(0.0);
         let size = Vector2 { x: w, y: h };
@@ -308,7 +514,9 @@ impl Shade {
         self.shape.SetSize(size)?;
         self.surface.SetSourceSize(size)?;
         self.sprite.SetSize(size)?;
-        self.clip.SetPath(&hole(w, h, r, m)?)
+        // the old way (dev) clipped the rounded rectangle itself away, aliased at its corners
+        self.clip.SetPath(&hole(w, h, if mode() == Mode::Old { r } else { 0.0 }, m)?)?;
+        self.corners.resize(w, h, r, k)
     }
 
     /// Show `cast`, over `ms` milliseconds on CSS's `ease` (at once for 0).
@@ -320,26 +528,37 @@ impl Shade {
         let (opacity, blur, offset) = (cast.alpha * strength, cast.blur * BLUR, Vector3 { x: 0.0, y: cast.dy, z: 0.0 });
         let (o, b, f) = (HSTRING::from("Opacity"), HSTRING::from("BlurRadius"), HSTRING::from("Offset"));
         if ms == 0 {
-            for p in [&o, &b, &f] {
-                self.shadow.StopAnimation(p)?;
+            for s in &self.shadow {
+                for p in [&o, &b, &f] {
+                    s.StopAnimation(p)?;
+                }
+                s.SetOpacity(opacity)?;
+                s.SetBlurRadius(blur)?;
+                s.SetOffset(offset)?;
             }
-            self.shadow.SetOpacity(opacity)?;
-            self.shadow.SetBlurRadius(blur)?;
-            return self.shadow.SetOffset(offset);
+            return Ok(());
         }
-        let c = self.shadow.Compositor()?;
+        let c = self.shadow[0].Compositor()?;
         let ease = c.CreateCubicBezierEasingFunction(Vector2 { x: 0.25, y: 0.1 }, Vector2 { x: 0.25, y: 1.0 })?;
         let time = windows_time::TimeSpan { duration: i64::from(ms) * 10_000 };
+        // one animation of each, started on both: they run in step
+        let mut scalars = Vec::new();
         for (p, to) in [(&o, opacity), (&b, blur)] {
             let a = c.CreateScalarKeyFrameAnimation()?;
             a.InsertKeyFrameWithEasingFunction(1.0, to, &ease)?;
             a.SetDuration(time)?;
-            self.shadow.StartAnimation(p, &a)?;
+            scalars.push((p, a));
         }
         let a = c.CreateVector3KeyFrameAnimation()?;
         a.InsertKeyFrameWithEasingFunction(1.0, offset, &ease)?;
         a.SetDuration(time)?;
-        self.shadow.StartAnimation(&f, &a)
+        for s in &self.shadow {
+            for (p, anim) in &scalars {
+                s.StartAnimation(p, anim)?;
+            }
+            s.StartAnimation(&f, &a)?;
+        }
+        Ok(())
     }
 }
 
@@ -608,7 +827,7 @@ fn hang_menu(host: &UIElement, body: &UIElement, what: Surface) -> windows_core:
     let shade = Shade::new(host, Kind::Menu, radius, None)?;
     if host != body {
         let o = body.ActualOffset()?;
-        shade.sprite.SetOffset(Vector3 { z: 0.0, ..o })?;
+        shade.root.SetOffset(Vector3 { z: 0.0, ..o })?;
     }
     shade.show(Kind::Menu.rest(), 0)?;
     let (w, h) = (fe.ActualWidth()?, fe.ActualHeight()?);
@@ -896,6 +1115,21 @@ mod tests {
         assert_eq!(live.items.len(), 100);
         drop(kept);
         assert!(live.alive().is_empty());
+    }
+
+    /// A corner's mask steps from clear to opaque across half a screen pixel, half a screen pixel
+    /// inside the arc (behind the face's own antialiased edge the shadow stays), at any scale.
+    #[test]
+    fn a_corners_step_lies_just_inside_its_arc() {
+        for k in [1.0f32, 1.25, 1.5, 2.0] {
+            for r in [2.0f32, 4.0, 7.0, 16.0] {
+                let (clear, opaque, reach) = arc_stops(r, k);
+                assert_eq!(reach, r);
+                assert!(0.0 < clear && clear < opaque && opaque < 1.0, "{r} at {k}");
+                assert!(((opaque - clear) * r * k - 0.5).abs() < 1e-4, "half a pixel wide: {r} at {k}");
+                assert!(((r - (opaque + clear) / 2.0 * r) * k - 0.5).abs() < 1e-4, "half a pixel inside: {r} at {k}");
+            }
+        }
     }
 
     #[test]
