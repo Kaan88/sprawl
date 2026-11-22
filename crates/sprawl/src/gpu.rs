@@ -40,7 +40,20 @@ PSIn vs(VSIn i) {
     o.col = i.col; o.fx = i.fx; o.w = w; o.wh = i.rect.zw; o.ex = i.par;
     return o;
 }
-float4 ps(PSIn i) : SV_Target {
+// Dither: the 8-bit target rounds every colour to 1/255, and the dark, slow gradients here (the
+// glossy floor fading out, the deep-space sky, a cushion's shading) then show as steps. Noise of
+// +-0.5/255 before that rounding (interleaved gradient noise, fixed to the pixel, so it doesn't
+// crawl) turns the steps into a grain too fine to see, and leaves a flat colour as it was. Colour
+// and alpha get different noise: over a light page the floor is mostly alpha, and the same noise
+// on both would cancel there. Premultiplied: the colour stays within its alpha.
+float ign(float2 p) { return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715)))); }
+float4 dither(float4 c, float2 p) {
+    float n = (ign(p) - 0.5) * (0.999 / 255.0);
+    float m = (ign(p + float2(37.0, 17.0)) - 0.5) * (0.999 / 255.0);
+    float a = c.a < 0.999 ? saturate(c.a + m) : c.a;
+    return float4(clamp(c.rgb + n, 0.0, a), a);
+}
+float4 ps_lit(PSIn i) {
     float3 base = i.col.rgb; float kind = i.col.a;
     if (kind > 1.5 && kind < 2.5) {
         // Glossy floor: dark glass that fades out away from the map, with a soft sheen.
@@ -108,6 +121,7 @@ float4 ps(PSIn i) : SV_Target {
     }
     return float4(c, 1.0);
 }
+float4 ps(PSIn i) : SV_Target { return dither(ps_lit(i), i.sv.xy); }
 
 struct SOut { float4 sv : SV_Position; float2 uv : UV; float4 col : COLOR; float4 fx : FX; };
 SOut vs_star(VSIn i) {
@@ -121,7 +135,7 @@ SOut vs_star(VSIn i) {
     o.uv = c; o.col = i.col; o.fx = i.fx;
     return o;
 }
-float4 ps_star(SOut i) : SV_Target {
+float4 ps_star_lit(SOut i) {
     float d2 = dot(i.uv, i.uv);
     float kind = i.fx.y;
     if (kind > 3.5) {
@@ -129,7 +143,8 @@ float4 ps_star(SOut i) : SV_Target {
         float3 sky = lerp(float3(0.035, 0.03, 0.075), float3(0.004, 0.005, 0.012), saturate(sqrt(d2) * 3.0));
         return float4(sky * 0.94, 0.94);
     }
-    if (d2 > 1.0) discard;
+    // outside the disc: nothing (additive, depth off: the same as not drawing it)
+    if (d2 > 1.0) return 0.0.xxxx;
     float glow = i.fx.x;
     float3 col = i.col.rgb;
     float b = i.col.a;
@@ -150,6 +165,7 @@ float4 ps_star(SOut i) : SV_Target {
     float a = saturate(max(c.r, max(c.g, c.b)));
     return float4(c, a);
 }
+float4 ps_star(SOut i) : SV_Target { return dither(ps_star_lit(i), i.sv.xy); }
 // The other views: plain coloured triangles and lines. uRight.w = 1: positions are DIPs of the
 // panel (2D); 0: world positions under the camera (3D, already shaded).
 struct MIn { float3 pos : POSITION; float4 col : COLOR; };
@@ -161,7 +177,7 @@ MOut vs_mesh(MIn i) {
     o.col = i.col;
     return o;
 }
-float4 ps_mesh(MOut i) : SV_Target { return float4(i.col.rgb * i.col.a, i.col.a); }
+float4 ps_mesh(MOut i) : SV_Target { return dither(float4(i.col.rgb * i.col.a, i.col.a), i.sv.xy); }
 "#;
 
 /// One tile: rectangle and parent rectangle in layout units (DIPs), colour + kind (0 file, 1
@@ -618,20 +634,52 @@ impl Gpu {
     /// New panel size (DIPs) or composition scale.
     pub fn resize(&mut self, w: f32, h: f32, scale: (f32, f32)) -> Result<(), String> {
         let px = ((w * scale.0).round().max(1.0) as u32, (h * scale.1).round().max(1.0) as u32);
-        if px == self.px && scale == self.scale {
+        if px == self.px && scale == self.scale && self.msaa.is_some() && self.swap_size() == px {
             return Ok(());
         }
-        unsafe { self.d2d.SetTarget(None) };
+        // ResizeBuffers fails while anything still holds the old buffers: Direct2D's target, a
+        // view bound to the context, or a view already let go of but not yet destroyed (D3D11
+        // destroys them when the context next flushes). So: unbind, clear, flush, then resize.
+        unsafe {
+            self.d2d.SetTarget(None);
+            self.ctx.OMSetRenderTargets(None, None);
+            self.ctx.ClearState();
+        }
         self.msaa = None;
-        unsafe { self.ctx.ClearState() };
-        hr(
-            unsafe { self.swap.ResizeBuffers(2, px.0, px.1, FORMAT, DXGI_SWAP_CHAIN_FLAG(DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0)) },
-            "ResizeBuffers",
-        )?;
-        self.px = px;
-        self.scale = scale;
-        set_inverse_scale(&self.swap, scale);
-        self.make_targets()
+        unsafe { self.ctx.Flush() };
+        let resized = if dev_resize_fails() {
+            Err("ResizeBuffers: failed on purpose (SPRAWL_RESIZE_FAIL)".to_string())
+        } else {
+            hr(
+                unsafe { self.swap.ResizeBuffers(2, px.0, px.1, FORMAT, DXGI_SWAP_CHAIN_FLAG(DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0)) },
+                "ResizeBuffers",
+            )
+        };
+        if resized.is_ok() {
+            self.px = px;
+            self.scale = scale;
+            set_inverse_scale(&self.swap, scale);
+        }
+        // the targets again at the size the swap chain has now, so the map keeps drawing even
+        // when the resize failed (the caller tries it again)
+        self.make_targets()?;
+        resized?;
+        let got = self.swap_size();
+        if got != px {
+            return Err(format!("the swap chain is {}x{} after resizing it to {}x{}", got.0, got.1, px.0, px.1));
+        }
+        Ok(())
+    }
+
+    /// True when the GPU was lost (a driver update or reset, the adapter removed): everything
+    /// made on it must be made again.
+    pub fn lost(&self) -> bool {
+        unsafe { self.device.GetDeviceRemovedReason() }.is_err()
+    }
+
+    /// The swap chain's buffers as DXGI has them, in pixels.
+    pub fn swap_size(&self) -> (u32, u32) {
+        unsafe { self.swap.GetDesc1() }.map(|d| (d.Width, d.Height)).unwrap_or((0, 0))
     }
 
     /// True when the swap chain can take another frame without blocking.
@@ -822,6 +870,19 @@ impl Gpu {
 
 }
 
+/// dev: `SPRAWL_RESIZE_FAIL=n` makes the swap chain's first n resizes fail, to see the map
+/// recover from it.
+fn dev_resize_fails() -> bool {
+    thread_local! {
+        static LEFT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    }
+    LEFT.with(|l| {
+        let n = l.get().unwrap_or_else(|| std::env::var("SPRAWL_RESIZE_FAIL").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        l.set(Some(n.saturating_sub(1)));
+        n > 0
+    })
+}
+
 fn set_inverse_scale(swap: &IDXGISwapChain2, scale: (f32, f32)) {
     let m = DXGI_MATRIX_3X2_F { _11: 1.0 / scale.0, _12: 0.0, _21: 0.0, _22: 1.0 / scale.1, _31: 0.0, _32: 0.0 };
     unsafe {
@@ -837,4 +898,17 @@ unsafe fn write<T: Copy>(ctx: &ID3D11DeviceContext, buf: &ID3D11Buffer, data: &[
         ctx.Unmap(buf, 0);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every shader compiles (a mistake in the HLSL otherwise shows only as a map that can't start).
+    #[test]
+    fn shaders_compile() {
+        for (entry, target) in [("vs", "vs_5_0"), ("ps", "ps_5_0"), ("vs_star", "vs_5_0"), ("ps_star", "ps_5_0"), ("vs_mesh", "vs_5_0"), ("ps_mesh", "ps_5_0")] {
+            if let Err(e) = super::compile(entry, target) {
+                panic!("{entry}: {e}");
+            }
+        }
+    }
 }
