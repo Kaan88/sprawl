@@ -86,6 +86,69 @@ fn run(cmd: &mut Command) {
     }
 }
 
+/// The one line of the notes Hub shows beside the version: the first line of the CHANGELOG
+/// section that has text in it, without a list marker, a heading or emphasis marks. At most 300
+/// characters and 400 bytes (Hub's parser counts bytes), cut at a word with "..." when longer.
+fn one_line(notes: &str) -> String {
+    const FALLBACK: &str = "A new version of Sprawl.";
+    let clean = |l: &str| l.trim_start_matches(['-', '*', '+']).trim().replace(['*', '`'], "").trim().to_string();
+    let line = notes.lines().map(str::trim).filter(|l| !l.starts_with('#')).map(clean).find(|l| l.chars().any(char::is_alphanumeric)).unwrap_or_else(|| FALLBACK.to_string());
+    if line.chars().count() <= 300 && line.len() <= 400 {
+        return line;
+    }
+    // room for the three dots
+    let mut cut = String::new();
+    for c in line.chars() {
+        if cut.chars().count() >= 297 || cut.len() + c.len_utf8() > 397 {
+            break;
+        }
+        cut.push(c);
+    }
+    if let Some(i) = cut.rfind(' ').filter(|&i| i > cut.len() / 2) {
+        cut.truncate(i);
+    }
+    format!("{}...", cut.trim_end())
+}
+
+/// The files list `tools/write-hub-txt.ps1` is given (`-FilesJson`): Sprawl is a setup only, run
+/// silently for all users, because Hub is not elevated and cannot write to Program Files. A JSON
+/// file, so no quoting crosses a command line.
+fn hub_files_json(setup: &Path) -> String {
+    let name = setup.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    serde_json::json!([{ "Name": name, "Path": setup.display().to_string(), "Role": "setup", "Silent": HUB_SILENT, "Scope": "machine" }]).to_string()
+}
+
+/// The silent arguments Hub runs Setup with; no restart of Sprawl (Hub starts nothing itself).
+const HUB_SILENT: &str = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART";
+
+/// Whether `pwsh` (PowerShell 7) can be started. `build` asks first, so a missing one is found
+/// before the slow work and not after it.
+fn have_pwsh() -> bool {
+    Command::new("pwsh").args(["-NoProfile", "-Command", "exit 0"]).status().is_ok_and(|s| s.success())
+}
+
+/// Writes `hub.txt` into `out`, through the PowerShell script every app of the family shares
+/// (PowerShell 7, `pwsh`: the script's `-FilesJson` does not read a one-item list in Windows
+/// PowerShell 5.1, found when this was written). It refuses anything Hub's parser
+/// would refuse, so a bad release stops here. `Err` names what failed; the list file is removed
+/// either way. `-ExecutionPolicy Bypass` is for this one process: a machine policy of AllSigned
+/// would otherwise refuse the unsigned copy of the script.
+fn write_hub_txt(script: &Path, out: &Path, v: &str, notes: &str, setup: &Path) -> Result<(), String> {
+    let list = out.join("hub-files.json");
+    std::fs::write(&list, hub_files_json(setup)).map_err(|e| format!("hub.txt: {e}"))?;
+    let mut cmd = Command::new("pwsh");
+    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(script);
+    cmd.args(["-App", "sprawl", "-Repo", "sprawl", "-Version", v, "-Notes", notes, "-Kind", "setup", "-Exe", "sprawl.exe", "-Uninstall", "Sprawl_is1", "-FilesJson"]);
+    cmd.arg(&list).arg("-Out").arg(out.join(HUB_TXT));
+    let ok = cmd.status().is_ok_and(|s| s.success());
+    // the list was only an input
+    let _ = std::fs::remove_file(&list);
+    if ok { Ok(()) } else { Err("hub.txt could not be written by tools/write-hub-txt.ps1 (its message is above; PowerShell 7 `pwsh` is needed)".to_string()) }
+}
+
+/// The file Hub reads from the release.
+const HUB_TXT: &str = "hub.txt";
+
 /// The commit `build` was made from, written beside the files so `publish` can check that it
 /// is releasing what was built.
 const COMMIT: &str = "commit.txt";
@@ -159,6 +222,9 @@ fn dist(v: &str) -> PathBuf {
 fn build() {
     let v = version();
     let notes = notes(&v);
+    if !have_pwsh() {
+        fail("PowerShell 7 (`pwsh`) is not available: it writes hub.txt (tools/write-hub-txt.ps1)");
+    }
     // the release is tied to one commit: it is recorded here and checked again at publish
     require_clean_tree("building");
     let commit = head_commit();
@@ -224,6 +290,8 @@ fn build() {
     sprawl_install::verify(&manifest, sig.as_bytes(), &sprawl_install::PUBLIC_KEYS).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(MANIFEST), &manifest).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(SIGNATURE), &sig).unwrap_or_else(|e| fail(e));
+    // hub.txt: what the Hub launcher reads to find this release (tools/write-hub-txt.ps1)
+    write_hub_txt(&Path::new("tools").join("write-hub-txt.ps1"), &out, &v, &one_line(&notes), &setup).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join("notes.md"), notes).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(COMMIT), &commit).unwrap_or_else(|e| fail(e));
     println!("Sprawl {v} is ready in {} (commit {commit})", out.display());
@@ -234,6 +302,9 @@ fn publish() {
     let out = dist(&v);
     if !out.join(SIGNATURE).exists() {
         fail(format!("{} is not built; run `build` first", out.display()));
+    }
+    if !out.join(HUB_TXT).exists() {
+        fail(format!("{} has no {HUB_TXT} (built before Hub support); run `build` again", out.display()));
     }
     let tag = format!("v{v}");
     // A copy that already has this version never takes it again (an update has to be strictly
@@ -254,7 +325,7 @@ fn publish() {
         fail(format!("{} was built from {built}, but HEAD is now {head}; check out that commit or run `build` again", out.display()));
     }
     let mut assets: Vec<PathBuf> = FILES.iter().map(|n| out.join(n)).collect();
-    assets.extend([out.join(format!("Sprawl-Setup-{v}.exe")), out.join(MANIFEST), out.join(SIGNATURE)]);
+    assets.extend([out.join(format!("Sprawl-Setup-{v}.exe")), out.join(MANIFEST), out.join(SIGNATURE), out.join(HUB_TXT)]);
     let mut cmd = Command::new("gh");
     // the tag goes on the commit that was built, not on whatever main points at
     cmd.args(["release", "create", &tag, "--repo", REPO, "--target", &built, "--title", &format!("Sprawl {v}"), "--notes-file"]).arg(out.join("notes.md"));
@@ -301,5 +372,58 @@ mod tests {
         // anything else is a question that couldn't be asked, never a free pass
         assert!(release_exists(false, "could not connect to api.github.com").is_err());
         assert!(release_exists(false, "gh auth login required").is_err());
+    }
+
+    #[test]
+    fn hub_notes_are_the_first_text_line_of_the_section() {
+        assert_eq!(one_line("- Faster **scans** of `D:`.\n- Other."), "Faster scans of D:.");
+        assert_eq!(one_line("### Fixed\n\n* The map opens.\n"), "The map opens.");
+        assert_eq!(one_line("  \n\n"), "A new version of Sprawl.");
+        // lines with no text in them are skipped
+        assert_eq!(one_line("---\n```\n**\n- Real."), "Real.");
+        assert_eq!(one_line("---\n"), "A new version of Sprawl.");
+        // long: cut at a word, with dots, inside the limits
+        let long = one_line(&"word ".repeat(100));
+        assert!(long.ends_with("word..."), "{long}");
+        assert!(long.chars().count() <= 300);
+        let wide = one_line(&"\u{1D538}".repeat(300));
+        assert!(wide.len() <= 400 && wide.ends_with("..."), "{}", wide.len());
+    }
+
+    #[test]
+    fn hub_txt_is_written_by_the_real_script() {
+        if !have_pwsh() {
+            eprintln!("pwsh not found; skipped");
+            return;
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let dir = std::env::temp_dir().join(format!("sprawl-hub-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let setup = dir.join("Sprawl-Setup-9.9.9.exe");
+        std::fs::write(&setup, vec![7u8; 5000]).unwrap();
+        let script = root.join("tools").join("write-hub-txt.ps1");
+        write_hub_txt(&script, &dir, "9.9.9", "A note.", &setup).unwrap();
+        let txt = std::fs::read_to_string(dir.join(HUB_TXT)).unwrap();
+        assert!(!dir.join("hub-files.json").exists());
+        for want in ["sprawl", "9.9.9", "setup", "sprawl.exe", "Sprawl_is1", "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART", "machine", "A note."] {
+            assert!(txt.contains(want), "{want} missing from:\n{txt}");
+        }
+        // a wrong script: the error comes back and the list file is still removed
+        assert!(write_hub_txt(&dir.join("missing.ps1"), &dir, "9.9.9", "x", &setup).is_err());
+        assert!(!dir.join("hub-files.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hub_gets_the_setup_run_silently_for_all_users() {
+        let v: serde_json::Value = serde_json::from_str(&hub_files_json(Path::new("dist/v1.0.6/Sprawl-Setup-1.0.6.exe"))).unwrap();
+        let f = &v[0];
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(f["Name"], "Sprawl-Setup-1.0.6.exe");
+        assert_eq!(f["Role"], "setup");
+        assert_eq!(f["Scope"], "machine");
+        assert_eq!(f["Silent"], "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART");
+        // Setup's own [Run] starts Sprawl only when not silent, so the silent run starts nothing
+        assert!(!f["Silent"].as_str().unwrap().contains("RESTARTSPRAWL"));
     }
 }
