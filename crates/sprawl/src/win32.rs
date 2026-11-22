@@ -246,16 +246,56 @@ pub fn set_window_place(h: HWND, v: &str) -> bool {
     unsafe { SetWindowPlacement(h, &p) != 0 }
 }
 
-/// Size the window to most of the primary screen's work area, centred.
+/// The first window's size, in DIPs: a normal app window, not the whole of a wide screen.
+pub const FIRST_WINDOW: (f64, f64) = (1440.0, 920.0);
+
+/// The first window's size in pixels on a work area of `ww` by `wh` pixels at `scale`:
+/// [`FIRST_WINDOW`], never more than 90% of the work area, never less than the smallest
+/// window (look.rs `MIN_WINDOW`) unless the work area itself is smaller.
+pub fn first_size(ww: i32, wh: i32, scale: f64) -> (i32, i32) {
+    let fit = |want: f64, least: f64, room: i32| {
+        let most = room as f64 * 0.9;
+        (want * scale).min(most).max((least * scale).min(room as f64)).round() as i32
+    };
+    let (min_w, min_h) = crate::look::MIN_WINDOW;
+    (fit(FIRST_WINDOW.0, min_w, ww), fit(FIRST_WINDOW.1, min_h, wh))
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetDpiForWindow(h: HWND) -> u32;
+}
+
+/// Give a window with no remembered place its first size ([`first_size`]), centred on the
+/// primary screen's work area.
 pub fn fit_work_area(h: HWND) {
     let mut work = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     if unsafe { SystemParametersInfoW(0x30, 0, (&mut work as *mut RECT).cast(), 0) } == 0 {
         return;
     }
     let (ww, wh) = (work.right - work.left, work.bottom - work.top);
-    let (w, hh) = ((ww as f32 * 0.9) as i32, (wh as f32 * 0.9) as i32);
+    let dpi = unsafe { GetDpiForWindow(h) };
+    let scale = if dpi == 0 { 1.0 } else { dpi as f64 / 96.0 };
+    let (w, hh) = first_size(ww, wh, scale);
     unsafe {
         SetWindowPos(h, 0, work.left + (ww - w) / 2, work.top + (wh - hh) / 2, w, hh, 0x0004 | 0x0010); // no z-order, no activate
+    }
+}
+
+#[cfg(test)]
+mod first_size_tests {
+    use super::first_size;
+
+    #[test]
+    fn a_wide_screen_gets_a_normal_window_and_a_small_one_still_fits() {
+        // 3440 x 1400 at 100%: the normal size, not 90% of the width
+        assert_eq!(first_size(3440, 1400, 1.0), (1440, 920));
+        // a 4K screen at 150%: the same size in DIPs
+        assert_eq!(first_size(3840, 2100, 1.5), (2160, 1380));
+        // a 1366 x 728 laptop: 90% of it, but never under the smallest window
+        assert_eq!(first_size(1366, 728, 1.0), (1229, 655));
+        // a screen smaller than the smallest window: the whole work area
+        assert_eq!(first_size(900, 560, 1.0), (900, 560));
     }
 }
 
