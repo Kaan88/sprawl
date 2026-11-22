@@ -813,7 +813,7 @@ pub fn page(drives: &[String]) -> String {
         }
     };
     use crate::look::{pick, pick_drop, Pick};
-    let (tab_on, tab_off) = (pick(Pick::Page, true), pick(Pick::Page, false));
+    let (tab_on, tab_off) = (crate::look::pick_nav(true), crate::look::pick_nav(false));
     // a small count beside a tab's name, hidden while there is nothing to count
     let badge = |name: &str| format!(r##"<Border x:Name="{name}" Visibility="Collapsed" Padding="6,0,6,1" MinWidth="20" CornerRadius="{{$rc9}}" Background="{{$accentchip}}" VerticalAlignment="Center"><TextBlock x:Name="{name}Text" Text="" FontSize="{{$fs11}}" HorizontalAlignment="Center" Foreground="{{$text1}}"/></Border>"##);
     let (adv_badge, cl_badge) = (badge("TabAdvisorCount"), badge("TabCleanersCount"));
@@ -1064,6 +1064,7 @@ pub fn page(drives: &[String]) -> String {
     <Button.Flyout><Flyout x:Name="BusyFly" Placement="BottomEdgeAlignedRight"><Border x:Name="BusyList" MinWidth="320" MaxWidth="520"/></Flyout></Button.Flyout>
   </Button>
   <TextBox x:Name="FilterBox" HorizontalAlignment="Right" Width="340" Height="32" PlaceholderText="Filter: *.mp4;  node_modules;  *\cache\*" FontSize="{{$fs12}}"/>
+  <Grid x:Name="TabRow" HorizontalAlignment="Left">
   <StackPanel Orientation="Horizontal" Spacing="4">
     <Button x:Name="TabTree" Content="Tree View" {tab_on} Padding="14,4,14,7" FontSize="{{$fs14}}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number1" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
     <Button x:Name="TabFiles" Content="File View" {tab_off} Padding="14,4,14,7" FontSize="{{$fs14}}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number2" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
@@ -1072,6 +1073,8 @@ pub fn page(drives: &[String]) -> String {
     <Button x:Name="TabSearch" {tab_off} Padding="14,4,14,7" FontSize="{{$fs14}}"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE721;" FontSize="{{$fs12}}"/><TextBlock Text="Search"/></StackPanel></Button>
     <Button x:Name="TabAbout" Visibility="Collapsed" Content="About" {tab_off} Padding="14,4,14,7" FontSize="{{$fs14}}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Number4" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
   </StackPanel>
+  <Border x:Name="TabLine" Height="3" VerticalAlignment="Bottom" IsHitTestVisible="False"/>
+  </Grid>
   </Grid>
 
   <Grid x:Name="Panes" Grid.Row="4" Margin="12,0,12,0" ColumnSpacing="10">

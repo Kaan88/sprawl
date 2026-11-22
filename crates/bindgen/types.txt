@@ -212,3 +212,9 @@ Microsoft.UI.Composition.CompositionShadow
 Microsoft.UI.Composition.CompositionClip
 Microsoft.UI.Composition.CompositionColorBrush
 Windows.Graphics.IGeometrySource2D
+# --- the sliding tab line (tabline.rs) ---
+Microsoft.UI.Xaml.UIElement::ActualOffset
+Microsoft.UI.Composition.Compositor::CreateVector2KeyFrameAnimation
+Microsoft.UI.Composition.Vector2KeyFrameAnimation::InsertKeyFrame
+Microsoft.UI.Composition.CompositionShape::Offset
+Microsoft.UI.Composition.CompositionColorBrush::Color

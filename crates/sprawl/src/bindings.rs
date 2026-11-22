@@ -214,6 +214,30 @@ pub mod Microsoft {
                 CompositionObject
             );
             impl CompositionColorBrush {
+                pub fn Color(
+                    &self,
+                ) -> windows_core::Result<super::super::super::Windows::UI::Color> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).Color)(
+                            windows_core::Interface::as_raw(self),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
+                pub fn SetColor(
+                    &self,
+                    value: super::super::super::Windows::UI::Color,
+                ) -> windows_core::Result<()> {
+                    unsafe {
+                        (windows_core::Interface::vtable(self).SetColor)(
+                            windows_core::Interface::as_raw(self),
+                            value,
+                        )
+                        .ok()
+                    }
+                }
                 pub fn Compositor(&self) -> windows_core::Result<Compositor> {
                     let this = &windows_core::Interface::cast::<ICompositionObject>(self)?;
                     unsafe {
@@ -924,6 +948,28 @@ pub mod Microsoft {
                         .ok()
                     }
                 }
+                pub fn Offset(&self) -> windows_core::Result<windows_numerics::Vector2> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).Offset)(
+                            windows_core::Interface::as_raw(self),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
+                pub fn SetOffset(
+                    &self,
+                    value: windows_numerics::Vector2,
+                ) -> windows_core::Result<()> {
+                    unsafe {
+                        (windows_core::Interface::vtable(self).SetOffset)(
+                            windows_core::Interface::as_raw(self),
+                            value,
+                        )
+                        .ok()
+                    }
+                }
             }
             impl windows_core::RuntimeType for CompositionShape {
                 const SIGNATURE: windows_core::imp::ConstBuffer =
@@ -1249,6 +1295,30 @@ pub mod Microsoft {
                         .ok()
                     }
                 }
+                pub fn Offset(&self) -> windows_core::Result<windows_numerics::Vector2> {
+                    let this = &windows_core::Interface::cast::<ICompositionShape>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).Offset)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
+                pub fn SetOffset(
+                    &self,
+                    value: windows_numerics::Vector2,
+                ) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<ICompositionShape>(self)?;
+                    unsafe {
+                        (windows_core::Interface::vtable(this).SetOffset)(
+                            windows_core::Interface::as_raw(this),
+                            value,
+                        )
+                        .ok()
+                    }
+                }
                 pub fn FillBrush(&self) -> windows_core::Result<CompositionBrush> {
                     unsafe {
                         let mut result__ = core::mem::zeroed();
@@ -1556,6 +1626,18 @@ pub mod Microsoft {
                         (windows_core::Interface::vtable(self).CreateSurfaceBrushWithSurface)(
                             windows_core::Interface::as_raw(self),
                             surface.param().abi(),
+                            &mut result__,
+                        )
+                        .and_then(|| windows_core::imp::Type::from_abi(result__))
+                    }
+                }
+                pub fn CreateVector2KeyFrameAnimation(
+                    &self,
+                ) -> windows_core::Result<Vector2KeyFrameAnimation> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).CreateVector2KeyFrameAnimation)(
+                            windows_core::Interface::as_raw(self),
                             &mut result__,
                         )
                         .and_then(|| windows_core::imp::Type::from_abi(result__))
@@ -2119,6 +2201,14 @@ pub mod Microsoft {
             #[repr(C)]
             pub struct ICompositionColorBrush_Vtbl {
                 pub base__: windows_core::IInspectable_Vtbl,
+                pub Color: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut super::super::super::Windows::UI::Color,
+                ) -> windows_core::HRESULT,
+                pub SetColor: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    super::super::super::Windows::UI::Color,
+                ) -> windows_core::HRESULT,
             }
             windows_core::imp::define_interface!(
                 ICompositionEasingFunction,
@@ -2338,6 +2428,16 @@ pub mod Microsoft {
             #[repr(C)]
             pub struct ICompositionShape_Vtbl {
                 pub base__: windows_core::IInspectable_Vtbl,
+                CenterPoint: usize,
+                SetCenterPoint: usize,
+                pub Offset: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut windows_numerics::Vector2,
+                ) -> windows_core::HRESULT,
+                pub SetOffset: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    windows_numerics::Vector2,
+                ) -> windows_core::HRESULT,
             }
             windows_core::imp::define_interface!(
                 ICompositionSpriteShape,
@@ -2501,7 +2601,11 @@ pub mod Microsoft {
                         *mut core::ffi::c_void,
                         *mut *mut core::ffi::c_void,
                     ) -> windows_core::HRESULT,
-                CreateVector2KeyFrameAnimation: usize,
+                pub CreateVector2KeyFrameAnimation:
+                    unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut *mut core::ffi::c_void,
+                    ) -> windows_core::HRESULT,
                 pub CreateVector3KeyFrameAnimation:
                     unsafe extern "system" fn(
                         *mut core::ffi::c_void,
@@ -2835,6 +2939,29 @@ pub mod Microsoft {
                     *mut core::ffi::c_void,
                     *mut core::ffi::c_void,
                 ) -> windows_core::HRESULT,
+            }
+            windows_core::imp::define_interface!(
+                IVector2KeyFrameAnimation,
+                IVector2KeyFrameAnimation_Vtbl,
+                0xe9c5e3fd_43b7_526e_9da0_4c3ea96db27d
+            );
+            impl windows_core::RuntimeType for IVector2KeyFrameAnimation {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_interface::<Self>();
+                const NAME: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::from_slice(
+                        b"Microsoft.UI.Composition.IVector2KeyFrameAnimation",
+                    );
+            }
+            #[repr(C)]
+            pub struct IVector2KeyFrameAnimation_Vtbl {
+                pub base__: windows_core::IInspectable_Vtbl,
+                pub InsertKeyFrame: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    f32,
+                    windows_numerics::Vector2,
+                )
+                    -> windows_core::HRESULT,
             }
             windows_core::imp::define_interface!(
                 IVector3KeyFrameAnimation,
@@ -3399,6 +3526,116 @@ pub mod Microsoft {
             }
             unsafe impl Send for SpriteVisual {}
             unsafe impl Sync for SpriteVisual {}
+            #[repr(transparent)]
+            #[derive(Clone, Debug, Eq, PartialEq)]
+            pub struct Vector2KeyFrameAnimation(windows_core::IUnknown);
+            windows_core::imp::interface_hierarchy!(
+                Vector2KeyFrameAnimation,
+                windows_core::IUnknown,
+                windows_core::IInspectable
+            );
+            windows_core::imp::required_hierarchy!(
+                Vector2KeyFrameAnimation,
+                KeyFrameAnimation,
+                CompositionAnimation,
+                CompositionObject
+            );
+            impl Vector2KeyFrameAnimation {
+                pub fn Compositor(&self) -> windows_core::Result<Compositor> {
+                    let this = &windows_core::Interface::cast::<ICompositionObject>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).Compositor)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .and_then(|| windows_core::imp::Type::from_abi(result__))
+                    }
+                }
+                pub fn StartAnimation<P1>(
+                    &self,
+                    propertyname: &windows_core::HSTRING,
+                    animation: P1,
+                ) -> windows_core::Result<()>
+                where
+                    P1: windows_core::Param<CompositionAnimation>,
+                {
+                    let this = &windows_core::Interface::cast::<ICompositionObject>(self)?;
+                    unsafe {
+                        (windows_core::Interface::vtable(this).StartAnimation)(
+                            windows_core::Interface::as_raw(this),
+                            core::mem::transmute_copy(propertyname),
+                            animation.param().abi(),
+                        )
+                        .ok()
+                    }
+                }
+                pub fn StopAnimation(
+                    &self,
+                    propertyname: &windows_core::HSTRING,
+                ) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<ICompositionObject>(self)?;
+                    unsafe {
+                        (windows_core::Interface::vtable(this).StopAnimation)(
+                            windows_core::Interface::as_raw(this),
+                            core::mem::transmute_copy(propertyname),
+                        )
+                        .ok()
+                    }
+                }
+                pub fn Duration(&self) -> windows_core::Result<windows_time::TimeSpan> {
+                    let this = &windows_core::Interface::cast::<IKeyFrameAnimation>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).Duration)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
+                pub fn SetDuration(
+                    &self,
+                    value: windows_time::TimeSpan,
+                ) -> windows_core::Result<()> {
+                    let this = &windows_core::Interface::cast::<IKeyFrameAnimation>(self)?;
+                    unsafe {
+                        (windows_core::Interface::vtable(this).SetDuration)(
+                            windows_core::Interface::as_raw(this),
+                            value,
+                        )
+                        .ok()
+                    }
+                }
+                pub fn InsertKeyFrame(
+                    &self,
+                    normalizedprogresskey: f32,
+                    value: windows_numerics::Vector2,
+                ) -> windows_core::Result<()> {
+                    unsafe {
+                        (windows_core::Interface::vtable(self).InsertKeyFrame)(
+                            windows_core::Interface::as_raw(self),
+                            normalizedprogresskey,
+                            value,
+                        )
+                        .ok()
+                    }
+                }
+            }
+            impl windows_core::RuntimeType for Vector2KeyFrameAnimation {
+                const SIGNATURE: windows_core::imp::ConstBuffer =
+                    windows_core::imp::ConstBuffer::for_class::<Self, IVector2KeyFrameAnimation>();
+            }
+            unsafe impl windows_core::Interface for Vector2KeyFrameAnimation {
+                type Vtable = <IVector2KeyFrameAnimation as windows_core::Interface>::Vtable;
+                const IID: windows_core::GUID =
+                    <IVector2KeyFrameAnimation as windows_core::Interface>::IID;
+            }
+            impl windows_core::RuntimeName for Vector2KeyFrameAnimation {
+                const NAME: &'static str = "Microsoft.UI.Composition.Vector2KeyFrameAnimation";
+            }
+            unsafe impl Send for Vector2KeyFrameAnimation {}
+            unsafe impl Sync for Vector2KeyFrameAnimation {}
             #[repr(transparent)]
             #[derive(Clone, Debug, Eq, PartialEq)]
             pub struct Vector3KeyFrameAnimation(windows_core::IUnknown);
@@ -4848,6 +5085,17 @@ pub mod Microsoft {
                         .ok()
                     }
                 }
+                pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                    let this = &windows_core::Interface::cast::<IUIElement>(self)?;
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(this).ActualOffset)(
+                            windows_core::Interface::as_raw(this),
+                            &mut result__,
+                        )
+                        .map(|| result__)
+                    }
+                }
                 pub fn KeyDown<F>(
                     &self,
                     handler: F,
@@ -5750,7 +5998,11 @@ pub mod Microsoft {
                 SetCenterPoint: usize,
                 RotationAxis: usize,
                 SetRotationAxis: usize,
-                ActualOffset: usize,
+                pub ActualOffset: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut windows_numerics::Vector3,
+                )
+                    -> windows_core::HRESULT,
                 ActualSize: usize,
                 XamlRoot: usize,
                 SetXamlRoot: usize,
@@ -6597,6 +6849,16 @@ pub mod Microsoft {
                             value,
                         )
                         .ok()
+                    }
+                }
+                pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        (windows_core::Interface::vtable(self).ActualOffset)(
+                            windows_core::Interface::as_raw(self),
+                            &mut result__,
+                        )
+                        .map(|| result__)
                     }
                 }
                 pub fn KeyDown<F>(
@@ -7973,6 +8235,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -8630,6 +8903,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -9436,6 +9720,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -10142,6 +10437,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -10787,6 +11093,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -11419,6 +11736,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -13175,6 +13503,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -13807,6 +14146,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -14522,6 +14872,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -15342,6 +15703,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -16059,6 +16431,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -16686,6 +17069,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -17461,6 +17855,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -18270,6 +18675,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -19200,6 +19616,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -20068,6 +20495,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -20724,6 +21162,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -21520,6 +21969,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -22418,6 +22878,17 @@ pub mod Microsoft {
                             .ok()
                         }
                     }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
+                        }
+                    }
                     pub fn KeyDown<F>(
                         &self,
                         handler: F,
@@ -23197,6 +23668,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(
@@ -24386,6 +24868,21 @@ pub mod Microsoft {
                                     value,
                                 )
                                 .ok()
+                            }
+                        }
+                        pub fn ActualOffset(
+                            &self,
+                        ) -> windows_core::Result<windows_numerics::Vector3>
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).ActualOffset)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .map(|| result__)
                             }
                         }
                         pub fn KeyDown<F>(
@@ -25708,6 +26205,21 @@ pub mod Microsoft {
                                 .ok()
                             }
                         }
+                        pub fn ActualOffset(
+                            &self,
+                        ) -> windows_core::Result<windows_numerics::Vector3>
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).ActualOffset)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .map(|| result__)
+                            }
+                        }
                         pub fn KeyDown<F>(
                             &self,
                             handler: F,
@@ -26694,6 +27206,21 @@ pub mod Microsoft {
                                 .ok()
                             }
                         }
+                        pub fn ActualOffset(
+                            &self,
+                        ) -> windows_core::Result<windows_numerics::Vector3>
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).ActualOffset)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .map(|| result__)
+                            }
+                        }
                         pub fn KeyDown<F>(
                             &self,
                             handler: F,
@@ -27559,6 +28086,21 @@ pub mod Microsoft {
                                     value,
                                 )
                                 .ok()
+                            }
+                        }
+                        pub fn ActualOffset(
+                            &self,
+                        ) -> windows_core::Result<windows_numerics::Vector3>
+                        {
+                            let this =
+                                &windows_core::Interface::cast::<super::super::IUIElement>(self)?;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                (windows_core::Interface::vtable(this).ActualOffset)(
+                                    windows_core::Interface::as_raw(this),
+                                    &mut result__,
+                                )
+                                .map(|| result__)
                             }
                         }
                         pub fn KeyDown<F>(
@@ -30530,6 +31072,17 @@ pub mod Microsoft {
                                 value,
                             )
                             .ok()
+                        }
+                    }
+                    pub fn ActualOffset(&self) -> windows_core::Result<windows_numerics::Vector3> {
+                        let this = &windows_core::Interface::cast::<super::IUIElement>(self)?;
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            (windows_core::Interface::vtable(this).ActualOffset)(
+                                windows_core::Interface::as_raw(this),
+                                &mut result__,
+                            )
+                            .map(|| result__)
                         }
                     }
                     pub fn KeyDown<F>(

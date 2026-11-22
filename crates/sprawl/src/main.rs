@@ -53,6 +53,7 @@ mod shellmenu;
 mod admin;
 mod alert;
 mod shade;
+mod tabline;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -356,6 +357,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     STATE.with(|s| *s.borrow_mut() = Some(state));
     with(|s| {
         s.apply_settings();
+        // the line under the tabs is made now, under the tab the page starts on (a start on
+        // another tab slides it there at its first layout, which is no slide: see tabline.rs)
+        s.paint_tabs();
         // the welcome screen comes first; the wizard is offered when the first scan is done
         // dev: --screenshot with SPRAWL_WIZARD_PAGE=n pictures the wizard on page n
         if let Some(p) = s.shot.as_ref().and(std::env::var("SPRAWL_WIZARD_PAGE").ok()).and_then(|p| p.parse::<usize>().ok()) {

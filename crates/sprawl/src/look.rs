@@ -186,6 +186,23 @@ impl Pick {
     }
 }
 
+/// The attributes for one of the main page tabs (Tree View ... Search): like [`pick`] for
+/// `Pick::Page`, but with no line of its own. Under the underline option the one line under the
+/// row is `tabline.rs`'s, which slides from tab to tab; the pills option is the same as a page tab's.
+pub(crate) fn pick_nav(on: bool) -> String {
+    if pill_tabs() {
+        return pick(Pick::Page, on);
+    }
+    r##"Style="{StaticResource SprawlNav}" Background="Transparent" BorderBrush="Transparent""##.to_string()
+}
+
+/// Light or unlight a main page tab already on screen: only the pills have anything to paint.
+pub(crate) fn paint_nav(root: &FrameworkElement, name: &str, on: bool) {
+    if pill_tabs() {
+        paint(root, name, Pick::Page, on);
+    }
+}
+
 /// The attributes for a `<Button>` drawn as a selectable item.
 pub(crate) fn pick(kind: Pick, on: bool) -> String {
     if kind == Pick::Page && pill_tabs() {
@@ -301,7 +318,7 @@ fn flat() -> bool {
 }
 
 /// The motion the buttons are drawn with: Windows' "Animation effects" off wins over the look.
-fn motion() -> crate::tokens::Motion {
+pub(crate) fn motion() -> crate::tokens::Motion {
     if crate::win32::animations_on() {
         crate::tokens::current().motion
     } else {
@@ -910,7 +927,7 @@ fn stock() -> String {
 /// deletes for good; `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
-        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
+        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
         ui::NS,
         stock(),
         style("SprawlPick", "Button", false),
@@ -918,6 +935,8 @@ pub(crate) fn resources() -> String {
         style_with("SprawlMode", "Button", false, false, false, Geo { depth: Depth { light: Some("hlbtn"), ..Depth::default() }, ..Geo::small() }),
         style("SprawlPickDrop", "DropDownButton", true),
         style_with("SprawlPage", "Button", false, true, false, Geo::small()),
+        // the main page tabs: the same, without the line (the row's shared one is tabline.rs's)
+        style_with("SprawlNav", "Button", false, false, false, Geo::small()),
         // chips: pills (the corner is clamped to half the height), a WinUI button's size with its
         // faint edge, filled with the accent when picked
         style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcchip"), depth: Depth { light: Some("hlon"), ..Depth::default() }, ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
@@ -1461,8 +1480,8 @@ mod tests {
             // have it, and so does the text box's template
             assert!(r.matches(&format!(r#"x:Name="{s}""#)).count() >= 7, "{s}");
         }
-        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 9);
-        for k in ["SprawlPick", "SprawlMode", "SprawlPickDrop", "SprawlPage", "SprawlPagePill", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
+        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 10);
+        for k in ["SprawlPick", "SprawlMode", "SprawlPickDrop", "SprawlPage", "SprawlNav", "SprawlPagePill", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
             assert_eq!(r.matches(&format!(r#"x:Key="{k}""#)).count(), 1, "{k}");
         }
         // the main button has its own template, with the accent's shadow
@@ -1502,6 +1521,12 @@ mod tests {
         assert!(chip.contains(r#"<Setter Property="BorderBrush" Value="{$line1}"/>"#));
         assert_eq!(Pick::Page.bg(true), "Transparent");
         assert!(pick(Pick::Page, true).contains(&underline()) && !pick(Pick::Page, false).contains(&underline()));
+        // the main tabs have no line of their own: the row's shared one slides (tabline.rs)
+        crate::tokens::set(&crate::tokens::Look::default());
+        assert!(pick_nav(true).contains("SprawlNav") && !pick_nav(true).contains(&underline()) && pick_nav(true) == pick_nav(false));
+        let r = resources();
+        let nav = &r[r.find(r#"x:Key="SprawlNav""#).unwrap()..];
+        assert!(!nav[..nav.find("</Style>").unwrap()].contains(r#"x:Name="Line""#));
     }
 
     /// The time and the travel each motion asks for, and the styles they make when Windows'

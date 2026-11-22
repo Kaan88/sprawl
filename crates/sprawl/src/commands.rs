@@ -109,10 +109,16 @@ impl State {
     pub(crate) fn paint_tabs(&self) {
         let v = self.view;
         let cl = self.cleaners_tab();
+        let mut lit = None;
         for (name, me) in [("TabTree", View::Tree), ("TabFiles", View::Files), ("TabSearch", View::Search), ("TabAdvisor", View::Advisor), ("TabCleaners", View::Advisor), ("TabAbout", View::About)] {
             let on = me == v && (me != View::Advisor || (name == "TabCleaners") == cl);
-            crate::look::paint(&self.root, name, crate::look::Pick::Page, on);
+            crate::look::paint_nav(&self.root, name, on);
+            if on {
+                lit = Some(name);
+            }
         }
+        // the one line under the row slides to the lit tab
+        crate::tabline::select(&self.root, lit);
         self.tab_counts();
     }
 

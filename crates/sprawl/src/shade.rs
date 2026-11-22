@@ -139,7 +139,7 @@ impl Kind {
 }
 
 /// `#AARRGGBB` as a colour.
-fn colour(hex: &str) -> Option<Color> {
+pub(crate) fn colour(hex: &str) -> Option<Color> {
     let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).ok()?;
     let v = if hex.len() == 7 { 0xFF00_0000 | v } else { v };
     Some(Color { A: (v >> 24) as u8, R: (v >> 16) as u8, G: (v >> 8) as u8, B: v as u8 })
