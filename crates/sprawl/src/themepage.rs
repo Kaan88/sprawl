@@ -264,7 +264,7 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
       </StackPanel>
       <StackPanel Grid.Column="1" Spacing="8">
         <StackPanel Orientation="Horizontal" Spacing="6">
-          <Grid>{glow}<Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$accent}}"><TextBlock Text="Scan" FontSize="{{$fs13}}" FontWeight="SemiBold" Foreground="{{$onaccent}}"/></Border></Grid>
+          <Grid>{glow}<Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$accent}}"><TextBlock Text="Scan" FontSize="{{$fs13}}" FontWeight="SemiBold" Foreground="{{$onaccent}}"/></Border>{lit}</Grid>
           <Border Padding="14,4" CornerRadius="{{$rc4}}" Background="{{$surface3}}" BorderBrush="{{$line2}}" BorderThickness="1"><TextBlock Text="Cancel" FontSize="{{$fs13}}" Foreground="{{$text1}}"/></Border>
         </StackPanel>
         <StackPanel Orientation="Horizontal" Spacing="8">
@@ -284,14 +284,18 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
         c3 = chip("Caches", false),
         t1 = tab("Tree View", true),
         t2 = tab("Advisor", false),
-        glow = if look.finish == Finish::Soft { r##"<Border Margin="-1,3,-1,-4" CornerRadius="{$rc4}" Background="{$glow}" Opacity="0.7"/>"## } else { "" },
+        // the main button's accent shadow: a real one, hung on by shade.rs once loaded
+        glow = if look.finish == Finish::Soft { crate::look::shade_host("primary", &crate::tokens::rc(4.0)) } else { String::new() },
+        lit = if look.finish == Finish::Soft { crate::look::top_light_xaml("hlpri", &crate::tokens::rc(4.0), true) } else { String::new() },
     );
     tokens::expand_in(&xaml, &t)
 }
 
 /// The sample, made into an element.
 fn sample_element(look: &Look, mode: usize) -> Option<UIElement> {
-    XamlReader::Load(&HSTRING::from(sample(look, mode))).ok()?.cast().ok()
+    let el: UIElement = XamlReader::Load(&HSTRING::from(sample(look, mode))).ok()?.cast().ok()?;
+    crate::shade::watch(&el);
+    Some(el)
 }
 
 // ------------------------------------------------------------------ the page

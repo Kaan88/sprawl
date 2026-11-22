@@ -310,6 +310,8 @@ pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
     let num = crate::look::NUM;
     let fill = crate::look::accent().fill;
     let bars = crate::tokens::current().bars;
+    // the lit top edge of the fill (the Soft finish)
+    let lit = crate::look::top_light("hlbar", &crate::tokens::rc(3.0), true);
     let (track, fill_border) = match bars {
         crate::tokens::Bars::Thin => (
             r##"<Border CornerRadius="{$rc3}" Background="{$line1}" VerticalAlignment="Bottom" Height="4"/>"##.to_string(),
@@ -318,13 +320,13 @@ pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
         crate::tokens::Bars::Gradient => (
             r##"<Border CornerRadius="{$rc3}" Background="{$line1}"/>"##.to_string(),
             format!(
-                r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Opacity="0.45"><Border.Background>{}</Border.Background></Border>"##,
+                r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Opacity="0.45"><Border.Background>{}</Border.Background>{lit}</Border>"##,
                 crate::look::accent_gradient()
             ),
         ),
         crate::tokens::Bars::Solid => (
             r##"<Border CornerRadius="{$rc3}" Background="{$line1}"/>"##.to_string(),
-            format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}" Opacity="0.45"/>"##),
+            format!(r##"<Border CornerRadius="{{$rc3}}" HorizontalAlignment="Left" Width="{w:.1}" Background="{fill}" Opacity="0.45">{lit}</Border>"##),
         ),
     };
     format!(

@@ -63,10 +63,12 @@ fn main() {
             .map(String::from),
     );
 
-    // Interfaces the app implements in Rust (the composed Application).
+    // Interfaces the app implements in Rust (the composed Application, and the shape a drop
+    // shadow is clipped to, which Composition reads as a Direct2D geometry).
     args.push("--implement".into());
     args.push("Microsoft.UI.Xaml.IApplicationOverrides".into());
     args.push("Microsoft.UI.Xaml.Markup.IXamlMetadataProvider".into());
+    args.push("Windows.Graphics.IGeometrySource2D".into());
 
     // In windows-bindgen 0.100.0 this returns (); bad arguments show up as a panic.
     windows_bindgen::bindgen(args);

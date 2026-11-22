@@ -15,6 +15,9 @@ windows-core = "0.100"
 windows-collections = "0.100"
 windows-reference = "0.100"
 windows-time = "0.100"
+windows-numerics = "0.100"
+# the points Direct2D (the windows crate) takes, for the shape a shadow is clipped to
+d2d-numerics = { package = "windows-numerics", version = "0.3" }
 serde_json = "1"
 
 [dependencies.windows]

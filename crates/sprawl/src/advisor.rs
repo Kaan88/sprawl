@@ -4476,7 +4476,7 @@ impl State {
             _ => format!("{} · {}", kind, f.path.display()),
         };
         x += &format!(
-            r##"<Grid><Border CornerRadius="{{$rc7}}" Background="{bg}"/><Button x:Name="AdvF{i}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="{{$rc7}}" BorderThickness="0" Background="Transparent">
+            r##"<Grid><Border CornerRadius="{{$rc7}}" Background="{bg}"/><Button x:Name="AdvF{i}" Tag="shade:row" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="{{$rc7}}" BorderThickness="0" Background="Transparent">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="118"/></Grid.ColumnDefinitions>
 {dot}
 <StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>

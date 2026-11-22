@@ -269,7 +269,12 @@ pub(crate) fn timing(what: &str, since: Instant) {
 /// string the app loads, `reconcile`'s one-attribute loads included; `reconcile` compares the
 /// strings as they are written and lets `set` resolve a token for a value it reads itself.
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
-    XamlReader::Load(&HSTRING::from(&*crate::tokens::expand(&crate::theme::themed(xaml))))?.cast()
+    let made = XamlReader::Load(&HSTRING::from(&*crate::tokens::expand(&crate::theme::themed(xaml))))?;
+    // the drop shadows it marks are hung on once it is laid out (shade.rs)
+    if let Ok(el) = made.cast::<crate::bindings::Microsoft::UI::Xaml::UIElement>() {
+        crate::shade::watch(&el);
+    }
+    made.cast()
 }
 
 impl State {

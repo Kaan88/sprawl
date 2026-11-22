@@ -589,9 +589,10 @@ mod esc_tests {
         let fill = crate::look::accent().fill.clone();
         let p = super::page(&[]);
         assert!(
-            p.contains(&format!(r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{fill}"/>"##)),
+            p.contains(&format!(r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{fill}">"##)),
             "the solid bar is today's"
         );
+        assert!(p.contains(r##"BorderThickness="0,1,0,0" BorderBrush="{$hlbar}""##), "with its lit top edge");
 
         crate::tokens::set(&Look { bars: Bars::Gradient, ..Look::default() });
         let p = super::page(&[]);
@@ -790,17 +791,21 @@ fn hud() -> String {
 }
 
 pub fn page(drives: &[String]) -> String {
-    // the soft shadow under each card and pane (look.rs), in the cell before the card
-    let shadow = crate::look::shadow(&crate::tokens::rc(8.0), 1);
+    // the smooth shadow under each card and pane (look.rs), in the cell before the card, and the
+    // lit top edge over it, after
+    let shadow = crate::look::shadow(false);
+    let lit = crate::look::top_light("hlcard", &crate::tokens::rc(8.0), false);
     let num = crate::look::NUM;
     let accent = crate::look::accent().fill.clone();
+    // the lit top edge of a bar's fill (the Soft finish)
+    let bar_lit = crate::look::top_light("hlbar", &crate::tokens::rc(4.0), true);
     // the drive's usage bar: the accent solid, running to a lighter shade, or a 4 px line
     let usage_bar = match crate::tokens::current().bars {
         crate::tokens::Bars::Solid => {
-            format!(r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{accent}"/>"##)
+            format!(r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0" Background="{accent}">{bar_lit}</Border>"##)
         }
         crate::tokens::Bars::Gradient => format!(
-            r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0"><Border.Background>{}</Border.Background></Border>"##,
+            r##"<Border x:Name="UsageBar" Height="8" CornerRadius="{{$rc4}}" HorizontalAlignment="Left" Width="0"><Border.Background>{}</Border.Background>{bar_lit}</Border>"##,
             crate::look::accent_gradient()
         ),
         crate::tokens::Bars::Thin => {
@@ -1019,7 +1024,7 @@ pub fn page(drives: &[String]) -> String {
         <TextBlock x:Name="StatusText" {num} TextTrimming="CharacterEllipsis" Text="Ready. Pick a drive or folder and press Scan." FontSize="{{$fs12}}" Foreground="{{$text2}}"/>
         <ProgressBar x:Name="Progress" Value="0" Maximum="100" Height="4" CornerRadius="{{$rc2}}"/>
       </StackPanel>
-    </Border></Grid>
+    </Border>{lit}</Grid>
     <Grid Grid.Column="1">{shadow}<Border {CARD} Padding="14,10">
       <Grid ColumnSpacing="14" RowSpacing="7" VerticalAlignment="Center">
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -1037,7 +1042,7 @@ pub fn page(drives: &[String]) -> String {
           {usage_bar}
         </Grid>
       </Grid>
-    </Border></Grid>
+    </Border>{lit}</Grid>
     <Grid x:Name="BrandCard" Grid.Column="2">{shadow}<Border {CARD} Padding="16,10,22,10">
       <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
         {logo_small}
@@ -1046,7 +1051,7 @@ pub fn page(drives: &[String]) -> String {
           <TextBlock Text="Disk space analyser" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>
         </StackPanel>
       </StackPanel>
-    </Border></Grid>
+    </Border>{lit}</Grid>
   </Grid>
 
   <Grid Grid.Row="3" Margin="12,0,12,6" MinHeight="32">
@@ -1145,7 +1150,7 @@ pub fn page(drives: &[String]) -> String {
           </StackPanel>
         </ScrollViewer>
       </Grid>
-    </Border></Grid>
+    </Border>{lit}</Grid>
     <Grid x:Name="TypesPanel" Grid.Column="1">{shadow}<Border {PANE}>
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
@@ -1153,7 +1158,7 @@ pub fn page(drives: &[String]) -> String {
         <ScrollViewer x:Name="ExtScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled"/>
         {types_hint}
       </Grid>
-    </Border></Grid>
+    </Border>{lit}</Grid>
   </Grid>
 
   <Grid x:Name="MapBar" Grid.Row="5" Margin="12,6,12,6" ColumnSpacing="12">

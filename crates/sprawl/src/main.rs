@@ -52,6 +52,7 @@ mod search_box;
 mod shellmenu;
 mod admin;
 mod alert;
+mod shade;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

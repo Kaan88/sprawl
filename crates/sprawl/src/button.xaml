@@ -1,0 +1,54 @@
+<ControlTemplate TargetType="Button">
+<Grid>
+<Border x:Name="Shade" Tag="shade:button" CornerRadius="{TemplateBinding CornerRadius}" IsHitTestVisible="False"/>
+<ContentPresenter x:Name="ContentPresenter" Background="{TemplateBinding Background}" Foreground="{TemplateBinding Foreground}" BackgroundSizing="{TemplateBinding BackgroundSizing}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" ContentTransitions="{TemplateBinding ContentTransitions}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}" HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" AutomationProperties.AccessibilityView="Raw">
+<ContentPresenter.BackgroundTransition>
+<BrushTransition Duration="0:0:0.083"/>
+</ContentPresenter.BackgroundTransition>
+</ContentPresenter>
+<VisualStateManager.VisualStateGroups>
+<VisualStateGroup x:Name="CommonStates">
+<VisualState x:Name="Normal"/>
+<VisualState x:Name="PointerOver">
+<Storyboard>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonBackgroundPointerOver}"/>
+</ObjectAnimationUsingKeyFrames>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="BorderBrush">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonBorderBrushPointerOver}"/>
+</ObjectAnimationUsingKeyFrames>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonForegroundPointerOver}"/>
+</ObjectAnimationUsingKeyFrames>
+</Storyboard>
+</VisualState>
+<VisualState x:Name="Pressed">
+<Storyboard>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonBackgroundPressed}"/>
+</ObjectAnimationUsingKeyFrames>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="BorderBrush">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonBorderBrushPressed}"/>
+</ObjectAnimationUsingKeyFrames>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonForegroundPressed}"/>
+</ObjectAnimationUsingKeyFrames>
+</Storyboard>
+</VisualState>
+<VisualState x:Name="Disabled">
+<Storyboard>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonBackgroundDisabled}"/>
+</ObjectAnimationUsingKeyFrames>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="BorderBrush">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonBorderBrushDisabled}"/>
+</ObjectAnimationUsingKeyFrames>
+<ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+<DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ButtonForegroundDisabled}"/>
+</ObjectAnimationUsingKeyFrames>
+</Storyboard>
+</VisualState>
+</VisualStateGroup>
+</VisualStateManager.VisualStateGroups>
+</Grid>
+</ControlTemplate>

@@ -179,6 +179,7 @@ impl Pick {
     fn style(self) -> &'static str {
         match self {
             Pick::Chip => "SprawlChip",
+            Pick::Mode => "SprawlMode",
             Pick::Page => "SprawlPage",
             _ => "SprawlPick",
         }
@@ -245,23 +246,56 @@ pub(crate) fn label(text: &str) -> String {
     format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="4,0,0,0"/>"##, ui::esc(text))
 }
 
-/// A soft shadow under a card, as three borders of the shadow colour (`lift`), each wider and
-/// fainter than the last, to put in the card's own cell BEFORE the card. WinUI's ThemeShadow draws
-/// one colour only and needs a receiver, so it could not tint or soften this; borders cost nothing
-/// per frame. They reach past the cell without moving anything, and the card covers the middle.
-/// `corner` is the card's corner token, `k` how far the shadow reaches (1 for a pane, 2 for a
-/// dialog).
-pub(crate) fn shadow(corner: &str, k: i32) -> String {
+/// Where a real drop shadow goes: an empty, see-through border that [`crate::shade`] finds by
+/// its `Tag` once the XAML is loaded and hangs a Composition `DropShadow` on, clipped to the
+/// outside of the border's rounded shape (as a CSS box-shadow, never drawn under the item). Put
+/// it in the item's own cell BEFORE the item, the same size and corner as the item, so the shadow
+/// is drawn behind it. `kind` is one of [`crate::shade::Kind`]'s tags.
+pub(crate) fn shade_host(kind: &str, corner: &str) -> String {
+    format!(r##"<Border Tag="shade:{kind}" CornerRadius="{corner}" IsHitTestVisible="False"/>"##)
+}
+
+/// The shadow under a card or pane (0 8px 22px), to put in the card's own cell BEFORE the card.
+/// A dialog's card (`raised`) floats over the page as a menu does: 0 10px 28px. Nothing when
+/// the finish is Flat.
+pub(crate) fn shadow(raised: bool) -> String {
     if flat() {
         return String::new();
     }
-    let layer = |side: i32, top: i32, bottom: i32, opacity: f64| {
-        format!(r##"<Border Margin="{},{top},{},{bottom}" CornerRadius="{corner}" Background="{{$lift}}" Opacity="{opacity}" IsHitTestVisible="False"/>"##, -side, -side)
-    };
-    format!("{}{}{}", layer(k, k, -2 * k, 1.0), layer(3 * k, k, -5 * k, 0.6), layer(6 * k, 2 * k, -9 * k, 0.35))
+    if raised {
+        shade_host("dialog", &crate::tokens::rc(14.0))
+    } else {
+        shade_host("card", &crate::tokens::rc(8.0))
+    }
 }
 
-/// The Finish option is Flat: no shadow under a card, no glow under the main button.
+/// How a button's shadow follows the pointer, as the Press option says: whether it lifts (a
+/// bigger shadow under the pointer, none while pressed: Lift and sink only), and how long the
+/// change takes in milliseconds (the option's own time, longer when Lively, none when the motion
+/// is None or Windows' animation effects are off). CSS eases a shadow with `ease`.
+pub(crate) fn shadow_motion() -> (bool, u32) {
+    let feel = press_feel(crate::tokens::current().press);
+    (feel.shadow, state_ms(motion(), feel.ms))
+}
+
+/// The lit top edge of the Soft finish: a 1 px line along the top, as if light came from above,
+/// that follows the item's top corners. `token` is one of the `hl` colours. In a template it
+/// goes inside the item's border (`inside`); on a card it goes after the card, one pixel in from
+/// the card's own border. Nothing when the finish is Flat.
+pub(crate) fn top_light(token: &str, corner: &str, inside: bool) -> String {
+    if flat() {
+        return String::new();
+    }
+    top_light_xaml(token, corner, inside)
+}
+
+/// [`top_light`] whatever the finish is.
+pub(crate) fn top_light_xaml(token: &str, corner: &str, inside: bool) -> String {
+    let margin = if inside { "" } else { r#" Margin="1,1,1,0""# };
+    format!(r##"<Border{margin} CornerRadius="{corner}" BorderThickness="0,1,0,0" BorderBrush="{}" IsHitTestVisible="False"/>"##, crate::tokens::refer(token))
+}
+
+/// The Finish option is Flat: no shadow, no glow and no lit edge.
 fn flat() -> bool {
     crate::tokens::current().finish == crate::tokens::Finish::Flat
 }
@@ -275,71 +309,123 @@ fn motion() -> crate::tokens::Motion {
     }
 }
 
-/// How long a state takes to arrive.
-fn state_time(motion: crate::tokens::Motion) -> &'static str {
+/// How long a state takes to arrive: the press option's own time (`ms`), longer when Lively,
+/// none when the motion is None.
+fn state_time(motion: crate::tokens::Motion, ms: u32) -> String {
+    format!("0:0:{:.3}", state_ms(motion, ms) as f64 / 1000.0)
+}
+
+/// [`state_time`] in milliseconds.
+fn state_ms(motion: crate::tokens::Motion, ms: u32) -> u32 {
     match motion {
-        crate::tokens::Motion::Subtle => "0:0:0.14",
-        crate::tokens::Motion::Lively => "0:0:0.22",
-        crate::tokens::Motion::None => "0:0:0",
+        crate::tokens::Motion::Subtle => ms,
+        crate::tokens::Motion::Lively => ms * 11 / 7,
+        crate::tokens::Motion::None => 0,
     }
 }
 
-/// The travel a state makes under `motion`: Lively goes twice as far and presses deeper, None
-/// keeps the content still so only the wash changes.
+/// The travel a state makes under `motion`: Lively goes twice as far and presses twice as deep,
+/// None keeps the content still so only the wash changes.
 fn travel(motion: crate::tokens::Motion, lift: f64, scale: f64) -> (f64, f64) {
     match motion {
         crate::tokens::Motion::Subtle => (lift, scale),
-        crate::tokens::Motion::Lively => (lift * 2.0, if scale < 1.0 { 0.96 } else { 1.0 }),
+        crate::tokens::Motion::Lively => (lift * 2.0, (1.0 - (1.0 - scale) * 2.0).max(0.9)),
         crate::tokens::Motion::None => (0.0, 1.0),
     }
 }
 
-/// What the Press option does: the wash, the lift (negative Y is up) and the scale of the
-/// pointer-over state, then of the pressed state. Lift and sink is today's.
-fn press_feel(press: crate::tokens::Press) -> ((f64, f64, f64), (f64, f64, f64)) {
+/// One state of a button: the white wash, the black wash, and the content's lift (negative Y is
+/// up) and scale.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Pose {
+    white: f64,
+    black: f64,
+    lift: f64,
+    scale: f64,
+}
+
+/// What the Press option does, as the mockup's four modes: the state under the pointer and the
+/// pressed one, the time and the cubic-bezier they take, and whether a shadow comes up under the
+/// pointer (Lift and sink only). Pressing washes black, except in the faintest mode.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Feel {
+    over: Pose,
+    down: Pose,
+    ms: u32,
+    spline: &'static str,
+    shadow: bool,
+}
+
+fn press_feel(press: crate::tokens::Press) -> Feel {
     use crate::tokens::Press;
+    let state = |white: f64, black: f64, lift: f64, scale: f64| Pose { white, black, lift, scale };
     match press {
-        Press::LiftSink => ((0.10, -1.0, 1.0), (0.20, 1.0, 0.98)),
-        Press::PressIn => ((0.10, 0.0, 1.0), (0.20, 1.0, 0.98)),
-        Press::Fade => ((0.10, 0.0, 1.0), (0.20, 0.0, 1.0)),
-        Press::Faint => ((0.04, 0.0, 1.0), (0.08, 0.0, 1.0)),
+        // up 1 px with a shadow under the pointer, down 1 px at 0.98 when pressed
+        Press::LiftSink => Feel { over: state(0.10, 0.0, -1.0, 1.0), down: state(0.0, 0.20, 1.0, 0.98), ms: 140, spline: "0.2,0.8,0.2,1", shadow: true },
+        // no lift, and a sink to 0.95 that overshoots a little
+        Press::PressIn => Feel { over: state(0.13, 0.0, 0.0, 1.0), down: state(0.0, 0.22, 0.0, 0.95), ms: 130, spline: "0.2,0.9,0.3,1.35", shadow: false },
+        // no movement: only the wash fades in
+        Press::Fade => Feel { over: state(0.13, 0.0, 0.0, 1.0), down: state(0.0, 0.22, 0.0, 1.0), ms: 90, spline: "0.25,0.1,0.25,1", shadow: false },
+        // a very small wash, white both ways, at once
+        Press::Faint => Feel { over: state(0.07, 0.0, 0.0, 1.0), down: state(0.12, 0.0, 0.0, 1.0), ms: 0, spline: "0,0,1,1", shadow: false },
     }
 }
 
-/// One state's storyboard, shared by every button: the wash over the item, and the content's
-/// lift (negative Y is up) and scale. Ease-out, ExponentialEase with exponent 6, as close as
-/// WinUI gets to cubic-bezier(.2,.8,.2,1).
-fn states(wash: f64, lift: f64, scale: f64) -> String {
-    states_with(motion(), wash, lift, scale)
+/// One animation of a state's storyboard: `target`'s `prop` to `to`, with the press option's
+/// own cubic-bezier (a key frame's KeySpline is exactly one; the overshoot of Press in goes past
+/// the value on purpose).
+fn animate(target: &str, prop: &str, to: f64, time: &str, spline: &str) -> String {
+    format!(
+        r##"<DoubleAnimationUsingKeyFrames Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}"><SplineDoubleKeyFrame KeyTime="{time}" Value="{to}" KeySpline="{spline}"/></DoubleAnimationUsingKeyFrames>"##
+    )
+}
+
+/// One state's storyboard, shared by every button: the washes over the item, and the content's
+/// lift (negative Y is up) and scale. (A shadow is not XAML: [`crate::shade`] follows the same
+/// states in code.)
+fn states(feel: &Feel, state: Pose) -> String {
+    states_with(motion(), feel, state)
 }
 
 /// [`states`] under one motion, so both the look's option and Windows' animations setting reach
 /// the same storyboard.
-fn states_with(motion: crate::tokens::Motion, wash: f64, lift: f64, scale: f64) -> String {
-    let d = state_time(motion);
-    let (lift, scale) = travel(motion, lift, scale);
-    let ease = r##"<DoubleAnimation.EasingFunction><ExponentialEase EasingMode="EaseOut" Exponent="6"/></DoubleAnimation.EasingFunction>"##;
-    let one = |target: &str, prop: &str, to: f64| {
-        format!(r##"<DoubleAnimation Storyboard.TargetName="{target}" Storyboard.TargetProperty="{prop}" To="{to}" Duration="{d}">{ease}</DoubleAnimation>"##)
-    };
+fn states_with(motion: crate::tokens::Motion, feel: &Feel, state: Pose) -> String {
+    let d = state_time(motion, feel.ms);
+    let (lift, scale) = travel(motion, state.lift, state.scale);
     let t = "(UIElement.RenderTransform).(CompositeTransform.";
+    let one = |target: &str, prop: &str, to: f64| animate(target, prop, to, &d, feel.spline);
     format!(
-        "<Storyboard>{}{}{}{}</Storyboard>",
-        one("Wash", "Opacity", wash),
+        "<Storyboard>{}{}{}{}{}</Storyboard>",
+        one("Wash", "Opacity", state.white),
+        one("WashDown", "Opacity", state.black),
         one("Content", &format!("{t}TranslateY)"), lift),
         one("Content", &format!("{t}ScaleX)"), scale),
         one("Content", &format!("{t}ScaleY)"), scale),
     )
 }
 
+/// What a style adds to a button's flat look.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct Depth {
+    /// The main button: a wash a little stronger than the others.
+    primary: bool,
+    /// The drop shadow behind the button, by its kind (a [`crate::shade::Kind`] tag): a host
+    /// border, `Shade`, under `Root` in an outer grid. Only for a button with a face.
+    shade: Option<&'static str>,
+    /// The lit top edge: the name of its colour token.
+    light: Option<&'static str>,
+}
+
 /// The template both selectable styles share: the item's own background (set by `paint` or
-/// `pick`: at rest or selected), a white wash over it for the pointer (pointer over: 10%,
-/// pressed: 20%), and the content's travel by the look's motion (Subtle, today, is up 1 px, then
-/// down 1 px and at 0.98; None keeps it still), and the system's focus rectangle, which shows for the keyboard
-/// only. So selected-and-pointer-over is the selected background with the faint wash, and a
-/// selected item the pointer has left is the selected background alone. With `line`: a 3 px
-/// line under the content in the BorderBrush (the page tabs; they have no border of their own).
-fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bool) -> String {
+/// `pick`: at rest or selected), a white wash over it for the pointer and a black one while
+/// pressed (the Press option's values), the content's travel by the look's motion (Subtle, today,
+/// is up 1 px, then down 1 px and at 0.98; None keeps it still), and the system's focus
+/// rectangle, which shows for the keyboard only. So selected-and-pointer-over is the selected
+/// background with the faint wash, and a selected item the pointer has left is the selected
+/// background alone. With `line`: a 3 px line under the content in the BorderBrush (the page
+/// tabs; they have no border of their own). `depth` adds the Soft finish's lit edge and
+/// shadows, which Flat leaves out.
+fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, depth: Depth) -> String {
     let (cols, arrow) = if arrow {
         (
             r##"<Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>"##,
@@ -366,29 +452,30 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bo
     } else {
         r##"<Setter Target="Content.Opacity" Value="0.4"/>"##.to_string()
     };
-    let ((ow, oy, os), (pw, py, ps)) = press_feel(crate::tokens::current().press);
-    let (mut normal, mut over, mut pressed) = (states(0.0, 0.0, 1.0), states(ow, oy, os), states(pw, py, ps));
-    // the main button's accent shadow: soft at rest, fuller under the pointer, gone while pressed
-    // or disabled, on the same time and curve as the lift
-    let (shade_open, shade_close) = if glow && !flat() {
-        let to = |s: &mut String, v: f64| s.insert_str(s.len() - "</Storyboard>".len(), &glow_to(v));
-        to(&mut normal, 0.55);
-        to(&mut over, 1.0);
-        to(&mut pressed, 0.0);
-        disabled += r##"<Setter Target="Glow.Opacity" Value="0"/>"##;
-        (
-            r##"<Grid>
-  <Grid x:Name="Glow" Opacity="0.55" IsHitTestVisible="False">
-    <Border Margin="-1,3,-1,-4" CornerRadius="{$rc6}" Background="{$glow}" Opacity="0.7"/>
-    <Border Margin="-4,5,-4,-9" CornerRadius="{$rc8}" Background="{$glow}" Opacity="0.4"/>
-  </Grid>"##,
-            "</Grid>",
-        )
-    } else {
-        ("", "")
+    let feel = press_feel(crate::tokens::current().press);
+    let (mut over, mut down) = (feel.over, feel.down);
+    if depth.primary && crate::tokens::current().press != crate::tokens::Press::Faint {
+        // the main button's wash is a little stronger than the others
+        over.white = 0.16;
+        down.black = 0.26;
+    }
+    // the drop shadow (the Soft finish): a host border behind Root that shade.rs hangs a
+    // Composition shadow on, and moves with the states below (CommonStates) in code
+    let shades = match depth.shade {
+        Some(kind) if !flat() => shade_host(kind, "{TemplateBinding CornerRadius}").replacen("<Border ", r##"<Border x:Name="Shade" "##, 1),
+        _ => String::new(),
     };
+    let lit = match depth.light {
+        Some(token) if !flat() => {
+            disabled += r##"<Setter Target="Light.Opacity" Value="0"/>"##;
+            top_light_xaml(token, "{TemplateBinding CornerRadius}", true).replacen("<Border ", r##"<Border x:Name="Light" Grid.ColumnSpan="2" "##, 1)
+        }
+        _ => String::new(),
+    };
+    let rest = Pose { white: 0.0, black: 0.0, lift: 0.0, scale: 1.0 };
+    let (normal, over, pressed) = (states(&feel, rest), states(&feel, over), states(&feel, down));
     // WinUI runs a template's states only from its outermost element: Root, or the grid that
-    // holds the main button's glow around it
+    // holds the shadow's host and Root
     let vsm = format!(
         r##"<VisualStateManager.VisualStateGroups>
       <VisualStateGroup x:Name="CommonStates">
@@ -399,20 +486,22 @@ fn template_with(target: &str, arrow: bool, line: bool, grey_off: bool, glow: bo
       </VisualStateGroup>
     </VisualStateManager.VisualStateGroups>"##
     );
-    let (inner_states, outer_states) = if glow { (String::new(), vsm) } else { (vsm, String::new()) };
+    let (inner_states, outer_states, open, close) = if shades.is_empty() { (vsm, String::new(), String::new(), "") } else { (String::new(), vsm, format!("<Grid>{shades}"), "</Grid>") };
     format!(
         r##"<ControlTemplate TargetType="{target}">
-  {shade_open}
+  {open}
   <Grid x:Name="Root" Background="{{TemplateBinding Background}}" CornerRadius="{{TemplateBinding CornerRadius}}" {border}>
     {cols}
+    {lit}
     <Border x:Name="Wash" Grid.ColumnSpan="2" Background="{{$wash}}" Opacity="0" CornerRadius="{{TemplateBinding CornerRadius}}"/>
+    <Border x:Name="WashDown" Grid.ColumnSpan="2" Background="{{$washdown}}" Opacity="0" CornerRadius="{{TemplateBinding CornerRadius}}"/>
     <ContentPresenter x:Name="Content" RenderTransformOrigin="0.5,0.5" Content="{{TemplateBinding Content}}" ContentTemplate="{{TemplateBinding ContentTemplate}}" Padding="{{TemplateBinding Padding}}" HorizontalContentAlignment="{{TemplateBinding HorizontalContentAlignment}}" VerticalContentAlignment="{{TemplateBinding VerticalContentAlignment}}" Foreground="{{TemplateBinding Foreground}}" FontSize="{{TemplateBinding FontSize}}" FontFamily="{{TemplateBinding FontFamily}}" FontWeight="{{TemplateBinding FontWeight}}"><ContentPresenter.RenderTransform><CompositeTransform/></ContentPresenter.RenderTransform></ContentPresenter>
     {arrow}
     {underline}
     {inner_states}
   </Grid>
   {outer_states}
-  {shade_close}
+  {close}
 </ControlTemplate>"##
     )
 }
@@ -426,14 +515,6 @@ fn line_time(motion: crate::tokens::Motion) -> &'static str {
     }
 }
 
-/// An animation of the button's accent shadow to `to`, for a state's storyboard.
-fn glow_to(to: f64) -> String {
-    let d = state_time(motion());
-    format!(
-        r##"<DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="Opacity" To="{to}" Duration="{d}"><DoubleAnimation.EasingFunction><ExponentialEase EasingMode="EaseOut" Exponent="6"/></DoubleAnimation.EasingFunction></DoubleAnimation>"##
-    )
-}
-
 /// The size and colours a style sets; a button's own attributes still win.
 struct Geo {
     padding: &'static str,
@@ -444,14 +525,14 @@ struct Geo {
     border: (&'static str, String),
     background: String,
     foreground: String,
-    /// The main button: an accent shadow under it.
-    glow: bool,
+    /// What the Soft finish adds: shadows and the lit edge.
+    depth: Depth,
 }
 
 impl Geo {
     /// The selectable items as they were: small, no border.
     fn small() -> Self {
-        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent".to_string()), background: "Transparent".to_string(), foreground: rest_text(), glow: false }
+        Geo { padding: "10,3", corner: crate::tokens::rc(6.0), size: crate::tokens::fs(12.0), weight: "Normal", border: ("0", "Transparent".to_string()), background: "Transparent".to_string(), foreground: rest_text(), depth: Depth::default() }
     }
 
     /// A WinUI button's size: 14 px text, 4 px corners, 32 px high with its 1 px border.
@@ -494,7 +575,7 @@ fn style_with(key: &str, target: &str, arrow: bool, line: bool, grey_off: bool, 
         g.corner,
         g.size,
         g.weight,
-        template_with(target, arrow, line, grey_off, g.glow)
+        template_with(target, arrow, line, grey_off, g.depth)
     )
 }
 
@@ -682,6 +763,17 @@ fn stock() -> String {
             include_str!("textbox.xaml")
         );
     }
+    // a plain button sits on a soft shadow (the Soft finish): WinUI's own template (generic.xaml),
+    // its states moved to a grid round it, with the shadow's host behind it. A button that has
+    // no face of its own (a transparent one) gets no shadow: shade.rs looks before it draws one.
+    // The copy leaves out generic.xaml's AnimatedIcon.State setters: loaded through XamlReader
+    // they stop the app at start, and no Sprawl button holds an AnimatedIcon.
+    if !flat() {
+        x += &format!(
+            r#"<Style TargetType="Button" BasedOn="{{StaticResource DefaultButtonStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#,
+            include_str!("button.xaml")
+        );
+    }
     x
 }
 
@@ -693,21 +785,23 @@ fn stock() -> String {
 /// deletes for good; `SprawlSubtle` is a text action with no fill until the pointer is over it.
 pub(crate) fn resources() -> String {
     format!(
-        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
+        r##"<ResourceDictionary {}>{}{}{}{}{}{}{}{}{}{}</ResourceDictionary>"##,
         ui::NS,
         stock(),
         style("SprawlPick", "Button", false),
+        // the map's modes, on their opaque strip: the lit edge
+        style_with("SprawlMode", "Button", false, false, false, Geo { depth: Depth { light: Some("hlbtn"), ..Depth::default() }, ..Geo::small() }),
         style("SprawlPickDrop", "DropDownButton", true),
         style_with("SprawlPage", "Button", false, true, false, Geo::small()),
         // chips: pills (the corner is clamped to half the height), a WinUI button's size with its
         // faint edge, filled with the accent when picked
-        style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcchip"), ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
+        style_with("SprawlChip", "Button", false, false, false, Geo { corner: crate::tokens::get("rcchip"), depth: Depth { light: Some("hlon"), ..Depth::default() }, ..Geo::button().with_border("1", crate::tokens::refer("line1")) }),
         // a page tab drawn as a picked chip (the Tabs option): the same corner, no edge
         style_with("SprawlPagePill", "Button", false, false, false, Geo { corner: crate::tokens::get("rcchip"), padding: "12,4", ..Geo::small() }),
         style_with("SprawlSubtle", "Button", false, false, false, Geo { foreground: accent().text, ..Geo::button() }),
-        style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", ..Geo::button() }),
-        // the one main action: the accent, semibold, with its soft accent shadow
-        style_with("SprawlPrimary", "Button", false, false, true, Geo { background: crate::tokens::refer("accent"), foreground: crate::tokens::refer("onaccent"), weight: "SemiBold", glow: true, ..Geo::button().with_border("1", crate::tokens::refer("accent")) }),
+        style_with("SprawlDanger", "Button", false, false, true, Geo { background: danger(), foreground: "White".into(), weight: "SemiBold", depth: Depth { shade: Some("button"), light: Some("hlon"), ..Depth::default() }, ..Geo::button() }),
+        // the one main action: the accent, semibold, with its accent shadow and a brighter lit edge
+        style_with("SprawlPrimary", "Button", false, false, true, Geo { background: crate::tokens::refer("accent"), foreground: crate::tokens::refer("onaccent"), weight: "SemiBold", depth: Depth { primary: true, shade: Some("primary"), light: Some("hlpri"), ..Depth::default() }, ..Geo::button().with_border("1", crate::tokens::refer("accent")) }),
     )
 }
 
@@ -1238,22 +1332,36 @@ mod tests {
         let r = resources();
         // the templated styles; SprawlPrimary builds on WinUI's own accent button
         for s in ["Normal", "PointerOver", "Pressed", "Disabled"] {
-            // the seven templated styles (pick, drop, page, chip, subtle, danger, primary) each
+            // the templated styles (pick, mode, drop, page, chip, subtle, danger, primary) each
             // have it, and so does the text box's template
             assert!(r.matches(&format!(r#"x:Name="{s}""#)).count() >= 7, "{s}");
         }
-        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 8);
-        for k in ["SprawlPick", "SprawlPickDrop", "SprawlPage", "SprawlPagePill", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
+        assert_eq!(r.matches("UseSystemFocusVisuals").count(), 9);
+        for k in ["SprawlPick", "SprawlMode", "SprawlPickDrop", "SprawlPage", "SprawlPagePill", "SprawlChip", "SprawlSubtle", "SprawlDanger", "SprawlPrimary"] {
             assert_eq!(r.matches(&format!(r#"x:Key="{k}""#)).count(), 1, "{k}");
         }
         // the main button has its own template, with the accent's shadow
         let primary = &r[r.find(r#"x:Key="SprawlPrimary""#).unwrap()..];
         let primary = &primary[..primary.find("</Style>").unwrap()];
-        assert!(primary.contains(r#"x:Name="Glow""#) && primary.contains(r#"Background="{$glow}""#));
+        // the shadow is a real one, hung by shade.rs on an empty host behind Root: no XAML
+        // imitation (no gradient, no stacked layers) is left
+        assert!(primary.contains(r#"<Border x:Name="Shade" Tag="shade:primary" CornerRadius="{TemplateBinding CornerRadius}" IsHitTestVisible="False"/>"#), "{primary}");
+        assert!(primary.find(r#"x:Name="Shade""#) < primary.find(r#"x:Name="Root""#), "behind the button");
+        assert!(!r.contains("GradientBrush") && !r.contains(r#"x:Name="Glow""#));
         // its states sit on the outer grid, after Root closes: WinUI runs only the outermost's
         let vsm = primary.find("VisualStateManager.VisualStateGroups").unwrap();
         assert_eq!(primary[vsm..].matches("</Grid>").count(), 1, "the main button's states are inside Root");
-        assert!(!r[..r.find(r#"x:Key="SprawlPrimary""#).unwrap()].contains(r#"x:Name="Glow""#), "only the main button glows");
+        assert!(!r[..r.find(r#"x:Key="SprawlPrimary""#).unwrap()].contains("shade:primary"), "only the main button is lit by the accent");
+        // the red one and a plain button sit on the black one; a plain button keeps WinUI's own
+        // template, its states moved to the grid round it
+        assert!(r.contains(r#"<Style TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">"#));
+        let plain = &r[r.find(r#"<Style TargetType="Button" BasedOn"#).unwrap()..];
+        let plain = &plain[..plain.find("</Style>").unwrap()];
+        assert!(plain.contains(r#"<Border x:Name="Shade" Tag="shade:button""#) && plain.contains(r#"x:Name="ContentPresenter""#));
+        assert!(plain.find("x:Name=\"Shade\"") < plain.find("x:Name=\"ContentPresenter\""));
+        assert!(plain.find("</ContentPresenter>") < plain.find("VisualStateManager.VisualStateGroups"), "the states are on the outer grid");
+        // the lit edge is a 1 px top border inside the button, bound to the button's corner
+        assert!(primary.contains(r#"x:Name="Light""#) && primary.contains(r#"BorderThickness="0,1,0,0" BorderBrush="{$hlpri}""#) && primary.contains("CornerRadius=\"{TemplateBinding CornerRadius}\" BorderThickness=\"0,1,0,0\""));
         // a text box with the focus shows the ring, outside its edge
         assert!(r.contains(r#"x:Name="Ring""#) && r.contains(r#"<Setter Target="Ring.Opacity" Value="1"/>"#) && r.contains(r#"BorderBrush="{$ring}""#));
         // the red one greys out when it can't be pressed, as WinUI's filled buttons do
@@ -1276,9 +1384,9 @@ mod tests {
     #[test]
     fn the_buttons_move_as_the_motion_option_says() {
         use crate::tokens::{Look, Motion, Ticks};
-        assert_eq!(state_time(Motion::Subtle), "0:0:0.14");
-        assert_eq!(state_time(Motion::Lively), "0:0:0.22");
-        assert_eq!(state_time(Motion::None), "0:0:0");
+        assert_eq!(state_time(Motion::Subtle, 140), "0:0:0.140");
+        assert_eq!(state_time(Motion::Lively, 140), "0:0:0.220");
+        assert_eq!(state_time(Motion::None, 140), "0:0:0.000");
         assert_eq!(travel(Motion::Subtle, -1.0, 0.98), (-1.0, 0.98));
         assert_eq!(travel(Motion::Lively, -1.0, 0.98), (-2.0, 0.96));
         assert_eq!(travel(Motion::None, -1.0, 0.98), (0.0, 1.0));
@@ -1286,25 +1394,27 @@ mod tests {
         if crate::win32::animations_on() {
             crate::tokens::set(&Look { motion: Motion::Lively, ..Look::default() });
             let r = resources();
-            assert!(r.contains(r#"Duration="0:0:0.22""#), "Lively's time");
+            assert!(r.contains(r#"KeyTime="0:0:0.220""#), "Lively's time");
         }
 
         // the storyboards each motion emits (the pointer-over and pressed states)
-        let subtle = states_with(Motion::Subtle, 0.10, -1.0, 1.0);
-        assert!(subtle.contains(r#"Duration="0:0:0.14""#), "{subtle}");
-        assert!(subtle.contains(r#"TranslateY)" To="-1""#), "{subtle}");
-        let lively = states_with(Motion::Lively, 0.10, -1.0, 1.0);
-        assert!(lively.contains(r#"Duration="0:0:0.22""#), "{lively}");
-        assert!(lively.contains(r#"TranslateY)" To="-2""#), "{lively}");
-        let lively_press = states_with(Motion::Lively, 0.20, 1.0, 0.98);
-        assert!(lively_press.contains(r#"TranslateY)" To="2""#), "{lively_press}");
-        assert!(lively_press.contains(r#"ScaleX)" To="0.96""#), "{lively_press}");
-        let still = states_with(Motion::None, 0.20, 1.0, 0.98);
-        assert!(still.contains(r#"Duration="0:0:0""#), "{still}");
-        assert!(still.contains(r#"TranslateY)" To="0""#), "{still}");
-        assert!(still.contains(r#"ScaleX)" To="1""#), "{still}");
-        // the wash still changes in each
-        assert!(still.contains(r#"To="0.2""#), "{still}");
+        let feel = press_feel(crate::tokens::Press::LiftSink);
+        let subtle = states_with(Motion::Subtle, &feel, feel.over);
+        assert!(subtle.contains(r#"KeyTime="0:0:0.140""#), "{subtle}");
+        assert!(subtle.contains(r#"TranslateY)"><SplineDoubleKeyFrame KeyTime="0:0:0.140" Value="-1""#), "{subtle}");
+        let lively = states_with(Motion::Lively, &feel, feel.over);
+        assert!(lively.contains(r#"KeyTime="0:0:0.220""#), "{lively}");
+        assert!(lively.contains(r#"Value="-2""#), "{lively}");
+        let lively_press = states_with(Motion::Lively, &feel, feel.down);
+        assert!(lively_press.contains(r#"TranslateY)"><SplineDoubleKeyFrame KeyTime="0:0:0.220" Value="2""#), "{lively_press}");
+        assert!(lively_press.contains(r#"ScaleX)"><SplineDoubleKeyFrame KeyTime="0:0:0.220" Value="0.96""#), "{lively_press}");
+        let still = states_with(Motion::None, &feel, feel.down);
+        assert!(still.contains(r#"KeyTime="0:0:0.000""#), "{still}");
+        assert!(still.contains(r#"TranslateY)"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="0""#), "{still}");
+        assert!(still.contains(r#"ScaleX)"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="1""#), "{still}");
+        // the wash still changes in each: black while pressed
+        assert!(still.contains(r#"TargetName="WashDown" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="0.2""#), "{still}");
+        assert!(still.contains(r#"TargetName="Wash" Storyboard.TargetProperty="Opacity"><SplineDoubleKeyFrame KeyTime="0:0:0.000" Value="0""#), "{still}");
 
         // Square is WinUI's own box; Round is the check box's CornerRadius, half of its 20 px
         crate::tokens::set(&Look { motion: Motion::Subtle, ..Look::default() });
@@ -1323,20 +1433,58 @@ mod tests {
     #[test]
     fn the_newer_options_reach_the_styles() {
         use crate::tokens::{Chips, Controls, Finish, Look, Press, Tabs};
-        // press feedback: the values each option gives the pointer-over and the pressed state
-        assert_eq!(press_feel(Press::LiftSink), ((0.10, -1.0, 1.0), (0.20, 1.0, 0.98)));
-        assert_eq!(press_feel(Press::PressIn).0 .1, 0.0, "no lift under the pointer");
-        assert_eq!(press_feel(Press::PressIn).1 .1, 1.0, "but it sinks when pressed");
-        assert_eq!(press_feel(Press::Fade), ((0.10, 0.0, 1.0), (0.20, 0.0, 1.0)));
-        assert!(press_feel(Press::Faint).0 .0 < 0.10 && press_feel(Press::Faint).1 .1 == 0.0);
-
-        // finish: Flat has no shadow under a card and no glow under the main button
-        assert!(shadow(&crate::tokens::rc(8.0), 1).contains(&crate::tokens::refer("lift")));
-        crate::tokens::set(&Look { finish: Finish::Flat, ..Look::default() });
-        assert_eq!(shadow(&crate::tokens::rc(8.0), 1), "");
-        assert!(!resources().contains(r#"x:Name="Glow""#));
+        // press feedback: the values each option gives the pointer-over and the pressed state,
+        // as the mockup's four modes (the wash is white under the pointer and black pressed)
+        let lift = press_feel(Press::LiftSink);
+        assert_eq!((lift.over.white, lift.over.lift, lift.down.black, lift.down.lift, lift.down.scale, lift.ms), (0.10, -1.0, 0.20, 1.0, 0.98, 140));
+        assert!(lift.shadow && lift.spline == "0.2,0.8,0.2,1");
+        let sink = press_feel(Press::PressIn);
+        assert_eq!((sink.over.white, sink.over.lift, sink.down.black, sink.down.scale, sink.ms), (0.13, 0.0, 0.22, 0.95, 130));
+        assert!(!sink.shadow && sink.spline == "0.2,0.9,0.3,1.35", "the sink overshoots");
+        let clear = press_feel(Press::Fade);
+        assert_eq!((clear.over.white, clear.down.black, clear.down.scale, clear.over.lift, clear.ms), (0.13, 0.22, 1.0, 0.0, 90));
+        let faint = press_feel(Press::Faint);
+        assert_eq!((faint.over.white, faint.down.white, faint.down.black, faint.ms), (0.07, 0.12, 0.0, 0));
+        // each reaches the main button's template: its spline, and the shadow only for Lift
+        for press in [Press::LiftSink, Press::PressIn, Press::Fade, Press::Faint] {
+            crate::tokens::set(&Look { press, ..Look::default() });
+            let r = resources();
+            let primary = &r[r.find(r#"x:Key="SprawlPrimary""#).unwrap()..];
+            let primary = &primary[..primary.find("</Style>").unwrap()];
+            assert!(primary.contains(&format!(r#"KeySpline="{}""#, press_feel(press).spline)), "{press:?}");
+            // the shadow grows under the pointer and goes while pressed for Lift only (shade.rs
+            // reads this), on the press's own time
+            assert_eq!(shadow_motion(), (press == Press::LiftSink, state_ms(motion(), press_feel(press).ms)), "{press:?}");
+        }
         crate::tokens::set(&Look::default());
-        assert!(resources().contains(r#"x:Name="Glow""#));
+
+        // finish: Flat has no shadow under a card, no shadow under a button and no lit edge
+        assert_eq!(shadow(false), shade_host("card", &crate::tokens::rc(8.0)));
+        assert!(shadow(true).contains(r#"Tag="shade:dialog""#));
+        let page = |flat: bool| {
+            crate::tokens::set(&Look { finish: if flat { Finish::Flat } else { Finish::Soft }, ..Look::default() });
+            let all = format!("{}{}{}", crate::ui::page(&[]), resources(), crate::wizard::xaml());
+            crate::tokens::set(&Look::default());
+            all
+        };
+        // (token names are written without the opening brace: a bare one in a string would be
+        // read as a token by the scanner test)
+        let soft = page(false);
+        for name in ["$hlcard}", "$hlbtn}", "$hlpri}", "shade:card", "shade:dialog", "shade:button", "shade:primary"] {
+            assert!(soft.contains(name), "{name}");
+        }
+        // no imitation is left: no stacked layers of a shadow colour, no gradient shadow
+        for old in ["$lift}", "$glow}", "$shd", "$glw", concat!("GradientStop Color=\"{", "$shd"), "x:Name=\"Glow\"", "x:Name=\"Lift\""] {
+            assert!(!soft.contains(old), "{old}");
+        }
+        let flat_page = page(true);
+        for token in ["shade:", "$hlcard", "$hlbtn", "$hlpri", "$hlon", "$hlbar", "x:Name=\"Shade\"", "x:Name=\"Light\"", "BasedOn=\"{StaticResource DefaultButtonStyle}\""] {
+            assert!(!flat_page.contains(token), "Flat still has {token}");
+        }
+        crate::tokens::set(&Look { finish: Finish::Flat, ..Look::default() });
+        assert_eq!(shadow(false), "");
+        assert_eq!(top_light("hlcard", &crate::tokens::rc(8.0), false), "");
+        crate::tokens::set(&Look::default());
 
         // chips: the corner follows the option
         for (chips, corner) in [(Chips::Pills, "15"), (Chips::Soft, "10"), (Chips::Rect, "4")] {
