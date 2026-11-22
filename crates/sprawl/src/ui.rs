@@ -974,6 +974,12 @@ pub fn page(drives: &[String]) -> String {
     let types_hint = crate::welcome::types_hint();
     let wizard = crate::wizard::xaml();
     let hist = crate::history::xaml();
+    // the map's panel; dev: SPRAWL_MAP_SCALE=k draws it k times as big (treemap.rs lays it out at
+    // 1/k of its room), so XAML gives it the composition scale of a display at k
+    let map_panel = match crate::treemap::map_scale_override() {
+        Some(k) => format!(r#"<SwapChainPanel x:Name="MapPanel" HorizontalAlignment="Left" VerticalAlignment="Top"><SwapChainPanel.RenderTransform><ScaleTransform ScaleX="{k}" ScaleY="{k}"/></SwapChainPanel.RenderTransform></SwapChainPanel>"#),
+        None => r#"<SwapChainPanel x:Name="MapPanel"/>"#.to_string(),
+    };
     let version = env!("CARGO_PKG_VERSION");
     let (logo_small, logo_big) = (logo(46), logo(96));
     // Colours and Tweaks act on the treemap only: its button is in the map bar, shown with it
@@ -1190,7 +1196,7 @@ pub fn page(drives: &[String]) -> String {
   </Grid>
   {welcome}
   <Grid x:Name="MapBorder" Grid.Row="6" Margin="12,0,12,0" CornerRadius="{{$rc8}}" BorderBrush="{{$line1}}" BorderThickness="1" Background="#38000000">
-    <SwapChainPanel x:Name="MapPanel"/>
+    {map_panel}
     <TextBlock x:Name="MapCaption" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,10,14,0" MaxWidth="720" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text1}}"/>
     <Border x:Name="MapKey" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Padding="10,6" CornerRadius="{{$rc6}}" Background="#B314161E"/>
     {hud}

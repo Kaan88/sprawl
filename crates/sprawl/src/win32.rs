@@ -420,6 +420,12 @@ pub fn show_behind(h: HWND) {
     }
 }
 
+/// The window's outer size in pixels.
+pub fn window_size(h: HWND) -> Option<(i32, i32)> {
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    (unsafe { GetWindowRect(h, &mut r) } != 0).then_some((r.right - r.left, r.bottom - r.top))
+}
+
 /// The window's picture as RGBA rows (width, height, pixels).
 pub fn capture(h: HWND) -> Option<(u32, u32, Vec<u8>)> {
     unsafe {

@@ -260,6 +260,11 @@ pub(crate) fn text(root: &FrameworkElement, name: &str, value: &str) {
     }
 }
 
+thread_local! {
+    /// dev: a screenshot run's window being dragged to a size: from, to, frames gone (of 20).
+    static SHOT_DRAG: std::cell::Cell<Option<((i32, i32), (i32, i32), u32)>> = const { std::cell::Cell::new(None) };
+}
+
 /// dev: with `SPRAWL_TIMING` set, one line per call in `%TEMP%\sprawl-timing.log`: what took
 /// how long since `since`. Off (one env lookup, cached) otherwise.
 pub(crate) fn timing(what: &str, since: Instant) {
@@ -843,6 +848,13 @@ impl State {
         if self.shot_ticks % 30 == 10 && std::env::var("SPRAWL_SWITCH").is_ok_and(|v| v.contains("kb=")) {
             crate::win32::alt_state(false);
         }
+        // dev: a `drag=` step's window, one size further each frame
+        if let Some((from, to, k)) = SHOT_DRAG.with(|d| d.get()) {
+            let k = k + 1;
+            let at = |a: i32, b: i32| a + (b - a) * k as i32 / 20;
+            let _ = self.window.AppWindow().and_then(|a| a.Resize(crate::bindings::Windows::Graphics::SizeInt32 { Width: at(from.0, to.0), Height: at(from.1, to.1) }));
+            SHOT_DRAG.with(|d| d.set((k < 20).then_some((from, to, k))));
+        }
         // dev: SPRAWL_SWITCH=ModeCity,ModeGalaxy,... runs those commands 30 frames apart,
         // hovering the map in between
         if self.shot_ticks % 30 == 0 {
@@ -868,6 +880,21 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: the window resized mid-run (size=2000x1100), as dragging its edge,
+                    // maximising or restoring it would
+                    s if s.starts_with("size=") => {
+                        if let Some((sw, sh)) = s[5..].split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))) {
+                            let _ = self.window.AppWindow().and_then(|a| a.Resize(crate::bindings::Windows::Graphics::SizeInt32 { Width: sw, Height: sh }));
+                        }
+                    }
+                    // dev: the window's edge dragged to this size over the next 20 frames, a new
+                    // size each frame (drag=2000x1100)
+                    s if s.starts_with("drag=") => {
+                        if let Some((sw, sh)) = s[5..].split_once('x').and_then(|(a, b)| Some((a.parse::<i32>().ok()?, b.parse::<i32>().ok()?))) {
+                            let now = crate::win32::window_size(self.hwnd).unwrap_or((sw, sh));
+                            SHOT_DRAG.with(|d| d.set(Some((now, (sw, sh), 0))));
+                        }
+                    }
                     // dev: give the control the keyboard's focus (focus=FilterBox), for the focus ring's picture
                     // (Keyboard, not Programmatic: a combo box only draws its ring for the first)
                     f if f.starts_with("focus=") => {

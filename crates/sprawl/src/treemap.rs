@@ -76,6 +76,10 @@ pub(crate) struct MapView {
     pub(crate) capture: Option<std::path::PathBuf>,
     /// The other views (rings, flame stack, ...), when one is on.
     pub(crate) views: crate::views::Views,
+    /// Resizes of the swap chain that failed in a row (after a few, the GPU side is made again).
+    pub(crate) resize_fails: u32,
+    /// Since when the map has wanted to draw and the swap chain has had no frame free.
+    pub(crate) stalled: Option<Instant>,
 }
 
 impl MapView {
@@ -102,8 +106,22 @@ impl MapView {
             galaxy: crate::galaxy::Galaxy::default(),
             capture: None,
             views: crate::views::Views::default(),
+            resize_fails: 0,
+            stalled: None,
         }
     }
+}
+
+/// dev: `SPRAWL_MAP_SCALE=1.5` pictures the map as a display at 150 % would: its panel is drawn
+/// 1.5 times as big (a ScaleTransform, ui.rs) and laid out at 1/1.5 of its room (`frame`), so
+/// it still fills the room and XAML itself reports a composition scale of 1.5 for the swap chain
+/// to follow. (`SPRAWL_SCALE` magnifies the whole page instead, and the map is then out of the
+/// picture.)
+pub(crate) fn map_scale_override() -> Option<f64> {
+    thread_local! {
+        static K: Option<f64> = std::env::var("SPRAWL_MAP_SCALE").ok().and_then(|v| v.parse::<f64>().ok()).filter(|k| *k >= 0.5 && (*k - 1.0).abs() > 1e-3);
+    }
+    K.with(|k| *k)
 }
 
 fn palette_colour(i: usize) -> [f32; 3] {
@@ -248,6 +266,18 @@ impl State {
             Ok(f) => f,
             Err(_) => return,
         };
+        if let Some(k) = map_scale_override() {
+            if let Ok(b) = crate::state::find::<FrameworkElement>(&self.root, "MapBorder") {
+                // inside the border's 1-DIP line
+                let (bw, bh) = (b.ActualWidth().unwrap_or(0.0) - 2.0, b.ActualHeight().unwrap_or(0.0) - 2.0);
+                // (Width is NaN until set)
+                let off = |now: f64, want: f64| !((now - want).abs() <= 0.01);
+                if bw > 0.0 && bh > 0.0 && (off(fe.Width().unwrap_or(0.0), bw / k) || off(fe.Height().unwrap_or(0.0), bh / k)) {
+                    let _ = fe.SetWidth(bw / k);
+                    let _ = fe.SetHeight(bh / k);
+                }
+            }
+        }
         let w = fe.ActualWidth().unwrap_or(0.0) as f32;
         let h = fe.ActualHeight().unwrap_or(0.0) as f32;
         let sx = p.CompositionScaleX().unwrap_or(1.0);
@@ -257,16 +287,32 @@ impl State {
             return;
         }
         if (w, h, sx, sy) != self.map.dims {
+            crate::state::timing(&format!("map panel {w}x{h} at {sx}x{sy}"), now);
             self.map.dims = (w, h, sx, sy);
             self.map.scene.w = w;
             self.map.scene.h = h;
+            // laid out again and drawn: a swap chain resized and not presented shows nothing new
             self.map.dirty = true;
             match &mut self.map.gpu {
-                Some(g) => {
-                    if let Err(e) = g.resize(w, h, (sx, sy)) {
-                        eprintln!("resize: {e}");
+                Some(g) => match g.resize(w, h, (sx, sy)) {
+                    Ok(()) => {
+                        self.map.resize_fails = 0;
+                        crate::state::timing(&format!("map swap chain {:?}", g.swap_size()), now);
                     }
-                }
+                    Err(e) => {
+                        // the swap chain kept its old size: the map would fill only that much of
+                        // the panel until the window changed size again. Tried again next frame;
+                        // after a few tries, or with the GPU lost, it is all made again.
+                        eprintln!("resize: {e}");
+                        crate::state::timing(&format!("map resize failed: {e}"), now);
+                        self.map.resize_fails += 1;
+                        self.map.dims = (0.0, 0.0, 1.0, 1.0);
+                        if self.map.resize_fails >= 3 || g.lost() {
+                            self.map.gpu = None;
+                            self.map.resize_fails = 0;
+                        }
+                    }
+                },
                 None if self.map.gpu_error.is_none() => {
                     let made = p.cast::<windows_core::IUnknown>().map_err(|e| e.to_string()).and_then(|u| Gpu::new(&u, w, h, (sx, sy)));
                     match made {
@@ -274,6 +320,7 @@ impl State {
                             if let Err(e) = g.set_samples(self.map.aa) {
                                 eprintln!("antialiasing: {e}");
                             }
+                            crate::state::timing(&format!("map swap chain made {:?}", g.swap_size()), now);
                             self.map.gpu = Some(g)
                         }
                         Err(e) => {
@@ -342,7 +389,20 @@ impl State {
         let want_capture = self.map.capture.is_some();
         if busy || !self.map.drawn_once || want_capture {
             if let Some(g) = &self.map.gpu {
-                if g.ready() || want_capture {
+                // The swap chain's waitable object says a frame is free. A frame slot that never
+                // comes back (a Present not made after the wait, or one the swap chain dropped
+                // in a resize) would stop the map for good, showing its last frame at its old
+                // size: after a quarter second without one it is drawn anyway (Present then waits
+                // a frame at most).
+                let ready = g.ready();
+                let stalled = if ready { None } else { Some(*self.map.stalled.get_or_insert(now)) };
+                self.map.stalled = stalled;
+                let overdue = stalled.is_some_and(|t| now - t >= std::time::Duration::from_millis(250));
+                if overdue {
+                    crate::state::timing("map drawn without a free frame", now);
+                    self.map.stalled = None;
+                }
+                if ready || want_capture || overdue {
                     let labels = if self.map.show_labels && !views { self.map_labels(galaxy) } else { Vec::new() };
                     let m = &mut self.map;
                     let (vp, eye) = if views { (m.views.vp, m.views.eye) } else if galaxy { (m.galaxy.vp, m.galaxy.eye) } else { (m.scene.vp, m.scene.eye) };
@@ -381,10 +441,12 @@ impl State {
                     };
                     let g = m.gpu.as_mut().unwrap();
                     g.want_capture = want_capture;
+                    let mut lost = false;
                     if let Err(e) = g.render(&frame) {
                         eprintln!("render: {e}");
+                        lost = g.lost();
                     }
-                    m.drawn_once = true;
+                    m.drawn_once = !lost;
                     if let Some(path) = m.capture.take() {
                         let msg = match g.captured.take() {
                             Some((cw, ch, mut px)) => {
@@ -400,6 +462,11 @@ impl State {
                             None => "Couldn't read the treemap picture back from the GPU".to_string(),
                         };
                         text(&self.root, "FootLeft", &msg);
+                    }
+                    if lost {
+                        // made again on the next frame, at the panel's size then
+                        self.map.gpu = None;
+                        self.map.dims = (0.0, 0.0, 1.0, 1.0);
                     }
                 }
             }
