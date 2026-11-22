@@ -160,6 +160,10 @@ cargo build --release -p sprawl-release
 `build` first runs `crates/sprawl-core/tests/speed_guard.rs`: Sprawl's folder inventory against a
 plain listing of deep disposable folders. A slowdown like 1.0's (27x there) stops the release.
 
+`build` also writes `hub.txt` beside the rest (through `tools/write-hub-txt.ps1`, a copy of the
+one in the Hub launcher's repository), and `publish` uploads it: it is how Hub finds, checks and
+updates Sprawl. It lists Setup only, run silently for all users. It needs PowerShell 7 (`pwsh`).
+
 The signing key is `%USERPROFILE%\.sprawl-release\signing.key`, made once with
 `sprawl-release keygen`. It never goes in the repository. Its public half is `PUBLIC_KEY` in
 `crates/sprawl-install/src/lib.rs`; losing the key means installed copies can't take updates
