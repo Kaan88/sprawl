@@ -452,13 +452,17 @@ pub fn expand_dropdown(h: HWND, id: &str) -> bool {
     use windows::core::BSTR;
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
-    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationExpandCollapsePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_ExpandCollapsePatternId};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationExpandCollapsePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_ExpandCollapsePatternId, UIA_NamePropertyId};
     let run = || -> windows::core::Result<()> {
         unsafe {
             let ua: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
             let root = ua.ElementFromHandle(windows::Win32::Foundation::HWND(h as *mut _))?;
             let cond = ua.CreatePropertyCondition(UIA_AutomationIdPropertyId, &VARIANT::from(BSTR::from(id)))?;
-            let found = root.FindFirst(TreeScope_Descendants, &cond)?;
+            // by its id (a control's x:Name), else by its name (a menu bar's "File")
+            let found = match root.FindFirst(TreeScope_Descendants, &cond) {
+                Ok(f) => f,
+                Err(_) => root.FindFirst(TreeScope_Descendants, &ua.CreatePropertyCondition(UIA_NamePropertyId, &VARIANT::from(BSTR::from(id)))?)?,
+            };
             let pattern: IUIAutomationExpandCollapsePattern = windows::core::Interface::cast(&found.GetCurrentPattern(UIA_ExpandCollapsePatternId)?)?;
             pattern.Expand()
         }

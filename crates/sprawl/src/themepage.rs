@@ -295,7 +295,10 @@ pub(crate) fn sample(look: &Look, mode: usize) -> String {
 /// The sample, made into an element.
 fn sample_element(look: &Look, mode: usize) -> Option<UIElement> {
     let el: UIElement = XamlReader::Load(&HSTRING::from(sample(look, mode))).ok()?.cast().ok()?;
-    crate::shade::watch(&el);
+    // its glow in the picked accent, and its shadows as strong as the picked light or dark has
+    // them, not the look in use (the window takes the picks a frame later)
+    let light = crate::theme::wanted_light(Some(&mode.to_string()));
+    crate::shade::watch_with(&el, crate::shade::Tones::of(&tokens::table(look, light)));
     Some(el)
 }
 

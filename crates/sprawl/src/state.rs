@@ -927,6 +927,37 @@ impl State {
                     }
                     // dev: the saved searches menu open
                     "saved" => self.search_saved_open(),
+                    // dev: open a dropdown or a menu bar's menu as a screen reader would
+                    // (expand=File, expand=TmPick_accent)
+                    e if e.starts_with("expand=") => {
+                        crate::win32::expand_dropdown(self.hwnd, &e[7..]);
+                    }
+                    // dev: close a named menu or flyout
+                    h if h.starts_with("hide=") => {
+                        if let Ok(f) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::FlyoutBase>(&self.root, &h[5..]) {
+                            let _ = f.Hide();
+                        }
+                    }
+                    // dev: a named menu shown by an element (menu=SearchHelpFly@SearchHelp), or at
+                    // a point in it as a right-click shows it (menu=RowMenu@TreeScroll@80x40: not a
+                    // comma, the steps are split on those)
+                    m if m.starts_with("menu=") => {
+                        let mut parts = m[5..].split('@');
+                        let (menu, target, at) = (parts.next().unwrap_or(""), parts.next().unwrap_or("TreeScroll"), parts.next());
+                        let shown = || -> windows_core::Result<()> {
+                            use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{FlyoutBase, FlyoutShowOptions};
+                            let f: FlyoutBase = find(&self.root, menu)?;
+                            let t: crate::bindings::Microsoft::UI::Xaml::DependencyObject = find(&self.root, target)?;
+                            let opts = FlyoutShowOptions::new()?;
+                            if let Some((x, y)) = at.and_then(|a| a.split_once('x')) {
+                                opts.SetPosition(Some(crate::bindings::Windows::Foundation::Point { X: x.parse().unwrap_or(0.0), Y: y.parse().unwrap_or(0.0) }))?;
+                            }
+                            f.ShowAtWithOptions(&t, &opts)
+                        };
+                        if let Err(e) = shown() {
+                            eprintln!("menu {menu}: {e:?}");
+                        }
+                    }
                     // dev: a key in the search box (boxkey=40 is Down)
                     k if k.starts_with("boxkey=") => {
                         self.search_box_key(k[7..].parse().unwrap_or(0));
