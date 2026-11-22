@@ -202,3 +202,39 @@ The two `.claude/worktrees/agent-*` worktrees are merged and can be removed.
 - Theme page: presets Sprawl/Windows/Midnight/Paper/Custom, Customise tabs Colour/Shape/Feel/Text and space, Copy/Paste theme, Back to Sprawl's own; stored as `look.<key>` + `look.custom` in settings.ini; Save applies live.
 - Not pushed. Waiting on the user's click test (hover/press, Theme page, Search delete on throwaway folders). In the light dropdown screenshot the open popup has a black frame; check whether it shows in the real app or only in the capture.
 - Still open: Part 3 tick/switch motion, soft shadow, field focus ring; Part 4 tier 2/3 options (custom accent, strength, backdrop, risk colours via Fable queue, chips, tabs, density...); Part 5 checks and CHANGELOG pass; clean up merged worktrees.
+
+## Update 6 (2026-11-22, paused here)
+
+Main is at 0f19180 plus this note; nothing pushed. Merged since Update 5: Theme options always shown
+and preset buttons fixed; menus/lists/tooltips tinted (token `menu`), dialogs not; every accent
+follows the chosen one (`look::accent()` reads tokens, `windows_accent()` is the registry);
+theme picks apply live with Settings open (restyle::preview / end_preview, Cancel restores);
+Part 3 soft finish (focus ring via textbox.xaml, tab line fade); Theme tier 2 + Backdrop (9
+options, three dropdowns per row); Stronger = most vivid shade (706d9a7); primary button states
+fixed (3b070c6). Risk colours queued for Fable in .claude/fable-review-queue.md.
+
+STANDING since today: no shortcuts (memory feedback-no-shortcuts.md). The audit list of earlier
+shortcuts is in docs/plans/plan-polish.md, "Audit: shortcuts taken in Parts 3 and 4".
+
+**In progress, decided by the user: real composition shadows.** The shadows on main are still the
+banded stacked borders (`look::shadow`, the primary button's `Glow`). Findings:
+- ThemeShadow written in XAML draws nothing (needs Receivers, settable only from code).
+- The real thing: Microsoft.UI.Composition `DropShadow` (Color, BlurRadius, Offset, Opacity) on a
+  `SpriteVisual` set with `ElementCompositionPreview::SetElementChildVisual`, masked to rounded
+  corners (CompositionMaskBrush / element alpha), hover opacity animated in code. Match the
+  mockup's CSS exactly (docs/mockups/polish-2026-11-21/index.html lines ~118-122, 206-212).
+- Needs new bindings: the generator is crates/bindgen (src/main.rs), metadata packages from
+  tools/setup.ps1 (Microsoft.UI.winmd holds Microsoft.UI.Composition; Microsoft.UI.Xaml.winmd
+  holds Microsoft.UI.Xaml.Hosting). Add Compositor, DropShadow, SpriteVisual, CompositionBrush,
+  CompositionMaskBrush, ElementCompositionPreview to the filter and regenerate bindings.rs.
+- Branch `worktree-agent-abc547e8ebf995eda` (5c394f4, NOT merged): gradient 9-slice shadows
+  (reject: an imitation, grey halo, no accent offset, a notch at Save's bottom-right corner) plus
+  parts worth keeping after review: the mockup's press feel (black press wash `washdown`, exact
+  timings/easing via key splines, sink overshoot), top highlights (tokens hlcard/hlbtn/hlpri/hlon/
+  hlbar, style SprawlMode), Flat dropping everything. Take those, drop `soft`/`soft_xaml`/the
+  gradient `shadow` and tokens shd*/glw*, then build the composition shadows on top.
+- Review bar: zoomed crops vs the mockup render, dark and light; no banding, accent-tinted
+  primary shadow offset below, no notches. Press feel must be clicked by hand.
+
+Then: the rest of the audit list, tier 3 (text size, density, custom accent), Part 5, 1.0.6.
+Merged worktrees under .claude/worktrees/ can be cleaned up.
