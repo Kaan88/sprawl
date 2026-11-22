@@ -39736,6 +39736,30 @@ pub mod Microsoft {
                             *mut core::ffi::c_void,
                         )
                             -> windows_core::HRESULT,
+                        IsThreeState: usize,
+                        SetIsThreeState: usize,
+                        pub Checked: unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            *mut core::ffi::c_void,
+                            *mut i64,
+                        )
+                            -> windows_core::HRESULT,
+                        pub RemoveChecked: unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            i64,
+                        )
+                            -> windows_core::HRESULT,
+                        pub Unchecked: unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            *mut core::ffi::c_void,
+                            *mut i64,
+                        )
+                            -> windows_core::HRESULT,
+                        pub RemoveUnchecked: unsafe extern "system" fn(
+                            *mut core::ffi::c_void,
+                            i64,
+                        )
+                            -> windows_core::HRESULT,
                     }
                     #[repr(transparent)]
                     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43779,6 +43803,66 @@ pub mod Microsoft {
                                     windows_core::Param::param(value__.as_ref()).abi(),
                                 )
                                 .ok()
+                            }
+                        }
+                        pub fn Checked<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<super::super::RoutedEventArgs>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let handler = <super::super::RoutedEventHandler>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(self).Checked)(
+                                    windows_core::Interface::as_raw(self),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    self.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(self).RemoveChecked,
+                                ))
+                            }
+                        }
+                        pub fn Unchecked<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<super::super::RoutedEventArgs>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let handler = <super::super::RoutedEventHandler>::new(move |a0, a1| {
+                                handler(a0, a1);
+                                Ok(())
+                            });
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ = (windows_core::Interface::vtable(self).Unchecked)(
+                                    windows_core::Interface::as_raw(self),
+                                    windows_core::Interface::as_raw(&handler),
+                                    &mut result__,
+                                )
+                                .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    self.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(self).RemoveUnchecked,
+                                ))
                             }
                         }
                         pub fn DesiredSize(

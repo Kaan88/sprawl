@@ -280,3 +280,5 @@ Microsoft.UI.Xaml.Controls.Panel::Children
 Microsoft.UI.Xaml.Media.VisualTreeHelper::GetChild
 Microsoft.UI.Xaml.Media.VisualTreeHelper::GetChildrenCount
 Microsoft.UI.Xaml.Controls.Primitives.ToggleButton::IsChecked
+Microsoft.UI.Xaml.Controls.Primitives.ToggleButton::Checked
+Microsoft.UI.Xaml.Controls.Primitives.ToggleButton::Unchecked

@@ -491,6 +491,9 @@ pub(crate) enum InMenu {
     Close,
     /// Something for the bar (Left and Right in one of the bar's own menus).
     Bar(Act),
+    /// The menu's key, with nothing to do: kept from the row (a dot's radio button would move
+    /// on to the next dot and pick it, without its command).
+    Hold,
 }
 
 /// A key in an open menu, before its rows see it: `at` is the row with the focus (none: the
@@ -510,7 +513,7 @@ pub(crate) fn menu_key(key: Key, at: Option<usize>, kinds: &[Kind], enabled: &[b
             })
             .find(|&i| can(i))
     };
-    let moved = |to: Option<usize>| to.map_or(InMenu::None, InMenu::Move);
+    let moved = |to: Option<usize>| to.map_or(InMenu::Hold, InMenu::Move);
     match key {
         Key::Down => moved(walk(at, true)),
         Key::Up => moved(walk(at, false)),
@@ -518,7 +521,7 @@ pub(crate) fn menu_key(key: Key, at: Option<usize>, kinds: &[Kind], enabled: &[b
         Key::End => moved(walk(None, false)),
         Key::Right => match at {
             Some(r) if kinds.get(r) == Some(&Kind::Sub) && can(r) => InMenu::OpenSub(r),
-            _ => top.map_or(InMenu::None, |(i, len)| InMenu::Bar(Act::Switch(step(i, len, true)))),
+            _ => top.map_or(InMenu::Hold, |(i, len)| InMenu::Bar(Act::Switch(step(i, len, true)))),
         },
         Key::Left => top.map_or(InMenu::Close, |(i, len)| InMenu::Bar(Act::Switch(step(i, len, false)))),
         Key::Escape => InMenu::Close,
@@ -678,6 +681,11 @@ struct Bar {
     delay: Duration,
     /// Menus closed by this code (not by a click outside them).
     closing: Vec<usize>,
+    /// Whether the window had the keyboard on the last frame (losing it ends an Alt tap).
+    foreground: bool,
+    /// Each sub-menu's menu that the pointer goes through to (the one it opened from, or one
+    /// further up while the pointer is over that).
+    through: Vec<Option<usize>>,
 }
 
 thread_local! {
@@ -738,6 +746,18 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<()> {
             if r.kind != Kind::Sub {
                 keep(c.cast::<ButtonBase>()?.Click(|_, _| close_all())?);
             }
+            // a check or a dot runs its command when its mark changes, however it changed: a
+            // click, Enter or Space, or a screen reader's Toggle or Select (which click nothing)
+            let toggle = c.cast::<ToggleButton>();
+            if matches!(r.kind, Kind::Toggle | Kind::Radio) {
+                let t = toggle?;
+                let name = r.name.clone();
+                keep(t.Checked(move |_, _| marked(&name))?);
+            }
+            if r.kind == Kind::Toggle {
+                let name = r.name.clone();
+                keep(c.cast::<ToggleButton>()?.Unchecked(move |_, _| marked(&name))?);
+            }
         }
         menus.push(Menu { flyout, owner, list, rows, els, shape: shape.clone() });
     }
@@ -795,6 +815,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<()> {
         }
     })?);
     let n = menus.len();
+    let through = parents(&menus);
     let delay = Duration::from_millis(u64::from(crate::win32::menu_show_delay()));
     BAR.with(|b| {
         *b.borrow_mut() = Some(Bar {
@@ -818,9 +839,38 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<()> {
             resting: None,
             delay,
             closing: Vec::new(),
+            foreground: false,
+            through,
         })
     });
     Ok(())
+}
+
+thread_local! {
+    /// Marks being set by this code ([`set_checked`]), not by the user: no command runs.
+    static SETTING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether row `name` runs its command on its click (main.rs binds that): not a check or a dot,
+/// which run theirs when their mark changes.
+pub(crate) fn runs_on_click(name: &str) -> bool {
+    SHAPE.with(|s| s.borrow().iter().flat_map(|m| &m.rows).find(|r| r.name == name).is_none_or(|r| !matches!(r.kind, Kind::Toggle | Kind::Radio)))
+}
+
+/// The user changed row `name`'s mark (a dot: picked it; its others are let go by WinUI only
+/// while on screen, so here too): the menus close and its command runs, once.
+fn marked(name: &str) {
+    if SETTING.with(|c| c.get()) > 0 {
+        return;
+    }
+    close_all();
+    if let Some(root) = bar(|b| b.root.clone()).and_then(|r| r.cast::<FrameworkElement>().ok()) {
+        if SHAPE.with(|s| s.borrow().iter().flat_map(|m| &m.rows).any(|r| r.name == name && r.kind == Kind::Radio)) {
+            let _ = set_checked(&root, name, true);
+        }
+    }
+    dev(&format!("marked {name}"));
+    crate::state::with(|s| s.command(name));
 }
 
 /// Whether the check or dot row `name` is ticked.
@@ -831,15 +881,20 @@ pub(crate) fn checked(root: &FrameworkElement, name: &str) -> windows_core::Resu
 /// Tick or untick the check or dot row `name`; a dot ticked unticks the rest of its group
 /// (WinUI's radio buttons only do so while they are on screen, and a menu's mostly are not).
 pub(crate) fn set_checked(root: &FrameworkElement, name: &str, on: bool) -> windows_core::Result<()> {
-    find::<ToggleButton>(root, name)?.SetIsChecked(Some(on))?;
-    if on {
-        for other in SHAPE.with(|s| group_of(&s.borrow(), name)) {
-            if let Ok(t) = find::<ToggleButton>(root, &other) {
-                t.SetIsChecked(Some(false))?;
+    SETTING.with(|c| c.set(c.get() + 1));
+    let set = (|| {
+        find::<ToggleButton>(root, name)?.SetIsChecked(Some(on))?;
+        if on {
+            for other in SHAPE.with(|s| group_of(&s.borrow(), name)) {
+                if let Ok(t) = find::<ToggleButton>(root, &other) {
+                    t.SetIsChecked(Some(false))?;
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    SETTING.with(|c| c.set(c.get() - 1));
+    set
 }
 
 /// A row's shortcut was pressed: a check flips (a dot is picked) and its command runs, as
@@ -1091,7 +1146,7 @@ fn pointer_on_menu() -> bool {
     }) else {
         return false;
     };
-    let rects: Vec<(f64, f64, f64, f64)> = lists.iter().filter_map(|l| rect(&l.cast().ok()?, &root)).collect();
+    let rects: Vec<(f64, f64, f64, f64)> = lists.iter().filter_map(|l| shown_rect(l, &root)).collect();
     dev(&format!("pointer at {at:?}; open menus at {rects:?}"));
     hit(at.0, at.1, &rects).is_some()
 }
@@ -1171,6 +1226,20 @@ fn list_key(m: usize, e: &KeyRoutedEventArgs) {
         return;
     }
     let Ok(k) = e.Key() else { return };
+    // Enter on a dot picks it, as on WinUI's (a radio button takes only Space): its command runs
+    // when its mark changes; picked already, the menus just close
+    if k.0 == 13 {
+        let dot = bar(|b| focused(&b.root).and_then(|f| row_of(&b.menus, &f)).filter(|&(o, r)| o == m && b.menus[o].shape.rows[r].kind == Kind::Radio).map(|(o, r)| b.menus[o].rows[r].clone())).flatten();
+        if let Some(Ok(t)) = dot.map(|c| c.cast::<ToggleButton>()) {
+            let _ = e.SetHandled(true);
+            if t.IsChecked() == Ok(true) {
+                close_all();
+            } else {
+                let _ = t.SetIsChecked(Some(true));
+            }
+            return;
+        }
+    }
     let key = Key::of(k.0);
     if matches!(key, Key::Letter(_) | Key::Other) {
         return;
@@ -1202,7 +1271,7 @@ fn list_key(m: usize, e: &KeyRoutedEventArgs) {
     }
     let _ = e.SetHandled(true);
     match act {
-        InMenu::None => {}
+        InMenu::None | InMenu::Hold => {}
         InMenu::Move(r) => {
             let _ = rows[r].Focus(FocusState::Keyboard);
         }
@@ -1239,6 +1308,15 @@ pub(crate) fn tick() {
             bar(|b| b.hwnd = Some(h));
         }
     }
+    // Alt let go after the window lost the keyboard (Alt+Tab away and back), or with a pointer
+    // press between, is no tap: the latch starts again
+    bar(|b| {
+        let fg = b.hwnd.is_some_and(crate::win32::is_foreground);
+        if (b.foreground && !fg) || crate::win32::mouse_button_down() {
+            b.alt = AltTap::default();
+        }
+        b.foreground = fg;
+    });
     if let Some(Some(m)) = bar(|b| b.again.take()) {
         show(m);
     }
@@ -1255,6 +1333,13 @@ pub(crate) fn tick() {
     }) else {
         return;
     };
+    // nothing open, or the pointer off the window: no row to rest on
+    if open.is_empty() || now.is_none() {
+        bar(|b| {
+            b.resting = None;
+            b.on_row = None;
+        });
+    }
     let Some(&top) = open.first() else { return };
     if let Some(p) = now {
         let moved = before != Some(((p.0 * 64.0) as i32, (p.1 * 64.0) as i32));
@@ -1312,18 +1397,29 @@ pub(crate) fn tick() {
 /// The pointer moved, with menus open: the row it is now on takes the focus (as in WinUI's
 /// menus, so the keys go on from there), and starts the wait for its sub-menu.
 fn pointer_on_rows(p: (f64, f64), root: &UIElement, open: &[usize]) {
-    let Some(rows) = bar(|b| open.iter().rev().map(|&m| (m, b.menus[m].els.clone())).collect::<Vec<_>>()) else { return };
+    let Some(rows) = bar(|b| open.iter().rev().map(|&m| (m, b.menus[m].els.clone(), b.menus[m].list.clone())).collect::<Vec<_>>()) else { return };
     let mut found = None;
-    for (m, els) in &rows {
-        let rects: Vec<(f64, f64, f64, f64)> = els.iter().map(|e| rect(e, root).unwrap_or((0.0, 0.0, 0.0, 0.0))).collect();
+    let mut over = None;
+    for (m, els, list) in &rows {
+        // a tall menu scrolls: only what is in its window counts
+        let Some(seen) = shown_rect(list, root) else { continue };
+        if over.is_none() && hit(p.0, p.1, &[seen]).is_some() {
+            over = Some(*m);
+        }
+        let rects: Vec<(f64, f64, f64, f64)> = els.iter().map(|e| rect(e, root).map_or((0.0, 0.0, 0.0, 0.0), |r| clip(r, seen))).collect();
         if let Some(r) = hit(p.0, p.1, &rects) {
             found = Some((*m, r, els[r].clone()));
             break;
         }
     }
+    pass_through(over);
     let now = found.as_ref().map(|f| (f.0, f.1));
     if bar(|b| std::mem::replace(&mut b.on_row, now)) == Some(now) {
         return;
+    }
+    // off the rows: the wait for a sub-menu ends
+    if found.is_none() {
+        bar(|b| b.resting = None);
     }
     if let Some((m, r, el)) = found {
         // with a sub-menu of this menu open, the focus stays in it until that closes (after
@@ -1332,6 +1428,38 @@ fn pointer_on_rows(p: (f64, f64), root: &UIElement, open: &[usize]) {
             let _ = el.Focus(FocusState::Pointer);
         }
         bar(|b| b.resting = Some((m, r, Instant::now())));
+    }
+}
+
+/// Each open sub-menu lets the pointer through to the menu it is over, when that is one it opened
+/// from (however far up), else to the menu it opened from: a click on a row further up is the
+/// row's, not swallowed closing the sub-menus.
+fn pass_through(over: Option<usize>) {
+    let Some(changes) = bar(|b| {
+        let parents = parents(&b.menus);
+        let mut changes = Vec::new();
+        for &k in &b.open {
+            let Some(parent) = parents[k] else { continue };
+            let mut up = parents[k];
+            let mut target = parent;
+            while let Some(a) = up {
+                if Some(a) == over {
+                    target = a;
+                    break;
+                }
+                up = parents[a];
+            }
+            if b.through[k] != Some(target) {
+                b.through[k] = Some(target);
+                changes.push((b.menus[k].flyout.clone(), b.menus[target].list.clone()));
+            }
+        }
+        changes
+    }) else {
+        return;
+    };
+    for (flyout, list) in changes {
+        let _ = flyout.SetOverlayInputPassThroughElement(&list);
     }
 }
 
@@ -1413,6 +1541,29 @@ pub(crate) fn dev_report() {
     dev(&format!("focus on {what}; open menus {open:?}"));
 }
 
+/// The part of a menu's rows panel `list` on screen: its rectangle cut to the scroll viewer
+/// around it (a menu too tall for the window scrolls).
+fn shown_rect(list: &FrameworkElement, root: &UIElement) -> Option<(f64, f64, f64, f64)> {
+    use crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer;
+    let r = rect(&list.cast().ok()?, root)?;
+    let mut el: DependencyObject = list.cast().ok()?;
+    for _ in 0..8 {
+        let Ok(up) = VisualTreeHelper::GetParent(&el) else { break };
+        if up.cast::<ScrollViewer>().is_ok() {
+            return Some(clip(r, rect(&up.cast().ok()?, root)?));
+        }
+        el = up;
+    }
+    Some(r)
+}
+
+/// Rectangle `r` cut to `to` (left, top, width, height; nothing left: zero wide or high).
+pub(crate) fn clip(r: (f64, f64, f64, f64), to: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (l, t) = (r.0.max(to.0), r.1.max(to.1));
+    let (rr, b) = ((r.0 + r.2).min(to.0 + to.2), (r.1 + r.3).min(to.1 + to.3));
+    (l, t, (rr - l).max(0.0), (b - t).max(0.0))
+}
+
 /// An element's rectangle on the page (left, top, width, height).
 fn rect(el: &UIElement, root: &UIElement) -> Option<(f64, f64, f64, f64)> {
     let fe: FrameworkElement = el.cast().ok()?;
@@ -1463,7 +1614,7 @@ mod tests {
         assert_eq!(menu_key(Key::Down, Some(0), &kinds, &some, None), InMenu::Move(2), "the one that is off is skipped");
         assert_eq!(menu_key(Key::Up, Some(2), &kinds, &some, None), InMenu::Move(0));
         assert_eq!(menu_key(Key::Down, Some(0), &[Item], &[true], None), InMenu::Move(0), "alone: stays");
-        assert_eq!(menu_key(Key::Down, None, &[Item, Item], &[false, false], None), InMenu::None);
+        assert_eq!(menu_key(Key::Down, None, &[Item, Item], &[false, false], None), InMenu::Hold);
     }
 
     #[test]
@@ -1472,10 +1623,10 @@ mod tests {
         let all = [true; 3];
         // in a sub-menu (not one of the bar's)
         assert_eq!(menu_key(Key::Right, Some(1), &kinds, &all, None), InMenu::OpenSub(1));
-        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, None), InMenu::None);
+        assert_eq!(menu_key(Key::Right, Some(0), &kinds, &all, None), InMenu::Hold, "kept from the row: a dot would pick the next");
         assert_eq!(menu_key(Key::Left, Some(0), &kinds, &all, None), InMenu::Close);
         assert_eq!(menu_key(Key::Escape, Some(2), &kinds, &all, None), InMenu::Close);
-        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &[true, false, true], None), InMenu::None, "an item that is off opens nothing");
+        assert_eq!(menu_key(Key::Right, Some(1), &kinds, &[true, false, true], None), InMenu::Hold, "an item that is off opens nothing");
     }
 
     #[test]
@@ -1535,6 +1686,16 @@ mod tests {
         assert_eq!(Key::of(27), Key::Escape);
         assert_eq!(Key::of(70), Key::Letter('F'));
         assert_eq!(Key::of(13), Key::Other, "Enter is the button's click");
+    }
+
+    #[test]
+    fn a_row_scrolled_out_of_its_menu_is_not_under_the_pointer() {
+        let menu = (10.0, 30.0, 200.0, 100.0);
+        assert_eq!(clip((10.0, 50.0, 200.0, 30.0), menu), (10.0, 50.0, 200.0, 30.0), "inside: whole");
+        assert_eq!(clip((10.0, 120.0, 200.0, 30.0), menu), (10.0, 120.0, 200.0, 10.0), "half out: cut");
+        let gone = clip((10.0, 200.0, 200.0, 30.0), menu);
+        assert_eq!(hit(50.0, 210.0, &[gone]), None, "below the menu: not hit");
+        assert_eq!(hit(50.0, 10.0, &[clip((10.0, 0.0, 200.0, 30.0), menu)]), None, "above it: not hit");
     }
 
     #[test]

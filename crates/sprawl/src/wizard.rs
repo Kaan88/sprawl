@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use sprawl_advisor::config::{self, AiConfig, Detected, Provider};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, PasswordBox, TextBox, ToggleMenuFlyoutItem, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, PasswordBox, TextBox, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibility};
 use crate::prefs::{self, Kind, Pref, Sec, PREFS, WIZARD};
 use crate::state::{find, keep, load, text, with, State};
@@ -168,7 +168,7 @@ fn selected(s: &State, name: &str) -> usize {
 }
 
 fn checked(s: &State, item: &str) -> bool {
-    find::<ToggleMenuFlyoutItem>(&s.root, item).and_then(|t| t.IsChecked()).unwrap_or(false)
+    crate::menubar::checked(&s.root, item).unwrap_or(false)
 }
 
 fn field(s: &State, name: &str) -> String {
@@ -289,18 +289,14 @@ impl State {
         match p.key {
             k if prefs::MENU.contains(&k) => {
                 if checked(self, k) != yes {
-                    if let Ok(t) = find::<ToggleMenuFlyoutItem>(&self.root, k) {
-                        let _ = t.SetIsChecked(yes);
-                    }
+                    let _ = crate::menubar::set_checked(&self.root, k, yes);
                     self.command(k);
                 }
             }
             "units" | "aa" => {
                 let items: &[&str] = if p.key == "units" { &prefs::UNIT_ITEMS } else { &prefs::AA_ITEMS };
                 let item = items[idx(items.len())];
-                if let Ok(t) = find::<ToggleMenuFlyoutItem>(&self.root, item) {
-                    let _ = t.SetIsChecked(true);
-                }
+                let _ = crate::menubar::set_checked(&self.root, item, true);
                 self.command(item);
             }
             "palette" => {

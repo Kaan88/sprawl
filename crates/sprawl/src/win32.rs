@@ -307,6 +307,12 @@ pub fn on_close(h: HWND, may_close: fn() -> bool) {
     }
 }
 
+/// A mouse button held down now (as this thread's window last saw it).
+pub fn mouse_button_down() -> bool {
+    // VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2
+    [0x01, 0x02, 0x04, 0x05, 0x06].iter().any(|&vk| unsafe { GetKeyState(vk) } < 0)
+}
+
 /// `h` is the window the keyboard goes to.
 pub fn is_foreground(h: HWND) -> bool {
     unsafe { GetForegroundWindow() == h }
@@ -625,6 +631,35 @@ fn expand_by_here(h: HWND, key: &str, by_id: bool) -> bool {
         }
     };
     run().is_ok()
+}
+
+/// dev (screenshot runs): a screen reader's Toggle (a check) or Select (a dot) on the element
+/// whose AutomationId is `id`, from another thread as [`expand_by`] does.
+pub fn toggle_or_select_by(h: HWND, id: &str) {
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        use windows::core::BSTR;
+        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+        use windows::Win32::System::Variant::VARIANT;
+        use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern, TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_SelectionItemPatternId, UIA_TogglePatternId};
+        let run = || -> windows::core::Result<&'static str> {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                let ua: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+                let root = ua.ElementFromHandle(windows::Win32::Foundation::HWND(h as *mut _))?;
+                let cond = ua.CreatePropertyCondition(UIA_AutomationIdPropertyId, &VARIANT::from(BSTR::from(id.as_str())))?;
+                let found = root.FindFirst(TreeScope_Descendants, &cond)?;
+                if let Ok(p) = found.GetCurrentPattern(UIA_SelectionItemPatternId).and_then(|p| windows::core::Interface::cast::<IUIAutomationSelectionItemPattern>(&p)) {
+                    p.Select()?;
+                    return Ok("select");
+                }
+                let p: IUIAutomationTogglePattern = windows::core::Interface::cast(&found.GetCurrentPattern(UIA_TogglePatternId)?)?;
+                p.Toggle()?;
+                Ok("toggle")
+            }
+        };
+        crate::state::timing(&format!("uia: {id}: {:?}", run()), std::time::Instant::now());
+    });
 }
 
 /// dev (screenshot runs): the menu bar as UI Automation (a screen reader) sees it, in the timing

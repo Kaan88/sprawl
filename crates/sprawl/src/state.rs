@@ -895,6 +895,8 @@ impl State {
                     // dev: the pointer said to rest on a menu's row by its x:Name (point=BarSub3),
                     // for the bar to find there as it finds the real pointer
                     p if p.starts_with("point=") => crate::menubar::dev_point(&p[6..]),
+                    // dev: a screen reader's Toggle or Select on a menu's check or dot (uiamark=oAuto)
+                    u if u.starts_with("uiamark=") => crate::win32::toggle_or_select_by(self.hwnd, &u[8..]),
                     // dev: the menu bar as UI Automation sees it, in the timing log
                     "uia" => crate::win32::uia_report(self.hwnd),
                     // dev: the other theme, as saving it in Settings would (in memory: a screenshot run saves nothing)

@@ -399,8 +399,12 @@ pub(crate) fn launch() -> windows_core::Result<()> {
 pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPanel> {
     // the menu bar: File, Options and Help, and what WinUI's MenuBar did on its own
     crate::menubar::bind(root)?;
-    // The menu bar's rows all route to State::command by name.
+    // The menu bar's rows all route to State::command by name (its checks and dots when their
+    // mark changes, in menubar.rs).
     for &name in COMMANDS {
+        if !crate::menubar::runs_on_click(name) {
+            continue;
+        }
         if let Ok(item) = find::<ButtonBase>(root, name) {
             keep(item.Click(move |_, _| {
                 with(|s| s.command(name));
