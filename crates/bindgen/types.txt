@@ -228,6 +228,23 @@ Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::GetElementVisual
 Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::SetIsTranslationEnabled
 Microsoft.UI.Composition.Visual::Scale
 Microsoft.UI.Composition.Visual::Opacity
+# --- shadows under menus, dropdown lists and flyouts (shade.rs) ---
+Microsoft.UI.Xaml.Controls.Button::Flyout
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::GetAttachedFlyout
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBase::ShouldConstrainToRootBounds
+Microsoft.UI.Xaml.Controls.Flyout::Content
+Microsoft.UI.Xaml.Media.VisualTreeHelper::GetOpenPopupsForXamlRoot
+Microsoft.UI.Xaml.UIElement::XamlRoot
+Microsoft.UI.Xaml.Controls.Primitives.Popup::Child
+Microsoft.UI.Xaml.Controls.Primitives.Popup::IsConstrainedToRootBounds
+Microsoft.UI.Xaml.Controls.Primitives.Popup::ShouldConstrainToRootBounds
+Microsoft.UI.Xaml.Controls.MenuFlyoutPresenter::IsDefaultShadowEnabled
+Microsoft.UI.Xaml.Controls.FlyoutPresenter::IsDefaultShadowEnabled
+Microsoft.UI.Xaml.UIElement::Shadow
+Microsoft.UI.Xaml.UIElement::Translation
+Microsoft.UI.Xaml.Controls.ComboBox::IsDropDownOpen
+Microsoft.UI.Xaml.Hosting.ElementCompositionPreview::GetElementChildVisual
+Microsoft.UI.Composition.Visual::Offset
 # --- the menu bar: File, Options, Help as buttons with menus (menubar.rs) ---
 Microsoft.UI.Xaml.Controls.DropDownButton
 Microsoft.UI.Xaml.Controls.Button::Flyout

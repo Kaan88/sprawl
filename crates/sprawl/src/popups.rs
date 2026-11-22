@@ -148,12 +148,18 @@ fn field(template: &str, controls: Controls, m: Motion, popup: bool) -> Option<S
 const COMBO_BOX: &str = include_str!("combobox.xaml");
 const PASSWORD_BOX: &str = include_str!("passwordbox.xaml");
 
-/// The implicit styles for the combo box and the password box, in the look's motion. Nothing
-/// under Stock.
+const TEXT_BOX: &str = include_str!("textbox.xaml");
+
+/// The implicit styles for the combo box, the password box and the text box, in the look's
+/// motion. Nothing under Stock.
 pub(crate) fn fields(controls: Controls) -> String {
     let m = motion();
     let mut x = String::new();
-    for (target, base, template, popup) in [("ComboBox", "DefaultComboBoxStyle", COMBO_BOX, true), ("PasswordBox", "DefaultPasswordBoxStyle", PASSWORD_BOX, false)] {
+    for (target, base, template, popup) in [
+        ("ComboBox", "DefaultComboBoxStyle", COMBO_BOX, true),
+        ("PasswordBox", "DefaultPasswordBoxStyle", PASSWORD_BOX, false),
+        ("TextBox", "DefaultTextBoxStyle", TEXT_BOX, false),
+    ] {
         if let Some(t) = field(template, controls, m, popup) {
             x += &format!(
                 r#"<Style TargetType="{target}" BasedOn="{{StaticResource {base}}}"><Setter Property="Template"><Setter.Value>{t}</Setter.Value></Setter></Style>"#
@@ -424,6 +430,27 @@ mod tests {
         let f = fields(Controls::Outlined);
         assert!(f.contains(r#"<Style TargetType="ComboBox" BasedOn="{StaticResource DefaultComboBoxStyle}">"#), "{f}");
         assert!(f.contains(r#"<Style TargetType="PasswordBox" BasedOn="{StaticResource DefaultPasswordBoxStyle}">"#), "{f}");
+    }
+
+    #[test]
+    fn the_text_box_takes_the_same_focus_as_the_other_fields() {
+        let outline = r#"x:Name="Outline" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" "#;
+        for (controls, width, brush, outline_paint) in [
+            (Controls::Outlined, 3, r#"BorderBrush="{$ring}""#, r#"Background="Transparent" BorderBrush="{$accent}""#),
+            (Controls::Soft, 2, r#"BorderBrush="{$accent}""#, r#"Background="{$fieldfocus}" BorderBrush="Transparent""#),
+        ] {
+            let ring = format!(r#"Margin="-{width}" CornerRadius="{}" {brush} BorderThickness="{width}""#, 4 + width);
+            let t = field(TEXT_BOX, controls, Motion::Subtle, false).unwrap();
+            assert!(t.contains(r#"TargetType="TextBox""#) && t.contains(r#"x:Name="DeleteButton""#), "the clear button is kept");
+            assert!(t.contains(&ring), "{t}");
+            assert!(t.contains(&format!("{outline}{outline_paint}")), "{t}");
+            let focused = &t[t.find(r#"<VisualState x:Name="Focused">"#).unwrap()..];
+            assert!(focused[..300].contains(r#"TargetName="Ring""#) && !focused[..2500].contains("TextControlBorderBrushFocused"));
+            assert!(!t.contains('@'), "every placeholder is filled");
+            splines_inside(&t);
+        }
+        assert!(field(TEXT_BOX, Controls::Stock, Motion::Subtle, false).is_none());
+        assert!(fields(Controls::Soft).contains(r#"<Style TargetType="TextBox" BasedOn="{StaticResource DefaultTextBoxStyle}">"#));
     }
 
     #[test]

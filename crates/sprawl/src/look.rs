@@ -864,16 +864,7 @@ fn stock() -> String {
     // padding and focus) with a template of the look's (see `tick_template`, `switch_template`)
     x += &format!(r#"<Style TargetType="CheckBox" BasedOn="{{StaticResource DefaultCheckBoxStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#, tick_template());
     x += &format!(r#"<Style TargetType="ToggleSwitch" BasedOn="{{StaticResource DefaultToggleSwitchStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#, switch_template());
-    // a text box with the focus gets a soft 3 px ring outside its accent line. A key cannot draw
-    // that, so this is WinUI's own template (generic.xaml) with one border added, `Ring`, shown
-    // by the Focused state; the ring lies outside the box, so nothing moves.
-    if fields {
-        x += &format!(
-            r#"<Style TargetType="TextBox" BasedOn="{{StaticResource DefaultTextBoxStyle}}"><Setter Property="Template"><Setter.Value>{}</Setter.Value></Setter></Style>"#,
-            include_str!("textbox.xaml")
-        );
-    }
-    // a dropdown and the API key box take the field's focus (the ring), and a menu or a
+    // a text box, a dropdown and the API key box take the field's focus (the ring), and a menu or a
     // dropdown's list fades in from just above: popups.rs, WinUI's own templates changed
     x += &crate::popups::fields(controls);
     x += &crate::popups::menu();
@@ -1881,7 +1872,7 @@ mod tests {
         // the lit edge is a 1 px top border inside the button, bound to the button's corner
         assert!(primary.contains(r#"x:Name="Light""#) && primary.contains(r#"BorderThickness="0,1,0,0" BorderBrush="{$hlpri}""#) && primary.contains("CornerRadius=\"{TemplateBinding CornerRadius}\" BorderThickness=\"0,1,0,0\""));
         // a text box with the focus shows the ring, outside its edge
-        assert!(r.contains(r#"x:Name="Ring""#) && r.contains(r#"<Setter Target="Ring.Opacity" Value="1"/>"#) && r.contains(r#"BorderBrush="{$ring}""#));
+        assert!(r.contains(r#"x:Name="Ring""#) && r.contains(r#"<Style TargetType="TextBox""#) && r.contains(r#"Storyboard.TargetName="Ring""#) && r.contains(r#"BorderBrush="{$ring}""#));
         // the red one greys out when it can't be pressed, as WinUI's filled buttons do
         let danger = &r[r.find(r#"x:Key="SprawlDanger""#).unwrap()..];
         let danger = &danger[..danger.find("</Style>").unwrap()];
