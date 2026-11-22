@@ -300,3 +300,15 @@ this from the start and was never reported.
   - layout passes on long lists without virtualisation.
 - Done when each of those actions shows its result on the next frame or two, checked with
   timings before and after.
+
+## K. Hub launcher: open points after PR #1 (merged 2026-11-23)
+
+PR Kaan88/sprawl#1 makes each release carry `hub.txt` (sprawl-release build/publish,
+tools/write-hub-txt.ps1). Left for later:
+- Two updaters: Sprawl's own updater does not stand down when Hub manages it
+  (`%LOCALAPPDATA%\Hub\managed\sprawl`), so both may offer an update. Decide before 1.0.6.
+- v1.0.5 has no hub.txt: Hub shows "no release information" until 1.0.6 (or attach one to 1.0.5).
+- The copied script says it works in Windows PowerShell 5.1, but `-FilesJson` with one file
+  does not there; Sprawl uses pwsh. Fix in the Hub repository's original.
+- Releases now need PowerShell 7 (`pwsh`); build checks it first.
+- Never run for real: at 1.0.6, check hub.txt is among the release assets.
