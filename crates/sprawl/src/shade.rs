@@ -33,7 +33,7 @@ use crate::bindings::Microsoft::UI::Composition::{
     CompositionPath, CompositionPathGeometry, CompositionRoundedRectangleGeometry, CompositionVisualSurface, Compositor, DropShadow, ICompositionSurface, ShapeVisual, SpriteVisual,
 };
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::ButtonBase;
-use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, ContentControl, Control, Panel};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, ContentControl, Control, Panel, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview;
 use crate::bindings::Microsoft::UI::Xaml::Media::{CompositionTarget, SolidColorBrush, VisualTreeHelper};
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, VisualStateManager};
@@ -56,6 +56,8 @@ pub(crate) enum Kind {
     Primary,
     /// An Advisor row: `0 1px 2px #00000033`, under the pointer `0 5px 12px #00000059`.
     Row,
+    /// A switch's knob, on the filled track: `0 1px 3px #00000066`, whatever the finish.
+    Knob,
 }
 
 /// One CSS box-shadow: its downward offset, its blur radius and its colour's alpha.
@@ -92,6 +94,7 @@ impl Kind {
             "button" => Kind::Button,
             "primary" => Kind::Primary,
             "row" => Kind::Row,
+            "knob" => Kind::Knob,
             _ => return None,
         })
     }
@@ -105,6 +108,7 @@ impl Kind {
             // color-mix(in srgb, accent 45%, transparent)
             Kind::Primary => Cast { dy: 3.0, blur: 10.0, alpha: 0.45 },
             Kind::Row => Cast::css(1.0, 2.0, 0x33),
+            Kind::Knob => Cast::css(1.0, 3.0, 0x66),
         }
     }
 
@@ -114,7 +118,7 @@ impl Kind {
             Kind::Button => Cast::css(6.0, 14.0, 0x66),
             Kind::Primary => Cast { dy: 6.0, blur: 16.0, alpha: 0.48 },
             Kind::Row => Cast::css(5.0, 12.0, 0x59),
-            Kind::Card | Kind::Dialog => self.rest(),
+            Kind::Card | Kind::Dialog | Kind::Knob => self.rest(),
         }
     }
 
@@ -255,6 +259,8 @@ fn walk(el: &UIElement, depth: u32) {
     }
     if el.cast::<ButtonBase>().is_ok() {
         follow_button(el);
+    } else if el.cast::<ToggleSwitch>().is_ok() {
+        follow_switch(el);
     } else if let Ok(fe) = el.cast::<FrameworkElement>() {
         if let Some(kind) = tag(&fe).as_deref().and_then(Kind::from_tag) {
             follow_host(&fe, kind);
@@ -322,6 +328,54 @@ fn follow_button(el: &UIElement) {
         return;
     };
     keep(handle);
+}
+
+/// A switch: its knob's host is in its template (look.rs's `switch_template`), there by its first
+/// size. The knob slides and the switch sinks by render transforms, which carry the shadow along.
+fn follow_switch(el: &UIElement) {
+    let Ok(fe) = el.cast::<FrameworkElement>() else { return };
+    let made: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let Ok(handle) = fe.SizeChanged(move |s, _| {
+        let Some(fe) = s.as_ref().and_then(|s| s.cast::<FrameworkElement>().ok()) else { return };
+        let Ok(mut made) = made.lock() else { return };
+        if *made {
+            return;
+        }
+        *made = true;
+        // the outlined (Windows stock) switch has no host: its knob casts nothing
+        let Some(host) = tagged(&fe, "shade:knob", 0) else { return };
+        // the knob's size is written in the template, laid out or not
+        let (Ok(w), Ok(h)) = (host.Width(), host.Height()) else { return };
+        let radius = host.cast::<Border>().and_then(|b| b.CornerRadius()).map(|c| c.TopLeft as f32).unwrap_or(0.0);
+        let Ok(el) = host.cast::<UIElement>() else { return };
+        let Ok(shade) = Shade::new(&el, Kind::Knob, radius) else { return };
+        let _ = shade.show(Kind::Knob.rest(), 0);
+        let _ = shade.resize(w as f32, h as f32);
+        // the composition objects live on as the host's child visual; the shade is not needed
+        // again (the knob's size never changes)
+        drop(shade);
+    }) else {
+        return;
+    };
+    keep(handle);
+}
+
+/// The first element under `el` in the visual tree whose `Tag` is `want`.
+fn tagged(el: &FrameworkElement, want: &str, depth: u32) -> Option<FrameworkElement> {
+    if depth > 32 {
+        return None;
+    }
+    let n = VisualTreeHelper::GetChildrenCount(el).ok()?;
+    for i in 0..n {
+        let Some(k) = VisualTreeHelper::GetChild(el, i).ok().and_then(|k| k.cast::<FrameworkElement>().ok()) else { continue };
+        if tag(&k).as_deref() == Some(want) {
+            return Some(k);
+        }
+        if let Some(found) = tagged(&k, want, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Whether a button has a face of its own: a transparent one (a text action, a row drawn by
@@ -498,7 +552,10 @@ mod tests {
         assert_eq!(Kind::Row.rest(), Cast { dy: 1.0, blur: 2.0, alpha: a(0x33) });
         assert_eq!(Kind::Row.over(), Cast { dy: 5.0, blur: 12.0, alpha: a(0x59) });
         assert_eq!(Kind::Dialog.rest(), Cast { dy: 10.0, blur: 28.0, alpha: a(0x99) });
-        for (tag, kind) in [("shade:card", Kind::Card), ("shade:dialog", Kind::Dialog), ("shade:button", Kind::Button), ("shade:primary", Kind::Primary), ("shade:row", Kind::Row)] {
+        // the switch's knob: 0 1px 3px #00000066, the same under the pointer
+        assert_eq!(Kind::Knob.rest(), Cast { dy: 1.0, blur: 3.0, alpha: a(0x66) });
+        assert_eq!(Kind::Knob.over(), Kind::Knob.rest());
+        for (tag, kind) in [("shade:card", Kind::Card), ("shade:dialog", Kind::Dialog), ("shade:button", Kind::Button), ("shade:primary", Kind::Primary), ("shade:row", Kind::Row), ("shade:knob", Kind::Knob)] {
             assert_eq!(Kind::from_tag(tag), Some(kind));
         }
         assert_eq!(Kind::from_tag("card"), None);

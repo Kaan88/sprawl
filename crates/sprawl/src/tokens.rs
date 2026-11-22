@@ -158,10 +158,10 @@ pub(crate) enum SmallText {
 #[allow(dead_code)] // The Theme page will read every option; until it exists, the tests are the only caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Ticks {
-    /// Today's: WinUI's square box.
+    /// A box with the controls' small corner (look.rs's `tick_corner`).
     #[default]
     Square,
-    /// A round box: WinUI's check box takes the control's own corner radius.
+    /// A round box: the corner is half the box.
     Round,
 }
 
@@ -386,6 +386,15 @@ pub(crate) const TOKENS: &[Token] = &[
     Token { name: "hlpri", what: "the lit top edge of the main button, on the accent", value: "#5CFFFFFF", light: "#7AFFFFFF" },
     Token { name: "hlon", what: "the lit top edge of a picked chip, tick or switch", value: "#4DFFFFFF", light: "#80FFFFFF" },
     Token { name: "hlbar", what: "the lit top edge of a bar's fill", value: "#47FFFFFF", light: "#80FFFFFF" },
+    // A tick box and a switch, as the mockup draws them (index.html's .chk and .sw): the edge of an
+    // unticked box (Windows stock), the soft box's fill, the filled switch's track and its white
+    // knob, and the outlined (Windows stock) switch's edge and knob. Black on the light page.
+    Token { name: "tickedge", what: "the edge of an unticked tick box", value: "#8CFFFFFF", light: "#8C000000" },
+    Token { name: "tickwell", what: "the fill of an unticked soft tick box", value: "#24FFFFFF", light: "#24000000" },
+    Token { name: "track", what: "a switch's track while it is off", value: "#29FFFFFF", light: "#29000000" },
+    Token { name: "knob", what: "a switch's knob on its filled track, on or off", value: "#FFFFFFFF", light: "#FFFFFFFF" },
+    Token { name: "trackedge", what: "the outline of an outlined switch while it is off", value: "#99FFFFFF", light: "#99000000" },
+    Token { name: "knoboff", what: "the knob of an outlined switch while it is off", value: "#C8FFFFFF", light: "#C8000000" },
     Token { name: "washdown", what: "the wash over a button while it is pressed: black on both pages", value: "#FF000000", light: "#FF000000" },
     Token { name: "disabled", what: "text on a greyed filled button", value: "#5CFFFFFF", light: "#5C000000" },
     // The opaque panels that sit on the ink page.
