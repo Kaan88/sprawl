@@ -933,7 +933,7 @@ impl State {
         if let Ok(i) = find::<Control>(&self.root, "cShell") {
             // ...nor during a clean-up, nor as administrator unless Settings > Scanning allows it
             let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
-            let _ = i.SetIsEnabled(self.menu_pick_count(scan) <= 1 && self.advisor.cleanup.running.is_none() && admin_ok);
+            let _ = i.SetIsEnabled(shell_allowed(self.menu_pick_count(scan), self.advisor.cleanup.running.is_some(), admin_ok));
         }
     }
 
@@ -1262,6 +1262,12 @@ impl State {
     }
 }
 
+/// Whether the row menu's Windows item may open: one result picked (it acts on one), no clean-up
+/// running, and the administrator evidence allowed when Sprawl is elevated.
+pub(crate) fn shell_allowed(picked: usize, cleanup: bool, admin_ok: bool) -> bool {
+    picked <= 1 && !cleanup && admin_ok
+}
+
 /// What the row menu's commands (Delete among them) act on after a right-click on the scan's node
 /// `n`, by its row or its tile on the map: in Search, never a row from another drive picked
 /// before (`more_sel`, `picks`); and `n` alone unless it is one of the rows picked already.
@@ -1277,9 +1283,17 @@ pub(crate) fn menu_pick(marked: &mut std::collections::BTreeSet<usize>, more_sel
 
 #[cfg(test)]
 mod menu_pick_tests {
-    use super::menu_pick;
+    use super::{menu_pick, shell_allowed};
     use crate::search_delete::{Pick, Picks};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn the_windows_menu_needs_one_result_no_clean_up_and_the_administrator_switch() {
+        assert!(shell_allowed(1, false, true), "one row, nothing running, the switch allows it");
+        assert!(!shell_allowed(2, false, true), "it acts on one result only");
+        assert!(!shell_allowed(1, true, true), "a clean-up is running");
+        assert!(!shell_allowed(1, false, false), "elevated without Settings > Scanning allowing it");
+    }
 
     fn picks() -> Picks {
         let mut p = Picks::default();

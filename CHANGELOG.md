@@ -5,7 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
-- Search results can be right-clicked without losing the rows you picked, and the menu now offers Open, Show in Explorer, Copy Path, Delete and Delete Permanently on every picked result (the items that only work on the scan on screen are shown greyed on results from other drives or saved scans). Pick several with Ctrl+click, Shift+click or Ctrl+A, then Del or Shift+Del deletes them all.
+- Search results can be right-clicked without losing the rows you picked, and the menu now offers Open, Show in Explorer, Copy Path, Delete and Delete Permanently on every picked result (the items that only work on the scan on screen are shown greyed on results from other drives or saved scans). Open and Show in Explorer work on up to 10 picked results or folders at a time and say so rather than opening a burst of windows. Pick several with Ctrl+click, Shift+click or Ctrl+A, then Del or Shift+Del deletes them all.
 
 ## 1.0.8 — 2026-11-23
 

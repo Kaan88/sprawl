@@ -352,9 +352,12 @@ impl State {
                 self.map.capture = Some(user_dir("Pictures").join(format!("Sprawl treemap {}.png", stamp())));
             }
             "mOpen" => {
-                // in Search: every picked result opens (a file with its program, a folder in Explorer)
+                // in Search: every picked result opens (a file with its program, a folder in
+                // Explorer), up to a limit: each starts a program or a window
                 let paths = self.menu_paths();
-                if self.view == View::Search {
+                if self.view == View::Search && !crate::search::can_open(paths.len()) {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked. Open works on up to {} at a time; pick fewer.", paths.len(), crate::search::MAX_OPEN));
+                } else if self.view == View::Search {
                     for p in paths {
                         self.search_open(&p);
                     }
@@ -375,10 +378,14 @@ impl State {
                 }
             }
             "mExplore" => {
-                // every picked result: one folder's files together in one window
+                // every picked result: one folder's files together in one window, one window for
+                // each folder; up to the same limit, since each is a window of its own
                 let paths = self.menu_paths();
-                if paths.len() > 1 {
-                    crate::win32::reveal_all(&paths);
+                let windows = crate::win32::reveal_windows(&paths);
+                if !crate::search::can_open(windows) {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked, in {} folders: Show in Explorer opens a window for each folder. Sprawl opens up to {} at a time; pick fewer.", paths.len(), windows, crate::search::MAX_OPEN));
+                } else if paths.len() > 1 {
+                    crate::win32::reveal_all(&paths, crate::search::MAX_OPEN);
                 } else if let Some(p) = paths.first() {
                     crate::win32::reveal(p);
                 }

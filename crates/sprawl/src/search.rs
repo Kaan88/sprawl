@@ -30,6 +30,15 @@ pub(crate) const SCAN_ONLY: &[(&str, &str, &str)] = &[
 /// The row menu's "Overwrite and delete": Tree View and File View only, off in Search.
 pub(crate) const OVERWRITE_ONLY: &str = "Overwrite and delete works in Tree View and File View.";
 
+/// The most results the row menu opens at once: Explorer starts a program for each result and a
+/// window for each folder holding picked files or picked itself.
+pub(crate) const MAX_OPEN: usize = 10;
+
+/// Whether Open (or Show in Explorer) may go ahead for `n` results or windows at once.
+pub(crate) fn can_open(n: usize) -> bool {
+    n <= MAX_OPEN
+}
+
 /// Whether the row menu's `item` can act on a Search result: `scan` is true for a row of the scan
 /// on screen, and the items that need the scan are off for the rows that come from elsewhere.
 pub(crate) fn item_applies(item: &str, scan: bool) -> bool {
@@ -758,7 +767,16 @@ mod picked_tests {
 
 #[cfg(test)]
 mod menu_tests {
-    use super::{item_applies, SCAN_ONLY};
+    use super::{can_open, item_applies, MAX_OPEN, SCAN_ONLY};
+
+    /// Open starts a program or an Explorer window for each result, so only up to the limit at
+    /// once; one more is refused.
+    #[test]
+    fn open_goes_up_to_the_limit_and_no_further() {
+        assert!(can_open(0) && can_open(1) && can_open(MAX_OPEN));
+        assert!(!can_open(MAX_OPEN + 1));
+        assert!(!can_open(MAX_OPEN * 2));
+    }
 
     /// The items that go by path stay on for a row from another drive or a saved scan; the ones
     /// that need the scan on screen are off there, and every one of them says why.
