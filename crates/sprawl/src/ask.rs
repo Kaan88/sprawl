@@ -28,6 +28,14 @@ pub(crate) struct Input {
     then: ThenText,
 }
 
+/// Where the keyboard can be in a question with a box to type in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Spot {
+    Box,
+    Yes,
+    No,
+}
+
 pub(crate) struct Pending {
     title: String,
     text: String,
@@ -48,7 +56,9 @@ pub(crate) struct Dialogs {
     queue: std::collections::VecDeque<Pending>,
     /// The keyboard is on "Yes" (it starts on "No" for every question).
     on_yes: bool,
-    /// The keyboard is in the question's box to type in (it starts there when there is one).
+    /// The keyboard is meant to be in the question's box to type in (it starts there when there
+    /// is one). Only where the focus is put back to; which key does what follows the real focus
+    /// (`dialog_spot`), so a click into the box or onto a button is respected.
     in_box: bool,
     /// The window was in front at the last frame: when it comes to the front again, the focus
     /// goes back to the question (a focus given while the window was behind doesn't hold, and
@@ -182,25 +192,62 @@ impl State {
         }
     }
 
+    /// Where the keyboard really is in a question with a box to type in: the box, "Yes" or "No",
+    /// or none of them (the window was behind, or the focus is elsewhere).
+    fn dialog_spot(&self) -> Option<Spot> {
+        let host = find::<Border>(&self.root, "DlgHost").ok()?;
+        let fe = host.Child().ok()?.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>().ok()?;
+        [("DlgInput", Spot::Box), ("DlgYes", Spot::Yes), ("DlgNo", Spot::No)]
+            .into_iter()
+            .find(|(name, _)| find::<Control>(&fe, name).ok().and_then(|c| c.FocusState().ok()).is_some_and(|f| f != FocusState::Unfocused))
+            .map(|(_, spot)| spot)
+    }
+
+    /// Put the keyboard on `to` (and remember it for `dialog_focus`).
+    fn dialog_go(&mut self, to: Spot) {
+        self.dialogs.in_box = to == Spot::Box;
+        self.dialogs.on_yes = to == Spot::Yes;
+        self.dialog_focus();
+    }
+
     /// Every key while a question is open (the window's PreviewKeyDown, before any control):
     /// Esc says no; Tab and the arrows move between the two buttons; Enter and Space press the
     /// one the keyboard is on ("No" until moved). Any other key is kept from the window behind,
     /// so nothing there acts while the question is open. True when the key was the dialog's.
+    ///
+    /// With a box to type in, the keys go by where the focus really is: in the box it gets every
+    /// key but Esc (no), Enter (yes) and Tab (on to "Yes", then "No", then the box again; Shift+Tab
+    /// the other way), and Space is only a space; on a button it is as without a box; with the
+    /// focus in none of them every key but Esc only brings the focus back.
     pub(crate) fn dialog_key(&mut self, key: i32) -> bool {
         let Some(p) = self.dialogs.queue.front() else { return false };
         let two = p.yes.is_some();
-        // a box to type in: it gets every key but Esc, Enter and Tab (Tab goes on to the buttons)
-        if p.input.is_some() && self.dialogs.in_box {
-            match key {
-                27 => self.dialog_answer(false),
-                // Enter in the box says yes
-                13 => self.dialog_answer(true),
-                9 => {
-                    self.dialogs.in_box = false;
-                    self.dialogs.on_yes = true;
-                    self.dialog_focus();
-                }
-                _ => return false,
+        if p.input.is_some() {
+            let shift = crate::win32::ctrl_shift_down().1;
+            let step = |from: Spot| {
+                let order = [Spot::Box, Spot::Yes, Spot::No];
+                let at = order.iter().position(|&s| s == from).unwrap_or(0);
+                order[(at + if shift { order.len() - 1 } else { 1 }) % order.len()]
+            };
+            match self.dialog_spot() {
+                Some(Spot::Box) => match key {
+                    27 => self.dialog_answer(false),
+                    // Enter in the box says yes
+                    13 => self.dialog_answer(true),
+                    9 => self.dialog_go(step(Spot::Box)),
+                    _ => return false,
+                },
+                Some(button) => match key {
+                    27 => self.dialog_answer(false),
+                    13 | 32 => self.dialog_answer(button == Spot::Yes),
+                    9 => self.dialog_go(step(button)),
+                    37 | 38 | 39 | 40 => self.dialog_go(if button == Spot::Yes { Spot::No } else { Spot::Yes }),
+                    _ => {}
+                },
+                None => match key {
+                    27 => self.dialog_answer(false),
+                    _ => self.dialog_focus(),
+                },
             }
             return true;
         }
