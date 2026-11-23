@@ -184,6 +184,8 @@ pub(crate) struct Search {
     pub(crate) reads: Reads,
     /// The map is shown under the results (the Map button; off at first: results take the room).
     pub(crate) map: bool,
+    /// The map's tile the row menu was opened on (it counts only while it is still `selected`).
+    pub(crate) tile: Option<usize>,
     /// What the no-match message says now ("" hidden; `None` not drawn yet).
     pub(crate) none: Option<String>,
     /// The last tap on a result: (row, when, already taken as a double-click).
@@ -611,6 +613,7 @@ impl State {
         };
         if self.view == View::Search {
             self.refresh_rows();
+            self.prune_marked();
             self.map.drawn_once = false;
         }
         if crate::bench::on() {
@@ -941,7 +944,7 @@ impl State {
         let more = &self.search.more;
         if more.sel.is_none() && more.picks.is_empty() {
             let t = self.tree.as_ref();
-            return picked_in_order(&self.rows, &self.marked, self.selected).iter().filter_map(|&n| t.map(|t| t.path_of(n))).collect();
+            return self.scan_targets().iter().filter_map(|&n| t.filter(|t| n < t.nodes.len()).map(|t| t.path_of(n))).collect();
         }
         self.rows
             .iter()
@@ -955,6 +958,28 @@ impl State {
                 crate::search_delete::counts(more.sel, &more.picks, (k, id), &p).then_some(p)
             })
             .collect()
+    }
+
+    /// The scan's nodes Delete, Open, Show in Explorer and Copy Path act on in Search: the picked
+    /// rows that are listed, and the map's tile the menu was opened on. One rule for all of them.
+    pub(crate) fn scan_targets(&self) -> Vec<usize> {
+        scan_targets(&self.rows, &self.marked, self.selected, self.search.tile)
+    }
+
+    /// Whether `marked` or `selected` hold a scan node that is not one of [`State::scan_targets`]
+    /// (picked under an earlier list, or left behind by a rescan): Delete then refuses.
+    pub(crate) fn scan_picks_hidden(&self) -> bool {
+        picks_hidden(&self.scan_targets(), &self.marked, self.selected)
+    }
+
+    /// Picks that are not rows of the list now are dropped (a new list, the keyboard coming down
+    /// from the box), so nothing picked is out of sight.
+    pub(crate) fn prune_marked(&mut self) {
+        if self.view != View::Search {
+            return;
+        }
+        let shown: std::collections::HashSet<usize> = self.rows.iter().filter(|r| r.1 == 0).map(|r| r.0).collect();
+        self.marked.retain(|n| shown.contains(n));
     }
 
     /// "Use as filter": the words go to the filter box (which narrows the whole analysis).
@@ -1077,9 +1102,94 @@ pub(crate) fn picked_in_order(rows: &[(usize, usize)], marked: &std::collections
     rows.iter().filter(|r| r.1 == 0 && (marked.contains(&r.0) || selected == Some(r.0)) && seen.insert(r.0)).map(|r| r.0).collect()
 }
 
+/// Each of `paths` as Show in Explorer takes it: itself when `exists`, else its nearest folder that
+/// does (each folder once). Also how many were mapped to a folder, and how many have none.
+pub(crate) fn nearest_existing(paths: &[std::path::PathBuf], exists: impl Fn(&std::path::Path) -> bool) -> (Vec<std::path::PathBuf>, usize, usize) {
+    let (mut out, mut seen, mut gone, mut nowhere) = (Vec::new(), std::collections::HashSet::new(), 0, 0);
+    for p in paths {
+        if exists(p) {
+            if seen.insert(p.clone()) {
+                out.push(p.clone());
+            }
+            continue;
+        }
+        match p.ancestors().skip(1).find(|a| exists(a)) {
+            Some(a) => {
+                gone += 1;
+                if seen.insert(a.to_path_buf()) {
+                    out.push(a.to_path_buf());
+                }
+            }
+            None => nowhere += 1,
+        }
+    }
+    (out, gone, nowhere)
+}
+
+/// What Show in Explorer says when some of the `total` results were gone.
+pub(crate) fn gone_note(total: usize, gone: usize, nowhere: usize) -> String {
+    match (total, gone, nowhere) {
+        (1, 1, _) => "That is gone now; its nearest folder is open.".into(),
+        (1, _, _) => "That path is gone.".into(),
+        (_, g, 0) => format!("{g} are gone now; their nearest folders are open."),
+        (_, 0, n) => format!("{n} paths are gone."),
+        (_, g, n) => format!("{g} are gone now; their nearest folders are open. {n} paths are gone."),
+    }
+}
+
+/// What Search's menu and Delete act on in the scan: [`picked_in_order`], then the map's `tile`
+/// when it is the selected node and not a row already.
+pub(crate) fn scan_targets(rows: &[(usize, usize)], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>, tile: Option<usize>) -> Vec<usize> {
+    let mut v = picked_in_order(rows, marked, selected);
+    if let Some(t) = tile.filter(|&t| selected == Some(t) && !v.contains(&t)) {
+        v.push(t);
+    }
+    v
+}
+
+/// A node in `marked` or `selected` that is not among `targets`.
+pub(crate) fn picks_hidden(targets: &[usize], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>) -> bool {
+    marked.iter().copied().chain(selected).any(|n| !targets.contains(&n))
+}
+
 #[cfg(test)]
 mod picked_tests {
-    use super::picked_in_order;
+    use super::{picked_in_order, picks_hidden, scan_targets};
+
+    #[test]
+    fn a_gone_result_shows_its_nearest_folder_and_says_so() {
+        use super::{gone_note, nearest_existing};
+        use std::path::{Path, PathBuf};
+        let there = |p: &Path| p == Path::new(r"D:\a") || p == Path::new(r"D:\a\x.txt") || p == Path::new(r"D:\");
+        let ps: Vec<PathBuf> = [r"D:\a\x.txt", r"D:\a\old\y.txt", r"D:\a\old\z.txt", r"Q:\no\w.txt"].iter().map(PathBuf::from).collect();
+        let (out, gone, nowhere) = nearest_existing(&ps, there);
+        assert_eq!(out, [PathBuf::from(r"D:\a\x.txt"), PathBuf::from(r"D:\a")]);
+        assert_eq!((gone, nowhere), (2, 1));
+        assert_eq!(gone_note(1, 1, 0), "That is gone now; its nearest folder is open.");
+        assert_eq!(gone_note(1, 0, 1), "That path is gone.");
+        assert!(gone_note(4, 2, 1).contains("2 are gone"));
+    }
+
+    #[test]
+    fn delete_and_the_menu_share_one_set_of_targets() {
+        let rows = [(9, 0), (5, 1), (5, 0), (2, 0)];
+        let m = |v: &[usize]| v.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        // a node that is not a row (a parent folder after a rescan, a folder picked in Tree View)
+        let t = scan_targets(&rows, &m(&[]), Some(77), None);
+        assert!(t.is_empty() && picks_hidden(&t, &m(&[]), Some(77)));
+        // a row picked earlier that the new list does not show
+        let t = scan_targets(&rows, &m(&[2, 40]), Some(2), None);
+        assert_eq!(t, [2]);
+        assert!(picks_hidden(&t, &m(&[2, 40]), Some(2)));
+        // everything picked is listed: nothing hidden
+        let t = scan_targets(&rows, &m(&[9, 2]), Some(2), None);
+        assert!(!picks_hidden(&t, &m(&[9, 2]), Some(2)));
+        // the map's tile is a target while it is the selected node, and only then
+        assert_eq!(scan_targets(&rows, &m(&[]), Some(77), Some(77)), [77]);
+        assert!(!picks_hidden(&[77], &m(&[]), Some(77)));
+        assert!(scan_targets(&rows, &m(&[]), Some(5), Some(77)).len() == 1, "the tile is stale once something else is selected");
+        assert_eq!(scan_targets(&rows, &m(&[]), Some(5), Some(5)), [5]);
+    }
 
     #[test]
     fn only_the_scans_rows_in_the_order_shown() {

@@ -13,6 +13,10 @@ in-app updater shows.
 - Search: F2 renames the picked result (one at a time). The new name is checked first: nothing Windows doesn't allow, never onto a name that is already there, and a file keeps its extension unless you type a new one. Protected places and results from saved scans are refused, and Windows' own message is shown if it says no.
 - Search: Ctrl+C copies the picked results as files, so Paste in Explorer copies them.
 - Search: right-click the list's header to choose which columns to show (Size, Allocated, Modified, Folder; Name always stays). Your choice is remembered.
+- Search: Delete (Del, Shift+Del, the Search bar's button and the row menu) acts only on results that are listed and picked. Something left picked under an earlier list, a folder picked in Tree View, or the folder a result moved up to after a rescan is no longer asked about; you are told to pick again.
+- Search: with the map shown, Open, Show in Explorer and Copy Path work on the map tile you right-clicked even when it is not a result.
+- Search: Show in Explorer on a result that is gone opens its nearest folder and says so, and a huge pick is refused at once instead of freezing the window while every path is read.
+- Search: the Menu key on a row you just took out of the picks no longer drops the picks; the menu acts on them as Del does.
 
 ## 1.0.8 — 2026-11-23
 - Search can find what was created, not only what was changed: `dc:` takes the same dates as `dm:` (`dc:2026`, `dc:2026-01-15`, `dc:>2026-01-01`, `dc:2026-01..2026-03`, `dc:lastweek`). A scan doesn't keep creation times, so they are read for the matches the rest of the search leaves; that needs another word to narrow it, only local fixed disks are read, and what the reading limit left out is said in the status line instead of being passed off as "no match".

@@ -160,9 +160,10 @@ pub(crate) fn all_listed(rows: &[(usize, usize)], picks: &[(usize, usize)]) -> b
 
 /// A right-click on the Search result at `path` (or the menu key on it): a row that is picked
 /// keeps every pick, because the menu acts on them all; any other row is acted on alone, so the
-/// picks go. True when they stayed.
-pub(crate) fn menu_keeps_picks(picks: &mut Picks, path: &Path) -> bool {
-    if picks.contains_key(&key(path)) {
+/// picks go. True when they stayed. The menu key (`by_key`) on a row that was just un-picked keeps
+/// them too, as Del does: only a pointer right-click on another row acts on that row alone.
+pub(crate) fn menu_keeps_picks(picks: &mut Picks, path: &Path, by_key: bool) -> bool {
+    if picks.contains_key(&key(path)) || (by_key && !picks.is_empty()) {
         return true;
     }
     picks.clear();
@@ -715,13 +716,21 @@ mod tests {
             picks.add(Pick { path: PathBuf::from(path), is_dir: false, size: 1, secs: Some(1), place: 0, id: 1, gen: 0 });
         }
         // the same row (a path is compared as the picks keep it)
-        assert!(menu_keeps_picks(&mut picks, Path::new(r"d:\A.TXT")));
+        assert!(menu_keeps_picks(&mut picks, Path::new(r"d:\A.TXT"), false));
         assert_eq!(picks.len(), 3, "a picked row leaves every pick for the menu to act on");
         // another row: it alone is acted on
-        assert!(!menu_keeps_picks(&mut picks, Path::new(r"E:\other.txt")));
+        assert!(!menu_keeps_picks(&mut picks, Path::new(r"E:\other.txt"), false));
         assert!(picks.is_empty());
         // and with nothing picked, nothing is kept
-        assert!(!menu_keeps_picks(&mut picks, Path::new(r"D:\a.txt")));
+        assert!(!menu_keeps_picks(&mut picks, Path::new(r"D:\a.txt"), false));
+        assert!(!menu_keeps_picks(&mut picks, Path::new(r"D:\a.txt"), true));
+        // the menu key on a row just taken out of the picks: the picks stay, as for Del
+        picks.add(Pick { path: PathBuf::from(r"D:\a.txt"), is_dir: false, size: 1, secs: Some(1), place: 0, id: 1, gen: 0 });
+        assert!(menu_keeps_picks(&mut picks, Path::new(r"D:\c.txt"), true));
+        assert_eq!(picks.len(), 1);
+        // a pointer right-click on that row acts on it alone
+        assert!(!menu_keeps_picks(&mut picks, Path::new(r"D:\c.txt"), false));
+        assert!(picks.is_empty());
     }
 
     fn tree(names: &[(&str, bool, usize, u64)]) -> Tree {

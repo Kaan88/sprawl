@@ -655,6 +655,8 @@ impl State {
         // the tile's menu acts on the tile, as a row's does on the row (tables.rs): never on rows
         // picked before elsewhere, nor on a row from another drive in Search
         self.menu_on_node(n);
+        // in Search the tile is a target of the menu though it may not be a result
+        self.search.tile = Some(n);
         if let Ok(target) = crate::state::find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "MapPanel") {
             crate::menu::show_at("RowMenu", &target, crate::bindings::Windows::Foundation::Point { X: x as f32, Y: y as f32 }, false);
         }
