@@ -508,14 +508,24 @@ pub fn reveal(path: &Path) -> bool {
 
 /// The Explorer windows [`reveal_all`] opens for `paths`: one for each folder picked, and one for
 /// each folder holding picked files (a folder picked and holding picked files is one window).
-pub fn reveal_windows(paths: &[PathBuf]) -> usize {
+/// Counting stops once it is past `limit` (the number returned is then `limit + 1`, "more than"),
+/// so a huge pick is not read from the disk path by path.
+pub fn reveal_windows(paths: &[PathBuf], limit: usize) -> usize {
+    windows_for(paths, |p| p.is_dir(), limit)
+}
+
+/// [`reveal_windows`] with the folder-or-not answer given by `is_dir`.
+fn windows_for(paths: &[PathBuf], is_dir: impl Fn(&Path) -> bool, limit: usize) -> usize {
     use std::collections::BTreeSet;
     let mut windows: BTreeSet<PathBuf> = BTreeSet::new();
     for p in paths {
-        if p.is_dir() {
+        if is_dir(p) {
             windows.insert(p.clone());
         } else if let Some(parent) = p.parent() {
             windows.insert(parent.to_path_buf());
+        }
+        if windows.len() > limit {
+            break;
         }
     }
     windows.len()
@@ -528,7 +538,10 @@ pub fn reveal_all(paths: &[PathBuf], max_windows: usize) -> bool {
     use std::collections::BTreeMap;
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
-    if reveal_windows(paths) > max_windows {
+    // each path is asked of the disk once: for the count and for the grouping below
+    let dirs: std::collections::HashMap<&Path, bool> = paths.iter().map(|p| (p.as_path(), p.is_dir())).collect();
+    let is_dir = |p: &Path| dirs.get(p).copied().unwrap_or(false);
+    if windows_for(paths, is_dir, max_windows) > max_windows {
         return false;
     }
     let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
@@ -536,7 +549,7 @@ pub fn reveal_all(paths: &[PathBuf], max_windows: usize) -> bool {
     let mut folders = Vec::new();
     for p in paths {
         match p.parent() {
-            Some(parent) if !p.is_dir() => by_parent.entry(parent.to_path_buf()).or_default().push(p),
+            Some(parent) if !is_dir(p) => by_parent.entry(parent.to_path_buf()).or_default().push(p),
             _ => folders.push(p),
         }
     }
@@ -904,7 +917,7 @@ pub fn set_app_icon(h: HWND) {
 
 #[cfg(test)]
 mod tests {
-    use super::{reveal_windows, select_arg};
+    use super::{reveal_windows, select_arg, windows_for};
     use std::path::Path;
 
     fn unquoted(arg: &str) -> &str {
@@ -924,13 +937,24 @@ mod tests {
         }
         let p = |f: &Path| f.to_path_buf();
         // one folder's files: one window; two folders: two
-        assert_eq!(reveal_windows(&[p(&a1), p(&a2)]), 1);
-        assert_eq!(reveal_windows(&[p(&a1), p(&b1)]), 2);
+        assert_eq!(reveal_windows(&[p(&a1), p(&a2)], 10), 1);
+        assert_eq!(reveal_windows(&[p(&a1), p(&b1)], 10), 2);
         // a picked folder is a window of its own; with its picked files shown in it, one
-        assert_eq!(reveal_windows(&[p(&a), p(&b1)]), 2);
-        assert_eq!(reveal_windows(&[p(&a), p(&a1)]), 1);
-        assert_eq!(reveal_windows(&[]), 0);
+        assert_eq!(reveal_windows(&[p(&a), p(&b1)], 10), 2);
+        assert_eq!(reveal_windows(&[p(&a), p(&a1)], 10), 1);
+        assert_eq!(reveal_windows(&[], 10), 0);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A huge pick is not asked of the disk path by path: counting stops once past the limit.
+    #[test]
+    fn counting_windows_stops_past_the_limit() {
+        let paths: Vec<std::path::PathBuf> = (0..1000).map(|i| std::path::PathBuf::from(format!(r"Z:/d{i}/file.txt"))).collect();
+        let asked = std::cell::Cell::new(0usize);
+        let n = windows_for(&paths, |_| { asked.set(asked.get() + 1); false }, 10);
+        assert_eq!(n, 11, "more than the limit, no more exact than that");
+        assert_eq!(asked.get(), 11, "the rest were never read");
+        assert_eq!(windows_for(&paths[..3], |_| false, 10), 3);
     }
 
     #[test]

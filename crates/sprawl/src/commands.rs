@@ -380,14 +380,26 @@ impl State {
             "mExplore" => {
                 // every picked result: one folder's files together in one window, one window for
                 // each folder; up to the same limit, since each is a window of its own
-                let paths = self.menu_paths();
-                let windows = crate::win32::reveal_windows(&paths);
+                let picked = self.menu_paths();
+                // far too many to look at one by one: refused before the disk is read for them
+                if picked.len() > crate::search_delete::MAX_PICKS {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked. Show in Explorer opens a window for each folder, up to {} at a time; pick fewer.", picked.len(), crate::search::MAX_OPEN));
+                    return;
+                }
+                // a result that is gone (a saved scan's, or deleted since) shows its nearest folder
+                let (paths, gone, nowhere) = crate::search::nearest_existing(&picked, |p| p.exists());
+                let windows = crate::win32::reveal_windows(&paths, crate::search::MAX_OPEN);
                 if !crate::search::can_open(windows) {
-                    text(&self.root, "SearchInfo", &format!("{} results are picked, in {} folders: Show in Explorer opens a window for each folder. Sprawl opens up to {} at a time; pick fewer.", paths.len(), windows, crate::search::MAX_OPEN));
-                } else if paths.len() > 1 {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked, in more than {} folders: Show in Explorer opens a window for each folder. Sprawl opens up to {} at a time; pick fewer.", picked.len(), crate::search::MAX_OPEN, crate::search::MAX_OPEN));
+                    return;
+                }
+                if paths.len() > 1 {
                     crate::win32::reveal_all(&paths, crate::search::MAX_OPEN);
                 } else if let Some(p) = paths.first() {
                     crate::win32::reveal(p);
+                }
+                if self.view == View::Search && (gone > 0 || nowhere > 0) {
+                    text(&self.root, "SearchInfo", &crate::search::gone_note(picked.len(), gone, nowhere));
                 }
             }
             "mScanHere" => {
@@ -824,6 +836,19 @@ impl State {
         // Search: rows from other drives or saved scans, deleted by path (search_delete.rs)
         if self.view == View::Search && (self.search.more.sel.is_some() || !self.search.more.picks.is_empty()) {
             return self.delete_more(permanent);
+        }
+        // Search: only what is listed and picked (or the map's tile the menu was opened on);
+        // anything else left in `marked`/`selected` (an earlier list, a folder picked in Tree
+        // View, a rescan) is never deleted from here
+        if self.view == View::Search {
+            if self.scan_targets().is_empty() {
+                text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several).");
+                return;
+            }
+            if self.scan_picks_hidden() {
+                text(&self.root, "SearchInfo", "The results changed since they were picked, so nothing was deleted. Pick the ones to delete again.");
+                return;
+            }
         }
         if self.marked.len() > 1 || (self.marked.len() == 1 && self.selected.is_some_and(|s| !self.marked.contains(&s))) {
             return self.delete_many(permanent);
@@ -1469,7 +1494,9 @@ impl State {
             }
             n
         };
-        self.selected = self.selected.map(up);
+        // in Search a selected node that is gone is dropped: moved up to its folder it would be a
+        // node the list does not show, and Delete would ask about the whole folder
+        self.selected = if self.view == View::Search { self.selected.filter(|&n| alive(t, n)) } else { self.selected.map(up) };
         self.map_root = up(self.map_root);
         self.expanded.retain(|&n| alive(t, n));
         // rows picked with Ctrl or Shift are indices too: a detached one would still be

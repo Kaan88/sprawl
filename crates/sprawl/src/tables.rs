@@ -914,6 +914,7 @@ impl State {
     pub(crate) fn menu_on_node(&mut self, n: usize) {
         let search = self.view == View::Search;
         menu_pick(&mut self.marked, &mut self.search.more.sel, &mut self.search.more.picks, search, n);
+        self.search.tile = None;
         self.selected = Some(n);
         self.refresh_rows();
         self.show_selection();
@@ -955,7 +956,7 @@ impl State {
     /// with the row right-clicked.
     fn menu_pick_count(&self, scan: bool) -> usize {
         if scan {
-            return self.picked_nodes().len();
+            return if self.view == View::Search { self.scan_targets().len() } else { self.picked_nodes().len() };
         }
         let m = &self.search.more;
         crate::search_delete::count(&m.picks, m.sel.is_some_and(|(k, id)| m.item(k, id).is_some()))
@@ -970,7 +971,7 @@ impl State {
             let Some((ix, i)) = self.search.more.item(d - 1, n) else { return };
             let path = ix.path_of(i);
             // a row among the picks keeps them (the menu acts on them all); another is alone
-            crate::search_delete::menu_keeps_picks(&mut self.search.more.picks, &path);
+            crate::search_delete::menu_keeps_picks(&mut self.search.more.picks, &path, by_key);
             self.search.more.sel = Some((d - 1, n));
             // as more_tapped does: a Delete afterwards must not act on a scan row
             self.selected = None;
@@ -992,7 +993,7 @@ impl State {
         }
         self.menu_on_node(n);
         // Shift+right-click: straight to the Windows menu (Shift+F10 is the keyboard's menu key)
-        if !by_key && crate::win32::ctrl_shift_down().1 && self.picked_nodes().len() <= 1 {
+        if !by_key && crate::win32::ctrl_shift_down().1 && self.menu_pick_count(true) <= 1 {
             if let Some(p) = self.selected_path() {
                 self.shell_menu(p, true);
                 return;
@@ -1043,6 +1044,7 @@ impl State {
             Some((p, n)) => self.rows.iter().any(|r| r.1 == p + 1 && r.0 == n),
             None => self.selected.is_some_and(|s| self.rows.iter().any(|r| r.0 == s && self.scan_row(r))),
         };
+        self.prune_marked();
         if !on_listed {
             if self.scan_row(&first) {
                 self.search.more.sel = None;
