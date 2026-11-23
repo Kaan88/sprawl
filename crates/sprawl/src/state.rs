@@ -153,6 +153,12 @@ pub(crate) struct State {
     /// Counts trees put on screen (set_tree), not their edits: places made for one tree are
     /// never kept for another.
     pub(crate) tree_set: u64,
+    /// Tree View's rows in the column's sort: each open folder's children, sorted when it is
+    /// first shown in that sort ([`State::visible_rows`]). A header click only starts it again,
+    /// so it never copies or sorts the whole tree (a few hundred ms on a big drive). Kept for
+    /// one tree, its sort and `order_gen` (bumped whenever the tree is edited in place).
+    pub(crate) kid_order: std::cell::RefCell<(Option<(usize, u64, (usize, bool), u64)>, HashMap<usize, Vec<usize>>)>,
+    pub(crate) order_gen: u64,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) selected: Option<usize>,
     /// More rows picked with Ctrl or Shift, besides `selected` (Delete takes them all).

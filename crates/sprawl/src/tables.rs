@@ -358,6 +358,7 @@ impl State {
 
     /// Order every folder's children by the tree view's sort column.
     pub(crate) fn sort_tree(&mut self) {
+        self.order_gen += 1;
         let sort = self.tables.tree_sort;
         let Some(t) = self.tree.as_mut().map(std::sync::Arc::make_mut) else { return };
         sort_children(t, &self.alloc, sort);
@@ -441,8 +442,14 @@ impl State {
                 self.refresh_exts();
             }
             Which::Main if self.view == View::Files => {
+                let before = self.tables.files_sort;
                 flip(&mut self.tables.files_sort);
-                self.sort_files();
+                // the same column again: the list turned around, exactly as sorting it would
+                // (a few ms, where sorting millions of files takes about a tenth of a second)
+                let turned = before.0 == self.tables.files_sort.0 && before.1 != self.tables.files_sort.1 && self.tree.as_ref().is_some_and(|t| reverse_file_list(t, &self.alloc, &self.ranks, before.0, &mut self.files));
+                if !turned {
+                    self.sort_files();
+                }
                 self.refresh_rows();
             }
             Which::Main if self.view == View::Search => {
@@ -451,8 +458,10 @@ impl State {
                 self.refresh_rows();
             }
             Which::Main => {
+                // only the open folders are put in the new order, as they are shown
+                // (visible_rows); the tree itself is left as it is
                 flip(&mut self.tables.tree_sort);
-                self.sort_tree();
+                self.order_gen += 1;
                 self.refresh_rows();
             }
         }
@@ -462,12 +471,23 @@ impl State {
 
     pub(crate) fn visible_rows(&self) -> Vec<(usize, usize)> {
         let t = self.tree.as_ref().unwrap();
+        let sort = self.tables.tree_sort;
+        let key = (std::sync::Arc::as_ptr(t) as usize, self.tree_set, sort, self.order_gen);
+        let mut cache = self.kid_order.borrow_mut();
+        if cache.0 != Some(key) {
+            *cache = (Some(key), std::collections::HashMap::new());
+        }
         let mut out = Vec::new();
         let mut stack = vec![(ROOT, 0usize)];
         while let Some((n, d)) = stack.pop() {
             out.push((n, d));
             if self.expanded.contains(&n) {
-                for &c in t.nodes[n].children.iter().rev() {
+                let kids = cache.1.entry(n).or_insert_with(|| {
+                    let mut kids = t.nodes[n].children.clone();
+                    kids.sort_by(child_order(t, &self.alloc, sort));
+                    kids
+                });
+                for &c in kids.iter().rev() {
                     stack.push((c, d + 1));
                 }
             }
@@ -1427,6 +1447,13 @@ mod tests {
                 let mut fs = fast.clone();
                 fs.sort_unstable();
                 assert_eq!(fs, files, "every file once");
+                // the same column clicked again: turned around, exactly the other way's sort
+                let mut turned = fast.clone();
+                if reverse_file_list(&t, &alloc, &ranks, c, &mut turned) {
+                    let mut sorted = files.clone();
+                    sort_file_list(&t, &alloc, &ranks, (c, !desc), &mut sorted);
+                    assert_eq!(turned, sorted, "{} turned from desc={desc}", FILES[c].title);
+                }
             }
         }
         // a tree with nodes the places weren't made for: not trusted
@@ -1712,18 +1739,23 @@ pub(crate) fn ext_rows(t: &Tree, alloc: &[u64]) -> Vec<crate::state::ExtRow> {
         .collect()
 }
 
-pub(crate) fn sort_children(t: &mut Tree, alloc: &[u64], (c, desc): (usize, bool)) {
-    let key = TREE[c].key;
+pub(crate) fn sort_children(t: &mut Tree, alloc: &[u64], sort: (usize, bool)) {
     for i in 0..t.nodes.len() {
         if t.nodes[i].children.len() < 2 {
             continue;
         }
         let mut kids = std::mem::take(&mut t.nodes[i].children);
-        kids.sort_by(|&a, &b| {
-            let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
-            if desc { o.reverse() } else { o }
-        });
+        kids.sort_by(child_order(t, alloc, sort));
         t.nodes[i].children = kids;
+    }
+}
+
+/// How Tree View orders a folder's children for the column `c` (reversed with `desc`).
+fn child_order<'a>(t: &'a Tree, alloc: &'a [u64], (c, desc): (usize, bool)) -> impl Fn(&usize, &usize) -> Ordering + 'a {
+    let key = TREE[c].key;
+    move |&a, &b| {
+        let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
+        if desc { o.reverse() } else { o }
     }
 }
 
@@ -1780,6 +1812,42 @@ fn sort_keyed<K: Ord + Copy>(files: &mut [usize], desc: bool, names: &[u32], key
     for (slot, (_, _, n)) in files.iter_mut().zip(v) {
         *slot = n as usize;
     }
+}
+
+/// Turn `files`, sorted by `sort_keyed` on one key, into its sort the other way round: reversed,
+/// then each run that sorts equal (same key and name place) turned back, since both ways break
+/// those ties by node index, lowest first. The same order sorting would give, in linear time.
+fn reverse_keyed<K: Eq>(files: &mut [usize], names: &[u32], key: impl Fn(usize) -> K) {
+    files.reverse();
+    let mut i = 0;
+    while i < files.len() {
+        let (k, name) = (key(files[i]), names[files[i]]);
+        let mut j = i + 1;
+        while j < files.len() && names[files[j]] == name && key(files[j]) == k {
+            j += 1;
+        }
+        files[i..j].reverse();
+        i = j;
+    }
+}
+
+/// File View's list, sorted on column `c` one way, turned to the other way without sorting it
+/// again ([`reverse_keyed`]). False when that can't be done exactly (no name places for this
+/// tree, or a column sorted by comparing): then it is sorted as usual.
+pub(crate) fn reverse_file_list(t: &Tree, alloc: &[u64], ranks: &Ranks, c: usize, files: &mut [usize]) -> bool {
+    if !ranks.fits(t) {
+        return false;
+    }
+    let names = &ranks.names;
+    match FILES[c].key {
+        Key::Name => reverse_keyed(files, names, |_| ()),
+        Key::Size => reverse_keyed(files, names, |n| t.nodes[n].size),
+        Key::Alloc => reverse_keyed(files, names, |n| alloc.get(n).copied()),
+        Key::Modified => reverse_keyed(files, names, |n| t.nodes[n].modified),
+        Key::Folder => reverse_keyed(files, names, |n| t.nodes[n].parent.map_or(0, |p| u64::from(ranks.folders[p]) + 1)),
+        _ => return false,
+    }
+    true
 }
 
 /// File View's sort. With `ranks` made for `t` every column sorts numbers; without (they

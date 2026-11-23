@@ -391,6 +391,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         ranks: Default::default(),
         ranks_job: None,
         tree_set: 0,
+        kid_order: Default::default(),
+        order_gen: 0,
         welcome: None,
         welcome_drives: Vec::new(),
         welcome_recent: Vec::new(),
