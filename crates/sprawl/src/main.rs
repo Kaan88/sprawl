@@ -194,10 +194,6 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     }
     let mut settings = settings::Settings::load();
     settings.keep_old_defaults();
-    // ONE-TIME, 1.0.7 only (remove in the release after): theme back to the defaults
-    if settings.reset_look_once() && a.shot.is_none() {
-        settings.save();
-    }
     // Setup runs as administrator, and when Sprawl itself started it (an update, or Install for
     // all users), Setup has no other user to start the new Sprawl as: it comes up elevated. Open
     // again as the user, unless "Always run as administrator" is on.
@@ -727,9 +723,7 @@ fn main() {
     }
     let result = Application::Start(&ApplicationInitializationCallback::new(|_| {
         let app = Application::compose(App { provider: OnceLock::new() })?;
-        let mut stored = crate::settings::Settings::load();
-        // ONE-TIME, 1.0.7 only (remove in the release after): a screenshot run doesn't save it
-        stored.reset_look_once();
+        let stored = crate::settings::Settings::load();
         crate::theme::init(stored.get("theme"));
         // the look (the Theme page's options) is set before any XAML loads
         crate::tokens::set(&crate::themepage::startup_look(&stored));

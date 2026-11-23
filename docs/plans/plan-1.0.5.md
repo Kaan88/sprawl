@@ -313,7 +313,7 @@ tools/write-hub-txt.ps1). Left for later:
 - Releases now need PowerShell 7 (`pwsh`); build checks it first.
 - Never run for real: at 1.0.6, check hub.txt is among the release assets.
 
-## L. One-time theme reset: in 1.0.7, out in the release after
+## L. One-time theme reset: in 1.0.7, out in the release after (removed 2026-11-23, after 1.0.7)
 
 The user's word (2026-11-23): the next release resets theming to the defaults, and the release
 after removes that code.
