@@ -237,6 +237,7 @@ impl State {
         let _slow = Slow(now);
         // dev (SPRAWL_TIMING): where a long frame's time went (bench.rs)
         let mut split = crate::bench::Split::new();
+        self.search_focus_frame();
         if (now - self.map.last).as_millis() >= 50 {
             crate::state::timing("gap before frame", self.map.last);
         }

@@ -389,6 +389,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         tree_set: 0,
         kid_order: Default::default(),
         order_gen: 0,
+        search_focus_wait: 0,
         welcome: None,
         welcome_drives: Vec::new(),
         welcome_recent: Vec::new(),

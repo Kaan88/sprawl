@@ -159,6 +159,9 @@ pub(crate) struct State {
     /// one tree, its sort and `order_gen` (bumped whenever the tree is edited in place).
     pub(crate) kid_order: std::cell::RefCell<(Option<(usize, u64, (usize, bool), u64)>, HashMap<usize, Vec<usize>>)>,
     pub(crate) order_gen: u64,
+    /// Frames left to keep putting the focus in the Search box: it can't take it while it is
+    /// still hidden or not laid out (right after the tab opens, or at start).
+    pub(crate) search_focus_wait: u8,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) selected: Option<usize>,
     /// More rows picked with Ctrl or Shift, besides `selected` (Delete takes them all).

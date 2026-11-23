@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- The Search box takes the keyboard focus when the Search tab opens, also when Sprawl starts on it, so you can type at once.
+- Cleaners, Unknown applications: one button asks the AI about all the folders in one go, instead of a button on each row.
+
 ## 1.0.8 — 2026-11-23
 
 - Faster: the map is ready sooner after Sprawl starts (its graphics are prepared while the window opens), clicking a column header in Tree View sorts a big scan in a few milliseconds instead of a fifth of a second, clicking the same column again in File View just turns the list around, and a map at rest no longer redraws its tiles in the background, so a large scan no longer slows down every click and key press.

@@ -598,32 +598,51 @@ impl State {
         self.advisor_start();
     }
 
-    /// Big folders of programs no cleaner knows, each with a button that asks the AI for one.
+    /// Big folders of programs no cleaner knows, with one button that asks the AI about them all.
     fn unclaimed_card(&self, r: &Report) -> String {
         let list = self.unclaimed_list(r);
         if list.is_empty() {
             return String::new();
         }
         let ai = AiConfig::load().provider != Provider::Off;
+        let ask = if !ai {
+            String::new()
+        } else {
+            format!(
+                r##"<Button x:Name="AdvClUAll" Content="{}" Margin="0,6,0,0"/>"##,
+                if list.len() == 1 { "Ask the AI to look".to_string() } else { format!("Ask the AI about all {}", list.len()) }
+            )
+        };
         let mut x = format!(
             r##"<TextBlock Text="Unknown applications" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$label}}" Margin="0,10,0,2"/><Border Padding="12,10" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><StackPanel Spacing="4"><TextBlock Text="{}" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>"##,
             ui::esc(&format!("Sprawl doesn't know {} {}", list.len(), if list.len() == 1 { "application" } else { "applications" })),
             if ai {
-                "Big folders of programs in your AppData that no cleaner knows. The AI can look inside and propose a cleaner; a second opinion checks it, and you approve it before it is used."
+                "Big folders of programs in your AppData that no cleaner knows. The AI can look inside them in one go and propose cleaners; a second opinion checks each one, and you approve it before it is used."
             } else {
                 "Big folders of programs in your AppData that no cleaner knows. With AI set up, it can look inside and propose a cleaner for you to approve."
             }
         );
-        for (i, (p, bytes)) in list.iter().enumerate() {
+        for (p, bytes) in &list {
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTipService.ToolTip="{0}"/>{}<TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTipService.ToolTip="{0}"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>"##,
                 ui::esc(&p.display().to_string()),
-                if ai { format!(r##"<Button x:Name="AdvClU{i}" Grid.Column="1" Content="Ask the AI to look" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/>"##) } else { String::new() },
                 self.size(*bytes)
             );
         }
+        x += &ask;
         x += "</StackPanel></Border>";
         x
+    }
+
+    /// One question to the AI about every folder on the Unknown applications card.
+    pub(crate) fn ask_unclaimed_all(&mut self) {
+        let Some(r) = self.advice() else { return };
+        let list = self.unclaimed_list(r);
+        if list.is_empty() {
+            return;
+        }
+        let q = unclaimed_question(&list);
+        self.ask_about(q);
     }
 
     pub(crate) fn unclaimed_list(&self, r: &Report) -> Vec<(std::path::PathBuf, u64)> {
@@ -804,15 +823,6 @@ impl State {
                 } else {
                     self.suggest_decline(Some(k));
                 }
-            }
-            "AdvClU" => {
-                let Some((path, bytes)) = self.unclaimed_list(r).into_iter().nth(i) else { return };
-                let q = format!(
-                    "Look inside {} ({}). Which program is it, and which of its folders come back by themselves (caches, logs, crash dumps)? If some do, propose a cleaner for them with propose_cleaner; leave out anything that is the user's own data, settings or sign-ins.",
-                    path.display(),
-                    crate::format::size(bytes)
-                );
-                self.ask_about(q);
             }
             "AdvClF" => {
                 let Some(id) = rows.get(i).filter(|c| c.def.is_some_and(|k| !r.catalogue[k].builtin)).map(|c| c.id.clone()) else { return };
@@ -1983,8 +1993,28 @@ pub(crate) fn presences(tree: &sprawl_core::Tree, catalogue: &[CleanerDef], find
     catalogue.iter().map(|d| sprawl_advisor::cleaners::presence(tree, d, d.parts.iter().any(|p| found.contains(p.rule.as_str())))).collect()
 }
 
+/// The question the Unknown applications card's button asks: every folder in one go.
+fn unclaimed_question(list: &[(std::path::PathBuf, u64)]) -> String {
+    let folders: Vec<String> = list.iter().map(|(p, b)| format!("- {} ({})", p.display(), crate::format::size(*b))).collect();
+    let one = list.len() == 1;
+    format!(
+        "Look inside {}:\n{}\nFor each: which program is it, and which of its folders come back by themselves (caches, logs, crash dumps)? Where some do, propose a cleaner for them with propose_cleaner, one per program; leave out anything that is the user's own data, settings or sign-ins. Then sum up in a line per folder what you found and what you proposed.",
+        if one { "this folder" } else { "these folders" },
+        folders.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod own_failed_tests {
+    #[test]
+    fn unknown_apps_are_asked_about_in_one_go() {
+        let list = vec![(std::path::PathBuf::from(r"C:\Users\x\AppData\Local\Android"), 16u64 << 30), (std::path::PathBuf::from(r"C:\Users\x\AppData\Local\RHI"), 2u64 << 30)];
+        let q = super::unclaimed_question(&list);
+        assert!(q.starts_with("Look inside these folders:"), "{q}");
+        assert!(q.contains(r"\Local\Android (") && q.contains(r"\Local\RHI ("), "{q}");
+        assert!(q.contains("one per program"));
+        assert!(super::unclaimed_question(&list[..1]).starts_with("Look inside this folder:"));
+    }
     use super::*;
 
     #[test]

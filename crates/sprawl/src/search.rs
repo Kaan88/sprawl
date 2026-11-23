@@ -523,8 +523,51 @@ impl State {
     /// Esc in the results: back to the search box.
     pub(crate) fn search_box_focus(&mut self) {
         self.search_ui_build();
-        if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
-            let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
+        self.search_box_take_focus();
+    }
+
+    /// The focus to the Search box, now if it can take it, else on the next frames
+    /// ([`State::search_focus_frame`]).
+    pub(crate) fn search_box_take_focus(&mut self) {
+        if self.search_box_focus_now() {
+            crate::bench::note("search box focused");
+        }
+        // watched for about half a second: the box may not be laid out yet, and the tab button
+        // a click came from may take the focus back after its Click
+        self.search_focus_wait = 30;
+    }
+
+    /// Whether the Search box has the focus after asking for it (false while it is hidden or
+    /// not yet laid out).
+    fn search_box_focus_now(&self) -> bool {
+        use crate::bindings::Microsoft::UI::Xaml::{Controls::TextBox, FocusState};
+        let Ok(b) = find::<TextBox>(&self.root, "SearchBox") else { return false };
+        b.Focus(FocusState::Programmatic).unwrap_or(false)
+    }
+
+    /// Each frame, for a moment after the Search tab opened: the Search box takes the focus if
+    /// nothing has it yet or a tab button still does (never from anything the user went to).
+    pub(crate) fn search_focus_frame(&mut self) {
+        if self.search_focus_wait == 0 {
+            return;
+        }
+        if self.view != View::Search {
+            self.search_focus_wait = 0;
+            return;
+        }
+        self.search_focus_wait -= 1;
+        use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
+        use windows_core::Interface;
+        let Ok(root) = self.root.cast::<UIElement>() else { return };
+        let name = crate::menu::focused(&root).and_then(|f| f.cast::<FrameworkElement>().ok()).and_then(|f| f.Name().ok()).map(|n| n.to_string_lossy());
+        // a menu title holds it when the window first opens (WinUI's first focus), as long as no
+        // menu is open
+        let free = match name.as_deref() {
+            None => true,
+            Some(n) => n.starts_with("Tab") || n.starts_with("Menu") && !crate::menu::any_open(),
+        };
+        if free && self.search_box_focus_now() {
+            crate::bench::note(&format!("search box focused (from {})", name.as_deref().unwrap_or("nothing")));
         }
     }
 
@@ -536,9 +579,7 @@ impl State {
         self.search_ui_build();
         self.search_box_state();
         self.more_open();
-        if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "SearchBox") {
-            let _ = b.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Programmatic);
-        }
+        self.search_box_take_focus();
     }
 
     /// Enter or a double-click on a result: a file opens with its program, a folder in

@@ -233,7 +233,7 @@ const ADVISOR_COMMANDS: &[&str] = &[
     "AdvAiRemove", "AdvAiForget", "AdvUninstall", "AdvDupes", "AdvDupesStop", "AdvKeptShow", "AdvMemShow", "AdvPrefAdd", "AdvChatSend", "AdvStop",
     "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0",
     "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev",
-    "AdvClPrevX", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny", "AdvRefresh", "AdvGoApprove", "AdvHeld",
+    "AdvClPrevX", "AdvClUAll", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny", "AdvRefresh", "AdvGoApprove", "AdvHeld",
     "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvExport",
     "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow",
     "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe",
@@ -1674,6 +1674,7 @@ impl State {
             }
             "AdvClPrevX" => self.advisor.cl.preview = None,
             "AdvClUpd" => self.community_fetch(),
+            "AdvClUAll" => self.ask_unclaimed_all(),
             "AdvClLeft" => self.advisor.cl.left_shown = !self.advisor.cl.left_shown,
             "AdvClComm" => {
                 self.advisor.memory_ready();
@@ -2211,7 +2212,6 @@ impl State {
             ("AdvClSgT", cl.1),
             ("AdvClSgX", cl.1),
             ("AdvClF", cl.0),
-            ("AdvClU", 6),
             ("AdvClUse", cl.0),
             ("AdvClApprove", m.cleaner_proposals.len()),
             ("AdvPvT", self.advice().map_or(0, |r| r.privacy.len())),
