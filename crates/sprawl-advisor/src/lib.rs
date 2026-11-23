@@ -13,6 +13,7 @@
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
 pub mod anomaly;
+pub mod born;
 pub mod chromium;
 pub mod leftovers;
 pub mod clean;

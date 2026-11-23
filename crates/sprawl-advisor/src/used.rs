@@ -223,7 +223,7 @@ pub fn notes(unread: usize, unknown: usize, one: &str, many: &str, access: &Acce
 /// The volume `X:\` is a fixed disk (not a network, removable or optical drive): only those have
 /// last-access times worth reading, and a mapped share that reports NTFS would be crawled slowly.
 #[cfg(windows)]
-fn fixed_drive(drive: char) -> bool {
+pub(crate) fn fixed_drive(drive: char) -> bool {
     const DRIVE_FIXED: u32 = 3;
     #[link(name = "kernel32")]
     extern "system" {
