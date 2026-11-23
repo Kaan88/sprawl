@@ -23,7 +23,8 @@
 //!   ([`crate::write_local`]), and read back and compared. If that fails, nothing is deleted and
 //!   the reason is returned. The last ten backups are kept, none younger than ten minutes; the
 //!   backup just written is never pruned. Each backup's name and SHA-256 are also written to a
-//!   small list ([`MANIFEST`]) so only files Sprawl itself wrote are listed or put back.
+//!   small list ([`MANIFEST`]) so only files Sprawl itself wrote are listed or put back. That
+//!   list catches accidents and corruption, not another program running as the same user.
 //! - **Put back, into those keys only.** [`restore`] writes the removed values back with the
 //!   same type and bytes, and refuses a backup that names any other key (or a subkey of one the
 //!   part doesn't keep), or that is not in Sprawl's list with the hash it recorded. It adds or
@@ -640,14 +641,17 @@ fn open_seg(base: HKEY, name: &str, sam: u32, path: &str) -> Result<Option<Handl
 }
 
 /// Open `segments` under HKCU one at a time, each relative to the previous handle, keeping every
-/// handle; None when a segment is missing. The last handle is the key itself.
+/// handle; None when a segment is missing. The last handle is the key itself. Every segment on
+/// the way is opened read-only; only the last (`sam`) is opened for what the caller needs.
 fn open_chain(segments: &[String], sam: u32) -> Result<Option<Vec<Handle>>, String> {
     let mut out: Vec<Handle> = Vec::new();
     let mut base: HKEY = HKCU;
     let mut sofar = String::new();
-    for seg in segments {
+    let last = segments.len().saturating_sub(1);
+    for (i, seg) in segments.iter().enumerate() {
         sofar = if sofar.is_empty() { seg.clone() } else { format!(r"{sofar}\{seg}") };
-        match open_seg(base, seg, sam, &safe(&sofar))? {
+        let access = if i == last { sam } else { KEY_READ };
+        match open_seg(base, seg, access, &safe(&sofar))? {
             Some(h) => {
                 base = h.0;
                 out.push(h);
@@ -663,10 +667,10 @@ fn open_child(parent: &Handle, name: &str, sam: u32) -> Result<Option<Handle>, S
     open_seg(parent.0, name, sam, name)
 }
 
-/// The open error is the code RegOpenKeyExW returned (it does not set the thread's last error).
-
 /// Walk to `segments` under HKCU, making the missing ones one segment at a time under the
-/// checked parent. The count of keys made goes in `created` (the caller caps it).
+/// checked parent. The count of keys made goes in `created` (the caller caps it). Here every
+/// existing segment is opened with the access the caller asked for: making a key needs write on
+/// its parent, so a restore that has to make a key could not do it through a read-only handle.
 fn ensure_chain(segments: &[String], sam: u32, created: &mut usize) -> Result<Vec<Handle>, String> {
     let mut out: Vec<Handle> = Vec::new();
     let mut base: HKEY = HKCU;
@@ -692,9 +696,10 @@ fn ensure_chain(segments: &[String], sam: u32, created: &mut usize) -> Result<Ve
     Ok(out)
 }
 
-/// Make `name` under the open key `base`, as a plain key, never through a link. Windows'
-/// `RegCreateKeyExW` may or may not accept `REG_OPTION_OPEN_LINK`; it is tried first, and when
-/// that key exists, the result is always opened again with `REG_OPTION_OPEN_LINK` and checked.
+/// Make `name` under the open key `base`, as a plain key, never through a link. Only
+/// `REG_OPTION_OPEN_LINK` is used: where Windows refuses it, nothing is made (a plain create
+/// would follow a link put at the name). A key found there is opened again as itself and
+/// checked, so a link is seen.
 fn create_child_h(base: HKEY, name: &str, sam: u32, path: &str) -> Result<Handle, String> {
     let w = wide(name);
     let try_create = |options: u32| -> Result<(HKEY, u32), u32> {
@@ -709,8 +714,8 @@ fn create_child_h(base: HKEY, name: &str, sam: u32, path: &str) -> Result<Handle
     };
     let (h, disposition) = match try_create(REG_OPTION_NON_VOLATILE | REG_OPTION_OPEN_LINK) {
         Ok(x) => x,
-        // Windows doesn't take OPEN_LINK with create: make it plainly, then look again below
-        Err(ERROR_INVALID_PARAMETER) => try_create(REG_OPTION_NON_VOLATILE).map_err(|e| format!("{path} couldn't be made ({e})"))?,
+        // making a key plainly could follow a link put at its name: refuse rather than guess
+        Err(ERROR_INVALID_PARAMETER) => return Err(format!("Windows here doesn't take REG_OPTION_OPEN_LINK when making {path}, so nothing was made (87)")),
         Err(e) => return Err(format!("{path} couldn't be made ({e})")),
     };
     let handle = Handle(h);
@@ -808,7 +813,7 @@ fn write_backup(part: &RegPart, values: &[Value], dir: &Path) -> Result<PathBuf,
     let name = format!("{PREFIX}{when:010}-{}.json", crate::store::nonce());
     let path = dir.join(name);
     crate::write_local(&path, &bytes, false).map_err(|e| format!("{}: {e}", path.display()))?;
-    if let Err(e) = remember_backup(dir, &path, part.id, values.len()) {
+    if let Err(e) = remember_backup(dir, &path, &bytes, part.id, values.len()) {
         let _ = crate::remove_local(&path);
         return Err(format!("the list of backups couldn't be written ({e})"));
     }
@@ -848,12 +853,22 @@ fn manifest_path(dir: &Path) -> PathBuf {
     dir.join(MANIFEST)
 }
 
-fn load_manifest(dir: &Path) -> Manifest {
-    let Ok(text) = std::fs::read(manifest_path(dir)) else { return Manifest::default() };
-    match serde_json::from_slice::<Manifest>(&text) {
-        Ok(m) if m.version == 1 => m,
-        _ => Manifest::default(),
+/// Sprawl's own list, read: a missing list is an empty one; anything else that can't be read or
+/// parsed is an error, never "empty" (writing an empty one would orphan every backup before it).
+fn read_manifest(dir: &Path) -> Result<Manifest, String> {
+    match std::fs::read(manifest_path(dir)) {
+        Ok(text) => match serde_json::from_slice::<Manifest>(&text) {
+            Ok(m) if m.version == 1 => Ok(m),
+            _ => Err(format!("{} couldn't be read as Sprawl's list of backups", manifest_path(dir).display())),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Manifest { version: 1, files: Vec::new() }),
+        Err(e) => Err(format!("{}: {e}", manifest_path(dir).display())),
     }
+}
+
+/// [`read_manifest`] for the list shown in Settings: a list it can't read shows nothing.
+fn load_manifest(dir: &Path) -> Manifest {
+    read_manifest(dir).unwrap_or_default()
 }
 
 fn save_manifest(dir: &Path, m: &Manifest) -> Result<(), String> {
@@ -861,14 +876,14 @@ fn save_manifest(dir: &Path, m: &Manifest) -> Result<(), String> {
     crate::write_local(&manifest_path(dir), &bytes, true).map_err(|e| e.to_string())
 }
 
-/// Add (or replace) a backup in Sprawl's list, with the hash of what was just written.
-fn remember_backup(dir: &Path, path: &Path, part: &str, values: usize) -> Result<(), String> {
+/// Add (or replace) a backup in Sprawl's list. The hash is of `bytes`, the ones just written, so
+/// the list never depends on a second read of the file.
+fn remember_backup(dir: &Path, path: &Path, bytes: &[u8], part: &str, values: usize) -> Result<(), String> {
     let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { return Err("the backup's name isn't text".into()) };
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let mut m = load_manifest(dir);
+    let mut m = read_manifest(dir)?;
     m.version = 1;
     m.files.retain(|e| e.name != name);
-    m.files.push(ManifestFile { name, sha256: hash_hex(&bytes), part: part.into(), values });
+    m.files.push(ManifestFile { name, sha256: hash_hex(bytes), part: part.into(), values });
     save_manifest(dir, &m)
 }
 
@@ -886,36 +901,45 @@ fn backup_matches(b: &Backup, part: &RegPart, values: &[Value]) -> bool {
 
 /// Keep the last [`KEEP_BACKUPS`] backups. Runs after the deletes; `keep` (the backup just
 /// written) is never removed, a backup younger than [`MIN_AGE`] isn't either (one stamped in
-/// the future still counts by its stamp and can go), and only files of Sprawl's own backup shape
-/// are counted or removed. A file that can't be removed is left, and its list entry with it.
+/// the future still counts by its stamp and can go). Only files in Sprawl's own list are counted
+/// or removed, so a planted file of the same shape is left alone; an entry whose file is gone is
+/// dropped from the list. A list that can't be read holds everything as it is.
 fn prune(dir: &Path, keep: Option<&Path>, now: u64) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut files: Vec<(u64, PathBuf)> = Vec::new();
-    for e in entries.flatten() {
-        let path = e.path();
-        let Some(stamp) = path.file_name().and_then(|n| n.to_str()).and_then(backup_stamp) else { continue };
+    let Ok(mut m) = read_manifest(dir) else { return };
+    let before = m.files.len();
+    let mut protected = 0usize;
+    let mut listed: Vec<(u64, PathBuf, String)> = Vec::new();
+    // entries whose file is gone are dropped; the rest are counted or candidates
+    m.files.retain(|e| {
+        let path = dir.join(&e.name);
+        if !path.is_file() {
+            return false;
+        }
+        let Some(stamp) = backup_stamp(&e.name) else { return true };
         let young = now.checked_sub(stamp).is_some_and(|age| age < MIN_AGE);
         if keep.is_some_and(|k| k == path) || young {
+            protected += 1;
+        } else {
+            listed.push((stamp, path, e.name.clone()));
+        }
+        true
+    });
+    let keep_listed = KEEP_BACKUPS.saturating_sub(protected);
+    listed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    let mut removed: Vec<String> = Vec::new();
+    for (_, p, name) in listed.into_iter().skip(keep_listed) {
+        if p == keep.unwrap_or(Path::new("")) {
             continue;
         }
-        files.push((stamp, path));
-    }
-    if files.len() <= KEEP_BACKUPS {
-        return;
-    }
-    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    let mut removed: Vec<String> = Vec::new();
-    for (_, p) in files.into_iter().skip(KEEP_BACKUPS) {
         if crate::remove_local(&p).is_ok() {
-            if let Some(n) = p.file_name().and_then(|n| n.to_str()) {
-                removed.push(n.to_string());
-            }
+            removed.push(name);
         }
     }
     if !removed.is_empty() {
-        let mut m = load_manifest(dir);
-        m.version = 1;
         m.files.retain(|e| !removed.contains(&e.name));
+    }
+    if !removed.is_empty() || m.files.len() != before {
+        m.version = 1;
         let _ = save_manifest(dir, &m);
     }
 }
@@ -1092,17 +1116,20 @@ mod tests {
     }
 
     /// Delete `h` and everything under it, children first, through handles: a link key is
-    /// deleted as itself, never through its target.
-    fn delete_handle(h: Handle) {
-        let names = subkey_names(&h);
-        for n in names {
+    /// deleted as itself, never through its target. False when Windows refused a delete.
+    fn delete_handle(h: Handle) -> bool {
+        let mut ok = true;
+        for n in subkey_names(&h) {
             if let Some(c) = open_any_handle_at(&h, &n) {
-                delete_handle(c);
+                ok &= delete_handle(c);
             }
         }
-        unsafe {
-            NtDeleteKey(h.0);
+        let status = unsafe { NtDeleteKey(h.0) };
+        if status != 0 {
+            println!("NtDeleteKey failed: status {status:#x}");
+            ok = false;
         }
+        ok
     }
 
     fn open_any_handle_at(parent: &Handle, name: &str) -> Option<Handle> {
@@ -1128,7 +1155,9 @@ mod tests {
 
     fn delete_tree(path: &str) {
         if let Some(h) = open_any_handle(path, KEY_ALL_ACCESS) {
-            delete_handle(h);
+            if !delete_handle(h) {
+                println!("a test key was left behind: {path}");
+            }
         }
     }
 
@@ -1244,21 +1273,77 @@ mod tests {
         let body = br#"{"version":1,"part":"registry.explorer/runmru","when":1,"values":[]}"#;
         let mut made = Vec::new();
         for i in 0..12u64 {
-            let p = dir.0.join(format!("{PREFIX}{:010}-{:x}.json", 1000 + i * 1000, i));
-            crate::write_local(&p, body, false).unwrap();
-            made.push(p);
+            let name = format!("{PREFIX}{:010}-{:x}.json", 1000 + i * 1000, i);
+            remember(&dir.0, &name, body, "registry.explorer/runmru", 0);
+            made.push(dir.0.join(name));
         }
-        let new = dir.0.join(format!("{PREFIX}0000000500-aa.json"));
-        crate::write_local(&new, body, false).unwrap();
-        // a folder of the backup shape that can't be removed
+        let new_name = format!("{PREFIX}0000000500-aa.json");
+        remember(&dir.0, &new_name, body, "registry.explorer/runmru", 0);
+        let new = dir.0.join(&new_name);
+        // a folder of the backup shape that can't be removed, and is not in the list
         let folder = dir.0.join(format!("{PREFIX}0000000000-bb.json"));
         std::fs::create_dir(&folder).unwrap();
         prune(&dir.0, Some(&new), 20_000);
         assert!(new.exists(), "the backup just written stays");
-        assert!(folder.exists(), "a file that can't be removed is left");
-        assert!(!made[0].exists() && !made[1].exists(), "the two oldest go");
-        assert!(made[2..].iter().all(|p| p.exists()), "the ten newest stay");
-        assert_eq!(shaped_count(&dir.0), 12, "ten + the new one + the folder");
+        assert!(folder.exists(), "a file outside the list is never removed");
+        // ten are kept in all, the new one among them: three of the twelve go
+        assert!(!made[0].exists() && !made[1].exists() && !made[2].exists(), "the three oldest go");
+        assert!(made[3..].iter().all(|p| p.exists()), "the nine newest stay, with the new one");
+        assert_eq!(shaped_count(&dir.0), 11, "nine + the new one + the folder");
+        // the list lost exactly the three that went
+        let m = read_manifest(&dir.0).unwrap();
+        assert_eq!(m.files.len(), 10, "nine + the new one");
+        let names: Vec<&str> = m.files.iter().map(|e| e.name.as_str()).collect();
+        for p in &made[..3] {
+            assert!(!names.contains(&p.file_name().unwrap().to_str().unwrap()));
+        }
+    }
+
+    /// Prune only touches files in Sprawl's list: ten planted, shape-named, future-stamped files
+    /// leave every real backup alone, and a list entry whose file is gone is dropped.
+    #[test]
+    fn prune_ignores_files_outside_the_list() {
+        let dir = test_dir();
+        let body = br#"{"version":1,"part":"registry.explorer/runmru","when":1,"values":[]}"#;
+        let real_name = format!("{PREFIX}{:010}-01.json", 1_000_000_000u64);
+        remember(&dir.0, &real_name, body, "registry.explorer/runmru", 0);
+        let real = dir.0.join(&real_name);
+        for i in 0..10u64 {
+            let p = dir.0.join(format!("{PREFIX}{:010}-{:02x}.json", 9_000_000_000u64 + i, i));
+            crate::write_local(&p, body, false).unwrap();
+        }
+        // a listed backup whose file someone deleted
+        let mut m = read_manifest(&dir.0).unwrap();
+        m.files.push(ManifestFile { name: format!("{PREFIX}{:010}-99.json", 5), sha256: "00".into(), part: "registry.explorer/runmru".into(), values: 0 });
+        save_manifest(&dir.0, &m).unwrap();
+        prune(&dir.0, Some(&real), now());
+        assert!(real.exists(), "the real backup survives");
+        assert_eq!(shaped_count(&dir.0), 11, "the real one and the ten planted ones");
+        let m = read_manifest(&dir.0).unwrap();
+        assert_eq!(m.files.len(), 1, "only the real backup is listed");
+        assert_eq!(m.files[0].name, real_name);
+    }
+
+    /// A list that can't be read is never treated as empty: nothing is removed, and the list is
+    /// left exactly as it is.
+    #[test]
+    fn an_unreadable_list_holds_the_part() {
+        let root = test_root();
+        let _key = TestKey(root.clone());
+        let dir = test_dir();
+        let part = part("registry.explorer/runmru").unwrap();
+        set_in(&root, part.key, "a", SZ, &utf16("notepad"));
+        let garbage = b"this is not a list";
+        crate::write_local(&dir.0.join(MANIFEST), garbage, true).unwrap();
+        let (done, problems) = remove_in(part, &root, &dir.0);
+        assert!(done.is_none(), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("nothing was removed") && p.contains("list of backups")), "{problems:?}");
+        assert_eq!(read_all(part, &root).unwrap().len(), 1, "the value is still there");
+        assert_eq!(std::fs::read(dir.0.join(MANIFEST)).unwrap(), garbage, "the list is untouched");
+        assert_eq!(shaped_count(&dir.0), 0, "the backup that couldn't be listed was removed");
+        // prune leaves it alone too, rather than rewriting an empty list
+        prune(&dir.0, None, now());
+        assert_eq!(std::fs::read(dir.0.join(MANIFEST)).unwrap(), garbage);
     }
 
     /// A backup that can't be written means nothing is deleted, with the reason.
@@ -1606,6 +1691,28 @@ mod tests {
         assert_eq!(one(&values_of(&root, &target_key), "secret"), (SZ, utf16("keep me")));
     }
 
+    /// A dangling link at a name Sprawl would create is refused, and the link's target is not
+    /// created: without OPEN_LINK, a plain create would follow it and make the target.
+    #[test]
+    fn a_dangling_link_at_the_created_name_is_refused() {
+        let root = test_root();
+        let _key = TestKey(root.clone());
+        let sid = sprawl_core::identity::account_sid().expect("this account's SID");
+        let gone_key = format!(r"{root}\gone");
+        set_in(&root, "gone", "x", SZ, &utf16("there for now"));
+        let target = format!(r"\REGISTRY\USER\{sid}\{gone_key}");
+        create_link(&root, "dangling", &target).expect("a link key can be made");
+        // the target goes: the link now points at a key that is not there
+        delete_tree(&format!(r"{root}\gone"));
+        assert!(open_chain(&full_segments(&root, "gone"), KEY_READ).unwrap().is_none());
+        let mut created = 0;
+        let err = ensure_chain(&full_segments(&root, "dangling"), KEY_EDIT, &mut created).err().expect("a link where a key would be made is refused");
+        assert!(err.contains("registry link"), "{err}");
+        assert_eq!(created, 0);
+        // the link's target was not made
+        assert!(open_chain(&full_segments(&root, "gone"), KEY_READ).unwrap().is_none(), "the target must not be created");
+    }
+
     /// Creating a key where a link was planted is refused: the target gets nothing.
     #[test]
     fn create_never_writes_through_a_planted_link() {
@@ -1659,8 +1766,9 @@ mod tests {
         let mut removed = 0;
         for n in &left {
             if let Some(c) = open_any_handle_at(&h, n) {
-                delete_handle(c);
-                removed += 1;
+                if delete_handle(c) {
+                    removed += 1;
+                }
             }
         }
         println!("removed {removed}");
@@ -1684,7 +1792,7 @@ mod tests {
     /// Put bytes in the manifest as if Sprawl had just written them (for crafted test backups).
     fn remember(dir: &Path, name: &str, bytes: &[u8], part: &str, values: usize) {
         crate::write_local(&dir.join(name), bytes, true).unwrap();
-        let mut m = load_manifest(dir);
+        let mut m = read_manifest(dir).unwrap();
         m.version = 1;
         m.files.retain(|e| e.name != name);
         m.files.push(ManifestFile { name: name.into(), sha256: hash_hex(bytes), part: part.into(), values });

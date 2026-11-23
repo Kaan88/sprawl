@@ -777,7 +777,8 @@ impl State {
             }
             n if n.starts_with("PfB_regBack") => {
                 let i: usize = n["PfB_regBack".len()..].parse().unwrap_or(usize::MAX);
-                // the row is identified by its file's name, never by an index into a fresh list
+                // the row is an index into the cached list the page was rendered from, never a
+                // fresh listing; the file's name is what the put back then uses
                 match self.prefs.registry_backups.as_ref().and_then(|l| l.get(i)).cloned() {
                     None => self.prefs.note = Some("That backup is no longer there.".into()),
                     Some(bk) => match self.registry_put_back_refusal() {
@@ -831,6 +832,12 @@ impl State {
     /// Put one backup back, named by its file (the file Sprawl itself listed), then say what
     /// was put back and read the list and the counts again.
     fn registry_put_back(&mut self, name: &str, part: &str, title: &str) {
+        // a clean-up, scan or update may have started while the question was open
+        if let Some(why) = self.registry_put_back_refusal() {
+            self.prefs.note = Some(why);
+            self.prefs_render();
+            return;
+        }
         let Some(dir) = sprawl_advisor::regclean::backup_dir() else {
             self.prefs.note = Some("Sprawl's data folder couldn't be found, so nothing was put back.".into());
             return;
