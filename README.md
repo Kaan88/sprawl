@@ -162,7 +162,10 @@ plain listing of deep disposable folders. A slowdown like 1.0's (27x there) stop
 
 `build` also writes `hub.txt` beside the rest (through `tools/write-hub-txt.ps1`, a copy of the
 one in the Hub launcher's repository), and `publish` uploads it: it is how Hub finds, checks and
-updates Sprawl. It lists Setup only, run silently for all users. It needs PowerShell 7 (`pwsh`).
+updates Sprawl. It lists Setup only, run silently for all users, and names `notes.md` (the full
+CHANGELOG section of the version, at most 64 KiB) as its `notes.file`: Hub's release-notes page
+fetches it. `notes.md` is a release asset too, and the text of the GitHub release. The script runs
+in Windows PowerShell 5.1 or PowerShell 7, whichever is there.
 
 The signing key is `%USERPROFILE%\.sprawl-release\signing.key`, made once with
 `sprawl-release keygen`. It never goes in the repository. Its public half is `PUBLIC_KEY` in
