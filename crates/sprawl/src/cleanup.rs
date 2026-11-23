@@ -1287,6 +1287,8 @@ impl State {
         c.auto = false;
         // the tree as it is now: each item's folder scanned again, or taken out when gone
         self.apply_rescans(run.rescans);
+        // the registry parts read again, so their counts and rows match what went
+        self.refresh_registry_advice();
         // the Cleaners tab's own read: read again
         if self.own_active() {
             self.own_start();

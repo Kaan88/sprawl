@@ -2701,7 +2701,7 @@ impl State {
                 if let Some(d) = &mut self.advisor.cleanup.done {
                     d.registry.remove(i);
                 }
-                self.refresh_registry_counts();
+                self.refresh_registry_advice();
                 self.adv_say(&format!("Put back {n} {} in {}. Values written since stay.", if n == 1 { "value" } else { "values" }, rec.title));
             }
             Err(e) => self.adv_say(&format!("The backup couldn't be put back: {e}")),
@@ -2710,20 +2710,24 @@ impl State {
     }
 
     /// How many values registry part `id` would remove, from the report's own reading (never a
-    /// fresh read on a render); the report's count when it has none.
+    /// fresh read on a render). A part the report doesn't hold shows nothing.
     pub(crate) fn registry_values(&self, id: &str) -> usize {
-        self.advice().and_then(|r| r.registry_counts.get(id).copied()).unwrap_or_else(|| sprawl_advisor::regclean::count(id))
+        self.advice().and_then(|r| r.registry_counts.get(id).copied()).unwrap_or(0)
     }
 
-    /// Read the registry parts' counts again (after Put back) into the reports on screen.
-    pub(crate) fn refresh_registry_counts(&mut self) {
+    /// Read the registry parts again after a clean-up or a put back: their counts and their
+    /// findings are made together, so the Privacy list and the review say the same thing (the
+    /// browser parts are left as they were).
+    pub(crate) fn refresh_registry_advice(&mut self) {
         if !self.privacy_on() { return; }
         let counts = sprawl_advisor::regclean::counts();
-        if let Some(r) = self.advisor.report.as_mut().filter(|r| r.privacy_on) {
+        let fresh = sprawl_advisor::regclean::find();
+        for r in [self.advisor.report.as_mut(), self.advisor.cl.own.as_mut().map(|o| &mut o.report)].into_iter().flatten() {
+            if !r.privacy_on { continue; }
+            r.privacy.retain(|f| !f.registry());
+            r.privacy.extend(fresh.iter().cloned());
+            r.privacy_rows = privacy_rows(&r.privacy);
             r.registry_counts = counts.clone();
-        }
-        if let Some(o) = self.advisor.cl.own.as_mut().filter(|o| o.report.privacy_on) {
-            o.report.registry_counts = counts;
         }
     }
 

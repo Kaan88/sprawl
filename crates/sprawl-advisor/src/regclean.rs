@@ -11,18 +11,23 @@
 //!   names.
 //! - **Values, never keys.** A part deletes the values of its key (and, for the two parts that
 //!   keep one subkey per file type, the values of those subkeys too). The keys themselves stay.
-//! - **Never through a link.** Every key is opened with `REG_OPTION_OPEN_LINK`, so a symbolic
-//!   link key (a `SymbolicLinkValue` of type `REG_LINK`) is seen as the link itself, held, and
-//!   never followed to another key (Sprawl may run elevated).
+//! - **Never through a link, and never by a re-checked path.** Every key is walked one segment
+//!   at a time, opened relative to its parent's handle with `REG_OPTION_OPEN_LINK`, and every
+//!   handle is kept: reads, the re-read before a delete, deletes and writes go through those
+//!   handles, so a key swapped for a link between the check and the use cannot redirect them.
+//!   A missing key is made relative to its checked parent, with `REG_OPTION_OPEN_LINK` in the
+//!   create options when Windows accepts it, and any existing key is opened as a link if it
+//!   became one. A link key (a `SymbolicLinkValue` of type `REG_LINK`) is held, never followed.
 //! - **A backup before anything goes.** Every value that will be removed (name, type, exact
 //!   bytes and the key it is in) is written first to a file in Sprawl's data folder, atomically
 //!   ([`crate::write_local`]), and read back and compared. If that fails, nothing is deleted and
 //!   the reason is returned. The last ten backups are kept, none younger than ten minutes; the
-//!   backup just written is never pruned.
+//!   backup just written is never pruned. Each backup's name and SHA-256 are also written to a
+//!   small list ([`MANIFEST`]) so only files Sprawl itself wrote are listed or put back.
 //! - **Put back, into those keys only.** [`restore`] writes the removed values back with the
 //!   same type and bytes, and refuses a backup that names any other key (or a subkey of one the
-//!   part doesn't keep): a backup is a file on disk someone could edit. It adds or overwrites
-//!   the values it holds; values written since it was made stay.
+//!   part doesn't keep), or that is not in Sprawl's list with the hash it recorded. It adds or
+//!   overwrites the values it holds; values written since it was made stay.
 //! - **Off unless the user turns privacy cleaners on**, never ticked for the user, never in a
 //!   space total, at least amber, and plain words that promise nothing (as [`crate::privacy`]).
 //! - **No disk space.** The parts remove no files: they are measured by how many values they
@@ -38,6 +43,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use crate::finding::{Action, Finding, Remedy, Risk, Source};
 
@@ -57,20 +63,23 @@ const REG_OPTION_NON_VOLATILE: u32 = 0;
 const REG_OPTION_OPEN_LINK: u32 = 0x0008;
 #[cfg(test)]
 const REG_OPTION_CREATE_LINK: u32 = 0x0002;
+const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 const ERROR_MORE_DATA: u32 = 234;
 const ERROR_NO_MORE_ITEMS: u32 = 259;
+const REG_OPENED_EXISTING_KEY: u32 = 2;
 /// The largest value this module will back up. Registry MRU values are far smaller; a bigger
 /// one means the key is not what the list says, and then nothing is removed.
 const MAX_VALUE: usize = 64 << 10;
-/// The largest backup file it will read back.
+/// The largest backup file it will write or read back.
 const MAX_BACKUP: u64 = 4 << 20;
 /// How many backups are kept.
 pub const KEEP_BACKUPS: usize = 10;
-/// A backup is not pruned until it is this old (seconds), so a clock that went back or forward
-/// cannot make the newest backups go by themselves.
+/// A backup is not pruned until it is this old (seconds), so a clock that went back cannot make
+/// the newest backups go by themselves. A file stamped in the future is still pruned: it counts
+/// as one of the ten by its stamp.
 const MIN_AGE: u64 = 600;
-/// The most subkeys a restore may make.
+/// The most keys a restore may make.
 const MAX_CREATED: usize = 500;
 /// The value Windows uses to store a symbolic link key's target.
 const LINK_VALUE: &str = "SymbolicLinkValue";
@@ -79,6 +88,8 @@ const REG_LINK_KIND: u32 = 6;
 /// The folder Sprawl keeps its own files in, for the backups.
 pub const FOLDER: &str = "registry-backups";
 const PREFIX: &str = "registry-backup-";
+/// The list of backups Sprawl itself wrote, by name and SHA-256.
+pub const MANIFEST: &str = "written.json";
 
 /// Said on every part: Explorer may not forget until the user signs out.
 pub const SIGN_OUT_NOTE: &str = "Explorer keeps some of these lists in memory: the change may only show after you sign out and back in.";
@@ -251,19 +262,20 @@ pub struct Done {
     pub backup: PathBuf,
 }
 
-/// One backup on disk, as Settings lists it.
+/// One backup Sprawl wrote, as Settings lists it (from its list, never by reading the file).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BackupInfo {
     pub path: PathBuf,
     pub part: String,
-    /// The part's title, or its id when this build doesn't know it.
+    /// The part's title.
     pub title: String,
-    /// When it was written, as seconds since 1970 (local time is the app's to show).
+    /// When it was written, from the file name's ten digits (seconds since 1970).
     pub when: u64,
     pub values: usize,
 }
 
-/// The backups kept, newest first. A file that isn't one of Sprawl's backups is left out.
+/// The backups Sprawl wrote that are still there, newest first. Files of the backup shape that
+/// are not in Sprawl's own list are never listed.
 pub fn backups() -> Vec<BackupInfo> {
     match backup_dir() {
         Some(d) => backups_in(&d),
@@ -272,15 +284,18 @@ pub fn backups() -> Vec<BackupInfo> {
 }
 
 pub(crate) fn backups_in(dir: &Path) -> Vec<BackupInfo> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<BackupInfo> = entries
-        .flatten()
-        .filter(|e| e.file_name().to_str().is_some_and(|n| backup_stamp(n).is_some()))
+    let manifest = load_manifest(dir);
+    let mut out: Vec<BackupInfo> = manifest
+        .files
+        .iter()
         .filter_map(|e| {
-            let path = e.path();
-            let b = read_backup(&path).ok()?;
-            let p = part(&b.part)?;
-            Some(BackupInfo { path, part: b.part, title: p.title.to_string(), when: b.when, values: b.values.len() })
+            let when = backup_stamp(&e.name)?;
+            let path = dir.join(&e.name);
+            if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+                return None;
+            }
+            let p = part(&e.part)?;
+            Some(BackupInfo { path, part: e.part.clone(), title: p.title.to_string(), when, values: e.values })
         })
         .collect();
     out.sort_by(|a, b| b.when.cmp(&a.when).then_with(|| b.path.cmp(&a.path)));
@@ -301,8 +316,12 @@ pub fn remove(id: &str) -> (Option<Done>, Vec<String>) {
 }
 
 pub(crate) fn remove_in(part: &RegPart, root: &str, dir: &Path) -> (Option<Done>, Vec<String>) {
-    let values = match read_all(part, root) {
-        Ok(v) => v,
+    // one walk to the part's key and its subkeys, every segment opened relative to the last and
+    // checked, and every handle kept: the read, the backup, the re-read and the deletes all go
+    // through these handles, so a key swapped for a link in between cannot redirect them
+    let (chain, subs, values) = match read_all_held(part, root, KEY_EDIT) {
+        Ok(Some(x)) => x,
+        Ok(None) => return (None, Vec::new()),
         Err(e) => return (None, vec![format!("nothing was removed: {e}")]),
     };
     if values.is_empty() {
@@ -321,25 +340,24 @@ pub(crate) fn remove_in(part: &RegPart, root: &str, dir: &Path) -> (Option<Done>
     }
     let mut problems = Vec::new();
     let mut removed = 0;
-    // each key opened once, and each value read again through that handle just before it goes
+    let Some(parent) = chain.last() else { return (None, vec!["the key is gone; nothing was removed, and the backup is kept".into()]) };
     let mut groups: std::collections::BTreeMap<&str, Vec<&Value>> = Default::default();
     for v in &values {
         groups.entry(v.0.as_str()).or_default().push(v);
     }
     for (key, items) in &groups {
-        let path = join(root, key);
-        let h = match open_key(&path, KEY_EDIT) {
-            Ok(Some(h)) => h,
-            // the key is gone: its values went with it
-            Ok(None) => continue,
-            Err(e) => {
-                problems.push(e);
-                continue;
-            }
+        let h: Option<&Handle> = if key.eq_ignore_ascii_case(part.key) {
+            Some(parent)
+        } else {
+            subs.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, h)| h)
+        };
+        let Some(h) = h else {
+            problems.push(format!("{} is not one of the part's keys; left as it is", safe(key)));
+            continue;
         };
         for (_, name, kind, data) in items {
-            match read_one(&h, name) {
-                Ok(Some((k, d))) if k == *kind && d == *data => match delete_value(&h, name) {
+            match read_one(h, name) {
+                Ok(Some((k, d))) if k == *kind && d == *data => match delete_value(h, name) {
                     Ok(true) => removed += 1,
                     Ok(false) => {}
                     Err(e) => problems.push(format!("{}: {}", safe(key), e)),
@@ -360,6 +378,8 @@ pub(crate) fn remove_in(part: &RegPart, root: &str, dir: &Path) -> (Option<Done>
         removed,
         backup: backup.clone(),
     });
+    drop(chain);
+    drop(subs);
     // only now, and never the backup this run wrote
     prune(dir, Some(&backup), now());
     (done, problems)
@@ -367,13 +387,15 @@ pub(crate) fn remove_in(part: &RegPart, root: &str, dir: &Path) -> (Option<Done>
 
 /// Put the values of a backup back, with the same type and bytes, into the fixed keys only.
 /// `expect`: the part the caller offered to put back (the done row's), which the backup must
-/// name too. Refuses a backup that names a key outside the list, or a type Sprawl doesn't write.
+/// name too. Refuses a backup that isn't in Sprawl's own list with the hash it recorded, that
+/// names a key outside the list, or that holds a type Sprawl doesn't write.
 pub fn restore(path: &Path, expect: Option<&str>) -> Result<usize, String> {
     restore_in(path, "", expect)
 }
 
 pub(crate) fn restore_in(path: &Path, root: &str, expect: Option<&str>) -> Result<usize, String> {
-    let backup = read_backup(path)?;
+    let bytes = verified_backup_bytes(path)?;
+    let backup: Backup = serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a backup file Sprawl can read ({e})", path.display()))?;
     let part = part(&backup.part).ok_or_else(|| format!("\"{}\" is not a registry part Sprawl knows", safe(&backup.part)))?;
     if expect.is_some_and(|e| e != backup.part) {
         return Err(format!("the backup is for {}, not {}, so nothing was put back", safe(&backup.part), safe(expect.unwrap_or(""))));
@@ -402,54 +424,43 @@ pub(crate) fn restore_in(path: &Path, root: &str, expect: Option<&str>) -> Resul
         }
         checked.push((v.key.clone(), v.name.clone(), v.kind, data));
     }
-    // the keys to write, each looked at once; a missing key is made, up to a cap
-    let mut keys: Vec<String> = Vec::new();
+    // the keys to write; the part's own key first, one handle chain, then each subkey under it
+    let mut keys: Vec<String> = vec![part.key.to_string()];
     for (key, ..) in &checked {
         if !keys.contains(key) {
             keys.push(key.clone());
         }
     }
-    let mut to_make = 0;
-    for key in &keys {
-        // a child is only ever made under the part's own key, and that key is looked at as
-        // itself first (a link there would send the child elsewhere)
-        if key != part.key {
-            match open_key(&join(root, part.key), KEY_EDIT) {
-                Ok(_) => {}
-                Err(e) => return Err(format!("{e}; nothing was put back")),
-            }
-        }
-        match open_key(&join(root, key), KEY_EDIT) {
-            Ok(Some(_)) => {}
-            Ok(None) => to_make += 1,
-            Err(e) => return Err(format!("{e}; nothing was put back")),
-        }
-    }
-    if to_make > MAX_CREATED {
-        return Err(format!("this backup names {to_make} keys to make; Sprawl makes {MAX_CREATED} at most, so nothing was put back"));
-    }
+    let mut created = 0usize;
+    let part_chain = ensure_chain(&full_segments(root, part.key), KEY_EDIT, &mut created).map_err(|e| format!("{e}; nothing was put back"))?;
     let mut opened: std::collections::HashMap<String, Handle> = Default::default();
-    for key in &keys {
-        no_link_on_the_way(root, key)?;
-        let path = join(root, key);
-        let h = match open_key(&path, KEY_EDIT) {
-            Ok(Some(h)) => h,
-            Ok(None) => {
-                // made only where a key of this backup's own part is missing; checked for a
-                // link again, so a link put there meanwhile is never written through
-                match create_key(&path) {
-                    Ok(h) => drop(h),
-                    Err(e) => return Err(format!("{}: Windows couldn't make it ({}); nothing more was put back", safe(key), e)),
-                }
-                match open_key(&path, KEY_EDIT) {
-                    Ok(Some(h)) => h,
-                    Ok(None) => return Err(format!("{}: Windows made it, then it wasn't there; nothing more was put back", safe(key))),
-                    Err(e) => return Err(format!("{e}; nothing more was put back")),
-                }
+    {
+        let Some(last) = part_chain.last() else { return Err("the part's key couldn't be opened; nothing was put back".into()) };
+        for key in &keys {
+            if key == part.key {
+                continue;
             }
-            Err(e) => return Err(format!("{e}; nothing more was put back")),
-        };
-        opened.insert(key.clone(), h);
+            let Some(name) = key.strip_prefix(part.key).and_then(|r| r.strip_prefix('\\')) else { continue };
+            let h = match open_child(last, name, KEY_EDIT) {
+                Ok(Some(h)) => h,
+                Ok(None) => {
+                    if created + 1 > MAX_CREATED {
+                        return Err(format!("this backup names more than {MAX_CREATED} keys to make; nothing more was put back"));
+                    }
+                    created += 1;
+                    match create_child_h(last.0, name, KEY_EDIT, key) {
+                        Ok(h) => h,
+                        Err(e) => return Err(format!("{e}; nothing more was put back")),
+                    }
+                }
+                Err(e) => return Err(format!("{e}; nothing more was put back")),
+            };
+            opened.insert(key.clone(), h);
+        }
+    }
+    // the part's own handle, from the chain walked once above
+    if let Some(h) = part_chain.into_iter().last() {
+        opened.insert(part.key.to_string(), h);
     }
     let mut written = 0;
     for (key, value_name, kind, data) in &checked {
@@ -469,28 +480,37 @@ pub(crate) fn restore_in(path: &Path, root: &str, expect: Option<&str>) -> Resul
 /// A value read from the registry: its key relative to HKCU, its name, its type and bytes.
 type Value = (String, String, u32, Vec<u8>);
 
-/// Every value of `part` now, including those in its immediate subkeys when it has them.
+/// Every value of `part` now, including those in its immediate subkeys when it has them. The
+/// handles are dropped at the end: for a read-and-measure only.
 fn read_all(part: &RegPart, root: &str) -> Result<Vec<Value>, String> {
-    no_link_on_the_way(root, part.key)?;
-    let mut out = Vec::new();
-    let key = part.key.to_string();
-    for (name, kind, data) in read_values(root, &key)? {
-        out.push((key.clone(), name, kind, data));
-    }
-    if part.subkeys {
-        for sub in read_subkeys(root, &key)? {
-            let child = format!(r"{key}\{sub}");
-            for (name, kind, data) in read_values(root, &child)? {
-                out.push((child.clone(), name, kind, data));
-            }
-        }
-    }
-    Ok(out)
+    Ok(read_all_held(part, root, KEY_READ)?.map_or_else(Vec::new, |(_, _, v)| v))
 }
 
-fn read_values(root: &str, key: &str) -> Result<Vec<(String, u32, Vec<u8>)>, String> {
-    let path = join(root, key);
-    let Some(h) = open_key(&path, KEY_READ)? else { return Ok(Vec::new()) };
+/// [`read_all`], with the handles kept: the whole chain to the part's key, a handle to each
+/// subkey read, and every value. A clean-up holds these through the read, the backup and the
+/// deletes, so no path is looked up twice (see [`remove_in`]).
+fn read_all_held(part: &RegPart, root: &str, sam: u32) -> Result<Option<(Vec<Handle>, Vec<(String, Handle)>, Vec<Value>)>, String> {
+    let segs = full_segments(root, part.key);
+    let Some(chain) = open_chain(&segs, sam)? else { return Ok(None) };
+    let Some(key) = chain.last() else { return Ok(Some((chain, Vec::new(), Vec::new()))) };
+    let mut subs: Vec<(String, Handle)> = Vec::new();
+    let mut out = Vec::new();
+    for (name, kind, data) in read_values(key)? {
+        out.push((part.key.to_string(), name, kind, data));
+    }
+    if part.subkeys {
+        for sub in read_subkeys(key)? {
+            let Some(child) = open_child(key, &sub, sam)? else { continue };
+            for (name, kind, data) in read_values(&child)? {
+                out.push((format!(r"{}\{sub}", part.key), name, kind, data));
+            }
+            subs.push((format!(r"{}\{sub}", part.key), child));
+        }
+    }
+    Ok(Some((chain, subs, out)))
+}
+
+fn read_values(h: &Handle) -> Result<Vec<(String, u32, Vec<u8>)>, String> {
     let mut out = Vec::new();
     let mut name = vec![0u16; 16_384];
     let mut data = vec![0u8; MAX_VALUE];
@@ -502,37 +522,35 @@ fn read_values(root: &str, key: &str) -> Result<Vec<(String, u32, Vec<u8>)>, Str
         let r = unsafe { RegEnumValueW(h.0, i, name.as_mut_ptr(), &mut nlen, std::ptr::null(), &mut kind, data.as_mut_ptr(), &mut dlen) };
         match r {
             0 => {
-                let name = String::from_utf16(&name[..nlen as usize]).map_err(|_| format!("a value name in {} isn't valid text, so nothing was removed", safe(key)))?;
+                let name = String::from_utf16(&name[..nlen as usize]).map_err(|_| "a value name isn't valid text, so nothing was removed".to_string())?;
                 if !value_name_ok(&name) {
-                    return Err(format!("a value name in {} isn't one Sprawl writes back, so nothing was removed", safe(key)));
+                    return Err("a value name isn't one Sprawl writes back, so nothing was removed".into());
                 }
                 // a value whose type Sprawl can't write back would break "Put back": hold the
                 // whole part, before anything is removed
                 if kind == REG_LINK_KIND {
-                    return Err(format!("{} is a registry link, so nothing was removed", safe(key)));
+                    return Err("a key is a registry link, so nothing was removed".into());
                 }
                 if !allowed_kind(kind) {
-                    return Err(format!("a value in {} has a type Sprawl can't put back, so nothing was removed", safe(key)));
+                    return Err("a value in it has a type Sprawl can't put back, so nothing was removed".into());
                 }
                 out.push((name, kind, data[..dlen as usize].to_vec()));
             }
-            ERROR_MORE_DATA => return Err(format!("a value in {} is too large to back up, so nothing was removed", safe(key))),
+            ERROR_MORE_DATA => return Err("a value is too large to back up, so nothing was removed".into()),
             ERROR_NO_MORE_ITEMS => {
                 ended = true;
                 break;
             }
-            e => return Err(format!("{} couldn't be read completely ({e})", safe(key))),
+            e => return Err(format!("it couldn't be read completely ({e})")),
         }
     }
     if !ended {
-        return Err(format!("{} has more values than Sprawl reads (100,000), so nothing was removed", safe(key)));
+        return Err("it has more values than Sprawl reads (100,000), so nothing was removed".into());
     }
     Ok(out)
 }
 
-fn read_subkeys(root: &str, key: &str) -> Result<Vec<String>, String> {
-    let path = join(root, key);
-    let Some(h) = open_key(&path, KEY_READ)? else { return Ok(Vec::new()) };
+fn read_subkeys(h: &Handle) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut name = vec![0u16; 512];
     let mut ended = false;
@@ -541,22 +559,22 @@ fn read_subkeys(root: &str, key: &str) -> Result<Vec<String>, String> {
         let r = unsafe { RegEnumKeyExW(h.0, i, name.as_mut_ptr(), &mut nlen, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
         match r {
             0 => {
-                let name = String::from_utf16(&name[..nlen as usize]).map_err(|_| format!("a subkey name under {} isn't valid text, so nothing was removed", safe(key)))?;
+                let name = String::from_utf16(&name[..nlen as usize]).map_err(|_| "a subkey name isn't valid text, so nothing was removed".to_string())?;
                 if !plain_name(&name) {
-                    return Err(format!("a subkey name under {} isn't one Sprawl reads, so nothing was removed", safe(key)));
+                    return Err("a subkey name isn't one Sprawl reads, so nothing was removed".into());
                 }
                 out.push(name);
             }
-            ERROR_MORE_DATA => continue,
+            ERROR_MORE_DATA => return Err("a subkey name is too long to read, so nothing was removed".into()),
             ERROR_NO_MORE_ITEMS => {
                 ended = true;
                 break;
             }
-            e => return Err(format!("the subkeys of {} couldn't be read completely ({e})", safe(key))),
+            e => return Err(format!("its subkeys couldn't be read completely ({e})")),
         }
     }
     if !ended {
-        return Err(format!("{} has more subkeys than Sprawl reads (100,000), so nothing was removed", safe(key)));
+        return Err("it has more subkeys than Sprawl reads (100,000), so nothing was removed".into());
     }
     Ok(out)
 }
@@ -600,77 +618,130 @@ fn delete_value(h: &Handle, name: &str) -> Result<bool, String> {
 
 #[cfg(test)]
 fn key_exists(root: &str, key: &str) -> bool {
-    matches!(open_key(&join(root, key), KEY_READ), Ok(Some(_)))
+    matches!(open_chain(&full_segments(root, key), KEY_READ), Ok(Some(_)))
 }
 
-/// Open `path` under HKCU as itself, never through a link key. None when it isn't there.
-fn open_key(path: &str, sam: u32) -> Result<Option<Handle>, String> {
-    match open(path, sam, REG_OPTION_OPEN_LINK) {
-        Ok(h) => {
-            if is_link(&h)? {
-                Err(format!("{} is a registry link, so nothing was done", safe(path)))
-            } else {
-                Ok(Some(h))
-            }
-        }
-        Err(ERROR_FILE_NOT_FOUND) => Ok(None),
-        Err(e) => Err(format!("{} couldn't be opened ({e})", safe(path))),
+/// One segment of a path, opened under `base` as itself (never through a link key).
+fn open_seg(base: HKEY, name: &str, sam: u32, path: &str) -> Result<Option<Handle>, String> {
+    let w = wide(name);
+    let mut h: HKEY = std::ptr::null_mut();
+    let r = unsafe { RegOpenKeyExW(base, w.as_ptr(), REG_OPTION_OPEN_LINK, sam, &mut h) };
+    if r == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
     }
+    if r != 0 {
+        return Err(format!("{path} couldn't be opened ({r})"));
+    }
+    let handle = Handle(h);
+    if is_link(&handle)? {
+        return Err(format!("{path} is a registry link, so nothing was done"));
+    }
+    Ok(Some(handle))
 }
 
-/// Every key on the way to `path`, opened as itself: a link at any level would send reads and
-/// writes elsewhere, so the part is held before anything is read or written.
-fn no_link_on_the_way(root: &str, key: &str) -> Result<(), String> {
-    let mut path = root.trim_end_matches('\\').to_string();
-    for seg in key.split('\\').filter(|s| !s.is_empty()) {
-        path = if path.is_empty() { seg.to_string() } else { format!(r"{path}\{seg}") };
-        match open(&path, KEY_READ, REG_OPTION_OPEN_LINK) {
-            Ok(h) => {
-                if is_link(&h)? {
-                    return Err(format!("{} is a registry link, so nothing was done", safe(&path)));
+/// Open `segments` under HKCU one at a time, each relative to the previous handle, keeping every
+/// handle; None when a segment is missing. The last handle is the key itself.
+fn open_chain(segments: &[String], sam: u32) -> Result<Option<Vec<Handle>>, String> {
+    let mut out: Vec<Handle> = Vec::new();
+    let mut base: HKEY = HKCU;
+    let mut sofar = String::new();
+    for seg in segments {
+        sofar = if sofar.is_empty() { seg.clone() } else { format!(r"{sofar}\{seg}") };
+        match open_seg(base, seg, sam, &safe(&sofar))? {
+            Some(h) => {
+                base = h.0;
+                out.push(h);
+            }
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Open `name` under an open key as itself.
+fn open_child(parent: &Handle, name: &str, sam: u32) -> Result<Option<Handle>, String> {
+    open_seg(parent.0, name, sam, name)
+}
+
+/// The open error is the code RegOpenKeyExW returned (it does not set the thread's last error).
+
+/// Walk to `segments` under HKCU, making the missing ones one segment at a time under the
+/// checked parent. The count of keys made goes in `created` (the caller caps it).
+fn ensure_chain(segments: &[String], sam: u32, created: &mut usize) -> Result<Vec<Handle>, String> {
+    let mut out: Vec<Handle> = Vec::new();
+    let mut base: HKEY = HKCU;
+    let mut sofar = String::new();
+    for seg in segments {
+        sofar = if sofar.is_empty() { seg.clone() } else { format!(r"{sofar}\{seg}") };
+        match open_seg(base, seg, sam, &safe(&sofar))? {
+            Some(h) => {
+                base = h.0;
+                out.push(h);
+            }
+            None => {
+                if *created + 1 > MAX_CREATED {
+                    return Err(format!("making {sofar} would go past the {MAX_CREATED} keys Sprawl makes"));
                 }
+                *created += 1;
+                let h = create_child_h(base, seg, sam, &safe(&sofar))?;
+                base = h.0;
+                out.push(h);
             }
-            // the rest is missing: there is nothing further to follow
-            Err(ERROR_FILE_NOT_FOUND) => return Ok(()),
-            Err(e) => return Err(format!("{} couldn't be opened ({e})", safe(&path))),
         }
     }
-    Ok(())
+    Ok(out)
 }
 
-/// Whether an opened key is a symbolic link (its `SymbolicLinkValue` is there).
+/// Make `name` under the open key `base`, as a plain key, never through a link. Windows'
+/// `RegCreateKeyExW` may or may not accept `REG_OPTION_OPEN_LINK`; it is tried first, and when
+/// that key exists, the result is always opened again with `REG_OPTION_OPEN_LINK` and checked.
+fn create_child_h(base: HKEY, name: &str, sam: u32, path: &str) -> Result<Handle, String> {
+    let w = wide(name);
+    let try_create = |options: u32| -> Result<(HKEY, u32), u32> {
+        let mut h: HKEY = std::ptr::null_mut();
+        let mut disposition = 0u32;
+        let r = unsafe { RegCreateKeyExW(base, w.as_ptr(), 0, std::ptr::null(), options, sam, std::ptr::null(), &mut h, &mut disposition) };
+        if r == 0 {
+            Ok((h, disposition))
+        } else {
+            Err(r)
+        }
+    };
+    let (h, disposition) = match try_create(REG_OPTION_NON_VOLATILE | REG_OPTION_OPEN_LINK) {
+        Ok(x) => x,
+        // Windows doesn't take OPEN_LINK with create: make it plainly, then look again below
+        Err(ERROR_INVALID_PARAMETER) => try_create(REG_OPTION_NON_VOLATILE).map_err(|e| format!("{path} couldn't be made ({e})"))?,
+        Err(e) => return Err(format!("{path} couldn't be made ({e})")),
+    };
+    let handle = Handle(h);
+    if disposition == REG_OPENED_EXISTING_KEY {
+        // it was there already: open it as itself and check again, so a link put there is seen
+        drop(handle);
+        return match open_seg(base, name, sam, path)? {
+            Some(h) => Ok(h),
+            None => Err(format!("{path} was there, then wasn't; nothing more was done")),
+        };
+    }
+    // a new key cannot be a link; still check, in case Windows made one
+    if is_link(&handle)? {
+        return Err(format!("{path} is a registry link, so nothing was done"));
+    }
+    Ok(handle)
+}
+
+/// Whether an opened key is a symbolic link. Windows here has no documented key-flags query for
+/// links; opened with `REG_OPTION_OPEN_LINK`, a link key shows its `SymbolicLinkValue` (type
+/// `REG_LINK`), which is the reliable check `regedit` itself relies on. A user value of that
+/// name only holds a part, never lets it through.
 fn is_link(h: &Handle) -> Result<bool, String> {
     let n = wide(LINK_VALUE);
+    let mut kind = 0u32;
     let mut size = 0u32;
-    let r = unsafe { RegQueryValueExW(h.0, n.as_ptr(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), &mut size) };
+    let r = unsafe { RegQueryValueExW(h.0, n.as_ptr(), std::ptr::null(), &mut kind, std::ptr::null_mut(), &mut size) };
     match r {
         0 => Ok(true),
         ERROR_FILE_NOT_FOUND => Ok(false),
         e => Err(format!("Windows couldn't tell whether a key is a registry link ({e})")),
-    }
-}
-
-/// The open error is the code RegOpenKeyExW returned (it does not set the thread's last error).
-fn open(path: &str, sam: u32, options: u32) -> Result<Handle, u32> {
-    let w = wide(path);
-    let mut h: HKEY = std::ptr::null_mut();
-    let r = unsafe { RegOpenKeyExW(HKCU, w.as_ptr(), options, sam, &mut h) };
-    if r == 0 {
-        Ok(Handle(h))
-    } else {
-        Err(r)
-    }
-}
-
-fn create_key(path: &str) -> Result<Handle, u32> {
-    let w = wide(path);
-    let mut h: HKEY = std::ptr::null_mut();
-    let mut disposition = 0u32;
-    let r = unsafe { RegCreateKeyExW(HKCU, w.as_ptr(), 0, std::ptr::null(), REG_OPTION_NON_VOLATILE, KEY_EDIT, std::ptr::null(), &mut h, &mut disposition) };
-    if r == 0 {
-        Ok(Handle(h))
-    } else {
-        Err(r)
     }
 }
 
@@ -703,6 +774,22 @@ struct BackupValue {
     data: String,
 }
 
+/// Sprawl's own list of the backups it wrote: their names, SHA-256 and what they hold, so a
+/// planted file of the same shape is never listed or put back.
+#[derive(Serialize, Deserialize, Default)]
+struct Manifest {
+    version: u32,
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ManifestFile {
+    name: String,
+    sha256: String,
+    part: String,
+    values: usize,
+}
+
 fn write_backup(part: &RegPart, values: &[Value], dir: &Path) -> Result<PathBuf, String> {
     let when = now();
     let backup = Backup {
@@ -715,10 +802,37 @@ fn write_backup(part: &RegPart, values: &[Value], dir: &Path) -> Result<PathBuf,
             .collect(),
     };
     let bytes = serde_json::to_vec(&backup).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_BACKUP {
+        return Err(format!("the backup would be {} MB, over Sprawl's {} MB limit", bytes.len().div_ceil(1 << 20), MAX_BACKUP >> 20));
+    }
     let name = format!("{PREFIX}{when:010}-{}.json", crate::store::nonce());
     let path = dir.join(name);
     crate::write_local(&path, &bytes, false).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Err(e) = remember_backup(dir, &path, part.id, values.len()) {
+        let _ = crate::remove_local(&path);
+        return Err(format!("the list of backups couldn't be written ({e})"));
+    }
     Ok(path)
+}
+
+/// Read a backup's bytes, only when its name is in Sprawl's list and its SHA-256 is the one
+/// recorded there.
+fn verified_backup_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() || meta.len() > MAX_BACKUP {
+        return Err(format!("{} is not a backup file Sprawl wrote", path.display()));
+    }
+    let Some(dir) = path.parent() else { return Err("the backup has no folder".into()) };
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return Err("the backup's name isn't text".into()) };
+    let manifest = load_manifest(dir);
+    let Some(entry) = manifest.files.iter().find(|e| e.name == name) else {
+        return Err("this file is not one of the backups Sprawl wrote, so nothing was put back".into());
+    };
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if hash_hex(&bytes) != entry.sha256 {
+        return Err("this backup changed since Sprawl wrote it, so nothing was put back".into());
+    }
+    Ok(bytes)
 }
 
 fn read_backup(path: &Path) -> Result<Backup, String> {
@@ -730,6 +844,38 @@ fn read_backup(path: &Path) -> Result<Backup, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a backup file Sprawl can read ({e})", path.display()))
 }
 
+fn manifest_path(dir: &Path) -> PathBuf {
+    dir.join(MANIFEST)
+}
+
+fn load_manifest(dir: &Path) -> Manifest {
+    let Ok(text) = std::fs::read(manifest_path(dir)) else { return Manifest::default() };
+    match serde_json::from_slice::<Manifest>(&text) {
+        Ok(m) if m.version == 1 => m,
+        _ => Manifest::default(),
+    }
+}
+
+fn save_manifest(dir: &Path, m: &Manifest) -> Result<(), String> {
+    let bytes = serde_json::to_vec(m).map_err(|e| e.to_string())?;
+    crate::write_local(&manifest_path(dir), &bytes, true).map_err(|e| e.to_string())
+}
+
+/// Add (or replace) a backup in Sprawl's list, with the hash of what was just written.
+fn remember_backup(dir: &Path, path: &Path, part: &str, values: usize) -> Result<(), String> {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { return Err("the backup's name isn't text".into()) };
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut m = load_manifest(dir);
+    m.version = 1;
+    m.files.retain(|e| e.name != name);
+    m.files.push(ManifestFile { name, sha256: hash_hex(&bytes), part: part.into(), values });
+    save_manifest(dir, &m)
+}
+
+fn hash_hex(bytes: &[u8]) -> String {
+    hex(&sha2::Sha256::digest(bytes))
+}
+
 /// The backup file holds exactly the values read, for the same part.
 fn backup_matches(b: &Backup, part: &RegPart, values: &[Value]) -> bool {
     b.version == 1
@@ -739,16 +885,17 @@ fn backup_matches(b: &Backup, part: &RegPart, values: &[Value]) -> bool {
 }
 
 /// Keep the last [`KEEP_BACKUPS`] backups. Runs after the deletes; `keep` (the backup just
-/// written) is never removed, a backup younger than [`MIN_AGE`] isn't either, and only files of
-/// Sprawl's own backup shape are counted or removed. A file that can't be removed is left and
-/// still counts as kept.
+/// written) is never removed, a backup younger than [`MIN_AGE`] isn't either (one stamped in
+/// the future still counts by its stamp and can go), and only files of Sprawl's own backup shape
+/// are counted or removed. A file that can't be removed is left, and its list entry with it.
 fn prune(dir: &Path, keep: Option<&Path>, now: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<(u64, PathBuf)> = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
         let Some(stamp) = path.file_name().and_then(|n| n.to_str()).and_then(backup_stamp) else { continue };
-        if keep.is_some_and(|k| k == path) || now.saturating_sub(stamp) < MIN_AGE {
+        let young = now.checked_sub(stamp).is_some_and(|age| age < MIN_AGE);
+        if keep.is_some_and(|k| k == path) || young {
             continue;
         }
         files.push((stamp, path));
@@ -757,8 +904,19 @@ fn prune(dir: &Path, keep: Option<&Path>, now: u64) {
         return;
     }
     files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    let mut removed: Vec<String> = Vec::new();
     for (_, p) in files.into_iter().skip(KEEP_BACKUPS) {
-        let _ = crate::remove_local(&p);
+        if crate::remove_local(&p).is_ok() {
+            if let Some(n) = p.file_name().and_then(|n| n.to_str()) {
+                removed.push(n.to_string());
+            }
+        }
+    }
+    if !removed.is_empty() {
+        let mut m = load_manifest(dir);
+        m.version = 1;
+        m.files.retain(|e| !removed.contains(&e.name));
+        let _ = save_manifest(dir, &m);
     }
 }
 
@@ -820,12 +978,9 @@ fn allowed_kind(kind: u32) -> bool {
     matches!(kind, 1 | 2 | 3 | 4 | 7 | 11)
 }
 
-fn join(root: &str, key: &str) -> String {
-    if root.is_empty() {
-        key.to_string()
-    } else {
-        format!(r"{}\{key}", root.trim_end_matches('\\'))
-    }
+/// The path under HKCU, as segments: the test root first (none for this account), then the key.
+fn full_segments(root: &str, key: &str) -> Vec<String> {
+    root.split('\\').chain(key.split('\\')).filter(|s| !s.is_empty()).map(str::to_string).collect()
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -880,9 +1035,9 @@ extern "system" {
 }
 
 #[cfg(test)]
-#[link(name = "advapi32")]
+#[link(name = "ntdll")]
 extern "system" {
-    fn RegDeleteKeyW(hkey: HKEY, subkey: *const u16) -> u32;
+    fn NtDeleteKey(hkey: HKEY) -> i32;
 }
 
 #[cfg(test)]
@@ -918,50 +1073,83 @@ mod tests {
         TestDir(d)
     }
 
-    fn delete_tree(path: &str) {
-        // a link key is opened as itself, so it can be removed like any other empty key
-        let Ok(h) = open(path, KEY_ALL_ACCESS, REG_OPTION_OPEN_LINK) else { return };
+    /// Open a key of any kind, links included, as the link itself.
+    fn open_any_handle(path: &str, sam: u32) -> Option<Handle> {
+        let mut base: HKEY = HKCU;
+        let mut keep: Option<Handle> = None;
+        for seg in path.split('\\').filter(|s| !s.is_empty()) {
+            let w = wide(seg);
+            let mut h: HKEY = std::ptr::null_mut();
+            let r = unsafe { RegOpenKeyExW(base, w.as_ptr(), REG_OPTION_OPEN_LINK, sam, &mut h) };
+            if r != 0 {
+                return None;
+            }
+            let handle = Handle(h);
+            base = handle.0;
+            keep = Some(handle);
+        }
+        keep
+    }
+
+    /// Delete `h` and everything under it, children first, through handles: a link key is
+    /// deleted as itself, never through its target.
+    fn delete_handle(h: Handle) {
+        let names = subkey_names(&h);
+        for n in names {
+            if let Some(c) = open_any_handle_at(&h, &n) {
+                delete_handle(c);
+            }
+        }
+        unsafe {
+            NtDeleteKey(h.0);
+        }
+    }
+
+    fn open_any_handle_at(parent: &Handle, name: &str) -> Option<Handle> {
+        let w = wide(name);
+        let mut h: HKEY = std::ptr::null_mut();
+        let r = unsafe { RegOpenKeyExW(parent.0, w.as_ptr(), REG_OPTION_OPEN_LINK, KEY_ALL_ACCESS, &mut h) };
+        (r == 0).then_some(Handle(h))
+    }
+
+    fn subkey_names(h: &Handle) -> Vec<String> {
+        let mut out = Vec::new();
         let mut name = vec![0u16; 512];
-        let mut subs = Vec::new();
         for i in 0..100_000u32 {
             let mut nlen = name.len() as u32;
             let r = unsafe { RegEnumKeyExW(h.0, i, name.as_mut_ptr(), &mut nlen, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
             if r != 0 {
                 break;
             }
-            subs.push(String::from_utf16_lossy(&name[..nlen as usize]));
+            out.push(String::from_utf16_lossy(&name[..nlen as usize]));
         }
-        drop(h);
-        for s in subs {
-            delete_tree(&format!(r"{path}\{s}"));
-        }
-        let w = wide(path);
-        unsafe {
-            RegDeleteKeyW(HKCU, w.as_ptr());
+        out
+    }
+
+    fn delete_tree(path: &str) {
+        if let Some(h) = open_any_handle(path, KEY_ALL_ACCESS) {
+            delete_handle(h);
         }
     }
 
     fn set_in(root: &str, key: &str, name: &str, kind: u32, data: &[u8]) {
-        let path = join(root, key);
-        if !matches!(open_key(&path, KEY_EDIT), Ok(Some(_))) {
-            create_key(&path).unwrap();
-        }
-        let h = match open_key(&path, KEY_EDIT) {
-            Ok(Some(h)) => h,
-            _ => panic!("couldn't open a test key"),
-        };
+        let mut created = 0;
+        let chain = ensure_chain(&full_segments(root, key), KEY_EDIT, &mut created).unwrap();
+        let h = chain.last().unwrap();
         let n = wide(name);
         let r = unsafe { RegSetValueExW(h.0, n.as_ptr(), 0, kind, data.as_ptr(), data.len() as u32) };
         assert_eq!(r, 0, "couldn't write a test value");
     }
 
     fn values_of(root: &str, key: &str) -> Vec<(String, u32, Vec<u8>)> {
-        read_values(root, key).unwrap()
+        let chain = open_chain(&full_segments(root, key), KEY_READ).unwrap().expect("the test key");
+        read_values(chain.last().unwrap()).unwrap()
     }
 
     /// Every value name in `key`, whatever its type (a test of a type read_values refuses).
     fn raw_names(root: &str, key: &str) -> Vec<String> {
-        let h = open_key(&join(root, key), KEY_READ).unwrap().unwrap();
+        let chain = open_chain(&full_segments(root, key), KEY_READ).unwrap().expect("the test key");
+        let h = chain.last().unwrap();
         let mut out = Vec::new();
         let mut name = vec![0u16; 16_384];
         let mut data = vec![0u8; 1024];
@@ -1044,18 +1232,16 @@ mod tests {
         let read = read_backup(&done.backup).unwrap();
         assert_eq!((read.part.as_str(), read.values.len()), (part.id, 1));
         assert_eq!(unhex(&read.values[0].data).unwrap(), utf16(r"C:\Users\sam\Documents"));
-        assert_eq!(dir.0.read_dir().unwrap().count(), 11, "the ten later ones and the new one");
+        assert_eq!(shaped_count(&dir.0), 11, "the ten later ones and the new one");
         assert!(read_all(part, &root).unwrap().is_empty());
     }
 
     /// Prune keeps the ten newest by their parsed stamp, never the file it is given, and leaves
-    /// a file it can't remove (it still counts as kept).
+    /// a file it can't remove (it still counts as kept). A future stamp is never "young".
     #[test]
     fn prune_keeps_ten_by_stamp_and_never_the_new_one() {
         let dir = test_dir();
         let body = br#"{"version":1,"part":"registry.explorer/runmru","when":1,"values":[]}"#;
-        // twelve dated files (an hour to twelve hours after the epoch) and the "new" one, whose
-        // stamp is older than all of them
         let mut made = Vec::new();
         for i in 0..12u64 {
             let p = dir.0.join(format!("{PREFIX}{:010}-{:x}.json", 1000 + i * 1000, i));
@@ -1070,10 +1256,9 @@ mod tests {
         prune(&dir.0, Some(&new), 20_000);
         assert!(new.exists(), "the backup just written stays");
         assert!(folder.exists(), "a file that can't be removed is left");
-        // the ten newest of the twelve dated files stay; 1000 and 2000 go
         assert!(!made[0].exists() && !made[1].exists(), "the two oldest go");
         assert!(made[2..].iter().all(|p| p.exists()), "the ten newest stay");
-        assert_eq!(dir.0.read_dir().unwrap().count(), 12, "ten + the new one + the folder");
+        assert_eq!(shaped_count(&dir.0), 12, "ten + the new one + the folder");
     }
 
     /// A backup that can't be written means nothing is deleted, with the reason.
@@ -1123,7 +1308,7 @@ mod tests {
         assert!(key_exists(&root, &format!(r"{}\docx", part.key)));
         assert!(key_exists(&root, &format!(r"{}\Folder", part.key)));
 
-        let path = dir.0.read_dir().unwrap().next().unwrap().unwrap().path();
+        let path = dir.0.read_dir().unwrap().map(|e| e.unwrap().path()).find(|p| backup_stamp(&p.file_name().unwrap().to_string_lossy()).is_some()).unwrap();
         // another part's backup is refused
         assert!(restore_in(&path, &root, Some("registry.explorer/runmru")).unwrap_err().contains("not registry.explorer/runmru"));
         assert_eq!(restore_in(&path, &root, Some(part.id)).unwrap(), 7);
@@ -1139,7 +1324,8 @@ mod tests {
     }
 
     /// A backup that names a key outside the fixed list is refused whole, before anything is
-    /// written; so is a subkey under a part that keeps none.
+    /// written; so is a subkey under a part that keeps none; and so is a file not in Sprawl's
+    /// list of backups it wrote.
     #[test]
     fn restore_refuses_a_key_outside_the_list() {
         let root = test_root();
@@ -1149,13 +1335,12 @@ mod tests {
         set_in(&root, part.key, "a", SZ, &utf16("notepad"));
         let (_, problems) = remove_in(part, &root, &dir.0);
         assert!(problems.is_empty(), "{problems:?}");
-        let path = dir.0.read_dir().unwrap().next().unwrap().unwrap().path();
+        let path = dir.0.read_dir().unwrap().map(|e| e.unwrap().path()).find(|p| backup_stamp(&p.file_name().unwrap().to_string_lossy()).is_some()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let mut backup: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         backup["values"][0]["key"] = serde_json::json!(r"Software\Microsoft\Windows\CurrentVersion\Run");
-        let bad = dir.0.join("bad.json");
-        crate::write_local(&bad, &serde_json::to_vec(&backup).unwrap(), false).unwrap();
-        let err = restore_in(&bad, &root, None).unwrap_err();
+        remember(&dir.0, "bad.json", &serde_json::to_vec(&backup).unwrap(), part.id, 1);
+        let err = restore_in(&dir.0.join("bad.json"), &root, None).unwrap_err();
         assert!(err.contains("not one of the fixed keys") && err.contains("nothing was put back"), "{err}");
         // the fixed key is still empty: the refused file wrote nothing anywhere
         assert!(read_all(part, &root).unwrap().is_empty());
@@ -1163,18 +1348,47 @@ mod tests {
         // a subkey under a part that has none
         let mut backup: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         backup["values"][0]["key"] = serde_json::json!(format!(r"{}\sub", part.key));
-        let bad = dir.0.join("bad2.json");
-        crate::write_local(&bad, &serde_json::to_vec(&backup).unwrap(), false).unwrap();
-        let err = restore_in(&bad, &root, None).unwrap_err();
+        remember(&dir.0, "bad2.json", &serde_json::to_vec(&backup).unwrap(), part.id, 1);
+        let err = restore_in(&dir.0.join("bad2.json"), &root, None).unwrap_err();
         assert!(err.contains("not one of the fixed keys"), "{err}");
         assert!(read_all(part, &root).unwrap().is_empty());
 
         // a part Sprawl doesn't know
         let mut backup: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         backup["part"] = serde_json::json!("registry.explorer/passwords");
-        let bad = dir.0.join("bad3.json");
-        crate::write_local(&bad, &serde_json::to_vec(&backup).unwrap(), false).unwrap();
-        assert!(restore_in(&bad, &root, None).is_err());
+        remember(&dir.0, "bad3.json", &serde_json::to_vec(&backup).unwrap(), "registry.explorer/passwords", 1);
+        assert!(restore_in(&dir.0.join("bad3.json"), &root, None).is_err());
+
+        // a file of the backup shape that Sprawl never wrote
+        let planted = dir.0.join(format!("{PREFIX}0000000001-cc.json"));
+        crate::write_local(&planted, &bytes, false).unwrap();
+        let err = restore_in(&planted, &root, None).unwrap_err();
+        assert!(err.contains("not one of the backups Sprawl wrote"), "{err}");
+    }
+
+    /// A backup changed after it was written is refused, and a planted file of the shape is not
+    /// listed.
+    #[test]
+    fn a_changed_or_planted_backup_is_refused() {
+        let root = test_root();
+        let _key = TestKey(root.clone());
+        let dir = test_dir();
+        let part = part("registry.explorer/runmru").unwrap();
+        set_in(&root, part.key, "a", SZ, &utf16("notepad"));
+        let (done, problems) = remove_in(part, &root, &dir.0);
+        assert!(problems.is_empty(), "{problems:?}");
+        let done = done.unwrap();
+        let mut bytes = std::fs::read(&done.backup).unwrap();
+        let len = bytes.len();
+        bytes.truncate(len - 2);
+        std::fs::write(&done.backup, &bytes).unwrap();
+        let err = restore_in(&done.backup, &root, Some(part.id)).unwrap_err();
+        assert!(err.contains("changed since Sprawl wrote it"), "{err}");
+        // a planted file of the backup shape gets no row
+        let planted = dir.0.join(format!("{PREFIX}0000000001-dd.json"));
+        crate::write_local(&planted, b"{}", false).unwrap();
+        assert!(backups_in(&dir.0).iter().all(|b| b.path != planted));
+        assert_eq!(backups_in(&dir.0).len(), 1, "only the one Sprawl wrote");
     }
 
     /// The compiled list: the six required lists, HKCU Explorer only, and none of the names that
@@ -1183,14 +1397,7 @@ mod tests {
     fn the_list_holds_only_allowed_keys() {
         assert_eq!(PARTS.len(), 6);
         let explorer = r"Software\Microsoft\Windows\CurrentVersion\Explorer";
-        let wanted = [
-            "RunMRU",
-            "TypedPaths",
-            "WordWheelQuery",
-            r"ComDlg32\OpenSavePidlMRU",
-            r"ComDlg32\LastVisitedPidlMRU",
-            "RecentDocs",
-        ];
+        let wanted = ["RunMRU", "TypedPaths", "WordWheelQuery", r"ComDlg32\OpenSavePidlMRU", r"ComDlg32\LastVisitedPidlMRU", "RecentDocs"];
         let forbidden = ["prefetch", "userassist", "shellbags", "policies", "run", "runonce", "startup", "shell folders"];
         for w in wanted {
             assert!(PARTS.iter().any(|p| p.key.ends_with(w)), "{w} is missing");
@@ -1207,7 +1414,6 @@ mod tests {
             assert!(p.why.contains("leaves"), "{}: the words say the key stays", p.id);
         }
         assert_eq!(PARTS.iter().filter(|p| p.subkeys).map(|p| p.id).collect::<Vec<_>>(), ["registry.explorer/opensave", "registry.explorer/recentdocs"]);
-        // no two parts share an id or a key
         for (i, a) in PARTS.iter().enumerate() {
             for b in &PARTS[i + 1..] {
                 assert_ne!(a.id, b.id);
@@ -1238,7 +1444,6 @@ mod tests {
                 assert!(!low.contains(w), "{w:?} in {t:?}");
             }
         }
-        // and each part says what is lost, in one line
         for p in PARTS {
             assert!(p.cost.ends_with('.'), "{}", p.cost);
         }
@@ -1298,7 +1503,7 @@ mod tests {
         let root = test_root();
         let _key = TestKey(root.clone());
         let dir = test_dir();
-        let mru = super::part("registry.explorer/runmru").unwrap();
+        let mru = part("registry.explorer/runmru").unwrap();
         set_in(&root, mru.key, "a", SZ, &utf16("notepad"));
         set_in(&root, mru.key, "bad\u{1}name", SZ, &utf16("x"));
         let (done, problems) = remove_in(mru, &root, &dir.0);
@@ -1307,12 +1512,37 @@ mod tests {
         assert_eq!(raw_names(&root, mru.key).len(), 2, "both values are still there");
 
         // a per-file-type subkey whose name can't be written back
-        let docs = super::part("registry.explorer/recentdocs").unwrap();
-        create_key(&join(&root, &format!("{}\\bad\u{1}ext", docs.key))).unwrap();
+        let docs = part("registry.explorer/recentdocs").unwrap();
+        let mut created = 0;
+        ensure_chain(&full_segments(&root, &format!("{}\\bad\u{1}ext", docs.key)), KEY_EDIT, &mut created).unwrap();
         let (done, problems) = remove_in(docs, &root, &dir.0);
         assert!(done.is_none());
         assert!(problems.iter().any(|p| p.contains("subkey name") && p.contains("nothing was removed")), "{problems:?}");
         assert_eq!(raw_names(&root, mru.key).len(), 2);
+    }
+
+    /// Windows either takes `REG_OPTION_OPEN_LINK` in `RegCreateKeyExW` (then a new key is made)
+    /// or refuses it with `ERROR_INVALID_PARAMETER`, which is the fallback the module uses.
+    #[test]
+    fn create_takes_open_link_or_refuses_it_by_name() {
+        let root = test_root();
+        let _key = TestKey(root.clone());
+        let mut created = 0;
+        let parent_chain = ensure_chain(&full_segments(&root, "p"), KEY_EDIT, &mut created).unwrap();
+        let parent = parent_chain.last().unwrap();
+        let w = wide("child");
+        let mut h: HKEY = std::ptr::null_mut();
+        let mut disposition = 0u32;
+        let r = unsafe { RegCreateKeyExW(parent.0, w.as_ptr(), 0, std::ptr::null(), REG_OPTION_NON_VOLATILE | REG_OPTION_OPEN_LINK, KEY_EDIT, std::ptr::null(), &mut h, &mut disposition) };
+        println!("RegCreateKeyExW with REG_OPTION_OPEN_LINK: {r}");
+        if r == 0 {
+            drop(Handle(h));
+        } else {
+            assert_eq!(r, ERROR_INVALID_PARAMETER, "the only refusal the fallback covers");
+            drop(create_child_h(parent.0, "child", KEY_EDIT, "child").unwrap());
+        }
+        let child = open_child(parent, "child", KEY_READ).unwrap().expect("the new key");
+        assert!(!is_link(&child).unwrap());
     }
 
     /// A registry link key is never followed: its target is not read, deleted or restored, and
@@ -1325,13 +1555,11 @@ mod tests {
         let part = part("registry.explorer/recentdocs").unwrap();
         let target_key = format!(r"{root}\target");
         set_in(&root, &target_key, "secret", SZ, &utf16("keep me"));
-        // the part's key, with one real value and one link subkey pointing at `target`
         set_in(&root, part.key, "0", SZ, &utf16("mine.txt"));
         let sid = sprawl_core::identity::account_sid().expect("this account's SID");
         let target = format!(r"\REGISTRY\USER\{sid}\{target_key}");
-        create_link(&join(&root, part.key), "link", &target).expect("a link key can be made in this account's registry");
+        create_link(&join_for_test(&root, part.key), "link", &target).expect("a link key can be made in this account's registry");
 
-        // neither offered nor read through
         let found = find_in(&root);
         assert!(!found.iter().any(|f| matches!(&f.source, Source::Rule(id) if id == part.id)), "the part is held, not offered");
         let err = read_all(part, &root).unwrap_err();
@@ -1339,36 +1567,64 @@ mod tests {
         let (done, problems) = remove_in(part, &root, &dir.0);
         assert!(done.is_none(), "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("registry link")), "{problems:?}");
-        // the real value stays, the target stays untouched, no backup was written
         assert_eq!(values_of(&root, part.key).len(), 1);
         assert_eq!(one(&values_of(&root, &target_key), "secret"), (SZ, utf16("keep me")));
         assert_eq!(dir.0.read_dir().unwrap().count(), 0);
     }
 
-    /// A link at a fixed key's own path is held too, and its target is untouched. (A real
-    /// fixed key is never written by the tests; this is a link of the same shape under the
-    /// test root, opened exactly as a part's key is.)
+    /// A link swapped in above the final key is refused on remove and on restore.
     #[test]
-    fn a_link_at_a_fixed_key_is_held() {
+    fn a_link_above_the_key_is_refused() {
+        let root = test_root();
+        let _key = TestKey(root.clone());
+        let dir = test_dir();
+        let part = part("registry.explorer/runmru").unwrap();
+        let target_key = format!(r"{root}\target");
+        set_in(&root, &target_key, "secret", SZ, &utf16("keep me"));
+        let sid = sprawl_core::identity::account_sid().expect("this account's SID");
+        let target = format!(r"\REGISTRY\USER\{sid}\{target_key}");
+        // a link where the part's own key sits: the whole part is held
+        create_link(&root, "midlink", &target).expect("a link key can be made");
+        let mut link_part = *part;
+        link_part.key = r"midlink\RunMRU";
+        let (done, problems) = remove_in(&link_part, &root, &dir.0);
+        assert!(done.is_none(), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("registry link")), "{problems:?}");
+        assert_eq!(one(&values_of(&root, &target_key), "secret"), (SZ, utf16("keep me")));
+        // a link at an intermediate key above the real fixed path: restore refuses it too
+        let parent = format!(r"{root}\Software\Microsoft\Windows\CurrentVersion");
+        let mut created = 0;
+        ensure_chain(&full_segments("", &parent), KEY_EDIT, &mut created).unwrap();
+        create_link(&parent, "Explorer", &target).expect("a link key can be made");
+        let backup = serde_json::json!({
+            "version": 1, "part": part.id, "when": 1,
+            "values": [{"key": part.key, "name": "a", "kind": SZ, "data": hex(&utf16("x"))}]
+        });
+        remember(&dir.0, "crafted.json", &serde_json::to_vec(&backup).unwrap(), part.id, 1);
+        let err = restore_in(&dir.0.join("crafted.json"), &root, Some(part.id)).unwrap_err();
+        assert!(err.contains("registry link"), "{err}");
+        assert_eq!(one(&values_of(&root, &target_key), "secret"), (SZ, utf16("keep me")));
+    }
+
+    /// Creating a key where a link was planted is refused: the target gets nothing.
+    #[test]
+    fn create_never_writes_through_a_planted_link() {
         let root = test_root();
         let _key = TestKey(root.clone());
         let target_key = format!(r"{root}\target");
         set_in(&root, &target_key, "secret", SZ, &utf16("keep me"));
         let sid = sprawl_core::identity::account_sid().expect("this account's SID");
         let target = format!(r"\REGISTRY\USER\{sid}\{target_key}");
-        create_link(&root, "ownlink", &target).expect("a link key can be made");
-        let link = format!(r"{root}\ownlink");
-        // a key at the fixed path is seen as the link, so nothing reads, deletes or writes it
-        assert!(open_key(&link, KEY_EDIT).err().is_some_and(|e| e.contains("registry link")));
-        assert!(read_values("", &link).unwrap_err().contains("registry link"));
-        // and a link on the way to a deeper key holds it too
-        let err = no_link_on_the_way(&root, r"ownlink\leaf").unwrap_err();
+        create_link(&root, "planted", &target).expect("a link key can be made");
+        let mut created = 0;
+        let err = ensure_chain(&full_segments(&root, r"planted\child"), KEY_EDIT, &mut created).err().expect("a link on the way is refused");
         assert!(err.contains("registry link"), "{err}");
-        assert!(no_link_on_the_way(&root, r"plain\leaf").is_ok(), "a missing key on the way is fine");
         assert_eq!(one(&values_of(&root, &target_key), "secret"), (SZ, utf16("keep me")));
+        assert_eq!(created, 0, "no key was made");
     }
 
-    /// What the app lists in Settings: the kept backups, newest first, with their part and count.
+    /// The list in Settings: only Sprawl's own backups, newest first, with the part and count,
+    /// from the list and the file names (a backup is not read to list it).
     #[test]
     fn the_kept_backups_are_listed() {
         let root = test_root();
@@ -1382,23 +1638,66 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].part.as_str(), list[0].title.as_str(), list[0].values), (part.id, "Run box history", 1));
         assert_eq!(list[0].path, done.backup);
-        // a file not of the backup shape is left out, and one that can't be read
+        // a file not of the backup shape, and a planted one of the shape, are left out
         std::fs::write(dir.0.join("notes.json"), b"{}").unwrap();
-        std::fs::write(dir.0.join(format!("{PREFIX}0000000001-aa.json")), b"not json").unwrap();
+        crate::write_local(&dir.0.join(format!("{PREFIX}0000000001-aa.json")), b"{}", false).unwrap();
         assert_eq!(backups_in(&dir.0).len(), 1);
+    }
+
+    /// The leftovers of an interrupted run can be cleaned once by hand; only keys whose name
+    /// starts with SprawlTest- under HKCU\Software are touched, listed first.
+    #[test]
+    #[ignore]
+    fn remove_leftover_test_keys() {
+        let software = "Software";
+        let Some(h) = open_any_handle(software, KEY_ALL_ACCESS) else { return };
+        let left: Vec<String> = subkey_names(&h).into_iter().filter(|n| n.starts_with("SprawlTest-")).collect();
+        println!("SprawlTest- keys under HKCU\\Software: {}", left.len());
+        for n in &left {
+            println!("  removing {n}");
+        }
+        let mut removed = 0;
+        for n in &left {
+            if let Some(c) = open_any_handle_at(&h, n) {
+                delete_handle(c);
+                removed += 1;
+            }
+        }
+        println!("removed {removed}");
     }
 
     fn count_in(part: &RegPart, root: &str) -> usize {
         read_all(part, root).map_or(0, |v| v.len())
     }
 
+    /// How many entries in `dir` have the backup file shape.
+    fn shaped_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|d| d.flatten().filter(|e| e.file_name().to_str().is_some_and(|n| backup_stamp(n).is_some())).count())
+            .unwrap_or(0)
+    }
+
+    fn join_for_test(root: &str, key: &str) -> String {
+        format!(r"{root}\{key}")
+    }
+
+    /// Put bytes in the manifest as if Sprawl had just written them (for crafted test backups).
+    fn remember(dir: &Path, name: &str, bytes: &[u8], part: &str, values: usize) {
+        crate::write_local(&dir.join(name), bytes, true).unwrap();
+        let mut m = load_manifest(dir);
+        m.version = 1;
+        m.files.retain(|e| e.name != name);
+        m.files.push(ManifestFile { name: name.into(), sha256: hash_hex(bytes), part: part.into(), values });
+        save_manifest(dir, &m).unwrap();
+    }
+
     /// A symbolic link key at `parent\name`, pointing at `target`, for the tests.
     fn create_link(parent: &str, name: &str, target: &str) -> Result<(), u32> {
-        let path = format!(r"{parent}\{name}");
-        let w = wide(&path);
+        let Some(ph) = open_any_handle(parent, KEY_ALL_ACCESS) else { return Err(ERROR_FILE_NOT_FOUND) };
+        let w = wide(name);
         let mut h: HKEY = std::ptr::null_mut();
         let mut disposition = 0u32;
-        let r = unsafe { RegCreateKeyExW(HKCU, w.as_ptr(), 0, std::ptr::null(), REG_OPTION_CREATE_LINK, KEY_ALL_ACCESS, std::ptr::null(), &mut h, &mut disposition) };
+        let r = unsafe { RegCreateKeyExW(ph.0, w.as_ptr(), 0, std::ptr::null(), REG_OPTION_CREATE_LINK, KEY_ALL_ACCESS, std::ptr::null(), &mut h, &mut disposition) };
         if r != 0 {
             return Err(r);
         }

@@ -39,6 +39,9 @@ pub(crate) struct PrefUi {
     pub(crate) note: Option<String>,
     /// The Theme page's picks (themepage.rs).
     pub(crate) theme: crate::themepage::ThemeUi,
+    /// The registry backups, read once when the Cleaning section opens (and after a put back);
+    /// None until then, so a render never reads the folder.
+    registry_backups: Option<Vec<sprawl_advisor::regclean::BackupInfo>>,
 }
 
 fn label(t: &str) -> String {
@@ -241,6 +244,7 @@ impl State {
         self.prefs.draft = draft;
         self.prefs.note = None;
         self.prefs.clear_armed = false;
+        self.prefs.registry_backups = None;
         self.theme_begin();
         // AI: what was saved (Off at first); what is installed is only offered, one click away
         let det = Detected::probe();
@@ -440,6 +444,10 @@ impl State {
         if let (Ok(host), Ok(el)) = (find::<Border>(&self.root, "PfTop"), load::<UIElement>(&top)) {
             let _ = host.SetChild(&el);
         }
+        // the Cleaning section's backup list, read once here, never per row or per render
+        if self.wizard_all && Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)] == Sec::Cleaning && self.prefs.registry_backups.is_none() {
+            self.prefs.registry_backups = Some(sprawl_advisor::regclean::backups());
+        }
         shown(self, "WizAi", keys.contains(&"ai"));
         let mut x = format!(r##"<StackPanel {} Spacing="4">"##, ui::NS);
         if let Some(n) = &self.prefs.note {
@@ -617,12 +625,14 @@ impl State {
             }
             "registryBackups" => {
                 x += &help(p.help);
-                let list = sprawl_advisor::regclean::backups();
+                let list = self.prefs.registry_backups.clone().unwrap_or_default();
                 if list.is_empty() {
                     x += &help("No backups yet. They are made when you clean a registry list in Cleaners.");
                 }
                 for (i, bk) in list.iter().enumerate() {
-                    let when = sprawl_core::local_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(bk.when));
+                    // the date comes from the file name's own stamp; a stamp too far out is
+                    // skipped, never made to panic
+                    let Some(when) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(bk.when)).map(sprawl_core::local_time) else { continue };
                     x += &format!(
                         r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}</StackPanel></Grid>"##,
                         ui::esc(&bk.title),
@@ -767,15 +777,23 @@ impl State {
             }
             n if n.starts_with("PfB_regBack") => {
                 let i: usize = n["PfB_regBack".len()..].parse().unwrap_or(usize::MAX);
-                match sprawl_advisor::regclean::backups().get(i) {
-                    Some(bk) => match sprawl_advisor::regclean::restore(&bk.path, Some(&bk.part)) {
-                        Ok(v) => {
-                            self.refresh_registry_counts();
-                            self.prefs.note = Some(format!("Put back {v} {} of {}. Values written since stay.", if v == 1 { "value" } else { "values" }, bk.title));
-                        }
-                        Err(e) => self.prefs.note = Some(format!("The backup couldn't be put back: {e}")),
-                    },
+                // the row is identified by its file's name, never by an index into a fresh list
+                match self.prefs.registry_backups.as_ref().and_then(|l| l.get(i)).cloned() {
                     None => self.prefs.note = Some("That backup is no longer there.".into()),
+                    Some(bk) => match self.registry_put_back_refusal() {
+                        Some(why) => self.prefs.note = Some(why),
+                        None => {
+                            let name = bk.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let (title, values, part) = (bk.title.clone(), bk.values, bk.part.clone());
+                            self.ask(
+                                "Put registry values back?",
+                                &format!("Write back {values} {} to {title}? Values written since stay.", if values == 1 { "value" } else { "values" }),
+                                "Put back",
+                                false,
+                                move |s| s.registry_put_back(&name, &part, &title),
+                            );
+                        }
+                    },
                 }
             }
             n if n.starts_with("PfB_unkeep") => {
@@ -788,6 +806,43 @@ impl State {
                 }
             }
             _ => {}
+        }
+        self.prefs_render();
+    }
+
+    /// Why a registry backup can't be put back right now, if it can't: a clean-up, another file
+    /// operation, a scan or an update is running.
+    fn registry_put_back_refusal(&self) -> Option<String> {
+        if self.advisor.cleanup.running.is_some() {
+            return Some("A clean-up is running. Put back can wait until it ends.".into());
+        }
+        if self.advisor.file_op() {
+            return Some("Another file operation is running. Put back can wait until it ends.".into());
+        }
+        if self.job.is_some() {
+            return Some("A scan is running. Put back can wait until it ends.".into());
+        }
+        if self.update.applying {
+            return Some("An update is being applied. Put back can wait until it ends.".into());
+        }
+        None
+    }
+
+    /// Put one backup back, named by its file (the file Sprawl itself listed), then say what
+    /// was put back and read the list and the counts again.
+    fn registry_put_back(&mut self, name: &str, part: &str, title: &str) {
+        let Some(dir) = sprawl_advisor::regclean::backup_dir() else {
+            self.prefs.note = Some("Sprawl's data folder couldn't be found, so nothing was put back.".into());
+            return;
+        };
+        let path = dir.join(name);
+        match sprawl_advisor::regclean::restore(&path, Some(part)) {
+            Ok(v) => {
+                self.prefs.note = Some(format!("Put back {v} {} of {title}. Values written since stay.", if v == 1 { "value" } else { "values" }));
+                self.prefs.registry_backups = None;
+                self.refresh_registry_advice();
+            }
+            Err(e) => self.prefs.note = Some(format!("The backup couldn't be put back: {e}")),
         }
         self.prefs_render();
     }
