@@ -39,7 +39,10 @@ pub(crate) struct Reads {
     pub(crate) dates: sprawl_core::query::ReadDates,
     /// A value not understood, or no other word to narrow the search with.
     pub(crate) error: Option<String>,
-    /// What the last search's reads left out, said in the status line and never as a no-match.
+    /// The last search's reads: matches the reading limit stopped and matches with no time to
+    /// read, for the one-line count, and the same said whole for the no-match panel.
+    pub(crate) unread: usize,
+    pub(crate) unknown: usize,
     pub(crate) notes: Vec<String>,
 }
 
@@ -50,7 +53,7 @@ const READ_MOST: usize = sprawl_advisor::used::ANSWER_BUDGET;
 
 /// What the times read for the matches left: the matches inside the ranges, and what wasn't read.
 enum ReadOutcome {
-    Kept(Vec<usize>, Vec<String>),
+    Kept { kept: Vec<usize>, notes: Vec<String>, unread: usize, unknown: usize },
     /// Too many matches to read without narrowing: how many there were.
     TooMany(usize),
 }
@@ -131,7 +134,7 @@ fn read_filter(tree: &sprawl_core::Tree, hits: Vec<usize>, dates: &sprawl_core::
     if unknown_a > 0 {
         notes.extend(sprawl_advisor::used::notes(0, unknown_a, "match", "matches", opened.as_ref().expect("one was made")));
     }
-    ReadOutcome::Kept(kept, notes)
+    ReadOutcome::Kept { kept, notes, unread: unread_c + unread_a, unknown: unknown_c + unknown_a }
 }
 
 /// The most results the row menu opens at once: Explorer starts a program for each result and a
@@ -153,8 +156,8 @@ pub(crate) fn item_applies(item: &str, scan: bool) -> bool {
 }
 
 /// (tree generation, query, sort, matches sorted, the folder ranks it built, what the `dc:`/`da:`
-/// reads left out)
-type Found = (u64, String, (usize, bool), Option<Vec<usize>>, Option<Arc<Vec<u32>>>, Vec<String>);
+/// reads said: the whole notes, and how many matches were not read and had no time)
+type Found = (u64, String, (usize, bool), Option<Vec<usize>>, Option<Arc<Vec<u32>>>, (Vec<String>, usize, usize));
 /// (tree generation, sort, the matches sorted again, the folder ranks it built)
 type Sorted = (u64, (usize, bool), Vec<usize>, Option<Arc<Vec<u32>>>);
 
@@ -259,6 +262,12 @@ impl State {
         self.search.sorting = None;
         self.search.reads.notes.clear();
         self.search_reads();
+        // `dc:`/`da:` read each match's own time, which needs a scan: other drives are searched
+        // without them, so the words don't go silently unchecked
+        if !self.search.reads.dates.is_empty() && self.tree.is_none() {
+            self.search.reads.error =
+                Some("dc: and da: read each match's own time, which needs a scan: scan a folder or a drive first.".to_string());
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.search.cancel = cancel.clone();
         // outside the scan: saved scans and other drives
@@ -317,21 +326,25 @@ impl State {
         let dates = self.search.reads.dates;
         std::thread::spawn(move || {
             let mut r = search(&tree, &index, &q, &cancel);
-            let mut notes = Vec::new();
+            let mut said = (Vec::new(), 0usize, 0usize);
             // `dc:`/`da:`: the times are read for the matches the other words left, here and
             // never on the window's thread
             if !dates.is_empty() {
                 r = match r {
                     Some(hits) => match read_filter(&tree, hits, &dates) {
-                        ReadOutcome::Kept(kept, said) => {
-                            notes = said;
+                        ReadOutcome::Kept { kept, notes, unread, unknown } => {
+                            said = (notes, unread, unknown);
                             Some(kept)
                         }
                         ReadOutcome::TooMany(n) => {
-                            notes = vec![format!(
-                                "dc: and da: weren't checked: {} matches would each have their own time read; add a word that narrows the search (a name, ext:, size: or a folder).",
-                                crate::format::thousands(n as u64)
-                            )];
+                            said = (
+                                vec![format!(
+                                    "dc: and da: weren't checked: {} matches would each have their own time read; add a word that narrows the search (a name, ext:, size: or a folder).",
+                                    crate::format::thousands(n as u64)
+                                )],
+                                0,
+                                0,
+                            );
                             Some(Vec::new())
                         }
                     },
@@ -343,7 +356,7 @@ impl State {
                 let ranks = folder_ranks_if(&tree, key, v.len(), ranks, &mut built);
                 crate::tables::sort_nodes(&tree, &alloc, key, desc, v, ranks.as_deref().map_or(&[], |r| &r[..]));
             }
-            let _ = tx.send((gen, text_q, (c, desc), r, built, notes));
+            let _ = tx.send((gen, text_q, (c, desc), r, built, said));
         });
         self.search.running = Some(rx);
     }
@@ -454,11 +467,13 @@ impl State {
             }
         }
         if let Some(rx) = &self.search.running {
-            if let Ok((gen, q, sort, r, built, notes)) = rx.try_recv() {
+            if let Ok((gen, q, sort, r, built, said)) = rx.try_recv() {
                 self.search.running = None;
                 self.keep_ranks(gen, built);
                 if r.is_some() && gen == self.tree_gen && q == self.search.query {
-                    self.search.reads.notes = notes;
+                    self.search.reads.notes = said.0;
+                    self.search.reads.unread = said.1;
+                    self.search.reads.unknown = said.2;
                 }
                 if let Some(found) = r.filter(|_| gen == self.tree_gen && q == self.search.query) {
                     let resort = sort != self.search.sort;
@@ -598,13 +613,16 @@ impl State {
         if self.full_tree.is_some() {
             s += "; the scan's part is the filtered view";
         }
-        // what a `dc:`/`da:` search read or couldn't: said here, never as a plain "no match"
-        for note in &self.search.reads.notes {
-            s += " ";
-            s += note;
+        // what a `dc:`/`da:` search read or couldn't, short for this one line (the whole wording
+        // is in the no-match panel), and never passed off as a plain "no match"
+        if self.search.reads.unread > 0 {
+            s += &format!("; {} not read (reading limit)", thousands(self.search.reads.unread as u64));
+        }
+        if self.search.reads.unknown > 0 {
+            s += &format!("; {} with no time to read", thousands(self.search.reads.unknown as u64));
         }
         if !self.search.reads.dates.is_empty() && m.has_places() {
-            s += " dc: and da: were checked for this scan's matches; the other drives are searched without them.";
+            s += "; dc:/da: for the scan only";
         }
         s
     }

@@ -517,7 +517,7 @@ impl State {
         m.running = None;
         m.resorting = None;
         let q = Query::parse(&self.search.reads.plain);
-        if q.is_empty() || !q.errors().is_empty() || !m.has_places() {
+        if q.is_empty() || !q.errors().is_empty() || self.search.reads.error.is_some() || !m.has_places() {
             m.hits.clear();
             m.all = Arc::new(Vec::new());
             m.total = 0;
