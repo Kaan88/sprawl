@@ -132,6 +132,23 @@ impl Item for NodeItem<'_> {
     fn depth(&self) -> u32 {
         u32::from(self.index.depth[self.i]).saturating_sub(1)
     }
+    fn children(&self) -> u32 {
+        u32::try_from(self.tree.nodes[self.i].children.len()).unwrap_or(u32::MAX)
+    }
+    fn child_files(&self) -> u32 {
+        let t = self.tree;
+        u32::try_from(t.nodes[self.i].children.iter().filter(|&&c| c < t.nodes.len() && !t.nodes[c].is_dir).count()).unwrap_or(u32::MAX)
+    }
+    fn child_matches(&self, ts: &[Term]) -> bool {
+        let tree = self.tree;
+        tree.nodes[self.i].children.iter().any(|&c| {
+            if c >= tree.nodes.len() {
+                return false;
+            }
+            let it = NodeItem { tree, index: self.index, i: c, path: &[], opath: &[] };
+            ts.iter().all(|t| t.matches(&it))
+        })
+    }
 }
 
 /// How many threads a search uses.
@@ -202,11 +219,43 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
         early.iter().all(|t| t.matches(&it))
     };
 
-    // the cheap part on every core
+    // the cheap part on every core, then the path words, then `dupe:`/`sizedupe:`: the copies
+    // only.
     let hits = par_filter(n, cancel, cheap)?;
-    if path_terms.is_empty() {
-        return Some(hits);
+    let mut hits = if path_terms.is_empty() { hits } else { path_matches(tree, index, &path_terms, hits, n, cancel)? };
+    // `dupe:` and `sizedupe:`: among the matches of everything else
+    if q.dupe {
+        let keep = crate::query::keep_shared(hits.len(), |k| Some(index.name(hits[k])));
+        hits = keep.into_iter().map(|k| hits[k]).collect();
     }
+    if q.size_dupe {
+        let keep = crate::query::keep_shared(hits.len(), |k| {
+            let i = hits[k];
+            (!tree.nodes[i].is_dir).then_some(tree.nodes[i].size)
+        });
+        hits = keep.into_iter().map(|k| hits[k]).collect();
+    }
+    Some(hits)
+}
+
+/// The key that puts copies next to each other in a `dupe:`/`sizedupe:` query (`None` for other
+/// queries, and for a folder under `sizedupe:`): a sort can use it before its own column.
+pub fn group_key(tree: &Tree, index: &Index, q: &Query, n: usize) -> Option<crate::query::GroupKey> {
+    match q.group_by()? {
+        crate::query::GroupBy::Name => Some(crate::query::GroupKey::Name(index.name(n).to_vec())),
+        crate::query::GroupBy::Size => (!tree.nodes[n].is_dir).then(|| crate::query::GroupKey::Size(tree.nodes[n].size)),
+    }
+}
+
+/// The path words over the tree, for the candidates in `hits`.
+fn path_matches(
+    tree: &Tree,
+    index: &Index,
+    path_terms: &[&Term],
+    hits: Vec<usize>,
+    n: usize,
+    cancel: &AtomicBool,
+) -> Option<Vec<usize>> {
     let threads = threads();
 
     // the path words: walk the tree with a path buffer, checking only the candidates; the
@@ -216,7 +265,7 @@ pub fn search(tree: &Tree, index: &Index, q: &Query, cancel: &AtomicBool) -> Opt
         candidate[i] = true;
     }
     let orig = path_terms.iter().any(|t| t.needs & NEED_CASE_PATH != 0);
-    let walker = PathWalk { tree, index, terms: &path_terms, candidate: &candidate, n, orig };
+    let walker = PathWalk { tree, index, terms: path_terms, candidate: &candidate, n, orig };
     let root = tree.root_path.to_string_lossy();
     let root = root.trim_end_matches('\\');
     let root = Bufs { low: root.to_lowercase().into_bytes(), orig: if orig { root.as_bytes().to_vec() } else { Vec::new() } };
@@ -507,6 +556,29 @@ mod tests {
         }
     }
 
+    /// `parent:`, `child:` and the counts over a real tree: the direct children, a folder
+    /// holding a match, and how many are directly inside.
+    #[test]
+    fn folder_shape() {
+        let t = sample();
+        assert_eq!(find(&t, "parent:c:\\data"), ["Games", "cache", "setup.exe"]);
+        let mut steam = find(&t, "parent:steam");
+        steam.sort();
+        assert_eq!(steam, ["Report 2024.PDF", "config.vdf"]);
+        assert_eq!(find(&t, "parent:c:\\data file:"), ["setup.exe"]);
+        assert_eq!(find(&t, "parent:c:\\data"), find(&t, "parent:C:/Data/"));
+        assert!(find(&t, "parent:c:\\").is_empty(), "the root is never a result");
+        assert_eq!(find(&t, "child:*.vdf"), ["Steam"]);
+        assert_eq!(find(&t, "child:steam"), ["Games"]);
+        assert!(find(&t, "child:*.iso").is_empty());
+        assert_eq!(find(&t, "childcount:2"), ["Steam"]);
+        assert_eq!(find(&t, "childfilecount:2"), ["Steam"]);
+        assert_eq!(find(&t, "folder: childfilecount:1"), ["cache"]);
+        assert_eq!(find(&t, "childcount:>1 folder:"), ["Steam"]);
+        // a group keeps them words of their own
+        assert_eq!(find(&t, "<parent:c:\\data *.exe>|zzz"), ["setup.exe"]);
+    }
+
     #[test]
     fn deleted_branches_are_skipped() {
         let mut t = sample();
@@ -544,7 +616,7 @@ mod tests {
         let start = std::time::Instant::now();
         let ix = Index::build(&t);
         println!("index: {:?}, {} MB", start.elapsed(), ix.memory() >> 20);
-        for q in ["v42", "file name 12345", "*.dll", "\\folder_000123_program data\\", ">90kb v1"] {
+        for q in ["v42", "file name 12345", "*.dll", "\\folder_000123_program data\\", ">90kb v1", "childcount:>5", "len:>80", "dupe:"] {
             let start = std::time::Instant::now();
             let r = search(&t, &ix, &Query::parse(q), &AtomicBool::new(false)).unwrap();
             println!("{q:>34}: {:>8} hits in {:?}", r.len(), start.elapsed());

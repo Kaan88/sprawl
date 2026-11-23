@@ -379,12 +379,22 @@ View already do folders first by name, and keep the Search picks and the 10-at-o
 are. Done when: a mixed result list sorted by Name shows every folder above every file, in either
 direction, on the scan on screen and on other drives, with a test for each sort path.
 
-**Search: what to borrow from Everything** (2026-11-23, the user asked to look; not started). Sprawl
+**Search: what to borrow from Everything** (2026-11-23, the user asked to look; items 3 to 9 shipped
+2026-11-24 on flash/query, except 7). Sprawl
 already has: words, globs, a|b, !not, path:, size and dm: ranges, ext:, regex:, case:, exact:,
 depth:, folder:/file:, compressed:, match highlighting, filter chips (Kind, Type, Size, Modified,
 Where, More), saved and recent searches, keyword suggestions, Enter / Ctrl+Enter, and the picks menu.
 The audit decision stands: powerful search, not a second Everything (no background service, no
 always-live index). In order of value for a disk tool:
+
+Shipped on flash/query (items 3 to 9 but 7): `dc:` (created) and `da:` (last opened) read per
+match, `parent:`, `child:`, `childcount:`, `childfilecount:`, `dupe:`, `sizedupe:`, `attrib:`,
+`len:`, the type macros (`audio:`, `video:`, `pic:`, `doc:`, `exe:`, `zip:`) and `<a b>|c`
+groups; see CHANGELOG.md under Unreleased. `Facts` cannot be reached from sprawl-core, and
+`Facts::gather` reads every app source and Prefetch for one word while `runs` is keyed by
+program name, so item 7 (`dr:`) needs a cached `Facts` held by Search plus a tree walk for each
+hit: more than the small hook it was meant to be, so it is left out. Item 3's Created column and
+item 2 (the cap) belong to the sorting/table work.
 
 1. Folders first when sorted by name (above).
 2. The whole list, not the first N. Everything sorts and counts every match; Sprawl caps at
