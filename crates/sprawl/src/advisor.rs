@@ -71,6 +71,9 @@ pub(crate) struct Report {
     pub(crate) privacy_held: Vec<(Finding, String)>,
     /// The Privacy group's rows: one per browser profile.
     pub(crate) privacy_rows: Vec<PrivRow>,
+    /// How many values each registry part would remove, read once when the report was made
+    /// (never on a render).
+    pub(crate) registry_counts: std::collections::HashMap<String, usize>,
 }
 
 /// A row in the Privacy group: a browser profile, or this account's Explorer registry lists.
@@ -873,6 +876,7 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
         privacy_rows: privacy_rows(&adv.privacy),
         privacy: adv.privacy,
         privacy_held: adv.privacy_held.into_iter().map(|(f, why)| (f, why.to_string())).collect(),
+        registry_counts: if privacy_on { sprawl_advisor::regclean::counts() } else { Default::default() },
     };
     (r, facts)
 }
@@ -2336,13 +2340,14 @@ impl State {
                         }),
                     )
                 }
-                // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
+                // a registry part's values, put back from the backup the clean-up wrote
                 "AdvRegBack" if i < reg_count => click(
                     name,
                     Box::new(move || {
                         with(|s| s.registry_restore(i));
                     }),
                 ),
+                // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
                 "AdvU" if i < count => click(
                     name,
                     Box::new(move || {
@@ -2691,16 +2696,35 @@ impl State {
     pub(crate) fn registry_restore(&mut self, i: usize) {
         if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying { return; }
         let Some(rec) = self.advisor.cleanup.done.as_ref().and_then(|d| d.registry.get(i)).cloned() else { return };
-        match sprawl_advisor::regclean::restore(&rec.backup) {
+        match sprawl_advisor::regclean::restore(&rec.backup, Some(&rec.part)) {
             Ok(n) => {
                 if let Some(d) = &mut self.advisor.cleanup.done {
                     d.registry.remove(i);
                 }
-                self.adv_say(&format!("Put back {n} {} in {}.", if n == 1 { "value" } else { "values" }, rec.title));
+                self.refresh_registry_counts();
+                self.adv_say(&format!("Put back {n} {} in {}. Values written since stay.", if n == 1 { "value" } else { "values" }, rec.title));
             }
             Err(e) => self.adv_say(&format!("The backup couldn't be put back: {e}")),
         }
         self.render_advisor();
+    }
+
+    /// How many values registry part `id` would remove, from the report's own reading (never a
+    /// fresh read on a render); the report's count when it has none.
+    pub(crate) fn registry_values(&self, id: &str) -> usize {
+        self.advice().and_then(|r| r.registry_counts.get(id).copied()).unwrap_or_else(|| sprawl_advisor::regclean::count(id))
+    }
+
+    /// Read the registry parts' counts again (after Put back) into the reports on screen.
+    pub(crate) fn refresh_registry_counts(&mut self) {
+        if !self.privacy_on() { return; }
+        let counts = sprawl_advisor::regclean::counts();
+        if let Some(r) = self.advisor.report.as_mut().filter(|r| r.privacy_on) {
+            r.registry_counts = counts.clone();
+        }
+        if let Some(o) = self.advisor.cl.own.as_mut().filter(|o| o.report.privacy_on) {
+            o.report.registry_counts = counts;
+        }
     }
 
     /// The findings list with its sort and filter, duplicates, hidden space and what was held back.

@@ -265,9 +265,10 @@ impl Finding {
         matches!(self.action, Some(Action::Set { .. }) | Some(Action::Reg { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id) || crate::regclean::is_id(id))
     }
 
-    /// A privacy part that removes this account's registry values, with a backup first.
+    /// A privacy part that removes this account's registry values, with a backup first: known by
+    /// its action, never by a name alone.
     pub fn registry(&self) -> bool {
-        matches!(self.action, Some(Action::Reg { .. })) || matches!(&self.source, Source::Rule(id) if crate::regclean::is_id(id))
+        matches!(self.action, Some(Action::Reg { .. }))
     }
 
     /// F4: copies made hard links to one of them: nothing is deleted or recycled.

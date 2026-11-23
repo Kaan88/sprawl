@@ -5,7 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
-- Cleaners, Privacy: with "Show privacy cleaners" on, Sprawl can now clear the short lists Explorer keeps in your own account's registry: the Run box, paths typed in the address bar, the Explorer search box, the Open and Save dialogs' recent files and folders, and recent documents. Each list is one part you tick yourself, and the review shows how many entries it would remove (they free no disk space). Every value is copied to a backup in Sprawl's data folder before anything goes, the keys themselves stay, and after the clean-up "Put back" writes the values back exactly as they were. Explorer keeps some of these lists in memory, so a change may only show after you sign out and back in.
+- Cleaners, Privacy: with "Show privacy cleaners" on, Sprawl can now clear the short lists Explorer keeps in your own account's registry: the Run box, paths typed in the address bar, the Explorer search box, the Open and Save dialogs' recent files and folders, and recent documents. Each list is one part you tick yourself, and the review shows how many entries it would remove (they free no disk space). Every value is copied to a backup in Sprawl's data folder before anything goes, the keys themselves stay, and after the clean-up "Put back" writes the removed values back (values written since stay). The backups are also listed in Settings > Cleaning, and the last ten are kept. Explorer keeps some of these lists in memory, so a change may only show after you sign out and back in.
 
 ## 1.0.7 — 2026-11-23
 

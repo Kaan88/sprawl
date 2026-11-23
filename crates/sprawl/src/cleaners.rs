@@ -415,7 +415,7 @@ impl State {
         let mut rows: Vec<ClRow> = Vec::new();
         for (k, d) in r.catalogue.iter().enumerate() {
             // the privacy cleaners have a group of their own (privacy_group), never these rows
-            if sprawl_advisor::privacy::is_privacy_id(&d.id) || d.id.to_lowercase().starts_with("privacy.") {
+            if sprawl_advisor::privacy::is_privacy_id(&d.id) || sprawl_advisor::rules::reserved_id(&d.id) {
                 continue;
             }
             let presence = r.presence.get(k).cloned().unwrap_or(Presence::Absent);
@@ -988,7 +988,7 @@ impl State {
         let mut left = 0;
         for k in keys {
             // a privacy part is never suggested, whatever the model sent
-            let declined = self.advisor.memory.declined_parts.iter().any(|d| d.eq_ignore_ascii_case(k)) || k.to_lowercase().starts_with("privacy.");
+            let declined = self.advisor.memory.declined_parts.iter().any(|d| d.eq_ignore_ascii_case(k)) || sprawl_advisor::rules::reserved_id(k);
             match rows.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).find(|(_, p)| p.key.eq_ignore_ascii_case(k)) {
                 // safe and amber space only: never a privacy part, nor one the user turned down
                 Some((c, p)) if !declined && p.class == Class::Space && !p.info && matches!(p.risk, Risk::Green | Risk::Amber) && p.tickable(r).next().is_some() && p.tickable(r).all(|i| auto_takes(r, i)) && self.part_true(r, p).0 > 0 => ok.push((c, p)),
@@ -1928,7 +1928,10 @@ impl State {
                 let ticked = self.advisor.cleanup.privacy_ticked.contains(&key(&f.path));
                 // not the space labels ("your own files"): what it is, and whether it can go now
                 let mut sub = match reg {
-                    Some(p) => format!("Privacy · {} values", sprawl_advisor::regclean::count(p.id)),
+                    Some(p) => {
+                        let n = r.registry_counts.get(p.id).copied().unwrap_or(0);
+                        format!("Privacy · {}", if n == 1 { "1 value".to_string() } else { format!("{n} values") })
+                    }
                     None => "Privacy".to_string(),
                 };
                 match self.app_open(f) {

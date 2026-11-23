@@ -615,6 +615,22 @@ impl State {
                     if n > 0 { b("PfB_histClear", if armed { "Press again to delete them all" } else { "Clear" }) } else { String::new() }
                 );
             }
+            "registryBackups" => {
+                x += &help(p.help);
+                let list = sprawl_advisor::regclean::backups();
+                if list.is_empty() {
+                    x += &help("No backups yet. They are made when you clean a registry list in Cleaners.");
+                }
+                for (i, bk) in list.iter().enumerate() {
+                    let when = sprawl_core::local_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(bk.when));
+                    x += &format!(
+                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}</StackPanel></Grid>"##,
+                        ui::esc(&bk.title),
+                        ui::esc(&format!("{when} · {}", if bk.values == 1 { "1 value".to_string() } else { format!("{} values", bk.values) })),
+                        b(&format!("PfB_regBack{i}"), "Put back")
+                    );
+                }
+            }
             _ => {}
         }
         x
@@ -747,6 +763,19 @@ impl State {
                     self.prefs.note = Some(format!("Sprawl will never offer {}.", path.display()));
                 } else {
                     self.prefs.note = Some("Type the full path of a folder or file that exists, like D:\\Photos.".into());
+                }
+            }
+            n if n.starts_with("PfB_regBack") => {
+                let i: usize = n["PfB_regBack".len()..].parse().unwrap_or(usize::MAX);
+                match sprawl_advisor::regclean::backups().get(i) {
+                    Some(bk) => match sprawl_advisor::regclean::restore(&bk.path, Some(&bk.part)) {
+                        Ok(v) => {
+                            self.refresh_registry_counts();
+                            self.prefs.note = Some(format!("Put back {v} {} of {}. Values written since stay.", if v == 1 { "value" } else { "values" }, bk.title));
+                        }
+                        Err(e) => self.prefs.note = Some(format!("The backup couldn't be put back: {e}")),
+                    },
+                    None => self.prefs.note = Some("That backup is no longer there.".into()),
                 }
             }
             n if n.starts_with("PfB_unkeep") => {
