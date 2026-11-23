@@ -13,6 +13,14 @@
 //! Folder totals aren't stored: [`read`] adds them up again. Times keep one-second precision.
 //! Columns compress much better than rows because neighbouring values look alike.
 //!
+//! Version 2 adds a kind byte after the version, and for a delta the file name of the
+//! snapshot it continues. A delta's frame holds the new tree's header and then one op per
+//! node: the same node as in the base (copied), one of its fields changed, a new node, or a
+//! run of nodes the base had and the new tree doesn't. Both sides are put in one canonical
+//! order first ([`canonical`]: depth first, every folder's children by name), so a tree
+//! rebuilt from a keyframe and its deltas is node for node the tree a whole snapshot gives.
+//! Version 1 files are whole snapshots and still load; they serve as keyframes.
+//!
 //! [`encode`] writes only what [`decode`] takes back, so a saved scan always loads again: names
 //! go through `csv::plausible_name` (a History tree must be projectable onto a live one) and
 //! the sizes of a whole tree add up to at most [`MAX_SIZE`], which is what the reader's own
@@ -23,10 +31,20 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sprawl_core::{Node, ScanMethod, Tree};
+use sprawl_core::{Node, ScanMethod, Tree, ROOT};
 
 const MAGIC: &[u8; 4] = b"DTSN";
-const VERSION: u32 = 1;
+/// Current format. Version 1 files (whole snapshots written before deltas) still load.
+const VERSION: u32 = 2;
+/// The version of a whole snapshot written before deltas: no kind byte, no base name.
+const VERSION_WHOLE: u32 = 1;
+/// The kinds a version 2 file can be.
+const WHOLE: u8 = 0;
+const DELTA: u8 = 1;
+/// The longest base file name a delta names.
+const MAX_BASE: usize = 256;
+/// How deep [`encode_delta`] will follow a tree: deeper falls back to a keyframe.
+const MAX_DEPTH: u32 = 512;
 pub const MAX_FILE: u64 = 512 << 20;
 const MAX_BODY: usize = 512 << 20;
 const MAX_HEAP: usize = 1024 << 20;
@@ -213,6 +231,57 @@ pub fn encode(tree: &Tree, taken: SystemTime) -> Vec<u8> {
     out
 }
 
+/// The same tree with one fixed order: depth first, every folder's children by name (file
+/// before folder when the two names are equal). Keyframes are written in it and a rebuilt
+/// delta comes out in it, so the same scan is the same tree whichever way it was stored, and
+/// two snapshots of one root line up node by node for the diff.
+///
+/// Nodes that can't be reached from the root (which a scan never makes) leave the tree as it
+/// is: better a larger keyframe than a tree missing nodes.
+pub fn canonical(t: &Tree) -> Tree {
+    if t.nodes.is_empty() { return t.clone(); }
+    let mut nodes: Vec<Node> = Vec::with_capacity(t.nodes.len());
+    let mut map = vec![usize::MAX; t.nodes.len()];
+    let mut stack: Vec<(usize, Option<usize>)> = vec![(ROOT, None)];
+    while let Some((old, parent)) = stack.pop() {
+        if old >= t.nodes.len() || map[old] != usize::MAX { continue; }
+        let new = nodes.len();
+        map[old] = new;
+        let mut node = t.nodes[old].clone();
+        node.parent = parent;
+        node.children.clear();
+        nodes.push(node);
+        if let Some(p) = parent { nodes[p].children.push(new); }
+        let mut kids = t.nodes[old].children.clone();
+        kids.sort_by(|&a, &b| t.nodes[a].name.cmp(&t.nodes[b].name).then(t.nodes[a].is_dir.cmp(&t.nodes[b].is_dir)));
+        for k in kids.into_iter().rev() {
+            if k < t.nodes.len() && map[k] == usize::MAX { stack.push((k, Some(new))); }
+        }
+    }
+    if nodes.len() != t.nodes.len() { return t.clone(); }
+    Tree { volumes: t.volumes.clone(), root_path: t.root_path.clone(), nodes, errors: t.errors, method: t.method }
+}
+
+/// A whole snapshot's body in [`canonical`] order: what History writes for a keyframe, so a
+/// delta chain rebuilt from it matches a whole snapshot of the same scan node for node.
+pub fn encode_ordered(tree: &Tree, taken: SystemTime) -> Vec<u8> {
+    encode(&canonical(tree), taken)
+}
+
+fn write_head(w: &mut impl Write, kind: u8) -> io::Result<()> {
+    w.write_all(MAGIC)?;
+    w.write_all(&VERSION.to_le_bytes())?;
+    w.write_all(&[kind])
+}
+
+fn compress(body: &[u8], level: i32, w: &mut impl Write) -> io::Result<()> {
+    let mut z = zstd::stream::Encoder::new(w, level)?;
+    z.multithread(std::thread::available_parallelism().map_or(1, |n| n.get() as u32))?;
+    z.write_all(body)?;
+    z.finish()?;
+    Ok(())
+}
+
 /// Write a snapshot. `level` is the zstd level (3 is fast, 19 is small).
 pub fn write(tree: &Tree, taken: SystemTime, level: i32, w: &mut impl Write) -> io::Result<()> {
     write_body(&encode(tree, taken), level, w)
@@ -222,13 +291,20 @@ pub fn write(tree: &Tree, taken: SystemTime, level: i32, w: &mut impl Write) -> 
 /// slower compression on another).
 pub fn write_body(body: &[u8], level: i32, w: &mut impl Write) -> io::Result<()> {
     if body.len() > MAX_BODY { return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds the supported body size")); }
-    w.write_all(MAGIC)?;
-    w.write_all(&VERSION.to_le_bytes())?;
-    let mut z = zstd::stream::Encoder::new(w, level)?;
-    z.multithread(std::thread::available_parallelism().map_or(1, |n| n.get() as u32))?;
-    z.write_all(body)?;
-    z.finish()?;
-    Ok(())
+    write_head(w, WHOLE)?;
+    compress(body, level, w)
+}
+
+/// Compress and write a delta made by [`encode_delta`], naming the file it continues.
+pub fn write_delta_body(body: &[u8], base: &str, level: i32, w: &mut impl Write) -> io::Result<()> {
+    if body.len() > MAX_BODY { return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds the supported body size")); }
+    if base.is_empty() || base.len() > MAX_BASE || !base.is_ascii() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a snapshot file name"));
+    }
+    write_head(w, DELTA)?;
+    w.write_all(&(base.len() as u16).to_le_bytes())?;
+    w.write_all(base.as_bytes())?;
+    compress(body, level, w)
 }
 
 struct Cursor<'a> {
@@ -272,26 +348,75 @@ impl Cursor<'_> {
     }
 }
 
-/// Read a snapshot back into a tree (with folder totals) and its metadata.
-pub fn read(r: &mut impl Read) -> io::Result<(Tree, Meta)> {
-    read_limited(r, MAX_BODY)
+/// A snapshot file opened only as far as its header.
+pub struct Opened {
+    /// A delta (its tree is its base plus changes) rather than a whole tree.
+    pub delta: bool,
+    /// The file a delta continues, from inside the delta itself.
+    pub base: Option<String>,
+    /// The decompressed frame.
+    pub body: Vec<u8>,
 }
 
-fn read_limited(r: &mut impl Read, body_limit: usize) -> io::Result<(Tree, Meta)> {
+/// Read just the header: the magic, the version, and for a delta the file it continues. Cheap
+/// enough for listing (no frame is decompressed).
+pub fn read_header(r: &mut impl Read) -> io::Result<(bool, Option<String>)> {
     let mut head = [0u8; 8];
     r.read_exact(&mut head)?;
     if &head[..4] != MAGIC {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a Sprawl snapshot"));
     }
     let version = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
-    if version != VERSION {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("snapshot version {version} isn't supported")));
+    match version {
+        VERSION_WHOLE => Ok((false, None)),
+        VERSION => {
+            let mut kind = [0u8; 1];
+            r.read_exact(&mut kind)?;
+            match kind[0] {
+                WHOLE => Ok((false, None)),
+                DELTA => {
+                    let mut len = [0u8; 2];
+                    r.read_exact(&mut len)?;
+                    let n = usize::from(u16::from_le_bytes(len));
+                    if n == 0 || n > MAX_BASE { return Err(Cursor::bad()); }
+                    let mut name = vec![0u8; n];
+                    r.read_exact(&mut name)?;
+                    Ok((true, Some(String::from_utf8(name).map_err(|_| Cursor::bad())?)))
+                }
+                _ => Err(Cursor::bad()),
+            }
+        }
+        v => Err(io::Error::new(io::ErrorKind::InvalidData, format!("snapshot version {v} isn't supported"))),
     }
+}
+
+/// Open a snapshot of either kind, keeping the frame for [`decode`] or [`decode_delta`].
+pub fn open(r: &mut impl Read) -> io::Result<Opened> {
+    let (delta, base) = read_header(r)?;
+    if delta != base.is_some() { return Err(Cursor::bad()); }
+    let body = read_body(r, MAX_BODY)?;
+    Ok(Opened { delta, base, body })
+}
+
+fn read_body(r: &mut impl Read, body_limit: usize) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
     let mut decoder = zstd::stream::Decoder::new(r.take(MAX_FILE + 1))?;
     decoder.window_log_max(27)?;
     decoder.take(body_limit as u64 + 1).read_to_end(&mut body)?;
     if body.len() > body_limit { return Err(Cursor::bad()); }
+    Ok(body)
+}
+
+/// Read a whole snapshot back into a tree (with folder totals) and its metadata. A delta needs
+/// [`decode_delta`] and its base.
+pub fn read(r: &mut impl Read) -> io::Result<(Tree, Meta)> {
+    read_limited(r, MAX_BODY)
+}
+
+fn read_limited(r: &mut impl Read, body_limit: usize) -> io::Result<(Tree, Meta)> {
+    let (delta, _) = read_header(r)?;
+    if delta { return Err(io::Error::new(io::ErrorKind::InvalidData, "a delta needs the snapshot it continues")); }
+    let body = read_body(r, body_limit)?;
     decode(&body)
 }
 
@@ -390,6 +515,259 @@ pub fn decode(body: &[u8]) -> io::Result<(Tree, Meta)> {
 
 /// Name of the pseudo-file that stands for a folder's own files in a [`folders_only`] tree.
 pub const FILES_HERE: &str = "<files>";
+
+// ---------------------------------------------------------------- deltas
+
+/// One op per node of the new tree, plus skips for the nodes the base had and the new tree
+/// doesn't: same node, changed fields, new node, skip a run of base nodes.
+const OP_SAME: u8 = 0;
+const OP_CHANGED: u8 = 1;
+const OP_ADD: u8 = 2;
+const OP_SKIP: u8 = 3;
+
+fn subtree_sizes(t: &Tree) -> Vec<usize> {
+    let mut s = vec![1usize; t.nodes.len()];
+    for i in (0..t.nodes.len()).rev() {
+        for &c in &t.nodes[i].children {
+            if c < s.len() { s[i] += s[c]; }
+        }
+    }
+    s
+}
+
+/// Children in [`canonical`] order.
+fn kids(t: &Tree, i: usize) -> Vec<usize> {
+    let mut k = t.nodes[i].children.clone();
+    k.sort_by(|&a, &b| t.nodes[a].name.cmp(&t.nodes[b].name).then(t.nodes[a].is_dir.cmp(&t.nodes[b].is_dir)));
+    k
+}
+
+struct Diff<'a> {
+    old: &'a Tree,
+    new: &'a Tree,
+    sub: Vec<usize>,
+    out: Vec<u8>,
+}
+
+impl Diff<'_> {
+    fn same_or_changed(&mut self, o: usize, n: usize) -> Option<()> {
+        let a = &self.old.nodes[o];
+        let b = &self.new.nodes[n];
+        let leaf = leaf(b);
+        let same = a.is_dir == b.is_dir
+            && a.name == b.name
+            && a.attributes == b.attributes
+            && secs(a.modified) == secs(b.modified)
+            && (!leaf || (a.size == b.size && a.allocated == b.allocated));
+        if same {
+            self.out.push(OP_SAME);
+            return Some(());
+        }
+        self.out.push(OP_CHANGED);
+        self.out.push(u8::from(leaf));
+        put(&mut self.out, u64::from(b.attributes));
+        if leaf {
+            // against the base node's, which is what a changed file mostly keeps
+            put(&mut self.out, zig(b.size.min(MAX_SIZE) as i64 - a.size.min(MAX_SIZE) as i64));
+            put(&mut self.out, zig(b.allocated.min(MAX_SIZE) as i64 - a.allocated.min(MAX_SIZE) as i64));
+        }
+        put(&mut self.out, zig(secs(b.modified) - secs(a.modified)));
+        Some(())
+    }
+
+    fn skip(&mut self, a: usize) {
+        self.out.push(OP_SKIP);
+        put(&mut self.out, self.sub.get(a).copied().unwrap_or(1).max(1) as u64);
+    }
+
+    fn dir(&mut self, o: usize, n: usize, depth: u32) -> Option<()> {
+        if depth > MAX_DEPTH { return None; }
+        let ok = kids(self.old, o);
+        let nk = kids(self.new, n);
+        let (mut i, mut j) = (0, 0);
+        while i < ok.len() || j < nk.len() {
+            match (ok.get(i), nk.get(j)) {
+                (Some(&a), Some(&b)) => match (&self.old.nodes[a].name, self.old.nodes[a].is_dir).cmp(&(&self.new.nodes[b].name, self.new.nodes[b].is_dir)) {
+                    std::cmp::Ordering::Equal => {
+                        self.same_or_changed(a, b)?;
+                        if self.new.nodes[b].is_dir { self.dir(a, b, depth + 1)?; }
+                        i += 1;
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Less => { self.skip(a); i += 1; }
+                    std::cmp::Ordering::Greater => { self.add(b, depth + 1)?; j += 1; }
+                },
+                (Some(&a), None) => { self.skip(a); i += 1; }
+                (None, Some(&b)) => { self.add(b, depth + 1)?; j += 1; }
+                (None, None) => break,
+            }
+        }
+        Some(())
+    }
+
+    fn add(&mut self, b: usize, depth: u32) -> Option<()> {
+        if depth > MAX_DEPTH { return None; }
+        let node = &self.new.nodes[b];
+        let parent = node.parent?;
+        if parent >= b { return None; }
+        self.out.push(OP_ADD);
+        let name = if exempt_name(&self.new.root_path, b, node) { node.name.clone() } else { storable_name(&node.name) };
+        put(&mut self.out, name.len() as u64);
+        self.out.extend_from_slice(name.as_bytes());
+        put(&mut self.out, (u64::from(node.attributes) << 1) | u64::from(node.is_dir));
+        put(&mut self.out, (b - parent) as u64);
+        let leaf = leaf(node);
+        self.out.push(u8::from(leaf));
+        if leaf {
+            let size = node.size.min(MAX_SIZE);
+            put(&mut self.out, size);
+            put(&mut self.out, zig(node.allocated.min(MAX_SIZE) as i64 - size as i64));
+        }
+        put(&mut self.out, zig(secs(node.modified)));
+        if node.is_dir {
+            for &c in &kids(self.new, b) { self.add(c, depth + 1)?; }
+        }
+        Some(())
+    }
+}
+
+/// The changes from `base` to `tree`, both of the same root, for a file written with
+/// [`write_delta_body`]. `None` when they can't be lined up (another root, a tree too deep or
+/// too big): the caller writes a whole snapshot then.
+pub fn encode_delta(base: &Tree, tree: &Tree, taken: SystemTime) -> Option<Vec<u8>> {
+    if base.root_path != tree.root_path || base.nodes.is_empty() || tree.nodes.is_empty() { return None; }
+    let per_node = std::mem::size_of::<Node>() + 3 * std::mem::size_of::<usize>();
+    if tree.nodes.len() > MAX_HEAP / per_node { return None; }
+    let old = canonical(base);
+    let new = canonical(tree);
+    if old.nodes.len() != base.nodes.len() || new.nodes.len() != tree.nodes.len() { return None; }
+    let mut out = Vec::with_capacity(new.nodes.len() / 8 + 64);
+    put(&mut out, new.nodes.len() as u64);
+    let root = new.root_path.to_string_lossy();
+    put(&mut out, root.len() as u64);
+    out.extend_from_slice(root.as_bytes());
+    out.push(method_code(new.method));
+    put(&mut out, secs(Some(taken)) as u64);
+    put(&mut out, new.errors);
+    put(&mut out, old.nodes.len() as u64);
+    let mut d = Diff { old: &old, new: &new, sub: subtree_sizes(&old), out };
+    d.same_or_changed(0, 0)?;
+    if d.new.nodes[0].is_dir { d.dir(0, 0, 1)?; }
+    if d.out.len() > MAX_BODY { return None; }
+    Some(d.out)
+}
+
+/// Rebuild the tree a delta describes, on top of the tree of its base.
+pub fn decode_delta(base: &Tree, body: &[u8]) -> io::Result<(Tree, Meta)> {
+    if body.len() > MAX_BODY { return Err(Cursor::bad()); }
+    let old = canonical(base);
+    let mut c = Cursor { b: body, at: 0 };
+    let count = c.get()? as usize;
+    let per_node = std::mem::size_of::<Node>() + 3 * std::mem::size_of::<usize>();
+    // every node takes at least its op byte
+    if count == 0 || count > body.len() || count > MAX_HEAP / per_node { return Err(Cursor::bad()); }
+    let root_path = PathBuf::from(c.string()?);
+    if root_path != old.root_path { return Err(Cursor::bad()); }
+    let method = match c.bytes(1)?[0] {
+        1 => ScanMethod::Mft,
+        2 => ScanMethod::Csv,
+        0 => ScanMethod::Walk,
+        _ => return Err(Cursor::bad()),
+    };
+    let taken = from_secs(i64::try_from(c.get()?).map_err(|_| Cursor::bad())?).ok_or_else(Cursor::bad)?;
+    let errors = c.get()?;
+    let old_count = c.get()? as usize;
+    if old_count == 0 || old_count != old.nodes.len() { return Err(Cursor::bad()); }
+    let mut nodes: Vec<Node> = Vec::new();
+    nodes.try_reserve_exact(count).map_err(|_| Cursor::bad())?;
+    let mut map = vec![usize::MAX; old_count];
+    let mut oi = 0usize;
+    while nodes.len() < count {
+        let op = u8::try_from(c.get()?).map_err(|_| Cursor::bad())?;
+        let i = nodes.len();
+        let node = match op {
+            OP_SAME | OP_CHANGED => {
+                if oi >= old_count { return Err(Cursor::bad()); }
+                let src = &old.nodes[oi];
+                let parent = match src.parent {
+                    Some(p) => match map.get(p) {
+                        Some(&at) if at != usize::MAX => Some(at),
+                        _ => return Err(Cursor::bad()),
+                    },
+                    None => None,
+                };
+                let mut node = Node {
+                    name: src.name.clone(),
+                    is_dir: src.is_dir,
+                    size: src.size,
+                    allocated: src.allocated,
+                    files: src.files,
+                    folders: src.folders,
+                    modified: src.modified,
+                    attributes: src.attributes,
+                    parent,
+                    children: Vec::new(),
+                    id: 0,
+                };
+                if op == OP_CHANGED {
+                    let sized = c.get()? != 0;
+                    node.attributes = u32::try_from(c.get()?).map_err(|_| Cursor::bad())?;
+                    if sized {
+                        let d = unzig(c.get()?);
+                        node.size = (src.size.min(MAX_SIZE) as i64).checked_add(d).filter(|&s| s >= 0).map(|s| s as u64).filter(|&s| s <= MAX_SIZE).ok_or_else(Cursor::bad)?;
+                        let d = unzig(c.get()?);
+                        node.allocated = (src.allocated.min(MAX_SIZE) as i64).checked_add(d).filter(|&a| a >= 0).ok_or_else(Cursor::bad)? as u64;
+                    } else {
+                        node.size = 0;
+                        node.allocated = 0;
+                    }
+                    node.modified = from_secs(secs(src.modified).checked_add(unzig(c.get()?)).ok_or_else(Cursor::bad)?);
+                }
+                map[oi] = i;
+                oi += 1;
+                node
+            }
+            OP_ADD => {
+                let name = c.string()?;
+                let flags = c.get()?;
+                if flags >> 1 > u32::MAX as u64 { return Err(Cursor::bad()); }
+                let is_dir = flags & 1 == 1;
+                let d = c.get()? as usize;
+                if d == 0 || d > i { return Err(Cursor::bad()); }
+                let mut node = Node { name, is_dir, attributes: (flags >> 1) as u32, parent: Some(i - d), files: u64::from(!is_dir), ..Default::default() };
+                if !exempt_name(&root_path, i, &node) && (node.name.len() > MAX_NAME || !sprawl_core::csv::plausible_name(&node.name)) { return Err(Cursor::bad()); }
+                let sized = c.get()? != 0;
+                if sized {
+                    node.size = c.get()?;
+                    if node.size > MAX_SIZE { return Err(Cursor::bad()); }
+                    node.allocated = (node.size as i64).checked_add(unzig(c.get()?)).filter(|&a| a >= 0).ok_or_else(Cursor::bad)? as u64;
+                }
+                node.modified = from_secs(unzig(c.get()?));
+                node
+            }
+            OP_SKIP => {
+                let n = c.get()? as usize;
+                oi = oi.checked_add(n).filter(|&x| x <= old_count).ok_or_else(Cursor::bad)?;
+                continue;
+            }
+            _ => return Err(Cursor::bad()),
+        };
+        if let Some(p) = node.parent { nodes[p].children.push(i); }
+        nodes.push(node);
+    }
+    // removals after the last kept node are trailing skips: consume them, nothing else
+    while c.at < body.len() {
+        let op = u8::try_from(c.get()?).map_err(|_| Cursor::bad())?;
+        if op != OP_SKIP { return Err(Cursor::bad()); }
+        let n = c.get()? as usize;
+        oi = oi.checked_add(n).filter(|&x| x <= old_count).ok_or_else(Cursor::bad)?;
+    }
+    if c.at != body.len() { return Err(Cursor::bad()); }
+    let mut tree = Tree { volumes: Vec::new(), root_path: root_path.clone(), nodes, errors, method };
+    tree.compute_totals();
+    if tree.nodes[0].size > i64::MAX as u64 || tree.nodes[0].allocated > i64::MAX as u64 { return Err(Cursor::bad()); }
+    Ok((tree, Meta { root_path, method, taken, nodes: count }))
+}
 
 /// A smaller tree for long-range history: every folder, plus one pseudo-file per folder (named
 /// [`FILES_HERE`]) holding the total of the files directly inside it. Folder totals still add
@@ -587,5 +965,113 @@ mod tests {
         write_body(&vec![0; 8192], 3, &mut bytes).unwrap();
         assert!(bytes.len() < 1024);
         assert!(read_limited(&mut bytes.as_slice(), 1024).is_err());
+    }
+
+    /// A tree of `root` with one folder per entry, each holding its (name, size) files.
+    fn build(root: &str, folders: &[(&str, &[(&str, u64)])]) -> Tree {
+        let mut nodes = vec![Node { name: root.into(), is_dir: true, ..Default::default() }];
+        for (folder, files) in folders {
+            let d = nodes.len();
+            nodes.push(Node { name: (*folder).into(), is_dir: true, parent: Some(0), ..Default::default() });
+            nodes[0].children.push(d);
+            for (name, size) in *files {
+                let f = nodes.len();
+                nodes.push(Node { name: (*name).into(), size: *size, allocated: size.div_ceil(4096) * 4096, files: 1, parent: Some(d), modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000 + *size)), ..Default::default() });
+                nodes[d].children.push(f);
+            }
+        }
+        let mut t = Tree { volumes: Vec::new(), root_path: root.into(), nodes, errors: 0, method: ScanMethod::Walk };
+        t.compute_totals();
+        t
+    }
+
+    fn assert_same(a: &Tree, b: &Tree) {
+        assert_eq!(a.root_path, b.root_path);
+        assert_eq!(a.nodes.len(), b.nodes.len());
+        for i in 0..a.nodes.len() {
+            let at = a.path_of(i);
+            assert_eq!(at, b.path_of(i), "node {i}");
+            assert_eq!(a.nodes[i].is_dir, b.nodes[i].is_dir, "{}", at.display());
+            assert_eq!(a.nodes[i].size, b.nodes[i].size, "{}", at.display());
+            assert_eq!(a.nodes[i].allocated, b.nodes[i].allocated, "{}", at.display());
+            assert_eq!(a.nodes[i].files, b.nodes[i].files, "{}", at.display());
+            assert_eq!(a.nodes[i].folders, b.nodes[i].folders, "{}", at.display());
+            assert_eq!(a.nodes[i].modified, b.nodes[i].modified, "{}", at.display());
+            assert_eq!(a.nodes[i].attributes, b.nodes[i].attributes, "{}", at.display());
+            assert_eq!(a.nodes[i].children, b.nodes[i].children, "{}", at.display());
+        }
+    }
+
+    #[test]
+    fn a_delta_rebuilds_exactly_what_a_whole_snapshot_would() {
+        let root = r"C:\data";
+        let t0 = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut rebuilt = decode(&encode_ordered(&build(root, &[("a", &[("x", 1), ("y", 2)]), ("b", &[("z", 3)])]), t0)).unwrap().0;
+        for i in 0..12u64 {
+            // every round changes a size; some add, remove or rename a folder or a file
+            let next = match i % 4 {
+                0 => build(root, &[("a", &[("x", 1 + i), ("y", 2)]), ("b", &[("z", 3)]), (format!("new{i}").as_str(), &[("f", 40)])]),
+                1 => build(root, &[("a", &[("x", 1 + i)]), ("b", &[("z", 3)])]),
+                2 => build(root, &[("a", &[("renamed{i}", 1 + i), ("y", 2)]), ("b", &[("z", 3)])]),
+                _ => build(root, &[("a", &[("x", 1 + i), ("y", 2)]), ("b", &[("z", 3), ("w", 7)])]),
+            };
+            let at = t0 + Duration::from_secs(60 * (i + 1));
+            let delta = encode_delta(&rebuilt, &next, at).expect("a delta");
+            let (got, meta) = decode_delta(&rebuilt, &delta).unwrap();
+            assert_eq!(meta.taken, at);
+            assert_eq!(meta.nodes, next.nodes.len());
+            let (whole, _) = decode(&encode_ordered(&next, at)).unwrap();
+            assert_same(&got, &whole);
+            rebuilt = got;
+        }
+    }
+
+    #[test]
+    fn a_delta_of_an_unchanged_tree_is_one_op_per_node_and_typos_fail() {
+        let t = build(r"C:\data", &[("a", &[("x", 1), ("y", 2)])]);
+        let body = encode_delta(&t, &t, UNIX_EPOCH).unwrap();
+        // a few same-only op bytes after the header
+        assert!(body.len() < encode(&t, UNIX_EPOCH).len());
+        let mut cut = body.clone();
+        cut.push(0);
+        assert!(decode_delta(&t, &cut).is_err(), "the body must end exactly");
+        assert!(decode_delta(&t, &body[..body.len() - 1]).is_err());
+        assert!(encode_delta(&t, &build(r"C:\other", &[]), UNIX_EPOCH).is_none(), "another root is never a delta");
+    }
+
+    #[test]
+    fn version_one_files_still_load_as_whole_snapshots() {
+        let t = sample();
+        let taken = UNIX_EPOCH + Duration::from_secs(1_750_000_000);
+        let body = encode(&t, taken);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&VERSION_WHOLE.to_le_bytes());
+        {
+            let mut z = zstd::stream::Encoder::new(&mut bytes, 3).unwrap();
+            z.write_all(&body).unwrap();
+            z.finish().unwrap();
+        }
+        let (back, meta) = read(&mut bytes.as_slice()).unwrap();
+        assert_eq!(meta.taken, taken);
+        assert_eq!(back.nodes.len(), t.nodes.len());
+        assert_eq!(back.nodes[0].size, t.nodes[0].size);
+        let mut opened = open(&mut bytes.as_slice()).unwrap();
+        assert!(!opened.delta && opened.base.is_none());
+        assert_eq!(decode(&std::mem::take(&mut opened.body)).unwrap().0.nodes.len(), t.nodes.len());
+    }
+
+    #[test]
+    fn a_delta_file_names_its_base_and_never_reads_as_a_whole_one() {
+        let t = build(r"C:\data", &[("a", &[("x", 1)])]);
+        let body = encode_delta(&t, &t, UNIX_EPOCH).unwrap();
+        let mut bytes = Vec::new();
+        write_delta_body(&body, "1700000000.ab-c.df.dtsn", 3, &mut bytes).unwrap();
+        assert!(read(&mut bytes.as_slice()).is_err(), "a delta is not readable on its own");
+        let opened = open(&mut bytes.as_slice()).unwrap();
+        assert!(opened.delta);
+        assert_eq!(opened.base.as_deref(), Some("1700000000.ab-c.df.dtsn"));
+        assert!(write_delta_body(&body, "", 3, &mut Vec::new()).is_err());
+        assert!(write_delta_body(&body, "x\u{e9}.df.dtsn", 3, &mut Vec::new()).is_err(), "file names are ASCII");
     }
 }

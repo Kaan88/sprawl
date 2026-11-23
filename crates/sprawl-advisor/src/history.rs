@@ -2,18 +2,32 @@
 //! snapshot onto the current tree (for the time-lapse and "what changed").
 //!
 //! Layout: `%LOCALAPPDATA%\Sprawl\snapshots\<key>\` per scanned root, holding `root.txt`
-//! (the root path) and `<unix seconds>.<unique>.fo.dtsn` (folders only) and `.full.dtsn`.
+//! (the root path) and `<unix seconds>.<unique>.fo.dtsn` (folders only), `.df.dtsn` (folders
+//! only, stored as changes against the file it names) and `.full.dtsn` (the whole tree).
 //! New buckets use a SHA-256 root key; validated legacy buckets and filenames remain readable.
+//!
+//! Every scan's folders-only snapshot is a delta against the previous one of the same root,
+//! with a keyframe (a whole snapshot, `.fo.dtsn`) at least every eight snapshots and whenever
+//! the delta would be more than half a whole one. Old whole snapshots (version 1 files) are
+//! keyframes too. A chain is only ever read from its keyframe, so a missing or damaged file
+//! costs the snapshots built on it, never the rest.
 //!
 //! Retention (see docs/plans/ai-advisor.md): every folders-only snapshot from the last 30
 //! days, then the newest per week for 6 months, then the newest per month; the newest 3 full
-//! snapshots per root; and a total cap that removes the oldest folders-only snapshots first.
+//! snapshots per root; and a total cap that removes the oldest folders-only snapshots first,
+//! never a file a kept delta is built on.
+//!
+//! A scan of a folder the History already shows, from a scan of a folder above it made within
+//! the last day and with no later point of its own, is not saved at all: the slider can show
+//! the drive's snapshot projected onto it.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
 use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sprawl_core::{Tree, ROOT};
@@ -24,6 +38,11 @@ use crate::store::{ensure_dir, nonce, delete, write_atomic, lock};
 
 pub const KEEP_FULL: usize = 3;
 const DAY: u64 = 86_400;
+/// A keyframe at least every eight snapshots of a root: at most seven deltas in a row, so a
+/// lost file costs at most a short run of the slider.
+pub const MAX_DELTAS: usize = 7;
+/// How far a chain may be followed before it is treated as damaged (a hand-made loop).
+const MAX_CHAIN: usize = 64;
 
 pub fn base_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("Sprawl").join("snapshots"))
@@ -98,7 +117,11 @@ pub struct Entry {
     pub taken: SystemTime,
     pub file: PathBuf,
     pub full: bool,
+    /// A folders-only snapshot stored as changes against `delta_base`.
+    pub delta: bool,
     pub bytes: u64,
+    /// The file this delta continues, as its own header names it (never followed when missing).
+    delta_base: Option<PathBuf>,
     base: PathBuf,
     identity: Identity,
     modified: Option<SystemTime>,
@@ -125,11 +148,19 @@ fn bucket(path: &Path) -> io::Result<(sprawl_core::local::Directory, PathBuf)> {
     Ok((held, root))
 }
 
-fn stamp(name: &str) -> Option<(SystemTime, bool)> {
-    let (stem, full) = if let Some(s) = name.strip_suffix(".full.dtsn") { (s, true) } else { (name.strip_suffix(".fo.dtsn")?, false) };
+fn stamp(name: &str) -> Option<(SystemTime, bool, bool)> {
+    let (stem, full, delta) = if let Some(s) = name.strip_suffix(".full.dtsn") {
+        (s, true, false)
+    } else if let Some(s) = name.strip_suffix(".df.dtsn") {
+        (s, false, true)
+    } else if let Some(s) = name.strip_suffix(".fo.dtsn") {
+        (s, false, false)
+    } else {
+        return None;
+    };
     let (t, unique) = stem.split_once('.').map_or((stem, None), |(t, n)| (t, Some(n)));
     if unique.is_some_and(|n| n.is_empty() || n.len() > 128 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) { return None; }
-    Some((UNIX_EPOCH.checked_add(Duration::from_secs(t.parse().ok()?))?, full))
+    Some((UNIX_EPOCH.checked_add(Duration::from_secs(t.parse().ok()?))?, full, delta))
 }
 
 fn file_id(file: &fs::File) -> io::Result<Identity> {
@@ -152,21 +183,29 @@ pub struct Pending {
     pub size: u64,
     pub root: PathBuf,
     pub taken: SystemTime,
-    pub folders: Vec<u8>,
-    pub full: Option<Vec<u8>>,
+    /// The folders-only tree, kept so [`Pending::save`] can diff it against the previous
+    /// snapshot on its thread.
+    folders: Tree,
+    /// Its whole-snapshot body: a keyframe, or the fallback when a delta is not worth it.
+    folders_body: Vec<u8>,
+    full: Option<Vec<u8>>,
 }
 
 /// Encode the snapshots for a finished scan (fast; the slow part is [`Pending::save`]).
 pub fn prepare(tree: &Tree, taken: SystemTime, full: bool) -> Pending {
-    let folders = snapshot::encode(&snapshot::folders_only(tree), taken);
+    let folders = snapshot::folders_only(tree);
+    let folders_body = snapshot::encode_ordered(&folders, taken);
     let full = full.then(|| snapshot::encode(tree, taken));
-    Pending { size: tree.nodes[sprawl_core::ROOT].size, root: tree.root_path.clone(), taken, folders, full }
+    Pending { size: tree.nodes[sprawl_core::ROOT].size, root: tree.root_path.clone(), taken, folders, folders_body, full }
 }
 
 impl Pending {
     /// Write into `base` and apply the retention policy with a total cap.
     pub fn save(self, base: &Path, cap_bytes: u64) -> io::Result<()> {
         let identity = root_id(&self.root).ok_or_else(bad)?;
+        // A scan of a folder a fresh scan above it already shows adds a duplicate point: see
+        // [`covered_by_recent`]. Nothing is written, not even a bucket.
+        if covered_by_recent(base, &self.root, self.taken) { return Ok(()); }
         let base = ensure_dir(base)?;
         let held = ensure_dir(&base.path.join(key(&self.root)))?;
         let dir = &held.path;
@@ -181,18 +220,26 @@ impl Pending {
         }
         let t = secs(self.taken);
         let unique = nonce();
-        let write = |name: &str, body: &[u8]| -> io::Result<()> {
+        let write = |name: &str, whole: bool, body: &[u8], base_name: Option<&str>| -> io::Result<()> {
             write_atomic(dir, name, false, |file| {
                 let mut buffered = io::BufWriter::new(file);
-                snapshot::write_body(body, 9, &mut buffered)?;
+                match base_name {
+                    Some(b) => snapshot::write_delta_body(body, b, 9, &mut buffered)?,
+                    None if whole => snapshot::write_body(body, 9, &mut buffered)?,
+                    None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "a snapshot is either whole or a delta")),
+                }
                 buffered.flush()?;
                 if buffered.get_ref().metadata()?.len() > snapshot::MAX_FILE { return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds the supported file size")); }
                 Ok(())
             })
         };
-        write(&format!("{t}.{unique}.fo.dtsn"), &self.folders)?;
         if let Some(full) = &self.full {
-            write(&format!("{t}.{unique}.full.dtsn"), full)?;
+            write(&format!("{t}.{unique}.full.dtsn"), true, full, None)?;
+        }
+        let entries = list(&base.path);
+        match self.delta_for(&entries, dir) {
+            Some((body, base_name)) => write(&format!("{t}.{unique}.df.dtsn"), false, &body, Some(&base_name))?,
+            None => write(&format!("{t}.{unique}.fo.dtsn"), true, &self.folders_body, None)?,
         }
         {
             let _lock = lock(dir)?;
@@ -207,6 +254,71 @@ impl Pending {
         }
         prune(&base.path, cap_bytes, SystemTime::now())
     }
+
+    /// The delta that stands for this scan's folders-only tree, when the previous snapshot is
+    /// readable and the chain short enough and the delta under half a whole one.
+    fn delta_for(&self, entries: &[Entry], dir: &Path) -> Option<(Vec<u8>, String)> {
+        let prev = previous(entries, dir, self.taken)?;
+        if depth(entries, prev).is_none_or(|d| d >= MAX_DELTAS) { return None; }
+        // reading the base also proves its own chain: a gap in it writes a keyframe
+        let old = load(prev).ok()?;
+        let body = snapshot::encode_delta(&old, &self.folders, self.taken)?;
+        if body.len().saturating_mul(2) > self.folders_body.len() { return None; }
+        Some((body, prev.file.file_name()?.to_str()?.to_string()))
+    }
+}
+
+/// The snapshot of `dir` taken at or before `taken` (the one to build a delta on).
+fn previous<'a>(entries: &'a [Entry], dir: &Path, taken: SystemTime) -> Option<&'a Entry> {
+    entries.iter().filter(|e| !e.full && e.file.parent() == Some(dir) && e.taken <= taken).max_by(|a, b| (a.taken, &a.file).cmp(&(b.taken, &b.file)))
+}
+
+/// The snapshot a delta continues, by the file name its header stores: `None` when that file
+/// is gone or belongs to another moment.
+fn base_of<'a>(entries: &'a [Entry], e: &'a Entry) -> Option<&'a Entry> {
+    let name = e.delta_base.as_ref()?.file_name()?;
+    entries.iter().find(|x| !x.full && x.file.parent() == e.file.parent() && x.file.file_name() == Some(name) && x.taken <= e.taken)
+}
+
+/// How many deltas deep `e` is (0 for a keyframe); `None` when its chain is broken.
+fn depth(entries: &[Entry], e: &Entry) -> Option<usize> {
+    let (mut n, mut cur) = (0, e);
+    while cur.delta {
+        if n > MAX_CHAIN { return None; }
+        cur = base_of(entries, cur)?;
+        n += 1;
+    }
+    Some(n)
+}
+
+/// The files `e` is built from, oldest first: the keyframe and the deltas after it, each
+/// named by the base its own header stores. A missing or misnamed base breaks the chain.
+fn chain<'a>(entries: &'a [Entry], e: &'a Entry) -> Option<Vec<&'a Entry>> {
+    let mut out = vec![e];
+    let mut cur = e;
+    while cur.delta {
+        if out.len() > MAX_CHAIN { return None; }
+        cur = base_of(entries, cur)?;
+        out.push(cur);
+    }
+    out.reverse();
+    Some(out)
+}
+
+/// True when a snapshot of a folder above `root` taken within the last day already shows it,
+/// and `root` has no later snapshot of its own. Scanning the folder again would add a point the
+/// slider can already show (the drive's snapshot, projected onto the folder), so nothing is
+/// saved; once the covering snapshot is a day old, or the folder has a newer point of its own,
+/// its history resumes.
+fn covered_by_recent(base: &Path, root: &Path, taken: SystemTime) -> bool {
+    let Some(me) = root_id(root) else { return false; };
+    let scans = last_scans(base);
+    let own = scans.iter().filter(|(r, _, _)| root_id(r).as_deref() == Some(me.as_str())).map(|(_, when, _)| *when).max();
+    scans.iter().any(|(r, when, _)| {
+        root_id(r).is_some_and(|id| id != me && covers(r, root))
+            && taken.duration_since(*when).is_ok_and(|age| age <= Duration::from_secs(DAY))
+            && own.is_none_or(|own| own <= *when)
+    })
 }
 
 /// Each scanned root's last scan: (root, when, the folder's size then), newest first. Roots
@@ -240,34 +352,79 @@ pub fn list(base: &Path) -> Vec<Entry> {
         let Ok(files) = fs::read_dir(&held.path) else { continue };
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            let Some((taken, full)) = stamp(&name) else { continue; };
-            let Ok(file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
+            let Some((taken, full, named_delta)) = stamp(&name) else { continue; };
+            let Ok(mut file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
             let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
-            out.push(Entry {
-                root: root.clone(),
-                taken,
-                file: f.path(),
-                full,
-                bytes: meta.len(),
-                base: base.path.clone(), identity, modified: meta.modified().ok(),
-            });
+            let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
+            out.push(Entry { root: root.clone(), taken, file: f.path(), full, delta, bytes: meta.len(), delta_base, base: base.path.clone(), identity, modified: meta.modified().ok() });
         }
     }
-    out.sort_by(|a, b| a.taken.cmp(&b.taken).then(a.full.cmp(&b.full)));
+    out.sort_by(|a, b| a.taken.cmp(&b.taken).then_with(|| a.file.cmp(&b.file)));
     out
 }
 
+/// The entries of one bucket folder, as [`list`] makes them (used to follow a delta's chain
+/// without reading every other root's files). `base` is the snapshots folder that holds it.
+fn bucket_entries(base: &Path, dir: &Path) -> Vec<Entry> {
+    let Ok((held, root)) = bucket(dir) else { return Vec::new(); };
+    let Ok(files) = fs::read_dir(&held.path) else { return Vec::new(); };
+    let mut out = Vec::new();
+    for f in files.flatten() {
+        let name = f.file_name().to_string_lossy().into_owned();
+        let Some((taken, full, named_delta)) = stamp(&name) else { continue; };
+        let Ok(mut file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
+        let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
+        let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
+        out.push(Entry { root: root.clone(), taken, file: f.path(), full, delta, bytes: meta.len(), delta_base, base: base.to_path_buf(), identity, modified: meta.modified().ok() });
+    }
+    out.sort_by(|a, b| a.taken.cmp(&b.taken).then_with(|| a.file.cmp(&b.file)));
+    out
+}
+
+/// What a snapshot file holds, from its own header: a delta and the file it continues, or a
+/// whole tree. A delta written whole when history is thinned keeps its file name (the deltas
+/// after it name that file), so the name no longer says which: the header does. A header that
+/// can't be read makes it a delta with no base: listed, so pruning can remove it, never shown.
+fn kind(file: &mut fs::File) -> (bool, Option<PathBuf>) {
+    match snapshot::read_header(&mut io::BufReader::new(file)) {
+        Ok((true, Some(base))) => (true, Some(PathBuf::from(base))),
+        Ok(_) => (false, None),
+        Err(_) => (true, None),
+    }
+}
+
 /// Snapshots that cover `root` (taken of it or of a folder above it), one per moment (the
-/// full one when both exist), oldest first.
+/// full one when both exist), oldest first. A delta whose chain is broken (a file lost in the
+/// middle) is left out, so the slider never offers a snapshot that can't be read.
 pub fn covering(base: &Path, root: &Path) -> Vec<Entry> {
-    let mut v: Vec<Entry> = list(base)
-        .into_iter()
-        .filter(|e| covers(&e.root, root))
+    let all = list(base);
+    let mut memo: HashMap<PathBuf, bool> = HashMap::new();
+    let mut v: Vec<Entry> = all
+        .iter()
+        .filter(|e| covers(&e.root, root) && (!e.delta || chain_ok(&all, e, &mut memo)))
+        .cloned()
         .collect();
     // prefer the full snapshot of the same moment and root; then the closest root
     v.sort_by(|a, b| a.taken.cmp(&b.taken).then(b.full.cmp(&a.full)).then(b.root.as_os_str().len().cmp(&a.root.as_os_str().len())));
     v.dedup_by(|b, a| a.taken == b.taken);
     v
+}
+
+fn chain_ok(all: &[Entry], e: &Entry, memo: &mut HashMap<PathBuf, bool>) -> bool {
+    let mut seen = Vec::new();
+    let mut cur = e;
+    let ok = loop {
+        if let Some(&ok) = memo.get(&cur.file) { break ok; }
+        if seen.contains(&cur.file) || seen.len() > MAX_CHAIN { break false; }
+        seen.push(cur.file.clone());
+        if !cur.delta { break true; }
+        match base_of(all, cur) {
+            Some(b) => cur = b,
+            None => break false,
+        }
+    };
+    for file in seen { memo.insert(file, ok); }
+    ok
 }
 
 /// Snapshot times have one-second precision. Exclude the scan's entire start second as
@@ -278,8 +435,20 @@ pub fn earlier(base: &Path, root: &Path, scan_before: SystemTime) -> Vec<Entry> 
     covering(base, root).into_iter().filter(|entry| entry.taken < bound).collect()
 }
 
-/// Which files the policy removes, given every entry and the time now.
-pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf> {
+/// What pruning will do. Pruning is two steps because a delta that is kept while an earlier
+/// snapshot goes must be written whole first: [`plan`] decides (no I/O), [`apply`] does it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Plan {
+    /// Snapshot files to remove.
+    pub remove: Vec<PathBuf>,
+    /// Deltas to write whole, oldest first. Each keeps its own file name and time, so the
+    /// deltas written after it still find it: the name says when, the header says what.
+    pub promote: Vec<PathBuf>,
+}
+
+/// Which files the policy removes and which deltas it writes whole first, given every entry
+/// and the time now.
+pub fn plan(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Plan {
     let mut kill: Vec<PathBuf> = Vec::new();
     let mut roots: Vec<&PathBuf> = entries.iter().map(|e| &e.root).collect();
     roots.sort();
@@ -310,53 +479,318 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
             }
         }
     }
-    // The cap: folders-only snapshots first, then full ones, oldest first within each, but
-    // never a root's newest snapshot. Full snapshots were never removed for the cap before
-    // 1.0.2, so three per root could keep History well over it. Exactly one snapshot per root
-    // is protected: a full and a folders-only snapshot saved together share a second, and the
-    // full one is kept then (it holds everything the other does).
-    let kept: Vec<&Entry> = entries.iter().filter(|e| !kill.contains(&e.file)).collect();
-    let mut total: u64 = kept.iter().map(|e| e.bytes).sum();
+    // A delta still kept while the snapshot it continues goes is written whole first: the point
+    // stays, its base can go. One pass in time order is enough (a base always comes before what
+    // continues it), and a promoted delta is whole from then on, so nothing after it needs a
+    // rewrite either.
+    let mut whole: HashSet<PathBuf> = HashSet::new();
+    let mut promote: Vec<PathBuf> = Vec::new();
+    for e in entries {
+        if kill.contains(&e.file) {
+            continue;
+        }
+        if !e.delta {
+            whole.insert(e.file.clone());
+            continue;
+        }
+        match base_of(entries, e) {
+            Some(b) if whole.contains(&b.file) && !kill.contains(&b.file) => { whole.insert(e.file.clone()); }
+            Some(_) => {
+                promote.push(e.file.clone());
+                whole.insert(e.file.clone());
+            }
+            // already broken (its base is gone): there is nothing to write it whole from
+            None => {}
+        }
+    }
+    // The cap: whole chains (a keyframe and the deltas built on it) and full snapshots go as
+    // units, folders-only first at the same moment, oldest first, but never the unit holding a
+    // root's newest snapshot. A chain is a unit because dropping its keyframe while keeping a
+    // delta would mean writing that delta whole, which costs more than the keyframe it
+    // replaces. A promoted delta counts at the size it will have.
+    let size = |e: &Entry| if promote.contains(&e.file) { keyframe_bytes(entries, e) } else { e.bytes };
+    let mut total: u64 = entries.iter().filter(|e| !kill.contains(&e.file)).map(size).sum();
     if total > cap_bytes {
-        let mut newest: std::collections::HashMap<&PathBuf, &Entry> = std::collections::HashMap::new();
-        for &e in &kept {
+        let mut newest: HashMap<&PathBuf, &Entry> = HashMap::new();
+        for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
             let best = newest.entry(&e.root).or_insert(e);
             if (e.taken, e.full, &e.file) > (best.taken, best.full, &best.file) {
                 *best = e;
             }
         }
-        let mut order = kept;
-        order.sort_by_key(|e| (e.full, e.taken));
-        for e in order {
+        let mut units: Vec<((bool, SystemTime, PathBuf), Vec<&Entry>)> = Vec::new();
+        let mut groups: HashMap<PathBuf, Vec<&Entry>> = HashMap::new();
+        for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
+            if e.full {
+                units.push(((true, e.taken, e.file.clone()), vec![e]));
+            } else {
+                groups.entry(chain_root(entries, e)).or_default().push(e);
+            }
+        }
+        for (root, mut g) in groups {
+            g.sort_by_key(|e| e.taken);
+            let oldest = g.first().map_or(UNIX_EPOCH, |e| e.taken);
+            units.push(((false, oldest, root), g));
+        }
+        units.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, members) in units {
             if total <= cap_bytes {
                 break;
             }
-            if newest.get(&e.root).is_some_and(|best| best.file == e.file) {
+            if members.iter().any(|m| newest.get(&m.root).is_some_and(|n| n.file == m.file)) {
                 continue;
             }
-            total = total.saturating_sub(e.bytes);
-            kill.push(e.file.clone());
+            for m in &members {
+                total = total.saturating_sub(size(m));
+                kill.push(m.file.clone());
+            }
         }
     }
-    kill
+    // a promotion for a file the cap removed anyway is pointless
+    promote.retain(|p| !kill.contains(p));
+    // Nothing kept may end up without what it is built on: a promotion that cannot happen
+    // leaves the bases in place, and the cap may then stay over, as one snapshot per root
+    // already can.
+    protect_bases(entries, &mut kill, &promote);
+    Plan { remove: kill, promote }
 }
 
-pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
-    let entries = list(base);
-    let doomed = doomed(&entries, cap_bytes, now);
-    for entry in entries.iter().filter(|entry| doomed.contains(&entry.file)) {
-        let _ = remove_entry(entry);
+/// The bases of any kept delta that is not being promoted stay. The plan above makes that
+/// unnecessary; this is the last guard that a kept snapshot is never left unreadable.
+fn protect_bases(entries: &[Entry], kill: &mut Vec<PathBuf>, promote: &[PathBuf]) {
+    let live: Vec<&Entry> = entries.iter().filter(|e| e.delta && !kill.contains(&e.file) && !promote.contains(&e.file)).collect();
+    for e in live {
+        let mut cur = e;
+        while let Some(b) = base_of(entries, cur) {
+            kill.retain(|k| k != &b.file);
+            cur = b;
+            if !cur.delta { break; }
+        }
+    }
+}
+
+/// The keyframe a folders-only snapshot is built from (or the top of a broken chain, which is
+/// one group until it is removed).
+fn chain_root(entries: &[Entry], e: &Entry) -> PathBuf {
+    let (mut cur, mut n) = (e, 0);
+    while cur.delta {
+        match base_of(entries, cur) {
+            Some(b) if n < MAX_CHAIN => { cur = b; n += 1; }
+            _ => break,
+        }
+    }
+    cur.file.clone()
+}
+
+/// A whole-snapshot size for a delta that will be written whole: the keyframe its chain starts
+/// at (the tree is much the same, so the sizes are).
+fn keyframe_bytes(entries: &[Entry], e: &Entry) -> u64 {
+    let (mut cur, mut n) = (e, 0);
+    while cur.delta && n < MAX_CHAIN {
+        match base_of(entries, cur) {
+            Some(b) => {
+                cur = b;
+                n += 1;
+            }
+            None => break,
+        }
+    }
+    if cur.delta || cur.file == e.file { e.bytes } else { cur.bytes }
+}
+
+/// Write a delta whole, in place: its own name and time, so the deltas written after it still
+/// find it. The swap is atomic, so a reader sees the old file or the whole one, never half.
+fn promote(e: &Entry) -> io::Result<()> {
+    let tree = load(e)?;
+    let (_held, path) = entry_path(e)?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(bad)?;
+    let dir = path.parent().ok_or_else(bad)?;
+    let body = snapshot::encode_ordered(&tree, e.taken);
+    write_atomic(dir, name, true, |file| {
+        let mut buffered = io::BufWriter::new(file);
+        snapshot::write_body(&body, 9, &mut buffered)?;
+        buffered.flush()
+    })
+}
+
+/// Carry out a plan: write the deltas whole first, then remove what it names. A delta that
+/// cannot be written (a damaged file) keeps the snapshots it is built on: the plan is over the
+/// cap rather than a kept snapshot unreadable.
+pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
+    let mut spared: HashSet<PathBuf> = HashSet::new();
+    for path in &plan.promote {
+        let Some(e) = entries.iter().find(|e| &e.file == path) else { continue };
+        if let Err(err) = promote(e) {
+            let mut cur = e;
+            while let Some(b) = base_of(entries, cur) {
+                spared.insert(b.file.clone());
+                if !b.delta {
+                    break;
+                }
+                cur = b;
+            }
+            eprintln!("history: {} stays as changes ({err}); the snapshots it is built on stay", e.file.display());
+        }
+    }
+    for e in entries.iter().filter(|e| plan.remove.contains(&e.file) && !spared.contains(&e.file)) {
+        let _ = remove_entry(e);
     }
     Ok(())
 }
 
+pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
+    let entries = list(base);
+    let plan = plan(&entries, cap_bytes, now);
+    apply(&entries, &plan)
+}
+
+/// Rebuilt trees kept for the slider: a chain is rebuilt once and moving the slider back and
+/// forth over it does not read it again. Bounded by node count (a node is about 120 bytes), so
+/// a big drive keeps its newest point and little else.
+#[derive(Default)]
+struct Cache {
+    nodes: usize,
+    order: Vec<PathBuf>,
+    kept: HashMap<PathBuf, Kept>,
+}
+
+struct Kept {
+    identity: Identity,
+    modified: Option<SystemTime>,
+    bytes: u64,
+    tree: Tree,
+}
+
+static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+const CACHE_NODES: usize = 1_000_000;
+
+/// The tree read from `e`'s file before, when that file is still the very same one: the same
+/// bytes, time and identity, and the same root. A path never stands for another snapshot.
+fn cached(e: &Entry) -> Option<Tree> {
+    let c = CACHE.get()?.lock().ok()?;
+    let kept = c.kept.get(&e.file)?;
+    if kept.identity != e.identity || kept.modified != e.modified || kept.bytes != e.bytes { return None; }
+    if root_id(&kept.tree.root_path) != root_id(&e.root) { return None; }
+    Some(kept.tree.clone())
+}
+
+fn remember(e: &Entry, tree: &Tree) {
+    let cache = CACHE.get_or_init(|| Mutex::new(Cache::default()));
+    let Ok(mut c) = cache.lock() else { return; };
+    c.insert(e, tree, CACHE_NODES);
+}
+
+impl Cache {
+    /// Keep this tree, dropping the oldest ones until what is left fits `budget` nodes — or is
+    /// the single newest tree, which stays even when it alone is over the budget (a drive of
+    /// ten million nodes would otherwise never be cached). In all: about two trees' worth.
+    fn insert(&mut self, e: &Entry, tree: &Tree, budget: usize) {
+        if let Some(old) = self.kept.get(&e.file) {
+            if old.identity == e.identity && old.modified == e.modified && old.bytes == e.bytes { return; }
+        }
+        // the file was written again since (a delta made whole when history was thinned): what
+        // was kept is not it any more
+        if let Some(old) = self.kept.remove(&e.file) {
+            self.order.retain(|p| p != &e.file);
+            self.nodes = self.nodes.saturating_sub(old.tree.nodes.len());
+        }
+        self.order.push(e.file.clone());
+        self.nodes += tree.nodes.len();
+        self.kept.insert(e.file.clone(), Kept { identity: e.identity.clone(), modified: e.modified, bytes: e.bytes, tree: tree.clone() });
+        while self.order.len() > 1 {
+            let newest = self.order.last().and_then(|p| self.kept.get(p)).map_or(0, |k| k.tree.nodes.len());
+            if self.nodes <= budget.max(newest) { break; }
+            let old = self.order.remove(0);
+            if let Some(kept) = self.kept.remove(&old) {
+                self.nodes = self.nodes.saturating_sub(kept.tree.nodes.len());
+            }
+        }
+    }
+}
+
+/// Forget every kept tree (the timing test measures a cold rebuild).
+#[cfg(test)]
+fn clear_cache() {
+    if let Some(cache) = CACHE.get() {
+        if let Ok(mut c) = cache.lock() {
+            *c = Cache::default();
+        }
+    }
+}
+
 pub fn load(e: &Entry) -> io::Result<Tree> {
+    match load_chain(e) {
+        Ok(tree) => Ok(tree),
+        Err(first) => {
+            // The file may have been written again since it was listed (a delta written whole
+            // when history was thinned keeps its name): list its bucket once more and read
+            // what is there now, as a fresh look would.
+            let Some(dir) = e.file.parent() else { return Err(first) };
+            let fresh = bucket_entries(&e.base, dir).into_iter().find(|x| x.file == e.file && x.taken == e.taken);
+            match fresh {
+                // only a delta that has been written whole (its kind changed, which is what
+                // thinning does) is read again: a file swapped for another of the same kind is
+                // still refused, as it was listed and is no longer the file it was
+                Some(f) if f.delta != e.delta => load_chain(&f),
+                _ => Err(first),
+            }
+        }
+    }
+}
+
+fn load_chain(e: &Entry) -> io::Result<Tree> {
+    if !e.delta { return read_one(e, None); }
+    let dir = e.file.parent().ok_or_else(bad)?;
+    let entries = bucket_entries(&e.base, dir);
+    let links = chain(&entries, e).ok_or_else(bad)?;
+    let mut tree: Option<Tree> = None;
+    for link in links {
+        tree = Some(read_one(link, tree.as_ref())?);
+    }
+    tree.ok_or_else(bad)
+}
+
+/// Read one snapshot of a chain: a whole one by itself, a delta on top of its base.
+fn read_one(e: &Entry, base: Option<&Tree>) -> io::Result<Tree> {
     let (_bucket, path) = entry_path(e)?;
     let mut held = sprawl_core::local::file(&path, snapshot::MAX_FILE)?;
     check_entry(e, &held.file)?;
-    let (tree, meta) = snapshot::read(&mut io::BufReader::new(&mut held.file))?;
-    if root_id(&meta.root_path) != root_id(&e.root) || meta.taken != e.taken { return Err(bad()); }
+    if let Some(tree) = cached(e) { return Ok(tree); }
+    let opened = snapshot::open(&mut io::BufReader::new(&mut held.file))?;
+    let tree = if opened.delta {
+        if !e.delta { return Err(bad()); }
+        let old = base.ok_or_else(bad)?;
+        let name = opened.base.as_deref().ok_or_else(bad)?;
+        if e.delta_base.as_deref().and_then(Path::file_name) != Some(std::ffi::OsStr::new(name)) { return Err(bad()); }
+        let (tree, meta) = snapshot::decode_delta(old, &opened.body)?;
+        if root_id(&meta.root_path) != root_id(&e.root) || meta.taken != e.taken { return Err(bad()); }
+        tree
+    } else {
+        if e.delta { return Err(bad()); }
+        let (tree, meta) = snapshot::decode(&opened.body)?;
+        if root_id(&meta.root_path) != root_id(&e.root) || meta.taken != e.taken { return Err(bad()); }
+        tree
+    };
+    remember(e, &tree);
     Ok(tree)
+}
+
+/// The indexes of `entries[i]` and every snapshot that would be unreadable without it: the
+/// deltas whose chain runs through it. The app leaves them off the slider.
+pub fn dependents(entries: &[Entry], i: usize) -> Vec<usize> {
+    let mut out = vec![i];
+    let Some(broken) = entries.get(i) else { return out; };
+    for (j, e) in entries.iter().enumerate() {
+        if j == i || !e.delta || e.file.parent() != broken.file.parent() { continue; }
+        let (mut cur, mut n) = (e, 0);
+        while let Some(b) = base_of(entries, cur) {
+            if b.file == broken.file { out.push(j); break; }
+            if n > MAX_CHAIN { break; }
+            cur = b;
+            n += 1;
+        }
+    }
+    out
 }
 
 fn entry_path(e: &Entry) -> io::Result<(sprawl_core::local::Directory, PathBuf)> {
@@ -365,7 +799,9 @@ fn entry_path(e: &Entry) -> io::Result<(sprawl_core::local::Directory, PathBuf)>
     let parent = path.parent().ok_or_else(bad)?;
     if parent.parent() != Some(base.path.as_path()) { return Err(bad()); }
     let (held, root) = bucket(parent)?;
-    if root_id(&root) != root_id(&e.root) || path.file_name().and_then(|n| n.to_str()).and_then(stamp) != Some((e.taken, e.full)) { return Err(bad()); }
+    if root_id(&root) != root_id(&e.root) { return Err(bad()); }
+    let Some((taken, full, _)) = path.file_name().and_then(|n| n.to_str()).and_then(stamp) else { return Err(bad()); };
+    if taken != e.taken || full != e.full { return Err(bad()); }
     Ok((held, path))
 }
 
@@ -632,7 +1068,7 @@ mod tests {
 
     fn e(root: &str, days_ago: u64, full: bool, bytes: u64, now: SystemTime) -> Entry {
         let t = now - Duration::from_secs(days_ago * DAY);
-        Entry { root: root.into(), taken: t, file: PathBuf::from(format!("{root}-{days_ago}-{full}")), full, bytes, base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
+        Entry { root: root.into(), taken: t, file: PathBuf::from(format!("{root}-{days_ago}-{full}")), full, delta: false, bytes, delta_base: None, base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
     }
 
     #[test]
@@ -655,7 +1091,7 @@ mod tests {
         for d in 0..6 {
             v.push(e("C", d, true, 27, now));
         }
-        let kill = doomed(&v, u64::MAX, now);
+        let kill = plan(&v, u64::MAX, now).remove;
         let left: Vec<&Entry> = v.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert_eq!(left.iter().filter(|x| x.full).count(), 3);
         assert!(left.iter().filter(|x| x.full).all(|x| x.taken >= now - Duration::from_secs(2 * DAY)));
@@ -663,7 +1099,7 @@ mod tests {
         // 31 daily + about 22 weekly + about 7 monthly
         assert!((55..=65).contains(&fo), "{fo}");
         // a tight cap removes the oldest but keeps the newest
-        let kill = doomed(&v, 100, now);
+        let kill = plan(&v, 100, now).remove;
         let left: Vec<&Entry> = v.iter().filter(|x| !kill.contains(&x.file)).collect();
         // the newest is a full and a folders-only snapshot from the same second: the full one
         // is the one protected
@@ -671,19 +1107,19 @@ mod tests {
         assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 100);
         // Under the cap's pressure a tie keeps just one snapshot per root, and it is the full one.
         let tie = vec![e("C", 0, false, 50, now), e("C", 0, true, 80, now), e("D", 0, true, 80, now), e("D", 0, false, 50, now)];
-        let kill = doomed(&tie, 160, now);
+        let kill = plan(&tie, 160, now).remove;
         let left: Vec<&Entry> = tie.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert_eq!(left.len(), 2, "{left:?}");
         assert!(left.iter().all(|x| x.full));
         // the cap can stay exceeded when one snapshot per root is already over it
-        let kill = doomed(&tie, 100, now);
+        let kill = plan(&tie, 100, now).remove;
         assert_eq!(tie.iter().filter(|x| !kill.contains(&x.file)).count(), 2);
         // Full snapshots count toward the cap too: many roots with three each must not stay over it.
         let mut many = Vec::new();
         for r in ["C", "D", "E", "F"] {
             for d in 1..=3 { many.push(e(r, d, true, 30, now)); }
         }
-        let kill = doomed(&many, 200, now);
+        let kill = plan(&many, 200, now).remove;
         let left: Vec<&Entry> = many.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 200, "full snapshots are thinned for the cap");
         for r in ["C", "D", "E", "F"] {
@@ -726,5 +1162,517 @@ mod tests {
         assert_eq!(project(&sub, &first)[ROOT], 1000);
         let _ = fs::remove_dir_all(&base);
         let _ = fs::remove_dir_all(&data);
+    }
+
+    // ------------------------------------------------------------ deltas
+
+    /// A synthetic tree: `root` with one folder per entry, each holding its (name, size) files.
+    fn build(root: &str, folders: &[(&str, &[(&str, u64)])]) -> Tree {
+        let mut nodes = vec![sprawl_core::Node { name: root.into(), is_dir: true, ..Default::default() }];
+        for (folder, files) in folders {
+            let d = nodes.len();
+            nodes.push(sprawl_core::Node { name: (*folder).into(), is_dir: true, parent: Some(0), ..Default::default() });
+            nodes[0].children.push(d);
+            for (name, size) in *files {
+                let f = nodes.len();
+                nodes.push(sprawl_core::Node { name: (*name).into(), size: *size, allocated: size.div_ceil(4096) * 4096, files: 1, parent: Some(d), modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000 + *size)), ..Default::default() });
+                nodes[d].children.push(f);
+            }
+        }
+        let mut t = Tree { volumes: Vec::new(), root_path: root.into(), nodes, errors: 0, method: sprawl_core::ScanMethod::Walk };
+        t.compute_totals();
+        t
+    }
+
+    fn assert_same(a: &Tree, b: &Tree) {
+        assert_eq!(a.root_path, b.root_path);
+        assert_eq!(a.nodes.len(), b.nodes.len());
+        for i in 0..a.nodes.len() {
+            let at = a.path_of(i);
+            assert_eq!(at, b.path_of(i), "node {i}");
+            assert_eq!(a.nodes[i].is_dir, b.nodes[i].is_dir, "{}", at.display());
+            assert_eq!(a.nodes[i].size, b.nodes[i].size, "{}", at.display());
+            assert_eq!(a.nodes[i].allocated, b.nodes[i].allocated, "{}", at.display());
+            assert_eq!(a.nodes[i].files, b.nodes[i].files, "{}", at.display());
+            assert_eq!(a.nodes[i].folders, b.nodes[i].folders, "{}", at.display());
+            assert_eq!(a.nodes[i].modified, b.nodes[i].modified, "{}", at.display());
+            assert_eq!(a.nodes[i].attributes, b.nodes[i].attributes, "{}", at.display());
+            assert_eq!(a.nodes[i].children, b.nodes[i].children, "{}", at.display());
+        }
+    }
+
+    /// The tree of the i-th round: adds a folder, drops one, renames one, changes sizes.
+    fn round(root: &str, i: u64) -> Tree {
+        let mut folders: Vec<(String, Vec<(String, u64)>)> =
+            (0..300).map(|f| (format!("folder{f}"), vec![("a".into(), 10 + f), ("b".into(), 20 + f)])).collect();
+        for k in 0..3usize {
+            folders[(k * 97 + i as usize * 13) % 300].1[0].1 += 1 + i;
+        }
+        match i % 5 {
+            0 => folders.push((format!("new{i}"), vec![("f".into(), 40)])),
+            1 => { folders.remove(7); }
+            2 => folders[9].0 = format!("renamed{i}"),
+            _ => {}
+        }
+        build_owned(root, &folders)
+    }
+
+    fn build_owned(root: &str, folders: &[(String, Vec<(String, u64)>)]) -> Tree {
+        let files: Vec<(&str, Vec<(&str, u64)>)> = folders.iter().map(|(n, f)| (n.as_str(), f.iter().map(|(a, b)| (a.as_str(), *b)).collect())).collect();
+        let view: Vec<(&str, &[(&str, u64)])> = files.iter().map(|(n, f)| (*n, f.as_slice())).collect();
+        build(root, &view)
+    }
+
+    fn scratch(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("sprawl-history-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("history");
+        (dir, base)
+    }
+
+    #[test]
+    fn a_chain_of_deltas_rebuilds_every_snapshot_and_keeps_a_keyframe_every_eight() {
+        let (dir, base) = scratch("chain");
+        let root = dir.join("data").display().to_string();
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 20 * 3600);
+        let trees: Vec<Tree> = (0..12).map(|i| round(&root, i)).collect();
+        for (i, tree) in trees.iter().enumerate() {
+            prepare(tree, t0 + Duration::from_secs(60 * i as u64), false).save(&base, u64::MAX).unwrap();
+        }
+        let entries = list(&base);
+        assert_eq!(entries.len(), 12);
+        let deltas = entries.iter().filter(|e| e.delta).count();
+        assert!(deltas >= 8, "most snapshots are deltas, {deltas} were not");
+        let mut run = 0;
+        for e in &entries {
+            if e.delta {
+                run += 1;
+                assert!(run <= MAX_DELTAS, "a keyframe at least every eight snapshots");
+            } else {
+                run = 0;
+            }
+        }
+        for (i, e) in entries.iter().enumerate() {
+            let back = load(e).unwrap();
+            let taken = t0 + Duration::from_secs(60 * i as u64);
+            let (whole, meta) = snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&trees[i]), taken)).unwrap();
+            assert_eq!(meta.taken, taken);
+            assert_same(&back, &whole);
+            assert_eq!(e.taken, taken, "whole-second times");
+        }
+        // and the trees agree node for node in either direction (back to front too)
+        for (i, e) in entries.iter().enumerate().rev() {
+            assert_same(&load(e).unwrap(), &snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&trees[i]), e.taken)).unwrap().0);
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_delta_more_than_half_a_whole_one_is_written_as_a_keyframe() {
+        let (dir, base) = scratch("half");
+        let root = dir.join("data").display().to_string();
+        let names: Vec<String> = (0..300).map(|i| format!("folder{i}")).collect();
+        let renames: Vec<String> = (0..300).map(|i| format!("renamed-folder-{i}")).collect();
+        let folders = |names: &[String]| -> Vec<(String, Vec<(&str, u64)>)> {
+            names.iter().map(|n| (n.clone(), vec![("f", 500)])).collect()
+        };
+        let a = { let f = folders(&names); build(&root, &f.iter().map(|(n, s)| (n.as_str(), s.as_slice())).collect::<Vec<_>>()) };
+        let b = { let f = folders(&renames); build(&root, &f.iter().map(|(n, s)| (n.as_str(), s.as_slice())).collect::<Vec<_>>()) };
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 3600);
+        prepare(&a, t0, false).save(&base, u64::MAX).unwrap();
+        prepare(&b, t0 + Duration::from_secs(60), false).save(&base, u64::MAX).unwrap();
+        let entries = list(&base);
+        assert_eq!(entries.len(), 2);
+        assert!(!entries[1].delta, "every name changed: that is a keyframe");
+        // the rule itself: this delta is over half a whole snapshot
+        let delta = snapshot::encode_delta(&a, &b, t0).unwrap();
+        let whole = snapshot::encode_ordered(&b, t0);
+        assert!(delta.len() * 2 > whole.len(), "{} vs {}", delta.len(), whole.len());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_version_one_file_is_a_keyframe_a_delta_can_continue() {
+        let (dir, base) = scratch("v1");
+        let root = dir.join("data").display().to_string();
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 3600);
+        let old = build(&root, &[("a", &[("x", 1)]), ("b", &[("y", 2)])]);
+        // what 1.0.7 wrote: the magic, version 1 and the frame, no kind byte
+        let held = ensure_dir(&base.join(key(&old.root_path))).unwrap();
+        fs::write(held.path.join("root.txt"), old.root_path.display().to_string()).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"DTSN");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        {
+            let mut z = zstd::stream::Encoder::new(&mut bytes, 3).unwrap();
+            z.write_all(&snapshot::encode(&snapshot::folders_only(&old), t0)).unwrap();
+            z.finish().unwrap();
+        }
+        fs::write(held.path.join(format!("{}.fo.dtsn", secs(t0))), bytes).unwrap();
+        assert_eq!(load(&list(&base)[0]).unwrap().nodes[0].size, old.nodes[0].size);
+        let next = build(&root, &[("a", &[("x", 9)]), ("b", &[("y", 2)])]);
+        prepare(&next, t0 + Duration::from_secs(60), false).save(&base, u64::MAX).unwrap();
+        let entries = list(&base);
+        assert_eq!(entries.len(), 2);
+        assert!(entries[1].delta, "the old file serves as the keyframe");
+        let (whole, _) = snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&next), t0 + Duration::from_secs(60))).unwrap();
+        assert_same(&load(&entries[1]).unwrap(), &whole);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lost_or_damaged_file_hides_only_what_is_built_on_it() {
+        let (dir, base) = scratch("lost");
+        let root = dir.join("data").display().to_string();
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 20 * 3600);
+        let trees: Vec<Tree> = (0..10).map(|i| round(&root, i)).collect();
+        for (i, tree) in trees.iter().enumerate() {
+            prepare(tree, t0 + Duration::from_secs(60 * i as u64), false).save(&base, u64::MAX).unwrap();
+        }
+        let all = list(&base);
+        let middle: Vec<Entry> = all.iter().filter(|e| e.delta).cloned().collect();
+        assert!(middle.len() >= 5);
+        // one file lost from the middle of the chain
+        fs::remove_file(&middle[1].file).unwrap();
+        let visible = covering(&base, Path::new(&root));
+        assert!(visible.len() < all.len(), "the snapshots built on it are not offered");
+        assert!(!visible.iter().any(|e| e.file == middle[1].file));
+        for e in &visible {
+            assert!(load(e).is_ok(), "everything else still loads: {}", e.file.display());
+        }
+        // with the newest snapshot unreadable, the next save cannot build on it: a keyframe
+        let last = all.last().unwrap().clone();
+        let mut bytes = fs::read(&last.file).unwrap();
+        bytes.truncate(bytes.len() - 8);
+        fs::write(&last.file, &bytes).unwrap();
+        prepare(&trees[0], t0 + Duration::from_secs(600), false).save(&base, u64::MAX).unwrap();
+        let newest = list(&base).pop().unwrap();
+        assert!(!newest.delta, "a gap in the chain is closed with a keyframe");
+        assert!(load(&newest).is_ok());
+
+        // damage inside a file rather than its loss: the reader refuses it, and the app drops
+        // it and the deltas built on it from the slider (see `dependents`)
+        let (dir2, base2) = scratch("damaged");
+        for (i, tree) in trees.iter().enumerate() {
+            prepare(tree, t0 + Duration::from_secs(60 * i as u64), false).save(&base2, u64::MAX).unwrap();
+        }
+        let all = list(&base2);
+        let deltas: Vec<usize> = (0..all.len()).filter(|&i| all[i].delta).collect();
+        let broken = deltas[1];
+        let mut bytes = fs::read(&all[broken].file).unwrap();
+        bytes.truncate(bytes.len() - 8);
+        fs::write(&all[broken].file, &bytes).unwrap();
+        // the entry's own listing still matches (same file), so the app reads it and is refused
+        let e = list(&base2).into_iter().find(|e| e.file == all[broken].file).unwrap();
+        assert!(load(&e).is_err());
+        let doomed = dependents(&all, broken);
+        assert!(doomed.contains(&broken) && doomed.len() > 1, "the deltas built on it go too: {doomed:?}");
+        // with the newest snapshot unreadable, the next save cannot build on it: a keyframe
+        let last = all.last().unwrap().clone();
+        assert!(last.delta);
+        let mut bytes = fs::read(&last.file).unwrap();
+        bytes.truncate(bytes.len() - 8);
+        fs::write(&last.file, &bytes).unwrap();
+        let last_now = list(&base2).into_iter().find(|e| e.file == last.file).unwrap();
+        assert!(load(&last_now).is_err());
+        prepare(&trees[0], t0 + Duration::from_secs(600), false).save(&base2, u64::MAX).unwrap();
+        let newest = list(&base2).pop().unwrap();
+        assert!(!newest.delta, "the previous snapshot can't be read: a keyframe is written");
+        assert!(load(&newest).is_ok());
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir2);
+    }
+
+    fn chain_entry(root: &str, at: SystemTime, name: &str, base: Option<&str>, bytes: u64) -> Entry {
+        Entry { root: root.into(), taken: at, file: PathBuf::from(name), full: false, delta: base.is_some(), bytes, delta_base: base.map(PathBuf::from), base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
+    }
+
+    #[test]
+    fn the_cap_never_leaves_a_kept_delta_without_its_base() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let mut v = vec![
+            chain_entry("C", now - Duration::from_secs(40), "k1", None, 10),
+            chain_entry("C", now - Duration::from_secs(30), "d1", Some("k1"), 10),
+            chain_entry("C", now - Duration::from_secs(2), "k2", None, 10),
+            chain_entry("C", now - Duration::from_secs(1), "d2", Some("k2"), 10),
+        ];
+        v.sort_by_key(|e| e.taken);
+        // all within 30 days, so the cap is what removes: the oldest chain goes whole, never a
+        // keyframe while a delta built on it stays
+        let young = now;
+        let p = plan(&v, 35, young);
+        let kept: Vec<&Entry> = v.iter().filter(|e| !p.remove.contains(&e.file)).collect();
+        assert!(kept.iter().any(|e| e.file == Path::new("d2")), "a root's newest is never removed");
+        // every kept snapshot still reads: it is whole, written whole first, or keeps its base
+        for e in &kept {
+            if !e.delta || p.promote.contains(&e.file) {
+                continue;
+            }
+            let base = e.delta_base.as_ref().and_then(|d| d.file_name()).unwrap();
+            assert!(kept.iter().any(|b| b.file.file_name() == Some(base)), "{} keeps its base", e.file.display());
+        }
+        assert!(p.promote.iter().all(|x| !p.remove.contains(x)), "nothing is rewritten and then removed");
+        assert!(p.promote.is_empty(), "the cap takes a whole chain, it never rewrites one");
+        assert!(kept.iter().all(|e| e.file != Path::new("k1") && e.file != Path::new("d1")), "the old chain went whole: {kept:?}");
+        // the newest chain cannot shrink: its base is kept even when that alone is over the cap
+        let tight = plan(&v, 5, young).remove;
+        let kept: Vec<&Entry> = v.iter().filter(|e| !tight.contains(&e.file)).collect();
+        assert!(kept.iter().any(|e| e.file == Path::new("k2")), "the newest delta's base stays");
+        assert!(kept.iter().any(|e| e.file == Path::new("d2")));
+    }
+
+    #[test]
+    fn a_subfolder_already_shown_by_a_fresh_scan_above_it_is_not_saved() {
+        let (dir, base) = scratch("covered");
+        let parent = dir.display().to_string();
+        let sub = dir.join("data").display().to_string();
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 3600);
+        prepare(&build(&parent, &[("data", &[("x", 1)])]), t0, false).save(&base, u64::MAX).unwrap();
+        let count_sub = |base: &Path| list(base).iter().filter(|e| root_id(&e.root) == root_id(Path::new(&sub))).count();
+        prepare(&build(&sub, &[("x", &[("f", 1)])]), t0 + Duration::from_secs(60), false).save(&base, u64::MAX).unwrap();
+        assert_eq!(count_sub(&base), 0, "the drive's snapshot already shows it");
+        // a day later the drive's snapshot is old news: the folder's own history starts
+        prepare(&build(&sub, &[("x", &[("f", 2)])]), t0 + Duration::from_secs(25 * 3600), false).save(&base, u64::MAX).unwrap();
+        assert_eq!(count_sub(&base), 1);
+        // ...and once it has a later point of its own, later scans are saved again
+        prepare(&build(&sub, &[("x", &[("f", 3)])]), t0 + Duration::from_secs(26 * 3600), false).save(&base, u64::MAX).unwrap();
+        assert_eq!(count_sub(&base), 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// F7's number: a chain of ten snapshots against ten whole ones, on a synthetic tree of
+    /// 50,000 folders-only nodes where about 1% changes between snapshots. Run with
+    /// `--nocapture` to see the sizes.
+    #[test]
+    fn ten_snapshots_with_deltas_take_a_fraction_of_ten_whole_ones() {
+        let (dir, base) = scratch("size");
+        let root = dir.join("drive").display().to_string();
+        let mut cur = big_tree(&root, 250, 100, 4);
+        assert!(snapshot::folders_only(&cur).nodes.len() >= 50_000);
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 20 * 3600);
+        let mut whole = 0u64;
+        for i in 0..10 {
+            let taken = t0 + Duration::from_secs(60 * i);
+            prepare(&cur, taken, false).save(&base, u64::MAX).unwrap();
+            // one whole snapshot of the same tree, for comparison
+            let body = snapshot::encode_ordered(&snapshot::folders_only(&cur), taken);
+            let mut file = Vec::new();
+            snapshot::write_body(&body, 9, &mut file).unwrap();
+            whole += file.len() as u64;
+            if i < 9 {
+                churn(&mut cur, i as usize);
+            }
+        }
+        let entries = list(&base);
+        let chain: u64 = entries.iter().map(|e| e.bytes).sum();
+        let deltas: Vec<&Entry> = entries.iter().filter(|e| e.delta).collect();
+        let average = deltas.iter().map(|e| e.bytes).sum::<u64>() / deltas.len().max(1) as u64;
+        eprintln!(
+            "history size: ten snapshots as a delta chain {chain} bytes ({} keyframes, {} deltas averaging {average} bytes), ten whole ones {whole} bytes ({:.1}x)",
+            entries.len() - deltas.len(),
+            deltas.len(),
+            whole as f64 / chain as f64
+        );
+        assert!(chain * 3 < whole, "a day of scans is many times smaller: {chain} against {whole}");
+        assert!(entries.iter().filter(|e| e.delta).count() >= 8);
+        assert_same(&load(&entries[9]).unwrap(), &snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&cur), entries[9].taken)).unwrap().0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The schema of F7's thinning: a month of daily snapshots stays a month of daily points,
+    /// the older ones become one a week — and every file left on disk still reads as exactly
+    /// the tree a whole snapshot of that day gives.
+    #[test]
+    fn thinning_still_thins_a_month_of_daily_snapshots_and_every_kept_one_loads() {
+        let (dir, base) = scratch("thinning");
+        let root = dir.join("data").display().to_string();
+        let now = SystemTime::now();
+        let today = secs(now);
+        let mut day: HashMap<u64, u64> = HashMap::new();
+        for i in 0..40u64 {
+            // midday, so no snapshot sits on the 30-day line while the test runs
+            let taken = UNIX_EPOCH + Duration::from_secs(today - (39 - i) * DAY + 12 * 3600);
+            day.insert(secs(taken), i);
+            // saved as the app does, so the saves' own pruning thins as it goes
+            prepare(&round(&root, i), taken, false).save(&base, u64::MAX).unwrap();
+        }
+        prune(&base, u64::MAX, now).unwrap();
+        let all = list(&base);
+        // every snapshot left, on disk, is readable and is the tree of its own day
+        for e in &all {
+            let i = day[&secs(e.taken)];
+            let (whole, _) = snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&round(&root, i)), e.taken)).unwrap();
+            assert_same(&load(e).unwrap(), &whole);
+        }
+        // and none is hidden from the slider: no chain was broken by the thinning
+        assert_eq!(covering(&base, Path::new(&root)).len(), all.len(), "no chain is broken");
+        // older than 30 days: one per week, as before deltas — not the nine there were
+        let old: Vec<&Entry> = all.iter().filter(|e| now.duration_since(e.taken).is_ok_and(|age| age.as_secs() > 30 * DAY)).collect();
+        let mut weeks = HashSet::new();
+        for e in &old {
+            assert!(weeks.insert(secs(e.taken) / (7 * DAY)), "one snapshot per week");
+        }
+        assert!(!old.is_empty() && old.len() <= 3, "{} older than 30 days kept, of nine", old.len());
+        assert!(all.len() >= 30, "the last 30 days are all kept: {}", all.len());
+        // and the base that went was replaced by a rewrite, not by keeping everything
+        let rewritten = all.iter().filter(|e| !e.delta && e.file.to_string_lossy().contains(".df.")).count();
+        assert!(rewritten >= 1, "a delta written whole when its base was thinned");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn thinning_plans_a_rewrite_instead_of_keeping_every_base() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        // a keyframe and the delta after it, in one weekly bucket and both older than 30 days:
+        // the bucket keeps the newer point, so the keyframe goes and the delta is written whole
+        let week = secs(now) / (7 * DAY) - 9;
+        let k = UNIX_EPOCH + Duration::from_secs(week * 7 * DAY + 10);
+        let d = UNIX_EPOCH + Duration::from_secs(week * 7 * DAY + 20);
+        let v = vec![
+            chain_entry("C", k, "k", None, 100),
+            chain_entry("C", d, "d", Some("k"), 10),
+            chain_entry("C", now, "n", None, 100),
+        ];
+        let p = plan(&v, u64::MAX, now);
+        assert_eq!(p.remove, vec![PathBuf::from("k")], "the old keyframe goes, as before deltas");
+        assert_eq!(p.promote, vec![PathBuf::from("d")], "the delta built on it is written whole");
+        // nothing to rewrite when the base stays
+        let p = plan(&v, u64::MAX, UNIX_EPOCH + Duration::from_secs(secs(now) - 40 * DAY));
+        assert!(p.remove.is_empty() && p.promote.is_empty(), "all within 30 days: all kept");
+    }
+
+    fn an_entry_named(name: &str) -> Entry {
+        Entry { root: "C".into(), taken: UNIX_EPOCH, file: PathBuf::from(name), full: false, delta: false, bytes: 1, delta_base: None, base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
+    }
+
+    fn tree_of(n: usize) -> Tree {
+        let mut nodes = vec![sprawl_core::Node { name: "C".into(), is_dir: true, ..Default::default() }];
+        for i in 1..n {
+            nodes.push(sprawl_core::Node { name: format!("f{i}"), size: 1, files: 1, parent: Some(0), ..Default::default() });
+            nodes[0].children.push(i);
+        }
+        let mut t = Tree { volumes: Vec::new(), root_path: "C".into(), nodes, errors: 0, method: sprawl_core::ScanMethod::Walk };
+        t.compute_totals();
+        t
+    }
+
+    /// A drive of ten million nodes is the same case as this one, smaller: over the budget, and
+    /// still the one tree kept (the newest), so moving the slider does not rebuild it each time.
+    #[test]
+    fn the_cache_keeps_the_newest_tree_even_when_it_is_bigger_than_its_budget() {
+        let mut c = Cache::default();
+        c.insert(&an_entry_named("a"), &tree_of(100), 10);
+        assert_eq!(c.kept.len(), 1, "a tree over the budget is still kept");
+        // two trees fit the budget; a third pushes the oldest out, never the newest
+        let mut c = Cache::default();
+        c.insert(&an_entry_named("a"), &tree_of(40), 100);
+        c.insert(&an_entry_named("b"), &tree_of(40), 100);
+        assert_eq!(c.kept.len(), 2);
+        c.insert(&an_entry_named("c"), &tree_of(40), 100);
+        assert_eq!(c.kept.len(), 2, "at most about two trees' worth");
+        assert!(c.kept.contains_key(Path::new("b")) && c.kept.contains_key(Path::new("c")));
+        assert!(!c.kept.contains_key(Path::new("a")), "the oldest goes");
+        assert!(c.nodes <= 100);
+        // one big tree beside a small one: the big one stays alone
+        let mut c = Cache::default();
+        c.insert(&an_entry_named("small"), &tree_of(50), 100);
+        c.insert(&an_entry_named("big"), &tree_of(300), 100);
+        assert_eq!(c.kept.len(), 1);
+        assert!(c.kept.contains_key(Path::new("big")));
+        // the same file written again (a delta made whole) replaces what was kept of it
+        let mut c = Cache::default();
+        let mut e = an_entry_named("p");
+        c.insert(&e, &tree_of(40), 100);
+        e.bytes = 2;
+        c.insert(&e, &tree_of(60), 100);
+        assert_eq!(c.kept.len(), 1);
+        assert_eq!(c.nodes, 60, "counted once, the newer one");
+    }
+
+    /// F7's worst case: the deepest snapshot of a chain (seven deltas, the most there is), read
+    /// cold. Ignored because two million nodes take a while to build and measure. Run with
+    ///
+    ///     cargo test --release -p sprawl-advisor history::tests::the_worst_case_chain_rebuild -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn the_worst_case_chain_rebuild() {
+        for (label, files) in [("50,000 nodes", 4usize), ("2,000,000 nodes", 79)] {
+            let (dir, base) = scratch(&format!("cold-{files}"));
+            let root = dir.join("drive").display().to_string();
+            let mut tree = big_tree(&root, 250, 100, files);
+            let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 20 * 3600);
+            for i in 0..8u64 {
+                if i > 0 {
+                    churn(&mut tree, i as usize);
+                }
+                prepare(&tree, t0 + Duration::from_secs(60 * i), false).save(&base, u64::MAX).unwrap();
+            }
+            let nodes = snapshot::folders_only(&tree).nodes.len();
+            let entries = list(&base);
+            assert_eq!(entries.len(), 8);
+            let last = &entries[7];
+            assert!(last.delta, "seven deltas deep");
+            let mut worst = 0.0f64;
+            for _ in 0..3 {
+                clear_cache();
+                let t = std::time::Instant::now();
+                let rebuilt = load(last).unwrap();
+                worst = worst.max(t.elapsed().as_secs_f64());
+                assert_eq!(rebuilt.nodes.len(), nodes);
+                let _ = rebuilt;
+            }
+            let bytes: u64 = entries.iter().map(|e| e.bytes).sum();
+            eprintln!("{label}: seven-delta chain rebuilt cold in {:.0} ms (chain {bytes} bytes)", worst * 1000.0);
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    /// `dirs` folders of `subs` folders of `files` files each: about 50,000 nodes folders-only.
+    /// Names carry a spread-out tag, as real folder names do, so the whole snapshot's name
+    /// table is the bulk of it (a synthetic tree of `d0`, `s0` would compress unrealistically).
+    fn big_tree(root: &str, dirs: usize, subs: usize, files: usize) -> Tree {
+        let mut nodes = vec![sprawl_core::Node { name: root.into(), is_dir: true, ..Default::default() }];
+        for d in 0..dirs {
+            let di = nodes.len();
+            nodes.push(sprawl_core::Node { name: format!("d{d}-{}", tag(d as u64)), is_dir: true, parent: Some(0), ..Default::default() });
+            nodes[0].children.push(di);
+            for s in 0..subs {
+                let si = nodes.len();
+                nodes.push(sprawl_core::Node { name: format!("s{s}-{}", tag((d * 1000 + s) as u64)), is_dir: true, parent: Some(di), ..Default::default() });
+                nodes[di].children.push(si);
+                for f in 0..files {
+                    let fi = nodes.len();
+                    let size = 100 + (d * 31 + s * 7 + f * 13) as u64 % 900;
+                    nodes.push(sprawl_core::Node { name: format!("f{f}"), size, allocated: size.div_ceil(4096) * 4096, files: 1, parent: Some(si), modified: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000 + f as u64)), ..Default::default() });
+                    nodes[si].children.push(fi);
+                }
+            }
+        }
+        let mut t = Tree { volumes: Vec::new(), root_path: root.into(), nodes, errors: 0, method: sprawl_core::ScanMethod::Walk };
+        t.compute_totals();
+        t
+    }
+
+    fn tag(seed: u64) -> String {
+        format!("{:08x}{:04x}", seed.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17), (seed.wrapping_mul(0x85eb_ca6b) >> 40) as u16)
+    }
+
+    /// About 1% of the tree differs from the last snapshot: one file in fifty changed, and a
+    /// folder in a few hundred renamed.
+    fn churn(t: &mut Tree, round: usize) {
+        let mut renamed = 0;
+        for (i, n) in t.nodes.iter_mut().enumerate() {
+            if !n.is_dir && i % 50 == 0 {
+                n.size += 37;
+                n.allocated = n.size.div_ceil(4096) * 4096;
+                n.modified = Some(UNIX_EPOCH + Duration::from_secs(1_750_000_000 + round as u64));
+            }
+            if n.is_dir && n.parent.is_some() && n.parent != Some(0) && renamed < 10 && i % 20_000 == 0 {
+                n.name = format!("moved-{round}-{i}");
+                renamed += 1;
+            }
+        }
+        t.compute_totals();
     }
 }

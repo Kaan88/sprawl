@@ -6,6 +6,8 @@ in-app updater shows.
 ## Unreleased
 
 - Settings takes the keyboard focus when it opens, and gives it back when it closes.
+- Scan history takes much less space: each scan saves only what changed since the one before.
+- Scanning a folder again is not saved as its own history point when a scan of the drive above it, made in the last day, already shows it.
 
 ## 1.0.7 — 2026-11-23
 
