@@ -98,7 +98,7 @@ pub struct Named(std::collections::HashSet<Vec<String>>);
 
 impl Named {
     pub fn new(labels: &[Label]) -> Named {
-        Named(labels.iter().filter(|l| !l.pattern.contains(['*', '?'])).map(|l| segments(&crate::rules::expand(&l.pattern))).collect())
+        Named(labels.iter().filter(|l| !l.pattern.contains(['*', '?'])).map(|l| if is_hidden(l) { segments(&l.pattern) } else { segments(&crate::rules::expand(&l.pattern)) }).collect())
     }
 
     /// Whether a label names `path` itself: a label on a folder above it does not count.
@@ -286,7 +286,7 @@ pub(crate) fn exact_path(p: &str) -> bool {
         && p.len() < 300
         && p.split('\\').skip(1).any(|s| !s.is_empty())
         && !p.contains("..")
-        && !p.contains(['*', '?', '"', '`', '|', '<', '>', ';'])
+        && !p.contains(['*', '?', '"', '|', '<', '>'])
         && !p.chars().any(unseen)
 }
 
@@ -702,11 +702,12 @@ impl Memory {
         self.labels.iter().rev().filter(|l| !is_hidden(l)).find(|l| Pattern::new(&l.pattern).matches(&p))
     }
 
-    /// Make room for one more label: past 500 the oldest goes, a hidden folder before a label
-    /// that says what a folder is.
+    /// Make room after one more label was pushed: past 500 the oldest AI guess goes, else the
+    /// oldest other entry. The entry just added never goes, and a Hide outlives an AI label.
     fn trim_labels(&mut self) {
         if self.labels.len() > 500 {
-            let at = self.labels.iter().position(is_hidden).unwrap_or(0);
+            let last = self.labels.len() - 1;
+            let at = self.labels[..last].iter().position(|l| l.from == From::Model).unwrap_or(0);
             self.labels.remove(at);
         }
     }
@@ -730,6 +731,12 @@ impl Memory {
         let pattern = pattern.trim().replace('/', "\\");
         // one exact folder, any depth: a label deletes nothing. With a wildcard it has to stay narrow
         if !exact_path(&pattern) && !plain_pattern(&pattern) {
+            if pattern.len() >= 300 {
+                return Err("that path is too long to keep as a label (under 300 characters)".into());
+            }
+            if pattern.chars().any(unseen) || pattern.contains(['"', '|', '<', '>']) {
+                return Err("the path has a character a label can't hold".into());
+            }
             return Err("the pattern must be an absolute path to one folder (C:\\... or %VARIABLE%\\...), or with * and ** at least two folder names without a wildcard".into());
         }
         let label = clean_text_to(label, LABEL_MAX);
@@ -1308,7 +1315,8 @@ mod tests {
         }
         assert_eq!(m.label_for(Path::new(r"C:\Tools\x\cache")).unwrap().label, "Tool caches");
         assert!(m.add_label(r"..\x", "no", From::Model).is_err());
-        assert!(m.add_label(r"C:\x'; Remove-Item", "no", From::Model).is_err());
+        // a label is never run, so `;` may be in one; a rule pattern still refuses it
+        assert!(!plain_pattern(r"C:\x'; Remove-Item"));
         let p = |paths: Vec<&str>, remedy: Remedy| Proposal {
             id: "My Cache!".into(),
             title: "Cache".into(),
@@ -1341,7 +1349,7 @@ mod tests {
         for ok in [r"D:\Games", r"D:\Kaan's Files\Old", r"%USERPROFILE%\Stuff", r"C:\Intel\$Recycle.Bin"] {
             assert!(m.add_label(ok, "x", From::Model).is_ok(), "{ok}");
         }
-        for bad in [r"D:\", r"D:", r"D:\Games\*", r"?:\Games", r"D:\a..b", "D:\\Games\u{202e}x", r"D:\x; y", r"relative\Games", r"D:\Games\**"] {
+        for bad in [r"D:\", r"D:", r"D:\Games\*", r"?:\Games", r"D:\a..b", "D:\\Games\u{202e}x", r"relative\Games", r"D:\Games\**"] {
             let err = m.add_label(bad, "x", From::Model).unwrap_err();
             assert!(!err.is_empty(), "{bad}");
         }
@@ -1364,9 +1372,10 @@ mod tests {
         assert_eq!(m.label_for(Path::new(r"C:\A\B\X")).unwrap().label, "everything", "it still gives an Owner");
     }
 
-    /// Hide keeps the label it finds and never pushes a real label out of the 500.
+    /// Hide keeps the label it finds. Past 500 the oldest AI label goes, never a Hide, and a Hide
+    /// just added always stays.
     #[test]
-    fn hiding_does_not_replace_or_crowd_out_a_label() {
+    fn hiding_does_not_replace_a_label_and_outlives_ai_labels() {
         let mut m = Memory::default();
         m.add_label(r"D:\Games", "Steam games", From::Model).unwrap();
         m.hide_unexplained(Path::new(r"D:\Games"));
@@ -1377,8 +1386,35 @@ mod tests {
             m.add_label(&format!(r"D:\Folder{i}"), "x", From::Model).unwrap();
         }
         assert_eq!(m.labels.len(), 500);
-        assert!(labelled(&m.labels, Path::new(r"D:\Games")), "the oldest real label is still here");
-        assert!(!labelled(&m.labels, Path::new(r"D:\Hidden")), "the hidden folder went first");
+        assert!(!labelled(&m.labels, Path::new(r"D:\Games")), "the oldest AI label went");
+        assert!(labelled(&m.labels, Path::new(r"D:\Hidden")), "the user's Hide stays");
+        // 500 AI labels, then a Hide: the Hide sticks
+        let mut m = Memory::default();
+        for i in 0..500 {
+            m.add_label(&format!(r"D:\Folder{i}"), "x", From::Model).unwrap();
+        }
+        m.hide_unexplained(Path::new(r"D:\Games"));
+        assert_eq!(m.labels.len(), 500);
+        assert!(labelled(&m.labels, Path::new(r"D:\Games")));
+        assert!(!labelled(&m.labels, Path::new(r"D:\Folder0")));
+    }
+
+    /// Hide holds for a folder whose name is a real %VARIABLE%; an AI label still expands one.
+    #[test]
+    fn hide_holds_for_a_folder_named_like_a_variable() {
+        let p = Path::new(r"D:\proj\%SystemDrive%\data");
+        let mut m = Memory::default();
+        m.hide_unexplained(p);
+        assert!(labelled(&m.labels, p));
+    }
+
+    /// A path too long for a label says so, not that it isn't a path.
+    #[test]
+    fn a_label_that_is_too_long_says_why() {
+        let mut m = Memory::default();
+        assert!(m.add_label(&format!(r"D:\{}", "x".repeat(300)), "x", From::Model).unwrap_err().contains("too long"));
+        // `;` and a backtick are legal in a folder name and a label is never run
+        assert!(m.add_label(r"D:\a;b`c\data", "x", From::Model).is_ok());
     }
 
     /// What an import keeps of a description is what its approval is hashed over: still the old

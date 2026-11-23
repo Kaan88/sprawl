@@ -823,7 +823,13 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     progress("Gathering what Windows knows about your apps".into());
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build_for_tools(tree, &facts, Some(already), hidden, goal, &memory.labels) + notes + &memory.context();
+    // asked to call `remember` only by a model that can: Codex and a Claude Code without Sprawl's server run without tools
+    let tools_ok = match cfg.provider {
+        Provider::Codex => false,
+        Provider::ClaudeCode => super::mcp_exe().is_some(),
+        _ => true,
+    };
+    let report = if tools_ok { super::report::build_for_tools(tree, &facts, Some(already), hidden, goal, &memory.labels) } else { super::report::build(tree, &facts, Some(already), hidden, goal, &memory.labels) } + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory).at_scan(scan_before);
     tools.allowed = Some(specs().iter().map(|t| t.name).collect());
     let mut run = AiRun { model: named(cfg.provider, &model), ..AiRun::default() };
@@ -845,6 +851,7 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
         Err(e) if matches!(mode, Mode::Tools) && cfg.provider == Provider::OpenAi && e.to_lowercase().contains("tool") => {
             progress("This model can't use tools; asking it once from the report".into());
             mode = Mode::Single;
+            let report = report.replace(super::report::REMEMBER_NOTE, "");
             chat = metered(open(cfg, &model, &report, &mode, &stop)?);
             chat.turn()?
         }

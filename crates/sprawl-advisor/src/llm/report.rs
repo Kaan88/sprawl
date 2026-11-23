@@ -43,19 +43,28 @@ fn unexplained_in(tree: &Tree, facts: &Facts, found: &[Finding], min: u64, home:
         let node = &tree.nodes[n];
         if !node.is_dir || node.is_reparse_point() || node.attributes & crate::dupes::NOT_LOCAL != 0 { continue; }
         let path = tree.path_of(n);
-        // what the user or the AI said this very folder is: nothing left to explain, in it or
-        // below it (the scanned folder itself explains nothing, as it is never listed)
-        if n != ROOT && named.names(&path) { continue; }
-        if depth < 6 { stack.extend(node.children.iter().copied().filter(|&c| tree.nodes[c].is_dir).map(|c| (c, depth + 1))); }
+        // what the user or the AI said this very folder is (the scanned folder itself explains
+        // nothing, as it is never listed)
+        let named_here = n != ROOT && named.names(&path);
+        let push_children = |stack: &mut Vec<(usize, usize)>| {
+            if depth < 6 { stack.extend(node.children.iter().copied().filter(|&c| tree.nodes[c].is_dir).map(|c| (c, depth + 1))); }
+        };
         let name = path.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
         if node.size < min || name.is_empty() || ["users", "documents", "downloads", "desktop", "pictures", "videos", "music", "appdata", "local", "locallow", "roaming", "programdata", "program files", "program files (x86)", "steamapps", "common", "windows"].contains(&name.as_str())
-            || never.hit(&path.to_string_lossy()).is_some() || crate::finding::other_account(&path, home) || facts.owner_of(&path).is_some() { continue; }
-        if node.children.iter().any(|&c| (!tree.nodes[c].is_dir || tree.nodes[c].name.eq_ignore_ascii_case(".git")) && crate::projects::kind_of(&tree.nodes[c].name.to_ascii_lowercase()).is_some()) { continue; }
+            || never.hit(&path.to_string_lossy()).is_some() || crate::finding::other_account(&path, home) || facts.owner_of(&path).is_some()
+            || node.children.iter().any(|&c| (!tree.nodes[c].is_dir || tree.nodes[c].name.eq_ignore_ascii_case(".git")) && crate::projects::kind_of(&tree.nodes[c].name.to_ascii_lowercase()).is_some()) {
+            // never a candidate itself, so a label on it covers nothing below
+            push_children(&mut stack);
+            continue;
+        }
         let explained = found.iter().any(|f| !f.heuristic() && !matches!(&f.source, crate::Source::Rule(id) if id.starts_with("stale.") || id.starts_with("anomaly.") || id.starts_with("remedy.likely"))
             && crate::finding::within(&path, &f.path));
         // The scanned folder itself (or a root picked for a multiple scan) explains nothing:
         // 1.0 listed a folder scan's own root as its biggest unexplained folder.
         let picked_root = n == ROOT || depth == 1 && tree.root_path == std::path::Path::new(sprawl_core::MULTIPLE);
+        // a label covers what is inside a folder only when that folder would have been listed
+        if named_here && !explained && !picked_root { continue; }
+        push_children(&mut stack);
         if !explained && !picked_root { candidates.push(n); }
     }
     candidates.sort_by_key(|&n| std::cmp::Reverse(tree.nodes[n].size));
@@ -302,6 +311,25 @@ mod tests {
         m.add_label(&format!("{}\\**", dir.join("Named").display()), "everything below", crate::memory::From::Model).unwrap_or(());
         m.labels.push(crate::memory::Label { pattern: format!("{}\\**", dir.join("Named").display()), label: "x".into(), from: crate::memory::From::Model });
         assert_eq!(listed(&m.labels), vec![dir.join("Named")], "a wildcard label hides nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A label on a folder that could never be listed (a container like Users) covers nothing
+    /// below it.
+    #[test]
+    fn a_label_on_a_container_folder_hides_nothing_below_it() {
+        let dir = std::env::temp_dir().join(format!("sprawl-unexplained-container-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Users").join("Deep").join("Big")).unwrap();
+        std::fs::write(dir.join("Users").join("Deep").join("Big").join("a.bin"), vec![0u8; 900]).unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let facts = Facts::default();
+        let listed = |labels: &[crate::memory::Label]| -> Vec<std::path::PathBuf> {
+            unexplained_in(&tree, &facts, &[], 1, Some(&dir), labels).into_iter().map(|n| tree.path_of(n)).collect()
+        };
+        let model = |p: std::path::PathBuf| crate::memory::Label { pattern: p.display().to_string(), label: "x".into(), from: crate::memory::From::Model };
+        assert_eq!(listed(&[model(dir.join("Users"))]), vec![dir.join("Users").join("Deep")]);
+        assert!(listed(&[model(dir.join("Users").join("Deep"))]).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
