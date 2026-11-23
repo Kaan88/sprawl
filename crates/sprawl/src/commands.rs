@@ -212,7 +212,7 @@ impl State {
             "DeleteStop" => {
                 if let Some(stop) = &self.advisor.delete_stop {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    text(&self.root, "DeleteTitle", "Stopping after the item it is on...");
+                    text(&self.root, "DeleteTitle", if self.advisor.wiping.is_some() { "Stopping cipher..." } else { "Stopping after the item it is on..." });
                 }
             }
             "mShortcuts" => {
@@ -404,6 +404,8 @@ impl State {
             }
             "mDelete" | "mDeleteForever" if matches!(self.view, View::Tree | View::Files | View::Search) => self.delete(name == "mDeleteForever"),
             "mDelete" | "mDeleteForever" => text(&self.root, "FootLeft", "Delete works in Tree View, File View and Search (on rows of this scan)"),
+            "mOverwrite" => self.overwrite_ask(),
+            "mWipeFree" => self.wipe_free_ask(),
             "mExportCsv" if has_tree => {
                 // WizTree's format, so the file loads back here or in WizTree.
                 let path = user_dir("Documents").join(format!("Sprawl export {}.csv", stamp()));
@@ -724,7 +726,7 @@ impl State {
     }
 
     /// Why the selected item may not be deleted from here, if it may not.
-    fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
+    pub(crate) fn delete_refusal(&self, n: usize, path: &std::path::Path) -> Option<String> {
         if let Some(why) = self.delete_busy_refusal() {
             return Some(why);
         }
@@ -831,11 +833,31 @@ impl State {
         if self.dialogs.open() {
             return;
         }
-        if self.advisor.deleting.is_some() && self.advisor.cleanup.running.is_none() {
-            if self.advisor.close_after_delete { return; }
+        if self.advisor.wiping.is_some() {
+            if self.advisor.close_after_wipe { return; }
             self.ask(
                 "Close Sprawl?",
-                "A Delete is still running.\n\nSprawl stops it after the item it is on, then closes. What is already gone stays gone; the rest is left as it was.",
+                "Windows' cipher is still wiping the drive's free space.\n\nSprawl stops it, then closes. What cipher has already written stays written; the rest of the free space is left as it was.",
+                "Stop and close",
+                false,
+                |s| {
+                    if let Some(stop) = &s.advisor.delete_stop { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+                    s.advisor.close_after_wipe = true;
+                    crate::state::text(&s.root, "FootLeft", "Stopping cipher, then closing...");
+                },
+            );
+            return;
+        }
+        if self.advisor.deleting.is_some() && self.advisor.cleanup.running.is_none() {
+            if self.advisor.close_after_delete { return; }
+            let (what, stays) = match self.advisor.delete_total.1 {
+                DeleteVerb::Overwrite => ("An Overwrite and delete is still running.", "What is already overwritten and deleted stays so; the rest is left as it was."),
+                DeleteVerb::Forever => ("A Delete is still running.", "What is already gone stays gone; the rest is left as it was."),
+                DeleteVerb::Recycle => ("A Delete is still running.", "What has already gone to the Recycle Bin stays there; the rest is left as it was."),
+            };
+            self.ask(
+                "Close Sprawl?",
+                &format!("{what}\n\nSprawl stops it after the item it is on, then closes. {stays}"),
                 "Stop and close",
                 false,
                 |s| {
@@ -877,7 +899,7 @@ impl State {
     /// The scan the question was about is still the one on screen, with `n` still at `path`.
     /// Anything else (a rescan, a filter, another delete while the question was open) and
     /// nothing is deleted.
-    fn still_same(&self, gen: u64, n: usize, path: &std::path::Path) -> bool {
+    pub(crate) fn still_same(&self, gen: u64, n: usize, path: &std::path::Path) -> bool {
         self.tree_gen == gen && self.tree.as_ref().is_some_and(|t| n < t.nodes.len() && n != ROOT && t.path_of(n) == path)
     }
 
@@ -974,7 +996,7 @@ impl State {
         self.marked.clear();
         let (tx, rx) = std::sync::mpsc::channel();
         self.advisor.deleting = Some(rx);
-        self.advisor.delete_total = (total, permanent, paths.len());
+        self.advisor.delete_total = (total, if permanent { DeleteVerb::Forever } else { DeleteVerb::Recycle }, paths.len());
         crate::state::text(&self.root, "FootLeft", if permanent { "Deleting..." } else { "Moving to the Recycle Bin..." });
         self.delete_card(Some(0));
         std::thread::spawn(move || {
@@ -1039,7 +1061,7 @@ impl State {
             if more {
                 let _ = tx.send(DelMsg::Touched(touched));
             }
-            let _ = tx.send(DelMsg::Done(results, notes));
+            let _ = tx.send(DelMsg::Done(results, notes, Vec::new()));
         });
     }
 
@@ -1058,11 +1080,16 @@ impl State {
         for m in msgs {
             match m {
                 DelMsg::Progress(bytes) => {
-                    crate::state::text(&self.root, "FootLeft", &format!("Deleting... {} so far", self.size(bytes)));
+                    let verb = match self.advisor.delete_total.1 {
+                        DeleteVerb::Recycle => "Moving to the Recycle Bin",
+                        DeleteVerb::Forever => "Deleting",
+                        DeleteVerb::Overwrite => "Overwriting and deleting",
+                    };
+                    crate::state::text(&self.root, "FootLeft", &format!("{verb}... {} so far", self.size(bytes)));
                     self.delete_card(Some(bytes));
                 }
                 DelMsg::Touched(paths) => self.more_forget_deleted(&paths),
-                DelMsg::Done(results, notes) => {
+                DelMsg::Done(results, notes, damaged) => {
                     finished = true;
                     self.delete_card(None);
                     self.advisor.deleting = None;
@@ -1070,8 +1097,17 @@ impl State {
                     if self.advisor.close_after_delete { return self.exit_now(); }
                     crate::state::text(&self.root, "FootLeft", "");
                     self.apply_rescans(results);
-                    if !notes.is_empty() {
-                        self.tell("Some items were left alone", &notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
+                    // files that took some of the overwrite are the first thing to say, and the
+                    // list is never cut: each one is a file the user must know about
+                    if !damaged.is_empty() {
+                        let mut body = damaged.join("\n");
+                        if !notes.is_empty() {
+                            body.push_str("\n\nLeft as they were:\n");
+                            body.push_str(&notes_text(notes));
+                        }
+                        self.tell("Some files were damaged", &body);
+                    } else if !notes.is_empty() {
+                        self.tell("Some items were left alone", &notes_text(notes));
                     }
                 }
             }
@@ -1096,8 +1132,12 @@ impl State {
             let _ = card.SetVisibility(Visibility::Collapsed);
             return;
         };
-        let (total, permanent, count) = self.advisor.delete_total;
-        let verb = if permanent { "Deleting" } else { "Moving to the Recycle Bin" };
+        let (total, kind, count) = self.advisor.delete_total;
+        let verb = match kind {
+            DeleteVerb::Recycle => "Moving to the Recycle Bin",
+            DeleteVerb::Forever => "Deleting",
+            DeleteVerb::Overwrite => "Overwriting and deleting",
+        };
         let what = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
         let stopping = self.advisor.delete_stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
         if !stopping {
@@ -1133,13 +1173,34 @@ pub(crate) struct DeleteBasis {
     pub more: bool,
 }
 
+/// What a Delete from the tree does, for the card's words.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum DeleteVerb {
+    #[default]
+    Recycle,
+    Forever,
+    /// Overwrite each file once, then delete it (F9).
+    Overwrite,
+}
+
 /// From the thread of a Delete: bytes so far, then each path as it is now.
 pub(crate) enum DelMsg {
     Progress(u64),
     /// A Delete of Search rows from other drives or saved scans (there is no scan tree to read
     /// the paths back into): the paths it went through, to see which are gone.
     Touched(Vec<PathBuf>),
-    Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>),
+    Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>, Vec<String>),
+}
+
+/// What a card says about the items left alone: the first twelve, and how many more there were.
+fn notes_text(notes: Vec<String>) -> String {
+    let shown: Vec<String> = notes.iter().take(12).cloned().collect();
+    let more = notes.len().saturating_sub(shown.len());
+    let mut text = shown.join("\n");
+    if more > 0 {
+        text.push_str(&format!("\n...and {more} more"));
+    }
+    text
 }
 
 /// Why `path` may not be deleted whatever it is: inside a folder skipped in Settings >

@@ -27,6 +27,7 @@ mod scene;
 mod settings;
 mod state;
 mod tables;
+mod wiping;
 mod views;
 mod watch;
 mod treemap;
@@ -132,7 +133,7 @@ const COMMANDS: &[&str] = &[
     "mScan", "mSelectFolder", "mNewInstance", "mReset", "mExpandAll", "mParent", "mZoomIn", "mZoomOut", "mSavePng", "mExplore",
     "mCmd", "mCopyPath", "mDelete", "mDeleteForever", "mExportCsv", "mCopyInfo", "mExportTypes", "mExit", "uDyn", "uB", "uKB",
     "uMB", "uGB", "uTB", "oAuto", "oHeader", "oTypes", "oTreemap", "oAlloc", "oCushion", "oNames", "oTilt",
-    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mSearch", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh",
+    "mSelectMultiple", "mSelectCsv", "mSettings", "mShortcuts", "mAbout", "mUpdate", "oUpdates", "mStop", "mReselectChild", "mFilter", "mSearch", "mAdmin", "oFree", "oMirror", "oPulses", "oAlwaysAdmin", "mWizard", "oExplorer", "aaOff", "aaLow", "aaMedium", "aaHigh", "mWipeFree",
 ];
 
 /// Right-click menu on the tree: (item name, command).
@@ -147,6 +148,7 @@ const ROW_MENU: &[(&str, &str)] = &[
     ("cCopyInfo", "mCopyInfo"),
     ("cDelete", "mDelete"),
     ("cDeleteForever", "mDeleteForever"),
+    ("cOverwrite", "mOverwrite"),
     ("cShell", "mShell"),
 ];
 
@@ -261,7 +263,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     // closing mid clean-up asks first (what is gone stays gone; the rest is left as it was)
     // (Sprawl's own box doesn't block: the close is called off, and "Close anyway" exits)
     win32::on_close(hwnd, || {
-        if with(|s| s.advisor.cleanup.running.is_some() || s.advisor.deleting.is_some()) == Some(true) {
+        if with(|s| s.advisor.cleanup.running.is_some() || s.advisor.deleting.is_some() || s.advisor.wiping.is_some()) == Some(true) {
             with(|s| s.ask_close());
             return false;
         }

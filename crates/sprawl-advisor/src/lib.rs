@@ -40,6 +40,7 @@ pub mod llm;
 pub mod mcp;
 pub mod mcp_scan;
 pub mod memory;
+pub mod overwrite;
 pub mod pipe;
 pub mod plan;
 pub mod prevention;

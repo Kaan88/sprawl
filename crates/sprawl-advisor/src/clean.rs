@@ -152,6 +152,8 @@ pub struct Outcome {
     /// A tool's last lines of output.
     pub output: Vec<String>,
     pub stopped: bool,
+    /// A tool ran past its limit and was ended: not a stop by the user, and not its own ending.
+    pub timed_out: bool,
     /// Items left because they were created or changed after the scan.
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
@@ -255,7 +257,7 @@ impl Spare {
 
     /// The item at `p` was created or changed after the scan (by its open handle's times), or
     /// isn't the one the scan saw there (by its id).
-    fn is_new(&self, p: &Path, info: &win::Info) -> bool {
+    pub(crate) fn is_new(&self, p: &Path, info: &win::Info) -> bool {
         let Some(since) = self.since else { return false };
         let ft = filetime(since);
         if info.created > ft {
@@ -1461,7 +1463,7 @@ fn never() -> &'static crate::safety::Never {
 }
 
 /// `real` (from the handle, `\\?\C:\...` or `\\?\UNC\...`) is `want`.
-fn same_path(real: &Path, want: &Path) -> bool {
+pub(crate) fn same_path(real: &Path, want: &Path) -> bool {
     let norm = |s: String| -> String {
         let s = s.replace('/', "\\");
         let s = if let Some(r) = s.strip_prefix(r"\\?\UNC\") {
@@ -1552,7 +1554,7 @@ pub fn like(name: &str, pattern: &str) -> bool {
 }
 
 /// The Windows calls the clean-up is made of.
-mod win {
+pub(crate) mod win {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
@@ -1592,6 +1594,16 @@ mod win {
         fn GetFileInformationByHandleEx(h: H, class: i32, buf: *mut c_void, size: u32) -> i32;
         fn SetFileInformationByHandle(h: H, class: i32, buf: *const c_void, size: u32) -> i32;
         fn GetFinalPathNameByHandleW(h: H, buf: *mut u16, len: u32, flags: u32) -> u32;
+        fn GetVolumeInformationByHandleW(h: H, label: *mut u16, label_len: u32, serial: *mut u32, max_len: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
+        fn SetFilePointerEx(h: H, distance: i64, new: *mut i64, method: u32) -> i32;
+        fn WriteFile(h: H, buf: *const c_void, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
+        fn FlushFileBuffers(h: isize) -> i32;
+        fn SetEndOfFile(h: H) -> i32;
+        fn ReOpenFile(h: H, access: u32, share: u32, flags: u32) -> H;
+        fn DeviceIoControl(h: H, code: u32, inbuf: *const c_void, inlen: u32, outbuf: *mut c_void, outlen: u32, returned: *mut u32, overlapped: *mut c_void) -> i32;
+        fn FindFirstStreamW(name: *const u16, level: u32, data: *mut c_void, flags: u32) -> H;
+        fn FindNextStreamW(find: H, data: *mut c_void) -> i32;
+        fn FindClose(find: isize) -> i32;
         pub(super) fn GetSystemDirectoryW(buf: *mut u16, size: u32) -> u32;
         fn CreateJobObjectW(sa: *mut c_void, name: *const u16) -> H;
         fn SetInformationJobObject(job: H, class: i32, info: *const c_void, size: u32) -> i32;
@@ -1606,7 +1618,7 @@ mod win {
         fn ConvertSecurityDescriptorToStringSecurityDescriptorW(sd: *mut c_void, revision: u32, what: u32, out: *mut *mut u16, len: *mut u32) -> i32;
     }
 
-    pub(super) struct Handle(H);
+    pub(crate) struct Handle(H);
 
     impl Drop for Handle {
         fn drop(&mut self) {
@@ -1617,7 +1629,7 @@ mod win {
     // only ever used by the thread that opened it
     unsafe impl Send for Handle {}
 
-    pub(super) struct Info {
+    pub(crate) struct Info {
         pub attrs: u32,
         pub tag: u32,
         pub size: u64,
@@ -1626,6 +1638,8 @@ mod win {
         pub created: i64,
         /// The latest of its write and change times (a rename or move counts), as a FILETIME.
         pub newest: i64,
+        /// Its last-write time alone (clearing a read-only mark moves the change time, not this).
+        pub written: i64,
         /// Which file it is on its volume (`nFileIndexHigh:Low`).
         pub id: u64,
         /// The volume's serial (FILE_ID_INFO), when Windows gives it.
@@ -1654,13 +1668,13 @@ mod win {
 
     /// The item itself (a link is not followed), open for deleting. Others may keep reading and
     /// writing it, but nobody can rename or delete it (or a folder above it) while it is open.
-    pub(super) fn open(p: &Path) -> std::io::Result<(Handle, Info)> {
+    pub(crate) fn open(p: &Path) -> std::io::Result<(Handle, Info)> {
         open_with(p, 0x1 | 0x2)
     }
 
     /// The item itself, for its attributes and times only: shared with everyone, links not
     /// followed, cloud files not downloaded.
-    pub(super) fn open_attrs(p: &Path) -> std::io::Result<(Handle, Info)> {
+    pub(crate) fn open_attrs(p: &Path) -> std::io::Result<(Handle, Info)> {
         const READ_ATTRIBUTES: u32 = 0x80;
         const SYNCHRONIZE: u32 = 0x0010_0000;
         const OPEN_EXISTING: u32 = 3;
@@ -1681,6 +1695,353 @@ mod win {
     /// open, and no program can open it while this handle is held.
     pub(super) fn open_alone(p: &Path) -> std::io::Result<(Handle, Info)> {
         open_with(p, 0)
+    }
+
+    /// The item itself (a link is not followed), opened for deleting it and for reading and
+    /// writing its attributes: no program may rename or delete it while this is held (readers
+    /// and writers still may). Every check a delete makes is made through this one handle,
+    /// before anything about the file is changed; writing its data then reuses it
+    /// ([`reopen_write`]).
+    pub(crate) fn open_checked(p: &Path) -> std::io::Result<(Handle, Info)> {
+        const DELETE: u32 = 0x0001_0000;
+        const READ_DATA: u32 = 0x1;
+        const READ_ATTRIBUTES: u32 = 0x80;
+        const WRITE_ATTRIBUTES: u32 = 0x100;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let w = wide(p);
+        let h = unsafe {
+            CreateFileW(
+                w.as_ptr(),
+                DELETE | READ_DATA | READ_ATTRIBUTES | WRITE_ATTRIBUTES | SYNCHRONIZE,
+                0x1 | 0x2,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                BACKUP_SEMANTICS | OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if h as isize == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let h = Handle(h);
+        let info = info(&h)?;
+        Ok((h, info))
+    }
+
+    /// The same item, opened again for reading and writing its data (the checked handle's file
+    /// object, so the file can't be a different one). Its share mode is the narrowest the checked
+    /// handle's own access allows (read and delete): another program holding the file open for
+    /// writing makes this fail with a sharing violation, so such a file is left alone. The
+    /// checked handle stays open throughout, and it is what keeps the name from being renamed or
+    /// deleted. Taken after every check has passed.
+    pub(crate) fn reopen_write(h: &Handle) -> std::io::Result<Handle> {
+        const READ_DATA: u32 = 0x1;
+        const WRITE_DATA: u32 = 0x2;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let n = unsafe { ReOpenFile(h.0, READ_DATA | WRITE_DATA | SYNCHRONIZE, 0x1 | 0x4, 0) };
+        if n as isize == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Handle(n))
+        }
+    }
+
+    /// The item at `p` (or `p` made to name one of its streams), opened for its data only:
+    /// links not followed, no new writer or deleter let in. Its share mode has to allow the
+    /// checked handle's delete access, which is what keeps the name in place while a stream is
+    /// written.
+    pub(crate) fn open_data(p: &Path) -> std::io::Result<(Handle, Info)> {
+        const READ_DATA: u32 = 0x1;
+        const WRITE_DATA: u32 = 0x2;
+        const READ_ATTRIBUTES: u32 = 0x80;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        let w = wide(p);
+        let h = unsafe {
+            CreateFileW(w.as_ptr(), READ_DATA | WRITE_DATA | READ_ATTRIBUTES | SYNCHRONIZE, 0x1 | 0x4, std::ptr::null_mut(), OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT, std::ptr::null_mut())
+        };
+        if h as isize == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let h = Handle(h);
+        let info = info(&h)?;
+        Ok((h, info))
+    }
+
+    /// The names of the file's named data streams, each as Windows writes it (":name:$DATA"),
+    /// the unnamed one (its ordinary content) left out. An empty list for a file with none, and
+    /// for a volume that has no named streams at all (FAT32, exFAT): there the call answers
+    /// "unsupported" rather than "no streams", which is not a problem to report. The volume's
+    /// flags are asked through `h`, the open handle, so a FAT volume mounted inside a folder of
+    /// another drive is told right.
+    pub(crate) fn streams(p: &Path, h: &Handle) -> std::io::Result<Vec<String>> {
+        // WIN32_FIND_STREAM_DATA { LARGE_INTEGER StreamSize; WCHAR cStreamName[MAX_PATH + 36] }
+        #[repr(C)]
+        struct Data {
+            size: i64,
+            name: [u16; 296],
+        }
+        let has_streams = volume_has_streams(h);
+        let w = wide(p);
+        let mut data = Data { size: 0, name: [0; 296] };
+        // SAFETY: `data` is one WIN32_FIND_STREAM_DATA; level 0 is FindStreamInfoStandard.
+        let find = unsafe { FindFirstStreamW(w.as_ptr(), 0, (&mut data as *mut Data).cast(), 0) };
+        if find as isize == -1 {
+            let e = std::io::Error::last_os_error();
+            if no_named_streams(e.raw_os_error(), has_streams) {
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+        let find = Handle(find);
+        let mut names = Vec::new();
+        loop {
+            let n = data.name.iter().position(|&c| c == 0).unwrap_or(data.name.len());
+            let name = String::from_utf16_lossy(&data.name[..n]);
+            if !name.is_empty() && name != "::$DATA" {
+                names.push(name);
+            }
+            // SAFETY: the find handle came from FindFirstStreamW; `data` is its buffer.
+            if unsafe { FindNextStreamW(find.0, (&mut data as *mut Data).cast()) } == 0 {
+                let e = std::io::Error::last_os_error();
+                // ERROR_HANDLE_EOF: the last stream has been listed
+                if e.raw_os_error() != Some(38) {
+                    return Err(e);
+                }
+                break;
+            }
+        }
+        // SAFETY: `find` is an open find handle, closed once by FindClose (not CloseHandle).
+        let h = std::mem::ManuallyDrop::new(find);
+        unsafe { FindClose(h.0 as isize) };
+        Ok(names)
+    }
+
+    /// Whether a file-listing error means there are no named streams to list: exFAT and FAT32
+    /// answer `FindFirstStreamW` with "invalid parameter", "invalid function" or "not supported",
+    /// which is only "no streams" on a volume whose flags lack FILE_NAMED_STREAMS; a volume that
+    /// has them must not have a real failure pass for an empty list. A folder answers "end of
+    /// file", which is always no streams.
+    pub(crate) fn no_named_streams(code: Option<i32>, volume_has_streams: Option<bool>) -> bool {
+        match code {
+            Some(38) => true,
+            Some(1) | Some(50) | Some(87) => volume_has_streams == Some(false),
+            _ => false,
+        }
+    }
+
+    /// Whether the volume holding the open file supports named streams (FILE_NAMED_STREAMS in
+    /// its flags); None when that can't be read. A handle names the volume the file is actually
+    /// on, which a drive letter in the path does not (a mount point can lead elsewhere).
+    fn volume_has_streams(h: &Handle) -> Option<bool> {
+        const FILE_NAMED_STREAMS: u32 = 0x0004_0000;
+        let mut flags = 0u32;
+        // SAFETY: only `flags` is written; the other buffers are null and of length 0.
+        let ok = unsafe { GetVolumeInformationByHandleW(h.0, std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), &mut flags, std::ptr::null_mut(), 0) };
+        (ok != 0).then_some(flags & FILE_NAMED_STREAMS != 0)
+    }
+
+    /// The space the open file takes on the disk, in bytes (its allocated length; a sparse or
+    /// compressed file's is less than its size). Its size when Windows can't tell.
+    pub(crate) fn allocation(h: &Handle, size: u64) -> u64 {
+        standard(h).map(|(alloc, _)| if alloc > 0 { alloc.max(size) } else { size }).unwrap_or(size)
+    }
+
+    /// The open file's allocation and its end, in bytes.
+    pub(crate) fn standard(h: &Handle) -> std::io::Result<(u64, u64)> {
+        // FILE_STANDARD_INFO: AllocationSize i64, EndOfFile i64, NumberOfLinks u32, two u8
+        let mut b = [0u64; 3];
+        // SAFETY: 24 bytes, class 1 (FileStandardInfo).
+        if unsafe { GetFileInformationByHandleEx(h.0, 1, b.as_mut_ptr().cast(), 24) } != 0 {
+            Ok((b[0], b[1]))
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// The open file's last-write time (a FILETIME). A change time moves when a read-only mark is
+    /// cleared; this doesn't, so it says whether the file itself was written.
+    pub(crate) fn written_time(h: &Handle) -> std::io::Result<i64> {
+        let mut basic = Basic { created: 0, accessed: 0, written: 0, changed: 0, attrs: 0 };
+        // SAFETY: one FILE_BASIC_INFO, class 0.
+        if unsafe { GetFileInformationByHandleEx(h.0, 0, (&mut basic as *mut Basic).cast(), std::mem::size_of::<Basic>() as u32) } != 0 {
+            Ok(basic.written)
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Whether the open file's data is kept behind an external backing provider: a Windows
+    /// (WOF) compressed or sparse file. An ordinary open does not show its reparse point, so
+    /// this call is how it is told apart from a plain file.
+    pub(crate) fn wof_backed(h: &Handle) -> bool {
+        // CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 196, METHOD_BUFFERED, FILE_ANY_ACCESS)
+        const FSCTL_GET_EXTERNAL_BACKING: u32 = 0x0009_0310;
+        let mut out = [0u8; 64];
+        let mut got = 0u32;
+        // SAFETY: no input; a fixed output buffer, whose size is given.
+        (unsafe { DeviceIoControl(h.0, FSCTL_GET_EXTERNAL_BACKING, std::ptr::null(), 0, out.as_mut_ptr().cast(), out.len() as u32, &mut got, std::ptr::null_mut()) }) != 0
+    }
+
+    /// The parts of the open file's data that are on the disk, as (offset, length) within its
+    /// first `size` bytes: a sparse file's holes are left out. For a file with no holes this is
+    /// the whole range.
+    pub(crate) fn allocated_ranges(h: &Handle, size: u64) -> std::io::Result<Vec<(u64, u64)>> {
+        const FSCTL_QUERY_ALLOCATED_RANGES: u32 = 0x0009_40CF;
+        /// ERROR_HANDLE_EOF (no allocated range left), ERROR_MORE_DATA (buffer full).
+        const NO_MORE: i32 = 38;
+        const MORE: i32 = 234;
+        let mut out = Vec::new();
+        let mut start = 0u64;
+        while start < size {
+            // FILE_ALLOCATED_RANGE_BUFFER { FileOffset, Length }, and room for 4096 answers
+            let input = [start as i64, (size - start) as i64];
+            let mut buf = vec![0i64; 2 * 4096];
+            let mut got = 0u32;
+            // SAFETY: the input is one FILE_ALLOCATED_RANGE_BUFFER; `got` and `buf` are written.
+            let ok = unsafe {
+                DeviceIoControl(h.0, FSCTL_QUERY_ALLOCATED_RANGES, input.as_ptr().cast(), 16, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32, &mut got, std::ptr::null_mut())
+            };
+            let n = got as usize / 16;
+            for i in 0..n {
+                let (off, len) = (buf[i * 2], buf[i * 2 + 1]);
+                if off >= 0 && len > 0 {
+                    out.push((off as u64, len as u64));
+                }
+            }
+            if ok != 0 {
+                break;
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(NO_MORE) => break,
+                // the buffer filled: carry on after the last range it gave
+                Some(MORE) => {
+                    let Some(&(off, len)) = out.last() else { break };
+                    start = off + len;
+                }
+                _ => return Err(std::io::Error::last_os_error()),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Clear the open item's read-only mark so its data can be written (the handle has
+    /// FILE_WRITE_ATTRIBUTES). Its other marks and all four times stay.
+    pub(crate) fn clear_readonly(h: &Handle, attrs: u32) -> std::io::Result<()> {
+        set_attrs(h, attrs & !0x1)
+    }
+
+    /// Put the open item's read-only mark back, as it was before a failed attempt.
+    pub(crate) fn set_readonly(h: &Handle, attrs: u32) -> std::io::Result<()> {
+        set_attrs(h, attrs | 0x1)
+    }
+
+    fn set_attrs(h: &Handle, a: u32) -> std::io::Result<()> {
+        let mut info = [0u64; 5];
+        info[4] = if a == 0 { 0x80 } else { a as u64 };
+        // SAFETY: 40 bytes, class 0 (FileBasicInfo); the four times stay as they are.
+        if unsafe { SetFileInformationByHandle(h.0, 0, info.as_ptr().cast(), 40) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Make the open file sparse (its holes take no space on the disk), for a test that writes
+    /// one small range far into it.
+    #[cfg(test)]
+    pub(crate) fn set_sparse(h: &Handle) -> std::io::Result<()> {
+        const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
+        let mut got = 0u32;
+        // SAFETY: no input; only `got` is written.
+        if unsafe { DeviceIoControl(h.0, FSCTL_SET_SPARSE, std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut got, std::ptr::null_mut()) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Put the open file's write position at its start.
+    pub(crate) fn seek_start(h: &Handle) -> std::io::Result<()> {
+        if unsafe { SetFilePointerEx(h.0, 0, std::ptr::null_mut(), 0) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Put the open file's write position at `at` bytes from its start.
+    pub(crate) fn seek(h: &Handle, at: u64) -> std::io::Result<()> {
+        let Ok(at) = i64::try_from(at) else { return Err(std::io::Error::other("a position this far into a file can't be set")) };
+        if unsafe { SetFilePointerEx(h.0, at, std::ptr::null_mut(), 0) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// The file held open for writing, shared for reading and deleting (but not writing), as a
+    /// program that is writing it would hold it: the test that a file in use (and read-only) is
+    /// left untouched, with its mark put back.
+    #[cfg(test)]
+    pub(crate) fn hold_for_writing(p: &Path) -> std::io::Result<Handle> {
+        const WRITE_DATA: u32 = 0x2;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let w = wide(p);
+        let h = unsafe { CreateFileW(w.as_ptr(), WRITE_DATA | SYNCHRONIZE, 0x1 | 0x4, std::ptr::null_mut(), OPEN_EXISTING, BACKUP_SEMANTICS, std::ptr::null_mut()) };
+        if h as isize == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Handle(h))
+        }
+    }
+
+    /// Write all of `data` at the open file's position. A write Windows says it took only part
+    /// of is carried on from where it stopped, so a short write is never reported as an old
+    /// system error; only a write that takes nothing is an error.
+    pub(crate) fn write(h: &Handle, data: &[u8]) -> std::io::Result<()> {
+        let mut left = data;
+        while !left.is_empty() {
+            let mut done = 0u32;
+            // SAFETY: `left` is `len` bytes; the count written goes only to `done`.
+            if unsafe { WriteFile(h.0, left.as_ptr().cast(), left.len() as u32, &mut done, std::ptr::null_mut()) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if done == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
+            }
+            left = &left[done as usize..];
+        }
+        Ok(())
+    }
+
+    /// Make what was written reach the disk (not only Windows' cache).
+    pub(crate) fn flush(h: &Handle) -> std::io::Result<()> {
+        if unsafe { FlushFileBuffers(h.0 as isize) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Set the open file's length, at its current write position (`len` bytes from the start).
+    pub(crate) fn set_end(h: &Handle, len: u64) -> std::io::Result<()> {
+        let Ok(len) = i64::try_from(len) else { return Err(std::io::Error::other("a file this long can't be shortened")) };
+        if unsafe { SetFilePointerEx(h.0, len, std::ptr::null_mut(), 0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if unsafe { SetEndOfFile(h.0) } != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     fn open_with(p: &Path, share: u32) -> std::io::Result<(Handle, Info)> {
@@ -1713,9 +2074,11 @@ mod win {
         }
         let ft = |t: [u32; 2]| ((t[1] as u64) << 32 | t[0] as u64) as i64;
         let (mut created, mut newest) = (ft(b.created), ft(b.written));
+        let mut written = ft(b.written);
         let mut basic = Basic { created: 0, accessed: 0, written: 0, changed: 0, attrs: 0 };
         if unsafe { GetFileInformationByHandleEx(h.0, 0, (&mut basic as *mut Basic).cast(), std::mem::size_of::<Basic>() as u32) } != 0 {
             created = created.max(basic.created);
+            written = written.max(basic.written);
             newest = newest.max(basic.written).max(basic.changed);
         }
         let id = (b.index_high as u64) << 32 | b.index_low as u64;
@@ -1726,7 +2089,7 @@ mod win {
         } else {
             (None, false)
         };
-        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest, id, volume, id_exact })
+        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest, written, id, volume, id_exact })
     }
 
     // Borrow the File's handle only for the synchronous call; ownership remains with File.
@@ -1852,7 +2215,7 @@ mod win {
     }
 
     /// Delete exactly the opened item (an empty folder, a file, a link), read-only or not.
-    pub(super) fn delete(h: &Handle) -> std::io::Result<()> {
+    pub(crate) fn delete(h: &Handle) -> std::io::Result<()> {
         // POSIX semantics (the name goes at once) and read-only ignored: Windows 10 1809 and later
         let flags: u32 = 0x1 | 0x2 | 0x10;
         if unsafe { SetFileInformationByHandle(h.0, 21, (&flags as *const u32).cast(), 4) } != 0 {
@@ -1878,7 +2241,7 @@ mod win {
     }
 
     /// Move the opened item to `to` (same volume), never over something already there.
-    pub(super) fn rename(h: &Handle, to: &Path) -> std::io::Result<()> {
+    pub(crate) fn rename(h: &Handle, to: &Path) -> std::io::Result<()> {
         // FILE_RENAME_INFO: flags (4), padding, root handle (pointer), name length (4), name
         let name: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{}", to.display())).encode_wide().collect();
         let head = 8 + std::mem::size_of::<usize>() + 4;
@@ -1919,7 +2282,7 @@ mod win {
     }
 
     /// Where the opened item really is.
-    pub(super) fn final_path(h: &Handle) -> Option<PathBuf> {
+    pub(crate) fn final_path(h: &Handle) -> Option<PathBuf> {
         let mut buf = vec![0u16; 1024];
         loop {
             let n = unsafe { GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
@@ -1979,7 +2342,7 @@ fn system_command(command: &str, sys: &Path) -> String {
     if let Some(rest) = command.strip_prefix("Start-Process cleanmgr ") {
         return format!("Start-Process {} {rest}", crate::rules::ps_quote(&sys.join("cleanmgr.exe").display().to_string()));
     }
-    for (prefix, file) in [("DISM ", "Dism.exe"), ("compact.exe ", "compact.exe"), ("wsl.exe ", "wsl.exe")] {
+    for (prefix, file) in [("DISM ", "Dism.exe"), ("compact.exe ", "compact.exe"), ("wsl.exe ", "wsl.exe"), ("cipher ", "cipher.exe")] {
         if let Some(rest) = command.strip_prefix(prefix) {
             return format!("& {} {rest}", crate::rules::ps_quote(&sys.join(file).display().to_string()));
         }
@@ -2151,6 +2514,13 @@ const TOOL_OUTPUT: usize = 1 << 20;
 /// wrapped) when that was read completely and is at most [`TOOL_OUTPUT`]; None when it was
 /// longer, a read failed, or the run was stopped.
 fn tool_with(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
+    tool_with_limit(command, stop, o, env, Duration::from_secs(3600), false)
+}
+
+/// The time a tool command may take before it is ended: an hour, as DISM can run long. The
+/// free-space wipe has its own, longer one ([`run_tool`]). `require_job` refuses to run one that
+/// the job object could not take (so Stop can always end it).
+fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration, require_job: bool) -> Option<String> {
     let Some(sys) = system_dir() else { o.problem(Path::new(command), "Windows' System32 folder wasn't found"); return None };
     let command = system_command(command, &sys);
     let command = command.as_str();
@@ -2162,11 +2532,31 @@ fn tool_with(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &s
         o.problem(Path::new(command), why);
         return None;
     }
-    run_powershell(command, &sys, elevated, stop, o, env)
+    run_powershell(command, &sys, elevated, stop, o, env, limit, require_job)
+}
+
+/// One built-in tool command on `path`, for a caller outside a clean-up (the free-space wipe),
+/// through the same runner: Windows PowerShell from System32, hidden, in a job so Stop ends
+/// everything it started, its last lines of output and any problem kept. It is not started at
+/// all when Windows won't let the job take it: a tool that Stop couldn't end is worse than a
+/// refusal. `limit` is how long it may take: a wipe of a big drive can run for days.
+pub fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, progress: &mut dyn FnMut(u64)) -> Outcome {
+    let mut o = Outcome::default();
+    let targets: Vec<PathBuf> = std::iter::once(path.to_path_buf()).chain(quoted_paths(command)).collect();
+    if let Some(e) = targets.iter().find_map(|t| sprawl_core::local::lexical(t).err()) {
+        o.problem(path, format!("left alone: {e}"));
+        return o;
+    }
+    tool_with_limit(command, stop, &mut o, &[], limit, true);
+    if stop.load(Ordering::Relaxed) {
+        o.stopped = true;
+    }
+    progress(o.freed);
+    o
 }
 
 /// The run itself, once [`tool_with`] has let `command` through: see there.
-fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
+fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration, require_job: bool) -> Option<String> {
     use std::io::Read;
     use std::os::windows::process::CommandExt;
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
@@ -2196,11 +2586,23 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
         }
     }
     let job = win::Job::new();
+    // a tool Stop couldn't end (no job to hold it) is not started at all
+    if require_job && job.is_none() {
+        o.problem(Path::new(command), "not started: Windows would not let Sprawl keep it in a job, so Stop could not end it");
+        return None;
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => { o.problem(Path::new(command), e); return None }
     };
     let in_job = job.as_ref().is_some_and(|j| j.add(&child));
+    if require_job && !in_job {
+        // it never got to do any work: it is ended before its command runs
+        let _ = child.kill();
+        let _ = child.wait();
+        o.problem(Path::new(command), "not started: Windows would not let Sprawl keep it in a job, so Stop could not end it");
+        return None;
+    }
     let mut out = child.stdout.take();
     let reader = std::thread::spawn(move || {
         // read to the end (a tool must never block on a full pipe); past TOOL_OUTPUT the
@@ -2234,8 +2636,9 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
         match child.try_wait() {
             Ok(Some(s)) => break s.code(),
             Ok(None) => {
-                // a tool that hangs (DISM can take long; an hour is the limit)
-                if stop.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(3600) {
+                // a tool that hangs (DISM can take long; the caller's limit)
+                let by_stop = stop.load(Ordering::Relaxed);
+                if by_stop || started.elapsed() > limit {
                     match &job {
                         Some(j) if in_job => j.end(),
                         _ => {
@@ -2243,7 +2646,12 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
                         }
                     }
                     let _ = child.wait();
-                    o.stopped = true;
+                    // a tool that ran past its limit is not one the user stopped
+                    if by_stop {
+                        o.stopped = true;
+                    } else {
+                        o.timed_out = true;
+                    }
                     break None;
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -2260,13 +2668,19 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
             j.end();
         }
     }
-    let (text, cut) = if o.stopped && !in_job { (String::new(), true) } else { reader.join().unwrap_or((String::new(), true)) };
+    let ended = o.stopped || o.timed_out;
+    let (text, cut) = if ended && !in_job { (String::new(), true) } else { reader.join().unwrap_or((String::new(), true)) };
     let lines: Vec<String> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(|l| crate::llm::clip(l.to_string(), 200)).collect();
     o.output = lines[lines.len().saturating_sub(12)..].to_vec();
+    if o.timed_out {
+        let secs = limit.as_secs();
+        let allowed = if secs >= 48 * 3600 { format!("{} days", secs / 86_400) } else { format!("{} hours", (secs / 3600).max(1)) };
+        o.problem(Path::new(command), format!("ran past the {allowed} Sprawl allows and was ended"));
+    }
     if let Some(c) = code.filter(|&c| c != 0) {
         o.problem(Path::new(command.split_whitespace().next().unwrap_or(command)), format!("ended with code {c}"));
     }
-    (!cut && !o.stopped).then_some(text)
+    (!cut && !ended).then_some(text)
 }
 
 #[cfg(test)]
@@ -2277,7 +2691,7 @@ mod tests {
 
     #[test]
     fn recycle_never_falls_back_to_deleting_wof_cloud_or_unknown_reparse_files() {
-        let mut info = win::Info { attrs: REPARSE, tag: 0x8000_0017, size: 99, links: 1, created: 0, newest: 0, id: 0, volume: None, id_exact: false };
+        let mut info = win::Info { attrs: REPARSE, tag: 0x8000_0017, size: 99, links: 1, created: 0, newest: 0, written: 0, id: 0, volume: None, id_exact: false };
         assert!(recycling_refused(&info), "WOF is ordinary data, not a disposable link");
         info.tag = 0;
         assert!(recycling_refused(&info), "an unknown tag must stay");
@@ -3185,15 +3599,15 @@ mod tests {
         let mut o = Outcome::default();
         let long = "x".repeat(300);
         let sys = system_dir().unwrap();
-        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[]).expect("read whole");
+        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[], Duration::from_secs(3600), false).expect("read whole");
         assert_eq!(text.lines().count(), 40, "{:?}", o.problems);
         assert!(text.lines().all(|l| l.len() > 300));
         let mut o = Outcome::default();
-        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[]).is_none(), "1.2 MB is cut");
+        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[], Duration::from_secs(3600), false).is_none(), "1.2 MB is cut");
         // the binding reaches the tool
         let mut o = Outcome::default();
         let dir = std::ffi::OsString::from(r"C:\Reviewed\cache");
-        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())]).unwrap();
+        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())], Duration::from_secs(3600), false).unwrap();
         assert_eq!(text.trim(), r"C:\Reviewed\cache");
         drop(owned);
     }

@@ -340,8 +340,10 @@ pub(crate) struct Advisor {
     pub(crate) fn_suggest: Option<(Vec<String>, String)>,
     /// An uncompress running (F1): the exact record, its answer, what to show meanwhile.
     pub(crate) uncompress: Option<(sprawl_advisor::memory::Compressed, Receiver<(bool, String)>, String)>,
-    /// A Delete from the tree running on its own thread.
+    /// A Delete from the tree running on its own thread (an Overwrite and delete too).
     pub(crate) deleting: Option<Receiver<crate::commands::DelMsg>>,
+    /// A free-space wipe (Windows' cipher) running: its result, with the flag that stops it.
+    pub(crate) wiping: Option<(Receiver<sprawl_advisor::overwrite::Wiped>, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     /// Stops that Delete after the item it is on (closing Sprawl asks for this).
     pub(crate) delete_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Draw the Advisor again on the next frame (a dropdown changed it).
@@ -351,10 +353,12 @@ pub(crate) struct Advisor {
     pub(crate) ai_key_typed: String,
     /// The custom AI's name when its setup was opened or it was picked: a new name renames it.
     pub(crate) ai_custom_was: String,
-    /// The Delete running: what the scan said its items hold, whether it is for good, how many.
-    pub(crate) delete_total: (u64, bool, usize),
+    /// The Delete running: what the scan said its items hold, what it does, how many.
+    pub(crate) delete_total: (u64, crate::commands::DeleteVerb, usize),
     /// Close Sprawl once that Delete has stopped.
     pub(crate) close_after_delete: bool,
+    /// Close Sprawl once the free-space wipe has stopped.
+    pub(crate) close_after_wipe: bool,
     /// Close when the running clean-up has stopped (after the item in hand).
     pub(crate) close_after_cleanup: bool,
 }
@@ -362,7 +366,7 @@ pub(crate) struct Advisor {
 impl Advisor {
     /// A file operation other than a clean-up runs (an uncompress, a Delete from the tree).
     pub(crate) fn file_op(&self) -> bool {
-        self.uncompress.is_some() || self.deleting.is_some()
+        self.uncompress.is_some() || self.deleting.is_some() || self.wiping.is_some()
     }
 
     /// Something reads folders a Delete could be asked to remove, holding them open meanwhile:
@@ -1083,6 +1087,7 @@ impl State {
         self.recheck_poll();
         self.uncompress_poll();
         self.delete_poll();
+        self.wipe_free_poll();
         self.more_prep_poll();
         if std::mem::take(&mut self.advisor.rerender) {
             self.render_advisor();
