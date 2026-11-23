@@ -62,10 +62,14 @@ version expected before anything is written.
 
 **Built (after 1.0.7):** Firefox's browsing history without bookmarks and its form history, and the
 autofill entries of Chrome, Edge and Brave. Each edit copies the database (and its `-journal`,
-`-wal` and `-shm`) to `%LOCALAPPDATA%\Sprawl\backups\privacy`, keeps the last five copies, and
-checks the copy byte for byte; then it checks `PRAGMA integrity_check`, the tables and columns,
-and (Firefox) the schema version, and does every delete in one transaction. Nothing is VACUUMed,
-so the file may not shrink. The code is `crates/sprawl-advisor/src/privacy/edit.rs`.
+`-wal` and `-shm`) to `%LOCALAPPDATA%\Sprawl\backups\privacy`, keeps the last five copies (dropping
+copies older than 30 days), and checks the copy byte for byte; then it checks `PRAGMA
+integrity_check`, the tables and columns, and (Firefox) the schema version on a read-only
+connection before taking a write handle, and does every delete in one transaction. The browser is
+checked again once the transaction is open and again before it is kept (and Firefox's
+`parent.lock`). Nothing is VACUUMed, so the file may not shrink. The code is
+`crates/sprawl-advisor/src/privacy/edit.rs`; the test fixture is Firefox's own schema
+(`firefox_places.sql`, from mozilla-central's `nsPlacesTables.h`).
 
 **Still to do:** selective cookies ("keep these sites' cookies").
 

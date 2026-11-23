@@ -5,7 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
-- Privacy cleaning can now take things out of a browser's own database, with the browser closed: Firefox's browsing history (bookmarks stay, with their keywords and notes), Firefox's form history, and the autofill entries of Chrome, Edge and Brave (saved addresses, cards, passwords and search engines stay). Before anything is changed, Sprawl copies the database and its journal files into `%LOCALAPPDATA%\Sprawl\backups\privacy` and checks the copy; the last five copies of each part are kept. The review says how many rows would go, never a size, and a database may not get smaller after an edit.
+- Privacy cleaning can now take things out of a browser's own database, with the browser closed: Firefox's browsing history (bookmarks stay, with their keywords and notes), Firefox's form history, and the autofill entries of Chrome, Edge and Brave (saved addresses, cards, passwords and search engines stay). Before anything is changed, Sprawl copies the database and its journal files into `%LOCALAPPDATA%\Sprawl\backups\privacy` and checks the copy; the last five copies of each part are kept and copies older than 30 days are dropped. The review says how many rows would go, never a size, and a database may not get smaller after an edit.
 - The review and its result now say "row" for these parts, and the wording about privacy files no longer says the browser starts new, empty files when a database was edited instead.
 
 ## 1.0.7 — 2026-11-23

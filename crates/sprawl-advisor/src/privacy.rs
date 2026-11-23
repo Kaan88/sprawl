@@ -135,10 +135,10 @@ const AUTOFILL_FILES: &[&str] = &["Web Data"];
 /// Chromium's `Web Data` is held by name anywhere on the never-list, for every browser's copy:
 /// passed for this part's own file only (its exact profile path is checked too).
 const AUTOFILL_WAIVES: &[&str] = &[r"?:\**\Web Data"];
-const AUTOFILL_WHY: &str = "Chrome keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. A copy of the database is kept in Sprawl's backups before it is edited; the file may not get smaller.";
-const EDGE_AUTOFILL_WHY: &str = "Edge keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. A copy of the database is kept in Sprawl's backups before it is edited; the file may not get smaller.";
-const BRAVE_AUTOFILL_WHY: &str = "Brave keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. A copy of the database is kept in Sprawl's backups before it is edited; the file may not get smaller.";
-const AUTOFILL_COST: &str = "Chrome forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay.";
+const AUTOFILL_WHY: &str = "Chrome keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.";
+const EDGE_AUTOFILL_WHY: &str = "Edge keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.";
+const BRAVE_AUTOFILL_WHY: &str = "Brave keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.";
+const AUTOFILL_COST: &str = "Chrome forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay. With sync on, entries may come back from your other devices.";
 
 pub const PARTS: &[PrivacyPart] = &[
     PrivacyPart { browser: "privacy.chrome", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Chrome (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES, edit: None },
@@ -160,7 +160,7 @@ pub const PARTS: &[PrivacyPart] = &[
         browser: "privacy.edge",
         id: "autofill",
         title: "Autofill entries",
-        cost: "Edge forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay.",
+        cost: "Edge forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay. With sync on, entries may come back from your other devices.",
         why: EDGE_AUTOFILL_WHY,
         risk: Risk::Amber,
         files: AUTOFILL_FILES,
@@ -173,7 +173,7 @@ pub const PARTS: &[PrivacyPart] = &[
         browser: "privacy.brave",
         id: "autofill",
         title: "Autofill entries",
-        cost: "Brave forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay.",
+        cost: "Brave forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay. With sync on, entries may come back from your other devices.",
         why: BRAVE_AUTOFILL_WHY,
         risk: Risk::Amber,
         files: AUTOFILL_FILES,
@@ -195,8 +195,8 @@ pub const PARTS: &[PrivacyPart] = &[
         browser: "privacy.firefox",
         id: "history",
         title: "Browsing history",
-        cost: "Firefox forgets the pages you visited (this profile). Bookmarks stay.",
-        why: "Firefox keeps the pages you visited in places.sqlite, the same database as the bookmarks. Sprawl takes out the visits and the pages that aren't bookmarked; the bookmarks, their keywords and their notes stay. A copy of the database is kept in Sprawl's backups before it is edited; the file may not get smaller.",
+        cost: "Firefox forgets the pages you visited and its download list (this profile). Downloaded files, bookmarks, site icons and the last session stay. With sync on, history may come back from other devices.",
+        why: "Firefox keeps the pages you visited in places.sqlite, the same database as the bookmarks. Sprawl takes out the visits, and the pages nothing else holds (a bookmark, a keyword or an annotation keeps its page); the bookmarks, their keywords and their notes stay. Site icons stay in favicons.sqlite, which keeps the pages' addresses, and so do address-bar predictions and the last session. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.",
         risk: Risk::Amber,
         files: &["places.sqlite"],
         waives: &[],
@@ -206,8 +206,8 @@ pub const PARTS: &[PrivacyPart] = &[
         browser: "privacy.firefox",
         id: "forms",
         title: "Form history",
-        cost: "Firefox forgets what you typed into forms (this profile), and the suggestions it made from it.",
-        why: "Firefox keeps what you typed into web forms in formhistory.sqlite, field by field. Sprawl takes out every entry. A copy of the database is kept in Sprawl's backups before it is edited; the file may not get smaller.",
+        cost: "Firefox forgets what you typed into forms (this profile), and the suggestions it made from it. With sync on, entries may come back from your other devices.",
+        why: "Firefox keeps what you typed into web forms in formhistory.sqlite, field by field. Sprawl takes out every entry. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.",
         risk: Risk::Amber,
         files: &["formhistory.sqlite"],
         waives: &[],

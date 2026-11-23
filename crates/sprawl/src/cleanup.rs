@@ -1303,7 +1303,7 @@ impl State {
                 let (glyph, colour, state) = match &it.state {
                     ItemState::Waiting => ("&#xE823;", crate::tokens::refer("text3"), "Waiting".to_string()),
                     ItemState::Running(_) if it.privacy => ("&#xE895;", crate::tokens::refer("link"), "Removing...".to_string()),
-                    ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
+                    ItemState::Done(o) if it.privacy && o.problems.is_empty() && (o.edited.is_some() || o.files > 0) => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
                     ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing was changed".to_string()),
                     ItemState::Running(f) => ("&#xE895;", crate::tokens::refer("link"), running_label(it, *f)),
                     ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
