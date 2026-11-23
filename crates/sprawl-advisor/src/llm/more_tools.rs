@@ -23,7 +23,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 so give it with another narrowing word), folder: or file:, path:steam (in the path), depth:<3, regex:^IMG_\\d+$, parent:C:\\Games (directly \
                 inside it), child:*.tmp (folders holding one), dupe:, sizedupe:, attrib:hs, len:>260, audio: video: pic: doc: exe: zip:, and groups <a b>|c. \
                 With path, only inside that folder (and the scan holding it is the one searched). Biggest first. \
-                Each result says when it was last opened and changed, and a program when it last ran.",
+                Each result says when it was last opened and changed, and, for a program, when one with its name last ran (by program name, any folder).",
             schema: json!({"type": "object", "properties": {
                 "query": {"type": "string", "description": "The search, as typed in the Search tab, e.g. ext:iso >1gb or node_modules folder:"},
                 "path": {"type": "string", "description": "Only inside this folder."},
@@ -87,6 +87,10 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     // `dc:`: each match's creation time, read for the matches the other words left
     let mut created_notes: Vec<String> = Vec::new();
     if let Some((from, to)) = dates.created {
+        // a view that holds no disk times reads nothing, and says so instead of looking
+        if let Some(unseen) = access.unseen() {
+            return Err(unseen_created(unseen));
+        }
         if hits.len() > ACCESS_MOST {
             return Err(format!(
                 "dc: would read the creation time of {} matches; add a word that narrows the search first (a name, ext:, size: or a folder).",
@@ -120,17 +124,19 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     // left out is counted and said, never taken for a non-match
     let mut by_time = false;
     let mut timed: Vec<(usize, (SystemTime, bool))> = Vec::new();
-    let (mut unread, mut unknown) = (0usize, 0usize);
+    let (mut unread, mut unknown, mut partial) = (0usize, 0usize, 0usize);
     if let Some((from, to)) = dates.accessed {
         by_time = true;
-        let (kept, left_out, no_times) = accessed_hits(tree, hits, from, to, access)?;
+        let (kept, left_out, not_full, no_times) = accessed_hits(tree, hits, from, to, access)?;
         timed = kept;
         unread = left_out;
+        partial = not_full;
         unknown = no_times;
         hits = timed.iter().map(|&(n, _)| n).collect();
     }
+    let partial_note = crate::used::partial_note(partial, "match", "matches");
     if hits.is_empty() {
-        let missed = unread + unknown;
+        let missed = unread + unknown + partial;
         let mut s = if (by_time || !created_notes.is_empty()) && missed + created_notes.len() > 0 {
             format!("Nothing in {} could be checked for {text}: their times weren't read.", tree.path_of(top).display())
         } else {
@@ -139,7 +145,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
         for note in &created_notes {
             let _ = write!(s, "\n({note})");
         }
-        for note in crate::used::notes(unread, unknown, "match", "matches", access) {
+        for note in partial_note.iter().chain(crate::used::notes(unread, unknown, "match", "matches", access).iter()) {
             let _ = write!(s, "\n({note})");
         }
         return Ok(s);
@@ -147,7 +153,8 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     hits.sort_by_key(|&n| std::cmp::Reverse(tree.nodes[n].size));
     timed.sort_by_key(|&(n, _)| std::cmp::Reverse(tree.nodes[n].size));
     // a folder's total holds its matching children's: the total counts outermost matches
-    let total: u64 = hits.iter().filter(|&&n| !tree.nodes[n].parent.is_some_and(|p| hits_contains(&hits, tree, p))).map(|&n| tree.nodes[n].size).sum();
+    let hit_set: std::collections::HashSet<usize> = hits.iter().copied().collect();
+    let total: u64 = hits.iter().filter(|&&n| !has_hit_ancestor(&hit_set, tree, n)).map(|&n| tree.nodes[n].size).sum();
     let mut s = format!("{} matches for {text} in {}, {} in all. Biggest first:\n", hits.len(), tree.path_of(top).display(), format_size(total));
     if by_time {
         for &(n, a) in timed.iter().take(max) {
@@ -167,7 +174,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     for note in &created_notes {
         let _ = writeln!(s, "({note})");
     }
-    for note in crate::used::notes(unread, unknown, "match", "matches", access) {
+    for note in partial_note.iter().chain(crate::used::notes(unread, unknown, "match", "matches", access).iter()) {
         let _ = writeln!(s, "({note})");
     }
     Ok(s)
@@ -177,28 +184,46 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
 /// budget, since past it every further match would only be counted as not read.
 const ACCESS_MOST: usize = crate::used::ANSWER_BUDGET;
 
+/// Why `dc:` can't read anything for this view.
+fn unseen_created(unseen: crate::used::Unseen) -> String {
+    let held = match unseen {
+        crate::used::Unseen::ScanOnly => "This view may only use the scan",
+        crate::used::Unseen::Csv => "This view came from a CSV file",
+    };
+    format!("{held}, which holds no creation times, so dc: can't search by when files were created.")
+}
+
+/// Why `da:` can't read anything for this view.
+fn unseen_accessed(unseen: crate::used::Unseen) -> String {
+    let held = match unseen {
+        crate::used::Unseen::ScanOnly => "This view may only use the scan",
+        crate::used::Unseen::Csv => "This view came from a CSV file",
+    };
+    format!("{held}, which holds no last-access times, so da: can't search by when files were last opened.")
+}
+
 /// `hits` whose last-access time is inside `[from, to)` (seconds since 1970), as (node, time and
-/// whether all of it was read); and how many were left out by the reading limit, and how many
-/// have no time here. A partly read folder is not a "no": it counts as left out.
+/// whether all of it was read); and how many were left out by the reading limit, how many were
+/// read only in part (a skipped or unreadable folder inside) and how many have no time here. A
+/// partly read folder is not a "no": it counts as not fully read.
 fn accessed_hits(
     tree: &Tree,
     hits: Vec<usize>,
     from: i64,
     to: i64,
     access: &mut crate::used::Accessed,
-) -> Result<(Vec<(usize, (SystemTime, bool))>, usize, usize), String> {
+) -> Result<(Vec<(usize, (SystemTime, bool))>, usize, usize, usize), String> {
     use crate::used::LastOpened;
+    if let Some(unseen) = access.unseen() {
+        return Err(unseen_accessed(unseen));
+    }
     if !access.kept() {
-        return Err(if access.silent() {
-            "This view may only use the scan, which holds no last-access times, so da: can't search by when files were last opened.".into()
-        } else {
-            "This search asks when files were last opened, but this PC has Windows' last-access updates turned off, so Sprawl has no such times to check.".into()
-        });
+        return Err("This search asks when files were last opened, but this PC has Windows' last-access updates turned off, so Sprawl has no such times to check.".into());
     }
     if hits.len() > ACCESS_MOST {
         return Err(format!("da: would read the last-access time of {} matches; add a word that narrows the search first (a name, ext:, size: or a folder).", hits.len()));
     }
-    let (mut kept, mut unread, mut unknown) = (Vec::new(), 0, 0);
+    let (mut kept, mut unread, mut partial, mut unknown) = (Vec::new(), 0, 0, 0);
     for n in hits {
         match access.of(&tree.path_of(n)) {
             LastOpened::At(t, true) => {
@@ -207,17 +232,18 @@ fn accessed_hits(
                     kept.push((n, (t, true)));
                 }
             }
-            LastOpened::At(_, false) => unread += 1,
+            LastOpened::At(_, false) => partial += 1,
             LastOpened::Unread => unread += 1,
             LastOpened::Unknown => unknown += 1,
         }
     }
-    Ok((kept, unread, unknown))
+    Ok((kept, unread, partial, unknown))
 }
 
-/// Whether a match sits above `n` (a match inside a matching folder isn't counted twice).
-fn hits_contains(hits: &[usize], tree: &Tree, n: usize) -> bool {
-    let mut cur = Some(n);
+/// Whether a match sits above `n` (a match inside a matching folder isn't counted twice). The
+/// matches are a set, so the total is linear in the number of matches, not quadratic.
+fn has_hit_ancestor(hits: &std::collections::HashSet<usize>, tree: &Tree, n: usize) -> bool {
+    let mut cur = tree.nodes[n].parent;
     while let Some(c) = cur {
         if hits.contains(&c) {
             return true;
@@ -359,6 +385,42 @@ mod tests {
         let tiny = search(&t, &facts, &json!({"query": "*.txt da:today"}), &mut crate::used::Accessed::with_budget(0)).unwrap();
         assert!(tiny.contains("could be checked"), "{tiny}");
         assert!(tiny.contains("1 match not checked for a last-opened time: the reading limit ran out"), "{tiny}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A client allowed only the scan reads nothing and is told so for both words; a CSV view
+    /// says where it came from.
+    #[test]
+    fn a_scan_only_or_csv_view_cannot_search_by_a_time() {
+        use crate::used::{Accessed, Unseen};
+        let dir = std::env::temp_dir().join(format!("sprawl-more-times-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), b"x").unwrap();
+        let t = tree_of(&dir);
+        let facts = Facts::from_apps(Vec::new());
+        let e = search(&t, &facts, &json!({"query": "*.txt dc:today"}), &mut Accessed::off()).unwrap_err();
+        assert!(e.contains("may only use the scan") && e.contains("dc:"), "{e}");
+        let e = search(&t, &facts, &json!({"query": "*.txt da:today"}), &mut Accessed::off()).unwrap_err();
+        assert!(e.contains("may only use the scan") && e.contains("da:"), "{e}");
+        let e = search(&t, &facts, &json!({"query": "*.txt dc:today"}), &mut Accessed::off_for(Unseen::Csv)).unwrap_err();
+        assert!(e.contains("CSV"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder and a matching file inside it count once in the total, not twice.
+    #[test]
+    fn a_folder_and_its_matching_child_count_once() {
+        let dir = std::env::temp_dir().join(format!("sprawl-more-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("iso")).unwrap();
+        std::fs::write(dir.join("iso").join("big.iso"), vec![0u8; 20_000]).unwrap();
+        let t = tree_of(&dir);
+        let facts = Facts::from_apps(Vec::new());
+        let r = search(&t, &facts, &json!({"query": "iso"}), &mut crate::used::Accessed::new()).unwrap();
+        assert!(r.starts_with("2 matches"), "{r}");
+        let once = format!("{} in all", sprawl_core::format_size(20_000));
+        assert!(r.contains(&once), "{r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
