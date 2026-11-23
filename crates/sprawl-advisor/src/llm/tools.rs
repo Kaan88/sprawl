@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use sprawl_core::{format_size, Tree};
 
-use super::report::{node_line, types_below};
+use super::report::{node_line_at, types_below};
 use super::ToolSpec;
 use crate::facts::{clean_text, month_year, Facts};
 use crate::finding::{Finding, Remedy, Risk, Source};
@@ -173,12 +173,13 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "list_children",
-            description: "What is directly inside a folder, biggest first: size (with exact bytes), item counts, newest change and owning app.",
+            description: "What is directly inside a folder, biggest first: size (with exact bytes), item counts, newest change, when it was last \
+                opened (Windows' last-access time) and owning app.",
             schema: json!({"type": "object", "properties": {"path": path, "limit": {"type": "integer", "description": "At most this many (default 40, max 80)"}}, "required": ["path"]}),
         },
         ToolSpec {
             name: "largest",
-            description: "The biggest files, or the biggest folders, anywhere below a folder.",
+            description: "The biggest files, or the biggest folders, anywhere below a folder. Each says when it last changed, was last opened and, for a program, last ran.",
             schema: json!({"type": "object", "properties": {"path": path, "what": {"type": "string", "enum": ["files", "folders"]}, "limit": {"type": "integer", "description": "Default 25, max 60"}}, "required": ["path", "what"]}),
         },
         ToolSpec {
@@ -300,6 +301,9 @@ pub struct Tools<'a> {
     pub allowed: Option<Vec<&'static str>>,
     /// Captured scan time, required for comparisons with History. Never the chat's start.
     pub scan_before: Option<std::time::SystemTime>,
+    /// Tests only: the reading budget an answer's last-access lookups start with.
+    #[cfg(test)]
+    pub(crate) test_access_budget: Option<usize>,
 }
 
 fn path_arg(input: &Value) -> Result<PathBuf, String> {
@@ -353,6 +357,8 @@ impl<'a> Tools<'a> {
             looked_up: Vec::new(),
             allowed: None,
             scan_before: None,
+            #[cfg(test)]
+            test_access_budget: None,
         };
         for f in already {
             // only what removes something closes the folders inside and around it; an
@@ -382,30 +388,60 @@ impl<'a> Tools<'a> {
         Ok((n, p))
     }
 
+    /// The last-access lookups for one answer. A client that may only see the scan on screen
+    /// reads nothing.
+    fn accessed(&self) -> crate::used::Accessed {
+        if self.exact {
+            return crate::used::Accessed::off();
+        }
+        #[cfg(test)]
+        {
+            if let Some(budget) = self.test_access_budget {
+                return crate::used::Accessed::with_budget(budget);
+            }
+        }
+        crate::used::Accessed::new()
+    }
+
     /// Run one tool. `Err` is sent back to the model as an error result.
     pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
         if self.allowed.as_ref().is_some_and(|a| !a.contains(&name)) {
             return Err(format!("there is no tool called {name} here"));
         }
         match name {
-            "search" => super::more_tools::search(self.tree, self.facts, input),
+            "search" => {
+                // a restricted client may only see the scan: nothing is read for dates
+                let mut access = self.accessed();
+                super::more_tools::search(self.tree, self.facts, input, &mut access)
+            }
             "growth" => super::more_tools::growth(self.tree, input, self.scan_before.ok_or("This scan's capture time is unavailable; make a fresh scan before comparing History.")?),
             "list_children" => {
                 let (n, _) = self.node(input)?;
                 let node = &self.tree.nodes[n];
+                let mut access = self.accessed();
+                let (mut unread, mut unknown) = (0, 0);
+                let top = access.time(&self.tree.path_of(n), &mut unread, &mut unknown);
                 if !node.is_dir {
-                    return Ok(format!("{} is a file: {}", self.tree.path_of(n).display(), node_line(self.tree, self.facts, n)));
+                    let mut s = format!("{} is a file: {}", self.tree.path_of(n).display(), node_line_at(self.tree, self.facts, n, top));
+                    for note in crate::used::notes(unread, unknown, "item", "items", &access) {
+                        let _ = write!(s, "\n({note})");
+                    }
+                    return Ok(s);
                 }
                 let mut kids = node.children.clone();
                 kids.sort_by(|a, b| self.tree.nodes[*b].size.cmp(&self.tree.nodes[*a].size));
                 let max = limit(input, 40, 80);
-                let mut s = format!("{}  {}\n", self.tree.path_of(n).display(), node_line(self.tree, self.facts, n));
+                let mut s = format!("{}  {}\n", self.tree.path_of(n).display(), node_line_at(self.tree, self.facts, n, top));
                 for &c in kids.iter().take(max) {
                     let kind = if self.tree.nodes[c].is_dir { "folder" } else { "file" };
-                    let _ = writeln!(s, "- {} [{kind}] {}", self.tree.nodes[c].name, node_line(self.tree, self.facts, c));
+                    let a = access.time(&self.tree.path_of(c), &mut unread, &mut unknown);
+                    let _ = writeln!(s, "- {} [{kind}] {}", self.tree.nodes[c].name, node_line_at(self.tree, self.facts, c, a));
                 }
                 if kids.len() > max {
                     let _ = writeln!(s, "({} more, smaller)", kids.len() - max);
+                }
+                for note in crate::used::notes(unread, unknown, "item", "items", &access) {
+                    let _ = writeln!(s, "({note})");
                 }
                 Ok(s)
             }
@@ -426,8 +462,16 @@ impl<'a> Tools<'a> {
                 }
                 found.sort_by(|a, b| b.0.cmp(&a.0));
                 let mut s = String::new();
+                let mut access = self.accessed();
+                let (mut unread, mut unknown) = (0, 0);
                 for &(_, k) in found.iter().take(max) {
-                    let _ = writeln!(s, "- {}  {}", self.tree.path_of(k).display(), node_line(self.tree, self.facts, k));
+                    let a = access.time(&self.tree.path_of(k), &mut unread, &mut unknown);
+                    let _ = writeln!(s, "- {}  {}", self.tree.path_of(k).display(), node_line_at(self.tree, self.facts, k, a));
+                }
+                if !s.is_empty() {
+                    for note in crate::used::notes(unread, unknown, "item", "items", &access) {
+                        let _ = writeln!(s, "({note})");
+                    }
                 }
                 Ok(if s.is_empty() { "nothing there".into() } else { s })
             }
@@ -813,6 +857,28 @@ pub(crate) fn clean_text_long(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reading limit that runs out before the list does is said, never silently dropped.
+    #[test]
+    fn a_reading_limit_that_runs_out_is_said() {
+        let dir = std::env::temp_dir().join(format!("sprawl-tools-access-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.join(format!("f{i}.bin")), vec![0u8; 100]).unwrap();
+        }
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let facts = Facts::from_apps(Vec::new());
+        let mut t = Tools::new(&tree, &facts, "test-model", &[], &Memory::default());
+        t.test_access_budget = Some(0);
+        // the folder itself and its five files
+        let answer = t.call("list_children", &json!({"path": dir.display().to_string()})).unwrap();
+        assert!(answer.contains("6 items not checked for a last-opened time: the reading limit ran out"), "{answer}");
+        assert!(!answer.contains("last opened"), "nothing pretends a date was read: {answer}");
+        let answer = t.call("largest", &json!({"path": dir.display().to_string(), "what": "files"})).unwrap();
+        assert!(answer.contains("5 items not checked for a last-opened time"), "{answer}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn claims_are_checked() {

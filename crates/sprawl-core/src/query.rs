@@ -240,7 +240,8 @@ pub(crate) fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Seconds since 1970, rounded down (before 1970: negative).
-pub(crate) fn unix_secs(t: SystemTime) -> i64 {
+/// Seconds since 1970 (before it, negative): what a `dm:` or `da:` value is compared with.
+pub fn unix_secs(t: SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_secs().min(i64::MAX as u64) as i64,
         Err(e) => {
@@ -509,6 +510,40 @@ fn date_value(s: &str, today: Option<Day>) -> Option<(i64, i64)> {
 }
 
 // -------------------------------------------------------------------- parsing
+
+/// `da:` (date accessed) words taken out of an AI search, as seconds `[from, to)`: a scan
+/// doesn't hold access times, so the caller reads them for the matches it keeps. Returns the
+/// query without those words, and `Err` saying what is wrong with a value (`da:2026-13`).
+pub fn split_accessed(q: &str, now: SystemTime) -> (String, Result<Option<(i64, i64)>, String>) {
+    let today = || local_day(unix_secs(now));
+    let mut kept: Vec<&str> = Vec::new();
+    let mut range: Option<(i64, i64)> = None;
+    let mut error: Option<String> = None;
+    for t in token_spans(q) {
+        let plain = t.chars.iter().all(|&(_, quoted)| !quoted);
+        let word: String = t.chars.iter().filter(|&&(_, quoted)| !quoted).map(|&(c, _)| c).collect();
+        if plain && (word.starts_with("!da:") || word.starts_with("!dateaccessed:")) {
+            error.get_or_insert_with(|| "da: can't be negated".to_string());
+            continue;
+        }
+        let value = plain.then(|| word.strip_prefix("da:").or_else(|| word.strip_prefix("dateaccessed:"))).flatten();
+        let Some(v) = value else {
+            kept.push(&q[t.start..t.end]);
+            continue;
+        };
+        // a keyword with nothing after it is being typed: ignored, as the others are
+        if v.is_empty() {
+            continue;
+        }
+        match date_value(v, today()) {
+            Some((a, b)) => range = Some(range.map_or((a, b), |(a0, b0)| (a.max(a0), b.min(b0)))),
+            None => {
+                error.get_or_insert_with(|| format!("da:{v} isn't a date Sprawl understands"));
+            }
+        }
+    }
+    (kept.join(" "), error.map_or(Ok(range), Err))
+}
 
 /// A character of the query and whether it was inside quotes.
 type Ch = (char, bool);
@@ -1016,6 +1051,33 @@ mod tests {
 
     fn m(q: &str, it: &T) -> bool {
         hit(&Query::parse(q), it)
+    }
+
+    /// `da:` is taken out of an AI search as a range, not searched as text; quoted is text.
+    #[test]
+    fn access_dates_are_taken_out_of_a_query() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+        let jan = local_midnight(days_from_civil(2026, 1, 1)).unwrap();
+        let feb = local_midnight(days_from_civil(2026, 2, 1)).unwrap();
+        let (text, r) = split_accessed("*.mp4 da:2026-01", now);
+        assert_eq!(text, "*.mp4");
+        assert_eq!(r.unwrap(), Some((jan, feb)));
+        assert_eq!(split_accessed("da:2026-01 *.mp4", now).0, "*.mp4");
+        assert_eq!(split_accessed("x dateaccessed:2026-01 y", now).0, "x y");
+        // quoted, it is a word to look for; nothing is read for it
+        let (text, r) = split_accessed("\"da:2026-01\" x", now);
+        assert_eq!(text, "\"da:2026-01\" x");
+        assert_eq!(r.unwrap(), None);
+        // a value that isn't a date is said, never searched as text
+        assert!(split_accessed("x da:2026-13", now).1.unwrap_err().contains("isn't a date"));
+        // two of them: the part both allow
+        let (a, b) = split_accessed("da:>=2026-01-10 da:<=2026-01-20", now).1.unwrap().unwrap();
+        assert_eq!(a, local_midnight(days_from_civil(2026, 1, 10)).unwrap());
+        assert_eq!(b, local_midnight(days_from_civil(2026, 1, 21)).unwrap());
+        // being typed: ignored
+        assert_eq!(split_accessed("x da:", now).1.unwrap(), None);
+        // never negated
+        assert!(split_accessed("x !da:2026-01", now).1.is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::time::SystemTime;
 
 use sprawl_core::{format_size, Tree, ROOT};
 
@@ -62,8 +63,15 @@ fn unexplained_in(tree: &Tree, facts: &Facts, found: &[Finding], min: u64, home:
     chosen
 }
 
-/// Size, item count, newest change and owner of node `n` on one line.
+/// Size, item count, newest change, last run and owner of node `n` on one line. Nothing is read:
+/// the last-opened time is added by [`node_line_at`], from a time the caller read.
 pub(crate) fn node_line(tree: &Tree, facts: &Facts, n: usize) -> String {
+    node_line_at(tree, facts, n, None)
+}
+
+/// [`node_line`], with when `n` was last opened: `access` is a time the caller read and whether
+/// all of `n` was read. Absent where this PC keeps no last-access times.
+pub(crate) fn node_line_at(tree: &Tree, facts: &Facts, n: usize, access: Option<(SystemTime, bool)>) -> String {
     let node = &tree.nodes[n];
     let mut s = format!("{} ({} bytes)", format_size(node.size), node.size);
     if node.is_dir {
@@ -71,6 +79,16 @@ pub(crate) fn node_line(tree: &Tree, facts: &Facts, n: usize) -> String {
     }
     if let Some(t) = node.modified {
         let _ = write!(s, ", modified {}", month_year(t));
+    }
+    if let Some((t, complete)) = access {
+        let _ = write!(s, ", last opened {}", month_year(t));
+        if !complete {
+            s.push_str(" (part of it read)");
+        }
+    }
+    // a program's last start, from Windows' own records (Prefetch and the Start menu history)
+    if let Some((t, from)) = facts.last_run_in(tree, n) {
+        let _ = write!(s, ", last run {} (from {})", month_year(t), from.label());
     }
     if node.is_reparse_point() {
         s.push_str(", junction or link");
@@ -222,6 +240,24 @@ mod tests {
         let known = crate::rules::run(&tree, &[pack]);
         assert!(unexplained_in(&tree, &facts, &known, 1, Some(&dir)).is_empty());
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    /// The tools' line says when it was last opened; the report's own never reads a date.
+    #[test]
+    fn a_line_says_when_it_was_last_opened() {
+        let dir = std::env::temp_dir().join(format!("sprawl-report-access-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![0u8; 300]).unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let facts = Facts::from_apps(Vec::new());
+        let n = tree.nodes[ROOT].children[0];
+        let when = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600);
+        let opened = format!("last opened {}", month_year(when));
+        assert!(node_line_at(&tree, &facts, n, Some((when, true))).contains(&opened));
+        assert!(node_line_at(&tree, &facts, n, Some((when, false))).contains("(part of it read)"));
+        assert!(!node_line(&tree, &facts, n).contains("last opened"), "the report reads nothing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

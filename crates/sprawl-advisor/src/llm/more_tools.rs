@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use sprawl_core::{format_size, Tree, ROOT};
 
-use super::report::node_line;
+use super::report::node_line_at;
 use super::ToolSpec;
 use crate::facts::Facts;
 
@@ -19,8 +19,10 @@ pub fn specs() -> Vec<ToolSpec> {
             name: "search",
             description: "Find files and folders by name, size, date or type in a scan, with the language of Sprawl's Search tab: words (all must match, \
                 any case), *.iso and img_????.jpg patterns, a|b (either), !tmp (not), >1gb <10kb (size; a folder's size is its total), ext:mp4,mkv, \
-                dm:2024 dm:>2025-06-01 (modified), folder: or file:, path:steam (in the path), depth:<3, regex:^IMG_\\d+$. \
-                With path, only inside that folder (and the scan holding it is the one searched). Biggest first.",
+                dm:2024 dm:>2025-06-01 (modified), da:2024 da:>2025-06-01 (last opened: the files' Windows last-access times, read for each match, \
+                so give it with another narrowing word), folder: or file:, path:steam (in the path), depth:<3, regex:^IMG_\\d+$. \
+                With path, only inside that folder (and the scan holding it is the one searched). Biggest first. \
+                Each result says when it was last opened and changed, and a program when it last ran.",
             schema: json!({"type": "object", "properties": {
                 "query": {"type": "string", "description": "The search, as typed in the Search tab, e.g. ext:iso >1gb or node_modules folder:"},
                 "path": {"type": "string", "description": "Only inside this folder."},
@@ -60,9 +62,18 @@ fn within(tree: &Tree, mut n: usize, top: usize) -> bool {
     }
 }
 
-pub fn search(tree: &Tree, facts: &Facts, input: &Value) -> Result<String, String> {
+pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::used::Accessed) -> Result<String, String> {
     let text = input["query"].as_str().map(str::trim).filter(|q| !q.is_empty()).ok_or("give a `query`, e.g. ext:iso >1gb")?;
-    let q = sprawl_core::query::Query::parse(text);
+    // `da:` isn't in the scan: taken out here, and only the matches the other words leave are
+    // read (an access time is read per path, never scanned)
+    let (plain, accessed) = sprawl_core::query::split_accessed(text, SystemTime::now());
+    if let Err(e) = &accessed {
+        return Err(format!("The search has mistakes: {e}.\n\nThe language:\n{}", sprawl_core::query::HELP));
+    }
+    if accessed.as_ref().is_ok_and(Option::is_some) && plain.trim().is_empty() {
+        return Err("da: reads each match's last-access time, so give it another word to narrow the search first (a name, ext:, size: or a folder).".into());
+    }
+    let q = sprawl_core::query::Query::parse(&plain);
     if !q.errors().is_empty() {
         return Err(format!("The search has mistakes: {}.\n\nThe language:\n{}", q.errors().join("; "), sprawl_core::query::HELP));
     }
@@ -71,21 +82,97 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value) -> Result<String, Strin
     let index = sprawl_core::search::Index::build(tree);
     let hits = sprawl_core::search::search(tree, &index, &q, &AtomicBool::new(false)).unwrap_or_default();
     let mut hits: Vec<usize> = hits.into_iter().filter(|&n| n != top && within(tree, n, top)).collect();
+    // `da:`: each match's time is read once and used again for the list; what the reading limit
+    // left out is counted and said, never taken for a non-match
+    let mut by_time = false;
+    let mut timed: Vec<(usize, (SystemTime, bool))> = Vec::new();
+    let (mut unread, mut unknown) = (0usize, 0usize);
+    if let Ok(Some((from, to))) = accessed {
+        by_time = true;
+        let (kept, left_out, no_times) = accessed_hits(tree, hits, from, to, access)?;
+        timed = kept;
+        unread = left_out;
+        unknown = no_times;
+        hits = timed.iter().map(|&(n, _)| n).collect();
+    }
     if hits.is_empty() {
-        return Ok(format!("Nothing in {} matches {text}.", tree.path_of(top).display()));
+        let missed = unread + unknown;
+        let mut s = if by_time && missed > 0 {
+            format!("Nothing in {} could be checked for {text}: their last-opened times weren't read.", tree.path_of(top).display())
+        } else {
+            format!("Nothing in {} matches {text}.", tree.path_of(top).display())
+        };
+        for note in crate::used::notes(unread, unknown, "match", "matches", access) {
+            let _ = write!(s, "\n({note})");
+        }
+        return Ok(s);
     }
     hits.sort_by_key(|&n| std::cmp::Reverse(tree.nodes[n].size));
+    timed.sort_by_key(|&(n, _)| std::cmp::Reverse(tree.nodes[n].size));
     // a folder's total holds its matching children's: the total counts outermost matches
     let total: u64 = hits.iter().filter(|&&n| !tree.nodes[n].parent.is_some_and(|p| hits_contains(&hits, tree, p))).map(|&n| tree.nodes[n].size).sum();
     let mut s = format!("{} matches for {text} in {}, {} in all. Biggest first:\n", hits.len(), tree.path_of(top).display(), format_size(total));
-    for &n in hits.iter().take(max) {
-        let kind = if tree.nodes[n].is_dir { "folder" } else { "file" };
-        let _ = writeln!(s, "- {} [{kind}] {}", tree.path_of(n).display(), node_line(tree, facts, n));
+    if by_time {
+        for &(n, a) in timed.iter().take(max) {
+            let kind = if tree.nodes[n].is_dir { "folder" } else { "file" };
+            let _ = writeln!(s, "- {} [{kind}] {}", tree.path_of(n).display(), node_line_at(tree, facts, n, Some(a)));
+        }
+    } else {
+        for &n in hits.iter().take(max) {
+            let kind = if tree.nodes[n].is_dir { "folder" } else { "file" };
+            let a = access.time(&tree.path_of(n), &mut unread, &mut unknown);
+            let _ = writeln!(s, "- {} [{kind}] {}", tree.path_of(n).display(), node_line_at(tree, facts, n, a));
+        }
     }
     if hits.len() > max {
         let _ = writeln!(s, "({} more, smaller)", hits.len() - max);
     }
+    for note in crate::used::notes(unread, unknown, "match", "matches", access) {
+        let _ = writeln!(s, "({note})");
+    }
     Ok(s)
+}
+
+/// The most matches a `da:` search reads an access time for: the same as one answer's reading
+/// budget, since past it every further match would only be counted as not read.
+const ACCESS_MOST: usize = crate::used::ANSWER_BUDGET;
+
+/// `hits` whose last-access time is inside `[from, to)` (seconds since 1970), as (node, time and
+/// whether all of it was read); and how many were left out by the reading limit, and how many
+/// have no time here. A partly read folder is not a "no": it counts as left out.
+fn accessed_hits(
+    tree: &Tree,
+    hits: Vec<usize>,
+    from: i64,
+    to: i64,
+    access: &mut crate::used::Accessed,
+) -> Result<(Vec<(usize, (SystemTime, bool))>, usize, usize), String> {
+    use crate::used::LastOpened;
+    if !access.kept() {
+        return Err(if access.silent() {
+            "This view may only use the scan, which holds no last-access times, so da: can't search by when files were last opened.".into()
+        } else {
+            "This search asks when files were last opened, but this PC has Windows' last-access updates turned off, so Sprawl has no such times to check.".into()
+        });
+    }
+    if hits.len() > ACCESS_MOST {
+        return Err(format!("da: would read the last-access time of {} matches; add a word that narrows the search first (a name, ext:, size: or a folder).", hits.len()));
+    }
+    let (mut kept, mut unread, mut unknown) = (Vec::new(), 0, 0);
+    for n in hits {
+        match access.of(&tree.path_of(n)) {
+            LastOpened::At(t, true) => {
+                let s = sprawl_core::query::unix_secs(t);
+                if from <= s && s < to {
+                    kept.push((n, (t, true)));
+                }
+            }
+            LastOpened::At(_, false) => unread += 1,
+            LastOpened::Unread => unread += 1,
+            LastOpened::Unknown => unknown += 1,
+        }
+    }
+    Ok((kept, unread, unknown))
 }
 
 /// Whether a match sits above `n` (a match inside a matching folder isn't counted twice).
@@ -199,14 +286,39 @@ mod tests {
         std::fs::write(dir.join("note.txt"), b"x").unwrap();
         let t = tree_of(&dir);
         let facts = Facts::from_apps(Vec::new());
-        let r = search(&t, &facts, &json!({"query": "ext:iso"})).unwrap();
+        let mut access = crate::used::Accessed::new();
+        let r = search(&t, &facts, &json!({"query": "ext:iso"}), &mut access).unwrap();
         assert!(r.starts_with("2 matches") && r.find("big.iso") < r.find("small.iso"), "{r}");
-        let r = search(&t, &facts, &json!({"query": "*.iso >10kb"})).unwrap();
+        let r = search(&t, &facts, &json!({"query": "*.iso >10kb"}), &mut crate::used::Accessed::new()).unwrap();
         assert!(r.contains("big.iso") && !r.contains("small.iso"), "{r}");
-        let inside = search(&t, &facts, &json!({"query": "iso", "path": dir.join("a").to_string_lossy()})).unwrap();
+        let inside = search(&t, &facts, &json!({"query": "iso", "path": dir.join("a").to_string_lossy()}), &mut crate::used::Accessed::new()).unwrap();
         assert!(inside.starts_with("1 matches"), "{inside}");
-        assert!(search(&t, &facts, &json!({"query": "size:>>"})).is_err());
-        assert!(search(&t, &facts, &json!({"query": "zzz-none"})).unwrap().starts_with("Nothing"));
+        assert!(search(&t, &facts, &json!({"query": "size:>>"}), &mut crate::used::Accessed::new()).is_err());
+        assert!(search(&t, &facts, &json!({"query": "zzz-none"}), &mut crate::used::Accessed::new()).unwrap().starts_with("Nothing"));
+        // `da:` needs another word, and a value that isn't a date is said
+        assert!(search(&t, &facts, &json!({"query": "da:2026-01"}), &mut crate::used::Accessed::new()).is_err());
+        assert!(search(&t, &facts, &json!({"query": "ext:iso da:2026-13"}), &mut crate::used::Accessed::new()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_by_last_opened_reads_the_files_time() {
+        let dir = std::env::temp_dir().join(format!("sprawl-more-da-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), b"x").unwrap();
+        let t = tree_of(&dir);
+        let facts = Facts::from_apps(Vec::new());
+        let mut access = crate::used::Accessed::new();
+        if access.kept() {
+            let today = search(&t, &facts, &json!({"query": "*.txt da:today"}), &mut access).unwrap();
+            assert!(today.contains("note.txt") && today.contains("last opened"), "{today}");
+            let future = search(&t, &facts, &json!({"query": "*.txt da:>2030-01-01"}), &mut crate::used::Accessed::new()).unwrap();
+            assert!(future.starts_with("Nothing"), "{future}");
+        }
+        // a reading limit that runs out is said, never turned into "nothing matches"
+        let tiny = search(&t, &facts, &json!({"query": "*.txt da:today"}), &mut crate::used::Accessed::with_budget(0)).unwrap();
+        assert!(tiny.contains("could be checked"), "{tiny}");
+        assert!(tiny.contains("1 match not checked for a last-opened time: the reading limit ran out"), "{tiny}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

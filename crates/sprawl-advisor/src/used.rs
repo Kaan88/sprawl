@@ -55,13 +55,187 @@ fn drive_upper(s: &str) -> String {
     }
 }
 
-/// Whether NTFS keeps last-access times on this machine: only when the setting says so plainly
-/// (0, or 0x80000000 "user managed, on"). "System managed" (on only for a small system drive)
-/// and off count as not kept.
+/// Whether this machine keeps last-access times: `NtfsDisableLastAccessUpdate` is 0 (on) or
+/// 0x80000000 (user managed, on). 1 and 0x80000001 are off; 2 and 0x80000002 are system managed
+/// (on for the system volume only) and so not taken as kept for every drive here. Either way
+/// Windows updates a time lazily (up to an hour), so it is a guide to use, never a clock.
 pub fn access_times_kept() -> bool {
     crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Control\FileSystem", crate::reg::View::Native)
         .and_then(|k| k.dword("NtfsDisableLastAccessUpdate"))
-        .is_some_and(|v| v == 0 || v == 0x8000_0000)
+        .is_some_and(keeps_last_access)
+}
+
+/// [`access_times_kept`]'s reading of the registry value, on its own so it can be tested.
+fn keeps_last_access(v: u32) -> bool {
+    v == 0 || v == 0x8000_0000
+}
+
+/// What one path's last-access lookup gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LastOpened {
+    /// The newest access time, and whether everything at the path was read.
+    At(SystemTime, bool),
+    /// Not read: this answer's reading limit ran out first. Never take it for "not opened".
+    Unread,
+    /// No time here: this PC keeps none, or the drive can't be read for them.
+    Unknown,
+}
+
+/// The most entries one answer reads for last-access times.
+pub const ANSWER_BUDGET: usize = 40_000;
+/// The most entries read for one path asked about.
+const PER_PATH: usize = 4_000;
+const NOT_KEPT: &str = "this PC has Windows' last-access updates turned off";
+const NOT_FIXED: &str = "this drive isn't a local fixed disk, so its times aren't read";
+const NOT_NTFS: &str = "this drive isn't NTFS";
+
+/// Last-access times for one answer: the setting and the folders to skip are read once, each
+/// drive is asked about once, and the work is bounded, so an answer about a folder of a million
+/// files stays quick. [`Accessed::off`] reads nothing (a client that may only see the scan on
+/// screen).
+pub struct Accessed {
+    kept: bool,
+    /// A client that may only see the scan: nothing is read and nothing is said about the disk.
+    silent: bool,
+    /// Entries still allowed to be read for this answer.
+    left: usize,
+    excluded: Vec<PathBuf>,
+    drives: std::collections::HashMap<char, Drive>,
+    /// Why no time can be read, when that is the machine or the drive rather than the limit.
+    why: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Drive {
+    FixedNtfs,
+    NotFixed,
+    NotNtfs,
+}
+
+impl Accessed {
+    /// For an answer that may look at the disk.
+    pub fn new() -> Accessed {
+        Accessed { kept: access_times_kept(), silent: false, left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), drives: Default::default(), why: None }
+    }
+
+    /// For a client that may only see the scan on screen: nothing is read, and no note is added
+    /// about the machine (it never looked).
+    pub fn off() -> Accessed {
+        Accessed { kept: false, silent: true, left: 0, excluded: Vec::new(), drives: Default::default(), why: None }
+    }
+
+    /// The same with a given reading limit, to see what running out says.
+    #[cfg(test)]
+    pub(crate) fn with_budget(left: usize) -> Accessed {
+        Accessed { kept: true, silent: false, left, excluded: Vec::new(), drives: Default::default(), why: None }
+    }
+
+    /// Whether this machine keeps last-access times at all.
+    pub fn kept(&self) -> bool {
+        self.kept
+    }
+
+    /// Whether this is a client that may only see the scan on screen (it never reads the disk
+    /// and never says anything about it).
+    pub fn silent(&self) -> bool {
+        self.silent
+    }
+
+    /// When anything at `path` was last opened. For a folder this is the newest time of the
+    /// files in it: listing a folder moves its own time, so its own is never used.
+    pub fn of(&mut self, path: &std::path::Path) -> LastOpened {
+        if !self.kept {
+            self.why.get_or_insert(NOT_KEPT);
+            return LastOpened::Unknown;
+        }
+        if self.left == 0 {
+            return LastOpened::Unread;
+        }
+        let Some(drive) = path.to_string_lossy().chars().next().map(|c| c.to_ascii_uppercase()).filter(|c| c.is_ascii_alphabetic()) else {
+            self.why.get_or_insert(NOT_FIXED);
+            return LastOpened::Unknown;
+        };
+        match *self.drives.entry(drive).or_insert_with(|| {
+            if !fixed_drive(drive) {
+                Drive::NotFixed
+            } else if !ntfs(drive) {
+                Drive::NotNtfs
+            } else {
+                Drive::FixedNtfs
+            }
+        }) {
+            Drive::FixedNtfs => {}
+            Drive::NotFixed => {
+                self.why.get_or_insert(NOT_FIXED);
+                return LastOpened::Unknown;
+            }
+            Drive::NotNtfs => {
+                self.why.get_or_insert(NOT_NTFS);
+                return LastOpened::Unknown;
+            }
+        }
+        let mut budget = self.left.min(PER_PATH);
+        let (t, complete) = accessed_in_with(path, &mut budget, &self.excluded);
+        self.left -= self.left.min(PER_PATH) - budget;
+        match t {
+            Some(t) => LastOpened::At(t, complete),
+            // the limit stopped it, or nothing there could be read: an answer, not a "no"
+            None if budget == 0 => LastOpened::Unread,
+            None => LastOpened::Unknown,
+        }
+    }
+
+    /// [`Accessed::of`] as a line builder takes it: the time and whether all of the path was
+    /// read, or None with the reason counted in `unread` (the limit) or `unknown` (this PC).
+    pub fn time(&mut self, path: &std::path::Path, unread: &mut usize, unknown: &mut usize) -> Option<(SystemTime, bool)> {
+        match self.of(path) {
+            LastOpened::At(t, complete) => Some((t, complete)),
+            LastOpened::Unread => {
+                *unread += 1;
+                None
+            }
+            LastOpened::Unknown => {
+                *unknown += 1;
+                None
+            }
+        }
+    }
+}
+
+/// The lines said after an answer for items whose last-access time wasn't read: how many the
+/// reading limit left out, and how many have no time here and why. Empty for a restricted
+/// client, and when everything asked about was read.
+pub fn notes(unread: usize, unknown: usize, one: &str, many: &str, access: &Accessed) -> Vec<String> {
+    let mut out = Vec::new();
+    if access.silent {
+        return out;
+    }
+    let count = |n: usize| format!("{n} {}", if n == 1 { one } else { many });
+    if unread > 0 {
+        out.push(format!("{} not checked for a last-opened time: the reading limit ran out (a smaller folder or a narrower search gives more).", count(unread)));
+    }
+    if unknown > 0 {
+        out.push(format!("{} with no last-opened time here: {}.", count(unknown), access.why.unwrap_or("the time couldn't be read")));
+    }
+    out
+}
+
+/// The volume `X:\` is a fixed disk (not a network, removable or optical drive): only those have
+/// last-access times worth reading, and a mapped share that reports NTFS would be crawled slowly.
+#[cfg(windows)]
+fn fixed_drive(drive: char) -> bool {
+    const DRIVE_FIXED: u32 = 3;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    let root: Vec<u16> = format!("{drive}:\\").encode_utf16().chain([0]).collect();
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_FIXED }
+}
+
+#[cfg(not(windows))]
+fn fixed_drive(_: char) -> bool {
+    false
 }
 
 /// The volume `X:\` is NTFS (FAT keeps only a date, other file systems their own rules).
@@ -213,6 +387,62 @@ mod tests {
         assert_eq!(accessed_in_with(&dir.join("visible.txt"), &mut 0, &[]), (None, false));
         assert!(!accessed_in_with(&dir, &mut 1, &[]).1);
         assert_eq!(accessed_in_with(&dir.join("missing"), &mut 100, &[]), (None, false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Only 0 and 0x80000000 are on; the rest are off or system-volume-only.
+    #[test]
+    fn only_an_explicit_on_counts_as_kept() {
+        assert!(keeps_last_access(0));
+        assert!(keeps_last_access(0x8000_0000));
+        // 1 and 0x80000001 are off
+        for v in [1, 0x8000_0001] {
+            assert!(!keeps_last_access(v), "{v:#x}");
+        }
+        // 2, 3, 0x80000002 and 0x80000003 are system managed: the system volume only
+        for v in [2, 3, 0x8000_0002, 0x8000_0003] {
+            assert!(!keeps_last_access(v), "{v:#x}");
+        }
+    }
+
+    /// An answer that may only see the scan reads nothing, and a kept machine reads a file's time.
+    #[test]
+    fn one_answers_access_times() {
+        let dir = std::env::temp_dir().join(format!("sprawl-accessed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("kept.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(Accessed::off().of(&file), LastOpened::Unknown, "a restricted answer never reads");
+        let mut a = Accessed::new();
+        if a.kept() {
+            let LastOpened::At(t, complete) = a.of(&file) else { panic!("a file's own time") };
+            assert!(complete);
+            assert!(t > SystemTime::UNIX_EPOCH);
+            // a file that isn't there isn't given a time
+            assert_eq!(a.of(&dir.join("gone.txt")), LastOpened::Unknown);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A reading limit that runs out is "not read", never "not opened", and is counted in the
+    /// answer; a restricted client hears nothing about the machine.
+    #[test]
+    fn a_reading_limit_that_ran_out_is_not_a_no() {
+        let dir = std::env::temp_dir().join(format!("sprawl-accessed-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut a = Accessed::with_budget(0);
+        assert_eq!(a.of(&file), LastOpened::Unread);
+        let said = notes(1, 0, "match", "matches", &a);
+        assert_eq!(said, vec!["1 match not checked for a last-opened time: the reading limit ran out (a smaller folder or a narrower search gives more)."]);
+        assert!(notes(2, 0, "item", "items", &a)[0].starts_with("2 items not checked"));
+        // a PC that keeps none says why, once
+        let mut none = Accessed { kept: false, silent: false, left: 10, excluded: Vec::new(), drives: Default::default(), why: None };
+        assert_eq!(none.of(&file), LastOpened::Unknown);
+        assert!(notes(0, 1, "item", "items", &none)[0].contains("last-access updates turned off"));
+        // a restricted client may not see the disk: nothing is said
+        assert!(notes(1, 2, "match", "matches", &Accessed::off()).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
