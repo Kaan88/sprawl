@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Right-click a file or folder in the tree and pick "Overwrite and delete..." to write over its files once with random data before deleting them, so what was on the disk is harder to recover. Nothing goes to the Recycle Bin. Before anything runs, the question says what it will do and what it cannot promise for that item: a solid-state drive moves writes around, compressed, sparse, encrypted or Windows-compressed files and copy-on-write volumes may keep the old data elsewhere, a OneDrive folder may keep older versions online, and System Restore, shadow copies and the Recycle Bin may hold older copies. Files in use, changed since the scan, kept, protected, links and cloud files are left alone, and Stop ends it after the file it is on. It never claims the data is gone for good.
+- File > Wipe Free Space on the Selected Drive... runs Windows' own cipher over the unused room on the drive, so deleted files there are harder to recover. The question says it can take hours and that the drive fills up while it runs, and states the limits for that drive (solid-state, ReFS, shadow copies). Stop ends it and clears cipher's working folder if one is left.
+
 ## 1.0.7 — 2026-11-23
 
 - The theme goes back to the defaults once, so everyone gets the new default look (below) and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.
