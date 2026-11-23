@@ -17,8 +17,12 @@
 //!    one Sprawl was written for. A database refused here is never opened for writing, which
 //!    is what would let SQLite finish a log or journal the browser left behind.
 //! 4. then the database is opened read-write and never created, and every delete for it goes in
-//!    one transaction. The browser is checked again once the transaction is open and once more
-//!    before it is kept (Firefox's `parent.lock` too): if it started meanwhile, the edit is
+//!    one transaction. If nothing was taken out, the transaction is dropped rather than kept, so
+//!    a run with nothing to do writes nothing. Inside it, `PRAGMA quick_check` reads what was
+//!    written (through the log the read-only check could not see), and `PRAGMA foreign_key_check`
+//!    refuses a schema with a table Sprawl doesn't know still pointing at a row that went. The
+//!    browser is checked again once the transaction is open and once more before it is kept
+//!    (Firefox's `parent.lock`, Chromium's `lockfile`): if it started meanwhile, the edit is
 //!    rolled back. No VACUUM (the browser does its own), so the file may not get smaller.
 //!
 //! The side files Sprawl held are released before SQLite opens them by path: the browser's own
@@ -40,10 +44,10 @@ use crate::clean::{Outcome, Spare};
 use crate::privacy::{Edit, Places, PrivacyPart, SIDE_FILES};
 
 /// Firefox's `places.sqlite` schema versions this code was written for: 52, which Firefox itself
-/// still opens, through 82, `DATABASE_SCHEMA_VERSION` in nsINavHistoryService.idl (mozilla-central,
-/// fetched 2026-11-23; the tables in `firefox_places.sql` are the same revision's). Anything else
-/// is refused untouched.
-pub const PLACES_VERSIONS: std::ops::RangeInclusive<i64> = 52..=82;
+/// still opens (below it, Places replaces the database), through 89, `DATABASE_SCHEMA_VERSION` in
+/// nsINavHistoryService.idl (mozilla-firefox/firefox main, fetched 2026-11-23; the tables in
+/// `firefox_places.sql` are the same revision's). Anything else is refused untouched.
+pub const PLACES_VERSIONS: std::ops::RangeInclusive<i64> = 52..=89;
 /// `formhistory.sqlite`: 5 since Firefox 57; Firefox itself refuses anything below 3.
 pub const FORMS_VERSIONS: std::ops::RangeInclusive<i64> = 3..=5;
 
@@ -67,7 +71,8 @@ fn unknown(browser: &str) -> String {
 /// The read is `immutable`: even a read-only SQLite open of a database in WAL mode makes a
 /// `-shm` and a `-wal` beside it, and Sprawl must leave nothing in a browser's profile (those
 /// would also count as new files when the edit is checked). A browser that closed cleanly has
-/// checkpointed its log, so the file itself is what the edit will see.
+/// checkpointed its log, so the file itself is what the edit will see; after a crash the log may
+/// hold rows this count doesn't, which is why the review says "at least".
 pub(crate) fn rows(kind: Edit, db: &Path) -> Option<u64> {
     let conn = open_read(db).ok()?;
     conn.execute_batch("PRAGMA query_only = 1").ok()?;
@@ -244,9 +249,10 @@ impl Schema {
         Ok(total)
     }
 
-    /// The places that stay: bookmarked, used by a keyword, or held by something else
-    /// (`foreign_count`: annotations such as a download's destination, and anything else Firefox
-    /// counts). Qualified with the table name, so it reads the same inside a subquery.
+    /// The places that stay: bookmarked, used by a keyword, or held by something else Firefox
+    /// counts in `foreign_count`. Firefox's triggers bump that for bookmarks and keywords; an
+    /// annotation alone does not count, so a download's page goes and its annotation with it.
+    /// Qualified with the table name, so it reads the same inside a subquery.
     fn stays(&self) -> String {
         let mut s = String::from("(moz_places.id IN (SELECT fk FROM moz_bookmarks WHERE fk IS NOT NULL) OR moz_places.id IN (SELECT place_id FROM moz_keywords WHERE place_id IS NOT NULL))");
         if self.has_foreign_count {
@@ -295,21 +301,23 @@ impl Schema {
             ));
         }
         if self.has_metadata {
+            // Firefox's own History.clear() removes every interaction record, not only those
+            // keyed to a page that goes: typed text, view times and search terms are history too
             v.push((
-                "DELETE FROM moz_places_metadata WHERE place_id NOT IN (SELECT id FROM moz_places) OR (referrer_place_id IS NOT NULL AND referrer_place_id NOT IN (SELECT id FROM moz_places))".to_string(),
-                format!("SELECT COUNT(*) FROM moz_places_metadata WHERE place_id IN (SELECT id FROM moz_places WHERE {deletable}) OR (referrer_place_id IS NOT NULL AND referrer_place_id IN (SELECT id FROM moz_places WHERE {deletable}))"),
+                "DELETE FROM moz_places_metadata".to_string(),
+                "SELECT COUNT(*) FROM moz_places_metadata".to_string(),
             ));
         }
         if self.has_search_queries {
             v.push((
-                "DELETE FROM moz_places_metadata_search_queries WHERE id NOT IN (SELECT search_query_id FROM moz_places_metadata WHERE search_query_id IS NOT NULL)".to_string(),
-                format!("SELECT COUNT(*) FROM moz_places_metadata_search_queries WHERE id NOT IN (SELECT m.search_query_id FROM moz_places_metadata m WHERE m.search_query_id IS NOT NULL AND m.place_id IN (SELECT id FROM moz_places WHERE {stays}) AND (m.referrer_place_id IS NULL OR m.referrer_place_id IN (SELECT id FROM moz_places WHERE {stays})))"),
+                "DELETE FROM moz_places_metadata_search_queries".to_string(),
+                "SELECT COUNT(*) FROM moz_places_metadata_search_queries".to_string(),
             ));
         }
         if self.has_newtab {
             v.push((
-                "DELETE FROM moz_newtab_shortcuts_interaction WHERE place_id NOT IN (SELECT id FROM moz_places)".to_string(),
-                format!("SELECT COUNT(*) FROM moz_newtab_shortcuts_interaction WHERE place_id IN (SELECT id FROM moz_places WHERE {deletable})"),
+                "DELETE FROM moz_newtab_shortcuts_interaction".to_string(),
+                "SELECT COUNT(*) FROM moz_newtab_shortcuts_interaction".to_string(),
             ));
         }
         if self.has_origins {
@@ -356,12 +364,13 @@ impl Schema {
                         v.push(("UPDATE moz_origins SET recalc_alt_frecency = 1".to_string(), false));
                     }
                     if !self.origins_recalc && !self.origins_recalc_alt {
-                        v.push(("UPDATE moz_origins SET frecency = -1".to_string(), false));
+                        // an origin's own "work this out again" is 0 (there is no -1 for it)
+                        v.push(("UPDATE moz_origins SET frecency = 0".to_string(), false));
                     }
                 }
                 // the cached origin frecency sums are rebuilt from the pages that are left
                 if self.has_meta {
-                    v.push(("DELETE FROM moz_meta WHERE key GLOB 'origin_frecency_*'".to_string(), false));
+                    v.push(("DELETE FROM moz_meta WHERE key LIKE 'origin_%frecency%'".to_string(), false));
                 }
                 v
             }
@@ -372,8 +381,18 @@ impl Schema {
 }
 
 fn integrity(conn: &Connection) -> Result<(), String> {
-    let bad = |e: rusqlite::Error| format!("the database didn't pass its own check ({e})");
-    let mut stmt = conn.prepare("PRAGMA integrity_check").map_err(bad)?;
+    passes(conn, "integrity_check", "the database")
+}
+
+/// The same, quickly, on the connection that did the writing: it reads pages through the log the
+/// read-only check couldn't see.
+fn quick(conn: &Connection) -> Result<(), String> {
+    passes(conn, "quick_check", "the edited database")
+}
+
+fn passes(conn: &Connection, pragma: &str, who: &str) -> Result<(), String> {
+    let bad = |e: rusqlite::Error| format!("{who} didn't pass its own check ({e})");
+    let mut stmt = conn.prepare(&format!("PRAGMA {pragma}")).map_err(bad)?;
     let mut rows = stmt.query([]).map_err(bad)?;
     let mut first: Option<String> = None;
     let mut more = 0u64;
@@ -387,9 +406,9 @@ fn integrity(conn: &Connection) -> Result<(), String> {
     }
     match first.as_deref() {
         Some("ok") if more == 0 => Ok(()),
-        Some("ok") => Err(format!("the database didn't pass its own check, and {more} more things after its first line")),
-        Some(why) => Err(format!("the database didn't pass its own check ({why})")),
-        None => Err("the database didn't pass its own check (it gave no answer)".into()),
+        Some("ok") => Err(format!("{who} didn't pass its own check, and {more} more things after its first line")),
+        Some(why) => Err(format!("{who} didn't pass its own check ({why})")),
+        None => Err(format!("{who} didn't pass its own check (it gave no answer)")),
     }
 }
 
@@ -404,15 +423,16 @@ fn side_path(p: &Path, suffix: &str) -> PathBuf {
 /// The whole edit: the copy first, then the format check, then one transaction.
 #[cfg(test)]
 fn apply(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browser: &str, spare: &Spare) -> Result<u64, String> {
-    apply_guarded(kind, db, sides, folder, browser, spare, &|| Ok(()))
+    let mut notes = Vec::new();
+    apply_guarded(kind, db, sides, folder, browser, spare, &|| Ok(()), &mut notes)
 }
 
 /// [`apply`], with `guard` run once the transaction is open and again just before it is
 /// committed: the browser may start between the check before the edit and the commit, and the
 /// edit must not land if it did. Anything that goes wrong after the copy removes the copy and
-/// leaves the database as SQLite found it.
+/// leaves the database as SQLite found it; anything that couldn't be removed is a note.
 #[allow(clippy::too_many_arguments)]
-fn apply_guarded(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browser: &str, spare: &Spare, guard: &dyn Fn() -> Result<(), String>) -> Result<u64, String> {
+fn apply_guarded(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browser: &str, spare: &Spare, guard: &dyn Fn() -> Result<(), String>, notes: &mut Vec<String>) -> Result<u64, String> {
     let held = crate::clean::hold_plain(db, spare)?;
     let mut held_sides = Vec::new();
     for s in sides {
@@ -433,7 +453,9 @@ fn apply_guarded(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browse
     })();
     if let Err(e) = copied {
         // no checked copy, no edit: whatever was written is removed
-        remove_copy(part_dir, folder);
+        if let Some(n) = remove_copy(part_dir, folder) {
+            notes.push(n);
+        }
         return Err(e);
     }
     // the side files are copied and released: SQLite opens them itself, by path, from here on
@@ -441,17 +463,21 @@ fn apply_guarded(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browse
     match edit_database(kind, db, browser, guard) {
         Ok(0) => {
             // nothing was edited: a copy of it would only push a real one out
-            remove_copy(part_dir, folder);
+            if let Some(n) = remove_copy(part_dir, folder) {
+                notes.push(n);
+            }
             Ok(0)
         }
         Ok(rows) => {
             let keep = folder.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            prune(part_dir, keep);
+            notes.extend(prune(part_dir, keep));
             Ok(rows)
         }
         Err(e) => {
             // a failed try keeps no copy: it must not push a good one out
-            remove_copy(part_dir, folder);
+            if let Some(n) = remove_copy(part_dir, folder) {
+                notes.push(n);
+            }
             Err(e)
         }
     }
@@ -485,9 +511,28 @@ fn edit_database(kind: Edit, db: &Path, browser: &str, guard: &dyn Fn() -> Resul
             rows += n;
         }
     }
+    if rows == 0 {
+        // nothing was taken out: drop the transaction, so its bookkeeping UPDATEs are not kept
+        // (a copy of a database nothing changed is not worth keeping either)
+        return Ok(0);
+    }
+    // the write connection can see a log the read-only check could not: check what was written
+    quick(&tx)?;
+    // anything the edit left pointing at a row that went is a schema Sprawl doesn't know
+    if foreign_key_orphan(&tx)? {
+        return Err(unknown(browser));
+    }
     guard()?;
     tx.commit().map_err(|e| format!("the edit was rolled back ({e})"))?;
     Ok(rows)
+}
+
+/// Whether any foreign key in the database points at a row that isn't there (it works with
+/// enforcement off, which is how the edit runs).
+fn foreign_key_orphan(conn: &Connection) -> Result<bool, String> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    Ok(rows.next().map_err(|e| e.to_string())?.is_some())
 }
 
 /// Copy `src` (an open, checked file) into `dir` under `name`, then read it back and compare it
@@ -515,43 +560,64 @@ fn copy_checked(src: &crate::clean::HeldFile, dir: &sprawl_core::local::Director
 
 /// Keep the newest [`KEEP_BACKUPS`] copies in `part_dir`, and drop any older than 30 days; the
 /// copy just written is never one of them, and each goes through the pinned folder's handle
-/// (only folders named like a copy are considered, and never a link).
-fn prune(part_dir: &Path, keep: &str) {
-    let Ok(dir) = crate::store::ensure_dir(part_dir) else { return };
-    let Ok(names) = dir.names() else { return };
+/// (only folders named like a copy are considered, and never a link). A copy that can't be
+/// removed is reported and does not count as one of the copies kept.
+fn prune(part_dir: &Path, keep: &str) -> Vec<String> {
+    let mut notes = Vec::new();
+    let Ok(dir) = crate::store::ensure_dir(part_dir) else { return notes };
+    let Ok(names) = dir.names() else { return notes };
     let cutoff = stamp_before(30 * 86_400);
     let mut old: Vec<String> = names.into_iter().filter(|n| is_stamp(n) && n != keep).collect();
     old.sort();
     let excess = old.len().saturating_sub(KEEP_BACKUPS.saturating_sub(1));
-    for (i, n) in old.iter().enumerate() {
+    let mut removed = 0usize;
+    for n in &old {
         let too_old = cutoff.as_deref().is_some_and(|c| n.as_str() < c);
-        if i < excess || too_old {
-            let _ = dir.remove_tree(n);
+        if removed < excess || too_old {
+            match dir.remove_tree(n) {
+                Ok(()) => removed += 1,
+                // it stays and is not counted as kept: the next one goes instead
+                Err(e) => notes.push(format!("an old copy couldn't be removed ({}: {e})", part_dir.join(n).display())),
+            }
         }
+    }
+    notes
+}
+
+/// Where the browser keeps the file it holds while it runs: Firefox's `parent.lock` in the
+/// profile, Chromium's `lockfile` in the user-data folder one above the profile.
+fn lock_path(kind: crate::privacy::Kind, db: &Path) -> Option<PathBuf> {
+    match kind {
+        crate::privacy::Kind::Firefox => db.parent().map(|p| p.join("parent.lock")),
+        crate::privacy::Kind::Chromium => db.parent().and_then(|p| p.parent()).map(|p| p.join("lockfile")),
     }
 }
 
-/// Firefox holds `parent.lock` in its profile while it runs: one that can't be opened over means
-/// Firefox is (or is starting) and nothing may be edited. Missing is fine (it removes it when it
-/// closes cleanly, and a cleanly closed Firefox is what the other checks see too).
-fn profile_lock_free(lock: &Path) -> Result<(), String> {
+/// Firefox holds `parent.lock` in its profile while it runs, Chromium `lockfile` in its user-data
+/// folder: one that exists and can't be opened over means the browser is (or is starting) and
+/// nothing may be edited. The file is only opened when it is already there, so a browser starting
+/// in that instant is not held up by Sprawl.
+fn browser_lock_free(lock: &Path, who: &str) -> Result<(), String> {
     use std::os::windows::fs::OpenOptionsExt;
+    if let Err(e) = std::fs::symlink_metadata(lock) {
+        return if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(format!("{who}'s lock couldn't be checked ({e})")) };
+    }
     match std::fs::OpenOptions::new().read(true).share_mode(0).custom_flags(0x0020_0000).open(lock) {
         Ok(f) => {
             drop(f);
             Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err("Firefox's profile lock is held, so it may have started".into()),
+        Err(_) => Err(format!("{who}'s lock is held, so it may have started")),
     }
 }
 
 /// Remove the copy at `folder` (the one just made), through the pinned part folder's handle.
-fn remove_copy(part_dir: &Path, folder: &Path) {
-    let Some(name) = folder.file_name().and_then(|n| n.to_str()) else { return };
-    if let Ok(dir) = crate::store::ensure_dir(part_dir) {
-        let _ = dir.remove_tree(name);
-    }
+/// Remove the copy at `folder` (the one just made), through the pinned part folder's handle. A
+/// copy that can't be removed is reported: it stays where it is.
+fn remove_copy(part_dir: &Path, folder: &Path) -> Option<String> {
+    let name = folder.file_name().and_then(|n| n.to_str())?;
+    let dir = crate::store::ensure_dir(part_dir).ok()?;
+    dir.remove_tree(name).err().map(|e| format!("a copy of the database couldn't be removed ({}: {e})", folder.display()))
 }
 
 /// Whether `name` is what [`stamp`] writes: `2026-11-23-03-50-12-123456`.
@@ -666,7 +732,7 @@ pub(crate) fn run(
     // the browser may start between the check just made and the commit: the guard runs after
     // the transaction is open and again before it is kept
     let b = part.browser();
-    let lock = (b.kind == crate::privacy::Kind::Firefox).then(|| file.parent().map(|p| p.join("parent.lock"))).flatten();
+    let lock = lock_path(b.kind, file);
     let guard = || -> Result<(), String> {
         match crate::procs::any_running(&exes, crate::procs::running().as_ref()) {
             Some(false) => {}
@@ -676,11 +742,11 @@ pub(crate) fn run(
         // a browser that could have been started and stopped again is caught by the lock it
         // holds while it runs; one it can't be opened over means it is back
         if let Some(lock) = &lock {
-            profile_lock_free(lock)?;
+            browser_lock_free(lock, b.short)?;
         }
         Ok(())
     };
-    match apply_guarded(kind, file, &sides, &folder, browser, spare, &guard) {
+    match apply_guarded(kind, file, &sides, &folder, browser, spare, &guard, &mut o.notes) {
         Ok(rows) => {
             o.edited = Some(rows);
             progress(0);
@@ -748,7 +814,7 @@ INSERT INTO moz_places (id, url, title, visit_count, last_visit_date, origin_id,
   (2, 'https://gone.example/b', 'Gone', 3, 500, 2, 0),
   (3, 'https://gone.example/c', 'Typed', 0, NULL, 2, 0),
   (4, 'https://keyword.example/d', 'Keyword', 1, 600, 3, 1),
-  (5, 'https://download.example/file', 'Download', 1, 700, 4, 1);
+  (5, 'https://download.example/file', 'Download', 1, 700, 4, 0);
 INSERT INTO moz_historyvisits (id, place_id, visit_date, visit_type) VALUES
   (1, 1, 100, 1), (2, 1, 200, 1),
   (3, 2, 300, 1), (4, 2, 400, 1), (5, 2, 500, 1),
@@ -770,7 +836,7 @@ INSERT INTO moz_places_metadata (id, place_id, referrer_place_id, created_at, se
 INSERT INTO moz_newtab_shortcuts_interaction (id, place_id, event_type, timestamp_s, pinned, tile_position) VALUES
   (1, 1, 0, 1000, 0, 0),
   (2, 2, 0, 1001, 0, 1);
-INSERT INTO moz_meta (key, value) VALUES ('origin_frecency_count', '4'), ('origin_frecency_sum', '220'), ('other', 'stays');
+INSERT INTO moz_meta (key, value) VALUES ('origin_frecency_count', '4'), ('origin_frecency_sum', '220'), ('origin_alt_frecency_sum', '5'), ('other', 'stays');
 "#,
         )
         .unwrap();
@@ -827,32 +893,38 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn firefox_history_rows_go_and_what_holds_a_page_stays() {
         let base = dir("history");
         let db_path = base.join("places.sqlite");
-        places_db(&db_path, 82);
+        places_db(&db_path, 89);
         let before = std::fs::read(&db_path).unwrap();
         let backups = base.join("backups").join("privacy.firefox-history").join(stamp().unwrap());
         let rows = apply(Edit::FirefoxHistory, &db_path, &[], &backups, "Firefox", &Spare::default()).unwrap();
-        assert_eq!(rows, 17, "7 visits, 2 pages, and the rows keyed to them");
+        assert_eq!(rows, 23, "7 visits, 3 pages, and the rows keyed to them");
         let c = open(&db_path);
         assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_historyvisits"), 0);
         let left: Vec<i64> = { let mut s = c.prepare("SELECT id FROM moz_places ORDER BY id").unwrap(); s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect() };
-        assert_eq!(left, [1, 4, 5], "the bookmarked, the keyworded and the downloaded page stay");
+        assert_eq!(left, [1, 4], "the bookmarked and the keyworded page stay; a download's page is held by nothing Firefox counts");
         let (visits, last): (i64, Option<i64>) = c.query_row("SELECT visit_count, last_visit_date FROM moz_places WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((visits, last), (0, None), "the kept page keeps no history count");
         assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_bookmarks WHERE fk = 1"), 1, "the bookmark stays");
         assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_bookmarks WHERE type = 2"), 1, "the folder stays");
         assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_keywords WHERE place_id = 4"), 1, "the keyword stays");
         let notes: Vec<String> = { let mut s = c.prepare("SELECT content FROM moz_annos ORDER BY id").unwrap(); s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect() };
-        assert_eq!(notes, ["a note on the page that stays", "C:\\Users\\sam\\Downloads\\file.zip"], "the note and the download's destination stay");
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_origins"), 3, "only origins a remaining page uses");
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places WHERE id IN (1, 4, 5) AND recalc_frecency = 1 AND recalc_alt_frecency = 1"), 3, "kept pages ask for their ranking to be worked out again");
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_origins WHERE recalc_frecency = 1 AND recalc_alt_frecency = 1"), 3, "and so do their origins");
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_meta WHERE key GLOB 'origin_frecency_*'"), 0, "Firefox rebuilds its origin sums");
+        assert_eq!(notes, ["a note on the page that stays"], "the kept page's note stays; the download's destination went with its page");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places_metadata"), 0, "no page-interaction record survives");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places_metadata_search_queries"), 0, "no search term survives");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_newtab_shortcuts_interaction"), 0, "no newtab click survives");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_inputhistory"), 1, "the kept page's typed text stays (Firefox's clear keeps it too)");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_origins"), 2, "only origins a remaining page uses");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places WHERE recalc_frecency = 1 AND recalc_alt_frecency = 1"), 2, "kept pages ask for their ranking to be worked out again");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_origins WHERE recalc_frecency = 1 AND recalc_alt_frecency = 1"), 2, "and so do their origins");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_meta WHERE key LIKE 'origin_%frecency%'"), 0, "Firefox rebuilds its origin sums");
         assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_meta"), 1, "and leaves other keys");
         drop(c);
         // the copy is the database exactly as it was, and it is kept
         assert_eq!(std::fs::read(backups.join("places.sqlite")).unwrap(), before, "the copy is byte for byte the original");
-        // and running it again takes out nothing
+        // and running it again takes out nothing, and writes nothing
+        let after = std::fs::read(&db_path).unwrap();
         assert_eq!(apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups").join("privacy.firefox-history").join(stamp().unwrap()), "Firefox", &Spare::default()).unwrap(), 0);
+        assert_eq!(std::fs::read(&db_path).unwrap(), after, "a run with nothing to take out leaves the file's bytes as they were");
     }
 
     /// No row keyed to a place is left pointing at a page that is gone, in any table that has
@@ -861,14 +933,16 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn no_row_keyed_to_a_missing_place_is_left() {
         let base = dir("orphans");
         let db_path = base.join("places.sqlite");
-        places_db(&db_path, 82);
+        places_db(&db_path, 89);
         apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups"), "Firefox", &Spare::default()).unwrap();
         let c = open(&db_path);
         let tables: Vec<String> = { let mut s = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").unwrap(); s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect() };
         for t in tables {
             let cols: Vec<String> = { let mut s = c.prepare(&format!("PRAGMA table_info({t})")).unwrap(); s.query_map([], |r| r.get::<_, String>(1)).unwrap().map(|r| r.unwrap()).collect() };
-            if cols.iter().any(|x| x == "place_id") {
-                assert_eq!(count(&c, &format!("SELECT COUNT(*) FROM {t} WHERE place_id NOT IN (SELECT id FROM moz_places)")), 0, "{t} left a row pointing at a missing page");
+            for (col, parent) in [("place_id", "moz_places"), ("visit_id", "moz_historyvisits"), ("origin_id", "moz_origins")] {
+                if cols.iter().any(|x| x == col) {
+                    assert_eq!(count(&c, &format!("SELECT COUNT(*) FROM {t} WHERE {col} NOT IN (SELECT id FROM {parent})")), 0, "{t}.{col} left a row pointing at a missing row");
+                }
             }
             if t == "moz_bookmarks" {
                 assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_bookmarks WHERE fk IS NOT NULL AND fk NOT IN (SELECT id FROM moz_places)"), 0, "a bookmark pointing at a missing page");
@@ -922,7 +996,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn no_backup_no_edit() {
         let base = dir("nobackup");
         let db_path = base.join("places.sqlite");
-        places_db(&db_path, 82);
+        places_db(&db_path, 89);
         let before = std::fs::read(&db_path).unwrap();
         // a file where the backup folder should be
         std::fs::write(base.join("backups"), b"not a folder").unwrap();
@@ -946,7 +1020,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         // the oldest Firefox itself opens (52) is taken, and the newest Sprawl was written for
         places_db(&base.join("old.sqlite"), 52);
         assert!(apply(Edit::FirefoxHistory, &base.join("old.sqlite"), &[], &base.join("bk52"), "Firefox", &Spare::default()).is_ok());
-        places_db(&base.join("new.sqlite"), 82);
+        places_db(&base.join("new.sqlite"), 89);
         assert!(apply(Edit::FirefoxHistory, &base.join("new.sqlite"), &[], &base.join("bk82"), "Firefox", &Spare::default()).is_ok());
         // one below each end is refused too
         places_db(&base.join("too-old.sqlite"), 51);
@@ -954,7 +1028,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let err = apply(Edit::FirefoxHistory, &base.join("too-old.sqlite"), &[], &base.join("bk51"), "Firefox", &Spare::default()).unwrap_err();
         assert!(err.contains("isn't one Sprawl knows how to edit"), "{err}");
         assert_eq!(std::fs::read(base.join("too-old.sqlite")).unwrap(), before);
-        places_db(&base.join("too-new.sqlite"), 83);
+        places_db(&base.join("too-new.sqlite"), 90);
         assert!(apply(Edit::FirefoxHistory, &base.join("too-new.sqlite"), &[], &base.join("bk83"), "Firefox", &Spare::default()).is_err());
 
     }
@@ -965,7 +1039,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let base = dir("rollback");
         let db_path = base.join("places.sqlite");
         {
-            let c = places_db(&db_path, 82);
+            let c = places_db(&db_path, 89);
             // the last statement (on moz_origins) fails after the visits and pages have gone
             c.execute_batch("CREATE TRIGGER stop_origins BEFORE DELETE ON moz_origins BEGIN SELECT RAISE(ABORT, 'no'); END;").unwrap();
         }
@@ -985,7 +1059,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn a_file_with_another_name_or_changed_is_left_alone() {
         let base = dir("links");
         let db_path = base.join("places.sqlite");
-        places_db(&db_path, 82);
+        places_db(&db_path, 89);
         std::fs::hard_link(&db_path, base.join("same file")).unwrap();
         let err = apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups"), "Firefox", &Spare::default()).unwrap_err();
         assert!(err.contains("another name"), "{err}");
@@ -1048,13 +1122,13 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn counting_is_read_only_and_agrees_with_the_edit() {
         let base = dir("count");
         let db_path = base.join("places.sqlite");
-        places_db(&db_path, 82);
+        places_db(&db_path, 89);
         let before = std::fs::read(&db_path).unwrap();
-        assert_eq!(rows(Edit::FirefoxHistory, &db_path), Some(17));
+        assert_eq!(rows(Edit::FirefoxHistory, &db_path), Some(23));
         assert_eq!(std::fs::read(&db_path).unwrap(), before, "measuring wrote nothing");
         assert_eq!(rows(Edit::FirefoxHistory, &base.join("missing.sqlite")), None);
         // and it agrees with the edit
-        assert_eq!(apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups"), "Firefox", &Spare::default()).unwrap(), 17);
+        assert_eq!(apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups"), "Firefox", &Spare::default()).unwrap(), 23);
 
     }
 
@@ -1065,14 +1139,14 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let base = dir("wal");
         let db_path = base.join("places.sqlite");
         {
-            let c = places_db(&db_path, 82);
+            let c = places_db(&db_path, 89);
             c.pragma_update(None, "journal_mode", "WAL").unwrap();
         }
         let rows = apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups"), "Firefox", &Spare::default()).unwrap();
-        assert_eq!(rows, 17);
+        assert_eq!(rows, 23);
         let c = open(&db_path);
         assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_historyvisits"), 0);
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places"), 3);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places"), 2);
 
     }
 
@@ -1083,12 +1157,12 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let base = dir("walcount");
         let db_path = base.join("places.sqlite");
         {
-            let c = places_db(&db_path, 82);
+            let c = places_db(&db_path, 89);
             c.pragma_update(None, "journal_mode", "WAL").unwrap();
         }
         let names = |p: &Path| { let mut v: Vec<String> = std::fs::read_dir(p).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect(); v.sort(); v };
         let before = names(&base);
-        assert_eq!(rows(Edit::FirefoxHistory, &db_path), Some(17), "the main file is read");
+        assert_eq!(rows(Edit::FirefoxHistory, &db_path), Some(23), "the main file is read");
         assert_eq!(names(&base), before, "nothing was made beside it");
 
     }
@@ -1101,17 +1175,17 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let fp = places.roaming.join(r"Mozilla\Firefox\Profiles\abcd1234.default-release");
         let db = fp.join("places.sqlite");
         std::fs::remove_file(&db).unwrap();
-        places_db(&db, 82);
+        places_db(&db, 89);
         let tree = sprawl_core::scan(&base, |_| {}).unwrap();
         let found = crate::privacy::find_in(&tree, &places);
         let f = found.iter().find(|f| f.title == "Firefox: Browsing history (default-release)").expect("the history part");
         assert_eq!(f.bytes, 0, "a privacy edit is never counted as space");
         assert!(
-            matches!(&f.action, Some(crate::finding::Action::Edit { part, file, rows }) if part == "privacy.firefox/history" && file == &db && *rows == 17),
+            matches!(&f.action, Some(crate::finding::Action::Edit { part, file, rows }) if part == "privacy.firefox/history" && file == &db && *rows == 23),
             "{:?}",
             f.action
         );
-        assert!(f.evidence.iter().any(|e| e.contains("17 rows would go")), "{:?}", f.evidence);
+        assert!(f.evidence.iter().any(|e| e.contains("At least 23 rows would go")), "{:?}", f.evidence);
         // the fixture's other databases aren't readable as their formats, so their parts aren't offered
         assert!(!found.iter().any(|f| f.title.contains("Form history") || f.title.contains("Autofill")), "{found:?}");
         // the safety check takes it, with no space claimed
@@ -1125,7 +1199,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         assert!(crate::safety::check_in(&bad, &tree, &never, crate::safety::CACHE_CARVE_OUTS, home, Some(&places)).is_err());
         // the review's preview: the database, its size and the rows, never bytes to free
         let preview = crate::clean::edit_preview(crate::privacy::part("privacy.firefox/history").unwrap(), &db, &crate::clean::Spare::default(), &places);
-        assert_eq!((preview.bytes, preview.files, preview.rows), (0, 1, 17));
+        assert_eq!((preview.bytes, preview.files, preview.rows), (0, 1, 23));
         assert_eq!(preview.biggest[0].0, db);
 
     }
@@ -1137,28 +1211,82 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let base = dir("frecency");
         let db_path = base.join("places.sqlite");
         {
-            let c = places_db(&db_path, 82);
+            let c = places_db(&db_path, 89);
             c.execute_batch("ALTER TABLE moz_places DROP COLUMN recalc_frecency; ALTER TABLE moz_places DROP COLUMN recalc_alt_frecency; ALTER TABLE moz_origins DROP COLUMN recalc_frecency; ALTER TABLE moz_origins DROP COLUMN recalc_alt_frecency;").unwrap();
         }
         apply(Edit::FirefoxHistory, &db_path, &[], &base.join("backups"), "Firefox", &Spare::default()).unwrap();
         let c = open(&db_path);
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places WHERE frecency = -1"), 3, "every kept page");
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_origins WHERE frecency = -1"), 3, "every kept origin");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_places WHERE frecency = -1"), 2, "every kept page");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM moz_origins WHERE frecency = 0"), 2, "every kept origin asks to be worked out again");
     }
 
-    /// Firefox's profile lock: free when the file is missing or no one holds it, held otherwise.
+    /// The browser's lock (Firefox's `parent.lock`, Chromium's `lockfile`): free when the file is
+    /// missing or no one holds it, held otherwise.
     #[test]
-    fn the_profile_lock_is_read_as_firefox_holds_it() {
-        let base = dir("lock");
-        let lock = base.join("parent.lock");
-        assert!(profile_lock_free(&lock).is_ok(), "no lock file at all");
-        std::fs::write(&lock, b"").unwrap();
-        assert!(profile_lock_free(&lock).is_ok(), "a lock file nobody holds");
+    fn the_browser_lock_is_read_as_the_browser_holds_it() {
         use std::os::windows::fs::OpenOptionsExt;
-        let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&lock).unwrap();
-        assert!(profile_lock_free(&lock).is_err(), "a lock Firefox holds");
+        let base = dir("lock");
+        for name in ["parent.lock", "lockfile"] {
+            let lock = base.join(name);
+            let who = if name == "parent.lock" { "Firefox" } else { "Chrome" };
+            assert!(browser_lock_free(&lock, who).is_ok(), "{name}: no lock file at all");
+            std::fs::write(&lock, b"").unwrap();
+            assert!(browser_lock_free(&lock, who).is_ok(), "{name}: a lock file nobody holds");
+            let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&lock).unwrap();
+            assert!(browser_lock_free(&lock, who).is_err(), "{name}: a lock the browser holds");
+            drop(held);
+            assert!(browser_lock_free(&lock, who).is_ok(), "{name}: the lock let go");
+            std::fs::remove_file(&lock).unwrap();
+        }
+    }
+
+    /// The lock file each browser holds while it runs, found from the database's own place.
+    #[test]
+    fn the_lock_is_looked_for_where_its_browser_keeps_it() {
+        let ff = Path::new(r"C:\Users\sam\AppData\Roaming\Mozilla\Firefox\Profiles\abc.default\places.sqlite");
+        assert_eq!(lock_path(crate::privacy::Kind::Firefox, ff).unwrap(), Path::new(r"C:\Users\sam\AppData\Roaming\Mozilla\Firefox\Profiles\abc.default\parent.lock"));
+        let ch = Path::new(r"C:\Users\sam\AppData\Local\Google\Chrome\User Data\Default\Web Data");
+        assert_eq!(lock_path(crate::privacy::Kind::Chromium, ch).unwrap(), Path::new(r"C:\Users\sam\AppData\Local\Google\Chrome\User Data\lockfile"));
+    }
+
+    /// A table Sprawl doesn't know, with a foreign key to a page that goes: the edit rolls back
+    /// and the database is left as it was.
+    #[test]
+    fn a_table_keyed_to_a_page_that_is_not_cleaned_rolls_back() {
+        let base = dir("fkcheck");
+        let db_path = base.join("places.sqlite");
+        {
+            let c = places_db(&db_path, 89);
+            c.execute_batch("CREATE TABLE extra_refs (id INTEGER PRIMARY KEY, place_id INTEGER REFERENCES moz_places(id)); INSERT INTO extra_refs (id, place_id) VALUES (1, 2);").unwrap();
+        }
+        let before = std::fs::read(&db_path).unwrap();
+        let backups = base.join("backups");
+        let err = apply(Edit::FirefoxHistory, &db_path, &[], &backups, "Firefox", &Spare::default()).unwrap_err();
+        assert!(err.contains("this version of Firefox isn't one Sprawl knows how to edit"), "{err}");
+        assert_eq!(std::fs::read(&db_path).unwrap(), before, "the transaction rolled back");
+        assert!(!backups.exists(), "the copy of the failed try is gone");
+    }
+
+    /// A copy that can't be removed is reported, not silently left, and the item still fails
+    /// for its own reason.
+    #[test]
+    fn a_copy_that_cannot_be_removed_is_reported() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let base = dir("stuck");
+        let db_path = base.join("places.sqlite");
+        places_db(&db_path, 89);
+        let folder = base.join("copy");
+        std::fs::create_dir_all(&folder).unwrap();
+        let stuck = folder.join("stuck");
+        std::fs::write(&stuck, b"x").unwrap();
+        // held with no sharing: the folder cannot be emptied, so it cannot be removed
+        let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&stuck).unwrap();
+        let mut notes = Vec::new();
+        let guard = || Err::<(), String>("Firefox started while the database was being edited".into());
+        let err = apply_guarded(Edit::FirefoxHistory, &db_path, &[], &folder, "Firefox", &Spare::default(), &guard, &mut notes).unwrap_err();
+        assert!(err.contains("started"), "{err}");
+        assert!(notes.iter().any(|n| n.contains("couldn't be removed")), "{notes:?}");
         drop(held);
-        assert!(profile_lock_free(&lock).is_ok(), "the lock let go");
     }
 
     /// Copies are named so they sort by when they were made, and only such folders are pruned.
@@ -1217,7 +1345,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn a_browser_that_starts_mid_edit_rolls_back() {
         let base = dir("guard");
         let db_path = base.join("places.sqlite");
-        places_db(&db_path, 82);
+        places_db(&db_path, 89);
         let before = std::fs::read(&db_path).unwrap();
         let calls = std::cell::Cell::new(0);
         let started = || {
@@ -1225,7 +1353,8 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
             Err("Firefox started while the database was being edited".to_string())
         };
         let first = base.join("copy1");
-        let err = apply_guarded(Edit::FirefoxHistory, &db_path, &[], &first, "Firefox", &Spare::default(), &started).unwrap_err();
+        let mut notes = Vec::new();
+        let err = apply_guarded(Edit::FirefoxHistory, &db_path, &[], &first, "Firefox", &Spare::default(), &started, &mut notes).unwrap_err();
         assert!(err.contains("started"), "{err}");
         assert_eq!(std::fs::read(&db_path).unwrap(), before, "nothing was written");
         assert!(!first.exists(), "the copy of the failed try is gone");
@@ -1236,7 +1365,8 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
             if calls.get() == 1 { Ok(()) } else { Err("Firefox started while the database was being edited".to_string()) }
         };
         let second = base.join("copy2");
-        let err = apply_guarded(Edit::FirefoxHistory, &db_path, &[], &second, "Firefox", &Spare::default(), &late).unwrap_err();
+        let mut notes = Vec::new();
+        let err = apply_guarded(Edit::FirefoxHistory, &db_path, &[], &second, "Firefox", &Spare::default(), &late, &mut notes).unwrap_err();
         assert!(err.contains("started"), "{err}");
         assert!(!second.exists(), "the copy of the failed try is gone");
         let c = open(&db_path);
@@ -1294,7 +1424,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         use std::io::{Seek, SeekFrom, Write};
         let base = dir("corrupt");
         let db_path = base.join("places.sqlite");
-        let page = { let c = places_db(&db_path, 82); let p: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap(); drop(c); p as u64 };
+        let page = { let c = places_db(&db_path, 89); let p: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap(); drop(c); p as u64 };
         {
             let mut f = std::fs::OpenOptions::new().write(true).open(&db_path).unwrap();
             for n in 1..=2u64 {

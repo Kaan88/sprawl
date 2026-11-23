@@ -1,11 +1,13 @@
 -- Firefox's places.sqlite tables and indexes, as Firefox itself creates them.
 --
--- Copied from mozilla-central, toolkit/components/places/nsPlacesTables.h and
--- nsPlacesIndexes.h (nsPlacesIndexes.h was last changed by commit
--- 99726c926afada817d2f6251059d1e5631fe5550, 2025-06-19, fetched 2026-11-23 from
--- https://raw.githubusercontent.com/mozilla/gecko-dev/master/toolkit/components/places/).
--- The schema version those files ship with is DATABASE_SCHEMA_VERSION = 82 in
--- nsINavHistoryService.idl.
+-- Copied from mozilla-central's replacement, github.com/mozilla-firefox/firefox main,
+-- toolkit/components/places/nsPlacesTables.h and nsPlacesIndexes.h (fetched 2026-11-23;
+-- nsPlacesTables.h last changed by commit daec459afc8fa03dd9fd6ef9e738edccef6e9a44,
+-- 2026-11-18). The schema version those files ship with is DATABASE_SCHEMA_VERSION = 89 in
+-- nsINavHistoryService.idl; `Database.h` has MigrateV83Up, 85, 86, 87, 88 and 89 (83 and 85
+-- change data only, 86 adds the two block columns to moz_origins, 87 inverts its unique key to
+-- (host, prefix), 88 adds moz_historyvisits.userContextId, 89 adds a favicons index). None of
+-- them adds a table that refers to moz_places or moz_historyvisits.
 --
 -- The tables Firefox keeps in favicons.sqlite (moz_pages_w_icons, moz_icons,
 -- moz_icons_to_pages) and its TEMP tables and triggers are left out: they are not in
@@ -47,7 +49,8 @@ CREATE TABLE moz_historyvisits (
   visit_type INTEGER,
   session INTEGER,
   source INTEGER DEFAULT 0 NOT NULL,
-  triggeringPlaceId INTEGER
+  triggeringPlaceId INTEGER,
+  userContextId INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE moz_historyvisits_extra (
@@ -128,7 +131,9 @@ CREATE TABLE moz_origins (
   recalc_frecency INTEGER NOT NULL DEFAULT 0,
   alt_frecency INTEGER,
   recalc_alt_frecency INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (prefix, host)
+  block_until_ms INTEGER,
+  block_pages_until_ms INTEGER,
+  UNIQUE (host, prefix)
 );
 
 CREATE TABLE moz_meta (

@@ -154,6 +154,9 @@ pub struct Outcome {
     pub problems: Vec<String>,
     /// Problems past the ones kept.
     pub more_problems: u64,
+    /// Things worth saying that are not failures (an old copy of a database that couldn't be
+    /// removed, say): the item itself still went.
+    pub notes: Vec<String>,
     /// A tool's last lines of output.
     pub output: Vec<String>,
     pub stopped: bool,

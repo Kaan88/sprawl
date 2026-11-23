@@ -1934,7 +1934,7 @@ impl State {
             }
             if rows > 0 {
                 x += &format!(
-                    r##"<TextBlock Text="{} row{} would go, in one transaction. The file may not get smaller." FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="16,0,0,0" TextWrapping="Wrap"/>"##,
+                    r##"<TextBlock Text="At least {} row{} would go, in one transaction. The file may not get smaller." FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="16,0,0,0" TextWrapping="Wrap"/>"##,
                     rows,
                     if rows == 1 { "" } else { "s" }
                 );
@@ -2006,6 +2006,9 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
                 }
                 if o.more_problems > 0 {
                     s += &format!("\t  and {} more not removed\r\n", o.more_problems);
+                }
+                for n in &o.notes {
+                    s += &format!("\t  note: {n}\r\n");
                 }
             }
             _ => s += &format!("{}\tnot started\r\n", it.path.display()),
