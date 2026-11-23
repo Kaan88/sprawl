@@ -1565,6 +1565,7 @@ pub(crate) mod win {
         fn GetFileInformationByHandleEx(h: H, class: i32, buf: *mut c_void, size: u32) -> i32;
         fn SetFileInformationByHandle(h: H, class: i32, buf: *const c_void, size: u32) -> i32;
         fn GetFinalPathNameByHandleW(h: H, buf: *mut u16, len: u32, flags: u32) -> u32;
+        fn GetVolumeInformationW(root: *const u16, label: *mut u16, label_len: u32, serial: *mut u32, max_len: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
         fn SetFilePointerEx(h: H, distance: i64, new: *mut i64, method: u32) -> i32;
         fn WriteFile(h: H, buf: *const c_void, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
         fn FlushFileBuffers(h: isize) -> i32;
@@ -1745,8 +1746,8 @@ pub(crate) mod win {
 
     /// The names of the file's named data streams, each as Windows writes it (":name:$DATA"),
     /// the unnamed one (its ordinary content) left out. An empty list for a file with none, and
-    /// for a volume that has no named streams at all (FAT32, exFAT): those report the call as
-    /// unsupported rather than "no streams", which is not a problem to report.
+    /// for a volume that has no named streams at all (FAT32, exFAT): there the call answers
+    /// "unsupported" rather than "no streams", which is not a problem to report.
     pub(crate) fn streams(p: &Path) -> std::io::Result<Vec<String>> {
         // WIN32_FIND_STREAM_DATA { LARGE_INTEGER StreamSize; WCHAR cStreamName[MAX_PATH + 36] }
         #[repr(C)]
@@ -1754,13 +1755,14 @@ pub(crate) mod win {
             size: i64,
             name: [u16; 296],
         }
+        let has_streams = volume_has_streams(p);
         let w = wide(p);
         let mut data = Data { size: 0, name: [0; 296] };
         // SAFETY: `data` is one WIN32_FIND_STREAM_DATA; level 0 is FindStreamInfoStandard.
         let find = unsafe { FindFirstStreamW(w.as_ptr(), 0, (&mut data as *mut Data).cast(), 0) };
         if find as isize == -1 {
             let e = std::io::Error::last_os_error();
-            if no_named_streams(e.raw_os_error()) {
+            if no_named_streams(e.raw_os_error(), has_streams) {
                 return Ok(Vec::new());
             }
             return Err(e);
@@ -1790,10 +1792,30 @@ pub(crate) mod win {
     }
 
     /// Whether a file-listing error means there are no named streams to list: exFAT and FAT32
-    /// answer `FindFirstStreamW` with "invalid parameter", "invalid function" or "not
-    /// supported", and a folder answers "end of file", rather than an empty list.
-    pub(crate) fn no_named_streams(code: Option<i32>) -> bool {
-        matches!(code, Some(1) | Some(38) | Some(50) | Some(87))
+    /// answer `FindFirstStreamW` with "invalid parameter", "invalid function" or "not supported",
+    /// which is only "no streams" on a volume whose flags lack FILE_NAMED_STREAMS; a volume that
+    /// has them must not have a real failure pass for an empty list. A folder answers "end of
+    /// file", which is always no streams.
+    pub(crate) fn no_named_streams(code: Option<i32>, volume_has_streams: Option<bool>) -> bool {
+        match code {
+            Some(38) => true,
+            Some(1) | Some(50) | Some(87) => volume_has_streams == Some(false),
+            _ => false,
+        }
+    }
+
+    /// Whether the volume holding `p` supports named streams (FILE_NAMED_STREAMS in its flags);
+    /// None when that can't be read.
+    fn volume_has_streams(p: &Path) -> Option<bool> {
+        const FILE_NAMED_STREAMS: u32 = 0x0004_0000;
+        let root = match p.components().next()? {
+            std::path::Component::Prefix(q) if matches!(q.kind(), std::path::Prefix::Disk(_)) => PathBuf::from(format!("{}\\", q.as_os_str().to_string_lossy())),
+            _ => return None,
+        };
+        let mut flags = 0u32;
+        // SAFETY: the wide root is NUL-terminated; only `flags` is written.
+        let ok = unsafe { GetVolumeInformationW(wide(&root).as_ptr(), std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), &mut flags, std::ptr::null_mut(), 0) };
+        (ok != 0).then_some(flags & FILE_NAMED_STREAMS != 0)
     }
 
     /// The space the open file takes on the disk, in bytes (its allocated length; a sparse or
