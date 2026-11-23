@@ -37,6 +37,11 @@ const ABS: u8 = 2;
 /// The name is not ASCII: kept as it is in `odd`.
 const ODD: u8 = 4;
 const COMPRESSED: u8 = 8;
+/// The `FILE_ATTRIBUTE_*` bits a search can ask about (`attrib:`).
+const HIDDEN: u8 = 16;
+const SYSTEM: u8 = 32;
+const READONLY: u8 = 64;
+const REPARSE: u8 = 128;
 /// No modified time.
 const NO_TIME: i64 = i64::MIN;
 
@@ -109,7 +114,21 @@ impl CompactIndex {
             let id = ix.parent.len() as u32;
             let node = &tree.nodes[old];
             let mut flags = if node.is_dir { DIR } else { 0 };
-            if node.is_compressed() { flags |= COMPRESSED; }
+            if node.is_compressed() {
+                flags |= COMPRESSED;
+            }
+            if node.attributes & crate::attr::HIDDEN != 0 {
+                flags |= HIDDEN;
+            }
+            if node.attributes & crate::attr::SYSTEM != 0 {
+                flags |= SYSTEM;
+            }
+            if node.attributes & crate::attr::READONLY != 0 {
+                flags |= READONLY;
+            }
+            if node.attributes & crate::attr::REPARSE_POINT != 0 {
+                flags |= REPARSE;
+            }
             let at = ix.blob.len();
             ix.starts.push(at as u32);
             let name = last_name(&node.name);
@@ -252,6 +271,24 @@ impl CompactIndex {
         self.flags[id as usize] & DIR != 0
     }
 
+    /// The direct children of item `i`, in order (the ids of a folder and what is inside it are
+    /// neighbours).
+    fn kids(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
+        let n = self.len();
+        let d = self.depth[i];
+        let mut j = i + 1;
+        std::iter::from_fn(move || {
+            while j < n && self.depth[j] > d {
+                let k = j;
+                j += 1;
+                if self.parent[k] == i as u32 {
+                    return Some(k);
+                }
+            }
+            None
+        })
+    }
+
     /// The folder an item is in; `None` for the root.
     pub fn parent(&self, id: u32) -> Option<u32> {
         Some(self.parent[id as usize]).filter(|&p| p != u32::MAX)
@@ -286,7 +323,9 @@ impl CompactIndex {
             early.iter().all(|t| t.matches(&it))
         };
         let hits = par_filter(n, cancel, cheap)?;
+        let mut hits = hits;
         if path_terms.is_empty() {
+            hits = self.dupes(q, hits);
             return Some(hits.into_iter().map(|i| i as u32).collect());
         }
 
@@ -325,7 +364,34 @@ impl CompactIndex {
             runs.extend(p?);
         }
         runs.sort_unstable_by_key(|r| r.0);
-        Some(runs.into_iter().flat_map(|r| r.1).collect())
+        let hits: Vec<usize> = runs.into_iter().flat_map(|r| r.1).map(|i| i as usize).collect();
+        Some(self.dupes(q, hits).into_iter().map(|i| i as u32).collect())
+    }
+
+    /// `dupe:` and `sizedupe:`: among the matches of the rest of the query, the ones with a copy.
+    fn dupes(&self, q: &Query, hits: Vec<usize>) -> Vec<usize> {
+        let mut hits = hits;
+        if q.dupe {
+            let keep = crate::query::keep_shared(hits.len(), |k| Some(self.low(hits[k])));
+            hits = keep.into_iter().map(|k| hits[k]).collect();
+        }
+        if q.size_dupe {
+            let keep = crate::query::keep_shared(hits.len(), |k| {
+                let i = hits[k];
+                (self.flags[i] & DIR == 0).then_some(self.size[i])
+            });
+            hits = keep.into_iter().map(|k| hits[k]).collect();
+        }
+        hits
+    }
+
+    /// The key that puts copies next to each other in a `dupe:`/`sizedupe:` query (`None` for
+    /// other queries): as [`crate::search::group_key`].
+    pub fn group_key(&self, q: &Query, id: u32) -> Option<crate::query::GroupKey> {
+        match q.group_by()? {
+            crate::query::GroupBy::Name => Some(crate::query::GroupKey::Name(self.low(id as usize).to_vec())),
+            crate::query::GroupBy::Size => (self.flags[id as usize] & DIR == 0).then(|| crate::query::GroupKey::Size(self.size[id as usize])),
+        }
     }
 
     /// The root's path, lower-case and as it is, without a trailing `\`.
@@ -503,6 +569,38 @@ impl Item for CItem<'_> {
         // as the tree's index counts them
         u32::from(self.ix.depth[self.i]).min(254)
     }
+    fn attributes(&self) -> u32 {
+        let f = self.ix.flags[self.i];
+        let mut a = 0;
+        if f & HIDDEN != 0 {
+            a |= crate::attr::HIDDEN;
+        }
+        if f & SYSTEM != 0 {
+            a |= crate::attr::SYSTEM;
+        }
+        if f & READONLY != 0 {
+            a |= crate::attr::READONLY;
+        }
+        if f & REPARSE != 0 {
+            a |= crate::attr::REPARSE_POINT;
+        }
+        if f & COMPRESSED != 0 {
+            a |= crate::attr::COMPRESSED;
+        }
+        a
+    }
+    fn children(&self) -> u32 {
+        u32::try_from(self.ix.kids(self.i).count()).unwrap_or(u32::MAX)
+    }
+    fn child_files(&self) -> u32 {
+        u32::try_from(self.ix.kids(self.i).filter(|&c| self.ix.flags[c] & DIR == 0).count()).unwrap_or(u32::MAX)
+    }
+    fn child_matches(&self, ts: &[Term]) -> bool {
+        self.ix.kids(self.i).any(|c| {
+            let it = CItem { ix: self.ix, i: c, path: &[], opath: &[] };
+            ts.iter().all(|t| t.matches(&it))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -566,6 +664,10 @@ mod tests {
         "size:1kb..1mb", "size:>1gb", "!size:empty", "depth:1", "depth:<=2", "depth:>=3", "dm:2026", "dm:<2026", "!dm:2026",
         "dm:2026-01..2026-02", "dm:>2026-06-01", "über", "ärger", "case:Über", "case:über", "ünïcödé", "ünïcödé\\photo",
         "case:Földer\\Photo", "folder:", "file:", "!e", "zzz", "*", "c:", "foo:bar", "\"!x\"", "dm:bad", "regex:(",
+        "parent:c:\\data", "parent:steam", "parent:c:", "child:*.vdf", "child:cache", "child:ext:pdf;md",
+        "childcount:2", "childcount:>1", "childfilecount:0", "childfilecount:>0", "folder: childcount:1",
+        "<parent:c:\\data *.pdf>|*.exe", "!<parent:c:\\data file:>",
+        "dupe:", "dupe: readme", "sizedupe:", "sizedupe: file:", "attrib:h", "attrib:c", "audio:", "doc:", "len:<20", "len:>20",
     ];
 
     fn tree_paths(t: &Tree, q: &Query) -> Vec<PathBuf> {
@@ -630,6 +732,34 @@ mod tests {
         assert_eq!(names("cut"), Vec::<String>::new(), "a cut-off branch is left out");
         assert_eq!(names("size:empty file:"), ["README.md", "Über Ärger.TXT"]);
         assert_eq!(names("depth:1 folder:"), ["Games", "cache", "Ünïcödé Földer"]);
+    }
+
+    #[test]
+    fn duplicates_and_their_group_key() {
+        let t = sample();
+        let c = CompactIndex::build(&t);
+        let names = |q: &str| -> Vec<String> {
+            let mut v: Vec<String> = c.search(&Query::parse(q), &AtomicBool::new(false)).unwrap().into_iter().map(|i| c.name(i)).collect();
+            v.sort();
+            v
+        };
+        // README.md and Readme.MD: one name, any case
+        assert_eq!(names("dupe:"), ["README.md", "Readme.MD"]);
+        assert_eq!(names("dupe: readme"), ["README.md", "Readme.MD"]);
+        assert!(names("dupe: config").is_empty(), "one of it is not a duplicate");
+        // sizedupe: files only, and the two files of 0 bytes
+        assert_eq!(names("sizedupe:"), ["README.md", "Über Ärger.TXT"]);
+        assert!(names("sizedupe: ext:txt").is_empty(), "among the .txt files only one is 0 bytes: not a duplicate");
+        // the group key puts copies together; folders never take part in sizedupe:
+        let q = Query::parse("dupe:");
+        let hits = c.search(&q, &AtomicBool::new(false)).unwrap();
+        let keys: Vec<_> = hits.iter().filter_map(|&i| c.group_key(&q, i)).collect();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], keys[1]);
+        let q = Query::parse("sizedupe:");
+        let keys: Vec<_> = c.search(&q, &AtomicBool::new(false)).unwrap().iter().filter_map(|&i| c.group_key(&q, i)).collect();
+        assert_eq!(keys, [crate::query::GroupKey::Size(0), crate::query::GroupKey::Size(0)]);
+        assert_eq!(Query::parse("readme").group_by(), None);
     }
 
     #[test]

@@ -19,8 +19,9 @@ pub fn specs() -> Vec<ToolSpec> {
             name: "search",
             description: "Find files and folders by name, size, date or type in a scan, with the language of Sprawl's Search tab: words (all must match, \
                 any case), *.iso and img_????.jpg patterns, a|b (either), !tmp (not), >1gb <10kb (size; a folder's size is its total), ext:mp4,mkv, \
-                dm:2024 dm:>2025-06-01 (modified), da:2024 da:>2025-06-01 (last opened: the files' Windows last-access times, read for each match, \
-                so give it with another narrowing word), folder: or file:, path:steam (in the path), depth:<3, regex:^IMG_\\d+$. \
+                dm:2024 dm:>2025-06-01 (modified), dc:2024 (created), da:2024 da:>2025-06-01 (last opened: the files' Windows last-access times, read for each match, \
+                so give it with another narrowing word), folder: or file:, path:steam (in the path), depth:<3, regex:^IMG_\\d+$, parent:C:\\Games (directly \
+                inside it), child:*.tmp (folders holding one), dupe:, sizedupe:, attrib:hs, len:>260, audio: video: pic: doc: exe: zip:, and groups <a b>|c. \
                 With path, only inside that folder (and the scan holding it is the one searched). Biggest first. \
                 Each result says when it was last opened and changed, and a program when it last ran.",
             schema: json!({"type": "object", "properties": {
@@ -64,14 +65,15 @@ fn within(tree: &Tree, mut n: usize, top: usize) -> bool {
 
 pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::used::Accessed) -> Result<String, String> {
     let text = input["query"].as_str().map(str::trim).filter(|q| !q.is_empty()).ok_or("give a `query`, e.g. ext:iso >1gb")?;
-    // `da:` isn't in the scan: taken out here, and only the matches the other words leave are
-    // read (an access time is read per path, never scanned)
-    let (plain, accessed) = sprawl_core::query::split_accessed(text, SystemTime::now());
-    if let Err(e) = &accessed {
-        return Err(format!("The search has mistakes: {e}.\n\nThe language:\n{}", sprawl_core::query::HELP));
-    }
-    if accessed.as_ref().is_ok_and(Option::is_some) && plain.trim().is_empty() {
-        return Err("da: reads each match's last-access time, so give it another word to narrow the search first (a name, ext:, size: or a folder).".into());
+    // `dc:` and `da:` aren't in the scan: taken out here, and only the matches the other words
+    // leave are read (a time is read per path, never scanned)
+    let (plain, dates) = sprawl_core::query::split_read_dates(text, SystemTime::now());
+    let dates = match dates {
+        Ok(d) => d,
+        Err(e) => return Err(format!("The search has mistakes: {e}.\n\nThe language:\n{}", sprawl_core::query::HELP)),
+    };
+    if !dates.is_empty() && plain.trim().is_empty() {
+        return Err("dc: and da: read each match's own time, so give them another word to narrow the search first (a name, ext:, size: or a folder).".into());
     }
     let q = sprawl_core::query::Query::parse(&plain);
     if !q.errors().is_empty() {
@@ -82,12 +84,44 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     let index = sprawl_core::search::Index::build(tree);
     let hits = sprawl_core::search::search(tree, &index, &q, &AtomicBool::new(false)).unwrap_or_default();
     let mut hits: Vec<usize> = hits.into_iter().filter(|&n| n != top && within(tree, n, top)).collect();
+    // `dc:`: each match's creation time, read for the matches the other words left
+    let mut created_notes: Vec<String> = Vec::new();
+    if let Some((from, to)) = dates.created {
+        if hits.len() > ACCESS_MOST {
+            return Err(format!(
+                "dc: would read the creation time of {} matches; add a word that narrows the search first (a name, ext:, size: or a folder).",
+                hits.len()
+            ));
+        }
+        let mut born = crate::born::Created::new();
+        let (mut unread, mut unknown) = (0usize, 0usize);
+        hits.retain(|&n| match born.of(&tree.path_of(n)) {
+            crate::born::Born::At(t) => {
+                let s = sprawl_core::query::unix_secs(t);
+                from <= s && s < to
+            }
+            crate::born::Born::Unread => {
+                unread += 1;
+                false
+            }
+            crate::born::Born::Unknown => {
+                unknown += 1;
+                false
+            }
+        });
+        if unread > 0 {
+            created_notes.push(format!("{unread} matches not checked for created: the reading limit ran out."));
+        }
+        if unknown > 0 {
+            created_notes.push(format!("{unknown} matches with no creation time to check: {}.", born.why().unwrap_or("the time couldn't be read")));
+        }
+    }
     // `da:`: each match's time is read once and used again for the list; what the reading limit
     // left out is counted and said, never taken for a non-match
     let mut by_time = false;
     let mut timed: Vec<(usize, (SystemTime, bool))> = Vec::new();
     let (mut unread, mut unknown) = (0usize, 0usize);
-    if let Ok(Some((from, to))) = accessed {
+    if let Some((from, to)) = dates.accessed {
         by_time = true;
         let (kept, left_out, no_times) = accessed_hits(tree, hits, from, to, access)?;
         timed = kept;
@@ -97,11 +131,14 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     }
     if hits.is_empty() {
         let missed = unread + unknown;
-        let mut s = if by_time && missed > 0 {
-            format!("Nothing in {} could be checked for {text}: their last-opened times weren't read.", tree.path_of(top).display())
+        let mut s = if (by_time || !created_notes.is_empty()) && missed + created_notes.len() > 0 {
+            format!("Nothing in {} could be checked for {text}: their times weren't read.", tree.path_of(top).display())
         } else {
             format!("Nothing in {} matches {text}.", tree.path_of(top).display())
         };
+        for note in &created_notes {
+            let _ = write!(s, "\n({note})");
+        }
         for note in crate::used::notes(unread, unknown, "match", "matches", access) {
             let _ = write!(s, "\n({note})");
         }
@@ -126,6 +163,9 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     }
     if hits.len() > max {
         let _ = writeln!(s, "({} more, smaller)", hits.len() - max);
+    }
+    for note in &created_notes {
+        let _ = writeln!(s, "({note})");
     }
     for note in crate::used::notes(unread, unknown, "match", "matches", access) {
         let _ = writeln!(s, "({note})");

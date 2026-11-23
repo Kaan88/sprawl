@@ -15,6 +15,16 @@ in-app updater shows.
 - Search: right-click the list's header to choose which columns to show (Size, Allocated, Modified, Folder; Name always stays). Your choice is remembered.
 
 ## 1.0.8 — 2026-11-23
+- Search can find what was created, not only what was changed: `dc:` takes the same dates as `dm:` (`dc:2026`, `dc:2026-01-15`, `dc:>2026-01-01`, `dc:2026-01..2026-03`, `dc:lastweek`). A scan doesn't keep creation times, so they are read for the matches the rest of the search leaves; that needs another word to narrow it, only local fixed disks are read, and what the reading limit left out is said in the status line instead of being passed off as "no match".
+- Search's `da:` (last opened) now works in the Search box as it already did for the AI: the same reading, the same limits, and the same plain words about what couldn't be read. It is checked for the scan on screen; other drives are searched without it and the status line says so.
+- Search can look at the shape of folders: `parent:C:\Games` finds only what is directly inside that folder (`parent:steam` for a folder of that name), `child:*.tmp` finds folders that directly hold such a file or folder, and `childcount:>10000` and `childfilecount:>10000` count the files and folders directly inside one.
+- Search can list duplicates: `dupe:` keeps only the files and folders whose name another match has (any case), and `sizedupe:` only the files whose size another file match has.
+- Search can ask about attributes and long paths: `attrib:h` hidden, `attrib:s` system, `attrib:r` read-only, `attrib:l` a link or junction, `attrib:c` compressed, together as `attrib:hs`, and `len:>260` for a full path longer than 260 characters (also `len:<=200`, `len:100..260`).
+- Search has type macros: `audio:`, `video:`, `pic:`, `doc:`, `exe:` and `zip:` mean the same extension lists the Type filter offers.
+- Search's `<>` groups words: `<report 2024>|draft` finds both words of the first group or the second, groups nest, and `!<temp cache>` leaves out anything that has both. Quotes keep `<` and `>` as plain text, and a `<` with no closing `>` is still an ordinary character, so `>1gb`, `size:<1mb`, `dm:>2026-01-15` and `len:>260` mean what they did.
+- The Search box's keyword suggestions and its help list know every new keyword, and the filter buttons show them (`parent:` under Where; `child:`, `dupe:`, `sizedupe:`, `attrib:` and `len:` under More).
+
+## 1.0.8 - 2026-11-23
 
 - Search results can be right-clicked without losing the rows you picked, and the menu now offers Open, Show in Explorer, Copy Path, Delete and Delete Permanently on every picked result (the items that only work on the scan on screen are shown greyed on results from other drives or saved scans). Open and Show in Explorer work on up to 10 picked results or folders at a time and say so rather than opening a burst of windows. Pick several with Ctrl+click, Shift+click or Ctrl+A, then Del or Shift+Del deletes them all.
 - Ask your disk now says when a file or folder was last opened, and when a program last ran, so the AI can tell which of several copies was used last instead of saying Sprawl doesn't record it. Where Windows has last-access times turned off, the drive isn't a local fixed disk, or the answer's reading limit stopped it, the answer says so instead of passing it off as "not opened".
