@@ -82,10 +82,16 @@ pub(crate) fn shown_cols(base: &[Col], hidden: u8) -> Vec<Col> {
 /// The Folder column's width in characters for a table `width` wide: what the fixed columns
 /// leave, its 3 parts of 5, at about 6.5 pixels a character of 12 px text (0: not measured).
 pub(crate) fn folder_chars(width: f64) -> usize {
+    folder_chars_in(width, FILES)
+}
+
+/// [`folder_chars`] for the columns `cols` (Search can hide some: what they leave goes to the
+/// others).
+pub(crate) fn folder_chars_in(width: f64, cols: &[Col]) -> usize {
     if width <= 0.0 {
         return 0;
     }
-    let fixed: f64 = FILES.iter().map(|c| c.width).filter(|w| *w > 0.0).sum::<f64>() + 40.0;
+    let fixed: f64 = cols.iter().map(|c| c.width).filter(|w| *w > 0.0).sum::<f64>() + 40.0;
     (((width - fixed).max(0.0) * 3.0 / 5.0) / 6.5).max(16.0) as usize
 }
 
@@ -572,7 +578,8 @@ impl State {
             }
         }
         if which == Which::Main && matches!(self.view, View::Files | View::Search) {
-            let chars = folder_chars(sv.ViewportWidth().unwrap_or(0.0));
+            let w = sv.ViewportWidth().unwrap_or(0.0);
+            let chars = if self.view == View::Search { folder_chars_in(w, &self.search_cols()) } else { folder_chars(w) };
             if chars.abs_diff(self.tables.folder_chars) > 3 {
                 self.tables.folder_chars = chars;
                 self.refresh_rows();

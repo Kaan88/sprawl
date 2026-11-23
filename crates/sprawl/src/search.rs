@@ -244,6 +244,12 @@ pub(crate) fn hidden_to(mask: u8) -> String {
     COL_KEYS.iter().enumerate().filter(|&(i, _)| i > 0 && mask & (1 << i) != 0).map(|(_, k)| *k).collect::<Vec<_>>().join(",")
 }
 
+/// The sort to keep when the columns in `hidden` are hidden: a sort by a column that isn't shown
+/// has no title to carry its arrow, so the list goes back to Name, A to Z.
+pub(crate) fn sort_for_hidden(sort: (usize, bool), hidden: u8) -> (usize, bool) {
+    if sort.0 > 0 && sort.0 < COL_KEYS.len() && hidden & (1 << sort.0) != 0 { (0, false) } else { sort }
+}
+
 /// The columns' menu: (the row's name, its words, the column).
 pub(crate) const COL_MENU: [(&str, &str, usize); 4] = [("scSize", "Size", 1), ("scAlloc", "Allocated", 2), ("scMod", "Modified", 3), ("scFolder", "Folder", 4)];
 
@@ -291,6 +297,17 @@ impl State {
         if !self.search.cols_loaded {
             self.search.cols_loaded = true;
             self.search.cols_hidden = hidden_from(self.settings.get("searchColsHidden").unwrap_or(""));
+            self.search_sort_visible();
+        }
+    }
+
+    /// The list is sorted by a column that is shown: if its column is hidden it is sorted by
+    /// Name instead.
+    fn search_sort_visible(&mut self) {
+        let sort = sort_for_hidden(self.search.sort, self.search.cols_hidden);
+        if sort != self.search.sort {
+            self.search.sort = sort;
+            self.search_sort();
         }
     }
 
@@ -319,6 +336,7 @@ impl State {
         } else {
             self.search.cols_hidden |= 1 << i;
         }
+        self.search_sort_visible();
         let v = hidden_to(self.search.cols_hidden);
         self.settings.set("searchColsHidden", v);
         self.settings.save();
@@ -990,7 +1008,18 @@ fn second_tap(last: Option<Tap>, row: (usize, usize), now: std::time::Instant, w
 
 #[cfg(test)]
 mod col_tests {
-    use super::{hidden_from, hidden_to, COLS, COL_KEYS, COL_MENU};
+    use super::{hidden_from, hidden_to, sort_for_hidden, COLS, COL_KEYS, COL_MENU};
+
+    /// Hiding the column the list is sorted by moves the sort to Name; any other hidden column
+    /// leaves it.
+    #[test]
+    fn a_sort_never_stays_on_a_hidden_column() {
+        assert_eq!(sort_for_hidden((1, true), 0b00010), (0, false), "Size hidden");
+        assert_eq!(sort_for_hidden((4, false), 0b10000), (0, false), "Folder hidden");
+        assert_eq!(sort_for_hidden((1, true), 0b10100), (1, true), "another column hidden");
+        assert_eq!(sort_for_hidden((0, true), 0b11110), (0, true), "Name is never hidden");
+        assert_eq!(sort_for_hidden((9, true), 0b11111), (9, true), "no such column: untouched");
+    }
 
     #[test]
     fn the_hidden_columns_are_remembered_as_words() {

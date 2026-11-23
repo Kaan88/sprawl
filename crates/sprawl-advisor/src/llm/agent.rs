@@ -91,9 +91,10 @@ pub(crate) fn proposals_block(text: &str) -> Option<(String, Option<Value>)> {
 /// What a proposal from a block says it came from.
 pub(crate) const REPORT_ONLY: &str = "(From the report only; the AI didn't look inside.)";
 
-/// The most of a model's own explanation a proposal from a block keeps: room for a full
-/// one, little enough that a runaway answer can't grow memory.
-const REPORT_WHY_MAX: usize = 1000;
+/// The most of a model's own explanation a proposal from a block keeps: the stored cap
+/// (`Memory::propose` cuts at WHY_MAX) less the note and the space before it, so the note is
+/// still whole once the rule is stored.
+const REPORT_WHY_MAX: usize = crate::memory::WHY_MAX - REPORT_ONLY.len() - 1;
 
 /// `why` with [`REPORT_ONLY`] after it, the model's text kept up to [`REPORT_WHY_MAX`] at a word
 /// boundary; the note is always kept whole (Fable 1.0.4-1.0.5 P2-3).
@@ -135,7 +136,6 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
     events(ChatEvent::Progress("Reading the scan...".into()));
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, found, None, None, &memory.labels) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, &[], memory).at_scan(scan_before);
     tools.consent = Some(consent);
     // the web search exists only while the user's switch is on
@@ -153,9 +153,13 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
         Provider::Codex => false,
         _ => true,
     };
+    // asked to label the unexplained folders only when `remember` can be called
+    let report = if tools_ok { super::report::build_for_tools(tree, &facts, found, None, None, &memory.labels) } else { super::report::build(tree, &facts, found, None, None, &memory.labels) } + notes + &memory.context();
     let opening = format!("{report}\n\n# The user asks\n{first}");
     let effort = super::effort::pick(cfg, &model);
     let open_chat = |with_tools: bool| -> Result<Box<dyn Chat>, String> {
+        // a chat started again without tools isn't asked to call one
+        let opening = if with_tools { opening.clone() } else { opening.replace(super::report::REMEMBER_NOTE, "") };
         let specs = if with_tools { chat_specs_with(web) } else { Vec::new() };
         let system = if with_tools { CHAT.to_string() } else { format!("{CHAT}\n{NO_TOOLS}") };
         let c: Box<dyn Chat> = match cfg.provider {
@@ -817,7 +821,7 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     progress("Gathering what Windows knows about your apps".into());
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, Some(already), hidden, goal, &memory.labels) + notes + &memory.context();
+    let report = super::report::build_for_tools(tree, &facts, Some(already), hidden, goal, &memory.labels) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory).at_scan(scan_before);
     tools.allowed = Some(specs().iter().map(|t| t.name).collect());
     let mut run = AiRun { model: named(cfg.provider, &model), ..AiRun::default() };
@@ -956,6 +960,18 @@ mod block_tests {
         let huge = super::report_only(&"x".repeat(5000));
         assert!(huge.ends_with(super::REPORT_ONLY));
         assert!(huge.starts_with(&"x".repeat(super::REPORT_WHY_MAX - 3)) && huge[super::REPORT_WHY_MAX - 3..].starts_with("..."), "{}", &huge[..super::REPORT_WHY_MAX + 3]);
+        // and after Memory::propose has capped it again: the note is still the end of what is stored
+        for n in [900, 960, 1000, 1200, 5000] {
+            let block = json!({"rules": [{"id": "big", "title": "Big", "paths": [r"?:\Games\*\PS3_GAME"], "risk": "amber", "remedy": "info", "why": "word ".repeat(n / 5)}]});
+            let (_, call) = block_calls(&block).into_iter().next().unwrap();
+            let why = call["why"].as_str().unwrap();
+            let mut m = crate::memory::Memory::default();
+            m.propose(crate::memory::Proposal {
+                id: "big".into(), title: "Big".into(), paths: vec![r"?:\Games\*\PS3_GAME".into()],
+                risk: crate::finding::Risk::Amber, remedy: crate::finding::Remedy::Info, why: why.to_string(), min_bytes: None,
+            }).unwrap();
+            assert!(m.proposals[0].why.ends_with(super::REPORT_ONLY), "{n}: {}", m.proposals[0].why);
+        }
         // unreadable: taken out all the same, and said
         let (rest, v) = proposals_block("Answer ```sprawl-proposals {not json ``` tail").unwrap();
         assert!(v.is_none());
