@@ -199,16 +199,19 @@ pub fn run(path: &Path, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnM
             let f = stack.pop().unwrap();
             let mut stays = f.left;
             if !stays {
-                if scrub_folder_streams(&f.path, &f.info, &mut o) {
-                    match win::delete(&f.h) {
+                match scrub_folder_streams(&f.path, &f.h, &f.info, &mut o) {
+                    FolderStreams::Left => stays = true,
+                    done => match win::delete(&f.h) {
                         Ok(()) => o.folders += 1,
                         Err(e) => {
                             stays = true;
-                            o.damage(&f.path, format!("its own streams were overwritten once, but the folder couldn't be deleted ({e}); it stays"));
+                            match done {
+                                // its own streams are already written over: say so
+                                FolderStreams::Written => o.damage(&f.path, format!("its own streams were overwritten once, but the folder couldn't be deleted ({e}); it stays")),
+                                _ => o.problem(&f.path, format!("couldn't be deleted ({e})")),
+                            }
                         }
-                    }
-                } else {
-                    stays = true;
+                    },
                 }
             }
             if stays {
@@ -416,7 +419,7 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
     };
     // its named streams first: all of them are opened before any is written, so a stream that
     // can't be overwritten leaves the whole file as it was
-    let names = match win::streams(p) {
+    let names = match win::streams(p, &h) {
         Ok(n) => n,
         Err(e) => {
             o.problem(p, format!("left alone: its named streams couldn't be read ({e})"));
@@ -487,8 +490,7 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
     };
     // the reopen is refused while another program holds it for writing; one that slipped a
     // write in just before is caught by its length and last-write time
-    let wof_file = wof(&h, &info);
-    if let Err(why) = unchanged(&data, &info, wof_file) {
+    if let Err(why) = unchanged(&data, &info) {
         if was_readonly {
             let _ = win::set_readonly(&h, info.attrs);
         }
@@ -578,15 +580,24 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
     }
 }
 
+/// What a folder's own named streams came to.
+enum FolderStreams {
+    /// It carried none.
+    None,
+    /// It carried some, and all of them were written over.
+    Written,
+    /// One couldn't be read, opened, planned, given room or written: the folder stays (the
+    /// reason is recorded).
+    Left,
+}
+
 /// Write over the named streams a folder itself carries, while its checked handle is held.
-/// True when the folder can go; false (with the reason recorded) when a stream couldn't be read,
-/// opened, planned, given room or written, in which case the folder is left.
-fn scrub_folder_streams(path: &Path, info: &win::Info, o: &mut Outcome) -> bool {
-    let names = match win::streams(path) {
+fn scrub_folder_streams(path: &Path, h: &win::Handle, info: &win::Info, o: &mut Outcome) -> FolderStreams {
+    let names = match win::streams(path, h) {
         Ok(n) => n,
         Err(e) => {
             o.problem(path, format!("left as it is: its named streams couldn't be read ({e})"));
-            return false;
+            return FolderStreams::Left;
         }
     };
     let mut streams: Vec<(String, win::Handle, Plan)> = Vec::new();
@@ -599,13 +610,13 @@ fn scrub_folder_streams(path: &Path, info: &win::Info, o: &mut Outcome) -> bool 
                 // held; the stream must still be on the very folder that was checked
                 if si.id != info.id || si.volume != info.volume {
                     o.problem(path, format!("left as it is: its stream {name} isn't on the folder Sprawl checked"));
-                    return false;
+                    return FolderStreams::Left;
                 }
                 let plan = match plan_for(&sh, &si) {
                     Ok(plan) => plan,
                     Err(why) => {
                         o.problem(path, format!("left as it is: its stream {name}: {why}"));
-                        return false;
+                        return FolderStreams::Left;
                     }
                 };
                 extra += extra_room(&sh, &plan);
@@ -613,38 +624,42 @@ fn scrub_folder_streams(path: &Path, info: &win::Info, o: &mut Outcome) -> bool 
             }
             Err(e) => {
                 o.problem(path, format!("left as it is: its stream {name} couldn't be opened ({e})"));
-                return false;
+                return FolderStreams::Left;
             }
         }
     }
     // the room the folder's streams need between them, checked once
     if let Some(why) = room_for(path, extra) {
         o.problem(path, format!("left as it is: {why}"));
-        return false;
+        return FolderStreams::Left;
     }
     let mut written = 0u64;
     for (name, sh, plan) in &streams {
         if let Err(e) = wipe(sh, plan, &mut written) {
             o.overwritten += written;
             o.damage(path, format!("partly overwritten (its stream {name} couldn't be written: {e}); the folder is left"));
-            return false;
+            return FolderStreams::Left;
         }
         if let Err(e) = win::set_end(sh, 0).and_then(|()| win::flush(sh)) {
             o.overwritten += written;
             o.damage(path, format!("partly overwritten (its stream {name} couldn't be set to 0 bytes: {e}); the folder is left"));
-            return false;
+            return FolderStreams::Left;
         }
     }
     o.overwritten += written;
-    true
+    if streams.is_empty() {
+        FolderStreams::None
+    } else {
+        FolderStreams::Written
+    }
 }
 
 /// Whether the file on the reopened data handle is still the one that was checked: its length,
-/// and its last-write time. A WOF file's write-open decompresses it, which can move that time,
-/// so only the length is compared for one (decompressing keeps the length).
-fn unchanged(data: &win::Handle, info: &win::Info, wof_file: bool) -> Result<(), &'static str> {
+/// and its last-write time (a WOF file's write-open does not move it, so it is compared
+/// like any other).
+fn unchanged(data: &win::Handle, info: &win::Info) -> Result<(), &'static str> {
     match (win::standard(data), win::written_time(data)) {
-        (Ok((_, eof)), Ok(written)) if eof == info.size && (wof_file || written == info.written) => Ok(()),
+        (Ok((_, eof)), Ok(written)) if eof == info.size && written == info.written => Ok(()),
         (Ok((_, eof)), Ok(_)) if eof != info.size => Err("left alone: it changed while Sprawl was checking it (its length is not the one it had)"),
         (Ok(_), Ok(_)) => Err("left alone: it changed while Sprawl was checking it (it was written)"),
         _ => Err("left alone: it couldn't be checked again"),
@@ -908,7 +923,7 @@ pub fn wipe_plan(root: &Path, marker_dir: &Path) -> Result<WipePlan, String> {
         Err(_) => true,
     };
     let (scratch_bytes, scratch_items) = if scratch_present { measure(&scratch) } else { (0, 0) };
-    let live = ours.as_ref().filter(|m| marker_live(m)).map(|m| m.pid);
+    let live = ours.as_ref().filter(|m| !marker_is_this_run(m)).filter(|m| marker_live(m)).map(|m| m.pid);
     Ok(WipePlan {
         root,
         marker,
@@ -964,8 +979,9 @@ pub fn wipe_free_space(root: &Path, marker_dir: &Path, stop: &AtomicBool) -> Wip
             // Sprawl's own incomplete wipe: its folder goes before a new one starts, and it has
             // to go: cipher must not find it there
             if let Err(e) = remove_scratch(&plan.scratch) {
+                // the note stays on the disk, marked as Sprawl's own (foreign=0), so the next run
+                // still knows the folder is its own leftover and may remove it
                 drop(hold);
-                let _ = std::fs::remove_file(&plan.marker);
                 let mut outcome = crate::clean::Outcome::default();
                 outcome.problems.push(format!("not started: an earlier Sprawl wipe's working folder ({}) couldn't be removed ({e}); delete it, then wipe again", plan.scratch.display()));
                 return Wiped { outcome, ok: false };
@@ -1028,8 +1044,14 @@ fn marker_live(m: &Marker) -> bool {
     process_alive(m.pid) && process_start(m.pid) == Some(m.start)
 }
 
-/// A marker held open for the whole wipe, with no sharing at all: while it is held no other
-/// Sprawl can read, change or remove it, so a live wipe can't be displaced.
+/// Whether the note names this very run: a wipe this process started, or the note it leaves
+/// after a failed start. It is not "another Sprawl", and the user isn't told to wait for it.
+fn marker_is_this_run(m: &Marker) -> bool {
+    m.pid == std::process::id() && Some(m.start) == process_start(std::process::id())
+}
+
+/// A marker held open for the whole wipe, shared for reading only: another Sprawl can see that a
+/// wipe is running, but can neither change nor remove the note.
 struct MarkerHold(#[allow(dead_code)] std::fs::File);
 
 /// Claim the marker for this drive. The first Sprawl to make it wins; a marker left by a Sprawl
@@ -1049,15 +1071,16 @@ fn claim_marker(p: &Path, root: &Path, foreign: bool) -> std::io::Result<MarkerH
             .read(true)
             .write(true)
             .create_new(true)
-            // no sharing: a live marker can be neither read, changed nor removed by another Sprawl
-            .share_mode(0)
+            // shared for reading only: another Sprawl sees the wipe running, and can neither
+            // write the note nor remove it while it is held
+            .share_mode(1)
             .open(p)
     };
     let mut f = match make() {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             match read_marker(p) {
-                Some(m) if marker_live(&m) => return Err(std::io::Error::other("another Sprawl is wiping this drive right now")),
+                Some(m) if !marker_is_this_run(&m) && marker_live(&m) => return Err(std::io::Error::other("another Sprawl is wiping this drive right now")),
                 // a stale or unreadable note goes; one that can't be removed is being held by a
                 // live wipe, which is a refusal, not a reason to carry on
                 _ => {}
@@ -1079,14 +1102,24 @@ fn claim_marker(p: &Path, root: &Path, foreign: bool) -> std::io::Result<MarkerH
         }
         Err(e) => return Err(e),
     };
-    f.write_all(body.as_bytes())?;
-    // read it back through the same handle: it must be this run's note
-    f.seek(SeekFrom::Start(0))?;
-    let mut read = String::new();
-    f.read_to_string(&mut read)?;
-    let m = parse_marker(&read).ok_or_else(|| std::io::Error::other("the wipe's own note couldn't be read back"))?;
-    if m.pid != std::process::id() || m.start != start {
-        return Err(std::io::Error::other("another Sprawl's note was found in place of this one's"));
+    // written and read back through the same handle: it must be this run's note
+    let checked = (|| -> std::io::Result<()> {
+        f.write_all(body.as_bytes())?;
+        f.seek(SeekFrom::Start(0))?;
+        let mut read = String::new();
+        f.read_to_string(&mut read)?;
+        let m = parse_marker(&read).ok_or_else(|| std::io::Error::other("the wipe's own note couldn't be read back"))?;
+        if m.pid != std::process::id() || m.start != start {
+            return Err(std::io::Error::other("another Sprawl's note was found in place of this one's"));
+        }
+        Ok(())
+    })();
+    if let Err(e) = checked {
+        // the note is this run's own and half-made: it goes with the handle, so a later run
+        // doesn't find a dead note of its own and refuse
+        drop(f);
+        let _ = std::fs::remove_file(p);
+        return Err(e);
     }
     Ok(MarkerHold(f))
 }
@@ -1347,7 +1380,7 @@ mod tests {
             win::flush(&w).unwrap();
         }
         let data = win::reopen_write(&h).unwrap();
-        assert!(unchanged(&data, &info, false).is_err(), "a same-length write is caught by its last-write time");
+        assert!(unchanged(&data, &info).is_err(), "a same-length write is caught by its last-write time");
         drop(data);
         drop(h);
         assert_eq!(std::fs::read(&f).unwrap(), b"changed!!");
@@ -1519,7 +1552,10 @@ mod tests {
         let sp = stream_path(&f, ":extra:$DATA");
         let pattern = b"STREAM-KNOWN-PATTERN-0123456789";
         std::fs::write(&sp, pattern).unwrap();
-        assert_eq!(win::streams(&f).unwrap(), vec![":extra:$DATA".to_string()]);
+        {
+            let (hand, _info) = win::open_checked(&f).unwrap();
+            assert_eq!(win::streams(&f, &hand).unwrap(), vec![":extra:$DATA".to_string()]);
+        }
 
         // the stream itself: written over, then emptied, through the same calls the engine uses
         {
@@ -1573,8 +1609,10 @@ mod tests {
         assert!(!marker.file_name().unwrap().to_string_lossy().contains(':'));
         assert!(read_marker(&marker).is_none(), "no marker, no wipe");
         let hold = claim_marker(&marker, &plan.root, false).unwrap();
-        assert!(read_marker(&marker).is_none(), "a held note can't be read by another opener");
-        assert!(std::fs::remove_file(&marker).is_err(), "nor removed while it is held");
+        let seen = read_marker(&marker).expect("another Sprawl can read a held note and see the wipe");
+        assert_eq!((seen.pid, seen.start), (std::process::id(), process_start(std::process::id()).unwrap()));
+        assert!(std::fs::remove_file(&marker).is_err(), "the note can't be removed while it is held");
+        assert!(std::fs::OpenOptions::new().write(true).open(&marker).is_err(), "nor written");
         assert!(claim_marker(&marker, &plan.root, false).is_err(), "a second wipe is refused");
         assert!(!process_alive(u32::MAX - 1), "a made-up id is not");
 
@@ -1592,6 +1630,7 @@ mod tests {
         assert!(!marker_live(&other), "an id reused by another run is not this wipe");
         other.start = m.start;
         assert!(marker_live(&other));
+        assert!(marker_is_this_run(&other), "this run's own note is not 'another Sprawl'");
         std::fs::remove_file(&marker).unwrap();
     }
 
@@ -1662,7 +1701,7 @@ mod tests {
         // the folder's own stream, through the same calls the engine uses
         let (fh, finfo) = win::open_checked(&dir).unwrap();
         let mut o = Outcome::default();
-        assert!(scrub_folder_streams(&dir, &finfo, &mut o), "{:?}", o.problems);
+        assert!(matches!(scrub_folder_streams(&dir, &fh, &finfo, &mut o), FolderStreams::Written), "{:?}", o.problems);
         drop(fh);
         let after = std::fs::read(&sp).unwrap();
         assert_eq!(after.len(), 0, "the folder's stream is emptied");

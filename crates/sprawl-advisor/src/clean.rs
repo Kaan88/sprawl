@@ -1565,7 +1565,7 @@ pub(crate) mod win {
         fn GetFileInformationByHandleEx(h: H, class: i32, buf: *mut c_void, size: u32) -> i32;
         fn SetFileInformationByHandle(h: H, class: i32, buf: *const c_void, size: u32) -> i32;
         fn GetFinalPathNameByHandleW(h: H, buf: *mut u16, len: u32, flags: u32) -> u32;
-        fn GetVolumeInformationW(root: *const u16, label: *mut u16, label_len: u32, serial: *mut u32, max_len: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
+        fn GetVolumeInformationByHandleW(h: H, label: *mut u16, label_len: u32, serial: *mut u32, max_len: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
         fn SetFilePointerEx(h: H, distance: i64, new: *mut i64, method: u32) -> i32;
         fn WriteFile(h: H, buf: *const c_void, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
         fn FlushFileBuffers(h: isize) -> i32;
@@ -1747,15 +1747,17 @@ pub(crate) mod win {
     /// The names of the file's named data streams, each as Windows writes it (":name:$DATA"),
     /// the unnamed one (its ordinary content) left out. An empty list for a file with none, and
     /// for a volume that has no named streams at all (FAT32, exFAT): there the call answers
-    /// "unsupported" rather than "no streams", which is not a problem to report.
-    pub(crate) fn streams(p: &Path) -> std::io::Result<Vec<String>> {
+    /// "unsupported" rather than "no streams", which is not a problem to report. The volume's
+    /// flags are asked through `h`, the open handle, so a FAT volume mounted inside a folder of
+    /// another drive is told right.
+    pub(crate) fn streams(p: &Path, h: &Handle) -> std::io::Result<Vec<String>> {
         // WIN32_FIND_STREAM_DATA { LARGE_INTEGER StreamSize; WCHAR cStreamName[MAX_PATH + 36] }
         #[repr(C)]
         struct Data {
             size: i64,
             name: [u16; 296],
         }
-        let has_streams = volume_has_streams(p);
+        let has_streams = volume_has_streams(h);
         let w = wide(p);
         let mut data = Data { size: 0, name: [0; 296] };
         // SAFETY: `data` is one WIN32_FIND_STREAM_DATA; level 0 is FindStreamInfoStandard.
@@ -1804,17 +1806,14 @@ pub(crate) mod win {
         }
     }
 
-    /// Whether the volume holding `p` supports named streams (FILE_NAMED_STREAMS in its flags);
-    /// None when that can't be read.
-    fn volume_has_streams(p: &Path) -> Option<bool> {
+    /// Whether the volume holding the open file supports named streams (FILE_NAMED_STREAMS in
+    /// its flags); None when that can't be read. A handle names the volume the file is actually
+    /// on, which a drive letter in the path does not (a mount point can lead elsewhere).
+    fn volume_has_streams(h: &Handle) -> Option<bool> {
         const FILE_NAMED_STREAMS: u32 = 0x0004_0000;
-        let root = match p.components().next()? {
-            std::path::Component::Prefix(q) if matches!(q.kind(), std::path::Prefix::Disk(_)) => PathBuf::from(format!("{}\\", q.as_os_str().to_string_lossy())),
-            _ => return None,
-        };
         let mut flags = 0u32;
-        // SAFETY: the wide root is NUL-terminated; only `flags` is written.
-        let ok = unsafe { GetVolumeInformationW(wide(&root).as_ptr(), std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), &mut flags, std::ptr::null_mut(), 0) };
+        // SAFETY: only `flags` is written; the other buffers are null and of length 0.
+        let ok = unsafe { GetVolumeInformationByHandleW(h.0, std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), &mut flags, std::ptr::null_mut(), 0) };
         (ok != 0).then_some(flags & FILE_NAMED_STREAMS != 0)
     }
 
