@@ -286,7 +286,7 @@ ran no command, Alt latch, clipped hit-testing, nested pass-through, rest timer,
 all fixed. Decisions: F10 stays Zoom in Treemap (Alt alone focuses the bar); rows' parent is a
 Pane in UIA; sub-menus with shortcuts are ~19 px wider than WinUI's.
 
-Known, not fixed: Settings takes no focus when it opens (focus stays on the tree behind it,
+Known, not fixed: [fixed 2026-11-23, 768e8b3: Settings now takes the focus and gives it back] Settings takes no focus when it opens (focus stays on the tree behind it,
 also via Ctrl+Shift+S). Screenshot runs exit with 0xC000041D after writing the image; 1.0.5
 does the same, so not a regression. Dropdown lists keep Windows' placement over the field.
 

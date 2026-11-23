@@ -6,6 +6,11 @@ dated implementation notes (see the last section).
 
 ## Where things stand
 
+- **2026-11-23, after 1.0.7 (newest first):** F7 history deltas, F8 registry cleaning, F9 secure
+  wiping and F10 browser-database editing are merged into main, with the Settings focus fix; see
+  [future-features.md](future-features.md) for what each does. F8 to F10 passed several rounds of
+  Fable safety review. Next: the UI benchmark (plan-1.0.5.md section J, branch `bench/j`), then a
+  release. The older entries below are history.
 - **Released:** 1.0.1 (2026-11-19, at the user's word, before the Astra review), with the
   corrections below. The user's installed copy was replaced with the same build first.
   1.0.0 (tag `v1.0.0`, rebuilt in place by Codex) is described further down.

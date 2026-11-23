@@ -21,13 +21,14 @@ was requested. Future safety changes still need independent review.
 | F4 | Duplicates resolved by linking | Duplicate search exists; the action is new and must be exact | Medium |
 | F5 | Headless report | Parts exist; no UI | Small |
 | F6 | Low-space and growth alert | Shipped with the account's scheduled task; no resident background app | Large |
-| F7 | History deltas | Back on the roadmap (user, 2026-11-23): snapshots are whole trees; a change list against the previous one is likely ~10x smaller | Medium |
-| F8 | Registry cleaning | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Medium |
-| F9 | Secure wiping | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Medium |
-| F10 | Editing browser databases | Built for Firefox history and form history and Chromium autofill (after 1.0.7); selective cookies still to do | Large |
+| F7 | History deltas | Built after 1.0.7 (2026-11-23): each scan saves only what changed since the one before | Medium |
+| F8 | Registry cleaning | Built after 1.0.7 (2026-11-23): six Explorer lists, backup and Put back; Fable-reviewed | Medium |
+| F9 | Secure wiping | Built after 1.0.7 (2026-11-23): Overwrite and delete, and Wipe Free Space (cipher); Fable-reviewed | Medium |
+| F10 | Editing browser databases | Built for Firefox history and form history and Chromium autofill (after 1.0.7); Fable-reviewed; selective cookies still to do | Large |
 
-F5 can be done at any time; it helps test the others. F8 to F10 each get their own plan and an
-outside safety review (Fable) before any code; their conditions are below.
+F5 can be done at any time; it helps test the others. F7 to F10 were built on 2026-11-23 by
+DeepSeek Flash agents, reviewed by Claude, and F8 to F10 each passed several rounds of outside safety
+review (Fable) before they were merged; their conditions are below.
 
 ## F7. History deltas
 
@@ -41,17 +42,38 @@ Scan history saves each snapshot as a whole (bounded) tree. Saving runs off the 
 **Done when.** A day of repeated drive scans takes about a tenth of today's history space, and
 every snapshot opens exactly as before, also after one in the middle of a run is lost.
 
+**Built (after 1.0.7):** snapshot format v2 stores a delta against the previous snapshot of the
+same root, with a keyframe every so often (`crates/sprawl-advisor/src/snapshot.rs`). The cap and
+age thinning remove whole units (a keyframe and its deltas) or rewrite the next delta whole before
+its base goes (`history.rs` `plan`/`apply`). A subfolder scan is not saved when a drive scan from
+the last day already shows it. Measured: about 5x smaller for 10 snapshots, about 8x for long chains.
+
 ## F8. Registry cleaning
 
 MRU lists and the like, from `docs/plans/cleaners.md` "Wanted later". A fixed, built-in list of
 HKCU values only, never a key path from a definition (a rule, the community list or the AI);
 never Prefetch or UserAssist. Each write takes a backup first and has an undo.
 
+**Built (after 1.0.7):** `crates/sprawl-advisor/src/regclean.rs`, six parts: RunMRU, TypedPaths,
+WordWheelQuery, OpenSavePidlMRU, LastVisitedPidlMRU, RecentDocs. Values only, keys stay. Keys are
+walked one handle at a time with REG_OPTION_OPEN_LINK (a registry link anywhere is refused). A JSON
+backup goes to `%LOCALAPPDATA%\Sprawl\registry-backups` first, listed in `written.json` with its
+SHA-256; Put back (result card and Settings > Cleaning) restores only listed, unchanged backups.
+The last ten are kept.
+
 ## F9. Secure wiping
 
 Shredding files and wiping free space. It must say plainly what it can't promise: on SSDs
 (wear levelling, TRIM), on copy-on-write or compressed volumes, in cloud-synced folders and
 where shadow copies or the Recycle Bin hold older copies.
+
+**Built (after 1.0.7):** right-click > Overwrite and delete... (`crates/sprawl-advisor/src/overwrite.rs`,
+app glue `crates/sprawl/src/wiping.rs`): one pass of random data (BCryptGenRandom) over each file's
+data and its named streams, through the checked handle, then delete. Hard links, reparse points and
+files changed since the check are left; sparse files are written by range; compressed and WOF files
+need their extra room first. A folder that keeps something is left with its own streams untouched.
+File > Wipe Free Space on the Selected Drive... runs `cipher /w:X:\` in a job object with a marker
+so two Sprawls never run it at once. The question says what can't be promised (SSD, shadow copies...).
 
 ## F10. Editing browser databases
 
