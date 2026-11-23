@@ -3,6 +3,11 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Scan history takes much less space: each scan saves only what changed since the one before.
+- Scanning a folder again is not saved as its own history point when a scan of the drive above it, made in the last day, already shows it.
+
 ## 1.0.7 — 2026-11-23
 
 - The theme goes back to the defaults once, so everyone gets the new default look (below) and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.

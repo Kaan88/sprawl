@@ -28,9 +28,10 @@ pub(crate) struct Hist {
     next: Instant,
     /// `State::tree_gen` it was opened for.
     gen: u64,
-    /// Snapshots being read and laid over the tree on a worker: (index, sizes) as each is done.
-    /// Reading one is seconds on a big drive, which froze the window on every slider step.
-    job: Option<std::sync::mpsc::Receiver<(usize, Vec<u64>)>>,
+    /// Snapshots being read and laid over the tree on a worker: (index, sizes) as each is done,
+    /// `None` for one whose chain can't be read. Reading one is seconds on a big drive, which
+    /// froze the window on every slider step.
+    job: Option<std::sync::mpsc::Receiver<(usize, Option<Vec<u64>>)>>,
     /// The position on screen (`pos` may be ahead of it while its snapshot is read).
     shown: Option<usize>,
 }
@@ -210,11 +211,13 @@ impl State {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for (i, e) in want {
+                // a snapshot whose chain can't be read (a damaged file) is reported as none:
+                // the slider leaves it out instead of showing a map of nothing
                 let w = match history::load(&e) {
-                    Ok(old) => history::project(&t, &old),
+                    Ok(old) => Some(history::project(&t, &old)),
                     Err(err) => {
                         eprintln!("history: {err}");
-                        vec![0; t.nodes.len()]
+                        None
                     }
                 };
                 if tx.send((i, w)).is_err() {
@@ -226,34 +229,81 @@ impl State {
     }
 
     /// Each frame: snapshots read on the worker go into the cache, and the position wanted is
-    /// shown as soon as what it needs is there.
+    /// shown as soon as what it needs is there. A snapshot whose chain can't be read (a damaged
+    /// file) is taken off the slider, with the deltas built on it, silently.
     fn hist_poll(&mut self) {
-        let Some(h) = self.hist.as_mut() else { return };
-        if let Some(rx) = &h.job {
-            loop {
-                match rx.try_recv() {
-                    Ok((i, w)) => {
-                        h.cache.insert(i, Rc::new(w));
-                        // keep the neighbours of where we are (what it needs is within one step)
-                        let pos = h.pos;
-                        while h.cache.len() > KEEP {
-                            let Some(&far) = h.cache.keys().max_by_key(|&&k| k.abs_diff(pos)) else { break };
-                            h.cache.remove(&far);
+        let mut got: Vec<(usize, Option<Vec<u64>>)> = Vec::new();
+        if let Some(h) = self.hist.as_mut() {
+            if let Some(rx) = &h.job {
+                loop {
+                    match rx.try_recv() {
+                        Ok(item) => got.push(item),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            h.job = None;
+                            break;
                         }
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        h.job = None;
-                        break;
                     }
                 }
             }
         }
+        for (i, w) in got {
+            match w {
+                Some(w) => {
+                    let Some(h) = self.hist.as_mut() else { return };
+                    h.cache.insert(i, Rc::new(w));
+                    // keep the neighbours of where we are (what it needs is within one step)
+                    let pos = h.pos;
+                    while h.cache.len() > KEEP {
+                        let Some(&far) = h.cache.keys().max_by_key(|&&k| k.abs_diff(pos)) else { break };
+                        h.cache.remove(&far);
+                    }
+                }
+                None => self.hist_drop(i),
+            }
+        }
+        let Some(h) = self.hist.as_ref() else { return };
         let pos = h.pos;
         if h.shown != Some(pos) && Self::hist_needs(h, pos).iter().take(2).all(|i| h.cache.contains_key(i)) {
             self.hist_show(pos);
         }
         self.hist_fetch();
+    }
+
+    /// Leave a snapshot that couldn't be read off the slider, and the deltas built on it: the
+    /// rest still plays, and nothing is said.
+    fn hist_drop(&mut self, bad: usize) {
+        let alive = {
+            let Some(h) = self.hist.as_mut() else { return };
+            if bad >= h.entries.len() { return; }
+            let kill = history::dependents(&h.entries, bad);
+            for &k in kill.iter().rev() {
+                if k < h.entries.len() {
+                    h.entries.remove(k);
+                }
+            }
+            // what the worker still holds is for positions that no longer exist
+            h.job = None;
+            h.cache.clear();
+            h.shown = None;
+            h.display = None;
+            h.base = None;
+            let n = h.entries.len();
+            h.pos = h.pos.min(n);
+            n
+        };
+        if alive == 0 {
+            self.hist_close();
+            return;
+        }
+        let pos = self.hist.as_ref().map_or(0, |h| h.pos);
+        if let Ok(s) = find::<RangeBase>(&self.root, "HistSlider") {
+            let _ = s.SetMaximum(alive as f64);
+            if s.Value().map(|v| v.round() as usize) != Ok(pos) {
+                let _ = s.SetValue(pos as f64);
+            }
+        }
+        self.hist_seek(pos);
     }
 
     /// Go to position `pos` (0..=entries, the last is now). Shown at once when its snapshots
