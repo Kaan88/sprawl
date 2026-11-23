@@ -343,15 +343,22 @@ impl Facts {
     /// are left out (their runs say nothing about use). None when nothing there started, or when
     /// Prefetch couldn't be read and only the Start menu history is known.
     pub fn last_run_in(&self, tree: &Tree, n: usize) -> Option<(SystemTime, UsedFrom)> {
+        self.last_run_named(tree, n).map(|(_, t, from)| (t, from))
+    }
+
+    /// [`last_run_in`] with the program's file name: Windows' records match programs by name
+    /// only, so this says which name ran, never which copy in which folder. Only a program
+    /// (`.exe`) can have a run, so a data file whose name happens to match one is left alone.
+    pub fn last_run_named(&self, tree: &Tree, n: usize) -> Option<(String, SystemTime, UsedFrom)> {
         let run_of = |name: &str| {
             let name = name.to_lowercase();
-            (!helper(&name)).then(|| self.runs.get(&run_key(&name)).copied()).flatten()
+            (name.ends_with(".exe") && !helper(&name)).then(|| self.runs.get(&run_key(&name)).map(|&(t, from)| (name.clone(), t, from))).flatten()
         };
         let node = &tree.nodes[n];
         if !node.is_dir {
             return run_of(&node.name);
         }
-        node.children.iter().filter(|&&c| !tree.nodes[c].is_dir).filter_map(|&c| run_of(&tree.nodes[c].name)).max_by_key(|&(t, _)| t)
+        node.children.iter().filter(|&&c| !tree.nodes[c].is_dir).filter_map(|&c| run_of(&tree.nodes[c].name)).max_by_key(|(_, t, _)| *t)
     }
 
     #[cfg(test)]
@@ -1003,8 +1010,14 @@ mod tests {
         facts.set_run("tool.exe", at);
         facts.set_run("unins000.exe", at + Duration::from_secs(500));
         assert_eq!(facts.last_run_in(&tree, 0), Some((at, UsedFrom::Prefetch)), "the newest real program, not the installer");
-        assert_eq!(facts.last_run_in(&tree, 1), Some((at, UsedFrom::Prefetch)));
+        assert_eq!(facts.last_run_named(&tree, 1), Some(("tool.exe".into(), at, UsedFrom::Prefetch)), "the name is said, not just the time");
         assert_eq!(facts.last_run_in(&tree, 2), None, "a library never ran");
+        // a data file whose name shares a program's first 29 characters isn't that program
+        let twin = Tree { volumes: Vec::new(), root_path: r"C:\App".into(), errors: 0, method: ScanMethod::Walk,
+            nodes: vec![node(r"C:\App", true, None, vec![1]), node("averylongprogramname1234567890.txt", false, Some(0), vec![])] };
+        facts.set_run("averylongprogramname1234567890.exe", at);
+        assert_eq!(facts.last_run_named(&twin, 1), None, "only a program can have run");
+        assert_eq!(facts.last_run_named(&twin, 0), None);
     }
 
     #[test]

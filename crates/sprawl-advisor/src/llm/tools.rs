@@ -179,7 +179,7 @@ pub fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "largest",
-            description: "The biggest files, or the biggest folders, anywhere below a folder. Each says when it last changed, was last opened and, for a program, last ran.",
+            description: "The biggest files, or the biggest folders, anywhere below a folder. Each says when it last changed, was last opened and, for a program, when one with its name last ran (by program name, any folder).",
             schema: json!({"type": "object", "properties": {"path": path, "what": {"type": "string", "enum": ["files", "folders"]}, "limit": {"type": "integer", "description": "Default 25, max 60"}}, "required": ["path", "what"]}),
         },
         ToolSpec {
@@ -395,8 +395,11 @@ impl<'a> Tools<'a> {
     }
 
     /// The last-access lookups for one answer. A client that may only see the scan on screen
-    /// reads nothing.
+    /// reads nothing, and neither does a view loaded from a CSV file.
     fn accessed(&self) -> crate::used::Accessed {
+        if self.tree.method == sprawl_core::ScanMethod::Csv {
+            return crate::used::Accessed::off_for(crate::used::Unseen::Csv);
+        }
         if self.exact {
             return crate::used::Accessed::off();
         }
@@ -883,6 +886,32 @@ mod tests {
         assert!(!answer.contains("last opened"), "nothing pretends a date was read: {answer}");
         let answer = t.call("largest", &json!({"path": dir.display().to_string(), "what": "files"})).unwrap();
         assert!(answer.contains("5 items not checked for a last-opened time"), "{answer}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A client restricted to the scan, and a view loaded from a CSV file, read no times: `dc:` is
+    /// refused rather than answered from this PC's disk.
+    #[test]
+    fn a_scan_only_or_csv_view_reads_no_times() {
+        let dir = std::env::temp_dir().join(format!("sprawl-tools-times-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), b"x").unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let facts = Facts::from_apps(Vec::new());
+        let mut restricted = Tools::restricted(&tree, &facts, &Memory::default());
+        let e = restricted.call("search", &json!({"query": "*.txt dc:today"})).unwrap_err();
+        assert!(e.contains("may only use the scan"), "{e}");
+        let mut csv = tree.clone();
+        csv.method = sprawl_core::ScanMethod::Csv;
+        let mut t = Tools::new(&csv, &facts, "test-model", &[], &Memory::default());
+        let e = t.call("search", &json!({"query": "*.txt dc:today"})).unwrap_err();
+        assert!(e.contains("CSV"), "{e}");
+        // the list reads no last-opened times either, and says nothing about the disk
+        let answer = t.call("list_children", &json!({"path": dir.display().to_string()})).unwrap();
+        assert!(!answer.contains("last opened") && !answer.contains("not checked"), "{answer}");
+        let e = t.call("search", &json!({"query": "*.txt da:today"})).unwrap_err();
+        assert!(e.contains("CSV"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

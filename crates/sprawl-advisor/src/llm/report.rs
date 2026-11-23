@@ -90,9 +90,10 @@ pub(crate) fn node_line_at(tree: &Tree, facts: &Facts, n: usize, access: Option<
             s.push_str(" (part of it read)");
         }
     }
-    // a program's last start, from Windows' own records (Prefetch and the Start menu history)
-    if let Some((t, from)) = facts.last_run_in(tree, n) {
-        let _ = write!(s, ", last run {} (from {})", month_year(t), from.label());
+    // a program's last start, from Windows' own records (Prefetch and the Start menu history):
+    // matched by program name, so it can't say which copy in which folder ran
+    if let Some((name, t, from)) = facts.last_run_named(tree, n) {
+        let _ = write!(s, ", a program named {name} last ran {} (from {}, by name, any folder)", month_year(t), from.label());
     }
     if node.is_reparse_point() {
         s.push_str(", junction or link");
