@@ -40,6 +40,7 @@ impl State {
 
     fn set_view_inner(&mut self, v: View) {
         self.view = v;
+        self.search.tile = None;
         // the welcome page is drawn again for this view on the next frame
         if self.tree.is_none() && self.job.is_none() {
             self.welcome = None;
@@ -177,6 +178,7 @@ impl State {
             "CoverageDetails" => self.coverage_details(),
             "SearchMapBtn" => {
                 self.search.map = !self.search.map;
+                self.search.tile = None;
                 self.map_room();
             }
             // F5 and File > Scan: the folder on screen again (the button scans what the box says)
@@ -354,9 +356,11 @@ impl State {
             "mOpen" => {
                 // in Search: every picked result opens (a file with its program, a folder in
                 // Explorer), up to a limit: each starts a program or a window
-                let paths = self.menu_paths();
-                if self.view == View::Search && !crate::search::can_open(paths.len()) {
-                    text(&self.root, "SearchInfo", &format!("{} results are picked. Open works on up to {} at a time; pick fewer.", paths.len(), crate::search::MAX_OPEN));
+                // (counted before any path is built: Ctrl+A may have picked a million rows)
+                let count = self.menu_target_count();
+                let paths = if self.view == View::Search && !crate::search::can_open(count) { Vec::new() } else { self.menu_paths() };
+                if self.view == View::Search && !crate::search::can_open(count) {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked. Open works on up to {} at a time; pick fewer.", count, crate::search::MAX_OPEN));
                 } else if self.view == View::Search {
                     for p in paths {
                         self.search_open(&p);
@@ -380,12 +384,13 @@ impl State {
             "mExplore" => {
                 // every picked result: one folder's files together in one window, one window for
                 // each folder; up to the same limit, since each is a window of its own
-                let picked = self.menu_paths();
-                // far too many to look at one by one: refused before the disk is read for them
-                if picked.len() > crate::search_delete::MAX_PICKS {
-                    text(&self.root, "SearchInfo", &format!("{} results are picked. Show in Explorer opens a window for each folder, up to {} at a time; pick fewer.", picked.len(), crate::search::MAX_OPEN));
+                // far too many to look at one by one: refused before any path is built or the disk read
+                let count = self.menu_target_count();
+                if count > crate::search_delete::MAX_PICKS {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked. Show in Explorer opens a window for each folder, up to {} at a time; pick fewer.", count, crate::search::MAX_OPEN));
                     return;
                 }
+                let picked = self.menu_paths();
                 // a result that is gone (a saved scan's, or deleted since) shows its nearest folder
                 let (paths, gone, nowhere) = crate::search::nearest_existing(&picked, |p| p.exists());
                 let windows = crate::win32::reveal_windows(&paths, crate::search::MAX_OPEN);
@@ -812,9 +817,14 @@ impl State {
 
     /// The picked rows (Ctrl/Shift) as top-most nodes: one inside another goes with it.
     pub(crate) fn picked_nodes(&self) -> Vec<usize> {
-        let Some(t) = &self.tree else { return Vec::new() };
         let mut all: std::collections::BTreeSet<usize> = self.marked.clone();
         all.extend(self.selected);
+        self.topmost(all)
+    }
+
+    /// `all` as top-most nodes of this scan (ROOT and numbers past the tree dropped).
+    fn topmost(&self, mut all: std::collections::BTreeSet<usize>) -> Vec<usize> {
+        let Some(t) = &self.tree else { return Vec::new() };
         all.remove(&ROOT);
         all.iter()
             .copied()
@@ -849,6 +859,14 @@ impl State {
                 text(&self.root, "SearchInfo", "The results changed since they were picked, so nothing was deleted. Pick the ones to delete again.");
                 return;
             }
+            // exactly the listed targets, whatever a stale `selected` still holds
+            let nodes = self.topmost(self.scan_targets().into_iter().collect());
+            match nodes.as_slice() {
+                [] => text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several)."),
+                [n] => self.delete_single(*n, permanent),
+                _ => self.delete_nodes(nodes, permanent),
+            }
+            return;
         }
         if self.marked.len() > 1 || (self.marked.len() == 1 && self.selected.is_some_and(|s| !self.marked.contains(&s))) {
             return self.delete_many(permanent);
@@ -859,7 +877,12 @@ impl State {
             }
             return;
         };
-        let Some(path) = self.selected_path() else { return };
+        self.delete_single(n, permanent);
+    }
+
+    /// Delete one node of the scan: checked, then one confirm naming its path.
+    fn delete_single(&mut self, n: usize, permanent: bool) {
+        let Some(path) = self.tree.as_ref().filter(|t| n < t.nodes.len()).map(|t| t.path_of(n)) else { return };
         if let Some(why) = self.delete_refusal(n, &path) {
             self.tell("Not deleted", &why);
             return;
@@ -986,6 +1009,10 @@ impl State {
     /// Delete with several rows picked: every one is checked first, then one confirm for all.
     fn delete_many(&mut self, permanent: bool) {
         let nodes = self.picked_nodes();
+        self.delete_nodes(nodes, permanent);
+    }
+
+    fn delete_nodes(&mut self, nodes: Vec<usize>, permanent: bool) {
         let Some(t) = self.tree.clone() else { return };
         if nodes.is_empty() {
             return;

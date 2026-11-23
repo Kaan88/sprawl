@@ -825,12 +825,15 @@ impl State {
             let from = self.selected.and_then(|s| self.rows.iter().position(|r| r.0 == s && self.scan_row(r))).unwrap_or(k);
             let (a, b) = (from.min(k), from.max(k));
             self.marked = self.rows[a..=b].iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
+            if self.selected_listed().is_none() {
+                self.selected = Some(self.rows[from].0).filter(|_| self.scan_row(&self.rows[from]));
+            }
             self.refresh_rows();
             self.show_selection();
             return;
         }
         if ctrl {
-            if let Some(s) = self.selected {
+            if let Some(s) = self.selected_listed() {
                 self.marked.insert(s);
             }
             if !self.marked.remove(&n) {
@@ -955,8 +958,19 @@ impl State {
         if let Ok(i) = find::<Control>(&self.root, "cShell") {
             // ...nor during a clean-up, nor as administrator unless Settings > Scanning allows it
             let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
-            let _ = i.SetIsEnabled(shell_allowed(self.menu_pick_count(scan), self.advisor.cleanup.running.is_some(), admin_ok));
+            // (on another drive's row: only if that row is what Delete and Open act on too)
+            let on_target = scan || self.more_sel_counts();
+            let _ = i.SetIsEnabled(on_target && shell_allowed(self.menu_pick_count(scan), self.advisor.cleanup.running.is_some(), admin_ok));
         }
+    }
+
+    /// Whether the other-drive row the keyboard is on is one the menu's commands act on (a pick,
+    /// or with no picks the row itself).
+    fn more_sel_counts(&self) -> bool {
+        let m = &self.search.more;
+        let Some((k, id)) = m.sel else { return false };
+        let Some((ix, i)) = m.item(k, id) else { return false };
+        crate::search_delete::counts(m.sel, &m.picks, (k, id), &ix.path_of(i))
     }
 
     /// How many results the row menu acts on: the scan's picked nodes, or another drive's picks
@@ -1038,6 +1052,12 @@ impl State {
 
     /// Arrow keys and friends in the main table. Returns true when the key was used.
     /// A row of the scan on screen (in Search, a row can be from another drive).
+    /// The selected node, but in Search only while it is a row of the list (a node left over
+    /// from Tree View or an earlier list is not one, and must not join the picks).
+    pub(crate) fn selected_listed(&self) -> Option<usize> {
+        self.selected.filter(|&s| self.view != View::Search || self.rows.iter().any(|r| r.0 == s && self.scan_row(r)))
+    }
+
     pub(crate) fn scan_row(&self, r: &(usize, usize)) -> bool {
         self.view != View::Search || r.1 == 0
     }
@@ -1046,6 +1066,7 @@ impl State {
     /// otherwise take the first one. A row from another drive is only looked at (`more.sel`),
     /// never put in `selected`/`marked`, which index the scan's tree.
     pub(crate) fn search_box_down(&mut self) {
+        self.search.tile = None;
         let Some(&first) = self.rows.first() else { return };
         let on_listed = match self.search.more.sel.filter(|_| self.view == View::Search) {
             Some((p, n)) => self.rows.iter().any(|r| r.1 == p + 1 && r.0 == n),
@@ -1136,6 +1157,9 @@ impl State {
             65 if ctrl => {
                 self.search.more.picks.clear();
                 self.marked = self.rows.iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
+                if self.selected_listed().is_none() {
+                    self.selected = self.rows.iter().find(|r| self.scan_row(r)).map(|r| r.0);
+                }
                 self.refresh_rows();
                 self.show_selection();
                 return true;
@@ -1145,7 +1169,7 @@ impl State {
         // moving: Shift extends the picks, otherwise they go
         if matches!(key, 33..=40) {
             if shift {
-                self.marked.extend(self.selected);
+                self.marked.extend(self.selected_listed());
                 // a row from another drive the keyboard is on starts the run of picks there
                 if let Some((p, n)) = self.search.more.sel.filter(|_| self.view == View::Search) {
                     if self.search.more.picks.is_empty() {
