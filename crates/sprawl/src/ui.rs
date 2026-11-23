@@ -696,6 +696,8 @@ pub(crate) fn shortcuts_xaml() -> String {
         r("Ctrl+click", "Pick several"),
         r("Shift+click", "Pick a range"),
         r("type a name", "Jump to it"),
+        r("F2", "Rename the picked result (Search)"),
+        r("Ctrl+C", "Copy the picked results as files (Search)"),
     ];
     let map = [r("click", "Select"), r("double-click", "Go into a folder"), r("wheel", "Zoom in and out"), r("right-drag", "Pan")];
     // the menus' own, without the tabs listed above

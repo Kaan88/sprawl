@@ -52,6 +52,7 @@ mod models;
 mod search;
 mod search_more;
 mod search_delete;
+mod search_rename;
 mod search_query;
 mod search_box;
 mod shellmenu;

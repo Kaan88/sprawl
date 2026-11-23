@@ -323,7 +323,7 @@ fn saved_files(ix: &CompactIndex, id: u32) -> u64 {
 
 impl State {
     /// The scan on screen is, or holds, `path`: it must be deleted from that scan.
-    fn overlaps_scan(&self, path: &Path) -> bool {
+    pub(crate) fn overlaps_scan(&self, path: &Path) -> bool {
         use crate::search_more::within;
         let Some(t) = &self.tree else { return false };
         let roots: Vec<PathBuf> = if t.nodes[ROOT].name == sprawl_core::MULTIPLE {

@@ -1081,6 +1081,15 @@ impl State {
         let mut target = k;
         let (ctrl, shift) = crate::win32::ctrl_shift_down();
         match key {
+            // F2 renames the one picked result; Ctrl+C copies the picked results as files
+            113 if self.view == View::Search => {
+                self.search_rename();
+                return true;
+            }
+            67 if ctrl && !shift && self.view == View::Search => {
+                self.search_copy_files();
+                return true;
+            }
             // Esc drops the picks; Ctrl+A picks every row
             27 if !self.marked.is_empty() || (self.view == View::Search && !self.search.more.picks.is_empty()) => {
                 self.marked.clear();
