@@ -764,6 +764,26 @@ fn proposal_row(i: usize, p: &sprawl_advisor::memory::Proposal) -> String {
     )
 }
 
+/// Take `path` off the unexplained list in place: its row goes without the whole report being
+/// worked out again (its label keeps it off the next one too).
+fn drop_unexplained(list: &mut Vec<(PathBuf, u64)>, path: &std::path::Path) {
+    list.retain(|(p, _)| p != path);
+}
+
+#[cfg(test)]
+mod unex_tests {
+    use super::*;
+
+    #[test]
+    fn hiding_a_row_takes_only_that_folder_off_the_list() {
+        let mut list: Vec<(PathBuf, u64)> = vec![(PathBuf::from(r"C:\A\cache"), 10), (PathBuf::from(r"C:\B\cache"), 20)];
+        drop_unexplained(&mut list, std::path::Path::new(r"C:\A\cache"));
+        assert_eq!(list, vec![(PathBuf::from(r"C:\B\cache"), 20)]);
+        drop_unexplained(&mut list, std::path::Path::new(r"C:\C\none"));
+        assert_eq!(list.len(), 1, "a path that isn't listed changes nothing");
+    }
+}
+
 fn recheck_target(tree: &Tree, path: &std::path::Path) -> Option<PathBuf> {
     let n = sprawl_advisor::find_path(tree, path)?;
     if n == sprawl_core::ROOT { return None; }
@@ -3456,9 +3476,16 @@ impl State {
         if kind == "AdvUnexHide" {
             let Some(path) = self.advice().and_then(|r| r.unexplained.get(i)).map(|(p, _)| p.clone()) else { return };
             self.advisor.memory.hide_unexplained(&path);
+            // the row goes from the report on show (the scan's, or the Cleaners tab's own read):
+            // no rule runs again for one hidden row
+            {
+                let own = self.own_active();
+                let r = if own { self.advisor.cl.own.as_mut().map(|o| &mut o.report) } else { self.advisor.report.as_mut() };
+                if let Some(r) = r { drop_unexplained(&mut r.unexplained, &path); }
+            }
             self.save_memory();
             self.adv_say("Hidden from the list. Its label is under Remembered; Forget there brings it back.");
-            return self.advisor_refresh();
+            return self.advisor_changed();
         }
         let m = &mut self.advisor.memory;
         match kind {
