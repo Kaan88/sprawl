@@ -323,9 +323,11 @@ impl State {
             self.search_box_state();
         }
         self.render_map();
-        // the Settings page again, as it was: its section, its picks, its unsaved changes
+        // the Settings page again, as it was: its section, its picks, its unsaved changes, and
+        // the focus it takes when it opens (the old page's controls are gone)
         if settings_open {
             self.wizard_show();
+            self.wizard_focus_arm(self.prefs.open_state == crate::bindings::Microsoft::UI::Xaml::FocusState::Keyboard);
         }
         crate::state::timing("theme change", t0);
         Ok(true)

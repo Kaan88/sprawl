@@ -3,6 +3,10 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Settings takes the keyboard focus when it opens, and gives it back when it closes.
+
 ## 1.0.7 — 2026-11-23
 
 - The theme goes back to the defaults once, so everyone gets the new default look (below) and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.

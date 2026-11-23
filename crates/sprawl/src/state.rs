@@ -919,6 +919,8 @@ impl State {
                     }
                     // dev: what has the focus, and which menus are open, in the timing log
                     "barlog" => crate::menu::dev_report(),
+                    // dev: what has the focus once Settings (or the wizard) opened, in the log
+                    "wizlog" => crate::menu::dev_report(),
                     // dev: a right-click on row k of the main table (ctx=3), the menu key on the
                     // keyboard's row (ctxkey), a right-click on the map at x,y (mapctx=300x200)
                     c if c.starts_with("ctx=") => {
