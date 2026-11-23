@@ -121,33 +121,74 @@ fn hub_files_json(setup: &Path) -> String {
 /// The silent arguments Hub runs Setup with; no restart of Sprawl (Hub starts nothing itself).
 const HUB_SILENT: &str = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART";
 
-/// Whether `pwsh` (PowerShell 7) can be started. `build` asks first, so a missing one is found
-/// before the slow work and not after it.
-fn have_pwsh() -> bool {
-    Command::new("pwsh").args(["-NoProfile", "-Command", "exit 0"]).status().is_ok_and(|s| s.success())
+/// The PowerShell programs `tools/write-hub-txt.ps1` runs in: Windows PowerShell 5.1 (which every
+/// Windows has) first, PowerShell 7 if that is all there is. The script works in both.
+const POWERSHELLS: [&str; 2] = ["powershell", "pwsh"];
+
+/// Whether `shell` can be started.
+fn have_shell(shell: &str) -> bool {
+    Command::new(shell).args(["-NoProfile", "-Command", "exit 0"]).status().is_ok_and(|s| s.success())
+}
+
+/// The first of `POWERSHELLS` that starts. `build` asks first, so a missing one is found before
+/// the slow work and not after it.
+fn find_shell() -> Option<&'static str> {
+    POWERSHELLS.into_iter().find(|s| have_shell(s))
+}
+
+/// The most of the release notes sent as `notes.md` (Hub reads at most 64 KiB of the file
+/// `notes.file` names, and shows what it can read).
+const NOTES_MAX: usize = 64 * 1024;
+
+/// The notes as they go in `notes.md`: the CHANGELOG section as it is, or cut at a line end under
+/// `NOTES_MAX` bytes with a closing line when longer.
+fn notes_for_file(notes: &str) -> String {
+    const MORE: &str = "\n\n(The rest of these notes is in CHANGELOG.md.)\n";
+    if notes.len() <= NOTES_MAX {
+        return notes.to_string();
+    }
+    let mut end = NOTES_MAX - MORE.len();
+    while !notes.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &notes[..end];
+    // back to the end of a whole line, unless there is none worth keeping
+    let head = head.rfind('\n').filter(|&i| i > head.len() / 2).map_or(head, |i| &head[..i]);
+    format!("{}{MORE}", head.trim_end())
 }
 
 /// Writes `hub.txt` into `out`, through the PowerShell script every app of the family shares
-/// (PowerShell 7, `pwsh`: the script's `-FilesJson` does not read a one-item list in Windows
-/// PowerShell 5.1, found when this was written). It refuses anything Hub's parser
-/// would refuse, so a bad release stops here. `Err` names what failed; the list file is removed
-/// either way. `-ExecutionPolicy Bypass` is for this one process: a machine policy of AllSigned
-/// would otherwise refuse the unsigned copy of the script.
-fn write_hub_txt(script: &Path, out: &Path, v: &str, notes: &str, setup: &Path) -> Result<(), String> {
+/// (run by `shell`, one of `POWERSHELLS`). `notes_file` is the name of the full notes among the
+/// release's files (`notes.file` in hub.txt). The script refuses anything Hub's parser would
+/// refuse, so a bad release stops here. `Err` names what failed; the list file is removed either
+/// way. `-ExecutionPolicy Bypass` is for this one process: a machine policy of AllSigned would
+/// otherwise refuse the unsigned copy of the script.
+fn write_hub_txt(shell: &str, script: &Path, out: &Path, v: &str, notes: &str, notes_file: &str, setup: &Path) -> Result<(), String> {
     let list = out.join("hub-files.json");
     std::fs::write(&list, hub_files_json(setup)).map_err(|e| format!("hub.txt: {e}"))?;
-    let mut cmd = Command::new("pwsh");
+    let mut cmd = Command::new(shell);
     cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(script);
-    cmd.args(["-App", "sprawl", "-Repo", "sprawl", "-Version", v, "-Notes", notes, "-Kind", "setup", "-Exe", "sprawl.exe", "-Uninstall", "Sprawl_is1", "-FilesJson"]);
+    cmd.args(["-App", "sprawl", "-Repo", "sprawl", "-Version", v, "-Notes", notes, "-NotesFile", notes_file, "-Kind", "setup", "-Exe", "sprawl.exe", "-Uninstall", "Sprawl_is1", "-FilesJson"]);
     cmd.arg(&list).arg("-Out").arg(out.join(HUB_TXT));
     let ok = cmd.status().is_ok_and(|s| s.success());
     // the list was only an input
     let _ = std::fs::remove_file(&list);
-    if ok { Ok(()) } else { Err("hub.txt could not be written by tools/write-hub-txt.ps1 (its message is above; PowerShell 7 `pwsh` is needed)".to_string()) }
+    if ok { Ok(()) } else { Err(format!("hub.txt could not be written by tools/write-hub-txt.ps1 (its message is above; run by `{shell}`)")) }
 }
 
 /// The file Hub reads from the release.
 const HUB_TXT: &str = "hub.txt";
+
+/// The full release notes, a release asset Hub's release-notes page fetches (named in hub.txt as
+/// `notes.file`, so a plain name: letters, digits and `. _ -`). It is also the GitHub release text.
+const NOTES_FILE: &str = "notes.md";
+
+/// The files `publish` uploads, from the release folder `out`.
+fn release_assets(out: &Path, v: &str) -> Vec<PathBuf> {
+    let mut assets: Vec<PathBuf> = FILES.iter().map(|n| out.join(n)).collect();
+    assets.extend([out.join(format!("Sprawl-Setup-{v}.exe")), out.join(MANIFEST), out.join(SIGNATURE), out.join(HUB_TXT), out.join(NOTES_FILE)]);
+    assets
+}
 
 /// The commit `build` was made from, written beside the files so `publish` can check that it
 /// is releasing what was built.
@@ -222,9 +263,7 @@ fn dist(v: &str) -> PathBuf {
 fn build() {
     let v = version();
     let notes = notes(&v);
-    if !have_pwsh() {
-        fail("PowerShell 7 (`pwsh`) is not available: it writes hub.txt (tools/write-hub-txt.ps1)");
-    }
+    let shell = find_shell().unwrap_or_else(|| fail("PowerShell (`powershell` or `pwsh`) is not available: it writes hub.txt (tools/write-hub-txt.ps1)"));
     // the release is tied to one commit: it is recorded here and checked again at publish
     require_clean_tree("building");
     let commit = head_commit();
@@ -291,8 +330,9 @@ fn build() {
     std::fs::write(out.join(MANIFEST), &manifest).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(SIGNATURE), &sig).unwrap_or_else(|e| fail(e));
     // hub.txt: what the Hub launcher reads to find this release (tools/write-hub-txt.ps1)
-    write_hub_txt(&Path::new("tools").join("write-hub-txt.ps1"), &out, &v, &one_line(&notes), &setup).unwrap_or_else(|e| fail(e));
-    std::fs::write(out.join("notes.md"), notes).unwrap_or_else(|e| fail(e));
+    // the full notes go first: hub.txt names them, and they are uploaded with it
+    std::fs::write(out.join(NOTES_FILE), notes_for_file(&notes)).unwrap_or_else(|e| fail(e));
+    write_hub_txt(shell, &Path::new("tools").join("write-hub-txt.ps1"), &out, &v, &one_line(&notes), NOTES_FILE, &setup).unwrap_or_else(|e| fail(e));
     std::fs::write(out.join(COMMIT), &commit).unwrap_or_else(|e| fail(e));
     println!("Sprawl {v} is ready in {} (commit {commit})", out.display());
 }
@@ -305,6 +345,9 @@ fn publish() {
     }
     if !out.join(HUB_TXT).exists() {
         fail(format!("{} has no {HUB_TXT} (built before Hub support); run `build` again", out.display()));
+    }
+    if !out.join(NOTES_FILE).exists() {
+        fail(format!("{} has no {NOTES_FILE}; run `build` again", out.display()));
     }
     let tag = format!("v{v}");
     // A copy that already has this version never takes it again (an update has to be strictly
@@ -324,11 +367,10 @@ fn publish() {
     if built != head {
         fail(format!("{} was built from {built}, but HEAD is now {head}; check out that commit or run `build` again", out.display()));
     }
-    let mut assets: Vec<PathBuf> = FILES.iter().map(|n| out.join(n)).collect();
-    assets.extend([out.join(format!("Sprawl-Setup-{v}.exe")), out.join(MANIFEST), out.join(SIGNATURE), out.join(HUB_TXT)]);
+    let assets = release_assets(&out, &v);
     let mut cmd = Command::new("gh");
     // the tag goes on the commit that was built, not on whatever main points at
-    cmd.args(["release", "create", &tag, "--repo", REPO, "--target", &built, "--title", &format!("Sprawl {v}"), "--notes-file"]).arg(out.join("notes.md"));
+    cmd.args(["release", "create", &tag, "--repo", REPO, "--target", &built, "--title", &format!("Sprawl {v}"), "--notes-file"]).arg(out.join(NOTES_FILE));
     cmd.args(&assets);
     run(&mut cmd);
     println!("Published Sprawl {v} from {built}.");
@@ -392,26 +434,63 @@ mod tests {
 
     #[test]
     fn hub_txt_is_written_by_the_real_script() {
-        if !have_pwsh() {
-            eprintln!("pwsh not found; skipped");
+        let shells: Vec<&str> = POWERSHELLS.into_iter().filter(|s| have_shell(s)).collect();
+        if shells.is_empty() {
+            eprintln!("no PowerShell found; skipped");
             return;
         }
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-        let dir = std::env::temp_dir().join(format!("sprawl-hub-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let setup = dir.join("Sprawl-Setup-9.9.9.exe");
-        std::fs::write(&setup, vec![7u8; 5000]).unwrap();
         let script = root.join("tools").join("write-hub-txt.ps1");
-        write_hub_txt(&script, &dir, "9.9.9", "A note.", &setup).unwrap();
-        let txt = std::fs::read_to_string(dir.join(HUB_TXT)).unwrap();
-        assert!(!dir.join("hub-files.json").exists());
-        for want in ["sprawl", "9.9.9", "setup", "sprawl.exe", "Sprawl_is1", "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART", "machine", "A note."] {
-            assert!(txt.contains(want), "{want} missing from:\n{txt}");
+        // every PowerShell there is: the list has one file, which Windows PowerShell 5.1 read as
+        // nothing before the script was fixed
+        for shell in shells {
+            let dir = std::env::temp_dir().join(format!("sprawl-hub-test-{}-{shell}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let setup = dir.join("Sprawl-Setup-9.9.9.exe");
+            std::fs::write(&setup, vec![7u8; 5000]).unwrap();
+            write_hub_txt(shell, &script, &dir, "9.9.9", "A note.", NOTES_FILE, &setup).unwrap();
+            let txt = std::fs::read_to_string(dir.join(HUB_TXT)).unwrap();
+            assert!(!dir.join("hub-files.json").exists());
+            for want in ["sprawl", "9.9.9", "setup", "sprawl.exe", "Sprawl_is1", "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART", "machine", "A note.", "notes.file: notes.md\n"] {
+                assert!(txt.contains(want), "{shell}: {want} missing from:\n{txt}");
+            }
+            // a notes file name Hub would refuse stops the release, and the list file is still removed
+            assert!(write_hub_txt(shell, &script, &dir, "9.9.9", "x", "my notes.md", &setup).is_err());
+            assert!(!dir.join("hub-files.json").exists());
+            // a wrong script: the error comes back and the list file is still removed
+            assert!(write_hub_txt(shell, &dir.join("missing.ps1"), &dir, "9.9.9", "x", NOTES_FILE, &setup).is_err());
+            assert!(!dir.join("hub-files.json").exists());
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        // a wrong script: the error comes back and the list file is still removed
-        assert!(write_hub_txt(&dir.join("missing.ps1"), &dir, "9.9.9", "x", &setup).is_err());
-        assert!(!dir.join("hub-files.json").exists());
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_notes_file_is_a_plain_name_and_a_release_asset() {
+        // the script's own rule for notes.file
+        assert!(NOTES_FILE.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) && !NOTES_FILE.starts_with('.'));
+        let assets = release_assets(Path::new("dist/v1.0.8"), "1.0.8");
+        assert!(assets.contains(&Path::new("dist/v1.0.8").join(NOTES_FILE)));
+        assert!(assets.contains(&Path::new("dist/v1.0.8").join(HUB_TXT)));
+    }
+
+    #[test]
+    fn long_notes_are_cut_under_the_limit_at_a_line() {
+        // a short one is left alone
+        assert_eq!(notes_for_file("- Faster.\n- More."), "- Faster.\n- More.");
+        let at_limit = "a".repeat(NOTES_MAX);
+        assert_eq!(notes_for_file(&at_limit), at_limit);
+        // a long one: lines of 2-byte characters, so a byte cut could fall inside one
+        let line = "- \u{e9}\u{e9}\u{e9}\u{e9}\u{e9} a line of the notes";
+        let long = format!("{line}\n").repeat(5000);
+        assert!(long.len() > NOTES_MAX);
+        let cut = notes_for_file(&long);
+        assert!(cut.len() <= NOTES_MAX, "{}", cut.len());
+        assert!(cut.ends_with("(The rest of these notes is in CHANGELOG.md.)\n"));
+        let body = cut.split("\n\n(The rest").next().unwrap();
+        assert!(body.lines().all(|l| l == line), "cut inside a line");
+        // no line breaks to cut at: still under the limit, on a character boundary
+        let one = "\u{1D538}".repeat(NOTES_MAX);
+        assert!(notes_for_file(&one).len() <= NOTES_MAX);
     }
 
     #[test]

@@ -308,9 +308,8 @@ tools/write-hub-txt.ps1). Left for later:
 - Two updaters: Sprawl's own updater does not stand down when Hub manages it
   (`%LOCALAPPDATA%\Hub\managed\sprawl`), so both may offer an update. Decide before 1.0.6.
 - v1.0.5 has no hub.txt: Hub shows "no release information" until 1.0.6 (or attach one to 1.0.5).
-- The copied script says it works in Windows PowerShell 5.1, but `-FilesJson` with one file
-  does not there; Sprawl uses pwsh. Fix in the Hub repository's original.
-- Releases now need PowerShell 7 (`pwsh`); build checks it first.
+- (Done: the Hub script is fixed for PowerShell 5.1 and re-copied; `build` uses `powershell` or
+  `pwsh`, and passes `-NotesFile notes.md`, uploaded with the release.)
 - Never run for real: at 1.0.6, check hub.txt is among the release assets.
 
 ## L. One-time theme reset: in 1.0.7, out in the release after (removed 2026-11-23, after 1.0.7)
