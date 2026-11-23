@@ -137,6 +137,14 @@ fn read_filter(tree: &sprawl_core::Tree, hits: Vec<usize>, dates: &sprawl_core::
     ReadOutcome::Kept { kept, notes, unread: unread_c + unread_a, unknown: unknown_c + unknown_a }
 }
 
+/// Whether other drives and saved scans are searched for a query: `dc:` and `da:` read each
+/// match's own time, which only the scan on screen can do (one path at a time), so a query with
+/// either searches nothing else. Their rows would otherwise be listed without the dates, mixed
+/// into the scan's filtered list and ready to be picked and deleted.
+pub(crate) fn places_searched(dates: &sprawl_core::query::ReadDates) -> bool {
+    dates.is_empty()
+}
+
 /// The most results the row menu opens at once: Explorer starts a program for each result and a
 /// window for each folder holding picked files or picked itself.
 pub(crate) const MAX_OPEN: usize = 10;
@@ -389,7 +397,14 @@ impl State {
     fn search_none_state(&mut self) {
         let m = &self.search.more;
         let q = self.search.query.trim();
-        let settled = self.search.running.is_none() && self.search.sorting.is_none() && !self.search.pending && self.search.typed.is_none() && !m.is_reading();
+        // a `dc:`/`da:` query doesn't use other drives, so their reading doesn't hold the answer
+        // back (and the panel says they are left out)
+        let reads_places = places_searched(&self.search.reads.dates);
+        let settled = self.search.running.is_none()
+            && self.search.sorting.is_none()
+            && !self.search.pending
+            && self.search.typed.is_none()
+            && (!m.is_reading() || !reads_places);
         let none = self.view == View::Search
             && !q.is_empty()
             && settled
@@ -400,17 +415,22 @@ impl State {
             && m.current_hits().is_empty();
         let msg = if none {
             let drives = m.on_list();
-            let place = match (self.tree.is_some(), drives.is_empty()) {
+            // `dc:`/`da:` search only the scan on screen: naming other drives as searched would
+            // say the dates had been checked there too
+            let place = match (self.tree.is_some(), drives.is_empty() || !places_searched(&self.search.reads.dates)) {
                 (true, true) => "this scan".to_string(),
                 (true, false) => format!("this scan and {}", drives.join(", ")),
                 _ => drives.join(", "),
             };
             let mut ways = vec!["check the words", "take a filter off (a lit button under the box, or its words in the box)"];
-            if drives.is_empty() {
+            if drives.is_empty() && places_searched(&self.search.reads.dates) {
                 ways.push("add a drive with Search in");
             }
             let mut s = format!("Nothing matches \u{201c}{q}\u{201d} in {place}.\nTo widen it: {}.", ways.join("; "));
             // what a `dc:`/`da:` search couldn't read is said here too: never as a plain "no"
+            if !places_searched(&self.search.reads.dates) {
+                s += "\ndc: and da: read each match's own time, so only the scan on screen is searched: other drives and saved scans are left out.";
+            }
             if !self.search.reads.notes.is_empty() {
                 s += &format!("\n{}", self.search.reads.notes.join("\n"));
             }
@@ -601,7 +621,9 @@ impl State {
             }
         }
         let mut s = match (files, folders) {
-            (0, 0) if m.is_reading() => "Nothing yet; still reading drives".to_string(),
+            // other drives aren't searched when `dc:`/`da:` is in the query, so reading them is
+            // not "nothing yet"
+            (0, 0) if m.is_reading() && places_searched(&self.search.reads.dates) => "Nothing yet; still reading drives".to_string(),
             (0, 0) => "Nothing found".to_string(),
             (f, 0) => format!("{} file{}, {}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes)),
             (0, d) => format!("{} folder{}", thousands(d), if d == 1 { "" } else { "s" }),
@@ -621,8 +643,8 @@ impl State {
         if self.search.reads.unknown > 0 {
             s += &format!("; {} with no time to read", thousands(self.search.reads.unknown as u64));
         }
-        if !self.search.reads.dates.is_empty() && m.has_places() {
-            s += "; dc:/da: for the scan only";
+        if !places_searched(&self.search.reads.dates) && m.has_places() {
+            s += "; dc: and da: search only this scan";
         }
         s
     }
@@ -888,6 +910,22 @@ fn second_tap(last: Option<Tap>, row: (usize, usize), now: std::time::Instant, w
     let taken = recent.is_some_and(|(_, _, taken)| taken);
     let double = if gesture { !taken } else { recent.is_some() && !taken };
     (double, (row, now, double || (gesture && taken)))
+}
+
+#[cfg(test)]
+mod places_tests {
+    use super::places_searched;
+    use sprawl_core::query::ReadDates;
+
+    /// `dc:` or `da:` in the query: no other drive or saved scan is searched, so its rows can't
+    /// be listed without the dates. Neither word: they are, as before.
+    #[test]
+    fn a_date_word_keeps_the_search_to_the_scan() {
+        assert!(places_searched(&ReadDates::default()));
+        assert!(!places_searched(&ReadDates { created: Some((-1, i64::MAX)), accessed: None }));
+        assert!(!places_searched(&ReadDates { created: None, accessed: Some((-1, i64::MAX)) }));
+        assert!(!places_searched(&ReadDates { created: Some((-1, 0)), accessed: Some((0, 1)) }));
+    }
 }
 
 #[cfg(test)]

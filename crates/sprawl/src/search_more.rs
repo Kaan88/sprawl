@@ -517,7 +517,14 @@ impl State {
         m.running = None;
         m.resorting = None;
         let q = Query::parse(&self.search.reads.plain);
-        if q.is_empty() || !q.errors().is_empty() || self.search.reads.error.is_some() || !m.has_places() {
+        // `dc:`/`da:` read each match's own time, which only the scan on screen can do: other
+        // drives and saved scans are not searched at all for such a query (search::places_searched)
+        if q.is_empty()
+            || !q.errors().is_empty()
+            || self.search.reads.error.is_some()
+            || !crate::search::places_searched(&self.search.reads.dates)
+            || !m.has_places()
+        {
             m.hits.clear();
             m.all = Arc::new(Vec::new());
             m.total = 0;
@@ -594,7 +601,9 @@ impl State {
         if changed {
             self.search.stamp += 1;
             self.more_forget_covered();
-            if self.view == View::Search {
+            // a drive that finished reading only matters to a query that searches it: `dc:`/`da:`
+            // search the scan on screen, and re-running would read every match's time again
+            if self.view == View::Search && crate::search::places_searched(&self.search.reads.dates) {
                 self.search_run();
             }
             self.render_more();
