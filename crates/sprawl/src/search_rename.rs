@@ -23,8 +23,9 @@ use crate::search::picked_in_order;
 use crate::state::{text, State, View};
 
 /// Names Windows keeps for devices, with or without an extension.
-const DEVICES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+const DEVICES: [&str; 30] = [
+    "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM\u{b9}", "COM\u{b2}", "COM\u{b3}", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+    "LPT7", "LPT8", "LPT9", "LPT\u{b9}", "LPT\u{b2}", "LPT\u{b3}",
 ];
 
 /// Why `name` can't be a file or folder name on Windows.
@@ -32,7 +33,8 @@ pub(crate) fn invalid_name(name: &str) -> Option<String> {
     if name.is_empty() {
         return Some("Type a name.".into());
     }
-    if name.chars().count() > 255 {
+    // Windows counts UTF-16 units
+    if name.encode_utf16().count() > 255 {
         return Some("A name can have at most 255 characters.".into());
     }
     if let Some(c) = name.chars().find(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || (*c as u32) < 32) {
@@ -49,9 +51,12 @@ pub(crate) fn invalid_name(name: &str) -> Option<String> {
     None
 }
 
-/// The extension of file name `name` (what follows its last dot, if both parts are not empty).
+/// The extension of file name `name`: what follows its last dot, if both parts are not empty
+/// and it looks like an extension (letters and digits, at most 10; "Report v1.2 final" has none).
 fn extension(name: &str) -> Option<&str> {
-    name.rsplit_once('.').filter(|(a, b)| !a.is_empty() && !b.is_empty()).map(|(_, e)| e)
+    name.rsplit_once('.')
+        .filter(|(a, b)| !a.is_empty() && !b.is_empty() && b.chars().count() <= 10 && b.chars().all(char::is_alphanumeric))
+        .map(|(_, e)| e)
 }
 
 /// What `typed` makes of the name `old`: a file keeps its extension unless what was typed has a
@@ -86,6 +91,10 @@ pub(crate) enum Bad {
 /// check, applied to the new path too. Returns the new path.
 pub(crate) fn rename_on_disk(old: &Path, name: &str, refusal: &dyn Fn(&Path) -> Option<String>) -> Result<PathBuf, Bad> {
     let Some(dir) = old.parent() else { return Err(Bad::Stop("It has no folder to be renamed in.".into())) };
+    // the folder and every folder above it are held as themselves (no junction, no link, nothing
+    // that resolves elsewhere) until the rename is done, so none can be swapped for a link to
+    // somewhere else between the checks and the move, as Delete does
+    let _held = sprawl_core::local::directory(dir).map_err(|e| Bad::Stop(format!("Sprawl couldn't hold its folder safely ({e}), so nothing was renamed.")))?;
     let to = dir.join(name);
     if let Some(why) = refusal(&to) {
         return Err(Bad::Stop(why));
@@ -96,6 +105,73 @@ pub(crate) fn rename_on_disk(old: &Path, name: &str, refusal: &dyn Fn(&Path) -> 
     }
     crate::win32::move_no_replace(old, &to).map_err(|e| Bad::Stop(format!("Windows said: {e}")))?;
     Ok(to)
+}
+
+/// Why `path` may not be renamed from or to, wherever it is: not a local drive path (a network
+/// share is shown read only, as for every other action), protected, excluded in Settings, or
+/// one the user told Sprawl to Keep (or holding or inside one: a rename would orphan the Keep).
+pub(crate) fn path_refusal_for_rename(path: &Path, kept: &[PathBuf]) -> Option<String> {
+    if sprawl_core::local::lexical(path).is_err() {
+        return Some(format!("{}\n\nisn't on a local drive. Sprawl shows network folders read only and renames only on local drives; rename it in Explorer.", path.display()));
+    }
+    if let Some(why) = crate::commands::path_refusal(path) {
+        return Some(why);
+    }
+    kept_refusal(path, kept)
+}
+
+/// The Keep decision (what clean-ups spare) that a rename of `path` would orphan, if any.
+pub(crate) fn kept_refusal(path: &Path, kept: &[PathBuf]) -> Option<String> {
+    use crate::search_more::{norm, within};
+    let a = norm(path);
+    kept.iter()
+        .find(|k| {
+            let b = norm(k);
+            !b.is_empty() && (within(&a, &b) || within(&b, &a))
+        })
+        .map(|k| format!("You told Sprawl to Keep {}, which this is, holds or is inside. A rename would leave the Keep naming a path that is gone, and clean-ups would no longer spare the item. Forget that Keep first.", k.display()))
+}
+
+/// Every path the user chose to Keep (saved, and decided since); Err when the saved list can't
+/// be read, which stops the rename.
+fn kept_list(live: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let mut kept = sprawl_advisor::memory::Memory::load_checked()
+        .map_err(|e| format!("Sprawl couldn't read what you told it to Keep ({e}), so it won't rename anything now."))?
+        .kept_paths();
+    kept.extend(live);
+    Ok(kept)
+}
+
+/// Why folder item `id` of `place` (as `path`) can't be renamed for what it holds: the folder
+/// changed after its drive was read, or something in it (or it) is protected by the end of its
+/// path (a disk image, a mail profile, a vault), which `Never::hit` on the folder doesn't see.
+fn more_folder_refusal(place: &crate::search_more::Place, id: usize, path: &Path) -> Option<String> {
+    let ix = &place.ix;
+    let id = id as u32;
+    if std::fs::metadata(path).and_then(|m| m.modified()).map_or(true, |m| m > place.read_at) {
+        return Some("The folder changed since its drive was read, so what it holds isn't known. Refresh the drive's results (or scan the folder) and try again.".into());
+    }
+    let never = sprawl_advisor::safety::Never::default_list();
+    let d = ix.depth(id);
+    let n = ix.len() as u32;
+    let mut j = id;
+    while j < n && (j == id || ix.depth(j) > d) {
+        // the item's last names, as far as a never-list entry looks
+        let mut names = Vec::new();
+        let mut at = Some(j);
+        while let Some(i) = at.filter(|_| names.len() < 4) {
+            names.push(ix.name(i));
+            at = ix.parent(i);
+        }
+        names.reverse();
+        let tail: PathBuf = names.iter().collect();
+        if let Some(p) = never.path_hit(&tail) {
+            let held = ix.path_of(j);
+            return Some(format!("This folder holds\n{}\n\nwhich is protected ({p}), so it can't be renamed.", held.display()));
+        }
+        j += 1;
+    }
+    None
 }
 
 /// What a rename is for.
@@ -119,7 +195,11 @@ impl State {
         if let Some(why) = self.rename_busy() {
             return Some(why);
         }
-        if let Some(why) = crate::commands::path_refusal(path) {
+        let kept = match kept_list(self.advisor.memory.kept_paths()) {
+            Ok(k) => k,
+            Err(why) => return Some(why),
+        };
+        if let Some(why) = path_refusal_for_rename(path, &kept) {
             return Some(why);
         }
         let is_dir = match target {
@@ -132,7 +212,16 @@ impl State {
                     return Some("That is one of the scanned folders itself.".into());
                 }
                 let never = sprawl_advisor::safety::Never::default_list();
-                if let Some((at, p)) = never.hit_inside(t, n) {
+                // with a filter on, the tree on screen shows only part of a folder: what it
+                // holds is looked for in the whole scan
+                let (whole, inside) = match &self.full_tree {
+                    Some(full) if t.nodes[n].is_dir => match sprawl_advisor::find_path(full, path) {
+                        Some(k) => (&**full, k),
+                        None => return Some("A filter is on and this folder isn't in the whole scan, so what it holds isn't known. Clear the filter first.".into()),
+                    },
+                    _ => (&**t, n),
+                };
+                if let Some((at, p)) = never.hit_inside(whole, inside) {
                     return Some(format!("This folder holds\n{at}\n\nwhich is protected ({p}), so it can't be renamed."));
                 }
                 t.nodes[n].is_dir
@@ -144,9 +233,14 @@ impl State {
                     return Some("This result comes from a saved scan, which shows how a place was and not what is there now. Rename it from Explorer, or scan the folder first.".into());
                 }
                 if self.overlaps_scan(path) {
-                    return Some("It is, or holds, the scan on screen; rename it from the Tree or Files tab.".into());
+                    return Some("It is, or holds, the scan on screen, which a rename here would put out of step with the disk. Rename it in Explorer, or scan its folder on its own first.".into());
                 }
                 let Some((ix, i)) = m.item(k, id) else { return Some("That result is gone from the list.".into()) };
+                if ix.is_dir(i) {
+                    if let Some(why) = more_folder_refusal(place, id, path) {
+                        return Some(why);
+                    }
+                }
                 ix.is_dir(i)
             }
         };
@@ -217,18 +311,25 @@ impl State {
             Ok(n) => n,
             Err(why) => return self.rename_ask(target, path, is_dir, &typed, &why),
         };
-        match rename_on_disk(&path, &name, &crate::commands::path_refusal) {
+        let kept = match kept_list(self.advisor.memory.kept_paths()) {
+            Ok(k) => k,
+            Err(why) => return self.tell("Not renamed", &why),
+        };
+        match rename_on_disk(&path, &name, &|p| path_refusal_for_rename(p, &kept)) {
             Ok(_) => {}
             Err(Bad::Name(why)) => return self.rename_ask(target, path, is_dir, &name, &why),
             Err(Bad::Stop(why)) => return self.tell("Not renamed", &format!("{why}\n\n{}", path.display())),
         };
         let done = format!("Renamed {old_name} to {name}");
         match target {
-            Target::Scan(..) => {
-                // the scan on screen: its folder is read again, as after the Windows menu's own
-                // Rename (Delete and the like wait for that to finish)
-                let Some(root) = self.tree.as_ref().map(|t| t.path_of(sprawl_core::ROOT)) else { return };
-                let again = crate::shellmenu::rescan_target(&path, &root);
+            Target::Scan(n, _) => {
+                // the scan on screen: the row has its new name at once, and its folder is read
+                // again, as after the Windows menu's own Rename (Delete and the like wait for
+                // that to finish). The read is of the new path: a row directly in the scan's
+                // folder is read as itself, which the old name no longer is.
+                let to = path.with_file_name(&name);
+                let Some(root) = self.scan_renamed(n, &path, &name) else { return };
+                let again = crate::shellmenu::rescan_target(&to, &root);
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.shell_rescans = Some(rx);
                 std::thread::spawn(move || {
@@ -246,6 +347,34 @@ impl State {
         }
     }
 
+    /// Node `n` (at `old`) is now called `name` on the disk: the tree on screen (and the whole
+    /// scan behind a filter) says so. Returns the scanned folder the node belongs to, for the
+    /// read that follows: the scan's root, or for a scan of several folders the one it is in.
+    fn scan_renamed(&mut self, n: usize, old: &Path, name: &str) -> Option<PathBuf> {
+        if let Some(full) = self.full_tree.as_mut().map(std::sync::Arc::make_mut) {
+            if let Some(k) = sprawl_advisor::find_path(full, old).filter(|&k| k != sprawl_core::ROOT) {
+                full.nodes[k].name = name.to_string();
+            }
+        }
+        let t = std::sync::Arc::make_mut(self.tree.as_mut()?);
+        if n >= t.nodes.len() || n == sprawl_core::ROOT {
+            return None;
+        }
+        t.nodes[n].name = name.to_string();
+        let root = if t.nodes[sprawl_core::ROOT].name == sprawl_core::MULTIPLE {
+            let mut k = n;
+            while let Some(p) = t.nodes[k].parent.filter(|&p| p != sprawl_core::ROOT) {
+                k = p;
+            }
+            t.path_of(k)
+        } else {
+            t.path_of(sprawl_core::ROOT)
+        };
+        self.order_gen += 1;
+        self.tree_gen += 1;
+        Some(root)
+    }
+
     /// Ctrl+C in Search: the picked results go on the clipboard as files, so Paste in Explorer
     /// copies them.
     pub(crate) fn search_copy_files(&mut self) {
@@ -258,7 +387,7 @@ impl State {
         let note = if crate::win32::copy_files(self.hwnd, &paths) {
             format!("{} copied as {}: Paste in Explorer to copy {}.", crate::format::thousands(n as u64), if n == 1 { "a file" } else { "files" }, if n == 1 { "it" } else { "them" })
         } else {
-            "Couldn't put the results on the clipboard (another program has it).".to_string()
+            "Couldn't put the results on the clipboard (another program has it, or there isn't enough memory). What was on it is as it was.".to_string()
         };
         text(&self.root, "SearchInfo", &note);
     }
@@ -366,6 +495,97 @@ mod tests {
         let deny = |p: &Path| p.file_name().is_some_and(|n| n == "keep.txt").then(|| "protected".to_string());
         assert_eq!(rename_on_disk(&a, "keep.txt", &deny), Err(Bad::Stop("protected".into())));
         assert!(a.exists());
+    }
+
+    #[test]
+    fn a_dotted_name_that_is_no_extension_is_taken_whole() {
+        // "Report v1.2 final" is a name, not "Report v1" and an extension
+        assert_eq!(new_name("Report v1.2 final", false, "Report final"), Ok("Report final".into()));
+        assert_eq!(new_name("notes.backup of monday", false, "notes"), Ok("notes".into()));
+        assert_eq!(new_name("a.verylongextension", false, "b"), Ok("b".into()));
+        assert_eq!(new_name("photo.JPEG", false, "holiday"), Ok("holiday.JPEG".into()));
+        assert_eq!(extension("Report v1.2 final"), None);
+        assert_eq!(extension("x.tar"), Some("tar"));
+    }
+
+    #[test]
+    fn every_device_name_and_the_utf16_length_are_refused() {
+        for bad in ["CONIN$", "conout$", "COM\u{b9}", "LPT\u{b3}.txt", "AUX.log"] {
+            assert!(invalid_name(bad).is_some(), "{bad:?}");
+        }
+        // 128 characters of two UTF-16 units each are 256 units: too long for Windows
+        assert!(invalid_name(&"\u{1F600}".repeat(128)).is_some());
+        assert!(invalid_name(&"\u{1F600}".repeat(127)).is_none());
+    }
+
+    #[test]
+    fn a_kept_path_is_never_orphaned_by_a_rename() {
+        let kept = vec![PathBuf::from(r"D:\Projects\old-build")];
+        // the kept folder, one above it and one inside it
+        for p in [r"D:\Projects\old-build", r"d:\projects", r"D:\Projects\old-build\src\a.rs"] {
+            assert!(kept_refusal(Path::new(p), &kept).is_some(), "{p}");
+        }
+        // beside it, or a name that merely starts alike
+        for p in [r"D:\Projects\other", r"D:\Projects\old-build-2", r"D:\Work"] {
+            assert!(kept_refusal(Path::new(p), &kept).is_none(), "{p}");
+        }
+        assert!(kept_refusal(Path::new(r"D:\x"), &[]).is_none());
+    }
+
+    #[test]
+    fn a_network_path_is_refused_before_anything_else() {
+        for p in [r"\\nas\share\a.txt", r"\\?\UNC\nas\share\a.txt", r"\\.\C:\a.txt"] {
+            let why = path_refusal_for_rename(Path::new(p), &[]).unwrap_or_default();
+            assert!(why.contains("local drive"), "{p}: {why}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_renamed_through_a_junction() {
+        let t = Temp::new("junction");
+        let real = t.0.join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("a.txt"), b"x").unwrap();
+        let link = t.0.join("link");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&real).output().map(|o| o.status.success()).unwrap_or(false);
+        assert!(made, "the test needs to make a junction");
+        // the spelling is a plain local path, but a folder above the item is a junction
+        match rename_on_disk(&link.join("a.txt"), "b.txt", &allow) {
+            Err(Bad::Stop(why)) => assert!(why.contains("hold its folder safely"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(real.join("a.txt").exists() && !real.join("b.txt").exists());
+    }
+
+    #[test]
+    fn a_folder_holding_something_protected_is_not_renamed_from_another_drive() {
+        use sprawl_core::{Node, Tree};
+        let t = Temp::new("more");
+        std::fs::create_dir_all(t.0.join("vms")).unwrap();
+        std::fs::create_dir_all(t.0.join("docs")).unwrap();
+        let root = t.0.display().to_string();
+        let mut nodes = vec![Node { name: root.clone(), is_dir: true, ..Default::default() }];
+        for (name, dir, parent) in [("vms", true, 0), ("win11.vhdx", false, 1), ("docs", true, 0), ("notes.txt", false, 3)] {
+            let i = nodes.len();
+            nodes.push(Node { name: name.into(), is_dir: dir, parent: Some(parent), ..Default::default() });
+            nodes[parent].children.push(i);
+        }
+        let mut tree = Tree { volumes: Vec::new(), root_path: PathBuf::from(&root), nodes, errors: 0, method: Default::default() };
+        tree.compute_totals();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let place = |read_at| crate::search_more::Place { ix: std::sync::Arc::new(sprawl_core::compact::CompactIndex::build(&tree)), as_of: None, read_at, errors: 0, drive: Some("D:\\".into()) };
+        let p = place(later);
+        // (the index keeps its items in its own order: look the folders up by name)
+        let id = |name: &str| (0..p.ix.len() as u32).find(|&i| p.ix.name(i) == name).unwrap() as usize;
+        let (vms, docs) = (id("vms"), id("docs"));
+        let why = more_folder_refusal(&p, vms, &t.0.join("vms")).unwrap_or_default();
+        assert!(why.contains("win11.vhdx") && why.contains("protected"), "{why}");
+        assert_eq!(more_folder_refusal(&p, docs, &t.0.join("docs")), None);
+        // a read older than the folder says nothing about what is in it now
+        let old = place(std::time::UNIX_EPOCH);
+        assert!(more_folder_refusal(&old, docs, &t.0.join("docs")).is_some());
+        // a relative spelling is refused too
+        assert!(path_refusal_for_rename(Path::new("relative.txt"), &[]).is_some());
     }
 
     #[test]

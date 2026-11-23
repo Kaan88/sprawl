@@ -107,6 +107,7 @@ extern "system" {
     fn GlobalAlloc(flags: u32, bytes: usize) -> isize;
     fn GlobalLock(mem: isize) -> *mut c_void;
     fn GlobalUnlock(mem: isize) -> i32;
+    fn GlobalFree(mem: isize) -> isize;
     fn MoveFileW(from: *const u16, to: *const u16) -> i32;
 }
 
@@ -397,31 +398,51 @@ pub fn hdrop_bytes(paths: &[std::path::PathBuf]) -> Vec<u8> {
     b
 }
 
+/// A block of global memory (GMEM_MOVEABLE | GMEM_ZEROINIT) holding `bytes`, for the clipboard;
+/// 0 when it can't be made (nothing is left allocated then).
+unsafe fn global_with(bytes: &[u8]) -> isize {
+    let mem = GlobalAlloc(0x0002 | 0x0040, bytes.len());
+    if mem == 0 {
+        return 0;
+    }
+    let p = GlobalLock(mem) as *mut u8;
+    if p.is_null() {
+        GlobalFree(mem);
+        return 0;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+    GlobalUnlock(mem);
+    mem
+}
+
+/// Put the block `mem` on the clipboard as `format`. The system owns the block only once
+/// SetClipboardData has taken it; on any failure it is freed here. The clipboard is opened (and
+/// so emptied) only now that there is something to put on it.
+unsafe fn clipboard_take(owner: HWND, format: u32, mem: isize) -> bool {
+    if mem == 0 {
+        return false;
+    }
+    if OpenClipboard(owner) == 0 {
+        GlobalFree(mem);
+        return false;
+    }
+    EmptyClipboard();
+    let ok = SetClipboardData(format, mem) != 0;
+    if !ok {
+        GlobalFree(mem);
+    }
+    CloseClipboard();
+    ok
+}
+
 /// Put `paths` on the clipboard as files (CF_HDROP, copy), so Paste in Explorer copies them.
+/// The block is made before the clipboard is touched, so a failure leaves what was on it.
 pub fn copy_files(owner: HWND, paths: &[std::path::PathBuf]) -> bool {
     let bytes = hdrop_bytes(paths);
     unsafe {
-        if OpenClipboard(owner) == 0 {
-            return false;
-        }
-        EmptyClipboard();
-        // GMEM_MOVEABLE | GMEM_ZEROINIT
-        let mem = GlobalAlloc(0x0002 | 0x0040, bytes.len());
-        let ok = if mem != 0 {
-            let p = GlobalLock(mem) as *mut u8;
-            if p.is_null() {
-                false
-            } else {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
-                GlobalUnlock(mem);
-                // CF_HDROP
-                SetClipboardData(15, mem) != 0
-            }
-        } else {
-            false
-        };
-        CloseClipboard();
-        ok
+        let mem = global_with(&bytes);
+        // CF_HDROP
+        clipboard_take(owner, 15, mem)
     }
 }
 

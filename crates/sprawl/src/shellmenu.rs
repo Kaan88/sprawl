@@ -166,6 +166,12 @@ impl crate::state::State {
             crate::state::text(&self.root, "FootLeft", "A scan is running: the Windows menu for its rows is back when it has finished.");
             return;
         }
+        // a reread after an earlier command (or a Search rename) is still coming: this one's
+        // would replace it and the tree would keep the old state
+        if self.shell_rescans.is_some() {
+            crate::state::text(&self.root, "FootLeft", "The folder is still being read after the last change: the Windows menu is back when that has finished.");
+            return;
+        }
         let picked = if in_scan { self.picked_nodes().len() } else { 1 };
         if let Some(why) = unavailable(picked) {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
