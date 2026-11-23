@@ -74,7 +74,8 @@ dupe:\tfiles and folders with another match of the same name (any case)
 sizedupe:\tfiles with another match of the same size
 attrib:hs\thidden and system: h hidden, s system, r read-only, l link or junction, c compressed
 len:>260\ta full path longer than 260 characters (also len:<=200, len:100..260)
-audio:  video:  pic:  doc:  exe:  zip:\tfiles of that kind, the same lists as the Type filter
+audio:  video:  pic:\tfiles of that kind, the same lists as the Type filter
+doc:  exe:  zip:\tdocuments, programs and archives, the same lists as the Type filter
 compressed:\tcompression recorded by this scan; fast folder scans may omit hidden WOF backing (MFT and detailed checks retain it); compressed:no for others
 folder:  file:\tfolders only, files only (folder:cache)";
 
@@ -202,8 +203,10 @@ impl Pat {
                 p == &path[..] || (!path.is_empty() && p.len() > path.len() && p.ends_with(path) && p[p.len() - path.len() - 1] == b'\\')
             }
             Pat::Child(ts) => it.child_matches(ts),
-            Pat::ChildCount(a, b) => (*a..=*b).contains(&it.children()),
-            Pat::ChildFiles(a, b) => (*a..=*b).contains(&it.child_files()),
+            // counts are of a folder's children: a file has none, and `childcount:0` means the
+            // empty folders, not every file
+            Pat::ChildCount(a, b) => it.is_dir() && (*a..=*b).contains(&it.children()),
+            Pat::ChildFiles(a, b) => it.is_dir() && (*a..=*b).contains(&it.child_files()),
             Pat::Attrib { mask, compressed } => it.attributes() & mask == *mask && (!*compressed || it.compressed()),
             Pat::Len(a, b) => {
                 let p = trim_sep(it.path());
@@ -309,6 +312,15 @@ impl Alt {
             Alt::Group(_) => None,
         }
     }
+
+    /// Whether this alternative walks a folder's children (`child:`, `childcount:`), which is
+    /// work worth doing after every cheap word has passed.
+    fn child_walk(&self) -> bool {
+        match self {
+            Alt::Pat(p) => matches!(p, Pat::Child(_) | Pat::ChildCount(..) | Pat::ChildFiles(..)),
+            Alt::Group(ts) => ts.iter().any(Term::child_walk),
+        }
+    }
 }
 
 /// A word: any of its alternatives, or none of them with `!`.
@@ -334,6 +346,23 @@ impl Term {
 
     pub(crate) fn on_path(&self) -> bool {
         self.needs & (NEED_PATH | NEED_CASE_PATH) != 0
+    }
+
+    /// Whether the word looks at a folder's children.
+    fn child_walk(&self) -> bool {
+        self.alts.iter().any(Alt::child_walk)
+    }
+
+    /// The order [`Query::split_terms`] checks words in: sizes, dates, depths and kinds (0)
+    /// before names (1), and both before a word that walks children (2).
+    fn cost(&self) -> u8 {
+        if self.child_walk() {
+            2
+        } else if self.needs != 0 {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -766,6 +795,9 @@ fn read_inside(c: &[Ch]) -> bool {
 /// them, and `Err` saying what is wrong with a value (`da:2026-13`) or where the word is (not at
 /// the top level, negated).
 fn split_times(q: &str, now: SystemTime, kinds: &[ReadKind]) -> (String, Result<ReadDates, String>) {
+    if too_long(q) {
+        return (q.to_string(), Err(TOO_LONG.to_string()));
+    }
     let today = || local_day(unix_secs(now));
     let mut kept: Vec<&str> = Vec::new();
     let mut out = ReadDates::default();
@@ -866,19 +898,17 @@ const MARK_OPEN: u8 = 1;
 const MARK_CLOSE: u8 = 2;
 
 /// Which `<` and `>` of `c` are a group's. A `<` opens one where a word starts (after a space,
-/// a `|` or a `!`), when a `>` ends a word somewhere after it: `<-5` has none, so it stays text.
+/// a `|`, a `;` or a `!`), when a `>` that ends a word closes it: `<-5` has none, so it stays
+/// text. A bare size keeps its `<`: `<10mb >1mb` is two sizes being typed, not a group.
+///
+/// The pairs are matched in one pass (a stack of open `<`), so nothing here costs more than one
+/// scan of the query however many `<` it holds: 30 unclosed ones or a pasted address list used
+/// to take seconds to minutes, and it runs on every text change.
 fn marks(c: &[Ch]) -> Vec<u8> {
     let mut m = vec![0u8; c.len()];
-    mark_range(c, 0, c.len(), &mut m);
-    m
-}
-
-fn mark_range(c: &[Ch], a: usize, b: usize, m: &mut [u8]) {
-    let mut i = a;
-    // at the start of a word
+    let mut open: Vec<usize> = Vec::new();
     let mut start = true;
-    while i < b {
-        let (ch, quoted) = c[i];
+    for (i, &(ch, quoted)) in c.iter().enumerate() {
         if quoted {
             start = false;
         } else if ch == '|' || ch == ';' || ch.is_whitespace() {
@@ -886,60 +916,35 @@ fn mark_range(c: &[Ch], a: usize, b: usize, m: &mut [u8]) {
         } else if ch == '!' && start {
             // `!<a b>` negates the group: the `<` still starts a word
         } else if ch == '<' && start {
-            match close_of(c, i, b) {
-                Some(e) => {
-                    m[i] = MARK_OPEN;
-                    m[e] = MARK_CLOSE;
-                    mark_range(c, i + 1, e, m);
-                    i = e + 1;
-                    start = after_word(c, i, b);
-                    continue;
-                }
-                None => start = false,
+            if !bare_size_word(c, i) {
+                open.push(i);
             }
+            // the `<` is not a group after all: it is an ordinary character, as before
+            start = false;
+        } else if ch == '>' && after_word(c, i + 1, c.len()) {
+            if let Some(o) = open.pop() {
+                m[o] = MARK_OPEN;
+                m[i] = MARK_CLOSE;
+            }
+            start = true;
         } else {
             start = false;
         }
-        i += 1;
     }
+    m
 }
 
-/// Where the group opened at `open` closes: a `>` that ends a word, groups inside it counted.
-fn close_of(c: &[Ch], open: usize, b: usize) -> Option<usize> {
-    let mut depth = 1usize;
-    let mut i = open + 1;
-    let mut start = true;
-    while i < b {
-        let (ch, quoted) = c[i];
-        if quoted {
-            start = false;
-        } else if ch == '|' || ch == ';' || ch.is_whitespace() {
-            start = true;
-        } else if ch == '!' && start {
-        } else if ch == '<' && start {
-            match close_of(c, i, b) {
-                Some(e) => {
-                    // the group inside is one word of this one
-                    i = e + 1;
-                    start = after_word(c, i, b);
-                    continue;
-                }
-                None => start = false,
-            }
-        } else if ch == '>' && after_word(c, i + 1, b) {
-            depth -= 1;
-            if depth == 0 {
-                return Some(i);
-            }
-            i += 1;
-            start = after_word(c, i, b);
-            continue;
-        } else {
-            start = false;
+/// Whether the word starting at `i` (a `<` up to the next space, `|` or `;`) is a bare size
+/// comparison, `<10mb`, `<=5kb` or `<0`: such a `<` is never a group's.
+fn bare_size_word(c: &[Ch], i: usize) -> bool {
+    let mut s = String::new();
+    for &(ch, quoted) in &c[i..] {
+        if !quoted && (ch.is_whitespace() || ch == '|' || ch == ';') {
+            break;
         }
-        i += 1;
+        s.push(ch);
     }
-    None
+    size_compare(&s).is_some()
 }
 
 /// Whether position `i` is at a word's start (the end, a space, `|`, `;` or a group's `>`).
@@ -1015,6 +1020,8 @@ pub enum WordKey {
     Text,
     Ext,
     Date,
+    /// `dc:`/`da:`: a time read for each match, not a name word.
+    ReadDate,
     /// `size:`.
     Size,
     /// A bare `>1gb`, `<=10kb`.
@@ -1069,6 +1076,9 @@ impl Query {
     /// text the way [`Query::parse`] does; whether a value can be understood is not checked
     /// (see [`Query::errors`]).
     pub fn words(q: &str) -> Vec<Word> {
+        if too_long(q) {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for tok in token_spans(q) {
             let n = tok.chars.len();
@@ -1153,8 +1163,23 @@ impl Query {
             w.path = p.path;
             w.value_at = after(n - rest.len());
             w.value = text(rest);
+            // whatever is inside quotes is plain text, so `"audio:"` is not the macro and a
+            // `dc:` path inside quotes is not read
+            let quoted = rest.iter().any(|&(_, q)| q);
+            // `dc:`/`da:` are taken out and read, not searched as text: no modifier may land on
+            // them (`exact:dc:2026` would stop being a date)
+            if w.kind == Kind::Any
+                && w.key == WordKey::Text
+                && !w.case
+                && !w.exact
+                && !w.path
+                && !quoted
+                && read_keyword(&w.value.trim().to_ascii_lowercase()).is_some()
+            {
+                w.key = WordKey::ReadDate;
+            }
             // a type macro is the Type filter's own list (`audio:` lights Type as audio)
-            if !w.case && !w.exact && !w.path {
+            if w.key == WordKey::Text && !w.case && !w.exact && !w.path && !quoted {
                 if let Some(f) = macro_family(w.value.trim()) {
                     w.key = WordKey::Ext;
                     w.value = crate::kinds::extensions(f).join(";");
@@ -1263,20 +1288,56 @@ fn split_alts(t: &[Ch]) -> Vec<&[Ch]> {
 
 // ------------------------------------------------------------ words and groups
 
+/// The most nesting read: groups inside groups, and `child:` inside `child:`. Deeper is refused
+/// with an error instead of recursing until the stack is gone.
+const MAX_DEPTH: u32 = 16;
+
+/// The longest query read at all: the search box and the AI take any text, and nothing past a
+/// few thousand characters is a search anyone meant.
+const MAX_QUERY_CHARS: usize = 4096;
+/// What a query over [`MAX_QUERY_CHARS`] is answered with.
+const TOO_LONG: &str = "the query is too long: keep it under 4,096 characters";
+
+impl Query {
+    /// Note that the query nests deeper than [`MAX_DEPTH`], once.
+    fn too_deep(&mut self) {
+        if !self.errors.iter().any(|e| e == TOO_DEEP) {
+            self.errors.push(TOO_DEEP.to_string());
+        }
+    }
+
+    /// Whether the query has a group (`<a b>|c`): what a filter box can't take.
+    pub fn has_group(q: &str) -> bool {
+        !too_long(q) && marks(&chars_of(q)).contains(&MARK_OPEN)
+    }
+}
+
+/// What a query nested too deeply is answered with.
+const TOO_DEEP: &str = "too many nested groups: keep them under 16 levels";
+
+/// Whether `q` is longer than [`MAX_QUERY_CHARS`].
+fn too_long(q: &str) -> bool {
+    q.chars().count() > MAX_QUERY_CHARS
+}
+
 /// The terms of a word list: its words, all of which must match (a group's inside, or the whole
 /// query). A group's `<>` keeps its spaces inside one word.
-fn parse_words(c: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
+fn parse_words(c: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
+    if depth > MAX_DEPTH {
+        q.too_deep();
+        return Vec::new();
+    }
     let m = marks(c);
     let mut out = Vec::new();
-    let mut depth = 0usize;
+    let mut nest = 0usize;
     let mut start = 0usize;
     for i in 0..c.len() {
         match m[i] {
-            MARK_OPEN => depth += 1,
-            MARK_CLOSE => depth = depth.saturating_sub(1),
-            _ if depth == 0 && !c[i].1 && c[i].0.is_whitespace() => {
+            MARK_OPEN => nest += 1,
+            MARK_CLOSE => nest = nest.saturating_sub(1),
+            _ if nest == 0 && !c[i].1 && c[i].0.is_whitespace() => {
                 if i > start {
-                    out.extend(terms_of(&c[start..i], top, q, today, now));
+                    out.extend(terms_of(&c[start..i], top, depth, q, today, now));
                 }
                 start = i + 1;
             }
@@ -1284,17 +1345,17 @@ fn parse_words(c: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day
         }
     }
     if start < c.len() {
-        out.extend(terms_of(&c[start..], top, q, today, now));
+        out.extend(terms_of(&c[start..], top, depth, q, today, now));
     }
     out
 }
 
 /// The terms of one word: `!`, then its alternatives (`a|b`, `a;b`), any of which may be a
 /// group `<...>`: `<a b>|c` is all of a and b, or c.
-fn terms_of(t: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
+fn terms_of(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
     let m = marks(t);
     if !m.contains(&MARK_OPEN) {
-        return plain_term(t, top, q, today, now);
+        return plain_term(t, top, depth, q, today, now);
     }
     let mut i = 0usize;
     let not = t.first() == Some(&('!', false));
@@ -1345,13 +1406,14 @@ fn terms_of(t: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day>>,
             let (own, rest) = prefix(chars);
             let (p, rest) = if own.is_some() || !plain_seen { (own, rest) } else { (first.unwrap_or_default(), chars) };
             plain_seen = true;
-            match build(p, rest, chars, q, today, now) {
+            // a `dupe:` only means something as a top-level word of its own
+            match build(p, rest, chars, false, depth, q, today, now) {
                 Ok(pats) => alts.extend(pats.into_iter().map(Alt::Pat)),
                 Err(e) => q.errors.push(e),
             }
             continue;
         };
-        let ts = parse_words(inner, false, q, today, now);
+        let ts = parse_words(inner, false, depth + 1, q, today, now);
         if !ts.is_empty() {
             alts.push(Alt::Group(ts));
         }
@@ -1367,7 +1429,7 @@ fn terms_of(t: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day>>,
 /// The terms of a word with no group in it: `folder:`, a bare size, `!` and `a|b`. At the top
 /// level of the query a kind and a bare size belong to the whole query; inside a group they are
 /// words of it.
-fn plain_term(t: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
+fn plain_term(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
     let mut t: &[Ch] = t;
     let mut kind = Kind::Any;
     for (kw, k) in [("folder:", Kind::Folders), ("file:", Kind::Files)] {
@@ -1410,12 +1472,14 @@ fn plain_term(t: &[Ch], top: bool, q: &mut Query, today: &mut Option<Option<Day>
     let (first, _) = prefix(t);
     // a regex keeps its `|`
     let alts_raw = if first.key == Key::Regex { vec![t] } else { split_alts(t) };
+    // `dupe:` only as a word of its own at the top: not negated, not one of several alternatives
+    let own_word = top && !not && alts_raw.len() == 1;
     let mut alts = Vec::new();
     for (k, alt) in alts_raw.into_iter().enumerate() {
         let (own, rest) = prefix(alt);
         let p = if own.is_some() || k == 0 { own } else { first };
         let rest = if own.is_some() || k == 0 { rest } else { alt };
-        match build(p, rest, alt, q, today, now) {
+        match build(p, rest, alt, own_word, depth, q, today, now) {
             Ok(pats) => alts.extend(pats.into_iter().map(Alt::Pat)),
             Err(e) => q.errors.push(e),
         }
@@ -1437,8 +1501,12 @@ impl Query {
     /// [`Query::parse`] with `now` given, for words like `dm:today`.
     pub fn parse_at(q: &str, now: SystemTime) -> Query {
         let mut query = Query::default();
+        if too_long(q) {
+            query.errors.push(TOO_LONG.to_string());
+            return query;
+        }
         let mut today: Option<Option<Day>> = None;
-        let terms = parse_words(&chars_of(q), true, &mut query, &mut today, now);
+        let terms = parse_words(&chars_of(q), true, 0, &mut query, &mut today, now);
         query.terms = terms;
         query
     }
@@ -1465,11 +1533,12 @@ impl Query {
         self.terms.iter().any(Term::on_path)
     }
 
-    /// The words to check before any path is built, cheapest first (sizes, dates and depths
-    /// before names), and the words that need the path.
+    /// The words to check before any path is built, cheapest first (sizes, dates and depths,
+    /// then names, then the words that walk a folder's children), and the words that need the
+    /// path.
     pub(crate) fn split_terms(&self) -> (Vec<&Term>, Vec<&Term>) {
         let (mut early, path): (Vec<&Term>, Vec<&Term>) = self.terms.iter().partition(|t| !t.on_path());
-        early.sort_by_key(|t| t.needs != 0);
+        early.sort_by_key(|t| t.cost());
         (early, path)
     }
 
@@ -1509,8 +1578,9 @@ impl Query {
 }
 
 /// One alternative: `p` says how to read `rest`; `whole` is the alternative as typed, for
-/// messages.
-fn build(p: Prefix, rest: &[Ch], whole: &[Ch], q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Result<Vec<Pat>, String> {
+/// messages. `own_word` says it stands alone at the top level of the query (what `dupe:` needs);
+/// `depth` is how many groups and `child:` words it is inside.
+fn build(p: Prefix, rest: &[Ch], whole: &[Ch], own_word: bool, depth: u32, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Result<Vec<Pat>, String> {
     let value = text(rest);
     if value.trim().is_empty() && !matches!(p.key, Key::Compressed | Key::Dupe | Key::SizeDupe) {
         return Ok(Vec::new());
@@ -1524,6 +1594,13 @@ fn build(p: Prefix, rest: &[Ch], whole: &[Ch], q: &mut Query, today: &mut Option
         },
         Key::Ext => {
             let v = value.trim();
+            // a macro keeps its keyword as an alternative: `ext:jpg|audio:` is both lists
+            let quoted = rest.iter().any(|&(_, q)| q);
+            if !quoted && !p.case && !p.exact && !p.path {
+                if let Some(f) = macro_family(v) {
+                    return Ok(crate::kinds::extensions(f).iter().map(|e| Pat::Ext(e.as_bytes().to_vec())).collect());
+                }
+            }
             let v = v.strip_prefix('.').unwrap_or(v).to_lowercase();
             if v.is_empty() {
                 return Ok(Vec::new());
@@ -1548,8 +1625,9 @@ fn build(p: Prefix, rest: &[Ch], whole: &[Ch], q: &mut Query, today: &mut Option
             Ok(vec![Pat::Parent { path: v.into_bytes(), case: p.case }])
         }
         Key::Child => {
-            let ts = parse_words(rest, false, q, today, now);
-            if ts.iter().any(|t| t.needs & NEED_PATH != 0) {
+            let ts = parse_words(rest, false, depth + 1, q, today, now);
+            // a case word on the path is a path word too: the children's own paths are not built
+            if ts.iter().any(Term::on_path) {
                 return Err(format!("{shown}: child: looks at the names of the items directly inside, so a word with \\ or path: can't go in it"));
             }
             if ts.is_empty() {
@@ -1590,6 +1668,11 @@ fn build(p: Prefix, rest: &[Ch], whole: &[Ch], q: &mut Query, today: &mut Option
             if !value.trim().is_empty() {
                 return Err(format!("{shown}: takes no value: give dupe: or sizedupe: as a word of its own"));
             }
+            // a flag of the whole query: inside a group, child: or a|b it would quietly change
+            // what the other words mean
+            if !own_word {
+                return Err(format!("{shown}: goes as a word of its own (not with !, in <...>, child: or a|b)"));
+            }
             if p.key == Key::Dupe {
                 q.dupe = true;
             } else {
@@ -1621,8 +1704,10 @@ fn build(p: Prefix, rest: &[Ch], whole: &[Ch], q: &mut Query, today: &mut Option
             }
         }
         Key::Text => {
-            // the type macros: `audio:` is the Type filter's audio extensions, one list for both
-            if !p.case && !p.exact && !p.path {
+            // the type macros: `audio:` is the Type filter's audio extensions, one list for both;
+            // quotes make plain text of them too (`"audio:"`)
+            let quoted = rest.iter().any(|&(_, q)| q);
+            if !p.case && !p.exact && !p.path && !quoted {
                 if let Some(f) = macro_family(value.trim()) {
                     return Ok(crate::kinds::extensions(f).iter().map(|e| Pat::Ext(e.as_bytes().to_vec())).collect());
                 }
@@ -1999,6 +2084,80 @@ mod tests {
         assert!(m("<\\logs\\ *.log>", &deep));
     }
 
+    /// A `<` with no `>` after it is read in one pass whatever the text holds: the old matcher
+    /// tried again for every `<` before it, so 30 of them took half a minute and an address
+    /// list could take hours (this runs on every text change, in the window's thread).
+    #[test]
+    fn unclosed_groups_and_address_lists_are_cheap() {
+        let start = std::time::Instant::now();
+        let q = Query::parse(&format!("{}x", "<a ".repeat(200)));
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert!(!q.terms.is_empty());
+        let list: String = (0..40).map(|i| format!("Ann Lee <ann{i}@example.com>, ")).collect();
+        let q = Query::parse(&list);
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+    }
+
+    /// Groups and `child:` deeper than [`MAX_DEPTH`], or a query past [`MAX_QUERY_CHARS`], are
+    /// refused with an error: they are read for every keystroke and from the AI, and must never
+    /// recurse until the stack is gone (an abort, not a panic).
+    #[test]
+    fn deep_or_long_queries_are_refused() {
+        let nested = format!("{}a{}", "<a ".repeat(1000), ">".repeat(1000));
+        assert!(Query::parse(&nested).errors().iter().any(|e| e.contains("too many nested")), "{:?}", Query::parse(&nested).errors());
+        let child = format!("{}a", "child:".repeat(500));
+        assert!(Query::parse(&child).errors().iter().any(|e| e.contains("too many nested")), "{:?}", Query::parse(&child).errors());
+        // the deepest allowed still reads
+        let ok = format!("{}a{}", "<a ".repeat(MAX_DEPTH as usize), ">".repeat(MAX_DEPTH as usize));
+        assert!(Query::parse(&ok).errors().is_empty(), "{:?}", Query::parse(&ok).errors());
+        // 100 000: past the length limit, so nothing is scanned at all
+        let huge = format!("{}a{}", "<".repeat(100_000), ">".repeat(100_000));
+        let q = Query::parse(&huge);
+        assert!(q.errors().iter().any(|e| e.contains("too long")), "{:?}", q.errors());
+        let q = Query::parse(&format!("{}a", "child:".repeat(100_000)));
+        assert!(q.errors().iter().any(|e| e.contains("too long")), "{:?}", q.errors());
+        // `words()` and the date splitter stop at the same limit
+        assert!(Query::words(&huge).is_empty());
+        let now = UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+        assert!(split_read_dates(&huge, now).1.is_err());
+    }
+
+    /// A `<` that starts a bare size stays a size while the next comparison is typed: `<10mb >`
+    /// kept its limit before the group syntax, and `dm:>` was still reported as not a date.
+    #[test]
+    fn a_bare_size_never_opens_a_group() {
+        let q = Query::parse("<10mb >");
+        assert_eq!(q.max, Some((10u64 << 20) - 1), "{:?}", q.errors());
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        let q = Query::parse("<10mb >1mb");
+        assert_eq!((q.min, q.max), (Some((1 << 20) + 1), Some((10u64 << 20) - 1)));
+        let q = Query::parse("<10mb dm:>");
+        assert_eq!(q.max, Some((10u64 << 20) - 1));
+        assert!(q.errors().iter().any(|e| e.contains("dm:>")), "{:?}", q.errors());
+        let q = Query::parse("<=10 regex:^c a>");
+        assert_eq!(q.max, Some(10));
+        let q = Query::parse("<0 x>");
+        assert!(!q.size_ok(0) && !q.size_ok(1 << 40), "<0 is nothing, not a group");
+        // a group whose first word is such text can be quoted
+        assert!(m("\"<10mb\"", &file("<10mb")));
+    }
+
+    /// `child:` and the counts walk a folder's children: they are checked after the names, so a
+    /// query that uses them does that walk only for the items the cheap words passed.
+    #[test]
+    fn child_words_are_checked_after_names() {
+        let q = Query::parse("child:*.tmp size:>1mb report");
+        let (early, path) = q.split_terms();
+        assert!(path.is_empty());
+        assert_eq!(early.iter().map(|t| t.cost()).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(format!("{:?}", early[2]).contains("Child"), "{:?}", early[2]);
+        // inside a group too
+        let q = Query::parse("<child:*.tmp report>");
+        let (early, _) = q.split_terms();
+        assert_eq!(early[0].cost(), 2);
+    }
+
     /// `parent:` is the folder directly above; `child:` a folder holding a match; the counts are
     /// of direct children.
     #[test]
@@ -2033,18 +2192,30 @@ mod tests {
         assert!(m("child:old.tmp", &cache));
         assert!(!m("child:old.tmp", &vdf), "a file has no children");
         assert!(m("child:ext:vdf|pdf", &steam));
-        // counts
+        // counts are of a folder's children: a file has none to count
         assert!(m("childcount:3", &steam));
         assert!(m("childcount:>2", &steam));
         assert!(!m("childcount:>3", &steam));
         assert!(m("childfilecount:2", &steam));
         assert!(m("childfilecount:1..2", &steam));
         assert!(!m("childfilecount:>2", &steam));
-        assert!(m("childcount:0", &vdf), "a file has none");
+        let mut empty = file("empty");
+        empty.dir = true;
+        empty.path = "C:\\Games\\empty".into();
+        assert!(m("childcount:0", &empty), "an empty folder");
+        assert!(m("childfilecount:0", &empty));
+        assert!(!m("childcount:0", &vdf), "a file is not an empty folder");
+        assert!(!m("childfilecount:0", &vdf));
+        assert!(!m("childcount:0", &steam));
+        // pinned: `!childcount:>1` is every file and every folder with at most one child
+        assert!(m("!childcount:>1", &empty));
+        assert!(m("!childcount:>1", &cache));
+        assert!(m("!childcount:>1", &vdf));
+        assert!(!m("!childcount:>1", &steam));
         assert!(m("childcount:>0 folder:", &steam));
         assert!(!m("childcount:>0 file:", &steam));
         // mistakes say what is wrong
-        for bad in ["childcount:x", "childfilecount:lots", "child:\\steam\\"] {
+        for bad in ["childcount:x", "childfilecount:lots", "child:\\steam\\", "child:case:path:x", "child:case:a\\b"] {
             let q = Query::parse(bad);
             assert_eq!(q.errors().len(), 1, "{bad}");
             assert!(q.errors()[0].starts_with("child"), "{:?}", q.errors());
@@ -2112,6 +2283,14 @@ mod tests {
             let q = Query::parse(bad);
             assert_eq!(q.errors().len(), 1, "{bad}");
         }
+        // and they go as a word of their own at the top: not negated, in a group, in child: or
+        // one of several alternatives (where they would silently change the other words)
+        for bad in ["!dupe:", "<a dupe:>", "<readme dupe:>", "child:dupe:", "a|dupe:", "dupe:|a", "!sizedupe:", "child:sizedupe:"] {
+            let q = Query::parse(bad);
+            assert!(!q.errors().is_empty(), "{bad}");
+            assert!(q.errors().iter().any(|e| e.contains("word of its own")), "{bad}: {:?}", q.errors());
+            assert!(!q.dupe && !q.size_dupe, "{bad} is not a duplicates search");
+        }
         // quoted, they are text
         assert!(m("\"dupe:\"", &file("dupe:")));
         // keep_shared: a name or size two of them have, once
@@ -2142,6 +2321,18 @@ mod tests {
         let q = Query::parse("audio:mp3");
         assert_eq!(q.errors().len(), 1);
         assert!(q.errors()[0].contains("takes no value"), "{:?}", q.errors());
+        // a macro keeps an inherited keyword: `ext:jpg|audio:` is both lists
+        assert!(m("ext:jpg|audio:", &file("a.mp3")));
+        assert!(m("ext:jpg|audio:", &file("a.jpg")));
+        assert!(!m("ext:jpg|audio:", &file("a.txt")));
+        // quotes make plain text of it: `"audio:"` is a name with that text
+        assert!(m("\"audio:\"", &file("audio:")));
+        assert!(!m("\"audio:\"", &file("a.mp3")));
+        // and `words()` reports a macro only where it is the type word itself
+        assert_eq!(Query::words("regex:zip:")[0].key, WordKey::Regex);
+        assert_eq!(Query::words("child:audio:")[0].key, WordKey::Child);
+        assert_eq!(Query::words("ext:audio:")[0].key, WordKey::Ext);
+        assert_eq!(Query::words("\"audio:\"")[0].key, WordKey::Text);
         // folders are not files
         let mut d = file("a.mp3");
         d.dir = true;
@@ -2209,6 +2400,7 @@ mod tests {
             ">99999999999999999999999tb", "dm:0000", "dm:99999", "dm:2026-02-30", "dm:2026-1-1", "dm:-1", "depth:99999999999",
             "dm:today..yesterday", "folder:", "file:!", "!folder:", "😀 é *ü?", "dm:1601", "dm:9999-12-31", "\\", "/", "*", "?",
             "<", ">", "<>", "<a", "a>", "<<a>>", "!<>", "<a|<b>", "<a b", "a b>", "<", "><", "<->", "<a><b>", "<|>",
+            "<1mb <1mb >", "child:child:child:a", "<a <b <c>>>", "<=1 <=2 >", "<\"a b\">", "a|;|b", "<!>", "><<>>",
         ] {
             let q = Query::parse(q);
             let _ = hit(&q, &file("a.txt"));
@@ -2347,6 +2539,13 @@ mod tests {
         assert_eq!(&q[w[8].value_at..w[8].span.end], "\"my dir\"", "the value's opening quote is the value's");
         assert_eq!(at(9), "ünï");
         assert_eq!((w[10].key, &w[10].value[..]), (WordKey::Regex, "a|b"));
+        // `dc:` and `da:` are read for each match, not name words: no modifier may land on them
+        let q = "report dc:2026 da:>2026-01-15";
+        let w = Query::words(q);
+        assert_eq!((w[0].key, w[1].key, w[2].key), (WordKey::Text, WordKey::ReadDate, WordKey::ReadDate));
+        assert_eq!(w[1].value, "dc:2026");
+        // quoted, `dc:` is a name again
+        assert_eq!(Query::words("\"dc:2026\"")[0].key, WordKey::Text);
         // the same words as the parser reads
         for q in ["", "  ", "\"\"", "a\" \"b c", "!", "folder:", "\"a b\"|c d", "<a b>|c", "<a <b c> d>|e", "!<a b>|c", "<a|b> c"] {
             let n = tokens(q).len();
