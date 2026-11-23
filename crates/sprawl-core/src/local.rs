@@ -306,11 +306,7 @@ impl Directory {
     }
 
     fn links_of(&self, f: &File) -> io::Result<u32> {
-        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
-        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: `info` is a valid out-pointer.
-        if unsafe { GetFileInformationByHandle(f.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
-        Ok(info.nNumberOfLinks)
+        links_of_handle(f)
     }
 
     /// Rename `file` (opened with DELETE, in this folder) to `name` in this folder, the new
@@ -345,6 +341,38 @@ impl Directory {
     pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
         self._handles.last().ok_or_else(|| io::Error::other("No pinned path"))?.metadata()
     }
+
+    /// The names directly in this folder, as the filesystem lists them (each one is opened
+    /// through this folder's handle before it is used, so the list is only a list).
+    pub fn names(&self) -> io::Result<Vec<String>> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&self.path)? {
+            let e = e?;
+            if let Ok(n) = e.file_name().into_string() {
+                out.push(n);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remove the plain folder `name` in this folder, and the plain files directly in it, each
+    /// through a handle and never by path: a link at the name or inside is refused, a file with
+    /// another name (a hard link) is left, and so is any folder inside. The folder goes when it
+    /// is empty; anything left in it means the folder stays too.
+    pub fn remove_tree(&self, name: &str) -> io::Result<()> {
+        let (h, _) = open_rel(self.handle()?, name, DELETE | READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Open, Kind::Folder)?;
+        check_plain(&h, Kind::Folder)?;
+        let path = self.path.join(name);
+        for e in std::fs::read_dir(&path)? {
+            let e = e?;
+            let n = e.file_name().into_string().map_err(|_| io::Error::other("Not a plain name"))?;
+            let (f, _) = open_rel(&h, &n, DELETE | READ_DATA | READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE, Disposition::Open, Kind::File)?;
+            check_plain(&f, Kind::File)?;
+            if links_of_handle(&f)? != 1 { return Err(io::Error::other("A file in the folder has other names")); }
+            dispose(&f)?;
+        }
+        dispose(&h)
+    }
     /// WOF intentionally hides its reparse attribute from ordinary directory listings.
     /// Query only while this exact local path and all its ancestors remain pinned.
     pub fn externally_backed(&self) -> io::Result<bool> {
@@ -372,6 +400,15 @@ impl Directory {
         if !same(&final_path(&leaf)?, &crate::canonical_root(&path)) { return Err(io::Error::other("The listed child resolved elsewhere")); }
         Directory { path, _handles: vec![leaf] }.externally_backed()
     }
+}
+
+/// The hard-link count of an open handle.
+fn links_of_handle(f: &File) -> io::Result<u32> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid out-pointer.
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle().cast(), &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok(info.nNumberOfLinks)
 }
 
 /// The hard-link count of a listed leaf, opened as itself (no reparse follow, no recall).

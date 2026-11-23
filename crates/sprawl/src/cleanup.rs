@@ -1191,7 +1191,7 @@ impl State {
                     if let Some(reg) = &o.registry {
                         done.registry.push(reg.clone());
                     }
-                    if (o.problems.is_empty() && o.files > 0) || reg_went {
+                    if (o.problems.is_empty() && (o.files > 0 || o.edited.is_some())) || reg_went {
                         if it.rule.as_deref().is_some_and(sprawl_advisor::regclean::is_id) {
                             done.registry_items += 1;
                         } else {
@@ -1206,6 +1206,8 @@ impl State {
                         }
                     }
                     done.problems.extend(o.problems.iter().map(|p| format!("{}: {p}", it.title)));
+                    // not a failure, but something the user should see: a copy left behind
+                    done.problems.extend(o.notes.iter().map(|n| format!("{}: {n}", it.title)));
                     continue;
                 }
                 if o.freed > 0 {
@@ -1328,12 +1330,12 @@ impl State {
                     ItemState::Waiting => ("&#xE823;", crate::tokens::refer("text3"), "Waiting".to_string()),
                     ItemState::Running(_) if it.privacy => ("&#xE895;", crate::tokens::refer("link"), "Removing...".to_string()),
                     ItemState::Done(o) if it.privacy && it.rule.as_deref().is_some_and(sprawl_advisor::regclean::is_id) && o.registry.as_ref().is_none_or(|r| r.removed == 0) => ("&#xE7BA;", crate::tokens::refer("warn"), "Nothing was removed".to_string()),
-                    ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
+                    ItemState::Done(o) if it.privacy && o.problems.is_empty() && (o.edited.is_some() || o.files > 0 || o.registry.as_ref().is_some_and(|r| r.removed > 0)) => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
                     ItemState::Done(o) if it.privacy && o.registry.as_ref().is_some_and(|r| r.removed > 0) => {
                         let n = o.registry.as_ref().map_or(0, |r| r.removed);
                         ("&#xE7BA;", crate::tokens::refer("warn"), format!("{n} {} removed; some couldn't go", if n == 1 { "value" } else { "values" }))
                     }
-                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing in this set went".to_string()),
+                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing was changed".to_string()),
                     ItemState::Running(f) => ("&#xE895;", crate::tokens::refer("link"), running_label(it, *f)),
                     ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
                     ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), format!("{} to the Recycle Bin", self.size(o.recycled))),
@@ -1912,10 +1914,10 @@ impl State {
 }
 
 /// The privacy wording of the review and the result card, held to `privacy::PROMISE_WORDS`.
-pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, deleted without the Recycle Bin and not counted in the space above. A browser's set goes whole, or not at all, and only with its browser closed:";
+pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, deleted without the Recycle Bin and not counted in the space above. Each one goes whole, or not at all, and only with its browser closed:";
 pub(crate) const PV_REG_REVIEW: &str = "Registry items: the list's values go, the key itself stays, and every value is copied to a backup first. After the clean-up, Put back writes the removed values back: values written since stay:";
 pub(crate) const PV_OK: &str = "I understand what each of these removes";
-pub(crate) const PV_DONE: &str = "The privacy items' files were deleted; the browser starts new, empty ones the next time it opens.";
+pub(crate) const PV_DONE: &str = "The privacy items are done: files deleted, or rows taken out of their databases. An edited database may not get smaller.";
 pub(crate) const PV_REG_DONE: &str = "The Explorer registry lists were cleared. Explorer keeps some of them in memory: the change may only show after you sign out and back in.";
 
 /// "1 privacy item", "3 privacy items".
@@ -1960,7 +1962,9 @@ impl State {
                 Source::Rule(id) => sprawl_advisor::regclean::part(id),
                 _ => None,
             };
-            let files = clean::action(f).and_then(|(a, _)| clean::preview(&f.path, &a, &spare, 0)).map(|p| p.biggest.iter().map(|(p, b)| format!("{} ({})", p.display(), self.size(*b))).collect::<Vec<_>>()).unwrap_or_default();
+            let preview = clean::action(f).and_then(|(a, _)| clean::preview(&f.path, &a, &spare, 0));
+            let files: Vec<String> = preview.as_ref().map(|p| p.biggest.iter().map(|(p, b)| format!("{} ({})", p.display(), self.size(*b))).collect()).unwrap_or_default();
+            let rows = preview.as_ref().map_or(0, |p| p.rows);
             let n = reg.map_or(0, |p| self.registry_values(p.id));
             let held = self.app_open(f).map(|(app, _)| app);
             if let Some(app) = &held {
@@ -1978,10 +1982,17 @@ impl State {
             if reg.is_some() {
                 x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="16,0,0,0"/>"##, ui::esc(&if n == 1 { "1 value would be removed, after it is copied to a backup.".to_string() } else { format!("{n} values would be removed, after they are copied to a backup.") }));
             } else if files.is_empty() {
-                x += r##"<TextBlock Text="Its files couldn't be listed now: it will be held back." FontSize="{$fs12}" Foreground="{$text3}" Margin="16,0,0,0"/>"##;
+                x += r##"<TextBlock Text="Its files couldn't be read now: it will be held back." FontSize="{$fs12}" Foreground="{$text3}" Margin="16,0,0,0"/>"##;
             }
             for line in &files {
                 x += &format!(r##"<TextBlock Text="{}" {} FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis" Margin="16,0,0,0" ToolTipService.ToolTip="{0}"/>"##, ui::esc(line), crate::look::NUM);
+            }
+            if rows > 0 {
+                x += &format!(
+                    r##"<TextBlock Text="At least {} row{} would go, in one transaction. The file may not get smaller." FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="16,0,0,0" TextWrapping="Wrap"/>"##,
+                    rows,
+                    if rows == 1 { "" } else { "s" }
+                );
             }
             x += "</StackPanel>";
         }
@@ -2012,7 +2023,11 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
     for it in items {
         match &it.state {
             ItemState::Done(o) => {
-                s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
+                match o.edited {
+                    // a database edited in place: rows, not bytes (a privacy part, never space)
+                    Some(rows) => s += &format!("{}\t{} rows taken out of the database, in one transaction\r\n", it.path.display(), rows),
+                    None => s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files),
+                }
                 // a compress ran in Sprawl itself: what it did, file by file
                 let alg = it.command.as_deref().and_then(sprawl_advisor::remedies::compress_alg);
                 if let (Some(alg), Some(d)) = (alg, &o.compress) {
@@ -2049,6 +2064,9 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
                 }
                 if o.more_problems > 0 {
                     s += &format!("\t  and {} more not removed\r\n", o.more_problems);
+                }
+                for n in &o.notes {
+                    s += &format!("\t  note: {n}\r\n");
                 }
             }
             _ => s += &format!("{}\tnot started\r\n", it.path.display()),
@@ -2186,7 +2204,7 @@ mod admin_tests {
             pref.help.into(),
             "Removing...".into(),
             "Removed".into(),
-            "Held back: nothing in this set went".into(),
+            "Held back: nothing was changed".into(),
             "Tick \"I understand what each of these removes\" first, or untick the privacy items.".into(),
         ];
         for t in &texts {

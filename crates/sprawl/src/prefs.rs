@@ -211,7 +211,7 @@ pub static PREFS: [Pref; 62] = [
         "privacyCleaners",
         Sec::Cleaning,
         "Show privacy cleaners",
-        "Adds a Privacy group to Cleaners: cookies and history of this account's browsers, by profile, and the short lists Explorer keeps in this account's own registry. They free almost no space, and each is ticked on its own. Off, Sprawl doesn't look at them.",
+        "Adds a Privacy group to Cleaners: cookies, history and what forms remember in this account's browsers, by profile, and the short lists Explorer keeps in this account's own registry. They free almost no space, each is ticked on its own, and a browser database or a registry list is copied before it is edited. Off, Sprawl doesn't look at them.",
         Kind::Switch(false),
     ),
     p("registryBackups", Sec::Cleaning, "Registry backups", "The backups Sprawl wrote before clearing Explorer's registry lists in Cleaners. Put back writes the removed values back; values written since stay. The last ten are kept, in %LOCALAPPDATA%\\Sprawl\\registry-backups.", Kind::Custom),

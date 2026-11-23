@@ -13,6 +13,7 @@
 //!
 //! Tool commands (npm, pip, DISM...) run as a hidden process from System32, their output kept.
 
+use std::io::Seek;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
@@ -44,6 +45,13 @@ pub fn action(f: &Finding) -> Option<(Action, bool)> {
             return None;
         }
     }
+    // a privacy part that edits a database: the same, and only that part's own
+    if let Action::Edit { part, .. } = &a {
+        let own = matches!(&f.source, crate::finding::Source::Rule(id) if id == part);
+        if !(own && f.trusted && f.builtin && f.command.is_none() && crate::privacy::is_privacy_id(part)) {
+            return None;
+        }
+    }
     if let Action::Match { pattern } = &a {
         if pattern.is_empty() || pattern.contains(['\\', '/']) {
             return None;
@@ -72,6 +80,8 @@ pub fn script(path: &Path, action: &Action, admin: bool) -> String {
         Action::Set { .. } => "# Not in a script: privacy parts are cleaned only inside Sprawl, with the browser closed.".to_string(),
         // never run from a script: the values are backed up first, and put back by Sprawl
         Action::Reg { .. } => "# Not in a script: registry parts are cleaned only inside Sprawl, with a backup written first.".to_string(),
+        // never run from a script: the database is copied and checked first, inside Sprawl
+        Action::Edit { .. } => "# Not in a script: a browser database is edited only inside Sprawl, after a checked copy and with the browser closed.".to_string(),
         // never run from a script: each copy is compared again just before
         Action::Link { .. } => "# Not in a script: copies are linked only inside Sprawl, after comparing them again.".to_string(),
     };
@@ -145,10 +155,17 @@ pub struct Outcome {
     /// Bytes of the files removed.
     pub freed: u64,
     pub files: u64,
+    /// Rows taken out of a database edited in place (a privacy part's `Edit`): not space, and
+    /// never added to `freed`. None when nothing was edited; Some(0) when the edit ran and found
+    /// nothing left to take out.
+    pub edited: Option<u64>,
     /// What couldn't go, and why (the first few).
     pub problems: Vec<String>,
     /// Problems past the ones kept.
     pub more_problems: u64,
+    /// Things worth saying that are not failures (an old copy of a database that couldn't be
+    /// removed, say): the item itself still went.
+    pub notes: Vec<String>,
     /// A tool's last lines of output.
     pub output: Vec<String>,
     pub stopped: bool,
@@ -306,7 +323,7 @@ fn filetime(t: SystemTime) -> i64 {
 }
 
 impl Outcome {
-    fn problem(&mut self, p: &Path, why: impl std::fmt::Display) {
+    pub(crate) fn problem(&mut self, p: &Path, why: impl std::fmt::Display) {
         if self.problems.len() < 8 {
             self.problems.push(format!("{}: {why}", p.display()));
         } else {
@@ -365,6 +382,7 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     };
     let targets: Vec<&Path> = match action {
         Action::Set { files, .. } => std::iter::once(path).chain(files.iter().map(PathBuf::as_path)).collect(),
+        Action::Edit { file, .. } => vec![path, file.as_path()],
         Action::Link { keep, copies } => std::iter::once(path).chain(std::iter::once(keep.as_path())).chain(copies.iter().map(PathBuf::as_path)).collect(),
         _ => std::iter::once(path).chain(named.iter().map(PathBuf::as_path)).collect(),
     };
@@ -446,6 +464,15 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
             (Some(p), Some(places)) if same_path(path, files.first().map_or(Path::new(""), |f| f.as_path())) => {
                 let now = crate::procs::running();
                 set(p, files, spare, stop, &places, now.as_ref(), &crate::inuse::in_use, &mut o, progress)
+            }
+            (Some(_), None) => o.problem(path, "left alone: this account's AppData folders couldn't be worked out"),
+            _ => o.problem(path, "left alone: not a privacy part Sprawl knows"),
+        },
+        // a privacy part that edits one database: its own checks, copy and transaction
+        Action::Edit { part, file, .. } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
+            (Some(p), Some(places)) if same_path(path, file) && p.edit.is_some() => {
+                let now = crate::procs::running();
+                crate::privacy::edit::run(p, file, spare, stop, &places, now.as_ref(), &crate::inuse::in_use, &mut o, progress)
             }
             (Some(_), None) => o.problem(path, "left alone: this account's AppData folders couldn't be worked out"),
             _ => o.problem(path, "left alone: not a privacy part Sprawl knows"),
@@ -652,6 +679,8 @@ pub struct Preview {
     pub files: u64,
     /// (file, bytes), the biggest first.
     pub biggest: Vec<(PathBuf, u64)>,
+    /// Rows a privacy part would take out of its database now (0 for every other action).
+    pub rows: u64,
 }
 
 pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Option<Preview> {
@@ -662,6 +691,14 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
             return Some(Preview::default());
         }
         return Some(set_preview(p, files, spare, &places));
+    }
+    // a privacy part that edits one database: the file, and the rows it would take out now
+    if let Action::Edit { part, file, .. } = action {
+        let (Some(p), Some(places)) = (crate::privacy::part(part), crate::privacy::Places::current()) else { return Some(Preview::default()) };
+        if !same_path(path, file) {
+            return Some(Preview::default());
+        }
+        return Some(edit_preview(p, file, spare, &places));
     }
     let cut = match action {
         Action::Clear { days } if *days > 0 => Some(SystemTime::now().checked_sub(Duration::from_secs(*days as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH)),
@@ -790,12 +827,35 @@ pub(crate) fn set_preview(part: &crate::privacy::PrivacyPart, files: &[PathBuf],
         all.push((m.clone(), md.len()));
     }
     all.sort_by(|a, b| b.1.cmp(&a.1));
-    Preview { bytes: all.iter().map(|x| x.1).sum(), files: all.len() as u64, biggest: all }
+    Preview { bytes: all.iter().map(|x| x.1).sum(), files: all.len() as u64, biggest: all, rows: 0 }
+}
+
+/// What an edit of `part`'s one database would take out now, by the run's own tests other than
+/// "is the browser open" and the programs using the files: the database, and how many rows
+/// (never bytes: a privacy part isn't counted as space).
+pub(crate) fn edit_preview(part: &crate::privacy::PrivacyPart, file: &Path, spare: &Spare, places: &crate::privacy::Places) -> Preview {
+    use std::os::windows::fs::MetadataExt;
+    let Some(kind) = part.edit else { return Preview::default() };
+    let Some(m) = crate::privacy::member(part, file, places) else { return Preview::default() };
+    if m.side.is_some() || m.file != 0 {
+        return Preview::default();
+    }
+    let Ok(md) = std::fs::symlink_metadata(file) else { return Preview::default() };
+    let since = spare.since.map(filetime);
+    let new = since.is_some_and(|s| md.creation_time() as i64 > s || md.last_write_time() as i64 > s);
+    if md.is_dir() || attrs(&md) & REPARSE != 0 || spare.keeps(file) || new || has_link_above(file, places) {
+        return Preview::default();
+    }
+    let rows = crate::privacy::edit_rows(kind, file).unwrap_or(0);
+    if rows == 0 {
+        return Preview::default();
+    }
+    Preview { bytes: 0, files: 1, biggest: vec![(file.to_path_buf(), md.len())], rows }
 }
 
 /// A folder between this account's AppData and `p` is a junction or link (or `p` isn't below
 /// AppData at all).
-fn has_link_above(p: &Path, places: &crate::privacy::Places) -> bool {
+pub(crate) fn has_link_above(p: &Path, places: &crate::privacy::Places) -> bool {
     let roots = [lower(&places.local), lower(&places.roaming)];
     let mut cur = p.parent();
     while let Some(d) = cur {
@@ -809,6 +869,90 @@ fn has_link_above(p: &Path, places: &crate::privacy::Places) -> bool {
         cur = d.parent();
     }
     true
+}
+
+/// A database file held open for an edit: read through its handle, one name only, not changed
+/// since the scan, and no one able to rename, replace or remove it while it is held. Dropped,
+/// it is let go.
+pub(crate) struct HeldFile {
+    handle: win::Handle,
+    size: u64,
+}
+
+impl HeldFile {
+    /// The opened file as something to read from; it is not this reader's to close.
+    fn reader(&self) -> std::mem::ManuallyDrop<std::fs::File> {
+        std::mem::ManuallyDrop::new(win::as_file(&self.handle))
+    }
+
+    /// Copy the file through its handle into `out` (from its start).
+    pub(crate) fn copy_to(&self, out: &mut std::fs::File) -> std::io::Result<u64> {
+        let mut r = self.reader();
+        std::io::copy(&mut *r, out)
+    }
+
+    /// Whether `other` holds exactly the same bytes as the held file, compared in blocks after
+    /// both are rewound: the copy is checked before anything is edited.
+    pub(crate) fn equals(&self, other: &mut std::fs::File) -> std::io::Result<bool> {
+        if other.metadata()?.len() != self.size {
+            return Ok(false);
+        }
+        let r = self.reader();
+        let mut src: &std::fs::File = &r;
+        src.seek(std::io::SeekFrom::Start(0))?;
+        other.seek(std::io::SeekFrom::Start(0))?;
+        let mut a = [0u8; 1 << 16];
+        let mut b = [0u8; 1 << 16];
+        loop {
+            let na = fill(&mut src, &mut a)?;
+            let nb = fill(other, &mut b)?;
+            if na != nb || a[..na] != b[..nb] {
+                return Ok(false);
+            }
+            if na == 0 {
+                return Ok(true);
+            }
+        }
+    }
+}
+
+/// Read into `buf` until it is full or the file ends; the count (0 at the end).
+fn fill<R: std::io::Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
+/// The plain local file at `p`, opened as itself and held: a link, a cloud file, a file with
+/// another name (a hard link) or one changed since the scan is refused, and while it is held
+/// nobody can rename, replace or remove it (nor a folder above it). Used before a database is
+/// copied and edited, and for its side files while they are copied.
+pub(crate) fn hold_plain(p: &Path, spare: &Spare) -> Result<HeldFile, String> {
+    if let Err(e) = sprawl_core::local::lexical(p) {
+        return Err(format!("{e}"));
+    }
+    let (handle, info) = win::open_held(p).map_err(|e| format!("couldn't be opened as itself ({e})"))?;
+    if info.attrs & (DIRECTORY | REPARSE) != 0 || info.attrs & crate::dupes::NOT_LOCAL != 0 {
+        return Err("not a plain local file".into());
+    }
+    if info.links != 1 {
+        return Err("it has another name (a hard link), so Sprawl leaves it alone".into());
+    }
+    match win::final_path(&handle) {
+        Some(real) if same_path(&real, p) => {}
+        _ => return Err("it doesn't lead where its path says".into()),
+    }
+    if spare.is_new(p, &info) {
+        return Err("it changed since the scan; scan again".into());
+    }
+    Ok(HeldFile { handle, size: info.size })
 }
 
 /// Delete a privacy part's set: every file listed and their side files, all or none.
@@ -2042,6 +2186,36 @@ pub(crate) mod win {
         } else {
             Err(std::io::Error::last_os_error())
         }
+    }
+
+    /// The file itself for an edit: its data and attributes, not shared for deleting, so nobody
+    /// can rename, replace or remove it (nor a folder above it) while Sprawl holds it. Others
+    /// may still read and write it, as SQLite does while the file is edited. Links are not
+    /// followed and cloud files are not downloaded.
+    pub(super) fn open_held(p: &Path) -> std::io::Result<(Handle, Info)> {
+        const FILE_READ_DATA: u32 = 0x1;
+        const READ_ATTRIBUTES: u32 = 0x80;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const OPEN_NO_RECALL: u32 = 0x0010_0000;
+        let w = wide(p);
+        let h = unsafe { CreateFileW(w.as_ptr(), FILE_READ_DATA | READ_ATTRIBUTES | SYNCHRONIZE, 0x1 | 0x2, std::ptr::null_mut(), OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT | OPEN_NO_RECALL, std::ptr::null_mut()) };
+        if h as isize == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let h = Handle(h);
+        let info = info(&h)?;
+        Ok((h, info))
+    }
+
+    /// The opened file as a `std::fs::File`, which must never be dropped while the handle lives
+    /// (the caller keeps it in a `ManuallyDrop`): closing it is the handle's to do.
+    pub(super) fn as_file(h: &Handle) -> std::fs::File {
+        use std::os::windows::io::FromRawHandle;
+        // SAFETY: the handle is owned by `h` and outlives the File; the caller never drops it.
+        unsafe { std::fs::File::from_raw_handle(h.0) }
     }
 
     fn open_with(p: &Path, share: u32) -> std::io::Result<(Handle, Info)> {

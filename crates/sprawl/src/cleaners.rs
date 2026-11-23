@@ -1885,7 +1885,7 @@ impl State {
 
 /// The Privacy group's wording, held to `privacy::PROMISE_WORDS` by a test.
 pub(crate) const PV_HEAD: &str = "Privacy";
-pub(crate) const PV_SUB: &str = "Cookies and history in this account's browsers, by profile, and the short lists Explorer keeps in this account's own registry. They free almost no space: each is ticked on its own, and nothing here is ticked for you.";
+pub(crate) const PV_SUB: &str = "Cookies, history and what forms remember in this account's browsers, by profile, and the short lists Explorer keeps in this account's own registry. They free almost no space: each is ticked on its own, and nothing here is ticked for you.";
 pub(crate) const PV_NONE: &str = "Nothing in this account's browsers or Explorer registry lists was found in what was read.";
 pub(crate) const PV_HELD: &str = "held back by Sprawl's checks";
 

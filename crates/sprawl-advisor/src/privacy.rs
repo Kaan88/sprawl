@@ -4,13 +4,16 @@
 //! What sets them apart from every other part, and where each rule is kept:
 //! - **Compiled in, never written in a pack.** The parts are the list below. No rule pack (the
 //!   built-in TOML included), community import or model can define one: `cleaners::expand`
-//!   refuses `class = "privacy"`, and only this file makes an [`Action::Set`].
+//!   refuses `class = "privacy"`, and only this file makes an [`Action::Set`] or an
+//!   [`Action::Edit`].
 //! - **Off unless the user turns them on.** Nothing here runs unless the caller passes the
 //!   setting [`SETTING`] (`advise_report`, `cleaners::catalogue_with`). Off, nothing about them is
 //!   read, computed or listed.
-//! - **Whole files, as a set.** A part names databases; each goes with its `-journal`, `-wal` and
-//!   `-shm` files, all of them or none (`clean::run` with [`Action::Set`]). No database is opened
-//!   to remove some rows.
+//! - **Whole files, as a set; or a database edited in place.** A part that deletes names
+//!   databases; each goes with its `-journal`, `-wal` and `-shm` files, all of them or none
+//!   (`clean::run` with [`Action::Set`]). A part that edits opens one database, after copying it
+//!   and checking the copy, and takes rows out in one transaction (`edit`, F10): Firefox's
+//!   history and form history, and Chromium's autofill entries. Nothing else is edited.
 //! - **This account's profiles only**, each by name: Chromium's `Default` and `Profile N`
 //!   (named as the browser names them in `Local State`), Firefox's profile folders (named as
 //!   `profiles.ini` names them). Found under this user's `%LOCALAPPDATA%` and `%APPDATA%`.
@@ -23,11 +26,13 @@
 //! - **Plain words.** Each part says what the user loses, not how; none says or implies that the
 //!   files are beyond recovery (a test holds every string to a list of words).
 //!
-//! Left out on purpose (see the report of 2026-11-18 and `docs/plans/cleaners.md`): Firefox
-//! history (in `places.sqlite` with the bookmarks), saved passwords, form data and autofill
-//! (`Login Data`, `Web Data`, `formhistory.sqlite`), bookmarks, preferences, extensions, local
-//! storage and IndexedDB, session and tab restore, Windows' Recent items and jump lists (kept by
-//! Explorer, which is always open), and anything in the registry.
+//! Left out on purpose (see the report of 2026-11-18 and `docs/plans/cleaners.md`): saved
+//! passwords (`Login Data` is never opened), bookmarks, preferences, extensions, local storage
+//! and IndexedDB, session and tab restore, Chromium addresses and payment cards (the `autofill`
+//! table only is edited), Windows' Recent items and jump lists (kept by Explorer, which is
+//! always open), and anything in the registry. Selective cookies ("keep these sites' cookies")
+//! are not built: Sprawl would have to recognise which rows are which site's, and the plan
+//! leaves that for later.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +41,11 @@ use sprawl_core::Tree;
 
 use crate::cleaners::{CleanerDef, Class, Closed, PartDef};
 use crate::finding::{Action, Finding, Remedy, Risk, Source};
+
+pub(crate) mod edit;
+
+pub use edit::{backup_root, FORMS_VERSIONS, KEEP_BACKUPS, PLACES_VERSIONS};
+pub(crate) use edit::rows as edit_rows;
 
 /// The settings key the app stores the switch under, and passes in as `privacy_cleaners`.
 /// Off by default: with it off, nothing in this module runs.
@@ -80,6 +90,18 @@ pub const BROWSERS: &[Browser] = &[
     Browser { cleaner: "privacy.firefox", name: "Firefox", short: "Firefox", kind: Kind::Firefox, profiles: r"Mozilla\Firefox\Profiles", running: &["firefox.exe"] },
 ];
 
+/// What a part does to the one database it edits (F10): takes rows out of it in place, after a
+/// checked copy. Each names a format `edit` understands, by the tables and columns it expects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+    /// Firefox's `places.sqlite`: visits, and the pages that aren't bookmarked.
+    FirefoxHistory,
+    /// Firefox's `formhistory.sqlite`: every entry.
+    FirefoxForms,
+    /// Chromium's `Web Data`: the rows of the `autofill` table only.
+    ChromiumAutofill,
+}
+
 #[derive(Debug)]
 pub struct PrivacyPart {
     /// The [`Browser::cleaner`] it belongs to.
@@ -93,12 +115,15 @@ pub struct PrivacyPart {
     /// At least amber.
     pub risk: Risk,
     /// The files that go, relative to the profile folder, each with its [`SIDE_FILES`]. The first
-    /// must be there for the part to be offered; the others go when they are there.
+    /// must be there for the part to be offered; the others go when they are there. For a part
+    /// that edits, this is the one database edited; its side files are copied, never deleted.
     pub files: &'static [&'static str],
     /// Never-list entries that name these files on purpose (found by name anywhere), passed only
     /// for this part's own files. Entries that cover a whole folder (`...\User Data\**`) are
     /// passed for them too; nothing else is.
     pub waives: &'static [&'static str],
+    /// None: the files are deleted. Some: rows are taken out of the first file (see [`Edit`]).
+    pub edit: Option<Edit>,
 }
 
 const CHROMIUM_COOKIES_WHY: &str = "Cookies are what websites leave to recognise you. The browser keeps them in one database, Network\\Cookies, with its journal; Sprawl deletes that file whole, never part of it.";
@@ -106,14 +131,55 @@ const CHROMIUM_HISTORY_WHY: &str = "The browser keeps the pages you visited and 
 const CHROMIUM_COOKIE_FILES: &[&str] = &[r"Network\Cookies"];
 const CHROMIUM_HISTORY_FILES: &[&str] = &["History", "Visited Links", "Top Sites", "Shortcuts"];
 const CHROMIUM_COOKIE_WAIVES: &[&str] = &[r"?:\**\Network\Cookies"];
+const AUTOFILL_FILES: &[&str] = &["Web Data"];
+/// Chromium's `Web Data` is held by name anywhere on the never-list, for every browser's copy:
+/// passed for this part's own file only (its exact profile path is checked too).
+const AUTOFILL_WAIVES: &[&str] = &[r"?:\**\Web Data"];
+const AUTOFILL_WHY: &str = "Chrome keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.";
+const EDGE_AUTOFILL_WHY: &str = "Edge keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.";
+const BRAVE_AUTOFILL_WHY: &str = "Brave keeps what you typed into web forms in a database called Web Data, in a table of its own. Sprawl takes the rows out of that table and nothing else. Saved addresses, payment cards, passwords, search engines and bookmarks stay. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.";
+const AUTOFILL_COST: &str = "Chrome forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay. With sync on, entries may come back from your other devices.";
 
 pub const PARTS: &[PrivacyPart] = &[
-    PrivacyPart { browser: "privacy.chrome", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Chrome (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES },
-    PrivacyPart { browser: "privacy.chrome", id: "history", title: "History and download list", cost: "Chrome forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
-    PrivacyPart { browser: "privacy.edge", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Edge (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES },
-    PrivacyPart { browser: "privacy.edge", id: "history", title: "History and download list", cost: "Edge forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
-    PrivacyPart { browser: "privacy.brave", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Brave (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES },
-    PrivacyPart { browser: "privacy.brave", id: "history", title: "History and download list", cost: "Brave forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[] },
+    PrivacyPart { browser: "privacy.chrome", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Chrome (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES, edit: None },
+    PrivacyPart { browser: "privacy.chrome", id: "history", title: "History and download list", cost: "Chrome forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[], edit: None },
+    PrivacyPart {
+        browser: "privacy.chrome",
+        id: "autofill",
+        title: "Autofill entries",
+        cost: AUTOFILL_COST,
+        why: AUTOFILL_WHY,
+        risk: Risk::Amber,
+        files: AUTOFILL_FILES,
+        waives: AUTOFILL_WAIVES,
+        edit: Some(Edit::ChromiumAutofill),
+    },
+    PrivacyPart { browser: "privacy.edge", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Edge (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES, edit: None },
+    PrivacyPart { browser: "privacy.edge", id: "history", title: "History and download list", cost: "Edge forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[], edit: None },
+    PrivacyPart {
+        browser: "privacy.edge",
+        id: "autofill",
+        title: "Autofill entries",
+        cost: "Edge forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay. With sync on, entries may come back from your other devices.",
+        why: EDGE_AUTOFILL_WHY,
+        risk: Risk::Amber,
+        files: AUTOFILL_FILES,
+        waives: AUTOFILL_WAIVES,
+        edit: Some(Edit::ChromiumAutofill),
+    },
+    PrivacyPart { browser: "privacy.brave", id: "cookies", title: "Cookies", cost: "Signs you out of most websites in Brave (this profile), and sites forget choices they kept in cookies.", why: CHROMIUM_COOKIES_WHY, risk: Risk::Amber, files: CHROMIUM_COOKIE_FILES, waives: CHROMIUM_COOKIE_WAIVES, edit: None },
+    PrivacyPart { browser: "privacy.brave", id: "history", title: "History and download list", cost: "Brave forgets the pages you visited and its list of downloads (this profile), with the most-visited tiles made from them. The downloaded files stay, and so do some traces: site icons, address-bar predictions and the last session.", why: CHROMIUM_HISTORY_WHY, risk: Risk::Orange, files: CHROMIUM_HISTORY_FILES, waives: &[], edit: None },
+    PrivacyPart {
+        browser: "privacy.brave",
+        id: "autofill",
+        title: "Autofill entries",
+        cost: "Brave forgets what it filled into forms (this profile): names, street addresses, email addresses and phone numbers. Your saved addresses and cards, passwords and bookmarks stay. With sync on, entries may come back from your other devices.",
+        why: BRAVE_AUTOFILL_WHY,
+        risk: Risk::Amber,
+        files: AUTOFILL_FILES,
+        waives: AUTOFILL_WAIVES,
+        edit: Some(Edit::ChromiumAutofill),
+    },
     PrivacyPart {
         browser: "privacy.firefox",
         id: "cookies",
@@ -123,6 +189,29 @@ pub const PARTS: &[PrivacyPart] = &[
         risk: Risk::Amber,
         files: &["cookies.sqlite"],
         waives: &[],
+        edit: None,
+    },
+    PrivacyPart {
+        browser: "privacy.firefox",
+        id: "history",
+        title: "Browsing history",
+        cost: "Firefox forgets the pages you visited and its download list (this profile). Downloaded files, bookmarks, site icons and the last session stay. With sync on, history may come back from other devices.",
+        why: "Firefox keeps the pages you visited in places.sqlite, the same database as the bookmarks. Sprawl takes out the visits, and the pages nothing else holds (a bookmark or a keyword keeps its page); the bookmarks, their keywords and their notes stay. Page view times, search terms and new-tab clicks go for the pages that stay too; typed address-bar text for them is kept. Site icons stay in favicons.sqlite, which keeps the pages' addresses, and so do address-bar predictions and the last session. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.",
+        risk: Risk::Amber,
+        files: &["places.sqlite"],
+        waives: &[],
+        edit: Some(Edit::FirefoxHistory),
+    },
+    PrivacyPart {
+        browser: "privacy.firefox",
+        id: "forms",
+        title: "Form history",
+        cost: "Firefox forgets what you typed into forms (this profile), and the suggestions it made from it. With sync on, entries may come back from your other devices.",
+        why: "Firefox keeps what you typed into web forms in formhistory.sqlite, field by field. Sprawl takes out every entry. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.",
+        risk: Risk::Amber,
+        files: &["formhistory.sqlite"],
+        waives: &[],
+        edit: Some(Edit::FirefoxForms),
     },
 ];
 
@@ -133,6 +222,12 @@ impl PrivacyPart {
 
     pub fn browser(&self) -> &'static Browser {
         BROWSERS.iter().find(|b| b.cleaner == self.browser).expect("every part names a browser of BROWSERS")
+    }
+
+    /// The folder this part's database copies are kept in, below [`backup_root`]
+    /// (`privacy.firefox-history`).
+    pub fn backup_name(&self) -> String {
+        self.rule_id().replace('/', "-")
     }
 }
 
@@ -258,7 +353,7 @@ pub fn catalogue() -> Vec<CleanerDef> {
                     paths: p.files.iter().map(|f| format!(r"{base}\<profile>\{f}")).collect(),
                 })
                 .collect();
-            let mut text = format!("# {}: privacy parts built into Sprawl (they can't be written in a rule pack).\n# Each file goes with its -journal, -wal and -shm files, all of them or none, only with {} closed.\n", b.name, b.short);
+            let mut text = format!("# {}: privacy parts built into Sprawl (they can't be written in a rule pack).\n# Files go with their -journal, -wal and -shm files, all of them or none; a database that is edited is copied and checked first. Either way, only with {} closed.\n", b.name, b.short);
             for p in &parts {
                 text += &format!("# {} [{}]: {}\n#   {}\n", p.title, p.rule, p.cost, p.paths.join(", "));
             }
@@ -408,6 +503,11 @@ pub(crate) fn find_in(tree: &Tree, places: &Places) -> Vec<Finding> {
                     files.push(tree.path_of(k));
                     members.push((rel.to_string(), tree.nodes[k].size));
                     bytes += tree.nodes[k].size;
+                    // a database that is edited keeps its side files: they are copied, not
+                    // deleted, so they are not part of what this part takes
+                    if part.edit.is_some() {
+                        continue;
+                    }
                     let Some(parent) = tree.nodes[k].parent else { continue 'part };
                     for sfx in SIDE_FILES {
                         let side = format!("{}{sfx}", tree.nodes[k].name);
@@ -420,7 +520,42 @@ pub(crate) fn find_in(tree: &Tree, places: &Places) -> Vec<Finding> {
                         }
                     }
                 }
-                let list: Vec<String> = members.iter().map(|(m, b)| format!("{m} ({})", sprawl_core::format_size(*b))).collect();
+                let where_it_is = format!("Profile \"{shown}\", in {}", tree.path_of(prof).display());
+                let closed = format!("Only with {} closed: checked when you review it and again just before.", b.short);
+                let (action, bytes, evidence) = match part.edit {
+                    // rows taken out of one database: measured read-only now, and never counted
+                    // as space. A database Sprawl can't read, or has nothing to take out of, is
+                    // not offered.
+                    Some(kind) => {
+                        let Some(rows) = edit::rows(kind, &files[0]) else { continue 'part };
+                        if rows == 0 {
+                            continue 'part;
+                        }
+                        let backups = backup_root().map_or_else(|| "Sprawl's data folder".to_string(), |r| r.join(part.backup_name()).display().to_string());
+                        let evidence = vec![
+                            part.cost.to_string(),
+                            part.why.to_string(),
+                            where_it_is,
+                            format!("At least {rows} row{} would go, in {}", if rows == 1 { "" } else { "s" }, files[0].display()),
+                            format!("A checked copy is kept in {backups} before it is edited; the last {KEEP_BACKUPS} copies are kept."),
+                            closed,
+                            DELETED_NOTE.to_string(),
+                        ];
+                        (Action::Edit { part: part.rule_id(), file: files[0].clone(), rows }, 0, evidence)
+                    }
+                    None => {
+                        let list: Vec<String> = members.iter().map(|(m, b)| format!("{m} ({})", sprawl_core::format_size(*b))).collect();
+                        let evidence = vec![
+                            part.cost.to_string(),
+                            part.why.to_string(),
+                            where_it_is,
+                            format!("Goes together, or not at all: {}", list.join(", ")),
+                            closed,
+                            DELETED_NOTE.to_string(),
+                        ];
+                        (Action::Set { part: part.rule_id(), files: files.clone() }, bytes, evidence)
+                    }
+                };
                 out.push(Finding {
                     path: files[0].clone(),
                     owner: Some(b.name.into()),
@@ -429,21 +564,14 @@ pub(crate) fn find_in(tree: &Tree, places: &Places) -> Vec<Finding> {
                     remedy: Remedy::Delete,
                     command: None,
                     title: format!("{}: {} ({shown})", b.short, part.title),
-                    evidence: vec![
-                        part.cost.to_string(),
-                        part.why.to_string(),
-                        format!("Profile \"{shown}\", in {}", tree.path_of(prof).display()),
-                        format!("Goes together, or not at all: {}", list.join(", ")),
-                        format!("Only with {} closed: checked when you review it and again just before.", b.short),
-                        DELETED_NOTE.to_string(),
-                    ],
+                    evidence,
                     confidence: 1.0,
                     source: Source::Rule(part.rule_id()),
                     allow_protected: false,
                     trusted: true,
                     builtin: true,
                     on_path: true,
-                    action: Some(Action::Set { part: part.rule_id(), files }),
+                    action: Some(action),
                     admin: false,
                     carved: Vec::new(),
                     gain: None,
@@ -584,6 +712,10 @@ pub(crate) mod tests {
             let base = places.profiles(p.browser());
             for prof in ["Default", "Profile 1", "abc.default-release"] {
                 for k in keep {
+                    // a database this part edits is its own file, by design
+                    if p.files.iter().any(|f| f.eq_ignore_ascii_case(k)) {
+                        continue;
+                    }
                     for sfx in ["", "-journal", "-wal"] {
                         let path = base.join(prof).join(format!("{k}{sfx}"));
                         assert!(member(p, &path, &places).is_none(), "{} {}", p.rule_id(), path.display());
@@ -658,6 +790,10 @@ pub(crate) mod tests {
                 assert!(never.all_hits(&path.to_string_lossy()).contains(w), "{w}");
             }
             for k in ["Login Data", "Web Data"] {
+                // a file this part edits on purpose is its own to waive
+                if p.files.iter().any(|f| f.eq_ignore_ascii_case(k)) {
+                    continue;
+                }
                 let hits = never.all_hits(&base.join("Default").join(k).to_string_lossy());
                 assert!(hits.iter().any(|h| !cover(h) && !p.waives.contains(h)), "{k} is held for {}", p.rule_id());
             }

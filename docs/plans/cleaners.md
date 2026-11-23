@@ -197,10 +197,8 @@ record of something.
 | App open | per part | always `must` |
 
 More on privacy:
-- **Whole files only.** A cookie store goes as a whole, with its journal files, or not at all.
-  Sprawl never opens a database to remove some rows.
-- **What that rules out:** Firefox history (it shares `places.sqlite` with bookmarks), saved
-  passwords and form data (never), and "cookies except these sites".
+- **Whole files only, unless a part says it edits.** A cookie store goes as a whole, with its journal files, or not at all. Some parts (Firefox history and form history, Chromium autofill) edit inside one database instead: Sprawl copies it first, checks the copy, then takes rows out in one transaction (see F10 in `future-features.md`).
+- **What that rules out:** saved passwords (never offered) and "cookies except these sites". Selective cookies would need Sprawl to recognise which rows are which site's; that is still left for later.
 - **Honest words.** The part says: "Deleted, not overwritten. Recovery tools may still find
   it." Sprawl is not a wiping tool and must not sound like one.
 - **Sync.** A browser that syncs may bring history back. The part says so.
@@ -438,14 +436,17 @@ for a later milestone, each with its own plan and its own safety review. On the 
   promise on SSDs and with copy-on-write or cloud-synced folders.
 - **Editing browser databases** (selective cookies, Firefox history, autofill). Needs the
   browser closed, a backup of each file, and a check that the file is the format expected.
+  Built for Firefox history and form history and Chromium autofill (F10); selective cookies
+  are still to do.
 
 ## Left out, on purpose
 
 - **Wiping, shredding, wiping free space.** Not what Sprawl is, and not reliable on SSDs.
 - **Registry cleaning** of any kind in this plan. Prefetch and UserAssist: never.
-- **Editing files:** SQLite vacuum or row deletes, JSON and INI key removal. So no selective
-  cookies, no Firefox history, no autofill clean-up.
-- **Passwords and form data.** Never offered.
+- **Editing files:** SQLite vacuum or row deletes outside the parts F10 built. So no selective
+  cookies, and no registry or JSON key removal.
+- **Passwords.** Never offered. Form data only through the two parts F10 built (Firefox's form
+  history and Chromium's autofill entries); anything else that holds it stays as it is.
 - **Closing applications for the user.**
 - **An elevated helper, and cleaning other accounts.**
 - **Scheduled or automatic cleaning.** Nothing runs without the review.

@@ -188,6 +188,11 @@ pub enum Action {
     /// `registry.explorer/runmru`), from the fixed keys of [`crate::regclean`] only, written to a
     /// backup first. Made only by [`crate::regclean`]; never written to a script.
     Reg { part: String },
+    /// A privacy part that edits inside one of the browser's databases: `part` is its rule id,
+    /// `file` that database, `rows` how many rows the part takes out. A copy of the database is
+    /// made and checked first, and every delete for it goes in one transaction (see
+    /// [`crate::privacy`]). Made only there; never written to a script.
+    Edit { part: String, file: PathBuf, rows: u64 },
     /// F4: each of `copies` replaced by a hard link to `keep`, after comparing it with `keep`
     /// byte for byte again; every path stays, the space of one copy is used. Made only by
     /// [`crate::dupes::find`] for copies on one volume, none in a protected place; never written
@@ -262,7 +267,7 @@ impl Finding {
     /// planned, written to a script or counted in what can be freed. Known by its action or its
     /// rule's id.
     pub fn privacy(&self) -> bool {
-        matches!(self.action, Some(Action::Set { .. }) | Some(Action::Reg { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id) || crate::regclean::is_id(id))
+        matches!(self.action, Some(Action::Set { .. }) | Some(Action::Reg { .. }) | Some(Action::Edit { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id) || crate::regclean::is_id(id))
     }
 
     /// A privacy part that removes this account's registry values, with a backup first: known by
@@ -277,9 +282,9 @@ impl Finding {
     }
 
     /// Give the finding its action, and the command text "Save as script" writes for it (none
-    /// for a privacy part's set: those run only inside Sprawl).
+    /// for a privacy part's set or edit: those run only inside Sprawl).
     pub fn set_action(&mut self, action: Action, admin: bool) {
-        self.command = (!matches!(action, Action::Set { .. } | Action::Reg { .. } | Action::Link { .. })).then(|| crate::clean::script(&self.path, &action, admin));
+        self.command = (!matches!(action, Action::Set { .. } | Action::Reg { .. } | Action::Edit { .. } | Action::Link { .. })).then(|| crate::clean::script(&self.path, &action, admin));
         self.admin = admin;
         self.action = Some(action);
     }
