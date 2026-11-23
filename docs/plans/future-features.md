@@ -340,24 +340,34 @@ app that is already open.
 - Done when: from a double-click the window shows the chosen tab's frame without a black stage, Search is
   usable without waiting, and timings before and after are written down.
 
-**Open from the user's notes** (copied 2026-11-23 from their notes file, unchecked items).
+**From the user's notes** (copied 2026-11-23; all three shipped in the re-published 1.0.8, built by
+DeepSeek Flash, reviewed by Opus, merges d1267d9, c9294b0, ffb4e10).
 
-- **Search: picking and deleting still not right.** The user says multi-select and delete are "not
-  done" despite the Search Delete work (merges acb3c4b and cd9e774). Right-clicking a result
-  deselects the picked rows. The right-click menu on Search results should carry the same actions as
-  the other tabs' menus (Delete, Delete for good, Show in Explorer, and the rest). Check first: which
-  rows can't be picked (scan-on-screen, other drives, saved scans), and what right-click does to the
-  picks.
-- **Advisor > Remembered: the AI's explanation is cut off.** A remembered rule's explanation ends
-  mid-word ("…remove only games you no l") on one line with no way to read the rest. Wrap it, or
-  show it in full on hover or when the row is opened; check every place that shows AI-written text
-  on one line.
-- **Give the AI last-accessed times.** Asked which of several copies was used last, the AI answered
-  that Sprawl only records when files changed, to the month. Idea: include last-access (and, where
-  Windows keeps it, last-run, for example from Prefetch) in what the AI is given. Check first:
-  whether NTFS last-access updates are on for the drive (Windows turns them off on some systems,
-  `fsutil behavior query disablelastaccess`), what the MFT scan and the folder walk already read,
-  and what this adds to the data sent to the AI (privacy settings apply).
+- Done: Search right-click keeps the picks, and the row menu acts on all of them (Open, Show in
+  Explorer, Copy Path, Delete, Delete Permanently; Open and Show in Explorer stop at 10).
+- Done: Remembered shows an AI explanation whole and wrapped (capped at 1,000 characters on a word,
+  preferences 300, labels 200); trimmed one-line texts show the whole text on hover.
+- Done: the AI's tools say when an item was last opened and when a program last ran, and its search
+  takes `da:`. Read per path on local fixed NTFS drives only, never for a client that may only see the
+  scan; what the reading limit leaves unread is said.
+
+**Open: Fable's two findings on the Search delete path** (2026-11-23, quick review of 782229e..b01bdb0;
+shipped as is on the user's word, nothing deletes unannounced since the dialog names every item).
+
+- Low, older, now reachable from the row menu: picks can outlive their rows. Other drives give more
+  matches than `searchMaxHits`; Ctrl+click A, B, C; sort by a column, and C can fall off the list;
+  right-click A > Delete still asks about and deletes C (Copy Path gives only A and B). Also: picks
+  stay after the search box is emptied or a query fails to parse (`more_run`'s early return), so the
+  Search bar's Delete / Del ask about rows no longer shown. Fix: `delete_more`
+  (search_delete.rs ~331) also requires every pick's (place, id) to be among the current rows, else
+  the existing "The results changed since they were picked" refusal; clear `sel`/`picks` in
+  `more_run`'s early return; prune picks when a re-sort arrives.
+- Low, older, not via the menu: Ctrl+click A, B, C, then Ctrl+click C to un-pick it: `sel` stays C,
+  and Del or the Search bar's Delete adds `sel`, so the dialog asks about 3 (C included). The row
+  menu gets it right, so keyboard and menu disagree. Fix: one rule in `delete_more`, `more_row`,
+  `menu_paths`, `menu_pick_count` and the picked note: with picks, `sel` counts only if picked.
+- Still to do: the full Fable review of this release (all three changes, not only the delete path);
+  entry in .claude/fable-review-queue.md.
 
 ---
 
