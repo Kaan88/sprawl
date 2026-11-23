@@ -1345,7 +1345,7 @@ impl State {
                     ItemState::Done(o) => ("&#xE7BA;", crate::tokens::refer("warn"), format!("Freed {}; some couldn't go", self.size(o.freed))),
                 };
                 x += &format!(
-                    r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{colour}"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="AdvCS{i}" Grid.Column="2" Text="{}" {num} MinWidth="160" TextAlignment="Right" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></Grid>"##,
+                    r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{colour}"/><TextBlock Grid.Column="1" Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="AdvCS{i}" Grid.Column="2" Text="{}" {num} MinWidth="160" TextAlignment="Right" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></Grid>"##,
                     ui::esc(&it.title),
                     ui::esc(&state),
                     num = crate::look::NUM
@@ -1389,7 +1389,7 @@ impl State {
                 reg += r##"<TextBlock Text="Registry entries removed. Each part's values were copied to a backup first: Put back writes the removed values back; values written since stay." FontSize="{$fs12}" Foreground="{$text2}" TextWrapping="Wrap"/>"##;
                 for (i, r) in d.registry.iter().enumerate() {
                     reg += &format!(
-                        r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center"/><Button x:Name="AdvRegBack{i}" Content="Put back"/></StackPanel></Grid>"##,
+                        r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center"/><Button x:Name="AdvRegBack{i}" Content="Put back"/></StackPanel></Grid>"##,
                         ui::esc(&r.title),
                         if r.removed == 1 { "1 value".to_string() } else { format!("{} values", r.removed) },
                         num = crate::look::NUM
@@ -1609,7 +1609,7 @@ impl State {
             // a command is shown whole (R7): what runs is never cut short
             let wrap = if matches!(clean::action(f), Some((Action::Tool { .. }, _))) { r#"TextWrapping="Wrap" IsTextSelectionEnabled="True""# } else { r#"TextTrimming="CharacterEllipsis""# };
             x += &format!(
-                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" FontSize="{{$fs12}}" Foreground="{{$text3}}" {wrap}/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1"><TextBlock Text="{}" ToolTipService.ToolTip="{1}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}{ai}" ToolTipService.ToolTip="{2}" FontSize="{{$fs12}}" Foreground="{{$text3}}" {wrap}/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid>"##,
                 crate::advisor::risk_mark(f.risk, 8, ""),
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
@@ -1634,7 +1634,7 @@ impl State {
         }
         for (f, why) in &held {
             x += &format!(
-                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="&#xE7BA;" FontSize="{{$fs10}}" Foreground="{{$warn}}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis" Foreground="{{$text3}}"/><TextBlock Text="Held back: {}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="2" Text="not run" FontSize="{{$fs13}}" VerticalAlignment="Center" Foreground="{{$text3}}"/></Grid>"##,
+                r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="&#xE7BA;" FontSize="{{$fs10}}" Foreground="{{$warn}}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis" Foreground="{{$text3}}"/><TextBlock Text="Held back: {}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="2" Text="not run" FontSize="{{$fs13}}" VerticalAlignment="Center" Foreground="{{$text3}}"/></Grid>"##,
                 ui::esc(&f.title),
                 ui::esc(why),
             );
@@ -1667,7 +1667,7 @@ impl State {
         if !kept.is_empty() {
             x += r##"<StackPanel Spacing="2"><TextBlock Text="Kept, because you chose to keep them:" FontSize="{$fs12}" Foreground="{$text2}"/>"##;
             for k in kept.iter().take(6) {
-                x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis" Margin="10,0,0,0"/>"##, ui::esc(&k.display().to_string()));
+                x += &format!(r##"<TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis" Margin="10,0,0,0"/>"##, ui::esc(&k.display().to_string()));
             }
             if kept.len() > 6 {
                 x += &format!(r##"<TextBlock Text="and {} more" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="10,0,0,0"/>"##, kept.len() - 6);

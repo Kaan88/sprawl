@@ -392,10 +392,32 @@ fn ownable(segs: &[String]) -> bool {
 }
 
 /// Text from the registry or a manifest made safe to show: no control or direction-changing
-/// characters, at most 100 characters.
+/// characters, at most 100 characters (cut on a word boundary, marked with "...").
 pub(crate) fn clean_text(s: &str) -> String {
+    clean_text_to(s, 100)
+}
+
+/// [`clean_text_whole`] at most `max` characters, cut at a word boundary and marked with "...",
+/// so a cut never ends mid-word without a sign that it is one.
+pub fn clean_text_to(s: &str, max: usize) -> String {
+    let s = clean_text_whole(s);
+    if s.chars().count() <= max {
+        return s;
+    }
+    let room = max.saturating_sub(3);
+    let head: String = s.chars().take(room).collect();
+    let cut = match head.rfind(' ') {
+        Some(i) if head[..i].chars().count() >= room / 2 => head[..i].trim_end(),
+        _ => head.trim_end(),
+    };
+    format!("{cut}...")
+}
+
+/// Text made safe to show, whole: no control or direction-changing characters. For something
+/// the user has to be able to read in full, like an explanation.
+pub(crate) fn clean_text_whole(s: &str) -> String {
     let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    s.chars().filter(|&c| !c.is_control() && !bidi(c)).take(100).collect::<String>().trim().to_string()
+    s.chars().filter(|&c| !c.is_control() && !bidi(c)).collect::<String>().trim().to_string()
 }
 
 /// Programs that run at install, update or crash time, not when the app is used.

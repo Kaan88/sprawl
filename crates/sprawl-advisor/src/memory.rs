@@ -14,13 +14,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::facts::clean_text;
+use crate::facts::{clean_text, clean_text_to};
 use crate::finding::{Finding, Remedy, Risk};
 use crate::rules::{Kind, Pattern, Rule, RulePack};
 use crate::segments;
 
 /// How long "Not now" hides a finding.
 pub const LATER_DAYS: u64 = 30;
+
+/// The most of a proposed rule's explanation that is kept: room for a full one, little enough
+/// that fifty proposals and the prompt built from them stay small.
+const WHY_MAX: usize = 1000;
+/// The most of a proposal's note that is kept: the same room as an explanation.
+const NOTE_MAX: usize = 1000;
+/// The most of a cleaner part's cost that is kept: a sentence or two is all it says.
+const COST_MAX: usize = 1000;
+/// The most of a remembered preference that is kept: a sentence, as it goes into every prompt.
+const PREF_MAX: usize = 300;
+/// The most of a folder label that is kept: a few words name what a folder is.
+const LABEL_MAX: usize = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -633,7 +645,7 @@ impl Memory {
     }
 
     pub fn add_pref(&mut self, text: &str, from: From) -> Result<(), String> {
-        let text = clean_text(text);
+        let text = clean_text_to(text, PREF_MAX);
         if text.len() < 3 {
             return Err("too short".into());
         }
@@ -652,7 +664,7 @@ impl Memory {
         if !plain_pattern(&pattern) {
             return Err("the pattern must be an absolute path (C:\\... or %VARIABLE%\\...), optionally with * and **".into());
         }
-        let label = clean_text(label);
+        let label = clean_text_to(label, LABEL_MAX);
         if label.is_empty() {
             return Err("give a label".into());
         }
@@ -671,7 +683,8 @@ impl Memory {
             return Err("give the rule an id".into());
         }
         p.title = clean_text(&p.title);
-        p.why = clean_text(&p.why);
+        // shown wrapped in Remembered: kept whole up to WHY_MAX, never cut mid-word
+        p.why = clean_text_to(&p.why, WHY_MAX);
         // TOML holds signed 64-bit numbers: a bigger one would stop memory.toml saving
         p.min_bytes = p.min_bytes.map(|b| b.min(1 << 50));
         if p.remedy == Remedy::Delete { p.risk = p.risk.max(Risk::Orange); }
@@ -694,15 +707,16 @@ impl Memory {
         if c.id == "local." {
             return Err("give the cleaner an id".into());
         }
-        c.name = clean_text(&c.name).chars().take(60).collect();
+        c.name = clean_text_to(&c.name, 60);
         if !crate::cleaners::GROUPS.contains(&c.group.as_str()) {
             c.group = "Other".into();
         }
         c.rules.clear();
         for part in &mut c.parts {
-            part.title = clean_text(&part.title).chars().take(80).collect();
-            part.why = clean_text(&part.why);
-            part.cost = clean_text(&part.cost);
+            part.title = clean_text_to(&part.title, 80);
+            // shown wrapped in Remembered: kept whole up to WHY_MAX, never cut mid-word
+            part.why = clean_text_to(&part.why, WHY_MAX);
+            part.cost = clean_text_to(&part.cost, COST_MAX);
             part.admin = false;
             part.min_bytes = None;
             part.paths = part.paths.iter().map(|x| x.trim().replace('/', "\\")).collect();
@@ -711,7 +725,7 @@ impl Memory {
             // by Sprawl or the AI's ticks). Fable AI review P2-1
             part.risk = part.risk.max(if part.paths.iter().all(|x| in_app_data(x)) { Risk::Amber } else { Risk::Orange });
         }
-        p.note = clean_text(&p.note);
+        p.note = clean_text_to(&p.note, NOTE_MAX);
         check_cleaner(&p.cleaner)?;
         if self.cleaner_proposals.iter().any(|q| q.cleaner.id.eq_ignore_ascii_case(&p.cleaner.id)) {
             return Err(format!("a cleaner {} is already waiting", p.cleaner.id));
@@ -870,10 +884,10 @@ pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never,
         c.name = clean_text(&c.name);
         for p in &mut c.parts {
             p.title = clean_text(&p.title);
-            p.why = clean_text(&p.why);
+            p.why = clean_text_to(&p.why, WHY_MAX);
         // TOML holds signed 64-bit numbers: a bigger one would stop memory.toml saving
         p.min_bytes = p.min_bytes.map(|b| b.min(1 << 50));
-            p.cost = clean_text(&p.cost);
+            p.cost = clean_text_to(&p.cost, COST_MAX);
         }
     }
     let text = toml::to_string(&raw).map_err(|e| e.to_string())?;
@@ -1213,6 +1227,54 @@ mod tests {
         let back = RulePack::parse(&toml::to_string(&pack).unwrap()).unwrap();
         assert!(!back.trusted && back.rules[0].command.is_none());
         assert!(m.context().is_empty() || m.context().contains("Known folders"));
+    }
+
+    #[test]
+    fn an_explanation_is_kept_whole() {
+        let why = "Installed PS3 games and savedata (dev_hdd0\\game, 34 GB). Not regenerable: remove only games you no longer play, because each one has to be downloaded again from the store, and the saves in dev_hdd0\\home exist nowhere else, so they would be lost for good. Only the games you have finished, and never the whole dev_hdd0 folder.".to_string();
+        assert!(why.chars().count() >= 300 && why.chars().count() <= WHY_MAX);
+        let p = Proposal {
+            id: "ps3-games".into(),
+            title: "RPCS3 PS3 emulator with games and saves".into(),
+            paths: vec![r"%LOCALAPPDATA%\RPCS3\dev_hdd0\game".into()],
+            risk: Risk::Amber,
+            remedy: Remedy::Info,
+            why: why.clone(),
+            min_bytes: None,
+        };
+        let mut m = Memory::default();
+        m.propose(p).unwrap();
+        assert_eq!(m.proposals[0].why, why, "the explanation is never cut mid-word");
+    }
+
+    #[test]
+    fn a_long_explanation_is_capped_at_a_word() {
+        let long = "lose ".repeat(1000);
+        let p = Proposal {
+            id: "long-explanation".into(),
+            title: "Long".into(),
+            paths: vec![r"%LOCALAPPDATA%\Tool\cache".into()],
+            risk: Risk::Amber,
+            remedy: Remedy::Info,
+            why: long,
+            min_bytes: None,
+        };
+        let mut m = Memory::default();
+        m.propose(p).unwrap();
+        let got = &m.proposals[0].why;
+        assert!(got.chars().count() <= WHY_MAX, "{}", got.chars().count());
+        assert!(got.ends_with("..."), "a cut is marked: {got}");
+        assert!(got.trim_end_matches('.').trim_end().ends_with("lose"), "cut between words, not in one: {got}");
+    }
+
+    #[test]
+    fn a_long_preference_is_capped_at_a_word() {
+        let mut m = Memory::default();
+        m.add_pref(&"Steam ".repeat(60), From::Model).unwrap();
+        let got = &m.prefs[0].text;
+        assert!(got.chars().count() <= PREF_MAX, "{}", got.chars().count());
+        assert!(got.ends_with("..."), "a cut is marked: {got}");
+        assert!(got.trim_end_matches('.').trim_end().ends_with("Steam"), "cut between words, not in one: {got}");
     }
 
     fn pack_with(rule: &str) -> String {

@@ -3,6 +3,10 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Remembered: a proposed rule now shows its whole explanation, wrapped over as many lines as it needs, instead of being cut off mid-word after the first line; long names and paths that still have to fit one line show the whole text when you hover over them.
+
 ## 1.0.8 — 2026-11-23
 
 - Faster: the map is ready sooner after Sprawl starts (its graphics are prepared while the window opens), clicking a column header in Tree View sorts a big scan in a few milliseconds instead of a fifth of a second, clicking the same column again in File View just turns the list around, and a map at rest no longer redraws its tiles in the background, so a large scan no longer slows down every click and key press.

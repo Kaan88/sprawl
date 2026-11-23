@@ -87,11 +87,14 @@ pub(crate) fn proposals_block(text: &str) -> Option<(String, Option<Value>)> {
 /// What a proposal from a block says it came from.
 pub(crate) const REPORT_ONLY: &str = "(From the report only; the AI didn't look inside.)";
 
-/// `why` with [`REPORT_ONLY`] after it, within the 100 characters a proposal's text keeps: the
-/// model's text is cut, never the note (Fable 1.0.4-1.0.5 P2-3).
+/// The most of a model's own explanation a proposal from a block keeps: room for a full
+/// one, little enough that a runaway answer can't grow memory.
+const REPORT_WHY_MAX: usize = 1000;
+
+/// `why` with [`REPORT_ONLY`] after it, the model's text kept up to [`REPORT_WHY_MAX`] at a word
+/// boundary; the note is always kept whole (Fable 1.0.4-1.0.5 P2-3).
 pub(crate) fn report_only(why: &str) -> String {
-    let room = 100 - REPORT_ONLY.chars().count() - 1;
-    let why: String = why.chars().filter(|c| !c.is_control()).take(room).collect();
+    let why = crate::facts::clean_text_to(why, REPORT_WHY_MAX);
     format!("{} {REPORT_ONLY}", why.trim()).trim().to_string()
 }
 
@@ -941,10 +944,14 @@ mod block_tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "propose_rule");
         assert!(calls[0].1["why"].as_str().unwrap().contains("From the report only"));
-        // a long reason is cut, the note never
+        // a reason of normal length is kept whole, the note never cut
         let long = super::report_only(&"x".repeat(300));
-        assert!(long.ends_with(super::REPORT_ONLY) && long.chars().count() <= 100);
-        assert_eq!(crate::facts::clean_text(&long), long);
+        assert!(long.starts_with(&"x".repeat(300)) && long.ends_with(super::REPORT_ONLY));
+        assert_eq!(crate::facts::clean_text_to(&long, super::REPORT_WHY_MAX), long);
+        // a runaway one is capped and marked with "...", the note still whole after it
+        let huge = super::report_only(&"x".repeat(5000));
+        assert!(huge.ends_with(super::REPORT_ONLY));
+        assert!(huge.starts_with(&"x".repeat(super::REPORT_WHY_MAX - 3)) && huge[super::REPORT_WHY_MAX - 3..].starts_with("..."), "{}", &huge[..super::REPORT_WHY_MAX + 3]);
         // unreadable: taken out all the same, and said
         let (rest, v) = proposals_block("Answer ```sprawl-proposals {not json ``` tail").unwrap();
         assert!(v.is_none());

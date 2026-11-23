@@ -747,6 +747,23 @@ fn remedy_label(r: Remedy) -> &'static str {
     }
 }
 
+/// One rule the AI proposes, in Remembered: its title and how, then its explanation, wrapped so
+/// the whole of it can be read, and its paths.
+fn proposal_row(i: usize, p: &sprawl_advisor::memory::Proposal) -> String {
+    let small = |name: String, label: &str| format!(r##"<Button x:Name="{name}" Content="{label}" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/>"##);
+    format!(
+        r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8">{}<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text3}}"/></StackPanel>"##,
+        // a local rule's deletes are at least amber, whatever it proposes
+        risk_mark(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }, 8, MID),
+        ui::esc(&p.title),
+        remedy_label(p.remedy),
+        small(format!("AdvApprove{i}"), "Approve"),
+        small(format!("AdvDismiss{i}"), "Dismiss"),
+        ui::esc(&p.why),
+        ui::esc(&p.paths.join("   ")),
+    )
+}
+
 fn recheck_target(tree: &Tree, path: &std::path::Path) -> Option<PathBuf> {
     let n = sprawl_advisor::find_path(tree, path)?;
     if n == sprawl_core::ROOT { return None; }
@@ -2634,7 +2651,7 @@ impl State {
                 format!(r##"<Button x:Name="AdvUnc{i}" Content="Uncompress" IsEnabled="{}"/>"##, if busy { "False" } else { "True" })
             };
             x += &format!(
-                r##"<Border Padding="10,7" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{} on {} · saved {} of {}{}" FontSize="{{$fs12}}" Foreground="{{$text3}}"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center">{button}</StackPanel></Grid></Border>"##,
+                r##"<Border Padding="10,7" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{} on {} · saved {} of {}{}" FontSize="{{$fs12}}" Foreground="{{$text3}}"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center">{button}</StackPanel></Grid></Border>"##,
                 ui::esc(&c.path),
                 c.alg.to_uppercase(),
                 ui::esc(&when),
@@ -2916,7 +2933,7 @@ impl State {
             x += r##"<TextBlock Text="Held back by the safety checks" FontSize="{$fs13}" FontWeight="SemiBold" Margin="10,8,0,0"/>"##;
             for (f, why) in big {
                 x += &format!(
-                    r##"<Border Padding="12,8" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$faint}}" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
+                    r##"<Border Padding="12,8" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="1"><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text3}}"><Run Text="Not offered: "/><Run Text="{}"/></TextBlock><TextBlock Text="{}" ToolTipService.ToolTip="{2}" FontSize="{{$fs12}}" Foreground="{{$faint}}" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center" Margin="12,0,0,0"/></Grid></Border>"##,
                     ui::esc(&f.title),
                     ui::esc(why),
                     ui::esc(&f.path.to_string_lossy()),
@@ -3955,7 +3972,8 @@ impl State {
         if let Some(r) = r {
             if !cleaning {
                 if let Some(f) = self.advisor.open.and_then(|i| r.findings.get(i)) {
-                    let t: String = f.title.chars().take(48).collect();
+                    // a question is one line of a chip: a long title is cut at a word and marked
+                    let t = sprawl_advisor::facts::clean_text_to(&f.title, 60);
                     v.push(format!("Is it safe to remove \"{t}\"?"));
                     v.push(format!("What uses \"{t}\", and what happens without it?"));
                 }
@@ -4078,7 +4096,7 @@ impl State {
                         Verdict::Done => "done",
                     };
                     x += &format!(
-                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Text="{} ({}, {why})"/>{}</StackPanel>"##,
+                        r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="560" ToolTipService.ToolTip="{0} ({1}, {why})" Text="{} ({}, {why})"/>{}</StackPanel>"##,
                         ui::esc(&f.title),
                         self.size(f.bytes),
                         small(format!("AdvUndo{i}"), "Undo")
@@ -4092,7 +4110,7 @@ impl State {
                 x += &format!(
                     r##"<TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="{}" FontFamily="Consolas" Foreground="{{$text2}}"/><Run Text="  {}" Foreground="{{$text3}}"/></TextBlock>"##,
                     ui::esc(&f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
-                    ui::esc(&why.chars().take(300).collect::<String>())
+                    ui::esc(why)
                 );
             }
             x += "</StackPanel></Border>";
@@ -4101,22 +4119,13 @@ impl State {
         if !m.proposals.is_empty() {
             x += r##"<Border Padding="12,10" CornerRadius="{$rc7}" Background="{$surface2}"><StackPanel Spacing="6"><TextBlock Text="Rules the AI proposes" FontSize="{$fs13}" FontWeight="SemiBold"/><TextBlock Text="Approved rules join your own rule pack: they find these folders by themselves next time. They never run commands, and their deletes are at least amber." TextWrapping="Wrap" FontSize="{$fs12}" Foreground="{$text3}"/>"##;
             for (i, p) in m.proposals.iter().enumerate() {
-                x += &format!(
-                    r##"<StackPanel Spacing="2" Margin="0,4,0,0"><StackPanel Orientation="Horizontal" Spacing="8">{}<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" VerticalAlignment="Center"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>{}{}</StackPanel><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text3}}"/></StackPanel>"##,
-                    // a local rule's deletes are at least amber, whatever it proposes
-                    risk_mark(if p.remedy == Remedy::Delete { p.risk.max(Risk::Amber) } else { p.risk }, 8, MID),
-                    ui::esc(&p.title),
-                    remedy_label(p.remedy),
-                    small(format!("AdvApprove{i}"), "Approve"),
-                    small(format!("AdvDismiss{i}"), "Dismiss"),
-                    ui::esc(&p.why),
-                    ui::esc(&p.paths.join("   ")),
-                );
+                x += &proposal_row(i, p);
             }
             x += "</StackPanel></Border>";
         }
         x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/><TextBlock Text="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/></StackPanel>"##,
+            r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Use Sprawl from your own Claude Code:" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center"/><TextBlock Text="{}" ToolTipService.ToolTip="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis" MaxWidth="460"/><Button x:Name="AdvMcpCopy" Content="Copy" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/></StackPanel>"##,
+            ui::esc(&crate::bridge::setup_command()),
             ui::esc(&crate::bridge::setup_command())
         );
         x += &format!(
@@ -4130,12 +4139,12 @@ impl State {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="AdvPrefText" Width="360" PlaceholderText="A preference, like: I still play my Steam games"/><Button x:Name="AdvPrefAdd" Content="Remember"/></StackPanel>"##;
             for (i, p) in m.prefs.iter().enumerate() {
                 let who = if p.from == memory::From::Model { " (from the AI)" } else { "" };
-                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="700" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
             }
             for (i, l) in m.labels.iter().enumerate() {
                 let who = if l.from == memory::From::Model { " (from the AI)" } else { "" };
                 x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Text="{}: {}{who}"/>{}</StackPanel>"##,
+                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="700" Text="{}: {}{who}"/>{}</StackPanel>"##,
                     ui::esc(&l.pattern),
                     ui::esc(&l.label),
                     small(format!("AdvForgetL{i}"), "Forget")
@@ -4287,7 +4296,7 @@ impl State {
                 continue;
             }
             x += &format!(
-                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" VerticalAlignment="Center" Foreground="{{$warn}}"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" VerticalAlignment="Center" Foreground="{{$warn}}"/><Button Grid.Column="2" x:Name="AdvGrow{i}" Content="Show" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" VerticalAlignment="Center"/></Grid>"##,
                 ui::esc(&t.path_of(gr.node).display().to_string()),
                 ui::esc(&gr.why.join("; ")),
                 ui::esc(&signed(gr.delta)),
@@ -4554,7 +4563,7 @@ impl State {
             r##"<Grid><Border CornerRadius="{{$rc7}}" Background="{bg}"/><Button x:Name="AdvF{i}" Tag="shade:row" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,7" CornerRadius="{{$rc7}}" BorderThickness="0" Background="Transparent">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="118"/></Grid.ColumnDefinitions>
 {dot}
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" ToolTipService.ToolTip="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" ToolTipService.ToolTip="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">{plan}{remedy}</StackPanel>
 <TextBlock Grid.Column="3" Text="{size}" {num} FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button></Grid>"##,
@@ -4833,6 +4842,28 @@ mod memory_tests {
         assert!(a.memory_to_save().is_none());
         a.memory_loaded = true;
         assert!(a.memory_to_save().is_some());
+    }
+}
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_explanation_in_a_remembered_row_is_whole_and_wraps() {
+        let why = "Installed PS3 games and savedata (dev_hdd0\\game, 34 GB). Not regenerable; remove only games you no longer play, because each one means downloading it again from the store.";
+        let p = sprawl_advisor::memory::Proposal {
+            id: "local.ps3".into(),
+            title: "RPCS3 PS3 emulator with games and saves".into(),
+            paths: vec![r"D:\Games\RPCS3\dev_hdd0\game".into()],
+            risk: Risk::Amber,
+            remedy: Remedy::Info,
+            why: why.into(),
+            min_bytes: None,
+        };
+        let row = super::proposal_row(0, &p);
+        assert!(row.contains(&ui::esc(why)), "the whole explanation is in the row");
+        assert!(row.contains(&format!(r#"Text="{}" TextWrapping="Wrap""#, ui::esc(why))), "the explanation wraps instead of one cut line");
     }
 }
 
