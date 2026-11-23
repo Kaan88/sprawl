@@ -36,7 +36,9 @@ param(
     [string]$Large,
     [string]$Label = "",
     [switch]$NoFirst,
-    [int]$TimeoutSec = 240
+    [int]$TimeoutSec = 240,
+    # another scratch profile folder (under targetench), e.g. when a stuck run holds the usual one
+    [string]$ProfileName = "profile"
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
@@ -140,13 +142,13 @@ function Get-CpuLoad {
 
 # a batch starts with no shader cache: its first run is the first after a build, as far as
 # the graphics driver goes
-$profRoot = Join-Path $benchDir "profile"
+$profRoot = Join-Path $benchDir $ProfileName
 if (Test-Path $profRoot) { Remove-Item -Recurse -Force $profRoot }
 
 $letters = (65..90 | ForEach-Object { "$([char]$_):\" }) -join ","
 
 function Invoke-Run($sc) {
-    $prof = Join-Path $benchDir "profile"
+    $prof = Join-Path $benchDir $ProfileName
     # a fresh profile each run, but Home is kept: the graphics driver keeps its shader cache
     # there, as it does in the real profile (the first run of a batch fills it)
     foreach ($d in "Roaming", "Local", "Temp") { if (Test-Path (Join-Path $prof $d)) { Remove-Item -Recurse -Force (Join-Path $prof $d) } }
