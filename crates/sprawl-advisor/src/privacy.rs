@@ -196,7 +196,7 @@ pub const PARTS: &[PrivacyPart] = &[
         id: "history",
         title: "Browsing history",
         cost: "Firefox forgets the pages you visited and its download list (this profile). Downloaded files, bookmarks, site icons and the last session stay. With sync on, history may come back from other devices.",
-        why: "Firefox keeps the pages you visited in places.sqlite, the same database as the bookmarks. Sprawl takes out the visits, and the pages nothing else holds (a bookmark or a keyword keeps its page); the bookmarks, their keywords and their notes stay. Site icons stay in favicons.sqlite, which keeps the pages' addresses, and so do address-bar predictions and the last session; typed address-bar text for the pages that stay is kept. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.",
+        why: "Firefox keeps the pages you visited in places.sqlite, the same database as the bookmarks. Sprawl takes out the visits, and the pages nothing else holds (a bookmark or a keyword keeps its page); the bookmarks, their keywords and their notes stay. Page view times, search terms and new-tab clicks go for the pages that stay too; typed address-bar text for them is kept. Site icons stay in favicons.sqlite, which keeps the pages' addresses, and so do address-bar predictions and the last session. Up to five copies of the database are kept in %LOCALAPPDATA%\\Sprawl\\backups\\privacy, and copies older than 30 days are dropped. The file may not get smaller.",
         risk: Risk::Amber,
         files: &["places.sqlite"],
         waives: &[],

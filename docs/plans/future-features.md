@@ -64,7 +64,9 @@ version expected before anything is written.
 autofill entries of Chrome, Edge and Brave. The history part also takes out Firefox's page-interaction
 records (view times, typed text, search terms) and newtab click records. Each edit copies the
 database (and its `-journal`, `-wal` and `-shm`) to `%LOCALAPPDATA%\Sprawl\backups\privacy`, keeps
-the last five copies (dropping copies older than 30 days), and checks the copy byte for byte; then
+the last five complete copies (dropping copies older than 30 days; a finished copy carries a
+`complete` marker, so a try that never finished never counts as one of the five), and checks the copy
+byte for byte; then
 it checks `PRAGMA integrity_check`, the tables and columns, and (Firefox) the schema version on a
 read-only connection before taking a write handle, and does every delete in one transaction. The
 browser is checked again once the transaction is open and again before it is kept (and Firefox's

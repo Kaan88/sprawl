@@ -1184,6 +1184,8 @@ impl State {
                         }
                     }
                     done.problems.extend(o.problems.iter().map(|p| format!("{}: {p}", it.title)));
+                    // not a failure, but something the user should see: a copy left behind
+                    done.problems.extend(o.notes.iter().map(|n| format!("{}: {n}", it.title)));
                     continue;
                 }
                 if o.freed > 0 {

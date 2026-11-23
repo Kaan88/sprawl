@@ -18,12 +18,16 @@
 //!    is what would let SQLite finish a log or journal the browser left behind.
 //! 4. then the database is opened read-write and never created, and every delete for it goes in
 //!    one transaction. If nothing was taken out, the transaction is dropped rather than kept, so
-//!    a run with nothing to do writes nothing. Inside it, `PRAGMA quick_check` reads what was
-//!    written (through the log the read-only check could not see), and `PRAGMA foreign_key_check`
-//!    refuses a schema with a table Sprawl doesn't know still pointing at a row that went. The
-//!    browser is checked again once the transaction is open and once more before it is kept
-//!    (Firefox's `parent.lock`, Chromium's `lockfile`): if it started meanwhile, the edit is
-//!    rolled back. No VACUUM (the browser does its own), so the file may not get smaller.
+//!    a run with nothing to do keeps none of its own changes. Inside it, `PRAGMA quick_check`
+//!    reads what was written (through the log the read-only check could not see), and `PRAGMA
+//!    foreign_key_check` refuses a schema with a table Sprawl doesn't know still pointing at a row
+//!    that went (or one that was already broken before the edit). The browser is checked again
+//!    once the transaction is open and once more before it is kept (Firefox's `parent.lock`,
+//!    Chromium's `lockfile`): if it started meanwhile, the edit is rolled back. No VACUUM (the
+//!    browser does its own), so the file may not get smaller.
+//!
+//! The read-write open may finish a write-ahead log or a journal the browser left behind after a
+//! crash, which is SQLite recovering the browser's own file before any statement of Sprawl's runs.
 //!
 //! The side files Sprawl held are released before SQLite opens them by path: the browser's own
 //! `-journal`/`-wal` are then SQLite's to read and finish, not Sprawl's to hold (residual risk:
@@ -271,7 +275,8 @@ impl Schema {
             // pages you visited, and a visit to a bookmarked page is one of them
             ("DELETE FROM moz_historyvisits".to_string(), "SELECT COUNT(*) FROM moz_historyvisits".to_string()),
             // a page goes only when nothing else of Firefox's holds it: no bookmark, no keyword,
-            // and (when the column is there) no annotation or other holder
+            // and (when the column is there) `foreign_count = 0`, which Firefox's triggers bump
+            // for bookmarks and keywords
             (format!("DELETE FROM moz_places WHERE {deletable}"), format!("SELECT COUNT(*) FROM moz_places WHERE {deletable}")),
         ];
         // the visit records of newer versions, keyed to the visits that went
@@ -470,6 +475,10 @@ fn apply_guarded(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browse
         }
         Ok(rows) => {
             let keep = folder.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // a finished copy says so: prune can tell it from a try that never completed
+            if let Err(e) = std::fs::write(folder.join(COMPLETE), b"") {
+                notes.push(format!("the copy's complete marker couldn't be written ({}: {e})", folder.display()));
+            }
             notes.extend(prune(part_dir, keep));
             Ok(rows)
         }
@@ -484,8 +493,9 @@ fn apply_guarded(kind: Edit, db: &Path, sides: &[PathBuf], folder: &Path, browse
 }
 
 /// The checks, then the deletes. The format is checked on a read-only connection first, so a
-/// database Sprawl refuses is never opened for writing (a read-write open would let SQLite
-/// finish a write-ahead log or a journal the browser left behind).
+/// database Sprawl refuses is never opened for writing. The read-write open that follows may
+/// finish a write-ahead log or a journal the browser left behind after a crash: that is SQLite
+/// recovering the browser's own file, before any statement of Sprawl's runs.
 fn edit_database(kind: Edit, db: &Path, browser: &str, guard: &dyn Fn() -> Result<(), String>) -> Result<u64, String> {
     {
         let ro = open_read(db).map_err(|e| format!("the database couldn't be read ({e})"))?;
@@ -501,6 +511,13 @@ fn edit_database(kind: Edit, db: &Path, browser: &str, guard: &dyn Fn() -> Resul
     let schema = Schema::check(&conn, kind, browser)?;
     // one transaction for every delete: any failure rolls all of it back
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| format!("the edit couldn't be started ({e})"))?;
+    // broken links already in the database are its own (the browser repairs them): refuse before
+    // anything of Sprawl's is written, and don't blame the edit for them
+    match foreign_key_orphan(&tx) {
+        Ok(false) => {}
+        Ok(true) => return Err(format!("the database already has broken links of its own; nothing was changed ({browser} repairs this itself)")),
+        Err(()) => return Err(unknown(browser)),
+    }
     // the write lock is ours now: a browser that started meanwhile is caught before a page is
     // written, and again before what was written is kept
     guard()?;
@@ -512,15 +529,16 @@ fn edit_database(kind: Edit, db: &Path, browser: &str, guard: &dyn Fn() -> Resul
         }
     }
     if rows == 0 {
-        // nothing was taken out: drop the transaction, so its bookkeeping UPDATEs are not kept
-        // (a copy of a database nothing changed is not worth keeping either)
+        // nothing was taken out: drop the transaction, so a run with nothing to do keeps none of
+        // its own changes (a copy of a database nothing changed is not worth keeping either)
         return Ok(0);
     }
     // the write connection can see a log the read-only check could not: check what was written
     quick(&tx)?;
     // anything the edit left pointing at a row that went is a schema Sprawl doesn't know
-    if foreign_key_orphan(&tx)? {
-        return Err(unknown(browser));
+    match foreign_key_orphan(&tx) {
+        Ok(false) => {}
+        Ok(true) | Err(()) => return Err(unknown(browser)),
     }
     guard()?;
     tx.commit().map_err(|e| format!("the edit was rolled back ({e})"))?;
@@ -528,11 +546,12 @@ fn edit_database(kind: Edit, db: &Path, browser: &str, guard: &dyn Fn() -> Resul
 }
 
 /// Whether any foreign key in the database points at a row that isn't there (it works with
-/// enforcement off, which is how the edit runs).
-fn foreign_key_orphan(conn: &Connection) -> Result<bool, String> {
-    let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
-    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-    Ok(rows.next().map_err(|e| e.to_string())?.is_some())
+/// enforcement off, which is how the edit runs). `Err(())` when the pragma can't be read, which
+/// means the schema isn't one Sprawl knows.
+fn foreign_key_orphan(conn: &Connection) -> Result<bool, ()> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(|_| ())?;
+    let mut rows = stmt.query([]).map_err(|_| ())?;
+    rows.next().map(|r| r.is_some()).map_err(|_| ())
 }
 
 /// Copy `src` (an open, checked file) into `dir` under `name`, then read it back and compare it
@@ -558,10 +577,14 @@ fn copy_checked(src: &crate::clean::HeldFile, dir: &sprawl_core::local::Director
     }
 }
 
-/// Keep the newest [`KEEP_BACKUPS`] copies in `part_dir`, and drop any older than 30 days; the
-/// copy just written is never one of them, and each goes through the pinned folder's handle
-/// (only folders named like a copy are considered, and never a link). A copy that can't be
-/// removed is reported and does not count as one of the copies kept.
+/// The file a copy carries once it is complete: written after a successful commit.
+const COMPLETE: &str = "complete";
+
+/// Keep the newest [`KEEP_BACKUPS`] complete copies in `part_dir`, and drop any older than 30
+/// days; the copy just written is never one of them, and each goes through the pinned folder's
+/// handle (only folders named like a copy are considered, and never a link). A folder without the
+/// [`COMPLETE`] marker is a try that never finished: it is removed first and never counts as one
+/// of the copies kept, so a copy that can't be removed cannot push a real one out.
 fn prune(part_dir: &Path, keep: &str) -> Vec<String> {
     let mut notes = Vec::new();
     let Ok(dir) = crate::store::ensure_dir(part_dir) else { return notes };
@@ -569,9 +592,18 @@ fn prune(part_dir: &Path, keep: &str) -> Vec<String> {
     let cutoff = stamp_before(30 * 86_400);
     let mut old: Vec<String> = names.into_iter().filter(|n| is_stamp(n) && n != keep).collect();
     old.sort();
-    let excess = old.len().saturating_sub(KEEP_BACKUPS.saturating_sub(1));
+    let complete = |n: &str| -> bool {
+        std::fs::symlink_metadata(part_dir.join(n).join(COMPLETE)).is_ok()
+    };
+    let (marked, unmarked): (Vec<String>, Vec<String>) = old.into_iter().partition(|n| complete(n));
+    for n in &unmarked {
+        if let Err(e) = dir.remove_tree(n) {
+            notes.push(format!("a copy that never finished couldn't be removed ({}: {e})", part_dir.join(n).display()));
+        }
+    }
+    let excess = marked.len().saturating_sub(KEEP_BACKUPS.saturating_sub(1));
     let mut removed = 0usize;
-    for n in &old {
+    for n in &marked {
         let too_old = cutoff.as_deref().is_some_and(|c| n.as_str() < c);
         if removed < excess || too_old {
             match dir.remove_tree(n) {
@@ -593,30 +625,50 @@ fn lock_path(kind: crate::privacy::Kind, db: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Firefox holds `parent.lock` in its profile while it runs, Chromium `lockfile` in its user-data
-/// folder: one that exists and can't be opened over means the browser is (or is starting) and
-/// nothing may be edited. The file is only opened when it is already there, so a browser starting
-/// in that instant is not held up by Sprawl.
-fn browser_lock_free(lock: &Path, who: &str) -> Result<(), String> {
-    use std::os::windows::fs::OpenOptionsExt;
+/// Whether the browser's lock is free. Firefox keeps `parent.lock` in the profile and leaves it
+/// there after it closes, so it is asked about through the Restart Manager instead of being
+/// opened: opening it would be refused by a Firefox that is just starting, and that Firefox shows
+/// its "already running" dialog. Chromium removes its `lockfile` from the user-data folder when it
+/// closes, so opening that one without sharing is the signal. Either is looked for only when it
+/// exists, so a browser starting in that instant is not held up by Sprawl.
+fn browser_lock_free(kind: crate::privacy::Kind, lock: &Path, who: &str) -> Result<(), String> {
     if let Err(e) = std::fs::symlink_metadata(lock) {
         return if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(format!("{who}'s lock couldn't be checked ({e})")) };
     }
-    match std::fs::OpenOptions::new().read(true).share_mode(0).custom_flags(0x0020_0000).open(lock) {
-        Ok(f) => {
-            drop(f);
-            Ok(())
+    match kind {
+        crate::privacy::Kind::Firefox => {
+            let path = lock.to_path_buf();
+            match crate::inuse::in_use(&[path]) {
+                Some(names) if names.is_empty() => Ok(()),
+                Some(names) => Err(format!("{who}'s profile lock is in use by {}", names.join(", "))),
+                None => Err(format!("Windows couldn't say whether {who} is starting")),
+            }
         }
-        Err(_) => Err(format!("{who}'s lock is held, so it may have started")),
+        crate::privacy::Kind::Chromium => {
+            use std::os::windows::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new().read(true).share_mode(0).custom_flags(0x0020_0000).open(lock) {
+                Ok(f) => {
+                    drop(f);
+                    Ok(())
+                }
+                // it went between the check above and the open: nothing holds it
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(_) => Err(format!("{who}'s lock is held, so it may have started")),
+            }
+        }
     }
 }
 
-/// Remove the copy at `folder` (the one just made), through the pinned part folder's handle.
 /// Remove the copy at `folder` (the one just made), through the pinned part folder's handle. A
 /// copy that can't be removed is reported: it stays where it is.
 fn remove_copy(part_dir: &Path, folder: &Path) -> Option<String> {
-    let name = folder.file_name().and_then(|n| n.to_str())?;
-    let dir = crate::store::ensure_dir(part_dir).ok()?;
+    let Some(name) = folder.file_name().and_then(|n| n.to_str()) else {
+        return Some(format!("a copy of the database couldn't be removed ({}: its name couldn't be read)", folder.display()));
+    };
+    let dir = match crate::store::ensure_dir(part_dir) {
+        Ok(d) => d,
+        Err(e) => return Some(format!("a copy of the database couldn't be removed ({}: {e})", folder.display())),
+    };
     dir.remove_tree(name).err().map(|e| format!("a copy of the database couldn't be removed ({}: {e})", folder.display()))
 }
 
@@ -742,7 +794,7 @@ pub(crate) fn run(
         // a browser that could have been started and stopped again is caught by the lock it
         // holds while it runs; one it can't be opened over means it is back
         if let Some(lock) = &lock {
-            browser_lock_free(lock, b.short)?;
+            browser_lock_free(b.kind, lock, b.short)?;
         }
         Ok(())
     };
@@ -1021,7 +1073,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         places_db(&base.join("old.sqlite"), 52);
         assert!(apply(Edit::FirefoxHistory, &base.join("old.sqlite"), &[], &base.join("bk52"), "Firefox", &Spare::default()).is_ok());
         places_db(&base.join("new.sqlite"), 89);
-        assert!(apply(Edit::FirefoxHistory, &base.join("new.sqlite"), &[], &base.join("bk82"), "Firefox", &Spare::default()).is_ok());
+        assert!(apply(Edit::FirefoxHistory, &base.join("new.sqlite"), &[], &base.join("bk89"), "Firefox", &Spare::default()).is_ok());
         // one below each end is refused too
         places_db(&base.join("too-old.sqlite"), 51);
         let before = std::fs::read(base.join("too-old.sqlite")).unwrap();
@@ -1029,7 +1081,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         assert!(err.contains("isn't one Sprawl knows how to edit"), "{err}");
         assert_eq!(std::fs::read(base.join("too-old.sqlite")).unwrap(), before);
         places_db(&base.join("too-new.sqlite"), 90);
-        assert!(apply(Edit::FirefoxHistory, &base.join("too-new.sqlite"), &[], &base.join("bk83"), "Firefox", &Spare::default()).is_err());
+        assert!(apply(Edit::FirefoxHistory, &base.join("too-new.sqlite"), &[], &base.join("bk90"), "Firefox", &Spare::default()).is_err());
 
     }
 
@@ -1226,18 +1278,23 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
     fn the_browser_lock_is_read_as_the_browser_holds_it() {
         use std::os::windows::fs::OpenOptionsExt;
         let base = dir("lock");
-        for name in ["parent.lock", "lockfile"] {
-            let lock = base.join(name);
-            let who = if name == "parent.lock" { "Firefox" } else { "Chrome" };
-            assert!(browser_lock_free(&lock, who).is_ok(), "{name}: no lock file at all");
-            std::fs::write(&lock, b"").unwrap();
-            assert!(browser_lock_free(&lock, who).is_ok(), "{name}: a lock file nobody holds");
-            let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&lock).unwrap();
-            assert!(browser_lock_free(&lock, who).is_err(), "{name}: a lock the browser holds");
-            drop(held);
-            assert!(browser_lock_free(&lock, who).is_ok(), "{name}: the lock let go");
-            std::fs::remove_file(&lock).unwrap();
-        }
+        let (ff, ch) = (base.join("parent.lock"), base.join("lockfile"));
+        assert!(browser_lock_free(crate::privacy::Kind::Firefox, &ff, "Firefox").is_ok(), "no Firefox lock file at all");
+        assert!(browser_lock_free(crate::privacy::Kind::Chromium, &ch, "Chrome").is_ok(), "no Chromium lock file at all");
+        // Firefox leaves parent.lock behind after it closes: a file nobody holds is free
+        std::fs::write(&ff, b"").unwrap();
+        assert!(browser_lock_free(crate::privacy::Kind::Firefox, &ff, "Firefox").is_ok(), "a Firefox lock nobody holds");
+        let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&ff).unwrap();
+        assert!(browser_lock_free(crate::privacy::Kind::Firefox, &ff, "Firefox").is_err(), "a Firefox lock the browser holds");
+        drop(held);
+        assert!(browser_lock_free(crate::privacy::Kind::Firefox, &ff, "Firefox").is_ok(), "the Firefox lock let go");
+        // Chromium removes its lockfile when it closes: opening it without sharing is the signal
+        std::fs::write(&ch, b"").unwrap();
+        assert!(browser_lock_free(crate::privacy::Kind::Chromium, &ch, "Chrome").is_ok(), "a Chromium lock nobody holds");
+        let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&ch).unwrap();
+        assert!(browser_lock_free(crate::privacy::Kind::Chromium, &ch, "Chrome").is_err(), "a Chromium lock the browser holds");
+        drop(held);
+        assert!(browser_lock_free(crate::privacy::Kind::Chromium, &ch, "Chrome").is_ok(), "the Chromium lock let go");
     }
 
     /// The lock file each browser holds while it runs, found from the database's own place.
@@ -1312,6 +1369,7 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
             let n = format!("2999-01-01-00-00-{i:02}-000000");
             std::fs::create_dir_all(part_dir.join(&n)).unwrap();
             std::fs::write(part_dir.join(&n).join("formhistory.sqlite"), b"an old copy").unwrap();
+            std::fs::write(part_dir.join(&n).join(COMPLETE), b"").unwrap();
         }
         let now = stamp().unwrap();
         apply(Edit::FirefoxForms, &db_path, &[], &part_dir.join(&now), "Firefox", &Spare::default()).unwrap();
@@ -1332,10 +1390,41 @@ INSERT INTO meta (key, value) VALUES ('version', '90');
         let old = stamp_before(40 * 86_400).unwrap();
         std::fs::create_dir_all(part_dir.join(&old)).unwrap();
         std::fs::write(part_dir.join(&old).join("formhistory.sqlite"), b"a stale copy").unwrap();
+        std::fs::write(part_dir.join(&old).join(COMPLETE), b"").unwrap();
         let now = stamp().unwrap();
         apply(Edit::FirefoxForms, &db_path, &[], &part_dir.join(&now), "Firefox", &Spare::default()).unwrap();
         assert!(!part_dir.join(&old).exists(), "a copy 40 days old is dropped");
         assert!(part_dir.join(&now).exists());
+    }
+
+    /// A stamped folder without the complete marker is a try that never finished: it is removed
+    /// (or reported if it can't be) and never counts as one of the copies kept.
+    #[test]
+    fn a_copy_that_never_finished_is_removed_and_never_counts() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let base = dir("unmarked");
+        let db_path = base.join("formhistory.sqlite");
+        forms_db(&db_path);
+        let part_dir = base.join("backups").join("privacy.firefox-forms");
+        for i in 0..KEEP_BACKUPS - 1 {
+            let n = stamp_before((i as u64 + 1) * 86_400).unwrap();
+            std::fs::create_dir_all(part_dir.join(&n)).unwrap();
+            std::fs::write(part_dir.join(&n).join(COMPLETE), b"").unwrap();
+        }
+        // a folder that stopped before its copy was complete, and can't be removed
+        let half = stamp_before(12 * 3600).unwrap();
+        std::fs::create_dir_all(part_dir.join(&half)).unwrap();
+        let stuck = part_dir.join(&half).join("stuck");
+        std::fs::write(&stuck, b"x").unwrap();
+        let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&stuck).unwrap();
+        let now = stamp().unwrap();
+        let mut notes = Vec::new();
+        let ok = || Ok::<(), String>(());
+        assert_eq!(apply_guarded(Edit::FirefoxForms, &db_path, &[], &part_dir.join(&now), "Firefox", &Spare::default(), &ok, &mut notes).unwrap(), 2);
+        assert!(part_dir.join(&half).exists(), "the half copy stayed: it is held open");
+        assert!(notes.iter().any(|n| n.contains("never finished")), "{notes:?}");
+        assert_eq!(std::fs::read_dir(&part_dir).unwrap().count(), KEEP_BACKUPS + 1, "five real copies and the stuck half one, which counts as none");
+        drop(held);
     }
 
     /// A browser that starts once the edit has begun is caught twice - after the transaction
