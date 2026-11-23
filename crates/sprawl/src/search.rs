@@ -683,6 +683,7 @@ impl State {
     /// Show `found` (sorted here), or `note` when there is nothing to show.
     fn search_show(&mut self, found: Vec<usize>, note: String, sort: bool) {
         self.search.results = found;
+        self.search.tile = None;
         self.search.results_gen = self.tree_gen;
         if sort {
             self.search_sort();
@@ -1023,6 +1024,18 @@ impl State {
         self.reveal(n);
     }
 
+    /// How many results [`State::menu_paths`] would give, without building them.
+    pub(crate) fn menu_target_count(&self) -> usize {
+        let more = &self.search.more;
+        if self.view != View::Search {
+            self.selected.map_or(0, |_| 1)
+        } else if more.sel.is_none() && more.picks.is_empty() {
+            self.scan_targets().len()
+        } else {
+            more.picks.len().max(1)
+        }
+    }
+
     /// The full paths of the results the row menu acts on, in the order shown: the scan's picked
     /// rows, or the rows from another drive or a saved scan that are picked (or were right-clicked).
     /// Elsewhere, the selected row.
@@ -1058,7 +1071,7 @@ impl State {
     /// Whether `marked` or `selected` hold a scan node that is not one of [`State::scan_targets`]
     /// (picked under an earlier list, or left behind by a rescan): Delete then refuses.
     pub(crate) fn scan_picks_hidden(&self) -> bool {
-        picks_hidden(&self.scan_targets(), &self.marked, self.selected)
+        picks_hidden(&self.scan_targets(), &self.marked)
     }
 
     /// Picks that are not rows of the list now are dropped (a new list, the keyboard coming down
@@ -1379,9 +1392,11 @@ pub(crate) fn scan_targets(rows: &[(usize, usize)], marked: &std::collections::B
     v
 }
 
-/// A node in `marked` or `selected` that is not among `targets`.
-pub(crate) fn picks_hidden(targets: &[usize], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>) -> bool {
-    marked.iter().copied().chain(selected).any(|n| !targets.contains(&n))
+/// A picked node (in `marked`) that is not among `targets`. A stale `selected` that is not a
+/// target is simply not deleted, so it does not count. Linear in the picks.
+pub(crate) fn picks_hidden(targets: &[usize], marked: &std::collections::BTreeSet<usize>) -> bool {
+    let set: std::collections::HashSet<usize> = targets.iter().copied().collect();
+    marked.iter().any(|n| !set.contains(n))
 }
 
 #[cfg(test)]
@@ -1408,17 +1423,22 @@ mod picked_tests {
         let m = |v: &[usize]| v.iter().copied().collect::<std::collections::BTreeSet<_>>();
         // a node that is not a row (a parent folder after a rescan, a folder picked in Tree View)
         let t = scan_targets(&rows, &m(&[]), Some(77), None);
-        assert!(t.is_empty() && picks_hidden(&t, &m(&[]), Some(77)));
+        assert!(t.is_empty());
+        // ... nor does a stale selected node hide or join real picks (Ctrl+click after ROOT)
+        let t = scan_targets(&rows, &m(&[9, 2]), Some(0), None);
+        assert_eq!(t, [9, 2]);
+        assert!(!picks_hidden(&t, &m(&[9, 2])), "a stale selected is not a target and not refused");
+        assert!(picks_hidden(&t, &m(&[9, 2, 0])), "a non-row in marked still refuses");
         // a row picked earlier that the new list does not show
         let t = scan_targets(&rows, &m(&[2, 40]), Some(2), None);
         assert_eq!(t, [2]);
-        assert!(picks_hidden(&t, &m(&[2, 40]), Some(2)));
+        assert!(picks_hidden(&t, &m(&[2, 40])));
         // everything picked is listed: nothing hidden
         let t = scan_targets(&rows, &m(&[9, 2]), Some(2), None);
-        assert!(!picks_hidden(&t, &m(&[9, 2]), Some(2)));
+        assert!(!picks_hidden(&t, &m(&[9, 2])));
         // the map's tile is a target while it is the selected node, and only then
         assert_eq!(scan_targets(&rows, &m(&[]), Some(77), Some(77)), [77]);
-        assert!(!picks_hidden(&[77], &m(&[]), Some(77)));
+        assert!(!picks_hidden(&[77], &m(&[])));
         assert!(scan_targets(&rows, &m(&[]), Some(5), Some(77)).len() == 1, "the tile is stale once something else is selected");
         assert_eq!(scan_targets(&rows, &m(&[]), Some(5), Some(5)), [5]);
     }

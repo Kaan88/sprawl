@@ -614,6 +614,7 @@ impl State {
     /// Show a tree prepared on a worker ([`crate::tables::prepare`]).
     pub(crate) fn set_tree(&mut self, p: crate::tables::Prepared, path: &std::path::Path) {
         self.hist_close();
+        self.search.tile = None;
         let crate::tables::Prepared { tree, alloc, ranks, files, exts, colours, sorts } = p;
         self.alloc = alloc;
         self.ranks = ranks;
