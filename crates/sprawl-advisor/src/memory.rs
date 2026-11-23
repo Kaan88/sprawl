@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::facts::{clean_text, clean_text_to};
+use crate::facts::{clean_text, clean_text_legacy, clean_text_to};
 use crate::finding::{Finding, Remedy, Risk};
 use crate::rules::{Kind, Pattern, Rule, RulePack};
 use crate::segments;
@@ -24,7 +24,7 @@ pub const LATER_DAYS: u64 = 30;
 
 /// The most of a proposed rule's explanation that is kept: room for a full one, little enough
 /// that fifty proposals and the prompt built from them stay small.
-const WHY_MAX: usize = 1000;
+pub(crate) const WHY_MAX: usize = 1000;
 /// The most of a proposal's note that is kept: the same room as an explanation.
 const NOTE_MAX: usize = 1000;
 /// The most of a cleaner part's cost that is kept: a sentence or two is all it says.
@@ -90,10 +90,31 @@ pub fn hidden_label(path: &Path) -> Label {
     Label { pattern: path.to_string_lossy().replace('/', "\\"), label: HIDDEN_LABEL.to_string(), from: From::You }
 }
 
-/// Whether one of `labels` names `path` itself: a label on a folder above it does not count.
+/// The folders `labels` name one by one, ready to ask about many paths (the unexplained list
+/// asks about every big folder in a scan). A label with a wildcard names a kind of folder, not a
+/// folder, and a label from an AI answer can carry one: it still gives an Owner, but it never
+/// takes a folder off the unexplained list.
+pub struct Named(std::collections::HashSet<Vec<String>>);
+
+impl Named {
+    pub fn new(labels: &[Label]) -> Named {
+        Named(labels.iter().filter(|l| !l.pattern.contains(['*', '?'])).map(|l| segments(&crate::rules::expand(&l.pattern))).collect())
+    }
+
+    /// Whether a label names `path` itself: a label on a folder above it does not count.
+    pub fn names(&self, path: &Path) -> bool {
+        !self.0.is_empty() && self.0.contains(&segments(&path.to_string_lossy()))
+    }
+}
+
+/// [`Named::names`] for one path.
 pub fn labelled(labels: &[Label], path: &Path) -> bool {
-    let p = path.to_string_lossy();
-    labels.iter().rev().any(|l| Pattern::new(&l.pattern).matches(&p))
+    Named::new(labels).names(path)
+}
+
+/// Whether `label` is one the Hide button wrote.
+pub fn is_hidden(label: &Label) -> bool {
+    label.from == From::You && label.label == HIDDEN_LABEL
 }
 
 /// A rule the model proposed. No command: only Sprawl's built-in rules carry command text.
@@ -249,6 +270,26 @@ impl LocalEdit {
     }
 }
 
+/// A character the approval card or a prompt would show as nothing, or as something else.
+fn unseen(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{e0000}'..='\u{e007f}')
+}
+
+/// One folder named in full, at any depth (`D:\Games`, `D:\Kaan's Files\Old`): no wildcard, no
+/// `..`, nothing unseen. Good for a label, which deletes nothing; a rule needs
+/// [`plain_pattern`].
+pub(crate) fn exact_path(p: &str) -> bool {
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+    let var = p.starts_with('%') && VARS.iter().any(|v| b.len() > v.len() && b[..v.len()].eq_ignore_ascii_case(v.as_bytes()) && b[v.len()] == b'\\');
+    (drive || var)
+        && p.len() < 300
+        && p.split('\\').skip(1).any(|s| !s.is_empty())
+        && !p.contains("..")
+        && !p.contains(['*', '?', '"', '`', '|', '<', '>', ';'])
+        && !p.chars().any(unseen)
+}
+
 /// A path or pattern the model may name in a rule or a label: absolute (a drive or a
 /// `%VARIABLE%`), no `..`, nothing that isn't a plain path, and narrow: at least two segments
 /// after the root that aren't wildcards (`?:\\**\\*.jpg` or `C:\\*` would reach everything).
@@ -265,7 +306,7 @@ pub(crate) fn plain_pattern(p: &str) -> bool {
     }
     // nothing unseen on the approval card: controls (a tab included), bidi overrides,
     // zero-width and other format characters, variation selectors and tags (Fable AI review P3-5)
-    if p.chars().any(|c| c.is_control() || matches!(c, '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{e0000}'..='\u{e007f}')) {
+    if p.chars().any(unseen) {
         return false;
     }
     let literal = p.split('\\').skip(1).filter(|s| !s.is_empty() && !s.contains(['*', '?']) && !s.starts_with('%')).count();
@@ -657,7 +698,17 @@ impl Memory {
 
     pub fn label_for(&self, path: &Path) -> Option<&Label> {
         let p = path.to_string_lossy();
-        self.labels.iter().rev().find(|l| Pattern::new(&l.pattern).matches(&p))
+        // a folder the user hid from the unexplained list is not something they said it is
+        self.labels.iter().rev().filter(|l| !is_hidden(l)).find(|l| Pattern::new(&l.pattern).matches(&p))
+    }
+
+    /// Make room for one more label: past 500 the oldest goes, a hidden folder before a label
+    /// that says what a folder is.
+    fn trim_labels(&mut self) {
+        if self.labels.len() > 500 {
+            let at = self.labels.iter().position(is_hidden).unwrap_or(0);
+            self.labels.remove(at);
+        }
     }
 
     pub fn add_pref(&mut self, text: &str, from: From) -> Result<(), String> {
@@ -677,8 +728,9 @@ impl Memory {
 
     pub fn add_label(&mut self, pattern: &str, label: &str, from: From) -> Result<(), String> {
         let pattern = pattern.trim().replace('/', "\\");
-        if !plain_pattern(&pattern) {
-            return Err("the pattern must be an absolute path (C:\\... or %VARIABLE%\\...), optionally with * and **".into());
+        // one exact folder, any depth: a label deletes nothing. With a wildcard it has to stay narrow
+        if !exact_path(&pattern) && !plain_pattern(&pattern) {
+            return Err("the pattern must be an absolute path to one folder (C:\\... or %VARIABLE%\\...), or with * and ** at least two folder names without a wildcard".into());
         }
         let label = clean_text_to(label, LABEL_MAX);
         if label.is_empty() {
@@ -686,9 +738,7 @@ impl Memory {
         }
         self.labels.retain(|l| !l.pattern.eq_ignore_ascii_case(&pattern));
         self.labels.push(Label { pattern, label, from });
-        if self.labels.len() > 500 {
-            self.labels.remove(0);
-        }
+        self.trim_labels();
         Ok(())
     }
 
@@ -697,11 +747,12 @@ impl Memory {
     /// wildcard, and only that one folder is named.
     pub fn hide_unexplained(&mut self, path: &Path) {
         let l = hidden_label(path);
-        self.labels.retain(|x| !x.pattern.eq_ignore_ascii_case(&l.pattern));
-        self.labels.push(l);
-        if self.labels.len() > 500 {
-            self.labels.remove(0);
+        // a folder that already says what it is stays that: hiding adds nothing to it
+        if self.labels.iter().any(|x| x.pattern.eq_ignore_ascii_case(&l.pattern)) {
+            return;
         }
+        self.labels.push(l);
+        self.trim_labels();
     }
 
     /// Check a rule the model proposes and keep it for the user to approve.
@@ -870,9 +921,9 @@ impl Memory {
                 s.push_str(&format!("- {} ({})\n", d.title, d.path.display()));
             }
         }
-        if !self.labels.is_empty() {
+        if self.labels.iter().any(|l| !is_hidden(l)) {
             s.push_str("\n## Known folders (an AI's label is marked: unverified)\n");
-            for l in self.labels.iter().rev().take(80) {
+            for l in self.labels.iter().rev().filter(|l| !is_hidden(l)).take(80) {
                 let mark = if l.from == From::Model { " (an earlier AI answer's guess)" } else { "" };
                 s.push_str(&format!("- {}: {}{mark}\n", l.pattern, l.label));
             }
@@ -907,15 +958,17 @@ pub fn check_pack_text(text: &str, taken: &mut std::collections::HashSet<String>
 /// carries `prefix`, it has cleaners only, and every part is at least amber.
 pub fn check_import_text(text: &str, prefix: &str, never: &crate::safety::Never, taken: &mut std::collections::HashSet<String>) -> Result<RulePack, String> {
     let mut raw: RulePack = toml::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
-    raw.pack.name = clean_text(&raw.pack.name);
+    // the text of a community definition is what its approval is hashed over: kept to the old
+    // 100 characters, so updating Sprawl doesn't change it and expire every approval
+    raw.pack.name = clean_text_legacy(&raw.pack.name);
     for c in &mut raw.cleaners {
-        c.name = clean_text(&c.name);
+        c.name = clean_text_legacy(&c.name);
         for p in &mut c.parts {
-            p.title = clean_text(&p.title);
-            p.why = clean_text_to(&p.why, WHY_MAX);
-        // TOML holds signed 64-bit numbers: a bigger one would stop memory.toml saving
-        p.min_bytes = p.min_bytes.map(|b| b.min(1 << 50));
-            p.cost = clean_text_to(&p.cost, COST_MAX);
+            p.title = clean_text_legacy(&p.title);
+            p.why = clean_text_legacy(&p.why);
+            // TOML holds signed 64-bit numbers: a bigger one would stop memory.toml saving
+            p.min_bytes = p.min_bytes.map(|b| b.min(1 << 50));
+            p.cost = clean_text_legacy(&p.cost);
         }
     }
     let text = toml::to_string(&raw).map_err(|e| e.to_string())?;
@@ -1231,13 +1284,15 @@ mod tests {
         assert_eq!(l.from, From::You, "it is the user's own word");
         let mut m = Memory::default();
         m.hide_unexplained(path);
-        assert_eq!(m.label_for(path).map(|l| l.label.as_str()), Some(HIDDEN_LABEL));
-        assert!(m.label_for(Path::new(r"C:\Tools\Deep Folder\Inner")).is_none(), "only that folder");
+        assert!(labelled(&m.labels, path));
+        assert!(!labelled(&m.labels, Path::new(r"C:\Tools\Deep Folder\Inner")), "only that folder");
+        assert!(m.label_for(path).is_none(), "hiding is not a name: the Owner column and the prompts don't show it");
         // a top-level folder (too short for a model's own pattern) can still be hidden
         let top = Path::new(r"D:\Games");
         m.hide_unexplained(top);
-        assert_eq!(m.label_for(top).map(|l| l.label.as_str()), Some(HIDDEN_LABEL));
-        assert!(m.add_label(r"D:\Games", "x", From::Model).is_err(), "the narrow pattern rule still guards the AI's labels");
+        assert!(labelled(&m.labels, top));
+        assert!(m.context().is_empty(), "{}", m.context());
+        assert!(m.add_label(r"D:\Games\*", "x", From::Model).is_err(), "the narrow pattern rule still guards a wildcard");
         // pressing Hide twice keeps one label
         m.hide_unexplained(top);
         assert_eq!(m.labels.iter().filter(|l| l.pattern == r"D:\Games").count(), 1);
@@ -1276,6 +1331,68 @@ mod tests {
         let back = RulePack::parse(&toml::to_string(&pack).unwrap()).unwrap();
         assert!(!back.trusted && back.rules[0].command.is_none());
         assert!(m.context().is_empty() || m.context().contains("Known folders"));
+    }
+
+    /// A label that names one folder (any depth, an apostrophe in it) is taken; one with a wildcard
+    /// stays narrow.
+    #[test]
+    fn a_label_may_name_any_one_folder() {
+        let mut m = Memory::default();
+        for ok in [r"D:\Games", r"D:\Kaan's Files\Old", r"%USERPROFILE%\Stuff", r"C:\Intel\$Recycle.Bin"] {
+            assert!(m.add_label(ok, "x", From::Model).is_ok(), "{ok}");
+        }
+        for bad in [r"D:\", r"D:", r"D:\Games\*", r"?:\Games", r"D:\a..b", "D:\\Games\u{202e}x", r"D:\x; y", r"relative\Games", r"D:\Games\**"] {
+            let err = m.add_label(bad, "x", From::Model).unwrap_err();
+            assert!(!err.is_empty(), "{bad}");
+        }
+        assert!(m.add_label(&format!(r"D:\{}", "a".repeat(300)), "x", From::Model).is_err(), "under 300 bytes");
+    }
+
+    /// Only a label on one folder takes it off the unexplained list: a wildcard label from the AI
+    /// names a kind of folder, and one such label must not hide a whole tree.
+    #[test]
+    fn a_wildcard_label_does_not_take_a_folder_off_the_list() {
+        let mut m = Memory::default();
+        m.add_label(r"C:\A\B\**", "everything", From::Model).unwrap();
+        m.add_label(r"?:\Users\kaank\**", "all of it", From::Model).unwrap();
+        m.add_label(r"C:\A\Named", "Named", From::Model).unwrap();
+        assert!(!labelled(&m.labels, Path::new(r"C:\A\B\X")));
+        assert!(!labelled(&m.labels, Path::new(r"C:\A\B")));
+        assert!(!labelled(&m.labels, Path::new(r"C:\Users\kaank\Games")));
+        assert!(labelled(&m.labels, Path::new(r"c:\a\named")), "an exact label counts, in any case");
+        assert!(!labelled(&m.labels, Path::new(r"C:\A\Named\Inner")));
+        assert_eq!(m.label_for(Path::new(r"C:\A\B\X")).unwrap().label, "everything", "it still gives an Owner");
+    }
+
+    /// Hide keeps the label it finds and never pushes a real label out of the 500.
+    #[test]
+    fn hiding_does_not_replace_or_crowd_out_a_label() {
+        let mut m = Memory::default();
+        m.add_label(r"D:\Games", "Steam games", From::Model).unwrap();
+        m.hide_unexplained(Path::new(r"D:\Games"));
+        assert_eq!(m.labels.len(), 1);
+        assert_eq!(m.labels[0].label, "Steam games");
+        m.hide_unexplained(Path::new(r"D:\Hidden"));
+        for i in 0..499 {
+            m.add_label(&format!(r"D:\Folder{i}"), "x", From::Model).unwrap();
+        }
+        assert_eq!(m.labels.len(), 500);
+        assert!(labelled(&m.labels, Path::new(r"D:\Games")), "the oldest real label is still here");
+        assert!(!labelled(&m.labels, Path::new(r"D:\Hidden")), "the hidden folder went first");
+    }
+
+    /// What an import keeps of a description is what its approval is hashed over: still the old
+    /// 100 characters, cut without a marker.
+    #[test]
+    fn an_import_keeps_the_old_text_so_approvals_stand() {
+        let long = "word ".repeat(60);
+        let text = format!("[pack]\nname = 'x'\n[[cleaner]]\nid = 'winapp2.a'\nname = 'A'\n[[cleaner.part]]\nid = 'k1'\ntitle = 'Cache'\nrisk = 'amber'\npaths = ['%LOCALAPPDATA%\\A\\Cache']\nwhy = '{long}'\ncost = '{long}'\n");
+        let pack = check_import_text(&text, "winapp2.", &crate::safety::Never::default_list(), &mut std::collections::HashSet::new()).unwrap();
+        let part = &pack.cleaners[0].parts[0];
+        assert_eq!(part.why.chars().count(), 99, "{}", part.why);
+        assert!(!part.why.ends_with("..."));
+        assert_eq!(part.cost, part.why);
+        assert_eq!(crate::facts::clean_text_legacy(&long), long.chars().take(100).collect::<String>().trim());
     }
 
     #[test]

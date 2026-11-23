@@ -7,7 +7,9 @@ in-app updater shows.
 
 - Ask your disk: a last-run date is matched by program name, so it now reads as "a program named 7zFM.exe last ran Nov 2026 (by name, any folder)" instead of passing for that copy's own date; last-access times are also read on a PC where Windows manages them itself ("System Managed, updates enabled").
 - Search: `dc:` and `da:` say when the view has no times to read (no scan open, or a scan loaded from a CSV file) in the line under the box, a search too big to read says how many matches weren't checked instead of "Nothing found", and a redraw no longer drops what the reading limit said.
-
+- Folders the rules haven't explained: a label only takes a folder off that list when it names that one folder (an AI label with a wildcard no longer hides a whole tree), a labelled or hidden folder takes what is inside it off too, and an AI's labels and Forget now update the list on screen at once. The AI can label any folder by its full path, and a folder you hid no longer shows as its Owner or goes into the AI's prompts.
+- Remembered: a rule the AI proposed keeps its "From the report only" note even when the AI's reason is long; the Hide, Forget and rule-file rows keep their buttons in view beside a long path.
+- Search: hiding the column the list is sorted by sorts it by Name, so the sort always has a header to show it.
 - Folders the rules haven't explained now stay explained once you know what they are: Hide takes a folder off that list (Remembered keeps the label, where Forget brings it back), and the AI marks every folder it looked at so the same ones aren't sent to it again and again.
 - Search: sorting by Name now puts every folder above every file, in both directions (folders A-Z then files A-Z, or both reversed), for the scan on screen, other drives and saved scans.
 - Search: when other drives have more matches than the list holds, the status says "showing the first N of M on other drives", and the list is the first N of all matches in the order you sorted by.

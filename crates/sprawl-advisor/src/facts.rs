@@ -436,6 +436,14 @@ pub fn clean_text_to(s: &str, max: usize) -> String {
     format!("{cut}...")
 }
 
+/// The text of [`clean_text`] as it was before 1.0.9: the first 100 characters, no marker. A
+/// community definition is approved by the hash of its text, so what an import keeps of a long
+/// description must not change from one version to the next.
+pub(crate) fn clean_text_legacy(s: &str) -> String {
+    let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    s.chars().filter(|&c| !c.is_control() && !bidi(c)).take(100).collect::<String>().trim().to_string()
+}
+
 /// Text made safe to show, whole: no control or direction-changing characters. For something
 /// the user has to be able to read in full, like an explanation.
 pub(crate) fn clean_text_whole(s: &str) -> String {

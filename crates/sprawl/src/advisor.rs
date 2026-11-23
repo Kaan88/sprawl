@@ -764,10 +764,27 @@ fn proposal_row(i: usize, p: &sprawl_advisor::memory::Proposal) -> String {
     )
 }
 
+/// A line of wrapping text with a small button after it, as a grid: the text takes the width
+/// there is and wraps, and the button stays in sight whatever the text says (a horizontal stack
+/// measures its text without a limit and pushes the button out of the card). `text` is already
+/// escaped.
+fn row_with_button(text: &str, button: &str, label: &str, tip: Option<&str>) -> String {
+    let tip = tip.map(|t| format!(r##" ToolTipService.ToolTip="{}""##, ui::esc(t))).unwrap_or_default();
+    format!(
+        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{text}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap" VerticalAlignment="Center"/><Button x:Name="{button}" Grid.Column="1" Content="{label}" Padding="8,1" VerticalAlignment="Center" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"{tip}/></Grid>"##
+    )
+}
+
 /// Take `path` off the unexplained list in place: its row goes without the whole report being
 /// worked out again (its label keeps it off the next one too).
 fn drop_unexplained(list: &mut Vec<(PathBuf, u64)>, path: &std::path::Path) {
     list.retain(|(p, _)| p != path);
+}
+
+/// Take the folders a label now names off the unexplained list in place (the AI's labels, added
+/// while the list is on show).
+fn drop_named(list: &mut Vec<(PathBuf, u64)>, named: &memory::Named) {
+    list.retain(|(p, _)| !named.names(p));
 }
 
 #[cfg(test)]
@@ -781,6 +798,24 @@ mod unex_tests {
         assert_eq!(list, vec![(PathBuf::from(r"C:\B\cache"), 20)]);
         drop_unexplained(&mut list, std::path::Path::new(r"C:\C\none"));
         assert_eq!(list.len(), 1, "a path that isn't listed changes nothing");
+    }
+
+    #[test]
+    fn a_label_takes_its_folder_off_the_list_on_show() {
+        let mut list: Vec<(PathBuf, u64)> = vec![(PathBuf::from(r"C:\A\cache"), 10), (PathBuf::from(r"C:\B\X\cache"), 20)];
+        let mut m = memory::Memory::default();
+        m.add_label(r"C:\A\cache", "Checked by the AI: not identified", memory::From::Model).unwrap();
+        m.add_label(r"C:\B\X\**", "wildcard", memory::From::Model).unwrap();
+        drop_named(&mut list, &memory::Named::new(&m.labels));
+        assert_eq!(list, vec![(PathBuf::from(r"C:\B\X\cache"), 20)], "a wildcard label names no folder");
+    }
+
+    #[test]
+    fn a_row_keeps_its_button_beside_a_long_path() {
+        let x = row_with_button(&ui::esc(&format!(r"C:\{}", "Packages\\".repeat(30))), "AdvUnexHide0", "Hide", Some("a \"tip\" & more"));
+        assert!(x.starts_with("<Grid ") && x.contains(r#"<ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>"#));
+        assert!(x.contains(r#"x:Name="AdvUnexHide0" Grid.Column="1""#) && !x.contains("MaxWidth"));
+        assert!(x.contains("&quot;tip&quot; &amp; more"), "{x}");
     }
 }
 
@@ -924,6 +959,14 @@ pub(crate) fn analyse(tree: &Arc<Tree>, gen: u64, memory: &Memory, privacy_on: b
 
 impl State {
     /// The report for the tree on screen, if it is current.
+    /// Take the folders a label names off the unexplained list on show (the scan's, and the
+    /// Cleaners tab's own read), so an AI's answer doesn't leave them to be asked about again.
+    fn drop_labelled_unexplained(&mut self) {
+        let named = memory::Named::new(&self.advisor.memory.labels);
+        if let Some(r) = self.advisor.report.as_mut() { drop_named(&mut r.unexplained, &named); }
+        if let Some(o) = self.advisor.cl.own.as_mut() { drop_named(&mut o.report.unexplained, &named); }
+    }
+
     pub(crate) fn advice(&self) -> Option<&Report> {
         // the Cleaners tab with no scan that covers the cleaners (or while one runs): its own read
         if self.own_active() {
@@ -2786,10 +2829,11 @@ impl State {
             let off = AiConfig::load().provider == Provider::Off;
             x += &format!(r##"<Border Padding="12,10" CornerRadius="{{$rc7}}" Background="{{$surface2}}"><StackPanel Spacing="5"><TextBlock Text="Folders the rules haven't explained" FontSize="{{$fs13}}" FontWeight="SemiBold"/><TextBlock Text="These may be useful data. The AI can inspect the scan and propose reusable information rules; you approve each before a future scan uses it." TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text2}}"/>"##);
             for (i, (p, bytes)) in r.unexplained.iter().take(5).enumerate() {
-                x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{} · {}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="700"/><Button x:Name="AdvUnexHide{i}" Content="Hide" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Leave this folder out of this list; its label can be forgotten under Remembered."/></StackPanel>"##,
-                    ui::esc(&p.display().to_string()),
-                    self.size(*bytes)
+                x += &row_with_button(
+                    &format!("{} · {}", ui::esc(&p.display().to_string()), self.size(*bytes)),
+                    &format!("AdvUnexHide{i}"),
+                    "Hide",
+                    Some("Leave this folder out of this list; its label can be forgotten under Remembered."),
                 );
             }
             if off && self.ai_off_line() {
@@ -3187,6 +3231,7 @@ impl State {
         for p in run.cleaner_proposals {
             let _ = m.propose_cleaner(p);
         }
+        self.drop_labelled_unexplained();
         self.save_memory();
         Ai::Done {
             summary: run.summary,
@@ -3520,7 +3565,12 @@ impl State {
                 m.prefs.remove(i);
             }
             "AdvForgetL" if i < m.labels.len() => {
-                m.labels.remove(i);
+                let gone = m.labels.remove(i);
+                // a label on one folder kept it off the unexplained list: it is looked for again
+                // on leaving this section, as after an Undo
+                if !gone.pattern.contains(['*', '?']) {
+                    m.rules_changed();
+                }
             }
             _ => return,
         }
@@ -3984,6 +4034,8 @@ impl State {
                     for l in &labels {
                         let _ = self.advisor.memory.add_label(&l.pattern, &l.label, memory::From::Model);
                     }
+                    self.drop_labelled_unexplained();
+                    redraw |= !labels.is_empty();
                     self.save_memory();
                 }
                 ChatMsg::Consent(q, reply) => {
@@ -4151,7 +4203,7 @@ impl State {
                 x += &format!(
                     r##"<TextBlock TextWrapping="Wrap" FontSize="{{$fs12}}"><Run Text="{}" FontFamily="Consolas" Foreground="{{$text2}}"/><Run Text="  {}" Foreground="{{$text3}}"/></TextBlock>"##,
                     ui::esc(&f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
-                    ui::esc(why)
+                    ui::esc(&sprawl_advisor::facts::clean_text_to(why, 600))
                 );
             }
             x += "</StackPanel></Border>";
@@ -4180,16 +4232,11 @@ impl State {
             x += r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="AdvPrefText" Width="360" PlaceholderText="A preference, like: I still play my Steam games"/><Button x:Name="AdvPrefAdd" Content="Remember"/></StackPanel>"##;
             for (i, p) in m.prefs.iter().enumerate() {
                 let who = if p.from == memory::From::Model { " (from the AI)" } else { "" };
-                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="700" Text="{}{who}"/>{}</StackPanel>"##, ui::esc(&p.text), small(format!("AdvForgetP{i}"), "Forget"));
+                x += &row_with_button(&format!("{}{who}", ui::esc(&p.text)), &format!("AdvForgetP{i}"), "Forget", None);
             }
             for (i, l) in m.labels.iter().enumerate() {
                 let who = if l.from == memory::From::Model { " (from the AI)" } else { "" };
-                x += &format!(
-                    r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="700" Text="{}: {}{who}"/>{}</StackPanel>"##,
-                    ui::esc(&l.pattern),
-                    ui::esc(&l.label),
-                    small(format!("AdvForgetL{i}"), "Forget")
-                );
+                x += &row_with_button(&format!("{}: {}{who}", ui::esc(&l.pattern), ui::esc(&l.label)), &format!("AdvForgetL{i}"), "Forget", None);
             }
             x += "</StackPanel>";
         }
