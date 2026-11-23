@@ -104,6 +104,13 @@ impl Picks {
         self.map.remove(key);
     }
 
+    /// Keep the picks `keep` says yes to; how many went.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&Pick) -> bool) -> usize {
+        let before = self.map.len();
+        self.map.retain(|_, p| keep(p));
+        before - self.map.len()
+    }
+
     /// Pick it; false when it is not already picked and the most are.
     pub(crate) fn add(&mut self, p: Pick) -> bool {
         let k = key(&p.path);
@@ -122,6 +129,33 @@ impl Picks {
     pub(crate) fn top_most(&self) -> Vec<Pick> {
         self.map.values().filter(|p| !p.path.ancestors().skip(1).any(|a| self.map.contains_key(&key(a)))).cloned().collect()
     }
+}
+
+/// Whether the result `this` (place, id) at `path` is one the keyboard and the row menu act on:
+/// one of the picks, or, with no picks, the row the keyboard is on (`sel`). With picks, `sel`
+/// counts only if it is one of them (Ctrl+click took it away, say). The one rule for Delete, the
+/// row menu, the highlight and the count.
+pub(crate) fn counts(sel: Option<(usize, usize)>, picks: &Picks, this: (usize, usize), path: &Path) -> bool {
+    picks.contains_key(&key(path)) || (picks.is_empty() && sel == Some(this))
+}
+
+/// How many results the keyboard and the row menu act on: the picks, or with none the row the
+/// keyboard is on (`sel_listed`: it is still an item).
+pub(crate) fn count(picks: &Picks, sel_listed: bool) -> usize {
+    if picks.is_empty() {
+        usize::from(sel_listed)
+    } else {
+        picks.len()
+    }
+}
+
+/// Every pick `(place, id)` is one of the rows `(id, place + 1)` the table shows now.
+pub(crate) fn all_listed(rows: &[(usize, usize)], picks: &[(usize, usize)]) -> bool {
+    if picks.is_empty() {
+        return true;
+    }
+    let shown: std::collections::HashSet<(usize, usize)> = rows.iter().copied().collect();
+    picks.iter().all(|&(place, id)| shown.contains(&(id, place + 1)))
 }
 
 /// A right-click on the Search result at `path` (or the menu key on it): a row that is picked
@@ -322,13 +356,16 @@ impl State {
         }
         let m = &self.search.more;
         let mut all = m.picks.clone();
-        if let Some((k, id)) = m.sel {
+        // with picks, the row the keyboard is on counts only if it is one of them
+        if let (Some((k, id)), true) = (m.sel, m.picks.is_empty()) {
             if let Some((ix, i)) = m.item(k, id) {
                 all.add(Pick::of(ix, i, k, id, m.gen));
             }
         }
-        // each pick is still the row it was picked from (same list, same place, same path)
-        let listed = all.iter().all(|p| p.gen == m.gen && m.item(p.place, p.id).is_some_and(|(ix, i)| key(&ix.path_of(i)) == key(&p.path)));
+        // each pick is still the row it was picked from (same list, same place, same path), and
+        // still on the list (a sort that cut the list short can drop a row that was picked)
+        let at: Vec<(usize, usize)> = all.iter().map(|p| (p.place, p.id)).collect();
+        let listed = all_listed(&self.rows, &at) && all.iter().all(|p| p.gen == m.gen && m.item(p.place, p.id).is_some_and(|(ix, i)| key(&ix.path_of(i)) == key(&p.path)));
         if !listed {
             self.tell("Not deleted", "The results changed since they were picked, so nothing was deleted. Pick them again.");
             return;
@@ -724,6 +761,49 @@ mod tests {
         let kept: Vec<String> = picks.iter().map(|p| p.path.display().to_string()).collect();
         assert_eq!(kept, [r"D:\b.txt", r"D:\c.txt"]);
         assert_eq!(picks.top_most().len(), 2);
+    }
+
+    #[test]
+    fn with_picks_the_keyboards_row_counts_only_if_it_is_picked() {
+        let mut picks = Picks::default();
+        let p = |n: &str| PathBuf::from(format!(r"D:\{n}"));
+        let pk = |n: &str, id: usize| Pick { path: p(n), is_dir: false, size: 1, secs: None, place: 0, id, gen: 0 };
+        for (n, id) in [("a", 1), ("b", 2), ("c", 3)] {
+            picks.add(pk(n, id));
+        }
+        // Ctrl+click C again takes it away, and the keyboard stays on C
+        picks.remove(&key(&p("c")));
+        let sel = Some((0, 3));
+        assert!(counts(sel, &picks, (0, 1), &p("a")));
+        assert!(!counts(sel, &picks, (0, 3), &p("c")), "C is the keyboard's row but not picked: it doesn't count");
+        assert_eq!(count(&picks, true), 2, "so Delete and the menu act on 2");
+        // nothing picked: the keyboard's row is the one
+        let none = Picks::default();
+        assert!(counts(sel, &none, (0, 3), &p("c")));
+        assert!(!counts(sel, &none, (0, 4), &p("d")));
+        assert_eq!((count(&none, true), count(&none, false)), (1, 0));
+    }
+
+    #[test]
+    fn a_pick_that_is_not_on_the_list_refuses_the_delete() {
+        // rows are (id, place + 1); picks are (place, id)
+        let rows = [(1, 1), (2, 1), (7, 2), (5, 0)];
+        assert!(all_listed(&rows, &[(0, 1), (0, 2), (1, 7)]));
+        assert!(!all_listed(&rows, &[(0, 1), (0, 3)]), "id 3 fell off the list");
+        assert!(!all_listed(&rows, &[(1, 1)]), "id 1 is listed for place 0, not place 1");
+        assert!(!all_listed(&rows, &[(0, 5)]), "a row of the scan on screen is not another drive's");
+        assert!(all_listed(&[], &[]), "nothing picked: nothing to refuse");
+        assert!(!all_listed(&[], &[(0, 1)]), "the list was emptied");
+    }
+
+    #[test]
+    fn retain_says_how_many_picks_went() {
+        let mut picks = Picks::default();
+        for i in 0..4 {
+            picks.add(Pick { path: PathBuf::from(format!(r"D:\f{i}")), is_dir: false, size: 1, secs: None, place: 0, id: i, gen: 0 });
+        }
+        assert_eq!(picks.retain(|p| p.id % 2 == 0), 2);
+        assert_eq!(picks.len(), 2);
     }
 
     #[test]

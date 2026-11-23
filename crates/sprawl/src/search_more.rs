@@ -34,6 +34,17 @@ use crate::ui;
 pub(crate) fn max_hits() -> usize {
     sprawl_advisor::tuning::get(&sprawl_advisor::tuning::SEARCH_MAX_HITS) as usize
 }
+/// What the status adds when other drives have more matches than are listed: the list is the
+/// first `shown` of all `total` in the sort order on screen (a sort orders every match before the
+/// cap is taken, so another sort lists others).
+pub(crate) fn capped_note(shown: usize, total: usize) -> String {
+    if shown > 0 && total > shown {
+        format!("; showing the first {} of {} on other drives", thousands(shown as u64), thousands(total as u64))
+    } else {
+        String::new()
+    }
+}
+
 /// A place that isn't the scan on screen, as a search-only index.
 pub(crate) struct Place {
     pub(crate) ix: Arc<CompactIndex>,
@@ -173,6 +184,22 @@ impl More {
 
     pub(crate) fn has_places(&self) -> bool {
         self.places.iter().any(Option::is_some)
+    }
+
+    /// Nothing is picked and the keyboard is on no row from here.
+    pub(crate) fn drop_picks(&mut self) {
+        self.sel = None;
+        self.picks.clear();
+    }
+
+    /// Drop the picks (and the keyboard's row) that are not among the listed matches any more;
+    /// how many picks went.
+    pub(crate) fn prune_picks(&mut self) -> usize {
+        let listed: std::collections::HashSet<(usize, usize)> = self.hits.iter().copied().collect();
+        if self.sel.is_some_and(|s| !listed.contains(&s)) {
+            self.sel = None;
+        }
+        self.picks.retain(|p| listed.contains(&(p.place, p.id)))
     }
 
     /// The places changed: matches and the picked row are for the old ones.
@@ -532,6 +559,8 @@ impl State {
             m.total = 0;
             m.hits_gen = m.gen;
             m.hits_query = self.search.query.clone();
+            // nothing is listed now: nothing is picked
+            m.drop_picks();
             self.render_more();
             return;
         }
@@ -628,11 +657,16 @@ impl State {
                 m.hits_gen = gen;
                 m.hits_query = q;
                 m.hits_sort = sort;
+                let mut dropped = 0;
                 if !which {
                     // a new list of results: what was picked is for the old one (a re-sort
                     // keeps the picks, which are by path)
                     m.sel = None;
                     m.picks.clear();
+                } else {
+                    // a re-sort takes the cap again: a pick the new order cut off is not on the
+                    // list any more, so it is not picked any more
+                    dropped = m.prune_picks();
                 }
                 if sort != self.search.sort {
                     self.more_sort();
@@ -641,7 +675,13 @@ impl State {
                 if self.view == View::Search {
                     self.refresh_rows();
                     // the scan's own rows may still be sorting
-                    let info = if self.search.sorting.is_some() { "Sorting...".to_string() } else { self.search_count() };
+                    let info = if self.search.sorting.is_some() {
+                        "Sorting...".to_string()
+                    } else if dropped > 0 {
+                        format!("{} picked result{} left the list when it was sorted again (it lists only the first {} from other drives)", thousands(dropped as u64), if dropped == 1 { "" } else { "s" }, thousands(self.search.more.hits.len() as u64))
+                    } else {
+                        self.search_count()
+                    };
                     crate::state::text(&self.root, "SearchInfo", &info);
                 }
             }
@@ -740,6 +780,8 @@ impl State {
 
     /// Say how many are picked (and that the picks are full).
     pub(crate) fn more_picked_note(&self) {
+        // (only the picks: the row the keyboard is on counts only when nothing is picked, and
+        // then there is nothing to say)
         let n = self.search.more.picks.len();
         let full = if n >= crate::search_delete::MAX_PICKS { format!(" (the most Sprawl picks at once: {})", crate::search_delete::MAX_PICKS) } else { String::new() };
         let note = match n {
@@ -806,7 +848,7 @@ impl State {
         let Some((ix, i)) = self.search.more.item(k, id) else { return String::new() };
         let name = ix.name(i);
         let full = ix.path_of(i).display().to_string();
-        let picked = self.search.more.sel == Some((k, id)) || self.search.more.picks.contains_key(&crate::search_delete::key(Path::new(&full)));
+        let picked = crate::search_delete::counts(self.search.more.sel, &self.search.more.picks, (k, id), Path::new(&full));
         let (bg, sel_bar) = (self.row_bg(row, picked), crate::tables::row_bar(picked));
         let folder = ix.parent(i).map(|q| ix.path_of(q).display().to_string()).unwrap_or_default();
         let ext = name.rsplit_once('.').filter(|(a, b)| !a.is_empty() && !b.is_empty()).map(|(_, e)| e.to_lowercase()).unwrap_or_default();
@@ -1120,6 +1162,39 @@ mod tests {
             assert!(folder_first, "a scan folder is ahead of another drive's file (desc {desc})");
             assert!(if desc { d > f } else { d < f }, "and so is another drive's");
         }
+    }
+
+    fn pick(place: usize, id: usize, path: &str) -> crate::search_delete::Pick {
+        crate::search_delete::Pick { path: path.into(), is_dir: false, size: 1, secs: None, place, id, gen: 0 }
+    }
+
+    #[test]
+    fn a_re_sort_that_cuts_the_list_drops_the_picks_it_cut() {
+        // A, B, C picked; the new order lists only A and B: C is no longer picked (SRCH finding 1)
+        let mut m = More::default();
+        m.picks.add(pick(0, 1, r"D:\a"));
+        m.picks.add(pick(0, 2, r"D:\b"));
+        m.picks.add(pick(0, 3, r"D:\c"));
+        m.sel = Some((0, 3));
+        m.hits = vec![(0, 1), (0, 2), (0, 9)];
+        assert_eq!(m.prune_picks(), 1);
+        assert_eq!(m.picks.len(), 2);
+        assert!(m.picks.contains_key(&crate::search_delete::key(Path::new(r"D:\a"))) && !m.picks.contains_key(&crate::search_delete::key(Path::new(r"D:\c"))));
+        assert_eq!(m.sel, None, "the keyboard's row left the list too");
+        // nothing cut: nothing changes
+        m.sel = Some((0, 2));
+        assert_eq!(m.prune_picks(), 0);
+        assert_eq!(m.sel, Some((0, 2)));
+        // an emptied or unparsable query lists nothing: nothing stays picked
+        m.drop_picks();
+        assert!(m.picks.is_empty() && m.sel.is_none());
+    }
+
+    #[test]
+    fn the_status_says_how_many_of_how_many_are_listed() {
+        assert_eq!(capped_note(100_000, 250_000), "; showing the first 100,000 of 250,000 on other drives");
+        assert_eq!(capped_note(5, 5), "");
+        assert_eq!(capped_note(0, 0), "");
     }
 
     #[test]

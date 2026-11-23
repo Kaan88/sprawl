@@ -429,9 +429,7 @@ impl State {
             (0, d) => format!("{} folder{}", thousands(d), if d == 1 { "" } else { "s" }),
             (f, d) => format!("{} file{} ({}), {} folder{}", thousands(f), if f == 1 { "" } else { "s" }, self.size(bytes), thousands(d), if d == 1 { "" } else { "s" }),
         };
-        if !others.is_empty() && m.total > others.len() {
-            s += &format!("; the biggest {} of {} on other drives", thousands(others.len() as u64), thousands(m.total as u64));
-        }
+        s += &crate::search_more::capped_note(others.len(), m.total);
         if self.full_tree.is_some() {
             s += "; the scan's part is the filtered view";
         }
@@ -667,7 +665,7 @@ impl State {
                 let (k, id) = (d - 1, n);
                 let (ix, i) = more.item(k, id)?;
                 let p = ix.path_of(i);
-                (more.sel == Some((k, id)) || more.picks.contains_key(&crate::search_delete::key(&p))).then_some(p)
+                crate::search_delete::counts(more.sel, &more.picks, (k, id), &p).then_some(p)
             })
             .collect()
     }

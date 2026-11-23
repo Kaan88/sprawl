@@ -949,15 +949,7 @@ impl State {
             return self.picked_nodes().len();
         }
         let m = &self.search.more;
-        let mut n = m.picks.len();
-        if let Some((k, id)) = m.sel {
-            if let Some((ix, i)) = m.item(k, id) {
-                if !m.picks.contains_key(&crate::search_delete::key(&ix.path_of(i))) {
-                    n += 1;
-                }
-            }
-        }
-        n
+        crate::search_delete::count(&m.picks, m.sel.is_some_and(|(k, id)| m.item(k, id).is_some()))
     }
 
     /// Right-click on a row: select it and open the row menu at the pointer (`by_key`: the menu

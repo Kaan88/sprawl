@@ -3,6 +3,13 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Search: sorting by Name now puts every folder above every file, in both directions (folders A-Z then files A-Z, or both reversed), for the scan on screen, other drives and saved scans.
+- Search: when other drives have more matches than the list holds, the status says "showing the first N of M on other drives", and the list is the first N of all matches in the order you sorted by.
+- Search: results you picked that a new sort pushes off the list are no longer picked, so Delete can't act on a row you can't see; emptying the search box drops the picks too.
+- Search: after Ctrl+click takes a result out of the picks, Del and the row menu no longer still count it.
+
 ## 1.0.8 — 2026-11-23
 
 - Search results can be right-clicked without losing the rows you picked, and the menu now offers Open, Show in Explorer, Copy Path, Delete and Delete Permanently on every picked result (the items that only work on the scan on screen are shown greyed on results from other drives or saved scans). Open and Show in Explorer work on up to 10 picked results or folders at a time and say so rather than opening a burst of windows. Pick several with Ctrl+click, Shift+click or Ctrl+A, then Del or Shift+Del deletes them all.
