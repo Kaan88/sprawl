@@ -142,6 +142,7 @@ const ROW_MENU: &[(&str, &str)] = &[
     ("cOpen", "mOpen"),
     ("cInTree", "mInTree"),
     ("cExplore", "mExplore"),
+    ("cScan", "mScanHere"),
     ("cCmd", "mCmd"),
     ("cCopyPath", "mCopyPath"),
     ("cMapHere", "mMapHere"),
@@ -441,7 +442,7 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
     crate::menubar::bind(root)?;
     // the page's other menus, drawn and run as the bar's are (menu.rs): the right-click menus
     // and the map bar's dropdowns
-    for (set, how) in [("RowMenu", menu::How::Context), ("MoreMenu", menu::How::Context), ("ViewMoreFly", menu::How::Button), ("ViewPaintFly", menu::How::Button)] {
+    for (set, how) in [("RowMenu", menu::How::Context), ("ViewMoreFly", menu::How::Button), ("ViewPaintFly", menu::How::Button)] {
         crate::menu::bind(root, set, how)?;
     }
     // The menu bar's rows all route to State::command by name (its checks and dots when their
@@ -688,15 +689,6 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
     keep(find::<ButtonBase>(root, "TweaksClose")?.Click(|_, _| {
         with(|st| st.command("mTweaks"));
     })?);
-
-    // The menu of a search row from another drive.
-    for (item, kind) in [("sxExplore", 'E'), ("sxCopy", 'C'), ("sxScan", 'S'), ("sxShell", 'W')] {
-        if let Ok(i) = find::<ButtonBase>(root, item) {
-            keep(i.Click(move |_, _| {
-                with(|s| s.more_menu_pick(kind));
-            })?);
-        }
-    }
 
     // The row menu's items reuse the File menu's commands.
     for (item, cmd) in ROW_MENU {

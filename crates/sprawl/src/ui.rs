@@ -954,6 +954,7 @@ pub fn page(drives: &[String]) -> String {
             icon("cOpen", "Open", "&#xE8E5;"),
             Row::Item(Item::new("cInTree", "Show in the Tree (Ctrl+Enter)").icon("&#xE8A9;").hidden()),
             icon("cExplore", "Show in Explorer", "&#xEC50;"),
+            Row::Item(Item::new("cScan", "Scan This Folder").icon("&#xE721;").hidden()),
             icon("cCmd", "Command Prompt Here", "&#xE756;"),
             icon("cCopyPath", "Copy Path", "&#xE8C8;"),
             SEP,
@@ -967,13 +968,6 @@ pub fn page(drives: &[String]) -> String {
             SEP,
             shell("cShell"),
         ],
-    );
-    // a search result's from another drive
-    let more_menu = crate::menu::xaml(
-        "MoreMenu",
-        "",
-        "BottomEdgeAlignedLeft",
-        &[icon("sxExplore", "Show in Explorer", "&#xEC50;"), icon("sxCopy", "Copy Path", "&#xE8C8;"), icon("sxScan", "Scan This Folder", "&#xE721;"), SEP, shell("sxShell")],
     );
     let types_hint = crate::welcome::types_hint();
     let wizard = crate::wizard::xaml();
@@ -1128,9 +1122,7 @@ pub fn page(drives: &[String]) -> String {
     <Grid>{shadow}<Border {PANE}>
       <Grid>
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <Border x:Name="SearchMore" Grid.Row="3" Visibility="Collapsed" BorderBrush="{{$line2}}" BorderThickness="0,1,0,0">
-          <FlyoutBase.AttachedFlyout>{more_menu}</FlyoutBase.AttachedFlyout>
-        </Border>
+        <Border x:Name="SearchMore" Grid.Row="3" Visibility="Collapsed" BorderBrush="{{$line2}}" BorderThickness="0,1,0,0"/>
         <Grid x:Name="SearchBar" Visibility="Collapsed" Margin="8,8,8,6" ColumnSpacing="8" RowSpacing="6">
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>

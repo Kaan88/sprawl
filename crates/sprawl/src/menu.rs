@@ -1,5 +1,5 @@
 //! Every menu in Sprawl: the menu bar's (File, Options, Help and their sub-menus, menubar.rs),
-//! the right-click menus (a row's, the treemap's, a search result's from another drive) and the
+//! the right-click menus (a row's, the treemap's, a search result's) and the
 //! dropdown buttons' (More views, Colour, Search in, the saved searches, the search chips).
 //!
 //! WinUI's own `MenuFlyout` opens each menu in a window of its own, a few pixels bigger than the
@@ -1132,6 +1132,15 @@ pub(crate) fn show_at(flyout: &str, target: &UIElement, at: Point, by_key: bool)
             }
         });
     }
+}
+
+/// The tooltip menu item `name` in `scope` offers (`""` for none).
+pub(crate) fn set_tip(scope: &FrameworkElement, name: &str, tip: &str) {
+    use crate::bindings::Microsoft::UI::Xaml::Controls::ToolTipService;
+    let Ok(c) = find::<Control>(scope, name) else { return };
+    let Ok(el) = c.cast::<DependencyObject>() else { return };
+    let value: windows_core::IInspectable = windows_reference::IReference::<HSTRING>::from(tip).into();
+    let _ = ToolTipService::SetToolTip(&el, &value);
 }
 
 /// Menu `m` is about to open. Opened by its title or row itself (a click, Enter, Space, an

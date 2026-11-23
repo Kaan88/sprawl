@@ -8,7 +8,7 @@ use sprawl_core::{Tree, ROOT};
 use windows_core::Interface;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, ScrollViewer};
-use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement};
+use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
 use crate::bindings::Windows::Foundation::Point;
 use crate::format::{file_type, fmt_time, thousands};
 use crate::state::{find, load, text, State, View, ROW_H};
@@ -903,16 +903,56 @@ impl State {
         self.selected = Some(n);
         self.refresh_rows();
         self.show_selection();
+        self.row_menu_state(true);
+    }
+
+    /// The row menu's rows as they are for what was right-clicked: a row (or tile) of the scan on
+    /// screen (`scan`), or a Search result from another drive or a saved scan. The items that need
+    /// the scan are shown, off, saying why; those that go by path stay on, on every pick.
+    pub(crate) fn row_menu_state(&mut self, scan: bool) {
+        let search = self.view == View::Search;
+        use crate::bindings::Microsoft::UI::Xaml::Controls::Control;
+        for &(name, on, off) in crate::search::SCAN_ONLY {
+            if let Ok(i) = find::<Control>(&self.root, name) {
+                let _ = i.SetIsEnabled(crate::search::item_applies(name, scan));
+            }
+            crate::menu::set_tip(&self.root, name, if scan { on } else { off });
+        }
+        // overwrite runs on the scan in Tree View and File View, never in Search
+        if let Ok(i) = find::<Control>(&self.root, "cOverwrite") {
+            let _ = i.SetIsEnabled(!search);
+        }
+        crate::menu::set_tip(&self.root, "cOverwrite", if search { crate::search::OVERWRITE_ONLY } else { "Write over every file in it once with random data, then delete it" });
+        // the tree's own item and the folder a row is in are Search's
+        for name in ["cInTree", "cScan"] {
+            if let Ok(i) = find::<UIElement>(&self.root, name) {
+                let _ = i.SetVisibility(if search { Visibility::Visible } else { Visibility::Collapsed });
+            }
+        }
         // with several rows picked the Windows menu is off: it would act on one of them only
-        if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "cShell") {
+        if let Ok(i) = find::<Control>(&self.root, "cShell") {
             // ...nor during a clean-up, nor as administrator unless Settings > Scanning allows it
             let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
-            let _ = i.SetIsEnabled(self.picked_nodes().len() <= 1 && self.advisor.cleanup.running.is_none() && admin_ok);
+            let _ = i.SetIsEnabled(shell_allowed(self.menu_pick_count(scan), self.advisor.cleanup.running.is_some(), admin_ok));
         }
-        // "Show in the tree" only where the tree isn't on screen
-        if let Ok(i) = find::<UIElement>(&self.root, "cInTree") {
-            let _ = i.SetVisibility(if search { crate::bindings::Microsoft::UI::Xaml::Visibility::Visible } else { crate::bindings::Microsoft::UI::Xaml::Visibility::Collapsed });
+    }
+
+    /// How many results the row menu acts on: the scan's picked nodes, or another drive's picks
+    /// with the row right-clicked.
+    fn menu_pick_count(&self, scan: bool) -> usize {
+        if scan {
+            return self.picked_nodes().len();
         }
+        let m = &self.search.more;
+        let mut n = m.picks.len();
+        if let Some((k, id)) = m.sel {
+            if let Some((ix, i)) = m.item(k, id) {
+                if !m.picks.contains_key(&crate::search_delete::key(&ix.path_of(i))) {
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     /// Right-click on a row: select it and open the row menu at the pointer (`by_key`: the menu
@@ -920,24 +960,29 @@ impl State {
     pub(crate) fn row_menu(&mut self, y_content: f64, at: Point, by_key: bool) {
         let k = self.rows_now(Which::Main).at(y_content);
         let Some(&(n, d)) = self.rows.get(k) else { return };
-        if self.view == View::Search {
-            if d > 0 {
-                if !by_key && crate::win32::ctrl_shift_down().1 {
-                    if let Some((ix, i)) = self.search.more.item(d - 1, n) {
-                        let p = ix.path_of(i);
-                        self.search.more.sel = Some((d - 1, n));
-                        self.search.more.picks.clear();
-                        // as more_tapped does: a Delete afterwards must not act on a scan row
-                        self.selected = None;
-                        self.marked.clear();
-                        self.refresh_rows();
-                        self.shell_menu(p, false);
-                        return;
-                    }
-                }
-                self.more_menu(d - 1, n, at, by_key);
+        if self.view == View::Search && d > 0 {
+            let Some((ix, i)) = self.search.more.item(d - 1, n) else { return };
+            let path = ix.path_of(i);
+            // a row among the picks keeps them (the menu acts on them all); another is alone
+            crate::search_delete::menu_keeps_picks(&mut self.search.more.picks, &path);
+            self.search.more.sel = Some((d - 1, n));
+            // as more_tapped does: a Delete afterwards must not act on a scan row
+            self.selected = None;
+            self.marked.clear();
+            self.refresh_rows();
+            self.row_menu_state(false);
+            // Shift+right-click: straight to the Windows menu, with one result
+            if !by_key && crate::win32::ctrl_shift_down().1 && self.menu_pick_count(false) <= 1 {
+                self.shell_menu(path, false);
                 return;
             }
+            if let Ok(target) = find::<UIElement>(&self.root, "TreeScroll") {
+                if !by_key {
+                    let _ = target.Focus(FocusState::Pointer);
+                }
+                crate::menu::show_at("RowMenu", &target, at, by_key);
+            }
+            return;
         }
         self.menu_on_node(n);
         // Shift+right-click: straight to the Windows menu (Shift+F10 is the keyboard's menu key)
@@ -1217,6 +1262,12 @@ impl State {
     }
 }
 
+/// Whether the row menu's Windows item may open: one result picked (it acts on one), no clean-up
+/// running, and the administrator evidence allowed when Sprawl is elevated.
+pub(crate) fn shell_allowed(picked: usize, cleanup: bool, admin_ok: bool) -> bool {
+    picked <= 1 && !cleanup && admin_ok
+}
+
 /// What the row menu's commands (Delete among them) act on after a right-click on the scan's node
 /// `n`, by its row or its tile on the map: in Search, never a row from another drive picked
 /// before (`more_sel`, `picks`); and `n` alone unless it is one of the rows picked already.
@@ -1232,9 +1283,17 @@ pub(crate) fn menu_pick(marked: &mut std::collections::BTreeSet<usize>, more_sel
 
 #[cfg(test)]
 mod menu_pick_tests {
-    use super::menu_pick;
+    use super::{menu_pick, shell_allowed};
     use crate::search_delete::{Pick, Picks};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn the_windows_menu_needs_one_result_no_clean_up_and_the_administrator_switch() {
+        assert!(shell_allowed(1, false, true), "one row, nothing running, the switch allows it");
+        assert!(!shell_allowed(2, false, true), "it acts on one result only");
+        assert!(!shell_allowed(1, true, true), "a clean-up is running");
+        assert!(!shell_allowed(1, false, false), "elevated without Settings > Scanning allowing it");
+    }
 
     fn picks() -> Picks {
         let mut p = Picks::default();

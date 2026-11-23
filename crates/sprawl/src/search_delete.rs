@@ -124,6 +124,17 @@ impl Picks {
     }
 }
 
+/// A right-click on the Search result at `path` (or the menu key on it): a row that is picked
+/// keeps every pick, because the menu acts on them all; any other row is acted on alone, so the
+/// picks go. True when they stayed.
+pub(crate) fn menu_keeps_picks(picks: &mut Picks, path: &Path) -> bool {
+    if picks.contains_key(&key(path)) {
+        return true;
+    }
+    picks.clear();
+    false
+}
+
 /// Why the item may not be deleted as it is on the disk now (`refusal` is the protected-path
 /// refusal every Delete uses). Looks at the item itself without following a link.
 pub(crate) fn check_now(p: &Pick, refusal: &dyn Fn(&Path) -> Option<String>) -> Result<(), String> {
@@ -658,6 +669,22 @@ mod tests {
         assert_eq!(top, [r"D:\a", r"D:\ab", r"E:\x.txt"], "D:\\ab is not inside D:\\a");
         // the same path in another case is the same pick
         assert!(picks.contains_key(&key(Path::new(r"d:\A\B.TXT"))));
+    }
+
+    #[test]
+    fn a_right_click_keeps_the_picks_on_a_picked_row_and_drops_them_on_another() {
+        let mut picks = Picks::default();
+        for path in [r"D:\a.txt", r"D:\b.txt", r"E:\saved\c.txt"] {
+            picks.add(Pick { path: PathBuf::from(path), is_dir: false, size: 1, secs: Some(1), place: 0, id: 1, gen: 0 });
+        }
+        // the same row (a path is compared as the picks keep it)
+        assert!(menu_keeps_picks(&mut picks, Path::new(r"d:\A.TXT")));
+        assert_eq!(picks.len(), 3, "a picked row leaves every pick for the menu to act on");
+        // another row: it alone is acted on
+        assert!(!menu_keeps_picks(&mut picks, Path::new(r"E:\other.txt")));
+        assert!(picks.is_empty());
+        // and with nothing picked, nothing is kept
+        assert!(!menu_keeps_picks(&mut picks, Path::new(r"D:\a.txt")));
     }
 
     fn tree(names: &[(&str, bool, usize, u64)]) -> Tree {

@@ -447,6 +447,77 @@ pub fn reveal(path: &Path) -> bool {
     explorer().raw_arg(select_arg(path)).spawn().is_ok()
 }
 
+/// The Explorer windows [`reveal_all`] opens for `paths`: one for each folder picked, and one for
+/// each folder holding picked files (a folder picked and holding picked files is one window).
+pub fn reveal_windows(paths: &[PathBuf]) -> usize {
+    use std::collections::BTreeSet;
+    let mut windows: BTreeSet<PathBuf> = BTreeSet::new();
+    for p in paths {
+        if p.is_dir() {
+            windows.insert(p.clone());
+        } else if let Some(parent) = p.parent() {
+            windows.insert(parent.to_path_buf());
+        }
+    }
+    windows.len()
+}
+
+/// Show every path in `paths` in Explorer: the files of one folder are selected together, in one
+/// window, and each folder picked is opened. At most `max_windows` windows; false, opening
+/// nothing, when that would take more. True when Explorer was started for at least one.
+pub fn reveal_all(paths: &[PathBuf], max_windows: usize) -> bool {
+    use std::collections::BTreeMap;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    if reveal_windows(paths) > max_windows {
+        return false;
+    }
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
+    let mut by_parent: BTreeMap<PathBuf, Vec<&Path>> = BTreeMap::new();
+    let mut folders = Vec::new();
+    for p in paths {
+        match p.parent() {
+            Some(parent) if !p.is_dir() => by_parent.entry(parent.to_path_buf()).or_default().push(p),
+            _ => folders.push(p),
+        }
+    }
+    let mut ok = false;
+    for (parent, items) in &by_parent {
+        let w = wide(parent);
+        let holds: Vec<_> = items
+            .iter()
+            .filter_map(|p| {
+                let wi = wide(p);
+                let pidl = unsafe { ILCreateFromPathW(windows::core::PCWSTR(wi.as_ptr())) };
+                (!pidl.is_null()).then_some(pidl as *const _)
+            })
+            .collect();
+        let mut shown = false;
+        unsafe {
+            let folder = ILCreateFromPathW(windows::core::PCWSTR(w.as_ptr()));
+            if !folder.is_null() && !holds.is_empty() {
+                shown = SHOpenFolderAndSelectItems(folder, Some(&holds), 0).is_ok();
+            }
+            if !folder.is_null() {
+                ILFree(Some(folder));
+            }
+            for p in &holds {
+                ILFree(Some(*p));
+            }
+        }
+        // a pidl Explorer would not take: the first item, the way one item is shown
+        ok |= shown || reveal(items[0]);
+    }
+    for f in folders {
+        // a picked folder whose files were shown together above is already open
+        if by_parent.contains_key(f) {
+            continue;
+        }
+        ok |= explorer().arg(f).spawn().is_ok();
+    }
+    ok
+}
+
 fn explorer() -> std::process::Command {
     let exe = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("explorer.exe")).unwrap_or_else(|| PathBuf::from("explorer.exe"));
     std::process::Command::new(exe)
@@ -774,11 +845,33 @@ pub fn set_app_icon(h: HWND) {
 
 #[cfg(test)]
 mod tests {
-    use super::select_arg;
+    use super::{reveal_windows, select_arg};
     use std::path::Path;
 
     fn unquoted(arg: &str) -> &str {
         arg.strip_prefix("/select,\"").and_then(|a| a.strip_suffix('"')).expect("the switch, then one quoted path")
+    }
+
+    #[test]
+    fn the_windows_reveal_all_opens_are_counted() {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("sprawl-reveal-{}-{nanos}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let (a1, a2, b1) = (a.join("one.txt"), a.join("two.txt"), b.join("three.txt"));
+        for f in [&a1, &a2, &b1] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        let p = |f: &Path| f.to_path_buf();
+        // one folder's files: one window; two folders: two
+        assert_eq!(reveal_windows(&[p(&a1), p(&a2)]), 1);
+        assert_eq!(reveal_windows(&[p(&a1), p(&b1)]), 2);
+        // a picked folder is a window of its own; with its picked files shown in it, one
+        assert_eq!(reveal_windows(&[p(&a), p(&b1)]), 2);
+        assert_eq!(reveal_windows(&[p(&a), p(&a1)]), 1);
+        assert_eq!(reveal_windows(&[]), 0);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
