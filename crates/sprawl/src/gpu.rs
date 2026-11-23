@@ -361,30 +361,80 @@ fn buffer(device: &ID3D11Device, bytes: usize, bind: D3D11_BIND_FLAG, dynamic: b
     out.ok_or_else(|| "CreateBuffer returned nothing".into())
 }
 
+/// What [`Gpu::new`] needs first and the slowest of it: the device with its context, and the two
+/// shaders compiled. About 60-80 ms, which [`prewarm`] moves off the window's thread so the
+/// first frame of the map doesn't wait for it.
+struct Warm {
+    device: ID3D11Device,
+    ctx: ID3D11DeviceContext,
+    vsb: Vec<u8>,
+    psb: Vec<u8>,
+    /// The galaxy's stars and the 3D views' mesh.
+    star: (Vec<u8>, Vec<u8>),
+    mesh: (Vec<u8>, Vec<u8>),
+}
+
+// SAFETY: made on the warming thread, then handed over whole and used by the window's thread
+// only; a D3D11 device is free-threaded, and its immediate context is used by one thread at a time.
+unsafe impl Send for Warm {}
+
+/// The warming thread, while its result hasn't been taken.
+static WARM: std::sync::Mutex<Option<std::thread::JoinHandle<Result<Warm, String>>>> = std::sync::Mutex::new(None);
+
+/// Start making the device and the shaders on their own thread, once, at launch: the map takes
+/// them when it first draws ([`take_warm`]). Nothing is shown or changed by it.
+pub fn prewarm() {
+    if let Ok(mut w) = WARM.lock() {
+        if w.is_none() {
+            *w = std::thread::Builder::new().name("gpu warm".into()).spawn(make_warm).ok();
+        }
+    }
+}
+
+/// The warmed device and shaders, waiting for them if the thread is still at it; made here
+/// instead when there was none (a second map after a lost device) or it failed.
+fn take_warm() -> Result<Warm, String> {
+    let started = WARM.lock().ok().and_then(|mut w| w.take());
+    match started.map(|h| h.join()) {
+        Some(Ok(Ok(w))) => Ok(w),
+        _ => make_warm(),
+    }
+}
+
+fn make_warm() -> Result<Warm, String> {
+    let mut device = None;
+    let mut ctx = None;
+    hr(
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                Default::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut ctx),
+            )
+        },
+        "D3D11CreateDevice",
+    )?;
+    let device: ID3D11Device = device.ok_or("no device")?;
+    let ctx: ID3D11DeviceContext = ctx.ok_or("no context")?;
+    let vsb = compile("vs", "vs_5_0")?;
+    let psb = compile("ps", "ps_5_0")?;
+    let star = (compile("vs_star", "vs_5_0")?, compile("ps_star", "ps_5_0")?);
+    let mesh = (compile("vs_mesh", "vs_5_0")?, compile("ps_mesh", "ps_5_0")?);
+    Ok(Warm { device, ctx, vsb, psb, star, mesh })
+}
+
 impl Gpu {
     /// Create the device and a swap chain of `w`x`h` DIPs at `scale`, and attach it to `panel`
     /// (the XAML SwapChainPanel).
     pub fn new(panel: &windows_core::IUnknown, w: f32, h: f32, scale: (f32, f32)) -> Result<Self, String> {
-        let mut device = None;
-        let mut ctx = None;
-        hr(
-            unsafe {
-                D3D11CreateDevice(
-                    None,
-                    D3D_DRIVER_TYPE_HARDWARE,
-                    Default::default(),
-                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                    Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
-                    D3D11_SDK_VERSION,
-                    Some(&mut device),
-                    None,
-                    Some(&mut ctx),
-                )
-            },
-            "D3D11CreateDevice",
-        )?;
-        let device: ID3D11Device = device.ok_or("no device")?;
-        let ctx: ID3D11DeviceContext = ctx.ok_or("no context")?;
+        // the device and the compiled shaders, made off the window's thread at launch ([`prewarm`])
+        let Warm { device, ctx, vsb, psb, star, mesh } = take_warm()?;
         let dxgi: IDXGIDevice = hr(device.cast(), "IDXGIDevice")?;
         let factory: IDXGIFactory2 = hr(unsafe { dxgi.GetAdapter().and_then(|a| a.GetParent()) }, "DXGI factory")?;
 
@@ -415,8 +465,6 @@ impl Gpu {
         }
 
         // Pipeline.
-        let vsb = compile("vs", "vs_5_0")?;
-        let psb = compile("ps", "ps_5_0")?;
         let mut vs = None;
         let mut ps = None;
         hr(unsafe { device.CreateVertexShader(&vsb, None, Some(&mut vs)) }, "CreateVertexShader")?;
@@ -522,14 +570,14 @@ impl Gpu {
         let mut depth_off = None;
         hr(unsafe { device.CreateDepthStencilState(&off, Some(&mut depth_off)) }, "CreateDepthStencilState")?;
         let depth_off = depth_off.ok_or("depth")?;
-        let (svb, spb) = (compile("vs_star", "vs_5_0")?, compile("ps_star", "ps_5_0")?);
+        let (svb, spb) = star;
         let (mut vs_star, mut ps_star) = (None, None);
         hr(unsafe { device.CreateVertexShader(&svb, None, Some(&mut vs_star)) }, "CreateVertexShader")?;
         hr(unsafe { device.CreatePixelShader(&spb, None, Some(&mut ps_star)) }, "CreatePixelShader")?;
         let (vs_star, ps_star) = (vs_star.ok_or("vs_star")?, ps_star.ok_or("ps_star")?);
         let cb_mirror = buffer(&device, std::mem::size_of::<Constants>(), D3D11_BIND_CONSTANT_BUFFER, true, None)?;
         let extra = buffer(&device, 1024 * std::mem::size_of::<Instance>(), D3D11_BIND_VERTEX_BUFFER, true, None)?;
-        let (mvb, mpb) = (compile("vs_mesh", "vs_5_0")?, compile("ps_mesh", "ps_5_0")?);
+        let (mvb, mpb) = mesh;
         let (mut vs_mesh, mut ps_mesh) = (None, None);
         hr(unsafe { device.CreateVertexShader(&mvb, None, Some(&mut vs_mesh)) }, "CreateVertexShader")?;
         hr(unsafe { device.CreatePixelShader(&mpb, None, Some(&mut ps_mesh)) }, "CreatePixelShader")?;

@@ -241,6 +241,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         std::thread::spawn(|| alert::schedule(true));
     }
     bench::mark("launch: settings read");
+    // the map's device and shaders, made while the window and its page are set up
+    gpu::prewarm();
     let drives = win32::drives();
     let labels: Vec<String> = drives.iter().map(|d| format!("[{}] {}", d.root.trim_end_matches('\\'), d.label)).collect();
     bench::mark("launch: drives listed");
