@@ -6,6 +6,7 @@ in-app updater shows.
 ## Unreleased
 
 - The theme goes back to the defaults once, so everyone gets the new look of 1.0.6 and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.
+- After a clean-up, reading the folder again to show what is left is much quicker: it no longer opens every file inside (minutes on a Temp folder of 600,000 files). The row says "Measuring what's left..." meanwhile, and Stop ends it.
 
 ## 1.0.6 — 2026-11-23
 

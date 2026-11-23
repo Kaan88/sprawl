@@ -141,6 +141,8 @@ pub(crate) struct Item {
     pub learn: bool,
     /// What happens to it (deleted, to the bin, compressed in place...), as the review said.
     pub fate: Fate,
+    /// The clean-up is over and its folder is being read again for what is left.
+    pub measuring: bool,
 }
 
 pub(crate) enum ItemState {
@@ -206,6 +208,8 @@ pub(crate) struct Done {
 enum Msg {
     Start(usize),
     Progress(usize, u64),
+    /// The item's clean-up is over; its folder is being read again.
+    Measuring(usize),
     /// (item, how it went, a scan of what is there now: None when it is gone, or not read)
     Finished(usize, Outcome, Option<Option<Tree>>),
     End,
@@ -213,16 +217,40 @@ enum Msg {
 
 /// One folder read again after it was cleaned. A plain walk: exact and quick for one folder,
 /// where the volume's MFT (when elevated) would read the whole drive, maybe not yet seeing
-/// what was just deleted.
+/// what was just deleted. The quick listing a scan uses (sizes, times and attributes from the
+/// folder entries): the detailed walk opens every file for hidden compression and pins every
+/// folder's whole chain, which took many minutes on a 600,000-file Temp folder.
 pub(crate) fn rescan(p: &std::path::Path) -> std::io::Result<Tree> {
-    sprawl_core::walk::walk(p, &sprawl_advisor::exclusions::progress())
+    sprawl_core::walk::inventory(p, &sprawl_advisor::exclusions::progress())
 }
 
-fn rescan_after(path: &Path) -> Option<Option<Tree>> {
+/// `path` read again after its clean-up: None when it can't be read (or Stop was pressed,
+/// the tree then keeps what it had), Some(None) when it is gone. `detailed` opens every file
+/// for its compression (after a compress, where the on-disk sizes are the point).
+fn rescan_after(path: &Path, detailed: bool, stop: Option<&Arc<AtomicBool>>) -> Option<Option<Tree>> {
     let path = sprawl_core::local::lexical(path).ok()?;
     let _parent = sprawl_core::local::directory(path.parent().unwrap_or(&path)).ok()?;
     match std::fs::symlink_metadata(&path) {
-        Ok(_) => rescan(&path).ok().map(Some),
+        Ok(_) => {
+            let progress = sprawl_advisor::exclusions::progress();
+            // Stop also ends the reading: a watcher passes it on until the walk returns
+            let done = Arc::new(AtomicBool::new(false));
+            if let Some(stop) = stop {
+                let (p, s, d) = (progress.clone(), stop.clone(), done.clone());
+                std::thread::spawn(move || {
+                    while !d.load(Ordering::Relaxed) {
+                        if s.load(Ordering::Relaxed) {
+                            p.cancel();
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                });
+            }
+            let tree = if detailed { sprawl_core::walk::walk(&path, &progress) } else { sprawl_core::walk::inventory(&path, &progress) };
+            done.store(true, Ordering::Relaxed);
+            tree.ok().map(Some)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
         Err(_) => None,
     }
@@ -240,6 +268,7 @@ fn complete_size(scan: Option<&Option<Tree>>) -> Option<u64> {
 /// folder's), anything else by what it freed so far.
 fn running_label(it: &Item, so_far: u64) -> String {
     match it.fate {
+        _ if it.measuring => "Measuring what's left...".to_string(),
         Fate::Compress if it.bytes > 0 => format!("Compressing... {}%, {} of {}", (so_far.min(it.bytes) * 100 / it.bytes).min(99), crate::format::size(so_far.min(it.bytes)), crate::format::size(it.bytes)),
         Fate::Compress => "Compressing...".to_string(),
         _ if it.privacy => "Removing...".to_string(),
@@ -895,6 +924,7 @@ impl State {
                 title: f.title.clone(),
                 bytes: f.bytes,
                 state: ItemState::Waiting,
+                measuring: false,
                 rule: match &f.source {
                     sprawl_advisor::Source::Rule(r) => Some(r.clone()),
                     sprawl_advisor::Source::Model(_) => None,
@@ -954,7 +984,7 @@ impl State {
                 let in_place = sprawl_advisor::remedies::in_place(&action);
                 let before = if compress { None }
                     else if in_place { sprawl_advisor::remedies::on_disk(&path) }
-                    else if tool { complete_size(rescan_after(&path).as_ref()) } else { None };
+                    else if tool { complete_size(rescan_after(&path, false, None).as_ref()) } else { None };
                 let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
                     if last.elapsed().as_millis() >= 200 {
                         last = Instant::now();
@@ -962,7 +992,8 @@ impl State {
                     }
                 });
                 // what is there now, for the tree
-                let now = rescan_after(&path);
+                let _ = tx.send(Msg::Measuring(i));
+                let now = rescan_after(&path, compress, Some(&stop2));
                 if compress {
                     // what the files compressed now saved, also when it was stopped part way
                     out.freed = out.compress.as_ref().map_or(0, |d| d.before.saturating_sub(d.after));
@@ -1075,6 +1106,13 @@ impl State {
                     if let Some(it) = run.items.get_mut(i) {
                         it.state = ItemState::Running(freed);
                         self.advisor.slot_foot.text(&format!("AdvCS{i}"), &running_label(it, freed));
+                    }
+                }
+                Msg::Measuring(i) => {
+                    if let Some(it) = run.items.get_mut(i) {
+                        it.measuring = true;
+                        let so_far = match it.state { ItemState::Running(f) => f, _ => 0 };
+                        self.advisor.slot_foot.text(&format!("AdvCS{i}"), &running_label(it, so_far));
                     }
                 }
                 Msg::Finished(i, out, now) => {
