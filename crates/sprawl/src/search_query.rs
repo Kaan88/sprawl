@@ -169,6 +169,8 @@ pub(crate) fn chips_of(w: &Word) -> Vec<Chip> {
         WordKey::Ext => v.push(Chip::Type),
         WordKey::Size | WordKey::Compare => v.push(Chip::Size),
         WordKey::Date => v.push(Chip::Modified),
+        // `dc:`/`da:` are read for each match, not a filter a chip can show
+        WordKey::ReadDate => {}
         WordKey::Depth | WordKey::Regex | WordKey::Compressed => v.push(Chip::More),
         WordKey::Child | WordKey::ChildCount | WordKey::ChildFiles => v.push(Chip::More),
         WordKey::Attrib | WordKey::Len | WordKey::Dupe | WordKey::SizeDupe => v.push(Chip::More),
@@ -814,6 +816,30 @@ mod tests {
         assert_eq!(folder_term("D:\\"), "path:\"D:\\\"");
         assert_eq!(year_before("2028-02-29"), "2027-02-28");
         assert_eq!(today().len(), 10);
+    }
+
+    /// A `dc:`/`da:` word is not a name word: a More modifier goes on the name before it, and
+    /// the chips leave it alone (a modifier in front of it would stop it being a date).
+    #[test]
+    fn a_modifier_skips_read_dates() {
+        assert_eq!(add_modifier("report dc:2026", "exact:").0, "exact:report dc:2026");
+        assert_eq!(add_modifier("dc:2026 report", "case:").0, "dc:2026 case:report");
+        assert_eq!(add_modifier("dc:2026", "case:").0, "dc:2026 case:");
+        assert_eq!(lit_at("report dc:2026", Chip::More), None);
+        assert_eq!(lit_at("dc:2026", Chip::Modified), None, "read per match, not a chip's filter");
+        assert!(Query::parse("exact:report dc:2026").errors().is_empty());
+    }
+
+    /// A type macro is the Type word itself: a `regex:`, `child:` or quoted `audio:` is not it,
+    /// so picking a type leaves those words alone.
+    #[test]
+    fn a_macro_is_only_the_type_word() {
+        assert_eq!(remove("child:audio: report", Chip::Type), "child:audio: report");
+        assert_eq!(remove("regex:zip:", Chip::Type), "regex:zip:");
+        assert_eq!(remove("\"audio:\"", Chip::Type), "\"audio:\"");
+        // what it is stays removable
+        assert_eq!(remove("audio: report", Chip::Type), "report");
+        assert_eq!(lit_at("audio:", Chip::Type).as_deref(), Some("audio"));
     }
 
     #[test]
