@@ -446,12 +446,36 @@ pub fn copy_files(owner: HWND, paths: &[std::path::PathBuf]) -> bool {
     }
 }
 
+/// `p` in the verbatim spelling Windows takes at any length, NUL-ended: Sprawl has no long-path
+/// manifest, so a plain path of 260 characters or more is "not found". A drive path gets the
+/// verbatim prefix, a share the UNC form of it; one already verbatim, or relative, is as it is.
+/// (Callers refuse names ending in a dot or a space, which this spelling, unlike the plain
+/// one, would not tidy away: it names the same item.)
+pub fn verbatim(p: &std::path::Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let s: Vec<u16> = p.as_os_str().encode_wide().collect();
+    let w = |t: &str| t.encode_utf16().collect::<Vec<u16>>();
+    let mut out = if s.starts_with(&w(r"\\?\")) || s.starts_with(&w(r"\\.\")) {
+        s
+    } else if s.starts_with(&w(r"\\")) {
+        let mut o = w(r"\\?\UNC\");
+        o.extend_from_slice(&s[2..]);
+        o
+    } else if s.len() >= 3 && s[1] == u16::from(b':') && s[2] == u16::from(b'\\') {
+        let mut o = w(r"\\?\");
+        o.extend_from_slice(&s);
+        o
+    } else {
+        s
+    };
+    out.push(0);
+    out
+}
+
 /// Rename `from` to `to` (in the same folder) without ever replacing something already at `to`:
 /// MoveFileW fails when the name is taken, where `std::fs::rename` would overwrite a file.
 pub fn move_no_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    let w = |p: &std::path::Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
-    let (a, b) = (w(from), w(to));
+    let (a, b) = (verbatim(from), verbatim(to));
     if unsafe { MoveFileW(a.as_ptr(), b.as_ptr()) } != 0 {
         Ok(())
     } else {

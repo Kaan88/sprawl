@@ -449,8 +449,7 @@ impl Never {
         let mut stack = tree.nodes[n].children.clone();
         while let Some(k) = stack.pop() {
             let raw = &tree.nodes[k].name;
-            let maybe = tails.iter().any(|(_, _, q)| q.is_empty() || (raw.len() >= q.len() && raw.is_char_boundary(raw.len() - q.len()) && raw[raw.len() - q.len()..].eq_ignore_ascii_case(q)));
-            if maybe {
+            if quick_match(&tails, raw) {
                 // the node's name and those of the folders above it, last first
                 let mut names = Vec::new();
                 let mut i = Some(k);
@@ -466,6 +465,12 @@ impl Never {
             stack.extend_from_slice(&tree.nodes[k].children);
         }
         out
+    }
+
+    /// The by-the-end-of-the-path entries taken once, for a caller that tests a great many
+    /// items (a folder of a million): [`Never::path_hit`] takes them again on every call.
+    pub fn tail_matcher(&self) -> TailMatcher<'_> {
+        TailMatcher { tails: self.tails() }
     }
 
     /// The first never-list item below node `n` (see [`Never::hits_inside`]), by path.
@@ -766,6 +771,30 @@ fn live_share(share: &str) -> LiveShare {
 }
 
 /// `names` (an item's name, then the folders above it) ends in `tail` (segments, the item last).
+/// Whether `raw` (an item's name) ends the way some entry's last segment does, which is cheap
+/// to test and rules most names out before any path is built.
+fn quick_match(tails: &[(&[String], &str, &str)], raw: &str) -> bool {
+    tails.iter().any(|(_, _, q)| q.is_empty() || (raw.len() >= q.len() && raw.is_char_boundary(raw.len() - q.len()) && raw[raw.len() - q.len()..].eq_ignore_ascii_case(q)))
+}
+
+/// [`Never::tail_matcher`]: the never-list's end-of-path entries, ready for many tests.
+pub struct TailMatcher<'a> {
+    tails: Vec<(&'a [String], &'a str, &'a str)>,
+}
+
+impl<'a> TailMatcher<'a> {
+    /// Whether an item called `raw` could be a hit at all (test this before building `names`).
+    pub fn maybe(&self, raw: &str) -> bool {
+        quick_match(&self.tails, raw)
+    }
+
+    /// The entry the item falls under, given its lower-case name and those of the folders above
+    /// it, last first (at most the last four are looked at).
+    pub fn hit(&self, names: &[String]) -> Option<&'a str> {
+        self.tails.iter().find(|(t, _, _)| ends_with(names, t)).map(|(_, s, _)| *s)
+    }
+}
+
 fn ends_with(names: &[String], tail: &[String]) -> bool {
     tail.len() <= names.len() && tail.iter().rev().zip(names).all(|(t, n)| crate::rules::seg_match(t, n))
 }
@@ -1268,6 +1297,13 @@ mod tests {
         assert!(never.path_hit(std::path::Path::new(r"D:\Portable\Thunderbird\Profiles")).is_some());
         assert!(never.path_hit(std::path::Path::new(r"D:\x\Profiles")).is_none());
         assert!(never.path_hit(std::path::Path::new(r"D:\x\mail.OST")).is_some());
+        // the prepared matcher says the same, by names (lower case, last first)
+        let m = never.tail_matcher();
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(m.maybe("Mail.OST") && m.maybe("Profiles") && !m.maybe("notes.txt"));
+        assert!(m.hit(&names(&["profiles", "thunderbird", "portable"])).is_some());
+        assert!(m.hit(&names(&["profiles", "x"])).is_none());
+        assert!(m.hit(&names(&["mail.ost", "x"])).is_some());
     }
 
     #[test]
