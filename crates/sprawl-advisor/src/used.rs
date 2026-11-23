@@ -55,19 +55,40 @@ fn drive_upper(s: &str) -> String {
     }
 }
 
-/// Whether this machine keeps last-access times: `NtfsDisableLastAccessUpdate` is 0 (on) or
-/// 0x80000000 (user managed, on). 1 and 0x80000001 are off; 2 and 0x80000002 are system managed
-/// (on for the system volume only) and so not taken as kept for every drive here. Either way
-/// Windows updates a time lazily (up to an hour), so it is a guide to use, never a clock.
+/// Whether this machine keeps last-access times: `NtfsDisableLastAccessUpdate`'s low two bits
+/// say whether Windows updates them. 0 (`fsutil` "User Managed, updates enabled") and 2 ("System
+/// Managed, updates enabled", which Windows picks at boot for a system volume of 128 GB or less)
+/// are on; 1 and 3 are off. Older Windows writes 0x80000000/0x80000002/0x80000001/0x80000003,
+/// whose low bits mean the same. Either way Windows updates a time lazily (up to an hour), so it
+/// is a guide to use, never a clock.
 pub fn access_times_kept() -> bool {
     crate::reg::Key::open(crate::reg::HKLM, r"SYSTEM\CurrentControlSet\Control\FileSystem", crate::reg::View::Native)
         .and_then(|k| k.dword("NtfsDisableLastAccessUpdate"))
         .is_some_and(keeps_last_access)
 }
 
-/// [`access_times_kept`]'s reading of the registry value, on its own so it can be tested.
+/// [`access_times_kept`]'s reading of the registry value, on its own so it can be tested: the
+/// low two bits are the system's own on/off choice for NTFS (0 and 2 update last-access times,
+/// 1 and 3 don't); the high bit only says who decided.
 fn keeps_last_access(v: u32) -> bool {
-    v == 0 || v == 0x8000_0000
+    matches!(v & 3, 0 | 2)
+}
+
+/// Why no time can be read at all: not the limit, not the machine, but the view itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unseen {
+    /// A client that may only see the scan on screen.
+    ScanOnly,
+    /// A view loaded from a CSV file, not read from the disk now.
+    Csv,
+}
+
+/// The drive letter of a plain local path (`X:\...`), or None for a relative, UNC or device path:
+/// those are never read, so a relative path is never resolved against this process's folder.
+pub(crate) fn drive_of(path: &std::path::Path) -> Option<char> {
+    let s = path.to_string_lossy();
+    let b = s.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\').then(|| (b[0] as char).to_ascii_uppercase())
 }
 
 /// What one path's last-access lookup gave.
@@ -88,18 +109,23 @@ const PER_PATH: usize = 4_000;
 const NOT_KEPT: &str = "this PC has Windows' last-access updates turned off";
 const NOT_FIXED: &str = "this drive isn't a local fixed disk, so its times aren't read";
 const NOT_NTFS: &str = "this drive isn't NTFS";
+const SKIPPED: &str = "it is in a folder skipped in Settings > Scanning";
+const SKIPPED_UNKNOWN: &str = "the folders to skip in Settings > Scanning couldn't be read";
 
 /// Last-access times for one answer: the setting and the folders to skip are read once, each
 /// drive is asked about once, and the work is bounded, so an answer about a folder of a million
 /// files stays quick. [`Accessed::off`] reads nothing (a client that may only see the scan on
-/// screen).
+/// screen), and [`Accessed::off_for`] reads nothing for a view that has no disk times.
 pub struct Accessed {
     kept: bool,
-    /// A client that may only see the scan: nothing is read and nothing is said about the disk.
-    silent: bool,
+    /// Nothing is read: a client that may only see the scan, or a view from a CSV file.
+    unseen: Option<Unseen>,
     /// Entries still allowed to be read for this answer.
     left: usize,
     excluded: Vec<PathBuf>,
+    /// The folder last pinned: a search's matches are often siblings, and one open serves them
+    /// all instead of opening the whole chain for each file.
+    parent: Option<(PathBuf, sprawl_core::local::Directory)>,
     drives: std::collections::HashMap<char, Drive>,
     /// Why no time can be read, when that is the machine or the drive rather than the limit.
     why: Option<&'static str>,
@@ -115,19 +141,31 @@ enum Drive {
 impl Accessed {
     /// For an answer that may look at the disk.
     pub fn new() -> Accessed {
-        Accessed { kept: access_times_kept(), silent: false, left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), drives: Default::default(), why: None }
+        Accessed { kept: access_times_kept(), unseen: None, left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), parent: None, drives: Default::default(), why: None }
     }
 
     /// For a client that may only see the scan on screen: nothing is read, and no note is added
     /// about the machine (it never looked).
     pub fn off() -> Accessed {
-        Accessed { kept: false, silent: true, left: 0, excluded: Vec::new(), drives: Default::default(), why: None }
+        Accessed::off_for(Unseen::ScanOnly)
+    }
+
+    /// For a view that holds no disk times at all: a client that may only see the scan, or a
+    /// view loaded from a CSV file. Nothing is read.
+    pub fn off_for(unseen: Unseen) -> Accessed {
+        Accessed { kept: false, unseen: Some(unseen), left: 0, excluded: Vec::new(), parent: None, drives: Default::default(), why: None }
     }
 
     /// The same with a given reading limit, to see what running out says.
     #[cfg(test)]
     pub(crate) fn with_budget(left: usize) -> Accessed {
-        Accessed { kept: true, silent: false, left, excluded: Vec::new(), drives: Default::default(), why: None }
+        Accessed { kept: true, unseen: None, left, excluded: Vec::new(), parent: None, drives: Default::default(), why: None }
+    }
+
+    /// The same with given folders to skip, to see what a skipped folder says.
+    #[cfg(test)]
+    pub(crate) fn with_excluded(left: usize, excluded: Vec<PathBuf>) -> Accessed {
+        Accessed { kept: true, unseen: None, left, excluded, parent: None, drives: Default::default(), why: None }
     }
 
     /// Whether this machine keeps last-access times at all.
@@ -135,15 +173,23 @@ impl Accessed {
         self.kept
     }
 
-    /// Whether this is a client that may only see the scan on screen (it never reads the disk
-    /// and never says anything about it).
+    /// Whether this is a client that may only see the scan on screen, or a CSV view (it never
+    /// reads the disk and never says anything about it).
     pub fn silent(&self) -> bool {
-        self.silent
+        self.unseen.is_some()
+    }
+
+    /// Why nothing is read at all, when it is the view rather than the machine.
+    pub fn unseen(&self) -> Option<Unseen> {
+        self.unseen
     }
 
     /// When anything at `path` was last opened. For a folder this is the newest time of the
     /// files in it: listing a folder moves its own time, so its own is never used.
     pub fn of(&mut self, path: &std::path::Path) -> LastOpened {
+        if self.unseen.is_some() {
+            return LastOpened::Unknown;
+        }
         if !self.kept {
             self.why.get_or_insert(NOT_KEPT);
             return LastOpened::Unknown;
@@ -151,7 +197,16 @@ impl Accessed {
         if self.left == 0 {
             return LastOpened::Unread;
         }
-        let Some(drive) = path.to_string_lossy().chars().next().map(|c| c.to_ascii_uppercase()).filter(|c| c.is_ascii_alphabetic()) else {
+        // a folder the user skips is not read, and a list that can't be read refuses them all
+        if crate::exclusions::unreadable(&self.excluded) {
+            self.why.get_or_insert(SKIPPED_UNKNOWN);
+            return LastOpened::Unknown;
+        }
+        if self.excluded.iter().any(|p| crate::finding::within(path, p)) {
+            self.why.get_or_insert(SKIPPED);
+            return LastOpened::Unknown;
+        }
+        let Some(drive) = drive_of(path) else {
             self.why.get_or_insert(NOT_FIXED);
             return LastOpened::Unknown;
         };
@@ -175,7 +230,7 @@ impl Accessed {
             }
         }
         let mut budget = self.left.min(PER_PATH);
-        let (t, complete) = accessed_in_with(path, &mut budget, &self.excluded);
+        let (t, complete) = self.read(path, &mut budget);
         self.left -= self.left.min(PER_PATH) - budget;
         match t {
             Some(t) => LastOpened::At(t, complete),
@@ -183,6 +238,42 @@ impl Accessed {
             None if budget == 0 => LastOpened::Unread,
             None => LastOpened::Unknown,
         }
+    }
+
+    /// The newest last-access time at `path`: a file from its own attributes, opened through its
+    /// folder's handle with full sharing (so it is never held against a rename or delete), a
+    /// folder from the files in it. The folder last pinned is kept for the next sibling.
+    fn read(&mut self, path: &std::path::Path, budget: &mut usize) -> (Option<SystemTime>, bool) {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+            // a drive's root: nothing above it to pin
+            return accessed_in_with(path, budget, &self.excluded);
+        };
+        if !self.pin(parent) {
+            return (None, false);
+        }
+        let Some((_, dir)) = self.parent.as_ref() else { return (None, false) };
+        use sprawl_core::local::{Disposition, Kind, READ_ATTRIBUTES, SHARE_DELETE, SHARE_READ, SHARE_WRITE};
+        let Ok(file) = dir.open_in(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either, false) else {
+            return (None, false);
+        };
+        let Ok(m) = file.metadata() else { return (None, false) };
+        if m.is_file() {
+            *budget -= 1;
+            let time = m.accessed().ok();
+            return (time, time.is_some());
+        }
+        walk_accessed(path, budget, &self.excluded)
+    }
+
+    /// The folder at `path` pinned, reusing the one already held when it is the same folder.
+    fn pin(&mut self, path: &std::path::Path) -> bool {
+        if self.parent.as_ref().is_some_and(|(p, _)| p == path) {
+            return true;
+        }
+        self.parent = None;
+        let Ok(dir) = sprawl_core::local::directory(path) else { return false };
+        self.parent = Some((path.to_path_buf(), dir));
+        true
     }
 
     /// [`Accessed::of`] as a line builder takes it: the time and whether all of the path was
@@ -207,7 +298,7 @@ impl Accessed {
 /// client, and when everything asked about was read.
 pub fn notes(unread: usize, unknown: usize, one: &str, many: &str, access: &Accessed) -> Vec<String> {
     let mut out = Vec::new();
-    if access.silent {
+    if access.unseen.is_some() {
         return out;
     }
     let count = |n: usize| format!("{n} {}", if n == 1 { one } else { many });
@@ -218,6 +309,19 @@ pub fn notes(unread: usize, unknown: usize, one: &str, many: &str, access: &Acce
         out.push(format!("{} with no last-opened time here: {}.", count(unknown), access.why.unwrap_or("the time couldn't be read")));
     }
     out
+}
+
+/// The line for matches a date filter couldn't decide because only part of them was read (a
+/// folder inside was skipped or couldn't be read): never worded as the reading limit, which
+/// wasn't what stopped it.
+pub fn partial_note(partial: usize, one: &str, many: &str) -> Option<String> {
+    (partial > 0).then(|| {
+        format!(
+            "{} {} not fully read, so its last-opened time wasn't checked (part of it was skipped or couldn't be read).",
+            partial,
+            if partial == 1 { one } else { many }
+        )
+    })
 }
 
 /// The volume `X:\` is a fixed disk (not a network, removable or optical drive): only those have
@@ -266,8 +370,6 @@ pub fn accessed_in(path: &std::path::Path, budget: &mut usize) -> (Option<System
 }
 
 fn accessed_in_with(path: &std::path::Path, budget: &mut usize, excluded: &[PathBuf]) -> (Option<SystemTime>, bool) {
-    const REPARSE: u32 = 0x400;
-    use std::os::windows::fs::MetadataExt;
     if *budget == 0 || excluded.iter().any(|p| crate::finding::within(path, p)) { return (None, false); }
     let Ok(held) = sprawl_core::local::scope(path) else { return (None, false) };
     let Ok(top) = held.metadata() else { return (None, false) };
@@ -276,6 +378,14 @@ fn accessed_in_with(path: &std::path::Path, budget: &mut usize, excluded: &[Path
         let time = top.accessed().ok();
         return (time, time.is_some());
     }
+    walk_accessed(path, budget, excluded)
+}
+
+/// The newest last-access time of the files at or below the plain folder `path` (its chain is
+/// pinned by the caller), never entering a link and never counting a skipped folder.
+fn walk_accessed(path: &std::path::Path, budget: &mut usize, excluded: &[PathBuf]) -> (Option<SystemTime>, bool) {
+    const REPARSE: u32 = 0x400;
+    use std::os::windows::fs::MetadataExt;
     let mut best: Option<SystemTime> = None;
     let mut complete = true;
     let mut stack = vec![path.to_path_buf()];
@@ -390,18 +500,26 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Only 0 and 0x80000000 are on; the rest are off or system-volume-only.
+    /// Last-access times count as kept unless Windows' own two bits say off: 0 and 2 update them
+    /// (0x80000002 is what Windows picks for a small system volume), 1 and 3 don't.
     #[test]
-    fn only_an_explicit_on_counts_as_kept() {
-        assert!(keeps_last_access(0));
-        assert!(keeps_last_access(0x8000_0000));
-        // 1 and 0x80000001 are off
-        for v in [1, 0x8000_0001] {
+    fn access_times_count_as_kept_unless_windows_says_off() {
+        for v in [0, 2, 0x8000_0000, 0x8000_0002] {
+            assert!(keeps_last_access(v), "{v:#x}");
+        }
+        for v in [1, 3, 0x8000_0001, 0x8000_0003] {
             assert!(!keeps_last_access(v), "{v:#x}");
         }
-        // 2, 3, 0x80000002 and 0x80000003 are system managed: the system volume only
-        for v in [2, 3, 0x8000_0002, 0x8000_0003] {
-            assert!(!keeps_last_access(v), "{v:#x}");
+    }
+
+    /// Only a plain `X:\...` path is read: a relative or drive-relative one is never resolved
+    /// against this process's folder.
+    #[test]
+    fn only_a_plain_drive_path_is_read() {
+        assert_eq!(drive_of(std::path::Path::new(r"c:\Users\me\a.txt")), Some('C'));
+        assert_eq!(drive_of(std::path::Path::new(r"D:\")), Some('D'));
+        for p in [r"C:Users\me\a.txt", r"Users\me\a.txt", r"\\server\share\a.txt", r"\\?\C:\a.txt", r"a/b/c"] {
+            assert_eq!(drive_of(std::path::Path::new(p)), None, "{p}");
         }
     }
 
@@ -421,6 +539,8 @@ mod tests {
             // a file that isn't there isn't given a time
             assert_eq!(a.of(&dir.join("gone.txt")), LastOpened::Unknown);
         }
+        // the folder last read stays pinned for its siblings: let it go before the folder goes
+        drop(a);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -438,11 +558,28 @@ mod tests {
         assert_eq!(said, vec!["1 match not checked for a last-opened time: the reading limit ran out (a smaller folder or a narrower search gives more)."]);
         assert!(notes(2, 0, "item", "items", &a)[0].starts_with("2 items not checked"));
         // a PC that keeps none says why, once
-        let mut none = Accessed { kept: false, silent: false, left: 10, excluded: Vec::new(), drives: Default::default(), why: None };
+        let mut none = Accessed { kept: false, unseen: None, left: 10, excluded: Vec::new(), parent: None, drives: Default::default(), why: None };
         assert_eq!(none.of(&file), LastOpened::Unknown);
         assert!(notes(0, 1, "item", "items", &none)[0].contains("last-access updates turned off"));
         // a restricted client may not see the disk: nothing is said
         assert!(notes(1, 2, "match", "matches", &Accessed::off()).is_empty());
+        // a folder skipped in Settings > Scanning is not read, and says why without the limit
+        let mut skipped = Accessed::with_excluded(10, vec![dir.join("skipped")]);
+        std::fs::create_dir_all(dir.join("skipped")).unwrap();
+        std::fs::write(dir.join("skipped").join("secret.txt"), b"x").unwrap();
+        assert_eq!(skipped.of(&dir.join("skipped").join("secret.txt")), LastOpened::Unknown);
+        assert_eq!(skipped.left, 10, "no read is spent on a skipped folder");
+        let said = notes(0, 1, "match", "matches", &skipped);
+        assert!(said[0].contains("skipped in Settings > Scanning"), "{said:?}");
+        // a list that can't be read refuses every path
+        let mut unreadable = Accessed::with_excluded(10, vec![PathBuf::from(sprawl_core::progress::UNREADABLE_POLICY)]);
+        assert_eq!(unreadable.of(&file), LastOpened::Unknown);
+        assert!(notes(0, 1, "match", "matches", &unreadable)[0].contains("couldn't be read"));
+        // a part read only in part is never worded as the limit
+        let partial = partial_note(3, "match", "matches").unwrap();
+        assert!(partial.starts_with("3 matches not fully read") && !partial.contains("reading limit"), "{partial}");
+        assert!(partial_note(0, "match", "matches").is_none());
+        assert!(partial_note(1, "match", "matches").unwrap().contains("its last-opened time"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
