@@ -1830,7 +1830,8 @@ pub(crate) mod win {
     /// (WOF) compressed or sparse file. An ordinary open does not show its reparse point, so
     /// this call is how it is told apart from a plain file.
     pub(crate) fn wof_backed(h: &Handle) -> bool {
-        const FSCTL_GET_EXTERNAL_BACKING: u32 = 0x0009_00EC;
+        // CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 196, METHOD_BUFFERED, FILE_ANY_ACCESS)
+        const FSCTL_GET_EXTERNAL_BACKING: u32 = 0x0009_0310;
         let mut out = [0u8; 64];
         let mut got = 0u32;
         // SAFETY: no input; a fixed output buffer, whose size is given.
