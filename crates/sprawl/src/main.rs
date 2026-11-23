@@ -443,8 +443,14 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
     crate::menubar::bind(root)?;
     // the page's other menus, drawn and run as the bar's are (menu.rs): the right-click menus
     // and the map bar's dropdowns
-    for (set, how) in [("RowMenu", menu::How::Context), ("ViewMoreFly", menu::How::Button), ("ViewPaintFly", menu::How::Button)] {
+    for (set, how) in [("RowMenu", menu::How::Context), ("ColsMenu", menu::How::Context), ("ViewMoreFly", menu::How::Button), ("ViewPaintFly", menu::How::Button)] {
         crate::menu::bind(root, set, how)?;
+    }
+    // the Search list's columns: a check changes its column, however it was changed
+    for (name, _, i) in crate::search::COL_MENU {
+        crate::menu::on_mark(root, name, move |on| {
+            with(|s| s.search_col_set(i, on));
+        })?;
     }
     // The menu bar's rows all route to State::command by name (its checks and dots when their
     // mark changes, in menubar.rs).
@@ -598,6 +604,16 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
                 with(|st| st.header_clicked(which, p.X as f64, w));
             }
         })?);
+        // a right-click on the Search list's header: which columns to show
+        if which == Which::Main {
+            keep(header.RightTapped(|s, e| {
+                let (Some(s), Some(e)) = (s.as_ref(), e.as_ref()) else { return };
+                let Ok(el) = s.cast::<UIElement>() else { return };
+                if let Ok(p) = e.GetPosition(&el) {
+                    with(|st| st.search_cols_menu(p));
+                }
+            })?);
+        }
     }
     keep(find::<UIElement>(root, "ExtScroll")?.KeyDown(|_, e| {
         let Some(e) = e.as_ref() else { return };

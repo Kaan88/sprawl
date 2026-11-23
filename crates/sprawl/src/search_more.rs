@@ -861,13 +861,14 @@ impl State {
             None => String::new(),
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
-            cols = crate::tables::col_defs(crate::search::COLS),
+            cols = crate::tables::col_defs(&self.search_cols()),
             runs = self.name_runs(&name),
-            c1 = crate::tables::cell(1, &self.size(ix.size(i))),
-            c2 = crate::tables::cell(2, ""),
-            c3 = crate::tables::cell(3, &ix.modified(i).map(fmt_time).unwrap_or_default()),
+            fv = if self.search_col_shown(4) { "Visible" } else { "Collapsed" },
+            c1 = if self.search_col_shown(1) { crate::tables::cell(1, &self.size(ix.size(i))) } else { String::new() },
+            c2 = if self.search_col_shown(2) { crate::tables::cell(2, "") } else { String::new() },
+            c3 = if self.search_col_shown(3) { crate::tables::cell(3, &ix.modified(i).map(fmt_time).unwrap_or_default()) } else { String::new() },
             folder = ui::esc(&folder),
             full = ui::esc(&full),
         )

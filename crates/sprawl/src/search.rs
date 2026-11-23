@@ -107,7 +107,27 @@ pub(crate) struct Search {
     /// Saved and recent searches (read when first needed), and what their menu was made for.
     pub(crate) history: Option<crate::search_query::History>,
     pub(crate) saved_shape: String,
+    /// The columns hidden (bit i: column i of `COLS`; Name never), remembered in settings.
+    pub(crate) cols_hidden: u8,
+    cols_loaded: bool,
 }
+
+/// The settings words for `COLS`, in order (`searchColsHidden` lists the hidden ones).
+pub(crate) const COL_KEYS: [&str; 5] = ["name", "size", "alloc", "modified", "folder"];
+
+/// The hidden columns' bits for a `searchColsHidden` value; Name can't be hidden and unknown
+/// words are ignored.
+pub(crate) fn hidden_from(s: &str) -> u8 {
+    s.split(',').filter_map(|w| COL_KEYS.iter().position(|k| *k == w.trim())).filter(|&i| i > 0).fold(0, |m, i| m | (1 << i))
+}
+
+/// The `searchColsHidden` value for the hidden columns' bits.
+pub(crate) fn hidden_to(mask: u8) -> String {
+    COL_KEYS.iter().enumerate().filter(|&(i, _)| i > 0 && mask & (1 << i) != 0).map(|(_, k)| *k).collect::<Vec<_>>().join(",")
+}
+
+/// The columns' menu: (the row's name, its words, the column).
+pub(crate) const COL_MENU: [(&str, &str, usize); 4] = [("scSize", "Size", 1), ("scAlloc", "Allocated", 2), ("scMod", "Modified", 3), ("scFolder", "Folder", 4)];
 
 pub(crate) const COLS: &[Col] = FILES_LIKE;
 
@@ -134,6 +154,61 @@ impl Search {
 }
 
 impl State {
+    /// The columns as shown now: the hidden ones at width 0.
+    pub(crate) fn search_cols(&self) -> std::borrow::Cow<'static, [Col]> {
+        if self.search.cols_hidden == 0 {
+            std::borrow::Cow::Borrowed(COLS)
+        } else {
+            std::borrow::Cow::Owned(crate::tables::shown_cols(COLS, self.search.cols_hidden))
+        }
+    }
+
+    /// Whether column `i` is shown.
+    pub(crate) fn search_col_shown(&self, i: usize) -> bool {
+        i == 0 || self.search.cols_hidden & (1 << i) == 0
+    }
+
+    /// The remembered choice of columns is read (once, before the first rows are made).
+    pub(crate) fn search_cols_load(&mut self) {
+        if !self.search.cols_loaded {
+            self.search.cols_loaded = true;
+            self.search.cols_hidden = hidden_from(self.settings.get("searchColsHidden").unwrap_or(""));
+        }
+    }
+
+    /// A right-click on the list's header: the columns, each with a check; Name stays.
+    pub(crate) fn search_cols_menu(&mut self, at: crate::bindings::Windows::Foundation::Point) {
+        if self.view != View::Search {
+            return;
+        }
+        self.search_cols_load();
+        let Ok(target) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "TreeHeader") else { return };
+        for (name, _, i) in COL_MENU {
+            let _ = crate::menubar::set_checked(&self.root, name, self.search_col_shown(i));
+        }
+        crate::menu::show_at("ColsMenu", &target, at, false);
+    }
+
+    /// The column's check changed: show or hide it, and remember it. Nothing when it is so
+    /// already (the check was set by the menu opening).
+    pub(crate) fn search_col_set(&mut self, i: usize, shown: bool) {
+        self.search_cols_load();
+        if i == 0 || i >= COL_KEYS.len() || self.search_col_shown(i) == shown {
+            return;
+        }
+        if shown {
+            self.search.cols_hidden &= !(1 << i);
+        } else {
+            self.search.cols_hidden |= 1 << i;
+        }
+        let v = hidden_to(self.search.cols_hidden);
+        self.settings.set("searchColsHidden", v);
+        self.settings.save();
+        if self.view == View::Search {
+            self.refresh_rows();
+        }
+    }
+
     /// The text in the search box changed.
     pub(crate) fn search_changed(&mut self, q: String) {
         if q == self.search.query && self.search.results_gen == self.tree_gen {
@@ -540,12 +615,13 @@ impl State {
             ""
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
-            cols = crate::tables::col_defs(COLS),
-            c1 = cell(1, &self.size(node.size)),
-            c2 = cell(2, &self.size(self.alloc[n])),
-            c3 = cell(3, &modified),
+            cols = crate::tables::col_defs(&self.search_cols()),
+            fv = if self.search_col_shown(4) { "Visible" } else { "Collapsed" },
+            c1 = if self.search_col_shown(1) { cell(1, &self.size(node.size)) } else { String::new() },
+            c2 = if self.search_col_shown(2) { cell(2, &self.size(self.alloc[n])) } else { String::new() },
+            c3 = if self.search_col_shown(3) { cell(3, &modified) } else { String::new() },
             folder = ui::esc(&folder),
         )
     }
@@ -699,6 +775,30 @@ fn second_tap(last: Option<Tap>, row: (usize, usize), now: std::time::Instant, w
     let taken = recent.is_some_and(|(_, _, taken)| taken);
     let double = if gesture { !taken } else { recent.is_some() && !taken };
     (double, (row, now, double || (gesture && taken)))
+}
+
+#[cfg(test)]
+mod col_tests {
+    use super::{hidden_from, hidden_to, COLS, COL_KEYS, COL_MENU};
+
+    #[test]
+    fn the_hidden_columns_are_remembered_as_words() {
+        assert_eq!(hidden_from(""), 0);
+        assert_eq!(hidden_from("alloc,folder"), 0b10100);
+        assert_eq!(hidden_to(0b10100), "alloc,folder");
+        // Name can't be hidden, unknown words and spaces don't matter
+        assert_eq!(hidden_from("name, size ,nonsense"), 0b10);
+        assert_eq!(hidden_to(0b00001), "");
+        for mask in 0..32u8 {
+            assert_eq!(hidden_from(&hidden_to(mask)), mask & !1, "{mask:05b}");
+        }
+    }
+
+    #[test]
+    fn the_menu_lists_every_column_but_name() {
+        assert_eq!(COL_KEYS.len(), COLS.len());
+        assert_eq!(COL_MENU.iter().map(|m| m.2).collect::<Vec<_>>(), [1, 2, 3, 4]);
+    }
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ pub(crate) enum Key {
     None,
 }
 
+#[derive(Clone)]
 pub(crate) struct Col {
     title: &'static str,
     /// Pixels, or a negative number for a share (`-2.0` is `2*`).
@@ -72,6 +73,12 @@ pub(crate) const FILES_LIKE: &[Col] = &[
     col("Modified", 130.0, true, Key::Modified),
     col("Folder", -3.0, false, Key::Folder),
 ];
+/// `base` with the columns whose bit is set in `hidden` (bit i: column i) at width 0: nothing is
+/// drawn there and the others take the room. The first column is never hidden.
+pub(crate) fn shown_cols(base: &[Col], hidden: u8) -> Vec<Col> {
+    base.iter().enumerate().map(|(i, c)| if i > 0 && hidden & (1 << i) != 0 { Col { width: 0.0, ..c.clone() } } else { c.clone() }).collect()
+}
+
 /// The Folder column's width in characters for a table `width` wide: what the fixed columns
 /// leave, its 3 parts of 5, at about 6.5 pixels a character of 12 px text (0: not measured).
 pub(crate) fn folder_chars(width: f64) -> usize {
@@ -351,13 +358,14 @@ impl State {
         cols.iter().take(k).map(w).sum::<f64>() + cols.get(k).map_or(0.0, |c| w(c) / 2.0)
     }
 
-    fn main_cols(&self) -> (&'static [Col], (usize, bool)) {
+    fn main_cols(&self) -> (std::borrow::Cow<'static, [Col]>, (usize, bool)) {
+        use std::borrow::Cow;
         if self.view == View::Files {
-            (FILES, self.tables.files_sort)
+            (Cow::Borrowed(FILES), self.tables.files_sort)
         } else if self.view == View::Search {
-            (FILES_LIKE, self.search.sort)
+            (self.search_cols(), self.search.sort)
         } else {
-            (if self.tables.compact_tree { TREE_NARROW } else { TREE }, self.tables.tree_sort)
+            (Cow::Borrowed(if self.tables.compact_tree { TREE_NARROW } else { TREE }), self.tables.tree_sort)
         }
     }
 
@@ -430,11 +438,11 @@ impl State {
     }
 
     fn header_clicked_inner(&mut self, which: Which, x: f64, width: f64) {
-        let cols = match which {
-            Which::Exts => EXTS,
+        let cols: std::borrow::Cow<[Col]> = match which {
+            Which::Exts => std::borrow::Cow::Borrowed(EXTS),
             Which::Main => self.main_cols().0,
         };
-        let Some(c) = col_at(cols, width, x) else { return };
+        let Some(c) = col_at(&cols, width, x) else { return };
         if cols[c].key == Key::None {
             return;
         }
@@ -506,13 +514,14 @@ impl State {
             return;
         }
         let t0 = std::time::Instant::now();
+        self.search_cols_load();
         self.rows = match self.view {
             View::Files => self.files.iter().map(|&f| (f, 0)).collect(),
             View::Search => self.search_rows(),
             _ => self.visible_rows(),
         };
         let (cols, sort) = self.main_cols();
-        let head = header(cols, sort);
+        let head = header(&cols, sort);
         if head != self.tables.heads[0] {
             if let (Ok(h), Ok(el)) = (find::<Border>(&self.root, "TreeHeader"), load::<UIElement>(&head)) {
                 let _ = h.SetChild(&el);
@@ -695,7 +704,7 @@ impl State {
         let name = if node.is_compressed() { format!("{} · compressed", label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", label(n)) } else { label(n) };
         format!(
             r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}{sel_bar}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="{{$fs12}}" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="{{$fs14}}" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
-            cols = col_defs(self.main_cols().0),
+            cols = col_defs(&self.main_cols().0),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
             name = ui::esc(&name),
@@ -1544,6 +1553,26 @@ mod tests {
             assert_eq!(keyed, old, "keyed, desc {desc}");
             assert_eq!(ranked, old, "ranked, desc {desc}");
         }
+    }
+
+    #[test]
+    fn hidden_columns_have_no_width_and_the_others_take_the_room() {
+        let all = shown_cols(FILES_LIKE, 0);
+        assert_eq!(all.iter().map(|c| c.width).collect::<Vec<_>>(), FILES_LIKE.iter().map(|c| c.width).collect::<Vec<_>>());
+        // Size (1) and Folder (4) hidden; bit 0 (Name) is ignored
+        let some = shown_cols(FILES_LIKE, 0b10011);
+        assert_eq!(some.iter().map(|c| c.width).collect::<Vec<_>>(), [-2.0, 0.0, 92.0, 130.0, 0.0]);
+        assert_eq!(col_defs(&some), r##"<Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="0"/><ColumnDefinition Width="92"/><ColumnDefinition Width="130"/><ColumnDefinition Width="0"/></Grid.ColumnDefinitions>"##);
+        // a click goes to a column that is shown: Name takes everything the fixed ones leave
+        assert_eq!(col_at(&some, 1000.0, 10.0), Some(0));
+        assert_eq!(col_at(&some, 1000.0, 700.0), Some(0), "Name is 2* of what 92+130 leave");
+        assert_eq!(col_at(&some, 1000.0, 800.0), Some(2));
+        assert_eq!(col_at(&some, 1000.0, 900.0), Some(3));
+        assert_eq!(col_at(&some, 1000.0, 999.0), Some(3));
+        // the header draws no title over a hidden column
+        let h = header(&some, (0, false));
+        assert!(h.contains("Name") && h.contains("Allocated") && h.contains("Modified"));
+        assert!(!h.contains(r##"Text="Size""##) && !h.contains(r##"Text="Folder""##));
     }
 
     #[test]

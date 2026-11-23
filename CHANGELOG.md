@@ -11,6 +11,7 @@ in-app updater shows.
 - Search: after Ctrl+click takes a result out of the picks, Del and the row menu no longer still count it.
 - Search: F2 renames the picked result (one at a time). The new name is checked first: nothing Windows doesn't allow, never onto a name that is already there, and a file keeps its extension unless you type a new one. Protected places and results from saved scans are refused, and Windows' own message is shown if it says no.
 - Search: Ctrl+C copies the picked results as files, so Paste in Explorer copies them.
+- Search: right-click the list's header to choose which columns to show (Size, Allocated, Modified, Folder; Name always stays). Your choice is remembered.
 
 ## 1.0.8 — 2026-11-23
 
