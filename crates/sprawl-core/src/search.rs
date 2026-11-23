@@ -132,6 +132,9 @@ impl Item for NodeItem<'_> {
     fn depth(&self) -> u32 {
         u32::from(self.index.depth[self.i]).saturating_sub(1)
     }
+    fn attributes(&self) -> u32 {
+        self.tree.nodes[self.i].attributes
+    }
     fn children(&self) -> u32 {
         u32::try_from(self.tree.nodes[self.i].children.len()).unwrap_or(u32::MAX)
     }
@@ -142,7 +145,9 @@ impl Item for NodeItem<'_> {
     fn child_matches(&self, ts: &[Term]) -> bool {
         let tree = self.tree;
         tree.nodes[self.i].children.iter().any(|&c| {
-            if c >= tree.nodes.len() {
+            // the index can be shorter than the tree (`search` works on the shorter): a child
+            // past its end has no name to test
+            if c >= tree.nodes.len() || c >= self.index.len() {
                 return false;
             }
             let it = NodeItem { tree, index: self.index, i: c, path: &[], opath: &[] };
@@ -491,11 +496,11 @@ mod tests {
     }
 
     /// C:\Data
-    ///   Games\Steam\config.vdf (10), Games\Steam\Report 2024.PDF (3000)
-    ///   cache\ (folder) with temp.tmp (5)
+    ///   Games\Steam\config.vdf (10, hidden and system), Games\Steam\Report 2024.PDF (3000, read-only)
+    ///   cache\ (folder, hidden and system) with temp.tmp (5, a link)
     ///   setup.exe (2 GB)
     fn sample() -> Tree {
-        let nodes = vec![
+        let mut nodes = vec![
             node("C:\\Data", true, 0, None, vec![1, 5, 7]),
             node("Games", true, 0, Some(0), vec![2]),
             node("Steam", true, 0, Some(1), vec![3, 4]),
@@ -505,6 +510,11 @@ mod tests {
             node("temp.tmp", false, 5, Some(5), vec![]),
             node("setup.exe", false, 2 << 30, Some(0), vec![]),
         ];
+        // the flags `attrib:` asks about, as a scan keeps them
+        nodes[3].attributes = crate::attr::HIDDEN | crate::attr::SYSTEM;
+        nodes[4].attributes = crate::attr::READONLY;
+        nodes[5].attributes = crate::attr::HIDDEN | crate::attr::SYSTEM;
+        nodes[6].attributes = crate::attr::REPARSE_POINT;
         let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
@@ -585,6 +595,35 @@ mod tests {
         t.nodes[0].children.retain(|&c| c != 1); // Games cut off, as a delete leaves it
         assert!(find(&t, "*.vdf").is_empty());
         assert_eq!(find(&t, "setup"), ["setup.exe"]);
+    }
+
+    /// `attrib:` on the scan on screen reads the node's flags: the tree's own searcher used to
+    /// answer nothing for all but `attrib:c`, so `!attrib:h` listed the hidden files too.
+    #[test]
+    fn attributes_match_the_scan() {
+        let t = sample();
+        let mut hidden = find(&t, "attrib:h");
+        hidden.sort();
+        assert_eq!(hidden, ["cache", "config.vdf"]);
+        assert_eq!(find(&t, "attrib:hs"), find(&t, "attrib:h"));
+        assert_eq!(find(&t, "attrib:r"), ["Report 2024.PDF"]);
+        assert_eq!(find(&t, "attrib:l"), ["temp.tmp"]);
+        let mut not_r = find(&t, "!attrib:r");
+        not_r.sort();
+        assert_eq!(not_r, ["Games", "Steam", "cache", "config.vdf", "setup.exe", "temp.tmp"]);
+        assert_eq!(find(&t, "!attrib:h").len(), 5, "the hidden ones are left out");
+    }
+
+    /// A child past the end of the index is not asked its name: `search` works on the shorter
+    /// of the tree and the index, and a worker's panic would look like a cancelled search.
+    #[test]
+    fn a_child_past_the_index_is_not_read() {
+        let t = sample();
+        let mut ix = Index::build(&t);
+        ix.starts.truncate(3);
+        ix.depth.truncate(2);
+        let hits = search(&t, &ix, &Query::parse("child:config.vdf"), &AtomicBool::new(false)).unwrap();
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]

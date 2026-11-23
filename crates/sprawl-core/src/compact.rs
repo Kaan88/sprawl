@@ -278,7 +278,14 @@ impl CompactIndex {
         let d = self.depth[i];
         let mut j = i + 1;
         std::iter::from_fn(move || {
-            while j < n && self.depth[j] > d {
+            while j < n {
+                // a folder's subtree is the run after it, which ends at the first item that is
+                // not deeper. Depth stops at 255, so a folder that deep finds its children by
+                // their parent chain instead.
+                let inside = if d < u8::MAX { self.depth[j] > d } else { self.under(j, i) };
+                if !inside {
+                    return None;
+                }
                 let k = j;
                 j += 1;
                 if self.parent[k] == i as u32 {
@@ -287,6 +294,20 @@ impl CompactIndex {
             }
             None
         })
+    }
+
+    /// Whether item `j` is inside item `i` (one of the folder at depth 255's descendants: their
+    /// depth is saturated too, so the depth alone can't tell them from the next folder's).
+    fn under(&self, j: usize, i: usize) -> bool {
+        let mut k = j;
+        while k > i {
+            match self.parent[k] {
+                u32::MAX => return false,
+                p if p as usize == i => return true,
+                p => k = p as usize,
+            }
+        }
+        false
     }
 
     /// The folder an item is in; `None` for the root.
@@ -620,7 +641,7 @@ mod tests {
     /// C:\Data with folders, mixed case, non-ASCII names, empty files, times, and a cut-off
     /// branch. Node order is not depth-first on purpose.
     fn sample() -> Tree {
-        let nodes = vec![
+        let mut nodes = vec![
             node("C:\\Data", true, 0, None, vec![9, 1, 5, 7, 10], Some(T0)),
             node("Games", true, 0, Some(0), vec![2], Some(T0 + 3 * DAY)),
             node("Steam", true, 0, Some(1), vec![3, 4, 11], Some(T0 + 30 * DAY)),
@@ -636,6 +657,11 @@ mod tests {
             node("Readme.MD", false, 1 << 20, Some(5), vec![], Some(T0 + 200 * DAY)),
             node("Photo.JPG", false, 500_000, Some(10), vec![], Some(T0 + 20 * DAY)),
         ];
+        // the flags `attrib:` asks about, as a scan keeps them
+        nodes[3].attributes = crate::attr::HIDDEN | crate::attr::SYSTEM;
+        nodes[4].attributes = crate::attr::READONLY;
+        nodes[5].attributes = crate::attr::HIDDEN | crate::attr::SYSTEM;
+        nodes[6].attributes = crate::attr::REPARSE_POINT;
         let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
         t.compute_totals();
         t
@@ -668,6 +694,7 @@ mod tests {
         "childcount:2", "childcount:>1", "childfilecount:0", "childfilecount:>0", "folder: childcount:1",
         "<parent:c:\\data *.pdf>|*.exe", "!<parent:c:\\data file:>",
         "dupe:", "dupe: readme", "sizedupe:", "sizedupe: file:", "attrib:h", "attrib:c", "audio:", "doc:", "len:<20", "len:>20",
+        "attrib:hs", "!attrib:r", "attrib:l", "attrib:h folder:", "childcount:0", "childfilecount:0", "!childcount:>1",
     ];
 
     fn tree_paths(t: &Tree, q: &Query) -> Vec<PathBuf> {
@@ -732,6 +759,32 @@ mod tests {
         assert_eq!(names("cut"), Vec::<String>::new(), "a cut-off branch is left out");
         assert_eq!(names("size:empty file:"), ["README.md", "Über Ärger.TXT"]);
         assert_eq!(names("depth:1 folder:"), ["Games", "cache", "Ünïcödé Földer"]);
+    }
+
+    /// A folder 300 deep is stored at depth 255, like its children: it must still find them
+    /// (`child:` and the counts), as the tree does.
+    #[test]
+    fn children_of_a_folder_below_depth_255() {
+        let deep = 300usize;
+        let mut nodes: Vec<Node> = Vec::with_capacity(deep + 2);
+        nodes.push(node("C:\\Data", true, 0, None, Vec::new(), None));
+        for i in 0..deep {
+            nodes.push(node(&format!("f{i}"), true, 0, Some(i), Vec::new(), None));
+            nodes[i].children.push(i + 1);
+        }
+        nodes.push(node("x.txt", false, 1, Some(deep), Vec::new(), None));
+        nodes[deep].children.push(deep + 1);
+        let mut t = Tree { volumes: Vec::new(), root_path: PathBuf::from("C:\\Data"), nodes, errors: 0, method: Default::default() };
+        t.compute_totals();
+        let c = CompactIndex::build(&t);
+        assert_eq!(c.depth(deep as u32), 255, "the depth is saturated");
+        let q = Query::parse("child:x.txt");
+        assert_eq!(tree_paths(&t, &q), [t.path_of(deep)]);
+        assert_eq!(compact_paths(&c, &q), tree_paths(&t, &q));
+        for q in ["childcount:1", "childfilecount:1", "childcount:1 folder: f299"] {
+            let q = Query::parse(q);
+            assert_eq!(compact_paths(&c, &q), tree_paths(&t, &q), "{q:?}");
+        }
     }
 
     #[test]
