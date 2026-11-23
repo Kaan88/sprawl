@@ -177,10 +177,15 @@ pub(crate) fn sort_nodes(t: &Tree, alloc: &[u64], key: Key, desc: bool, v: &mut 
         }
         return;
     }
-    v.sort_by(|&a, &b| {
-        let o = if key == Key::Name { cmp_names(&t.nodes[a].name, &t.nodes[b].name) } else { cmp_nodes(t, alloc, key, a, b) };
-        dir(o)
-    });
+    if key == Key::Name {
+        // folders before files, whichever way round; the names run A-Z or Z-A inside each
+        v.sort_by(|&a, &b| {
+            let (x, y) = (&t.nodes[a], &t.nodes[b]);
+            y.is_dir.cmp(&x.is_dir).then_with(|| dir(cmp_names(&x.name, &y.name)))
+        });
+        return;
+    }
+    v.sort_by(|&a, &b| dir(cmp_nodes(t, alloc, key, a, b)));
 }
 
 /// The folder a row is in, as the Folder column compares it: its path, lowercased.
@@ -1537,6 +1542,29 @@ mod tests {
             sort_nodes(&t, &[], Key::Folder, desc, &mut ranked, &ranks);
             assert_eq!(keyed, old, "keyed, desc {desc}");
             assert_eq!(ranked, old, "ranked, desc {desc}");
+        }
+    }
+
+    #[test]
+    fn the_scans_name_sort_puts_folders_first_both_ways() {
+        let t = sample();
+        let all: Vec<usize> = (1..t.nodes.len()).collect();
+        assert!(all.iter().any(|&i| t.nodes[i].is_dir) && all.iter().any(|&i| !t.nodes[i].is_dir));
+        for desc in [false, true] {
+            let mut v = all.clone();
+            sort_nodes(&t, &[], Key::Name, desc, &mut v, &[]);
+            let dirs = v.iter().take_while(|&&i| t.nodes[i].is_dir).count();
+            assert_eq!(dirs, all.iter().filter(|&&i| t.nodes[i].is_dir).count(), "every folder above every file (desc {desc})");
+            let names = |r: &[usize]| -> Vec<String> { r.iter().map(|&i| t.nodes[i].name.to_lowercase()).collect() };
+            let (mut d, mut f) = (names(&v[..dirs]), names(&v[dirs..]));
+            let (gd, gf) = (d.clone(), f.clone());
+            d.sort();
+            f.sort();
+            if desc {
+                d.reverse();
+                f.reverse();
+            }
+            assert_eq!((gd, gf), (d, f), "each group in name order (desc {desc})");
         }
     }
 

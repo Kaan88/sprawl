@@ -450,13 +450,14 @@ impl CompactIndex {
         })
     }
 
-    /// Sort `hits` (ids from [`CompactIndex::search`]). Equal keys keep their order.
+    /// Sort `hits` (ids from [`CompactIndex::search`]). Equal keys keep their order. By name,
+    /// folders come before files whichever way round (A-Z or Z-A inside each group).
     pub fn sort(&self, hits: &mut [u32], by: SortBy, descending: bool) {
         let dir = |o: std::cmp::Ordering| if descending { o.reverse() } else { o };
         match by {
             SortBy::Size => hits.sort_by(|&a, &b| dir(self.size[a as usize].cmp(&self.size[b as usize]))),
             SortBy::Modified => hits.sort_by(|&a, &b| dir(self.modified[a as usize].cmp(&self.modified[b as usize]))),
-            SortBy::Name => hits.sort_by(|&a, &b| dir(self.low(a as usize).cmp(self.low(b as usize)))),
+            SortBy::Name => hits.sort_by(|&a, &b| self.is_dir(b).cmp(&self.is_dir(a)).then_with(|| dir(self.low(a as usize).cmp(self.low(b as usize))))),
             SortBy::Folder => {
                 let ranks = self.ranks();
                 let rank = |i: u32| self.parent(i).map_or(0, |p| u64::from(ranks[p as usize]) + 1);
@@ -687,6 +688,31 @@ mod tests {
         let keys2: Vec<(String, String)> =
             hits.iter().map(|&i| (c.path_of(c.parent(i).unwrap()).to_string_lossy().to_lowercase(), c.name(i).to_lowercase())).collect();
         assert_eq!(keys2, rev);
+    }
+
+    #[test]
+    fn name_sort_puts_folders_first_both_ways() {
+        let t = sample();
+        let c = CompactIndex::build(&t);
+        let mut hits: Vec<u32> = (1..c.len() as u32).collect();
+        let order = |c: &CompactIndex, hits: &[u32]| -> (Vec<String>, Vec<String>) {
+            let (d, f): (Vec<u32>, Vec<u32>) = hits.iter().partition(|&&i| c.is_dir(i));
+            // every folder is above every file
+            assert!(hits[..d.len()].iter().all(|&i| c.is_dir(i)) && hits[d.len()..].iter().all(|&i| !c.is_dir(i)));
+            (d.iter().map(|&i| c.name(i).to_lowercase()).collect(), f.iter().map(|&i| c.name(i).to_lowercase()).collect())
+        };
+        c.sort(&mut hits, SortBy::Name, false);
+        let (dirs, files) = order(&c, &hits);
+        assert!(!dirs.is_empty() && !files.is_empty());
+        let (mut d2, mut f2) = (dirs.clone(), files.clone());
+        d2.sort();
+        f2.sort();
+        assert_eq!((&dirs, &files), (&d2, &f2), "folders A-Z, then files A-Z");
+        c.sort(&mut hits, SortBy::Name, true);
+        let (dirs, files) = order(&c, &hits);
+        d2.reverse();
+        f2.reverse();
+        assert_eq!((dirs, files), (d2, f2), "folders still first, each group reversed");
     }
 
     #[test]

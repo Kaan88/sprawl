@@ -480,9 +480,11 @@ impl State {
                         // the one comparison both sorts use
                         crate::tables::cmp_names(&mine_dir.1, &other_dir.1).then_with(|| crate::tables::cmp_names(&a.name, &ix.name(id)))
                     } else if by == sprawl_core::compact::SortBy::Name {
-                        crate::tables::cmp_names(&a.name, &ix.name(id))
+                        // folders first (the same key the lists were sorted by), then the name
+                        let group = |dir| crate::search_more::name_group(dir, desc);
+                        group(a.is_dir).cmp(&group(ix.is_dir(id))).then_with(|| crate::tables::cmp_names(&a.name, &ix.name(id)))
                     } else {
-                        crate::search_more::scan_val(t, mine[i], by).cmp(&crate::search_more::compact_val(ix, id, by))
+                        crate::search_more::scan_val(t, mine[i], by, desc).cmp(&crate::search_more::compact_val(ix, id, by, desc))
                     };
                     let mine_first = if desc { o != std::cmp::Ordering::Less } else { o != std::cmp::Ordering::Greater };
                     if mine_first {

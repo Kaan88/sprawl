@@ -249,26 +249,35 @@ pub(crate) fn sort_by(col: usize) -> SortBy {
 pub(crate) enum SortVal {
     Num(u64),
     Time(Option<SystemTime>),
-    /// (the folder's path or the name, then the name), lower case
+    /// (the folder's path, then the name), lower case
     Text(String, String),
+    /// By name: folders first whichever way round (see [`name_group`]), then the name, lower case
+    Name(u8, String),
 }
 
-pub(crate) fn compact_val(ix: &CompactIndex, id: u32, by: SortBy) -> SortVal {
+/// The part of a name sort's key that puts folders before files. The sort takes the biggest key
+/// first when `desc`, so a folder is the biggest group then; the names inside a group run A-Z or
+/// Z-A as the key does.
+pub(crate) fn name_group(is_dir: bool, desc: bool) -> u8 {
+    u8::from(is_dir == desc)
+}
+
+pub(crate) fn compact_val(ix: &CompactIndex, id: u32, by: SortBy, desc: bool) -> SortVal {
     match by {
         SortBy::Size => SortVal::Num(ix.size(id)),
         SortBy::Modified => SortVal::Time(ix.modified(id)),
-        SortBy::Name => SortVal::Text(ix.name(id).to_lowercase(), String::new()),
+        SortBy::Name => SortVal::Name(name_group(ix.is_dir(id), desc), ix.name(id).to_lowercase()),
         SortBy::Folder => SortVal::Text(ix.parent(id).map(|p| ix.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default(), ix.name(id).to_lowercase()),
     }
 }
 
 /// The same for a node of the scan on screen, so its rows and other drives' rows merge.
-pub(crate) fn scan_val(t: &sprawl_core::Tree, n: usize, by: SortBy) -> SortVal {
+pub(crate) fn scan_val(t: &sprawl_core::Tree, n: usize, by: SortBy, desc: bool) -> SortVal {
     let x = &t.nodes[n];
     match by {
         SortBy::Size => SortVal::Num(x.size),
         SortBy::Modified => SortVal::Time(x.modified),
-        SortBy::Name => SortVal::Text(x.name.to_lowercase(), String::new()),
+        SortBy::Name => SortVal::Name(name_group(x.is_dir, desc), x.name.to_lowercase()),
         SortBy::Folder => SortVal::Text(x.parent.map(|p| t.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default(), x.name.to_lowercase()),
     }
 }
@@ -316,7 +325,7 @@ fn sort_and_cap(places: &[Option<Arc<Place>>], mut all: Vec<Vec<u32>>, (c, desc)
             p.ix.sort(hits, by, desc);
         }
     }
-    let shown = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, by)), desc, max_hits());
+    let shown = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, by, desc)), desc, max_hits());
     Some((all, shown))
 }
 
@@ -1076,15 +1085,41 @@ mod tests {
         // biggest first: the biggest two
         let (all, shown) = sort_and_cap(&places, all, (col(crate::tables::Key::Size), true), &AtomicBool::new(false)).unwrap();
         assert_eq!(names(&shown), ["b.txt", "c.txt", "a.txt", "y.txt", "z.txt"]);
-        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Size)), true, 2);
+        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Size, true)), true, 2);
         assert_eq!(names(&capped), ["b.txt", "c.txt"]);
         // by name: the first two names of all of them, not of the biggest two
         let (all, _) = sort_and_cap(&places, all, (col(crate::tables::Key::Name), false), &AtomicBool::new(false)).unwrap();
-        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Name)), false, 2);
+        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Name, false)), false, 2);
         assert_eq!(names(&capped), ["a.txt", "b.txt"]);
         // by folder: D:\ then E:\, names within
         let (_, shown) = sort_and_cap(&places, all, (col(crate::tables::Key::Folder), false), &AtomicBool::new(false)).unwrap();
         assert_eq!(names(&shown), ["a.txt", "b.txt", "z.txt", "c.txt", "y.txt"]);
+    }
+
+    #[test]
+    fn by_name_every_folder_is_above_every_file_in_both_directions() {
+        let d = tree("D:\\", &[("b.txt", false, 0, 1), ("Zed", true, 0, 0), ("a.txt", false, 0, 1), ("Alpha", true, 0, 0)]);
+        let e = tree("E:\\", &[("c.txt", false, 0, 1), ("Mid", true, 0, 0), ("z.txt", false, 0, 1)]);
+        let places = vec![place(&d, "D:\\"), place(&e, "E:\\")];
+        let all: Vec<Vec<u32>> = places.iter().map(|p| p.as_ref().map_or(Vec::new(), |p| (1..p.ix.len() as u32).collect())).collect();
+        let names = |shown: &[(usize, usize)]| -> Vec<String> { shown.iter().map(|&(k, id)| places[k].as_ref().unwrap().ix.name(id as u32)).collect() };
+        let name_col = crate::search::COLS.iter().position(|c| c.key() == crate::tables::Key::Name).unwrap();
+        let (all, shown) = sort_and_cap(&places, all, (name_col, false), &AtomicBool::new(false)).unwrap();
+        assert_eq!(names(&shown), ["Alpha", "Mid", "Zed", "a.txt", "b.txt", "c.txt", "z.txt"]);
+        let (_, shown) = sort_and_cap(&places, all, (name_col, true), &AtomicBool::new(false)).unwrap();
+        assert_eq!(names(&shown), ["Zed", "Mid", "Alpha", "z.txt", "c.txt", "b.txt", "a.txt"], "folders still first, each group reversed");
+        // the scan's rows merge with them by the same key: a scan folder between other drives' folders
+        let t = tree("C:\\", &[("Beta", true, 0, 0)]);
+        for desc in [false, true] {
+            let a = scan_val(&t, 1, SortBy::Name, desc);
+            let f = compact_val(&places[0].as_ref().unwrap().ix, 1, SortBy::Name, desc);
+            let dir_id = (1..places[0].as_ref().unwrap().ix.len() as u32).find(|&i| places[0].as_ref().unwrap().ix.is_dir(i)).unwrap();
+            let d = compact_val(&places[0].as_ref().unwrap().ix, dir_id, SortBy::Name, desc);
+            // (a folder against a file: the folder is the one that comes first in this direction)
+            let folder_first = if desc { a > f } else { a < f };
+            assert!(folder_first, "a scan folder is ahead of another drive's file (desc {desc})");
+            assert!(if desc { d > f } else { d < f }, "and so is another drive's");
+        }
     }
 
     #[test]
