@@ -338,6 +338,22 @@ impl Facts {
         self.runs.iter().filter(|(exe, _)| pick(exe)).map(|(_, &r)| r).max_by_key(|&(t, _)| t)
     }
 
+    /// When a program at `n` last started, from Windows' own records: a file's own name, or the
+    /// newest of a folder's programs directly in it. Installers, updaters and crash reporters
+    /// are left out (their runs say nothing about use). None when nothing there started, or when
+    /// Prefetch couldn't be read and only the Start menu history is known.
+    pub fn last_run_in(&self, tree: &Tree, n: usize) -> Option<(SystemTime, UsedFrom)> {
+        let run_of = |name: &str| {
+            let name = name.to_lowercase();
+            (!helper(&name)).then(|| self.runs.get(&run_key(&name)).copied()).flatten()
+        };
+        let node = &tree.nodes[n];
+        if !node.is_dir {
+            return run_of(&node.name);
+        }
+        node.children.iter().filter(|&&c| !tree.nodes[c].is_dir).filter_map(|&c| run_of(&tree.nodes[c].name)).max_by_key(|&(t, _)| t)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_run(&mut self, exe: &str, t: SystemTime) {
         self.runs.insert(run_key(exe), (t, UsedFrom::Prefetch));
@@ -947,6 +963,27 @@ mod tests {
     }
 
     use super::*;
+
+    /// A folder's programs say when they last ran; an installer's own run isn't use.
+    #[test]
+    fn a_folders_programs_say_when_they_ran() {
+        use sprawl_core::{Node, ScanMethod, Tree};
+        let node = |name: &str, dir: bool, parent: Option<usize>, children: Vec<usize>| Node { name: name.into(), is_dir: dir, parent, children, ..Default::default() };
+        let tree = Tree { volumes: Vec::new(), root_path: r"C:\App".into(), errors: 0, method: ScanMethod::Walk,
+            nodes: vec![
+                node(r"C:\App", true, None, vec![1, 2, 3]),
+                node("tool.exe", false, Some(0), vec![]),
+                node("helper.dll", false, Some(0), vec![]),
+                node("unins000.exe", false, Some(0), vec![]),
+            ] };
+        let at = UNIX_EPOCH + Duration::from_secs(1000);
+        let mut facts = Facts::default();
+        facts.set_run("tool.exe", at);
+        facts.set_run("unins000.exe", at + Duration::from_secs(500));
+        assert_eq!(facts.last_run_in(&tree, 0), Some((at, UsedFrom::Prefetch)), "the newest real program, not the installer");
+        assert_eq!(facts.last_run_in(&tree, 1), Some((at, UsedFrom::Prefetch)));
+        assert_eq!(facts.last_run_in(&tree, 2), None, "a library never ran");
+    }
 
     #[test]
     fn a_restricted_view_matches_names_in_their_own_case() {
