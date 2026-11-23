@@ -790,6 +790,7 @@ pub fn check(f: &Finding, tree: &Tree, never: &Never) -> Result<Finding, Rejecti
 pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[CacheCarveOut], home: Option<&std::path::Path>, places: Option<&crate::privacy::Places>) -> Result<Finding, Rejection> {
     let member_excluded = match &f.action {
         Some(crate::finding::Action::Set { files, .. }) => files.iter().any(|p| crate::exclusions::intersects(p, &never.excluded)),
+        Some(crate::finding::Action::Edit { file, .. }) => crate::exclusions::intersects(file, &never.excluded),
         Some(crate::finding::Action::Link { keep, copies }) => std::iter::once(keep).chain(copies).any(|p| crate::exclusions::intersects(p, &never.excluded)),
         _ => false,
     };
@@ -804,12 +805,16 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
     if let Some(crate::finding::Action::Set { part, files }) = &f.action {
         return check_set(f, tree, never, part, files, places, home);
     }
+    // a privacy part that edits one database: checked as that file, by its own rules
+    if let Some(crate::finding::Action::Edit { part, file, .. }) = &f.action {
+        return check_edit(f, tree, never, part, file, places, home);
+    }
     // F4: copies made links to one of them, checked as that group of files
     if let Some(crate::finding::Action::Link { keep, copies }) = &f.action {
         return check_link(f, tree, never, keep, copies, home);
     }
     if f.privacy() {
-        return Err(Rejection::Privacy("a privacy part is only ever a set of its own files".into()));
+        return Err(Rejection::Privacy("a privacy part is only ever a set of its own files, or one of its databases edited in place".into()));
     }
     let n = find_path(tree, &f.path).ok_or(Rejection::NotInTree)?;
     if std::fs::symlink_metadata(&f.path).is_err() {
@@ -1098,6 +1103,68 @@ fn check_set(f: &Finding, tree: &Tree, never: &Never, part_id: &str, files: &[st
     }
     let mut out = f.clone();
     out.bytes = actual;
+    out.risk = out.risk.max(Risk::Amber);
+    out.carved = Vec::new();
+    Ok(out)
+}
+
+/// A privacy part that edits one database ([`crate::finding::Action::Edit`]): Sprawl's own, the
+/// part's one file in this account's profile as the scan has it, no link on the way, on the
+/// never-list only by the browser's whole folder or a name the part waives, and no space claimed
+/// (it edits; it removes no file).
+fn check_edit(f: &Finding, tree: &Tree, never: &Never, part_id: &str, file: &std::path::Path, places: Option<&crate::privacy::Places>, home: Option<&std::path::Path>) -> Result<Finding, Rejection> {
+    let refuse = |why: String| Err(Rejection::Privacy(why));
+    let from_model = matches!(f.source, crate::finding::Source::Model(_));
+    if from_model || !f.builtin || !f.trusted || f.allow_protected || f.admin || f.remedy != Remedy::Delete || f.command.is_some() {
+        return refuse("not one of Sprawl's own privacy parts".into());
+    }
+    let Some(part) = crate::privacy::part(part_id) else { return refuse(format!("{part_id} is not a privacy part Sprawl knows")) };
+    if part.edit.is_none() {
+        return refuse("it is not a part that edits a database".into());
+    }
+    if !matches!(&f.source, crate::finding::Source::Rule(id) if id == part_id) {
+        return refuse("its rule and its file are not the same part".into());
+    }
+    let Some(places) = places else { return refuse("this account's AppData folders couldn't be worked out".into()) };
+    if never.incomplete {
+        return Err(Rejection::NeverListIncomplete);
+    }
+    let low = |p: &std::path::Path| p.to_string_lossy().to_lowercase();
+    if low(&f.path) != low(file) {
+        return refuse("its path is not the database it edits".into());
+    }
+    let Some(m) = crate::privacy::member(part, file, places) else { return refuse(format!("{} is not one of this part's files", file.display())) };
+    if m.side.is_some() || m.file != 0 || part.files.len() != 1 {
+        return refuse(format!("{} is not the database this part edits", file.display()));
+    }
+    let n = find_path(tree, file).ok_or(Rejection::NotInTree)?;
+    if std::fs::symlink_metadata(file).is_err() {
+        return Err(Rejection::Missing);
+    }
+    if n == sprawl_core::ROOT {
+        return Err(Rejection::ScanRoot);
+    }
+    if tree.nodes[n].is_dir {
+        return refuse(format!("{} is a folder", file.display()));
+    }
+    // no junction or link on the way down from the scan's root, the file itself included
+    let mut i = Some(n);
+    while let Some(k) = i {
+        if tree.nodes[k].is_reparse_point() {
+            return Err(Rejection::ThroughLink(tree.path_of(k).display().to_string()));
+        }
+        i = tree.nodes[k].parent;
+    }
+    let ps = file.to_string_lossy();
+    if let Some(h) = never.all_hits(&ps).into_iter().find(|h| !is_folder_cover(h) && !part.waives.contains(h)) {
+        return Err(Rejection::Never(format!("{} ({h})", file.display())));
+    }
+    if crate::finding::other_account(file, home) {
+        return refuse(format!("{} is in another account's profile", file.display()));
+    }
+    let mut out = f.clone();
+    // rows, not bytes: a database edited in place frees nothing Sprawl can promise
+    out.bytes = 0;
     out.risk = out.risk.max(Risk::Amber);
     out.carved = Vec::new();
     Ok(out)

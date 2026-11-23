@@ -211,7 +211,7 @@ pub static PREFS: [Pref; 61] = [
         "privacyCleaners",
         Sec::Cleaning,
         "Show privacy cleaners",
-        "Adds a Privacy group to Cleaners: cookies and history of this account's browsers, by profile. They free almost no space, and each is ticked on its own. Off, Sprawl doesn't look at them.",
+        "Adds a Privacy group to Cleaners: cookies, history and what forms remember in this account's browsers, by profile. They free almost no space, each is ticked on its own, and a browser database is copied before it is edited. Off, Sprawl doesn't look at them.",
         Kind::Switch(false),
     ),
     p("neverTouch", Sec::Cleaning, "Never touch", "Folders and files you chose to keep: Sprawl never offers them and a clean-up leaves them. Add one, or take one off the list.", Kind::Custom),

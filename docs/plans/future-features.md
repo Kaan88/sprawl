@@ -24,7 +24,7 @@ was requested. Future safety changes still need independent review.
 | F7 | History deltas | Back on the roadmap (user, 2026-11-23): snapshots are whole trees; a change list against the previous one is likely ~10x smaller | Medium |
 | F8 | Registry cleaning | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Medium |
 | F9 | Secure wiping | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Medium |
-| F10 | Editing browser databases | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Large |
+| F10 | Editing browser databases | Built for Firefox history and form history and Chromium autofill (after 1.0.7); selective cookies still to do | Large |
 
 F5 can be done at any time; it helps test the others. F8 to F10 each get their own plan and an
 outside safety review (Fable) before any code; their conditions are below.
@@ -56,9 +56,18 @@ where shadow copies or the Recycle Bin hold older copies.
 ## F10. Editing browser databases
 
 Selective cookies, Firefox history (it shares `places.sqlite` with bookmarks) and autofill.
-Today privacy cleaning removes whole files only; this opens a database to remove some rows. It
+Privacy cleaning used to remove whole files only; this opens a database to remove some rows. It
 needs the browser closed, a backup of each file, and a check that the file is the format and
 version expected before anything is written.
+
+**Built (after 1.0.7):** Firefox's browsing history without bookmarks and its form history, and the
+autofill entries of Chrome, Edge and Brave. Each edit copies the database (and its `-journal`,
+`-wal` and `-shm`) to `%LOCALAPPDATA%\Sprawl\backups\privacy`, keeps the last five copies, and
+checks the copy byte for byte; then it checks `PRAGMA integrity_check`, the tables and columns,
+and (Firefox) the schema version, and does every delete in one transaction. Nothing is VACUUMed,
+so the file may not shrink. The code is `crates/sprawl-advisor/src/privacy/edit.rs`.
+
+**Still to do:** selective cookies ("keep these sites' cookies").
 
 ---
 

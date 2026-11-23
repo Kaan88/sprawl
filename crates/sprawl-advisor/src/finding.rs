@@ -184,6 +184,11 @@ pub enum Action {
     /// database side files (`-journal`, `-wal`, `-shm`), deleted all together or not at all, only
     /// while the browser is closed. Made only by [`crate::privacy`]; never written to a script.
     Set { part: String, files: Vec<PathBuf> },
+    /// A privacy part that edits inside one of the browser's databases: `part` is its rule id,
+    /// `file` that database, `rows` how many rows the part takes out. A copy of the database is
+    /// made and checked first, and every delete for it goes in one transaction (see
+    /// [`crate::privacy`]). Made only there; never written to a script.
+    Edit { part: String, file: PathBuf, rows: u64 },
     /// F4: each of `copies` replaced by a hard link to `keep`, after comparing it with `keep`
     /// byte for byte again; every path stays, the space of one copy is used. Made only by
     /// [`crate::dupes::find`] for copies on one volume, none in a protected place; never written
@@ -257,7 +262,7 @@ impl Finding {
     /// A privacy part (cookies, history): never ticked for the user, planned, written to a
     /// script or counted in what can be freed. Known by its action or its rule's id.
     pub fn privacy(&self) -> bool {
-        matches!(self.action, Some(Action::Set { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id))
+        matches!(self.action, Some(Action::Set { .. }) | Some(Action::Edit { .. })) || matches!(&self.source, Source::Rule(id) if crate::privacy::is_privacy_id(id))
     }
 
     /// F4: copies made hard links to one of them: nothing is deleted or recycled.
@@ -266,9 +271,9 @@ impl Finding {
     }
 
     /// Give the finding its action, and the command text "Save as script" writes for it (none
-    /// for a privacy part's set: those run only inside Sprawl).
+    /// for a privacy part's set or edit: those run only inside Sprawl).
     pub fn set_action(&mut self, action: Action, admin: bool) {
-        self.command = (!matches!(action, Action::Set { .. } | Action::Link { .. })).then(|| crate::clean::script(&self.path, &action, admin));
+        self.command = (!matches!(action, Action::Set { .. } | Action::Edit { .. } | Action::Link { .. })).then(|| crate::clean::script(&self.path, &action, admin));
         self.admin = admin;
         self.action = Some(action);
     }

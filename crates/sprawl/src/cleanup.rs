@@ -1173,7 +1173,7 @@ impl State {
                 // unticked, one held back stays ticked for "Check again"
                 if it.privacy {
                     let browser = it.rule.as_deref().and_then(sprawl_advisor::privacy::part).map(|p| p.browser().short);
-                    if o.problems.is_empty() && o.files > 0 {
+                    if o.problems.is_empty() && (o.files > 0 || o.edited.is_some()) {
                         done.privacy_items += 1;
                         self.advisor.cleanup.privacy_ticked.remove(&key(&it.path));
                     } else {
@@ -1304,7 +1304,7 @@ impl State {
                     ItemState::Waiting => ("&#xE823;", crate::tokens::refer("text3"), "Waiting".to_string()),
                     ItemState::Running(_) if it.privacy => ("&#xE895;", crate::tokens::refer("link"), "Removing...".to_string()),
                     ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
-                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing in this set went".to_string()),
+                    ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing was changed".to_string()),
                     ItemState::Running(f) => ("&#xE895;", crate::tokens::refer("link"), running_label(it, *f)),
                     ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
                     ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), format!("{} to the Recycle Bin", self.size(o.recycled))),
@@ -1871,9 +1871,9 @@ impl State {
 }
 
 /// The privacy wording of the review and the result card, held to `privacy::PROMISE_WORDS`.
-pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, deleted without the Recycle Bin and not counted in the space above. Each set goes whole, or not at all, and only with its browser closed:";
+pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, deleted without the Recycle Bin and not counted in the space above. Each one goes whole, or not at all, and only with its browser closed:";
 pub(crate) const PV_OK: &str = "I understand what each of these removes";
-pub(crate) const PV_DONE: &str = "The privacy items' files were deleted; the browser starts new, empty ones the next time it opens.";
+pub(crate) const PV_DONE: &str = "The privacy items are done: files deleted, or rows taken out of their databases. An edited database may not get smaller.";
 
 /// "1 privacy item", "3 privacy items".
 pub(crate) fn privacy_count(n: usize) -> String {
@@ -1910,7 +1910,9 @@ impl State {
                 Source::Rule(id) => sprawl_advisor::privacy::part(id),
                 _ => None,
             };
-            let files = clean::action(f).and_then(|(a, _)| clean::preview(&f.path, &a, &spare, 0)).map(|p| p.biggest.iter().map(|(p, b)| format!("{} ({})", p.display(), self.size(*b))).collect::<Vec<_>>()).unwrap_or_default();
+            let preview = clean::action(f).and_then(|(a, _)| clean::preview(&f.path, &a, &spare, 0));
+            let files: Vec<String> = preview.as_ref().map(|p| p.biggest.iter().map(|(p, b)| format!("{} ({})", p.display(), self.size(*b))).collect()).unwrap_or_default();
+            let rows = preview.as_ref().map_or(0, |p| p.rows);
             let held = self.app_open(f).map(|(app, _)| app);
             if let Some(app) = &held {
                 let short = part.map_or(app.as_str(), |p| p.browser().short).to_string();
@@ -1925,10 +1927,17 @@ impl State {
                 ui::esc(part.map_or("", |p| p.cost))
             );
             if files.is_empty() {
-                x += r##"<TextBlock Text="Its files couldn't be listed now: it will be held back." FontSize="{$fs12}" Foreground="{$text3}" Margin="16,0,0,0"/>"##;
+                x += r##"<TextBlock Text="Its files couldn't be read now: it will be held back." FontSize="{$fs12}" Foreground="{$text3}" Margin="16,0,0,0"/>"##;
             }
             for line in &files {
                 x += &format!(r##"<TextBlock Text="{}" {} FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis" Margin="16,0,0,0" ToolTipService.ToolTip="{0}"/>"##, ui::esc(line), crate::look::NUM);
+            }
+            if rows > 0 {
+                x += &format!(
+                    r##"<TextBlock Text="{} row{} would go, in one transaction. The file may not get smaller." FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="16,0,0,0" TextWrapping="Wrap"/>"##,
+                    rows,
+                    if rows == 1 { "" } else { "s" }
+                );
             }
             x += "</StackPanel>";
         }
@@ -1959,7 +1968,11 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
     for it in items {
         match &it.state {
             ItemState::Done(o) => {
-                s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files);
+                match o.edited {
+                    // a database edited in place: rows, not bytes (a privacy part, never space)
+                    Some(rows) => s += &format!("{}\t{} rows taken out of the database, in one transaction\r\n", it.path.display(), rows),
+                    None => s += &format!("{}\tfreed {} bytes, {} files\r\n", it.path.display(), o.freed, o.files),
+                }
                 // a compress ran in Sprawl itself: what it did, file by file
                 let alg = it.command.as_deref().and_then(sprawl_advisor::remedies::compress_alg);
                 if let (Some(alg), Some(d)) = (alg, &o.compress) {
@@ -2095,7 +2108,7 @@ mod admin_tests {
             pref.help.into(),
             "Removing...".into(),
             "Removed".into(),
-            "Held back: nothing in this set went".into(),
+            "Held back: nothing was changed".into(),
             "Tick \"I understand what each of these removes\" first, or untick the privacy items.".into(),
         ];
         for t in &texts {
