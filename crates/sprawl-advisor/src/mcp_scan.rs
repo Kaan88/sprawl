@@ -202,7 +202,7 @@ impl Held {
         let answer = match name {
             "scan_report" | "findings" => {
                 let found = self.found.get_or_insert_with(|| crate::mcp::rules_for(&self.tree, facts));
-                Ok(if name == "findings" { crate::mcp::findings_list(found) } else { crate::llm::report::build(&self.tree, facts, Some(found), None, None) })
+                Ok(if name == "findings" { crate::mcp::findings_list(found) } else { crate::llm::report::build(&self.tree, facts, Some(found), None, None, &memory.labels) })
             }
             "cleaners" | "set_filter" if app_running => Err(format!("That works only for the scan open in Sprawl; {} isn't in it.", self.root.display())),
             "cleaners" | "set_filter" => Err("That needs Sprawl open: start Sprawl and ask again.".to_string()),

@@ -34,6 +34,9 @@ const PREF_MAX: usize = 300;
 /// The most of a folder label that is kept: a few words name what a folder is.
 const LABEL_MAX: usize = 200;
 
+/// The label the unexplained list's Hide button writes for a folder.
+pub const HIDDEN_LABEL: &str = "Hidden from the unexplained list by you";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
@@ -78,6 +81,19 @@ pub struct Label {
     pub pattern: String,
     pub label: String,
     pub from: From,
+}
+
+/// The label the Hide button on the unexplained list writes for `path`: the user's own word on
+/// exactly that folder. A path from Sprawl's own scan has no wildcard, so the narrow-pattern
+/// rule that guards model-written labels has nothing to add here.
+pub fn hidden_label(path: &Path) -> Label {
+    Label { pattern: path.to_string_lossy().replace('/', "\\"), label: HIDDEN_LABEL.to_string(), from: From::You }
+}
+
+/// Whether one of `labels` names `path` itself: a label on a folder above it does not count.
+pub fn labelled(labels: &[Label], path: &Path) -> bool {
+    let p = path.to_string_lossy();
+    labels.iter().rev().any(|l| Pattern::new(&l.pattern).matches(&p))
 }
 
 /// A rule the model proposed. No command: only Sprawl's built-in rules carry command text.
@@ -676,6 +692,18 @@ impl Memory {
         Ok(())
     }
 
+    /// Hide `path` from the unexplained list: the label the user's own Hide button writes. No
+    /// failure to report: the path came from the scan itself, so it is absolute and has no
+    /// wildcard, and only that one folder is named.
+    pub fn hide_unexplained(&mut self, path: &Path) {
+        let l = hidden_label(path);
+        self.labels.retain(|x| !x.pattern.eq_ignore_ascii_case(&l.pattern));
+        self.labels.push(l);
+        if self.labels.len() > 500 {
+            self.labels.remove(0);
+        }
+    }
+
     /// Check a rule the model proposes and keep it for the user to approve.
     pub fn propose(&mut self, mut p: Proposal) -> Result<(), String> {
         p.id = format!("local.{}", p.id.trim_start_matches("local.").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(40).collect::<String>());
@@ -1192,6 +1220,27 @@ mod tests {
         assert!(m.hides(Path::new(r"C:\Games\Old")).is_none());
         let t = toml::to_string(&m).unwrap();
         assert_eq!(toml::from_str::<Memory>(&t).unwrap(), m);
+    }
+
+    #[test]
+    fn the_hide_button_labels_exactly_that_folder() {
+        let path = Path::new(r"C:\Tools\Deep Folder");
+        let l = hidden_label(path);
+        assert_eq!(l.pattern, r"C:\Tools\Deep Folder");
+        assert_eq!(l.label, HIDDEN_LABEL);
+        assert_eq!(l.from, From::You, "it is the user's own word");
+        let mut m = Memory::default();
+        m.hide_unexplained(path);
+        assert_eq!(m.label_for(path).map(|l| l.label.as_str()), Some(HIDDEN_LABEL));
+        assert!(m.label_for(Path::new(r"C:\Tools\Deep Folder\Inner")).is_none(), "only that folder");
+        // a top-level folder (too short for a model's own pattern) can still be hidden
+        let top = Path::new(r"D:\Games");
+        m.hide_unexplained(top);
+        assert_eq!(m.label_for(top).map(|l| l.label.as_str()), Some(HIDDEN_LABEL));
+        assert!(m.add_label(r"D:\Games", "x", From::Model).is_err(), "the narrow pattern rule still guards the AI's labels");
+        // pressing Hide twice keeps one label
+        m.hide_unexplained(top);
+        assert_eq!(m.labels.iter().filter(|l| l.pattern == r"D:\Games").count(), 1);
     }
 
     #[test]
