@@ -21,7 +21,7 @@
 //! the last day and with no later point of its own, is not saved at all: the slider can show
 //! the drive's snapshot projected onto it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
@@ -352,18 +352,10 @@ pub fn list(base: &Path) -> Vec<Entry> {
         let Ok(files) = fs::read_dir(&held.path) else { continue };
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            let Some((taken, full, delta)) = stamp(&name) else { continue; };
+            let Some((taken, full, named_delta)) = stamp(&name) else { continue; };
             let Ok(mut file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
             let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
-            // a delta names the file it continues in its own header; a damaged one names
-            // nothing and is never shown (its followers are hidden with it)
-            let delta_base = if delta {
-                snapshot::read_header(&mut io::BufReader::new(&mut file.file)).ok()
-                    .and_then(|(is_delta, base)| if is_delta { base } else { None })
-                    .map(PathBuf::from)
-            } else {
-                None
-            };
+            let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
             out.push(Entry { root: root.clone(), taken, file: f.path(), full, delta, bytes: meta.len(), delta_base, base: base.path.clone(), identity, modified: meta.modified().ok() });
         }
     }
@@ -379,20 +371,26 @@ fn bucket_entries(base: &Path, dir: &Path) -> Vec<Entry> {
     let mut out = Vec::new();
     for f in files.flatten() {
         let name = f.file_name().to_string_lossy().into_owned();
-        let Some((taken, full, delta)) = stamp(&name) else { continue; };
+        let Some((taken, full, named_delta)) = stamp(&name) else { continue; };
         let Ok(mut file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
         let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
-        let delta_base = if delta {
-            snapshot::read_header(&mut io::BufReader::new(&mut file.file)).ok()
-                .and_then(|(is_delta, base)| if is_delta { base } else { None })
-                .map(PathBuf::from)
-        } else {
-            None
-        };
+        let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
         out.push(Entry { root: root.clone(), taken, file: f.path(), full, delta, bytes: meta.len(), delta_base, base: base.to_path_buf(), identity, modified: meta.modified().ok() });
     }
     out.sort_by(|a, b| a.taken.cmp(&b.taken).then_with(|| a.file.cmp(&b.file)));
     out
+}
+
+/// What a snapshot file holds, from its own header: a delta and the file it continues, or a
+/// whole tree. A delta written whole when history is thinned keeps its file name (the deltas
+/// after it name that file), so the name no longer says which: the header does. A header that
+/// can't be read makes it a delta with no base: listed, so pruning can remove it, never shown.
+fn kind(file: &mut fs::File) -> (bool, Option<PathBuf>) {
+    match snapshot::read_header(&mut io::BufReader::new(file)) {
+        Ok((true, Some(base))) => (true, Some(PathBuf::from(base))),
+        Ok(_) => (false, None),
+        Err(_) => (true, None),
+    }
 }
 
 /// Snapshots that cover `root` (taken of it or of a folder above it), one per moment (the
@@ -437,8 +435,20 @@ pub fn earlier(base: &Path, root: &Path, scan_before: SystemTime) -> Vec<Entry> 
     covering(base, root).into_iter().filter(|entry| entry.taken < bound).collect()
 }
 
-/// Which files the policy removes, given every entry and the time now.
-pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf> {
+/// What pruning will do. Pruning is two steps because a delta that is kept while an earlier
+/// snapshot goes must be written whole first: [`plan`] decides (no I/O), [`apply`] does it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Plan {
+    /// Snapshot files to remove.
+    pub remove: Vec<PathBuf>,
+    /// Deltas to write whole, oldest first. Each keeps its own file name and time, so the
+    /// deltas written after it still find it: the name says when, the header says what.
+    pub promote: Vec<PathBuf>,
+}
+
+/// Which files the policy removes and which deltas it writes whole first, given every entry
+/// and the time now.
+pub fn plan(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Plan {
     let mut kill: Vec<PathBuf> = Vec::new();
     let mut roots: Vec<&PathBuf> = entries.iter().map(|e| &e.root).collect();
     roots.sort();
@@ -469,45 +479,86 @@ pub fn doomed(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Vec<PathBuf
             }
         }
     }
-    // The cap: folders-only snapshots first, then full ones, oldest first within each, but
-    // never a root's newest snapshot. Full snapshots were never removed for the cap before
-    // 1.0.2, so three per root could keep History well over it. Exactly one snapshot per root
-    // is protected: a full and a folders-only snapshot saved together share a second, and the
-    // full one is kept then (it holds everything the other does).
-    let kept: Vec<&Entry> = entries.iter().filter(|e| !kill.contains(&e.file)).collect();
-    let mut total: u64 = kept.iter().map(|e| e.bytes).sum();
+    // A delta still kept while the snapshot it continues goes is written whole first: the point
+    // stays, its base can go. One pass in time order is enough (a base always comes before what
+    // continues it), and a promoted delta is whole from then on, so nothing after it needs a
+    // rewrite either.
+    let mut whole: HashSet<PathBuf> = HashSet::new();
+    let mut promote: Vec<PathBuf> = Vec::new();
+    for e in entries {
+        if kill.contains(&e.file) {
+            continue;
+        }
+        if !e.delta {
+            whole.insert(e.file.clone());
+            continue;
+        }
+        match base_of(entries, e) {
+            Some(b) if whole.contains(&b.file) && !kill.contains(&b.file) => { whole.insert(e.file.clone()); }
+            Some(_) => {
+                promote.push(e.file.clone());
+                whole.insert(e.file.clone());
+            }
+            // already broken (its base is gone): there is nothing to write it whole from
+            None => {}
+        }
+    }
+    // The cap: whole chains (a keyframe and the deltas built on it) and full snapshots go as
+    // units, folders-only first at the same moment, oldest first, but never the unit holding a
+    // root's newest snapshot. A chain is a unit because dropping its keyframe while keeping a
+    // delta would mean writing that delta whole, which costs more than the keyframe it
+    // replaces. A promoted delta counts at the size it will have.
+    let size = |e: &Entry| if promote.contains(&e.file) { keyframe_bytes(entries, e) } else { e.bytes };
+    let mut total: u64 = entries.iter().filter(|e| !kill.contains(&e.file)).map(size).sum();
     if total > cap_bytes {
-        let mut newest: std::collections::HashMap<&PathBuf, &Entry> = std::collections::HashMap::new();
-        for &e in &kept {
+        let mut newest: HashMap<&PathBuf, &Entry> = HashMap::new();
+        for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
             let best = newest.entry(&e.root).or_insert(e);
             if (e.taken, e.full, &e.file) > (best.taken, best.full, &best.file) {
                 *best = e;
             }
         }
-        let mut order = kept;
-        order.sort_by_key(|e| (e.full, e.taken));
-        for e in order {
+        let mut units: Vec<((bool, SystemTime, PathBuf), Vec<&Entry>)> = Vec::new();
+        let mut groups: HashMap<PathBuf, Vec<&Entry>> = HashMap::new();
+        for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
+            if e.full {
+                units.push(((true, e.taken, e.file.clone()), vec![e]));
+            } else {
+                groups.entry(chain_root(entries, e)).or_default().push(e);
+            }
+        }
+        for (root, mut g) in groups {
+            g.sort_by_key(|e| e.taken);
+            let oldest = g.first().map_or(UNIX_EPOCH, |e| e.taken);
+            units.push(((false, oldest, root), g));
+        }
+        units.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, members) in units {
             if total <= cap_bytes {
                 break;
             }
-            if newest.get(&e.root).is_some_and(|best| best.file == e.file) {
+            if members.iter().any(|m| newest.get(&m.root).is_some_and(|n| n.file == m.file)) {
                 continue;
             }
-            total = total.saturating_sub(e.bytes);
-            kill.push(e.file.clone());
+            for m in &members {
+                total = total.saturating_sub(size(m));
+                kill.push(m.file.clone());
+            }
         }
     }
-    // A delta is unreadable without the snapshot it continues, so a base the cap chose is kept
-    // after all: the cap may then stay a little over, the same way one snapshot per root can.
-    protect_bases(entries, &mut kill);
-    // With bases kept, whole chains (a keyframe and the deltas built on it) are what the cap
-    // can still remove: oldest first, never the chain holding a root's newest snapshot.
-    thin_chains(entries, &mut kill, cap_bytes);
-    kill
+    // a promotion for a file the cap removed anyway is pointless
+    promote.retain(|p| !kill.contains(p));
+    // Nothing kept may end up without what it is built on: a promotion that cannot happen
+    // leaves the bases in place, and the cap may then stay over, as one snapshot per root
+    // already can.
+    protect_bases(entries, &mut kill, &promote);
+    Plan { remove: kill, promote }
 }
 
-fn protect_bases(entries: &[Entry], kill: &mut Vec<PathBuf>) {
-    let live: Vec<&Entry> = entries.iter().filter(|e| e.delta && !kill.contains(&e.file)).collect();
+/// The bases of any kept delta that is not being promoted stay. The plan above makes that
+/// unnecessary; this is the last guard that a kept snapshot is never left unreadable.
+fn protect_bases(entries: &[Entry], kill: &mut Vec<PathBuf>, promote: &[PathBuf]) {
+    let live: Vec<&Entry> = entries.iter().filter(|e| e.delta && !kill.contains(&e.file) && !promote.contains(&e.file)).collect();
     for e in live {
         let mut cur = e;
         while let Some(b) = base_of(entries, cur) {
@@ -531,44 +582,66 @@ fn chain_root(entries: &[Entry], e: &Entry) -> PathBuf {
     cur.file.clone()
 }
 
-fn thin_chains(entries: &[Entry], kill: &mut Vec<PathBuf>, cap_bytes: u64) {
-    let mut total: u64 = entries.iter().filter(|e| !kill.contains(&e.file)).map(|e| e.bytes).sum();
-    if total <= cap_bytes { return; }
-    // the one snapshot per root the cap never removes: a chain holding it stays whole
-    let mut newest: HashMap<&PathBuf, (SystemTime, bool, &PathBuf)> = HashMap::new();
-    for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
-        let cur = newest.entry(&e.root).or_insert((e.taken, e.full, &e.file));
-        if (e.taken, e.full, &e.file) > *cur { *cur = (e.taken, e.full, &e.file); }
-    }
-    let mut groups: HashMap<PathBuf, Vec<&Entry>> = HashMap::new();
-    for e in entries.iter().filter(|e| !e.full && !kill.contains(&e.file)) {
-        groups.entry(chain_root(entries, e)).or_default().push(e);
-    }
-    let mut order: Vec<(SystemTime, PathBuf)> = groups.iter()
-        .filter(|(_, g)| !g.iter().any(|e| newest.get(&e.root).is_some_and(|n| n.2 == &e.file)))
-        .map(|(key, g)| (g.iter().map(|e| e.taken).max().unwrap_or(UNIX_EPOCH), key.clone()))
-        .collect();
-    order.sort();
-    for (_, key) in order {
-        if total <= cap_bytes { break; }
-        let Some(g) = groups.get(&key) else { continue };
-        // a chain the policy already partly removed stays as it is: its surviving delta needs
-        // its base, which protection has just kept
-        if g.iter().any(|e| kill.contains(&e.file)) { continue; }
-        for e in g {
-            kill.push(e.file.clone());
-            total = total.saturating_sub(e.bytes);
+/// A whole-snapshot size for a delta that will be written whole: the keyframe its chain starts
+/// at (the tree is much the same, so the sizes are).
+fn keyframe_bytes(entries: &[Entry], e: &Entry) -> u64 {
+    let (mut cur, mut n) = (e, 0);
+    while cur.delta && n < MAX_CHAIN {
+        match base_of(entries, cur) {
+            Some(b) => {
+                cur = b;
+                n += 1;
+            }
+            None => break,
         }
     }
+    if cur.delta || cur.file == e.file { e.bytes } else { cur.bytes }
+}
+
+/// Write a delta whole, in place: its own name and time, so the deltas written after it still
+/// find it. The swap is atomic, so a reader sees the old file or the whole one, never half.
+fn promote(e: &Entry) -> io::Result<()> {
+    let tree = load(e)?;
+    let (_held, path) = entry_path(e)?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(bad)?;
+    let dir = path.parent().ok_or_else(bad)?;
+    let body = snapshot::encode_ordered(&tree, e.taken);
+    write_atomic(dir, name, true, |file| {
+        let mut buffered = io::BufWriter::new(file);
+        snapshot::write_body(&body, 9, &mut buffered)?;
+        buffered.flush()
+    })
+}
+
+/// Carry out a plan: write the deltas whole first, then remove what it names. A delta that
+/// cannot be written (a damaged file) keeps the snapshots it is built on: the plan is over the
+/// cap rather than a kept snapshot unreadable.
+pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
+    let mut spared: HashSet<PathBuf> = HashSet::new();
+    for path in &plan.promote {
+        let Some(e) = entries.iter().find(|e| &e.file == path) else { continue };
+        if let Err(err) = promote(e) {
+            let mut cur = e;
+            while let Some(b) = base_of(entries, cur) {
+                spared.insert(b.file.clone());
+                if !b.delta {
+                    break;
+                }
+                cur = b;
+            }
+            eprintln!("history: {} stays as changes ({err}); the snapshots it is built on stay", e.file.display());
+        }
+    }
+    for e in entries.iter().filter(|e| plan.remove.contains(&e.file) && !spared.contains(&e.file)) {
+        let _ = remove_entry(e);
+    }
+    Ok(())
 }
 
 pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
     let entries = list(base);
-    let doomed = doomed(&entries, cap_bytes, now);
-    for entry in entries.iter().filter(|entry| doomed.contains(&entry.file)) {
-        let _ = remove_entry(entry);
-    }
-    Ok(())
+    let plan = plan(&entries, cap_bytes, now);
+    apply(&entries, &plan)
 }
 
 /// Rebuilt trees kept for the slider: a chain is rebuilt once and moving the slider back and
@@ -602,23 +675,70 @@ fn cached(e: &Entry) -> Option<Tree> {
 }
 
 fn remember(e: &Entry, tree: &Tree) {
-    if tree.nodes.len() > CACHE_NODES { return; }
     let cache = CACHE.get_or_init(|| Mutex::new(Cache::default()));
     let Ok(mut c) = cache.lock() else { return; };
-    if c.kept.contains_key(&e.file) { return; }
-    c.order.retain(|p| p != &e.file);
-    c.order.push(e.file.clone());
-    c.nodes += tree.nodes.len();
-    c.kept.insert(e.file.clone(), Kept { identity: e.identity.clone(), modified: e.modified, bytes: e.bytes, tree: tree.clone() });
-    while c.nodes > CACHE_NODES && c.order.len() > 1 {
-        let old = c.order.remove(0);
-        if let Some(kept) = c.kept.remove(&old) {
-            c.nodes = c.nodes.saturating_sub(kept.tree.nodes.len());
+    c.insert(e, tree, CACHE_NODES);
+}
+
+impl Cache {
+    /// Keep this tree, dropping the oldest ones until what is left fits `budget` nodes — or is
+    /// the single newest tree, which stays even when it alone is over the budget (a drive of
+    /// ten million nodes would otherwise never be cached). In all: about two trees' worth.
+    fn insert(&mut self, e: &Entry, tree: &Tree, budget: usize) {
+        if let Some(old) = self.kept.get(&e.file) {
+            if old.identity == e.identity && old.modified == e.modified && old.bytes == e.bytes { return; }
+        }
+        // the file was written again since (a delta made whole when history was thinned): what
+        // was kept is not it any more
+        if let Some(old) = self.kept.remove(&e.file) {
+            self.order.retain(|p| p != &e.file);
+            self.nodes = self.nodes.saturating_sub(old.tree.nodes.len());
+        }
+        self.order.push(e.file.clone());
+        self.nodes += tree.nodes.len();
+        self.kept.insert(e.file.clone(), Kept { identity: e.identity.clone(), modified: e.modified, bytes: e.bytes, tree: tree.clone() });
+        while self.order.len() > 1 {
+            let newest = self.order.last().and_then(|p| self.kept.get(p)).map_or(0, |k| k.tree.nodes.len());
+            if self.nodes <= budget.max(newest) { break; }
+            let old = self.order.remove(0);
+            if let Some(kept) = self.kept.remove(&old) {
+                self.nodes = self.nodes.saturating_sub(kept.tree.nodes.len());
+            }
+        }
+    }
+}
+
+/// Forget every kept tree (the timing test measures a cold rebuild).
+#[cfg(test)]
+fn clear_cache() {
+    if let Some(cache) = CACHE.get() {
+        if let Ok(mut c) = cache.lock() {
+            *c = Cache::default();
         }
     }
 }
 
 pub fn load(e: &Entry) -> io::Result<Tree> {
+    match load_chain(e) {
+        Ok(tree) => Ok(tree),
+        Err(first) => {
+            // The file may have been written again since it was listed (a delta written whole
+            // when history was thinned keeps its name): list its bucket once more and read
+            // what is there now, as a fresh look would.
+            let Some(dir) = e.file.parent() else { return Err(first) };
+            let fresh = bucket_entries(&e.base, dir).into_iter().find(|x| x.file == e.file && x.taken == e.taken);
+            match fresh {
+                // only a delta that has been written whole (its kind changed, which is what
+                // thinning does) is read again: a file swapped for another of the same kind is
+                // still refused, as it was listed and is no longer the file it was
+                Some(f) if f.delta != e.delta => load_chain(&f),
+                _ => Err(first),
+            }
+        }
+    }
+}
+
+fn load_chain(e: &Entry) -> io::Result<Tree> {
     if !e.delta { return read_one(e, None); }
     let dir = e.file.parent().ok_or_else(bad)?;
     let entries = bucket_entries(&e.base, dir);
@@ -680,8 +800,8 @@ fn entry_path(e: &Entry) -> io::Result<(sprawl_core::local::Directory, PathBuf)>
     if parent.parent() != Some(base.path.as_path()) { return Err(bad()); }
     let (held, root) = bucket(parent)?;
     if root_id(&root) != root_id(&e.root) { return Err(bad()); }
-    let Some((taken, full, delta)) = path.file_name().and_then(|n| n.to_str()).and_then(stamp) else { return Err(bad()); };
-    if taken != e.taken || full != e.full || delta != e.delta { return Err(bad()); }
+    let Some((taken, full, _)) = path.file_name().and_then(|n| n.to_str()).and_then(stamp) else { return Err(bad()); };
+    if taken != e.taken || full != e.full { return Err(bad()); }
     Ok((held, path))
 }
 
@@ -971,7 +1091,7 @@ mod tests {
         for d in 0..6 {
             v.push(e("C", d, true, 27, now));
         }
-        let kill = doomed(&v, u64::MAX, now);
+        let kill = plan(&v, u64::MAX, now).remove;
         let left: Vec<&Entry> = v.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert_eq!(left.iter().filter(|x| x.full).count(), 3);
         assert!(left.iter().filter(|x| x.full).all(|x| x.taken >= now - Duration::from_secs(2 * DAY)));
@@ -979,7 +1099,7 @@ mod tests {
         // 31 daily + about 22 weekly + about 7 monthly
         assert!((55..=65).contains(&fo), "{fo}");
         // a tight cap removes the oldest but keeps the newest
-        let kill = doomed(&v, 100, now);
+        let kill = plan(&v, 100, now).remove;
         let left: Vec<&Entry> = v.iter().filter(|x| !kill.contains(&x.file)).collect();
         // the newest is a full and a folders-only snapshot from the same second: the full one
         // is the one protected
@@ -987,19 +1107,19 @@ mod tests {
         assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 100);
         // Under the cap's pressure a tie keeps just one snapshot per root, and it is the full one.
         let tie = vec![e("C", 0, false, 50, now), e("C", 0, true, 80, now), e("D", 0, true, 80, now), e("D", 0, false, 50, now)];
-        let kill = doomed(&tie, 160, now);
+        let kill = plan(&tie, 160, now).remove;
         let left: Vec<&Entry> = tie.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert_eq!(left.len(), 2, "{left:?}");
         assert!(left.iter().all(|x| x.full));
         // the cap can stay exceeded when one snapshot per root is already over it
-        let kill = doomed(&tie, 100, now);
+        let kill = plan(&tie, 100, now).remove;
         assert_eq!(tie.iter().filter(|x| !kill.contains(&x.file)).count(), 2);
         // Full snapshots count toward the cap too: many roots with three each must not stay over it.
         let mut many = Vec::new();
         for r in ["C", "D", "E", "F"] {
             for d in 1..=3 { many.push(e(r, d, true, 30, now)); }
         }
-        let kill = doomed(&many, 200, now);
+        let kill = plan(&many, 200, now).remove;
         let left: Vec<&Entry> = many.iter().filter(|x| !kill.contains(&x.file)).collect();
         assert!(left.iter().map(|x| x.bytes).sum::<u64>() <= 200, "full snapshots are thinned for the cap");
         for r in ["C", "D", "E", "F"] {
@@ -1272,23 +1392,31 @@ mod tests {
     fn the_cap_never_leaves_a_kept_delta_without_its_base() {
         let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         let mut v = vec![
-            chain_entry("C", now - Duration::from_secs(60 * DAY), "k1", None, 10),
-            chain_entry("C", now - Duration::from_secs(59 * DAY), "d1", Some("k1"), 10),
-            chain_entry("C", now - Duration::from_secs(2 * DAY), "k2", None, 10),
-            chain_entry("C", now - Duration::from_secs(DAY), "d2", Some("k2"), 10),
+            chain_entry("C", now - Duration::from_secs(40), "k1", None, 10),
+            chain_entry("C", now - Duration::from_secs(30), "d1", Some("k1"), 10),
+            chain_entry("C", now - Duration::from_secs(2), "k2", None, 10),
+            chain_entry("C", now - Duration::from_secs(1), "d2", Some("k2"), 10),
         ];
         v.sort_by_key(|e| e.taken);
-        let kill = doomed(&v, 35, now);
-        let kept: Vec<&Entry> = v.iter().filter(|e| !kill.contains(&e.file)).collect();
+        // all within 30 days, so the cap is what removes: the oldest chain goes whole, never a
+        // keyframe while a delta built on it stays
+        let young = now;
+        let p = plan(&v, 35, young);
+        let kept: Vec<&Entry> = v.iter().filter(|e| !p.remove.contains(&e.file)).collect();
         assert!(kept.iter().any(|e| e.file == Path::new("d2")), "a root's newest is never removed");
+        // every kept snapshot still reads: it is whole, written whole first, or keeps its base
         for e in &kept {
-            if let Some(name) = &e.delta_base {
-                assert!(kept.iter().any(|b| b.file.file_name() == name.file_name()), "{} keeps its base", e.file.display());
+            if !e.delta || p.promote.contains(&e.file) {
+                continue;
             }
+            let base = e.delta_base.as_ref().and_then(|d| d.file_name()).unwrap();
+            assert!(kept.iter().any(|b| b.file.file_name() == Some(base)), "{} keeps its base", e.file.display());
         }
+        assert!(p.promote.iter().all(|x| !p.remove.contains(x)), "nothing is rewritten and then removed");
+        assert!(p.promote.is_empty(), "the cap takes a whole chain, it never rewrites one");
         assert!(kept.iter().all(|e| e.file != Path::new("k1") && e.file != Path::new("d1")), "the old chain went whole: {kept:?}");
         // the newest chain cannot shrink: its base is kept even when that alone is over the cap
-        let tight = doomed(&v, 5, now);
+        let tight = plan(&v, 5, young).remove;
         let kept: Vec<&Entry> = v.iter().filter(|e| !tight.contains(&e.file)).collect();
         assert!(kept.iter().any(|e| e.file == Path::new("k2")), "the newest delta's base stays");
         assert!(kept.iter().any(|e| e.file == Path::new("d2")));
@@ -1350,6 +1478,154 @@ mod tests {
         assert!(entries.iter().filter(|e| e.delta).count() >= 8);
         assert_same(&load(&entries[9]).unwrap(), &snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&cur), entries[9].taken)).unwrap().0);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The schema of F7's thinning: a month of daily snapshots stays a month of daily points,
+    /// the older ones become one a week — and every file left on disk still reads as exactly
+    /// the tree a whole snapshot of that day gives.
+    #[test]
+    fn thinning_still_thins_a_month_of_daily_snapshots_and_every_kept_one_loads() {
+        let (dir, base) = scratch("thinning");
+        let root = dir.join("data").display().to_string();
+        let now = SystemTime::now();
+        let today = secs(now);
+        let mut day: HashMap<u64, u64> = HashMap::new();
+        for i in 0..40u64 {
+            // midday, so no snapshot sits on the 30-day line while the test runs
+            let taken = UNIX_EPOCH + Duration::from_secs(today - (39 - i) * DAY + 12 * 3600);
+            day.insert(secs(taken), i);
+            // saved as the app does, so the saves' own pruning thins as it goes
+            prepare(&round(&root, i), taken, false).save(&base, u64::MAX).unwrap();
+        }
+        prune(&base, u64::MAX, now).unwrap();
+        let all = list(&base);
+        // every snapshot left, on disk, is readable and is the tree of its own day
+        for e in &all {
+            let i = day[&secs(e.taken)];
+            let (whole, _) = snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&round(&root, i)), e.taken)).unwrap();
+            assert_same(&load(e).unwrap(), &whole);
+        }
+        // and none is hidden from the slider: no chain was broken by the thinning
+        assert_eq!(covering(&base, Path::new(&root)).len(), all.len(), "no chain is broken");
+        // older than 30 days: one per week, as before deltas — not the nine there were
+        let old: Vec<&Entry> = all.iter().filter(|e| now.duration_since(e.taken).is_ok_and(|age| age.as_secs() > 30 * DAY)).collect();
+        let mut weeks = HashSet::new();
+        for e in &old {
+            assert!(weeks.insert(secs(e.taken) / (7 * DAY)), "one snapshot per week");
+        }
+        assert!(!old.is_empty() && old.len() <= 3, "{} older than 30 days kept, of nine", old.len());
+        assert!(all.len() >= 30, "the last 30 days are all kept: {}", all.len());
+        // and the base that went was replaced by a rewrite, not by keeping everything
+        let rewritten = all.iter().filter(|e| !e.delta && e.file.to_string_lossy().contains(".df.")).count();
+        assert!(rewritten >= 1, "a delta written whole when its base was thinned");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn thinning_plans_a_rewrite_instead_of_keeping_every_base() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        // a keyframe and the delta after it, in one weekly bucket and both older than 30 days:
+        // the bucket keeps the newer point, so the keyframe goes and the delta is written whole
+        let week = secs(now) / (7 * DAY) - 9;
+        let k = UNIX_EPOCH + Duration::from_secs(week * 7 * DAY + 10);
+        let d = UNIX_EPOCH + Duration::from_secs(week * 7 * DAY + 20);
+        let v = vec![
+            chain_entry("C", k, "k", None, 100),
+            chain_entry("C", d, "d", Some("k"), 10),
+            chain_entry("C", now, "n", None, 100),
+        ];
+        let p = plan(&v, u64::MAX, now);
+        assert_eq!(p.remove, vec![PathBuf::from("k")], "the old keyframe goes, as before deltas");
+        assert_eq!(p.promote, vec![PathBuf::from("d")], "the delta built on it is written whole");
+        // nothing to rewrite when the base stays
+        let p = plan(&v, u64::MAX, UNIX_EPOCH + Duration::from_secs(secs(now) - 40 * DAY));
+        assert!(p.remove.is_empty() && p.promote.is_empty(), "all within 30 days: all kept");
+    }
+
+    fn an_entry_named(name: &str) -> Entry {
+        Entry { root: "C".into(), taken: UNIX_EPOCH, file: PathBuf::from(name), full: false, delta: false, bytes: 1, delta_base: None, base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
+    }
+
+    fn tree_of(n: usize) -> Tree {
+        let mut nodes = vec![sprawl_core::Node { name: "C".into(), is_dir: true, ..Default::default() }];
+        for i in 1..n {
+            nodes.push(sprawl_core::Node { name: format!("f{i}"), size: 1, files: 1, parent: Some(0), ..Default::default() });
+            nodes[0].children.push(i);
+        }
+        let mut t = Tree { volumes: Vec::new(), root_path: "C".into(), nodes, errors: 0, method: sprawl_core::ScanMethod::Walk };
+        t.compute_totals();
+        t
+    }
+
+    /// A drive of ten million nodes is the same case as this one, smaller: over the budget, and
+    /// still the one tree kept (the newest), so moving the slider does not rebuild it each time.
+    #[test]
+    fn the_cache_keeps_the_newest_tree_even_when_it_is_bigger_than_its_budget() {
+        let mut c = Cache::default();
+        c.insert(&an_entry_named("a"), &tree_of(100), 10);
+        assert_eq!(c.kept.len(), 1, "a tree over the budget is still kept");
+        // two trees fit the budget; a third pushes the oldest out, never the newest
+        let mut c = Cache::default();
+        c.insert(&an_entry_named("a"), &tree_of(40), 100);
+        c.insert(&an_entry_named("b"), &tree_of(40), 100);
+        assert_eq!(c.kept.len(), 2);
+        c.insert(&an_entry_named("c"), &tree_of(40), 100);
+        assert_eq!(c.kept.len(), 2, "at most about two trees' worth");
+        assert!(c.kept.contains_key(Path::new("b")) && c.kept.contains_key(Path::new("c")));
+        assert!(!c.kept.contains_key(Path::new("a")), "the oldest goes");
+        assert!(c.nodes <= 100);
+        // one big tree beside a small one: the big one stays alone
+        let mut c = Cache::default();
+        c.insert(&an_entry_named("small"), &tree_of(50), 100);
+        c.insert(&an_entry_named("big"), &tree_of(300), 100);
+        assert_eq!(c.kept.len(), 1);
+        assert!(c.kept.contains_key(Path::new("big")));
+        // the same file written again (a delta made whole) replaces what was kept of it
+        let mut c = Cache::default();
+        let mut e = an_entry_named("p");
+        c.insert(&e, &tree_of(40), 100);
+        e.bytes = 2;
+        c.insert(&e, &tree_of(60), 100);
+        assert_eq!(c.kept.len(), 1);
+        assert_eq!(c.nodes, 60, "counted once, the newer one");
+    }
+
+    /// F7's worst case: the deepest snapshot of a chain (seven deltas, the most there is), read
+    /// cold. Ignored because two million nodes take a while to build and measure. Run with
+    ///
+    ///     cargo test --release -p sprawl-advisor history::tests::the_worst_case_chain_rebuild -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn the_worst_case_chain_rebuild() {
+        for (label, files) in [("50,000 nodes", 4usize), ("2,000,000 nodes", 79)] {
+            let (dir, base) = scratch(&format!("cold-{files}"));
+            let root = dir.join("drive").display().to_string();
+            let mut tree = big_tree(&root, 250, 100, files);
+            let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 20 * 3600);
+            for i in 0..8u64 {
+                if i > 0 {
+                    churn(&mut tree, i as usize);
+                }
+                prepare(&tree, t0 + Duration::from_secs(60 * i), false).save(&base, u64::MAX).unwrap();
+            }
+            let nodes = snapshot::folders_only(&tree).nodes.len();
+            let entries = list(&base);
+            assert_eq!(entries.len(), 8);
+            let last = &entries[7];
+            assert!(last.delta, "seven deltas deep");
+            let mut worst = 0.0f64;
+            for _ in 0..3 {
+                clear_cache();
+                let t = std::time::Instant::now();
+                let rebuilt = load(last).unwrap();
+                worst = worst.max(t.elapsed().as_secs_f64());
+                assert_eq!(rebuilt.nodes.len(), nodes);
+                let _ = rebuilt;
+            }
+            let bytes: u64 = entries.iter().map(|e| e.bytes).sum();
+            eprintln!("{label}: seven-delta chain rebuilt cold in {:.0} ms (chain {bytes} bytes)", worst * 1000.0);
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     /// `dirs` folders of `subs` folders of `files` files each: about 50,000 nodes folders-only.
