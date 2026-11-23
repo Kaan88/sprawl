@@ -1359,6 +1359,8 @@ impl State {
         if self.tree.is_none() || now.is_empty() {
             return;
         }
+        // the tree is edited in place below: Tree View's rows are put in order again
+        self.order_gen += 1;
         let filtered = self.full_tree.is_some();
         let mut changed = false;
         for (path, sub) in &now {

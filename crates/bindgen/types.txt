@@ -82,6 +82,10 @@ Microsoft.UI.Xaml.Controls.SwapChainPanel::CompositionScaleX
 Microsoft.UI.Xaml.Controls.SwapChainPanel::CompositionScaleY
 Microsoft.UI.Xaml.Controls.SwapChainPanel::CompositionScaleChanged
 Microsoft.UI.Xaml.Media.CompositionTarget::Rendering
+# dev (bench, SPRAWL_TIMING): when a frame has been rendered, and when layout ran
+Microsoft.UI.Xaml.Media.CompositionTarget::Rendered
+Microsoft.UI.Xaml.Media.RenderedEventArgs
+Microsoft.UI.Xaml.FrameworkElement::LayoutUpdated
 Microsoft.UI.Xaml.Media.DesktopAcrylicBackdrop::CreateInstance
 Microsoft.UI.Xaml.Media.SystemBackdrop
 Microsoft.UI.Xaml.Media.SolidColorBrush::CreateInstanceWithColor

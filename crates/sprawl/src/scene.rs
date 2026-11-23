@@ -114,6 +114,28 @@ pub struct Scene {
     ivp: [f32; 16],
     pub eye: [f32; 3],
     settled_frames: u32,
+    /// Bumped whenever the tiles themselves change (layout, rekey, hover-folder flags).
+    anims_gen: u64,
+    /// What the instance list was last built from; a settled map with the same inputs keeps it.
+    built_from: Option<BuildKey>,
+}
+
+/// Everything besides the tiles that `update` reads to build the instance list.
+#[derive(Clone, Copy, PartialEq)]
+struct BuildKey {
+    anims_gen: u64,
+    hover_leaf: Option<usize>,
+    hover_parent: Option<u32>,
+    hover_folder: Option<usize>,
+    selected: Option<usize>,
+    highlight_ext: Option<u32>,
+    lift_scale: u32,
+    lens: Option<(usize, bool)>,
+    shrink: Option<usize>,
+    mode: Mode,
+    animate: bool,
+    mouse: Option<(u32, u32)>,
+    size: (u32, u32),
 }
 
 impl Default for Scene {
@@ -158,6 +180,8 @@ impl Default for Scene {
             ivp: IDENTITY,
             eye: [0.0, 0.0, 1000.0],
             settled_frames: 0,
+            anims_gen: 0,
+            built_from: None,
         }
     }
 }
@@ -175,6 +199,7 @@ impl Scene {
         self.hover_leaf = None;
         self.hover_parent = None;
         self.hover_folder = None;
+        self.anims_gen += 1;
     }
 
     /// Lay out `root` of `tree` into the panel, weighting each node with `weight` (0 = hidden).
@@ -239,6 +264,7 @@ impl Scene {
             }
         }
         self.settled_frames = 0;
+        self.anims_gen += 1;
         self.refresh_flags(tree);
     }
 
@@ -294,6 +320,7 @@ impl Scene {
         }
         self.anims = keep;
         self.slot = self.anims.iter().enumerate().map(|(i, a)| (a.node, i)).collect();
+        self.anims_gen += 1;
     }
 
     /// Start the ripple that runs across the map when a scan finishes.
@@ -314,6 +341,7 @@ impl Scene {
     }
 
     fn refresh_flags(&mut self, tree: &Tree) {
+        self.anims_gen += 1;
         let f = self.hover_folder;
         for a in &mut self.anims {
             a.under_hover_folder = match f {
@@ -538,6 +566,11 @@ impl Scene {
 
     // ------------------------------------------------------------ per frame
 
+    /// dev (SPRAWL_TIMING): how many rectangles the map holds (each is updated every frame).
+    pub fn rect_count(&self) -> usize {
+        self.anims.len()
+    }
+
     /// Advance animations by `dt` seconds and rebuild the instance list. Returns false once
     /// everything has come to rest (nothing needs drawing until something changes).
     pub fn update(&mut self, dt: f32) -> bool {
@@ -556,6 +589,28 @@ impl Scene {
             self.wave = None;
         }
         let (w, h) = (self.w, self.h);
+        // A map at rest whose inputs haven't changed would build the same instances again: on a
+        // big scan that is millions of tiles, every frame, for nothing.
+        let key = BuildKey {
+            anims_gen: self.anims_gen,
+            hover_leaf: self.hover_leaf,
+            hover_parent: self.hover_parent,
+            hover_folder: self.hover_folder,
+            selected: self.selected,
+            highlight_ext: self.highlight_ext,
+            lift_scale: self.lift_scale.to_bits(),
+            lens: self.lens.as_ref().map(|(l, c)| (std::sync::Arc::as_ptr(l) as usize, *c)),
+            shrink: self.shrink.as_ref().map(|l| std::sync::Arc::as_ptr(l) as usize),
+            mode: self.mode,
+            animate: self.animate,
+            mouse: if self.animate { self.mouse.map(|(x, y)| (x.to_bits(), y.to_bits())) } else { None },
+            size: (w.to_bits(), h.to_bits()),
+        };
+        if self.settled_frames >= 3 && !cam_moving && self.pulses.is_empty() && self.wave.is_none() && !self.shrink_restart && self.built_from == Some(key) {
+            self.settled_frames = self.settled_frames.saturating_add(1);
+            return false;
+        }
+        self.built_from = Some(key);
         let mut moving = false;
         // the plan preview eases in over about two seconds
         if self.shrink_restart {

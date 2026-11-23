@@ -311,6 +311,9 @@ impl State {
             self.refresh_rows();
             self.map.drawn_once = false;
         }
+        if crate::bench::on() {
+            crate::bench::note(&format!("search results shown ({})", self.search.results.len()));
+        }
     }
 
     pub(crate) fn search_sort(&mut self) {

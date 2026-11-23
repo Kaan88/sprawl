@@ -6783,6 +6783,38 @@ pub mod Microsoft {
                         ))
                     }
                 }
+                pub fn LayoutUpdated<F>(
+                    &self,
+                    handler: F,
+                ) -> windows_core::Result<windows_core::EventRevoker>
+                where
+                    F: Fn(
+                            windows_core::Ref<windows_core::IInspectable>,
+                            windows_core::Ref<windows_core::IInspectable>,
+                        ) + Send
+                        + 'static,
+                {
+                    let handler = <super::super::super::Windows::Foundation::EventHandler<
+                        windows_core::IInspectable,
+                    >>::new(move |a0, a1| {
+                        handler(a0, a1);
+                        Ok(())
+                    });
+                    unsafe {
+                        let mut result__ = core::mem::zeroed();
+                        let token__ = (windows_core::Interface::vtable(self).LayoutUpdated)(
+                            windows_core::Interface::as_raw(self),
+                            windows_core::Interface::as_raw(&handler),
+                            &mut result__,
+                        )
+                        .map(|| result__)?;
+                        Ok(windows_core::EventRevoker::new(
+                            self.clone(),
+                            token__,
+                            windows_core::Interface::vtable(self).RemoveLayoutUpdated,
+                        ))
+                    }
+                }
                 pub fn FindName(
                     &self,
                     name: &windows_core::HSTRING,
@@ -7776,8 +7808,14 @@ pub mod Microsoft {
                     -> windows_core::HRESULT,
                 pub RemoveSizeChanged:
                     unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
-                LayoutUpdated: usize,
-                RemoveLayoutUpdated: usize,
+                pub LayoutUpdated: unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut core::ffi::c_void,
+                    *mut i64,
+                )
+                    -> windows_core::HRESULT,
+                pub RemoveLayoutUpdated:
+                    unsafe extern "system" fn(*mut core::ffi::c_void, i64) -> windows_core::HRESULT,
                 Loading: usize,
                 RemoveLoading: usize,
                 ActualThemeChanged: usize,
@@ -10570,6 +10608,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -11711,6 +11783,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -12637,6 +12743,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -13803,6 +13943,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -14918,6 +15092,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -15944,6 +16152,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -17089,6 +17331,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -18437,6 +18713,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -19360,6 +19670,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -20287,6 +20631,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -22544,6 +22922,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -23479,6 +23891,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -24541,6 +24987,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -25837,6 +26317,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -26909,6 +27423,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -27947,6 +28495,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -29031,6 +29613,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -29930,6 +30546,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -31021,6 +31671,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -32103,6 +32787,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -33340,6 +34058,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -34534,6 +35286,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -35539,6 +36325,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -36623,6 +37443,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -37878,6 +38732,40 @@ pub mod Microsoft {
                             ))
                         }
                     }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                            ))
+                        }
+                    }
                     pub fn FindName(
                         &self,
                         name: &windows_core::HSTRING,
@@ -38982,6 +39870,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
@@ -40565,6 +41487,37 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveSizeChanged,
+                                ))
+                            }
+                        }
+                        pub fn LayoutUpdated<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this = &windows_core::Interface::cast::<
+                                super::super::IFrameworkElement,
+                            >(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::EventHandler < windows_core::IInspectable > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ =
+                                    (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                        windows_core::Interface::as_raw(this),
+                                        windows_core::Interface::as_raw(&handler),
+                                        &mut result__,
+                                    )
+                                    .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                                 ))
                             }
                         }
@@ -42479,6 +43432,37 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn LayoutUpdated<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this = &windows_core::Interface::cast::<
+                                super::super::IFrameworkElement,
+                            >(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::EventHandler < windows_core::IInspectable > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ =
+                                    (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                        windows_core::Interface::as_raw(this),
+                                        windows_core::Interface::as_raw(&handler),
+                                        &mut result__,
+                                    )
+                                    .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                                ))
+                            }
+                        }
                         pub fn FindName(
                             &self,
                             name: &windows_core::HSTRING,
@@ -43668,6 +44652,37 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveSizeChanged,
+                                ))
+                            }
+                        }
+                        pub fn LayoutUpdated<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this = &windows_core::Interface::cast::<
+                                super::super::IFrameworkElement,
+                            >(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::EventHandler < windows_core::IInspectable > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ =
+                                    (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                        windows_core::Interface::as_raw(this),
+                                        windows_core::Interface::as_raw(&handler),
+                                        &mut result__,
+                                    )
+                                    .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                                 ))
                             }
                         }
@@ -45027,6 +46042,37 @@ pub mod Microsoft {
                                 ))
                             }
                         }
+                        pub fn LayoutUpdated<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this = &windows_core::Interface::cast::<
+                                super::super::IFrameworkElement,
+                            >(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::EventHandler < windows_core::IInspectable > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ =
+                                    (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                        windows_core::Interface::as_raw(this),
+                                        windows_core::Interface::as_raw(&handler),
+                                        &mut result__,
+                                    )
+                                    .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveLayoutUpdated,
+                                ))
+                            }
+                        }
                         pub fn FindName(
                             &self,
                             name: &windows_core::HSTRING,
@@ -46291,6 +47337,37 @@ pub mod Microsoft {
                                     this.clone(),
                                     token__,
                                     windows_core::Interface::vtable(this).RemoveSizeChanged,
+                                ))
+                            }
+                        }
+                        pub fn LayoutUpdated<F>(
+                            &self,
+                            handler: F,
+                        ) -> windows_core::Result<windows_core::EventRevoker>
+                        where
+                            F: Fn(
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                    windows_core::Ref<windows_core::IInspectable>,
+                                ) + Send
+                                + 'static,
+                        {
+                            let this = &windows_core::Interface::cast::<
+                                super::super::IFrameworkElement,
+                            >(self)?;
+                            let handler = < super::super::super::super::super::Windows::Foundation::EventHandler < windows_core::IInspectable > >::new (move | a0 , a1 | { handler (a0 , a1) ; Ok (()) }) ;
+                            unsafe {
+                                let mut result__ = core::mem::zeroed();
+                                let token__ =
+                                    (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                        windows_core::Interface::as_raw(this),
+                                        windows_core::Interface::as_raw(&handler),
+                                        &mut result__,
+                                    )
+                                    .map(|| result__)?;
+                                Ok(windows_core::EventRevoker::new(
+                                    this.clone(),
+                                    token__,
+                                    windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                                 ))
                             }
                         }
@@ -48996,6 +50073,37 @@ pub mod Microsoft {
                             ))
                         })
                     }
+                    pub fn Rendered<F>(
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<RenderedEventArgs>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            RenderedEventArgs,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        Self::ICompositionTargetStatics(|this| unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).Rendered)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveRendered,
+                            ))
+                        })
+                    }
                     pub fn GetCompositorForCurrentThread()
                     -> windows_core::Result<super::super::Composition::Compositor>
                     {
@@ -49209,8 +50317,17 @@ pub mod Microsoft {
                         i64,
                     )
                         -> windows_core::HRESULT,
-                    Rendered: usize,
-                    RemoveRendered: usize,
+                    pub Rendered: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        *mut core::ffi::c_void,
+                        *mut i64,
+                    )
+                        -> windows_core::HRESULT,
+                    pub RemoveRendered: unsafe extern "system" fn(
+                        *mut core::ffi::c_void,
+                        i64,
+                    )
+                        -> windows_core::HRESULT,
                     SurfaceContentsLost: usize,
                     RemoveSurfaceContentsLost: usize,
                     pub GetCompositorForCurrentThread:
@@ -49341,6 +50458,23 @@ pub mod Microsoft {
                         *mut *mut core::ffi::c_void,
                     )
                         -> windows_core::HRESULT,
+                }
+                windows_core::imp::define_interface!(
+                    IRenderedEventArgs,
+                    IRenderedEventArgs_Vtbl,
+                    0xb268b885_118d_5b66_8099_3b6bb8644726
+                );
+                impl windows_core::RuntimeType for IRenderedEventArgs {
+                    const SIGNATURE: windows_core::imp::ConstBuffer =
+                        windows_core::imp::ConstBuffer::for_interface::<Self>();
+                    const NAME: windows_core::imp::ConstBuffer =
+                        windows_core::imp::ConstBuffer::from_slice(
+                            b"Microsoft.UI.Xaml.Media.IRenderedEventArgs",
+                        );
+                }
+                #[repr(C)]
+                pub struct IRenderedEventArgs_Vtbl {
+                    pub base__: windows_core::IInspectable_Vtbl,
                 }
                 windows_core::imp::define_interface!(
                     IShadow,
@@ -49584,6 +50718,28 @@ pub mod Microsoft {
                 }
                 unsafe impl Send for MicaBackdrop {}
                 unsafe impl Sync for MicaBackdrop {}
+                #[repr(transparent)]
+                #[derive(Clone, Debug, Eq, PartialEq)]
+                pub struct RenderedEventArgs(windows_core::IUnknown);
+                windows_core::imp::interface_hierarchy!(
+                    RenderedEventArgs,
+                    windows_core::IUnknown,
+                    windows_core::IInspectable
+                );
+                impl windows_core::RuntimeType for RenderedEventArgs {
+                    const SIGNATURE: windows_core::imp::ConstBuffer =
+                        windows_core::imp::ConstBuffer::for_class::<Self, IRenderedEventArgs>();
+                }
+                unsafe impl windows_core::Interface for RenderedEventArgs {
+                    type Vtable = <IRenderedEventArgs as windows_core::Interface>::Vtable;
+                    const IID: windows_core::GUID =
+                        <IRenderedEventArgs as windows_core::Interface>::IID;
+                }
+                impl windows_core::RuntimeName for RenderedEventArgs {
+                    const NAME: &'static str = "Microsoft.UI.Xaml.Media.RenderedEventArgs";
+                }
+                unsafe impl Send for RenderedEventArgs {}
+                unsafe impl Sync for RenderedEventArgs {}
                 #[repr(transparent)]
                 #[derive(Clone, Debug, Eq, PartialEq)]
                 pub struct Shadow(windows_core::IUnknown);
@@ -50277,6 +51433,40 @@ pub mod Microsoft {
                                 this.clone(),
                                 token__,
                                 windows_core::Interface::vtable(this).RemoveSizeChanged,
+                            ))
+                        }
+                    }
+                    pub fn LayoutUpdated<F>(
+                        &self,
+                        handler: F,
+                    ) -> windows_core::Result<windows_core::EventRevoker>
+                    where
+                        F: Fn(
+                                windows_core::Ref<windows_core::IInspectable>,
+                                windows_core::Ref<windows_core::IInspectable>,
+                            ) + Send
+                            + 'static,
+                    {
+                        let this =
+                            &windows_core::Interface::cast::<super::IFrameworkElement>(self)?;
+                        let handler = <super::super::super::super::Windows::Foundation::EventHandler<
+                            windows_core::IInspectable,
+                        >>::new(move |a0, a1| {
+                            handler(a0, a1);
+                            Ok(())
+                        });
+                        unsafe {
+                            let mut result__ = core::mem::zeroed();
+                            let token__ = (windows_core::Interface::vtable(this).LayoutUpdated)(
+                                windows_core::Interface::as_raw(this),
+                                windows_core::Interface::as_raw(&handler),
+                                &mut result__,
+                            )
+                            .map(|| result__)?;
+                            Ok(windows_core::EventRevoker::new(
+                                this.clone(),
+                                token__,
+                                windows_core::Interface::vtable(this).RemoveLayoutUpdated,
                             ))
                         }
                     }
