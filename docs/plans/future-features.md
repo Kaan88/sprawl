@@ -379,6 +379,38 @@ View already do folders first by name, and keep the Search picks and the 10-at-o
 are. Done when: a mixed result list sorted by Name shows every folder above every file, in either
 direction, on the scan on screen and on other drives, with a test for each sort path.
 
+**Search: what to borrow from Everything** (2026-11-23, the user asked to look; not started). Sprawl
+already has: words, globs, a|b, !not, path:, size and dm: ranges, ext:, regex:, case:, exact:,
+depth:, folder:/file:, compressed:, match highlighting, filter chips (Kind, Type, Size, Modified,
+Where, More), saved and recent searches, keyword suggestions, Enter / Ctrl+Enter, and the picks menu.
+The audit decision stands: powerful search, not a second Everything (no background service, no
+always-live index). In order of value for a disk tool:
+
+1. Folders first when sorted by name (above).
+2. The whole list, not the first N. Everything sorts and counts every match; Sprawl caps at
+   `searchMaxHits` and re-takes the cap on a re-sort (also the root of Fable's finding 1). At least:
+   sort over all matches before the cap, and say "showing the first N of M".
+3. More dates: `dc:` (created) and a Created column (the MFT and the folder walk both get it at no
+   extra cost; check what the scan keeps now), and `da:` (last opened) for the user too, read per
+   match with the same `Accessed` reader and limits the AI's search uses.
+4. Folder-shape keywords: `parent:` (only the direct children of a folder), `child:` (folders that
+   hold a match), `childcount:` / `childfilecount:` (e.g. folders with more than 10,000 files).
+5. Duplicates in the list: `dupe:` (same name), `sizedupe:` (same size), sorted so copies sit together;
+   feeds F4 (duplicates resolved by linking).
+6. Attributes and path trouble: `attrib:h` / `s` / `r` / link (hidden, system, read-only, junction),
+   and `len:>260` for paths too long for many tools.
+7. Programs: `dr:` (last run) and run count from Prefetch, which `Facts` already reads for the AI.
+8. Type macros if the Type chip doesn't cover them already: `audio:`, `video:`, `pic:`, `doc:`,
+   `exe:`, `zip:`.
+9. Grouping: `<a b>|c` (Sprawl's | only works inside one word).
+10. Row actions Everything users expect: F2 rename, drag a result out to Explorer or another app,
+    Ctrl+C copies the file itself (paste in Explorer) with Copy Path staying on Ctrl+Shift+C; check
+    what F2 and Ctrl+C do now.
+11. Choose columns: show or hide Folder, Type, Created, Accessed, Attributes.
+
+Left out: a live index kept by a service (USN journal watching), content search, the HTTP/ETP server,
+thumbnails and the preview pane: costly, against the audit decision, or not what a disk tool is for.
+
 ---
 
 ## Left out on purpose
