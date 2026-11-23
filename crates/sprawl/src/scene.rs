@@ -538,13 +538,13 @@ impl Scene {
 
     // ------------------------------------------------------------ per frame
 
-    /// Advance animations by `dt` seconds and rebuild the instance list. Returns false once
-    /// everything has come to rest (nothing needs drawing until something changes).
     /// dev (SPRAWL_TIMING): how many rectangles the map holds (each is updated every frame).
     pub fn rect_count(&self) -> usize {
         self.anims.len()
     }
 
+    /// Advance animations by `dt` seconds and rebuild the instance list. Returns false once
+    /// everything has come to rest (nothing needs drawing until something changes).
     pub fn update(&mut self, dt: f32) -> bool {
         if !self.pulses.is_empty() {
             self.pulses.retain(|_, p| {
