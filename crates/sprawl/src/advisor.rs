@@ -73,33 +73,46 @@ pub(crate) struct Report {
     pub(crate) privacy_rows: Vec<PrivRow>,
 }
 
-/// One browser profile in the Privacy group.
+/// A row in the Privacy group: a browser profile, or this account's Explorer registry lists.
 pub(crate) struct PrivRow {
-    pub(crate) browser: &'static sprawl_advisor::privacy::Browser,
-    /// As the browser names the profile, and its folder's name.
-    pub(crate) shown: String,
-    pub(crate) folder: String,
+    /// What groups the row's parts (a browser and profile folder, or the registry).
+    key: String,
+    /// As it is shown: "Chrome · Person 1", "Windows Explorer (this account's registry)".
+    pub(crate) label: String,
+    /// The tooltip (a profile folder when its name differs), or empty.
+    pub(crate) tip: String,
     /// Its parts (indices into `Report::privacy`).
     pub(crate) parts: Vec<usize>,
 }
 
 /// The Privacy group's rows: `privacy` by browser and profile, each profile by the name the
-/// browser gives it.
+/// browser gives it, then the registry lists together.
 fn privacy_rows(privacy: &[Finding]) -> Vec<PrivRow> {
     use sprawl_advisor::privacy;
-    let Some(places) = privacy::Places::current() else { return Vec::new() };
+    let places = privacy::Places::current();
     let mut names: std::collections::HashMap<&str, std::collections::HashMap<String, String>> = Default::default();
     let mut rows: Vec<PrivRow> = Vec::new();
     for (i, f) in privacy.iter().enumerate() {
         let Source::Rule(id) = &f.source else { continue };
-        let Some(part) = privacy::part(id) else { continue };
-        let Some(m) = privacy::member(part, &f.path, &places) else { continue };
-        let b = part.browser();
-        let folder = m.profile.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let shown = names.entry(b.cleaner).or_insert_with(|| privacy::profile_names(b, &places)).get(&folder.to_lowercase()).cloned().unwrap_or_else(|| folder.clone());
-        match rows.iter_mut().find(|r| r.browser.cleaner == b.cleaner && r.folder.eq_ignore_ascii_case(&folder)) {
-            Some(r) => r.parts.push(i),
-            None => rows.push(PrivRow { browser: b, shown, folder, parts: vec![i] }),
+        if let Some(part) = privacy::part(id) {
+            let Some(places) = places.as_ref() else { continue };
+            let Some(m) = privacy::member(part, &f.path, places) else { continue };
+            let b = part.browser();
+            let folder = m.profile.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let shown = names.entry(b.cleaner).or_insert_with(|| privacy::profile_names(b, places)).get(&folder.to_lowercase()).cloned().unwrap_or_else(|| folder.clone());
+            let label = format!("{} · {shown}", b.short);
+            let tip = if shown.eq_ignore_ascii_case(&folder) { String::new() } else { format!("Profile folder: {folder}") };
+            let key = format!("{}:{}", b.cleaner, folder.to_lowercase());
+            match rows.iter_mut().find(|r| r.key == key) {
+                Some(r) => r.parts.push(i),
+                None => rows.push(PrivRow { key, label, tip, parts: vec![i] }),
+            }
+        } else if sprawl_advisor::regclean::part(id).is_some() {
+            let label = format!("{} (this account's registry)", sprawl_advisor::regclean::OWNER);
+            match rows.iter_mut().find(|r| r.key == "registry") {
+                Some(r) => r.parts.push(i),
+                None => rows.push(PrivRow { key: "registry".into(), label, tip: String::new(), parts: vec![i] }),
+            }
         }
     }
     rows
@@ -2165,6 +2178,7 @@ impl State {
         let count = self.advice().map_or(0, |r| r.findings.len());
         let cl = self.cleaner_counts();
         let m = &self.advisor.memory;
+        let reg_count = self.advisor.cleanup.done.as_ref().map_or(0, |d| d.registry.len());
         let counts = [
             ("AdvUndo", self.advice().map_or(0, |r| r.kept.len())),
             ("AdvApprove", m.proposals.len()),
@@ -2188,6 +2202,7 @@ impl State {
             ("AdvClUse", cl.0),
             ("AdvClApprove", m.cleaner_proposals.len()),
             ("AdvPvT", self.advice().map_or(0, |r| r.privacy.len())),
+            ("AdvRegBack", reg_count),
             ("AdvClDismiss", m.cleaner_proposals.len()),
         ];
         let click = |name: &str, f: Box<dyn Fn() + Send + Sync>| {
@@ -2322,6 +2337,12 @@ impl State {
                     )
                 }
                 // R7c: a row Sprawl doesn't tick: the first click says why, the second ticks it
+                "AdvRegBack" if i < reg_count => click(
+                    name,
+                    Box::new(move || {
+                        with(|s| s.registry_restore(i));
+                    }),
+                ),
                 "AdvU" if i < count => click(
                     name,
                     Box::new(move || {
@@ -2661,6 +2682,23 @@ impl State {
             self.advisor.memory.compressed.retain(|current| current != &record);
             self.save_memory();
             self.adv_say("Uncompressed: the files are stored as before.");
+        }
+        self.render_advisor();
+    }
+
+    /// Put the `i`th registry part's values back from the backup the clean-up wrote, and say
+    /// what was put back.
+    pub(crate) fn registry_restore(&mut self, i: usize) {
+        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying { return; }
+        let Some(rec) = self.advisor.cleanup.done.as_ref().and_then(|d| d.registry.get(i)).cloned() else { return };
+        match sprawl_advisor::regclean::restore(&rec.backup) {
+            Ok(n) => {
+                if let Some(d) = &mut self.advisor.cleanup.done {
+                    d.registry.remove(i);
+                }
+                self.adv_say(&format!("Put back {n} {} in {}.", if n == 1 { "value" } else { "values" }, rec.title));
+            }
+            Err(e) => self.adv_say(&format!("The backup couldn't be put back: {e}")),
         }
         self.render_advisor();
     }

@@ -182,6 +182,9 @@ pub(crate) struct Done {
     pub recycled_items: usize,
     /// Privacy sets that went, and the browsers that held one back (open).
     pub privacy_items: usize,
+    /// Registry parts that went, with the backup each can be put back from.
+    pub registry_items: usize,
+    pub registry: Vec<sprawl_advisor::regclean::Done>,
     pub privacy_open: Vec<String>,
     /// Tools that finished but whose saving couldn't be measured.
     pub unmeasured: usize,
@@ -322,6 +325,9 @@ fn done_words(d: &Done) -> String {
     }
     if d.privacy_items > 0 {
         parts.push(PV_DONE.into());
+    }
+    if d.registry_items > 0 {
+        parts.push(PV_REG_DONE.into());
     }
     if parts.is_empty() {
         parts.push("Nothing was removed.".into());
@@ -895,16 +901,21 @@ impl State {
                 held.push(format!("{}: not cleaned, you chose to keep it", f.title));
                 continue;
             }
-            // the same checks as when it was found, against this scan
-            let f = match sprawl_advisor::safety::check(&f, &t, &never) {
-                Ok(current) if review_changed(&f, &current) => {
-                    held.push(format!("{}: its risk or cleanup scope changed. Check again and review the updated item before cleaning it.", f.title));
-                    continue;
-                }
-                Ok(f) => f,
-                Err(why) => {
-                    held.push(format!("{}: not cleaned, {why}", f.title));
-                    continue;
+            // the same checks as when it was found, against this scan (a registry part has no
+            // path in the tree: its own module reads the fixed keys again and backs them up)
+            let f = if f.registry() {
+                f
+            } else {
+                match sprawl_advisor::safety::check(&f, &t, &never) {
+                    Ok(current) if review_changed(&f, &current) => {
+                        held.push(format!("{}: its risk or cleanup scope changed. Check again and review the updated item before cleaning it.", f.title));
+                        continue;
+                    }
+                    Ok(f) => f,
+                    Err(why) => {
+                        held.push(format!("{}: not cleaned, {why}", f.title));
+                        continue;
+                    }
                 }
             };
             let Some((action, _)) = clean::action(&f) else {
@@ -1173,8 +1184,17 @@ impl State {
                 // unticked, one held back stays ticked for "Check again"
                 if it.privacy {
                     let browser = it.rule.as_deref().and_then(sprawl_advisor::privacy::part).map(|p| p.browser().short);
-                    if o.problems.is_empty() && o.files > 0 {
-                        done.privacy_items += 1;
+                    // a registry part went when its values did; it has its backup to put back
+                    let reg_went = o.registry.as_ref().is_some_and(|r| r.removed > 0) && o.problems.is_empty();
+                    if let Some(reg) = &o.registry {
+                        done.registry.push(reg.clone());
+                    }
+                    if (o.problems.is_empty() && o.files > 0) || reg_went {
+                        if it.rule.as_deref().is_some_and(sprawl_advisor::regclean::is_id) {
+                            done.registry_items += 1;
+                        } else {
+                            done.privacy_items += 1;
+                        }
                         self.advisor.cleanup.privacy_ticked.remove(&key(&it.path));
                     } else {
                         for who in o.problems.iter().filter_map(|p| holder(p, browser)) {
@@ -1304,6 +1324,7 @@ impl State {
                     ItemState::Waiting => ("&#xE823;", crate::tokens::refer("text3"), "Waiting".to_string()),
                     ItemState::Running(_) if it.privacy => ("&#xE895;", crate::tokens::refer("link"), "Removing...".to_string()),
                     ItemState::Done(o) if it.privacy && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), "Removed".to_string()),
+                    ItemState::Done(o) if it.privacy && o.registry.as_ref().is_some_and(|r| r.removed > 0) => ("&#xE7BA;", crate::tokens::refer("warn"), format!("{} values removed; some couldn't go", o.registry.as_ref().map_or(0, |r| r.removed))),
                     ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing in this set went".to_string()),
                     ItemState::Running(f) => ("&#xE895;", crate::tokens::refer("link"), running_label(it, *f)),
                     ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
@@ -1322,12 +1343,12 @@ impl State {
             }
             x += "</StackPanel></Border>";
         } else if let Some(d) = &c.done {
-            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled + d.privacy_items as u64 + d.unmeasured as u64 > 0;
+            let fine = d.problems.is_empty() && !d.stopped && d.freed + d.recycled + (d.privacy_items + d.registry_items) as u64 + d.unmeasured as u64 > 0;
             let (bg, border, glyph, colour) = if fine { (crate::tokens::refer("goodwash"), crate::tokens::refer("goodline"), "&#xE73E;", crate::tokens::refer("good")) } else { (crate::tokens::refer("warnwash"), crate::tokens::refer("warnline"), "&#xE7BA;", crate::tokens::refer("warn")) };
             let items = if d.items == 1 { "1 item".to_string() } else { format!("{} items", d.items) };
             let head = match (d.stopped, d.items) {
-                (true, 0) if d.recycled == 0 && d.privacy_items == 0 => "Stopped. Nothing was freed.".to_string(),
-                (false, 0) if d.recycled == 0 && d.privacy_items == 0 => "Nothing was freed.".to_string(),
+                (true, 0) if d.recycled == 0 && d.privacy_items + d.registry_items == 0 => "Stopped. Nothing was freed.".to_string(),
+                (false, 0) if d.recycled == 0 && d.privacy_items + d.registry_items == 0 => "Nothing was freed.".to_string(),
                 (true, 0) => "Stopped.".to_string(),
                 (false, 0) => String::new(),
                 (true, _) => format!("Stopped. Freed {} from {items}.", self.size(d.freed)),
@@ -1346,15 +1367,27 @@ impl State {
                     format!("{head} {what}").trim().to_string()
                 }
             };
-            let head = match d.privacy_items {
+            let head = match d.privacy_items + d.registry_items {
                 0 => head,
                 n => format!("{head} {} removed.", privacy_count(n)).trim().to_string(),
             };
             // what happened to them, in plain words
             let gone = done_words(d);
             let gone = gone.as_str();
+            let mut reg = String::new();
+            if !d.registry.is_empty() {
+                reg += r##"<TextBlock Text="Registry entries removed. Each part's values were copied to a backup first: Put back writes them as they were." FontSize="{$fs12}" Foreground="{$text2}" TextWrapping="Wrap"/>"##;
+                for (i, r) in d.registry.iter().enumerate() {
+                    reg += &format!(
+                        r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" {num} FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center"/><Button x:Name="AdvRegBack{i}" Content="Put back"/></StackPanel></Grid>"##,
+                        ui::esc(&r.title),
+                        if r.removed == 1 { "1 value".to_string() } else { format!("{} values", r.removed) },
+                        num = crate::look::NUM
+                    );
+                }
+            }
             x += &format!(
-                r##"<Border Padding="14,12" CornerRadius="{{$rc8}}" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="{{$fs16}}" Foreground="{colour}"/><TextBlock Text="{}" {num} FontSize="{{$fs15}}" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK"/></Grid><TextBlock Text="{gone} The tree, the map and the findings are updated.{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI"/><Button x:Name="AdvCleanLog" Content="See what was removed"/></StackPanel>"##,
+                r##"<Border Padding="14,12" CornerRadius="{{$rc8}}" Background="{bg}" BorderBrush="{border}" BorderThickness="1"><StackPanel Spacing="6"><Grid><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="{glyph}" FontSize="{{$fs16}}" Foreground="{colour}"/><TextBlock Text="{}" {num} FontSize="{{$fs15}}" FontWeight="SemiBold"/></StackPanel><Button x:Name="AdvCleanedOk" HorizontalAlignment="Right" Content="OK"/></Grid>{reg}<TextBlock Text="{gone} The tree, the map and the findings are updated.{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="AdvCleanMore" Content="Find more with AI"/><Button x:Name="AdvCleanLog" Content="See what was removed"/></StackPanel>"##,
                 ui::esc(&head),
                 self.tree.as_ref().and_then(|t| crate::win32::disk_space(&t.path_of(sprawl_core::ROOT))).map_or(String::new(), |(_, free)| ui::esc(&format!(" The disk now has {} free.", self.size(free)))),
                 num = crate::look::NUM
@@ -1871,9 +1904,11 @@ impl State {
 }
 
 /// The privacy wording of the review and the result card, held to `privacy::PROMISE_WORDS`.
-pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, deleted without the Recycle Bin and not counted in the space above. Each set goes whole, or not at all, and only with its browser closed:";
+pub(crate) const PV_REVIEW_HEAD: &str = "Privacy items, deleted without the Recycle Bin and not counted in the space above. A browser's set goes whole, or not at all, and only with its browser closed:";
+pub(crate) const PV_REG_REVIEW: &str = "Registry items: the list's values go, the key itself stays, and every value is copied to a backup first. After the clean-up, Put back writes them back as they were:";
 pub(crate) const PV_OK: &str = "I understand what each of these removes";
 pub(crate) const PV_DONE: &str = "The privacy items' files were deleted; the browser starts new, empty ones the next time it opens.";
+pub(crate) const PV_REG_DONE: &str = "The Explorer registry lists were cleared. Explorer keeps some of them in memory: the change may only show after you sign out and back in.";
 
 /// "1 privacy item", "3 privacy items".
 pub(crate) fn privacy_count(n: usize) -> String {
@@ -1904,16 +1939,24 @@ impl State {
         }
         let spare = self.spare();
         let mut x = format!(r##"<Border Padding="10,8" CornerRadius="{{$rc6}}" Background="{{$surface1}}" BorderBrush="{{$warnline}}" BorderThickness="1"><StackPanel Spacing="6"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(PV_REVIEW_HEAD));
+        if privacy.iter().any(|f| f.registry()) {
+            x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(PV_REG_REVIEW));
+        }
         let mut open: Vec<String> = Vec::new();
         for f in privacy {
-            let part = match &f.source {
+            let browser = match &f.source {
                 Source::Rule(id) => sprawl_advisor::privacy::part(id),
                 _ => None,
             };
+            let reg = match &f.source {
+                Source::Rule(id) => sprawl_advisor::regclean::part(id),
+                _ => None,
+            };
             let files = clean::action(f).and_then(|(a, _)| clean::preview(&f.path, &a, &spare, 0)).map(|p| p.biggest.iter().map(|(p, b)| format!("{} ({})", p.display(), self.size(*b))).collect::<Vec<_>>()).unwrap_or_default();
+            let n = reg.map_or(0, |p| sprawl_advisor::regclean::count(p.id));
             let held = self.app_open(f).map(|(app, _)| app);
             if let Some(app) = &held {
-                let short = part.map_or(app.as_str(), |p| p.browser().short).to_string();
+                let short = browser.map_or(app.as_str(), |p| p.browser().short).to_string();
                 if !open.contains(&short) {
                     open.push(short);
                 }
@@ -1922,9 +1965,11 @@ impl State {
                 r##"<StackPanel Spacing="1"><StackPanel Orientation="Horizontal" Spacing="8">{}<TextBlock Text="{}" FontSize="{{$fs13}}"/></StackPanel><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap" Margin="16,0,0,0"/>"##,
                 crate::advisor::risk_mark(f.risk, 8, crate::advisor::MID),
                 ui::esc(&f.title),
-                ui::esc(part.map_or("", |p| p.cost))
+                ui::esc(browser.map_or_else(|| reg.map_or("", |p| p.cost), |p| p.cost))
             );
-            if files.is_empty() {
+            if reg.is_some() {
+                x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="16,0,0,0"/>"##, ui::esc(&if n == 1 { "1 value would be removed, after it is copied to a backup.".to_string() } else { format!("{n} values would be removed, after they are copied to a backup.") }));
+            } else if files.is_empty() {
                 x += r##"<TextBlock Text="Its files couldn't be listed now: it will be held back." FontSize="{$fs12}" Foreground="{$text3}" Margin="16,0,0,0"/>"##;
             }
             for line in &files {
@@ -1981,6 +2026,9 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
                 }
                 if o.recycled > 0 {
                     s += &format!("\t  sent to the Recycle Bin: {} bytes, {} files\r\n", o.recycled, o.recycled_files);
+                }
+                if let Some(r) = &o.registry {
+                    s += &format!("\t  registry values removed: {} ({})\r\n\t  backup: {}\r\n", r.removed, r.title, r.backup.display());
                 }
                 if o.kept_new > 0 {
                     s += &format!("\t  left {} items new since the scan\r\n", o.kept_new);
@@ -2075,6 +2123,39 @@ mod admin_tests {
         }
     }
 
+    /// A registry part (Run box history) is a privacy part too: never in a sum, never ticked for
+    /// the user, never to the Recycle Bin, never written to a script.
+    #[test]
+    fn registry_parts_are_privacy_parts_too() {
+        let mut f = Finding {
+            path: PathBuf::from(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"),
+            owner: Some("Windows Explorer".into()),
+            bytes: 0,
+            risk: Risk::Amber,
+            remedy: Remedy::Delete,
+            command: None,
+            title: "Windows Explorer: Run box history".into(),
+            evidence: vec![],
+            confidence: 1.0,
+            source: Source::Rule("registry.explorer/runmru".into()),
+            allow_protected: false,
+            trusted: true,
+            builtin: true,
+            on_path: false,
+            action: None,
+            admin: false,
+            carved: Vec::new(),
+            gain: None,
+            forced_from: None,
+        };
+        f.set_action(Action::Reg { part: "registry.explorer/runmru".into() }, false);
+        assert!(f.privacy() && f.registry() && f.command.is_none());
+        assert!(!counts_as_space(&f), "never in a space total");
+        assert!(!goes_to_bin(&f, true), "never to the Recycle Bin");
+        let s = sprawl_advisor::export::script(&[&f], r"C:\", std::time::SystemTime::now());
+        assert!(!s.contains("RunMRU") && !s.contains("registry"), "never in a saved script: {s}");
+    }
+
     /// The app's privacy wording promises nothing: the engine's word list, for every string the
     /// Privacy group, the review, the result card and Settings show.
     #[test]
@@ -2086,8 +2167,10 @@ mod admin_tests {
             crate::cleaners::PV_NONE.into(),
             crate::cleaners::PV_HELD.into(),
             PV_REVIEW_HEAD.into(),
+            PV_REG_REVIEW.into(),
             PV_OK.into(),
             PV_DONE.into(),
+            PV_REG_DONE.into(),
             privacy_count(1),
             privacy_count(3),
             close_then(&["Chrome".into(), "Edge".into()]),

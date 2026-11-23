@@ -1885,8 +1885,8 @@ impl State {
 
 /// The Privacy group's wording, held to `privacy::PROMISE_WORDS` by a test.
 pub(crate) const PV_HEAD: &str = "Privacy";
-pub(crate) const PV_SUB: &str = "Cookies and history in this account's browsers, by profile. They free almost no space: each is ticked on its own, and nothing here is ticked for you.";
-pub(crate) const PV_NONE: &str = "No browser profile of this account was found in what was read.";
+pub(crate) const PV_SUB: &str = "Cookies and history in this account's browsers, by profile, and the short lists Explorer keeps in this account's own registry. They free almost no space: each is ticked on its own, and nothing here is ticked for you.";
+pub(crate) const PV_NONE: &str = "Nothing in this account's browsers or Explorer registry lists was found in what was read.";
 pub(crate) const PV_HELD: &str = "held back by Sprawl's checks";
 
 impl State {
@@ -1912,18 +1912,25 @@ impl State {
             x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Margin="34,2,0,0"/>"##, ui::esc(PV_NONE));
         }
         for row in &r.privacy_rows {
-            let name = format!("{} · {}", row.browser.short, row.shown);
-            let tip = if row.shown.eq_ignore_ascii_case(&row.folder) { String::new() } else { format!(r##" ToolTipService.ToolTip="Profile folder: {}""##, ui::esc(&row.folder)) };
-            x += &format!(r##"<StackPanel Spacing="1" Margin="34,2,0,4"><TextBlock Text="{}" FontSize="{{$fs13}}"{tip}/>"##, ui::esc(&name));
+            let name = &row.label;
+            let tip = if row.tip.is_empty() { String::new() } else { format!(r##" ToolTipService.ToolTip="{}""##, ui::esc(&row.tip)) };
+            x += &format!(r##"<StackPanel Spacing="1" Margin="34,2,0,4"><TextBlock Text="{}" FontSize="{{$fs13}}"{tip}/>"##, ui::esc(name));
             for &i in &row.parts {
                 let f = &r.privacy[i];
-                let part = match &f.source {
+                let browser = match &f.source {
                     Source::Rule(id) => sprawl_advisor::privacy::part(id),
+                    _ => None,
+                };
+                let reg = match &f.source {
+                    Source::Rule(id) => sprawl_advisor::regclean::part(id),
                     _ => None,
                 };
                 let ticked = self.advisor.cleanup.privacy_ticked.contains(&key(&f.path));
                 // not the space labels ("your own files"): what it is, and whether it can go now
-                let mut sub = "Privacy".to_string();
+                let mut sub = match reg {
+                    Some(p) => format!("Privacy · {} values", sprawl_advisor::regclean::count(p.id)),
+                    None => "Privacy".to_string(),
+                };
                 match self.app_open(f) {
                     Some((app, _)) => sub += &format!(" · close {app} first"),
                     None => {}
@@ -1934,10 +1941,10 @@ impl State {
                     if running { "False" } else { "True" },
                     ui::esc(&f.title),
                     crate::advisor::risk_mark(f.risk, 8, crate::advisor::MID),
-                    ui::esc(part.map_or(f.title.as_str(), |p| p.title)),
-                    ui::esc(part.map_or("", |p| p.why)),
+                    ui::esc(browser.map_or(f.title.as_str(), |p| p.title)),
+                    ui::esc(browser.map_or_else(|| reg.map_or("", |p| p.why), |p| p.why)),
                     ui::esc(&sub),
-                    ui::esc(part.map_or("", |p| p.cost)),
+                    ui::esc(browser.map_or_else(|| reg.map_or("", |p| p.cost), |p| p.cost)),
                     if ticked { crate::tokens::refer("warn") } else { crate::tokens::refer("text2") },
                 );
             }
