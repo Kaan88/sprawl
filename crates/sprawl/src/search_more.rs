@@ -34,6 +34,17 @@ use crate::ui;
 pub(crate) fn max_hits() -> usize {
     sprawl_advisor::tuning::get(&sprawl_advisor::tuning::SEARCH_MAX_HITS) as usize
 }
+/// What the status adds when other drives have more matches than are listed: the list is the
+/// first `shown` of all `total` in the sort order on screen (a sort orders every match before the
+/// cap is taken, so another sort lists others).
+pub(crate) fn capped_note(shown: usize, total: usize) -> String {
+    if shown > 0 && total > shown {
+        format!("; showing the first {} of {} on other drives", thousands(shown as u64), thousands(total as u64))
+    } else {
+        String::new()
+    }
+}
+
 /// A place that isn't the scan on screen, as a search-only index.
 pub(crate) struct Place {
     pub(crate) ix: Arc<CompactIndex>,
@@ -175,6 +186,22 @@ impl More {
         self.places.iter().any(Option::is_some)
     }
 
+    /// Nothing is picked and the keyboard is on no row from here.
+    pub(crate) fn drop_picks(&mut self) {
+        self.sel = None;
+        self.picks.clear();
+    }
+
+    /// Drop the picks (and the keyboard's row) that are not among the listed matches any more;
+    /// how many picks went.
+    pub(crate) fn prune_picks(&mut self) -> usize {
+        let listed: std::collections::HashSet<(usize, usize)> = self.hits.iter().copied().collect();
+        if self.sel.is_some_and(|s| !listed.contains(&s)) {
+            self.sel = None;
+        }
+        self.picks.retain(|p| listed.contains(&(p.place, p.id)))
+    }
+
     /// The places changed: matches and the picked row are for the old ones.
     fn bump(&mut self) {
         self.gen += 1;
@@ -249,26 +276,35 @@ pub(crate) fn sort_by(col: usize) -> SortBy {
 pub(crate) enum SortVal {
     Num(u64),
     Time(Option<SystemTime>),
-    /// (the folder's path or the name, then the name), lower case
+    /// (the folder's path, then the name), lower case
     Text(String, String),
+    /// By name: folders first whichever way round (see [`name_group`]), then the name, lower case
+    Name(u8, String),
 }
 
-pub(crate) fn compact_val(ix: &CompactIndex, id: u32, by: SortBy) -> SortVal {
+/// The part of a name sort's key that puts folders before files. The sort takes the biggest key
+/// first when `desc`, so a folder is the biggest group then; the names inside a group run A-Z or
+/// Z-A as the key does.
+pub(crate) fn name_group(is_dir: bool, desc: bool) -> u8 {
+    u8::from(is_dir == desc)
+}
+
+pub(crate) fn compact_val(ix: &CompactIndex, id: u32, by: SortBy, desc: bool) -> SortVal {
     match by {
         SortBy::Size => SortVal::Num(ix.size(id)),
         SortBy::Modified => SortVal::Time(ix.modified(id)),
-        SortBy::Name => SortVal::Text(ix.name(id).to_lowercase(), String::new()),
+        SortBy::Name => SortVal::Name(name_group(ix.is_dir(id), desc), ix.name(id).to_lowercase()),
         SortBy::Folder => SortVal::Text(ix.parent(id).map(|p| ix.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default(), ix.name(id).to_lowercase()),
     }
 }
 
 /// The same for a node of the scan on screen, so its rows and other drives' rows merge.
-pub(crate) fn scan_val(t: &sprawl_core::Tree, n: usize, by: SortBy) -> SortVal {
+pub(crate) fn scan_val(t: &sprawl_core::Tree, n: usize, by: SortBy, desc: bool) -> SortVal {
     let x = &t.nodes[n];
     match by {
         SortBy::Size => SortVal::Num(x.size),
         SortBy::Modified => SortVal::Time(x.modified),
-        SortBy::Name => SortVal::Text(x.name.to_lowercase(), String::new()),
+        SortBy::Name => SortVal::Name(name_group(x.is_dir, desc), x.name.to_lowercase()),
         SortBy::Folder => SortVal::Text(x.parent.map(|p| t.path_of(p).to_string_lossy().to_lowercase()).unwrap_or_default(), x.name.to_lowercase()),
     }
 }
@@ -316,7 +352,7 @@ fn sort_and_cap(places: &[Option<Arc<Place>>], mut all: Vec<Vec<u32>>, (c, desc)
             p.ix.sort(hits, by, desc);
         }
     }
-    let shown = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, by)), desc, max_hits());
+    let shown = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, by, desc)), desc, max_hits());
     Some((all, shown))
 }
 
@@ -523,6 +559,8 @@ impl State {
             m.total = 0;
             m.hits_gen = m.gen;
             m.hits_query = self.search.query.clone();
+            // nothing is listed now: nothing is picked
+            m.drop_picks();
             self.render_more();
             return;
         }
@@ -619,11 +657,16 @@ impl State {
                 m.hits_gen = gen;
                 m.hits_query = q;
                 m.hits_sort = sort;
+                let mut dropped = 0;
                 if !which {
                     // a new list of results: what was picked is for the old one (a re-sort
                     // keeps the picks, which are by path)
                     m.sel = None;
                     m.picks.clear();
+                } else {
+                    // a re-sort takes the cap again: a pick the new order cut off is not on the
+                    // list any more, so it is not picked any more
+                    dropped = m.prune_picks();
                 }
                 if sort != self.search.sort {
                     self.more_sort();
@@ -632,7 +675,13 @@ impl State {
                 if self.view == View::Search {
                     self.refresh_rows();
                     // the scan's own rows may still be sorting
-                    let info = if self.search.sorting.is_some() { "Sorting...".to_string() } else { self.search_count() };
+                    let info = if self.search.sorting.is_some() {
+                        "Sorting...".to_string()
+                    } else if dropped > 0 {
+                        format!("{} picked result{} left the list when it was sorted again (it lists only the first {} from other drives)", thousands(dropped as u64), if dropped == 1 { "" } else { "s" }, thousands(self.search.more.hits.len() as u64))
+                    } else {
+                        self.search_count()
+                    };
                     crate::state::text(&self.root, "SearchInfo", &info);
                 }
             }
@@ -731,6 +780,8 @@ impl State {
 
     /// Say how many are picked (and that the picks are full).
     pub(crate) fn more_picked_note(&self) {
+        // (only the picks: the row the keyboard is on counts only when nothing is picked, and
+        // then there is nothing to say)
         let n = self.search.more.picks.len();
         let full = if n >= crate::search_delete::MAX_PICKS { format!(" (the most Sprawl picks at once: {})", crate::search_delete::MAX_PICKS) } else { String::new() };
         let note = match n {
@@ -797,7 +848,7 @@ impl State {
         let Some((ix, i)) = self.search.more.item(k, id) else { return String::new() };
         let name = ix.name(i);
         let full = ix.path_of(i).display().to_string();
-        let picked = self.search.more.sel == Some((k, id)) || self.search.more.picks.contains_key(&crate::search_delete::key(Path::new(&full)));
+        let picked = crate::search_delete::counts(self.search.more.sel, &self.search.more.picks, (k, id), Path::new(&full));
         let (bg, sel_bar) = (self.row_bg(row, picked), crate::tables::row_bar(picked));
         let folder = ix.parent(i).map(|q| ix.path_of(q).display().to_string()).unwrap_or_default();
         let ext = name.rsplit_once('.').filter(|(a, b)| !a.is_empty() && !b.is_empty()).map(|(_, e)| e.to_lowercase()).unwrap_or_default();
@@ -810,13 +861,14 @@ impl State {
             None => String::new(),
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
-            cols = crate::tables::col_defs(crate::search::COLS),
+            cols = crate::tables::col_defs(&self.search_cols()),
             runs = self.name_runs(&name),
-            c1 = crate::tables::cell(1, &self.size(ix.size(i))),
-            c2 = crate::tables::cell(2, ""),
-            c3 = crate::tables::cell(3, &ix.modified(i).map(fmt_time).unwrap_or_default()),
+            fv = if self.search_col_shown(4) { "Visible" } else { "Collapsed" },
+            c1 = if self.search_col_shown(1) { crate::tables::cell(1, &self.size(ix.size(i))) } else { String::new() },
+            c2 = if self.search_col_shown(2) { crate::tables::cell(2, "") } else { String::new() },
+            c3 = if self.search_col_shown(3) { crate::tables::cell(3, &ix.modified(i).map(fmt_time).unwrap_or_default()) } else { String::new() },
             folder = ui::esc(&folder),
             full = ui::esc(&full),
         )
@@ -1076,15 +1128,74 @@ mod tests {
         // biggest first: the biggest two
         let (all, shown) = sort_and_cap(&places, all, (col(crate::tables::Key::Size), true), &AtomicBool::new(false)).unwrap();
         assert_eq!(names(&shown), ["b.txt", "c.txt", "a.txt", "y.txt", "z.txt"]);
-        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Size)), true, 2);
+        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Size, true)), true, 2);
         assert_eq!(names(&capped), ["b.txt", "c.txt"]);
         // by name: the first two names of all of them, not of the biggest two
         let (all, _) = sort_and_cap(&places, all, (col(crate::tables::Key::Name), false), &AtomicBool::new(false)).unwrap();
-        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Name)), false, 2);
+        let capped = merge_capped(&all, |k, id| places[k].as_ref().map(|p| compact_val(&p.ix, id, SortBy::Name, false)), false, 2);
         assert_eq!(names(&capped), ["a.txt", "b.txt"]);
         // by folder: D:\ then E:\, names within
         let (_, shown) = sort_and_cap(&places, all, (col(crate::tables::Key::Folder), false), &AtomicBool::new(false)).unwrap();
         assert_eq!(names(&shown), ["a.txt", "b.txt", "z.txt", "c.txt", "y.txt"]);
+    }
+
+    #[test]
+    fn by_name_every_folder_is_above_every_file_in_both_directions() {
+        let d = tree("D:\\", &[("b.txt", false, 0, 1), ("Zed", true, 0, 0), ("a.txt", false, 0, 1), ("Alpha", true, 0, 0)]);
+        let e = tree("E:\\", &[("c.txt", false, 0, 1), ("Mid", true, 0, 0), ("z.txt", false, 0, 1)]);
+        let places = vec![place(&d, "D:\\"), place(&e, "E:\\")];
+        let all: Vec<Vec<u32>> = places.iter().map(|p| p.as_ref().map_or(Vec::new(), |p| (1..p.ix.len() as u32).collect())).collect();
+        let names = |shown: &[(usize, usize)]| -> Vec<String> { shown.iter().map(|&(k, id)| places[k].as_ref().unwrap().ix.name(id as u32)).collect() };
+        let name_col = crate::search::COLS.iter().position(|c| c.key() == crate::tables::Key::Name).unwrap();
+        let (all, shown) = sort_and_cap(&places, all, (name_col, false), &AtomicBool::new(false)).unwrap();
+        assert_eq!(names(&shown), ["Alpha", "Mid", "Zed", "a.txt", "b.txt", "c.txt", "z.txt"]);
+        let (_, shown) = sort_and_cap(&places, all, (name_col, true), &AtomicBool::new(false)).unwrap();
+        assert_eq!(names(&shown), ["Zed", "Mid", "Alpha", "z.txt", "c.txt", "b.txt", "a.txt"], "folders still first, each group reversed");
+        // the scan's rows merge with them by the same key: a scan folder between other drives' folders
+        let t = tree("C:\\", &[("Beta", true, 0, 0)]);
+        for desc in [false, true] {
+            let a = scan_val(&t, 1, SortBy::Name, desc);
+            let f = compact_val(&places[0].as_ref().unwrap().ix, 1, SortBy::Name, desc);
+            let dir_id = (1..places[0].as_ref().unwrap().ix.len() as u32).find(|&i| places[0].as_ref().unwrap().ix.is_dir(i)).unwrap();
+            let d = compact_val(&places[0].as_ref().unwrap().ix, dir_id, SortBy::Name, desc);
+            // (a folder against a file: the folder is the one that comes first in this direction)
+            let folder_first = if desc { a > f } else { a < f };
+            assert!(folder_first, "a scan folder is ahead of another drive's file (desc {desc})");
+            assert!(if desc { d > f } else { d < f }, "and so is another drive's");
+        }
+    }
+
+    fn pick(place: usize, id: usize, path: &str) -> crate::search_delete::Pick {
+        crate::search_delete::Pick { path: path.into(), is_dir: false, size: 1, secs: None, place, id, gen: 0 }
+    }
+
+    #[test]
+    fn a_re_sort_that_cuts_the_list_drops_the_picks_it_cut() {
+        // A, B, C picked; the new order lists only A and B: C is no longer picked (SRCH finding 1)
+        let mut m = More::default();
+        m.picks.add(pick(0, 1, r"D:\a"));
+        m.picks.add(pick(0, 2, r"D:\b"));
+        m.picks.add(pick(0, 3, r"D:\c"));
+        m.sel = Some((0, 3));
+        m.hits = vec![(0, 1), (0, 2), (0, 9)];
+        assert_eq!(m.prune_picks(), 1);
+        assert_eq!(m.picks.len(), 2);
+        assert!(m.picks.contains_key(&crate::search_delete::key(Path::new(r"D:\a"))) && !m.picks.contains_key(&crate::search_delete::key(Path::new(r"D:\c"))));
+        assert_eq!(m.sel, None, "the keyboard's row left the list too");
+        // nothing cut: nothing changes
+        m.sel = Some((0, 2));
+        assert_eq!(m.prune_picks(), 0);
+        assert_eq!(m.sel, Some((0, 2)));
+        // an emptied or unparsable query lists nothing: nothing stays picked
+        m.drop_picks();
+        assert!(m.picks.is_empty() && m.sel.is_none());
+    }
+
+    #[test]
+    fn the_status_says_how_many_of_how_many_are_listed() {
+        assert_eq!(capped_note(100_000, 250_000), "; showing the first 100,000 of 250,000 on other drives");
+        assert_eq!(capped_note(5, 5), "");
+        assert_eq!(capped_note(0, 0), "");
     }
 
     #[test]

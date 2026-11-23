@@ -6,6 +6,13 @@ in-app updater shows.
 ## Unreleased
 
 - Folders the rules haven't explained now stay explained once you know what they are: Hide takes a folder off that list (Remembered keeps the label, where Forget brings it back), and the AI marks every folder it looked at so the same ones aren't sent to it again and again.
+- Search: sorting by Name now puts every folder above every file, in both directions (folders A-Z then files A-Z, or both reversed), for the scan on screen, other drives and saved scans.
+- Search: when other drives have more matches than the list holds, the status says "showing the first N of M on other drives", and the list is the first N of all matches in the order you sorted by.
+- Search: results you picked that a new sort pushes off the list are no longer picked, so Delete can't act on a row you can't see; emptying the search box drops the picks too.
+- Search: after Ctrl+click takes a result out of the picks, Del and the row menu no longer still count it.
+- Search: F2 renames the picked result (one at a time). The new name is checked first: nothing Windows doesn't allow, never onto a name that is already there, and a file keeps its extension unless you type a new one. Protected places and results from saved scans are refused, and Windows' own message is shown if it says no.
+- Search: Ctrl+C copies the picked results as files, so Paste in Explorer copies them.
+- Search: right-click the list's header to choose which columns to show (Size, Allocated, Modified, Folder; Name always stays). Your choice is remembered.
 
 ## 1.0.8 — 2026-11-23
 

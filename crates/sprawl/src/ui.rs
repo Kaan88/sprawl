@@ -696,6 +696,8 @@ pub(crate) fn shortcuts_xaml() -> String {
         r("Ctrl+click", "Pick several"),
         r("Shift+click", "Pick a range"),
         r("type a name", "Jump to it"),
+        r("F2", "Rename the picked result (Search)"),
+        r("Ctrl+C", "Copy the picked results as files (Search)"),
     ];
     let map = [r("click", "Select"), r("double-click", "Go into a folder"), r("wheel", "Zoom in and out"), r("right-drag", "Pan")];
     // the menus' own, without the tabs listed above
@@ -969,6 +971,11 @@ pub fn page(drives: &[String]) -> String {
             shell("cShell"),
         ],
     );
+    // the Search list's header: a right-click chooses the columns (Name stays)
+    let col_toggle = |name: &str, text: &str| Row::Toggle { name: name.into(), text: text.into(), checked: true, key: String::new(), mods: String::new(), tip: "Show or hide this column in the Search list".into() };
+    let mut col_rows = vec![Row::Item(Item::new("", "Name: always shown").off(true)), SEP];
+    col_rows.extend(crate::search::COL_MENU.iter().map(|&(name, text, _)| col_toggle(name, text)));
+    let cols_menu = crate::menu::xaml("ColsMenu", "", "BottomEdgeAlignedLeft", &col_rows);
     let types_hint = crate::welcome::types_hint();
     let wizard = crate::wizard::xaml();
     let hist = crate::history::xaml();
@@ -1141,7 +1148,7 @@ pub fn page(drives: &[String]) -> String {
         <Border x:Name="SearchNone" Grid.Row="2" Visibility="Collapsed" Padding="16,14" VerticalAlignment="Top" IsHitTestVisible="False" Canvas.ZIndex="5"><TextBlock x:Name="SearchNoneText" TextWrapping="Wrap" FontSize="{{$fs13}}" LineHeight="22" Foreground="{{$text2}}"/></Border>
         <Border x:Name="SearchEmpty" Grid.Row="2" Visibility="Collapsed" Background="Transparent"><ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="16,12"><Border x:Name="SearchEmptyHost"/></ScrollViewer></Border>
         <Border x:Name="SearchSuggest" Grid.RowSpan="3" Canvas.ZIndex="20" Visibility="Collapsed" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="8,42,0,0" MinWidth="320" MaxWidth="640" Padding="4" CornerRadius="{{$rc6}}" Background="{{$panel}}" BorderBrush="{{$edge}}" BorderThickness="1"/>
-        <Border x:Name="TreeHeader" Grid.Row="1"/>
+        <Border x:Name="TreeHeader" Grid.Row="1"><FlyoutBase.AttachedFlyout>{cols_menu}</FlyoutBase.AttachedFlyout></Border>
         <ScrollViewer x:Name="TreeScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled" IsTabStop="True" UseSystemFocusVisuals="False">
           <FlyoutBase.AttachedFlyout>{row_menu}</FlyoutBase.AttachedFlyout>
         </ScrollViewer>

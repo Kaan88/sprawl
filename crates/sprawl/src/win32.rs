@@ -107,6 +107,7 @@ extern "system" {
     fn GlobalAlloc(flags: u32, bytes: usize) -> isize;
     fn GlobalLock(mem: isize) -> *mut c_void;
     fn GlobalUnlock(mem: isize) -> i32;
+    fn MoveFileW(from: *const u16, to: *const u16) -> i32;
 }
 
 #[link(name = "ole32")]
@@ -376,6 +377,64 @@ pub fn copy_text(owner: HWND, text: &str) -> bool {
         };
         CloseClipboard();
         ok
+    }
+}
+
+/// A DROPFILES block (CF_HDROP): the 20-byte header (offset of the names, a point, "not client
+/// area", "wide names") and every path as UTF-16 ending in NUL, then one more NUL.
+pub fn hdrop_bytes(paths: &[std::path::PathBuf]) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut b = Vec::new();
+    for v in [20u32, 0, 0, 0, 1] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    for p in paths {
+        for c in p.as_os_str().encode_wide().chain(std::iter::once(0)) {
+            b.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    b.extend_from_slice(&0u16.to_le_bytes());
+    b
+}
+
+/// Put `paths` on the clipboard as files (CF_HDROP, copy), so Paste in Explorer copies them.
+pub fn copy_files(owner: HWND, paths: &[std::path::PathBuf]) -> bool {
+    let bytes = hdrop_bytes(paths);
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            return false;
+        }
+        EmptyClipboard();
+        // GMEM_MOVEABLE | GMEM_ZEROINIT
+        let mem = GlobalAlloc(0x0002 | 0x0040, bytes.len());
+        let ok = if mem != 0 {
+            let p = GlobalLock(mem) as *mut u8;
+            if p.is_null() {
+                false
+            } else {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+                GlobalUnlock(mem);
+                // CF_HDROP
+                SetClipboardData(15, mem) != 0
+            }
+        } else {
+            false
+        };
+        CloseClipboard();
+        ok
+    }
+}
+
+/// Rename `from` to `to` (in the same folder) without ever replacing something already at `to`:
+/// MoveFileW fails when the name is taken, where `std::fs::rename` would overwrite a file.
+pub fn move_no_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let w = |p: &std::path::Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
+    let (a, b) = (w(from), w(to));
+    if unsafe { MoveFileW(a.as_ptr(), b.as_ptr()) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
