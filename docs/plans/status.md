@@ -228,7 +228,8 @@ These are future work or deliberate scope limits, not unfinished 1.0.0 audit cor
 | Compression drift | A dedicated "Compress again" workflow after application updates remains future work. Compression records, Undo and compression search already exist. |
 | Separate linked copies | A dedicated "Separate again" action remains future work. Checked linking and its shared-edit warning are implemented. |
 | More evidence and recognisers | Additional launcher last-played readers need representative data. Broader media, emulator and backup recognition remain ideas; supported MSI/EXE/ZIP/Steam behavior must not imply other formats are understood. |
-| History deltas | Snapshots are bounded full/reduced trees, not incremental delta snapshots. |
+| History deltas | On the roadmap as F7 (future-features.md). Snapshots are bounded full/reduced trees, not incremental delta snapshots. |
+| Registry cleaning, secure wiping, browser-database editing | On the roadmap as F8, F9 and F10 (future-features.md), each with its own plan and safety review. |
 | MCP presentation | Cleaners already return text with IDs, risk and counted bytes. Optional work is a structured row response and a `scan_report` overview of available scans. `list_scans` already exists. These extras were intentionally omitted from the earlier agreed scope. |
 | Privacy and accessibility | Recent-items/jump-list/Firefox privacy cleanup and expanded screen-reader/theme work remain deliberately deferred under the earlier user decisions. Basic readable contrast, keyboard operation and reduced-motion behavior still matter in design review. |
 

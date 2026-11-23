@@ -21,8 +21,44 @@ was requested. Future safety changes still need independent review.
 | F4 | Duplicates resolved by linking | Duplicate search exists; the action is new and must be exact | Medium |
 | F5 | Headless report | Parts exist; no UI | Small |
 | F6 | Low-space and growth alert | Shipped with the account's scheduled task; no resident background app | Large |
+| F7 | History deltas | Back on the roadmap (user, 2026-11-23): snapshots are whole trees; a change list against the previous one is likely ~10x smaller | Medium |
+| F8 | Registry cleaning | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Medium |
+| F9 | Secure wiping | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Medium |
+| F10 | Editing browser databases | Back on the roadmap (user, 2026-11-23); deferred from the cleaners plan, not dropped | Large |
 
-F5 can be done at any time; it helps test the others.
+F5 can be done at any time; it helps test the others. F8 to F10 each get their own plan and an
+outside safety review (Fable) before any code; their conditions are below.
+
+## F7. History deltas
+
+Scan history saves each snapshot as a whole (bounded) tree. Saving runs off the UI thread
+(07f1033) and the cap thins old full snapshots (b14d612); what is left:
+- Store a snapshot as its changes against the previous one of the same root, with a full one
+  every so often so a lost or damaged file costs only a short run.
+- Skip saving a subfolder scan already covered by a recent snapshot of its drive.
+- Keep whole-second times, the cap's rule (never a root's newest), and the slider's speed.
+
+**Done when.** A day of repeated drive scans takes about a tenth of today's history space, and
+every snapshot opens exactly as before, also after one in the middle of a run is lost.
+
+## F8. Registry cleaning
+
+MRU lists and the like, from `docs/plans/cleaners.md` "Wanted later". A fixed, built-in list of
+HKCU values only, never a key path from a definition (a rule, the community list or the AI);
+never Prefetch or UserAssist. Each write takes a backup first and has an undo.
+
+## F9. Secure wiping
+
+Shredding files and wiping free space. It must say plainly what it can't promise: on SSDs
+(wear levelling, TRIM), on copy-on-write or compressed volumes, in cloud-synced folders and
+where shadow copies or the Recycle Bin hold older copies.
+
+## F10. Editing browser databases
+
+Selective cookies, Firefox history (it shares `places.sqlite` with bookmarks) and autofill.
+Today privacy cleaning removes whole files only; this opens a database to remove some rows. It
+needs the browser closed, a backup of each file, and a check that the file is the format and
+version expected before anything is written.
 
 ---
 

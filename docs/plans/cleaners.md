@@ -429,7 +429,8 @@ out" below is worth its risk.
 ## Wanted later (the user's note, 2026-11-17)
 
 Three things below are left out of this plan, not dropped. The user wants them kept in view
-for a later milestone, each with its own plan and its own safety review:
+for a later milestone, each with its own plan and its own safety review. On the roadmap since
+2026-11-23 as F8, F9 and F10 in `future-features.md`:
 
 - **Registry cleaning** (MRU lists and the like). Needs a registry write with a backup and an
   undo, and a fixed list of keys; never Prefetch or UserAssist.
