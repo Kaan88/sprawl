@@ -285,6 +285,19 @@ impl State {
     /// The hint line and the empty state, for what is typed now.
     pub(crate) fn search_box_state(&mut self) {
         self.search_reads();
+        self.search_hint_state();
+        self.search_chips_state();
+        let empty = self.view == View::Search && self.search.query.trim().is_empty();
+        if let Ok(e) = find::<UIElement>(&self.root, "SearchEmpty") {
+            let _ = e.SetVisibility(if empty { Visibility::Visible } else { Visibility::Collapsed });
+        }
+        self.search_saved_state();
+    }
+
+    /// The hint line under the box: the tip, or what can't be understood. Its own function,
+    /// because a scan that finishes under the Search tab changes the answer without a keystroke
+    /// (times-14).
+    pub(crate) fn search_hint_state(&mut self) {
         let q = Query::parse(&self.search.reads.plain);
         let mut errors: Vec<String> = q.errors().to_vec();
         if let Some(e) = &self.search.reads.error {
@@ -297,18 +310,12 @@ impl State {
             format!("{} {}: {}", if n == 1 { "This word" } else { "These words" }, "can't be understood, so nothing is searched", errors.join("   ·   "))
         };
         text(&self.root, "SearchHint", &hint);
-        self.search_chips_state();
         if let Ok(t) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBlock>(&self.root, "SearchHint") {
             let colour = if errors.is_empty() { crate::tokens::refer("text3") } else { crate::tokens::refer("warn") };
             if let Ok(b) = load::<crate::bindings::Microsoft::UI::Xaml::Media::Brush>(&format!(r##"<SolidColorBrush {} Color="{colour}"/>"##, ui::NS)) {
                 let _ = t.SetForeground(&b);
             }
         }
-        let empty = self.view == View::Search && self.search.query.trim().is_empty();
-        if let Ok(e) = find::<UIElement>(&self.root, "SearchEmpty") {
-            let _ = e.SetVisibility(if empty { Visibility::Visible } else { Visibility::Collapsed });
-        }
-        self.search_saved_state();
     }
 
     /// Keep a history of searches (on unless switched off).
