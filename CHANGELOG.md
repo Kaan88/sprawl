@@ -3,14 +3,12 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.7 — 2026-11-23
 
-- The theme goes back to the defaults once, so everyone gets the new look of 1.0.6 and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.
+- The theme goes back to the defaults once, so everyone gets the new default look (below) and "Like Windows" for light or dark. Your saved Custom picks on the Theme page stay, ready to pick again.
 - After a clean-up, reading the folder again to show what is left is much quicker: it no longer opens every file inside (minutes on a Temp folder of 600,000 files). The row says "Measuring what's left..." meanwhile, and Stop ends it.
-
-## 1.0.6 — 2026-11-23
-
-- A new look by default: surfaces with a touch of your accent, slightly rounder corners (6 / 10), quieter 12 px explanations, rectangular chips and a flat finish. A look you picked on the Theme page stays as it is; the Midnight and Paper presets are unchanged.
+- The biggest bar in the scan's file-type race has its rounded end again: it was a few pixels wider than its column, which cut it off square.
+- A new default look: surfaces with a touch of your accent, slightly rounder corners (6 / 10), quieter 12 px explanations, rectangular chips and a flat finish. A look you picked on the Theme page stays as it is; the Midnight and Paper presets are unchanged.
 - Menus open smoothly: File, Options and Help, every right-click menu and the dropdowns (More views, Colour, Search in, saved searches) fade in from just above with a soft shadow, instead of sliding and unrolling. Moving the pointer to another title while a menu is open switches to it, the keyboard works as before (Alt, Alt+F/O/H, the arrows, Esc), and the focus goes back where it was when a menu closes.
 - The menu key and Shift+F10 open a row's menu in the tree, at the row.
 - A treemap tile's menu acts on that tile only: Delete from it no longer includes rows picked earlier in the tree, or a result picked from another drive in Search.

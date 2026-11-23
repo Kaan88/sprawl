@@ -303,7 +303,12 @@ impl State {
             let ty = rank as f32 * 22.0;
             lane.vel += ((ty - lane.y) * 160.0 - lane.vel * 18.0) * dt;
             lane.y += lane.vel * dt;
-            let tw = (e.1 as f32 / max as f32) * 170.0;
+            // the bar's column (the lane less the 56 px name, the 70 px value and two 8 px
+            // gaps): a fixed 170 px was wider than a narrow panel's column, which cut the
+            // biggest bar's rounded end off square
+            let room = fe.ActualWidth().map_or(0.0, |w| w as f32 - 56.0 - 70.0 - 16.0);
+            let room = if room > 0.0 { room.min(170.0) } else { 170.0 };
+            let tw = (e.1 as f32 / max as f32) * room;
             lane.width += (tw - lane.width) * (dt * 8.0).min(1.0);
             let _ = fe.SetOpacity(1.0);
             let _ = fe.SetMargin(Thickness { Left: 0.0, Top: lane.y as f64, Right: 0.0, Bottom: 0.0 });
