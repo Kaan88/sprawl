@@ -447,6 +447,54 @@ pub fn reveal(path: &Path) -> bool {
     explorer().raw_arg(select_arg(path)).spawn().is_ok()
 }
 
+/// Show every path in `paths` in Explorer: the files of one folder are selected together, in one
+/// window, and each folder picked is opened. True when Explorer was started for at least one.
+pub fn reveal_all(paths: &[PathBuf]) -> bool {
+    use std::collections::BTreeMap;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
+    let mut by_parent: BTreeMap<PathBuf, Vec<&Path>> = BTreeMap::new();
+    let mut folders = Vec::new();
+    for p in paths {
+        match p.parent() {
+            Some(parent) if !p.is_dir() => by_parent.entry(parent.to_path_buf()).or_default().push(p),
+            _ => folders.push(p),
+        }
+    }
+    let mut ok = false;
+    for (parent, items) in by_parent {
+        let w = wide(&parent);
+        let holds: Vec<_> = items
+            .iter()
+            .filter_map(|p| {
+                let wi = wide(p);
+                let pidl = unsafe { ILCreateFromPathW(windows::core::PCWSTR(wi.as_ptr())) };
+                (!pidl.is_null()).then_some(pidl as *const _)
+            })
+            .collect();
+        let mut shown = false;
+        unsafe {
+            let folder = ILCreateFromPathW(windows::core::PCWSTR(w.as_ptr()));
+            if !folder.is_null() && !holds.is_empty() {
+                shown = SHOpenFolderAndSelectItems(folder, Some(&holds), 0).is_ok();
+            }
+            if !folder.is_null() {
+                ILFree(Some(folder));
+            }
+            for p in &holds {
+                ILFree(Some(*p));
+            }
+        }
+        // a pidl Explorer would not take: the first item, the way one item is shown
+        ok |= shown || reveal(items[0]);
+    }
+    for f in folders {
+        ok |= explorer().arg(f).spawn().is_ok();
+    }
+    ok
+}
+
 fn explorer() -> std::process::Command {
     let exe = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("explorer.exe")).unwrap_or_else(|| PathBuf::from("explorer.exe"));
     std::process::Command::new(exe)

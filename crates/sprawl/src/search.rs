@@ -18,6 +18,27 @@ use crate::ui;
 /// The map colour code of a match (see `advisor::lens_colour`).
 pub(crate) const LENS_MATCH: u8 = 20;
 
+/// The row menu's items that need the scan on screen: (item, its tip on the scan's row, its tip
+/// on a row from another drive or a saved scan).
+pub(crate) const SCAN_ONLY: &[(&str, &str, &str)] = &[
+    ("cInTree", "Show it in the tree", "Only a result of the scan on screen is in the tree."),
+    ("cMapHere", "Show where it sits on the treemap", "Only a result of the scan on screen is on the treemap."),
+    ("cExpandAll", "Expand everything inside it", "Only a result of the scan on screen can be expanded."),
+    ("cCopyInfo", "Copy the rows on screen as text", "Copy Name and Size copies the scan on screen's rows."),
+];
+
+/// The row menu's "Overwrite and delete": Tree View and File View only, off in Search.
+pub(crate) const OVERWRITE_ONLY: &str = "Overwrite and delete works in Tree View and File View.";
+
+/// Whether the row menu's `item` can act on a Search result: `scan` is true for a row of the scan
+/// on screen, and the items that need the scan are off for the rows that come from elsewhere.
+pub(crate) fn item_applies(item: &str, scan: bool) -> bool {
+    if item == "cOverwrite" {
+        return false;
+    }
+    scan || !SCAN_ONLY.iter().any(|&(name, _, _)| name == item)
+}
+
 /// (tree generation, query, sort, matches sorted, the folder ranks it built)
 type Found = (u64, String, (usize, bool), Option<Vec<usize>>, Option<Arc<Vec<u32>>>);
 /// (tree generation, sort, the matches sorted again, the folder ranks it built)
@@ -614,6 +635,32 @@ impl State {
         self.reveal(n);
     }
 
+    /// The full paths of the results the row menu acts on, in the order shown: the scan's picked
+    /// rows, or the rows from another drive or a saved scan that are picked (or were right-clicked).
+    /// Elsewhere, the selected row.
+    pub(crate) fn menu_paths(&self) -> Vec<std::path::PathBuf> {
+        if self.view != View::Search {
+            return self.selected_path().into_iter().collect();
+        }
+        let more = &self.search.more;
+        if more.sel.is_none() && more.picks.is_empty() {
+            let t = self.tree.as_ref();
+            return picked_in_order(&self.rows, &self.marked, self.selected).iter().filter_map(|&n| t.map(|t| t.path_of(n))).collect();
+        }
+        self.rows
+            .iter()
+            .filter_map(|&(n, d)| {
+                if d == 0 {
+                    return None;
+                }
+                let (k, id) = (d - 1, n);
+                let (ix, i) = more.item(k, id)?;
+                let p = ix.path_of(i);
+                (more.sel == Some((k, id)) || more.picks.contains_key(&crate::search_delete::key(&p))).then_some(p)
+            })
+            .collect()
+    }
+
     /// "Use as filter": the words go to the filter box (which narrows the whole analysis).
     pub(crate) fn search_to_filter(&mut self) {
         let q = Query::parse(&self.search.query);
@@ -706,5 +753,39 @@ mod picked_tests {
         assert_eq!(picked_in_order(&rows, &marked, Some(9)), [9, 5, 2]);
         assert_eq!(picked_in_order(&rows, &Default::default(), Some(7)), Vec::<usize>::new(), "7 is only another drive's row");
         assert_eq!(picked_in_order(&rows, &Default::default(), None), Vec::<usize>::new());
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::{item_applies, SCAN_ONLY};
+
+    /// The items that go by path stay on for a row from another drive or a saved scan; the ones
+    /// that need the scan on screen are off there, and every one of them says why.
+    #[test]
+    fn what_the_row_menu_can_do_with_another_drives_row() {
+        for &(name, on, off) in SCAN_ONLY {
+            assert!(item_applies(name, true), "{name}");
+            assert!(!item_applies(name, false), "{name}");
+            assert!(!on.is_empty() && !off.is_empty(), "{name}");
+        }
+        for name in ["cOpen", "cExplore", "cCmd", "cCopyPath", "cDelete", "cDeleteForever", "cShell", "cScan"] {
+            assert!(item_applies(name, true), "{name}");
+            assert!(item_applies(name, false), "{name}");
+        }
+        assert!(!item_applies("cOverwrite", true) && !item_applies("cOverwrite", false), "Search offers no overwrite");
+    }
+
+    /// Every row of the right-click menu is in one list or the other: a new item has to choose
+    /// whether it works by path or needs the scan on screen.
+    #[test]
+    fn every_row_menu_item_is_known_here() {
+        for &(item, _) in crate::ROW_MENU {
+            match item {
+                "cOverwrite" => assert!(!item_applies(item, true)),
+                "cOpen" | "cExplore" | "cCmd" | "cCopyPath" | "cDelete" | "cDeleteForever" | "cShell" | "cScan" => assert!(item_applies(item, false), "{item}"),
+                _ => assert!(SCAN_ONLY.iter().any(|&(n, _, _)| n == item), "{item} is neither by path nor listed as scan-only"),
+            }
+        }
     }
 }

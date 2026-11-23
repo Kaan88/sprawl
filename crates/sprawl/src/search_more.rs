@@ -5,10 +5,10 @@
 //! What was read is kept as a [`CompactIndex`] (names, sizes, times; no [`sprawl_core::Tree`]):
 //! its item ids are its own, not node numbers of the scan on screen. A row from here is
 //! `(id, place + 1)` and is never put in `selected` or `marked`, never looked up in `self.tree`,
-//! and offers Show in Explorer, Copy path and "Scan this folder". Several can be picked
-//! (`picks`, keyed by the row's full path, so a re-sort can't move a pick to another item) and
-//! deleted by path: see `search_delete.rs`, which checks each item on the disk as it is now
-//! instead of against a scan. Places live in slots that are never reused, so a row's place
+//! and gets the table's row menu (the items that need the scan on screen shown, off). Several can
+//! be picked (`picks`, keyed by the row's full path, so a re-sort can't move a pick to another
+//! item) and deleted by path: see `search_delete.rs`, which checks each item on the disk as it is
+//! now instead of against a scan. Places live in slots that are never reused, so a row's place
 //! number always means the same place (or none, once it is gone).
 
 use std::collections::BTreeSet;
@@ -791,37 +791,6 @@ impl State {
         }
     }
 
-    /// Right-click on a row from another drive (or the menu key on it: `by_key`): what can be
-    /// done with it.
-    pub(crate) fn more_menu(&mut self, k: usize, id: usize, at: crate::bindings::Windows::Foundation::Point, by_key: bool) {
-        if self.search.more.item(k, id).is_none() {
-            return;
-        }
-        self.search.more.sel = Some((k, id));
-        self.search.more.picks.clear();
-        self.selected = None;
-        self.marked.clear();
-        self.refresh_rows();
-        // the Windows menu: not during a clean-up, nor as administrator unless Settings allows it
-        if let Ok(i) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::Control>(&self.root, "sxShell") {
-            let admin_ok = !crate::admin::elevated() || self.admin_on(&crate::admin::SHELL_MENU);
-            let _ = i.SetIsEnabled(self.advisor.cleanup.running.is_none() && admin_ok);
-        }
-        if let Ok(target) = find::<crate::bindings::Microsoft::UI::Xaml::UIElement>(&self.root, "TreeScroll") {
-            if !by_key {
-                let _ = target.Focus(crate::bindings::Microsoft::UI::Xaml::FocusState::Pointer);
-            }
-            crate::menu::show_at("MoreMenu", &target, at, by_key);
-        }
-    }
-
-    /// An item of that menu, for the picked row.
-    pub(crate) fn more_menu_pick(&mut self, kind: char) {
-        if let Some((k, id)) = self.search.more.sel {
-            self.more_command(kind, k, id);
-        }
-    }
-
     /// A row from another drive, in the same columns as the scan's.
     pub(crate) fn more_row(&self, row: usize, k: usize, id: usize) -> String {
         let Some(p) = self.search.more.place(k) else { return String::new() };
@@ -873,19 +842,6 @@ impl State {
             'O' => self.search_open(&path),
             // a row from another drive: not part of the scan on screen, nothing to read again
             'W' => self.shell_menu(path, false),
-            'C' => {
-                crate::win32::copy_text(self.hwnd, &path.display().to_string());
-                crate::state::text(&self.root, "SearchInfo", "Path copied.");
-            }
-            'S' => {
-                let folder = if path.is_dir() { path } else { path.parent().map(Path::to_path_buf).unwrap_or(path) };
-                if !folder.exists() {
-                    crate::state::text(&self.root, "SearchInfo", "That folder is gone.");
-                    return;
-                }
-                self.set_view(View::Tree);
-                self.start_scan(folder);
-            }
             _ => {}
         }
     }

@@ -149,6 +149,19 @@ impl State {
         Some(self.tree.as_ref()?.path_of(self.selected?))
     }
 
+    /// The row the row menu is on: the scan's selected row, or in Search the row from another
+    /// drive or a saved scan that was right-clicked.
+    fn menu_primary_path(&self) -> Option<PathBuf> {
+        if self.view == View::Search {
+            if let Some((k, id)) = self.search.more.sel {
+                if let Some((ix, i)) = self.search.more.item(k, id) {
+                    return Some(ix.path_of(i));
+                }
+            }
+        }
+        self.selected_path()
+    }
+
     pub(crate) fn command(&mut self, name: &str) {
         // a question is open: menu items and shortcuts behind it don't act (the window close
         // still reaches ask_close, which asks only once)
@@ -339,8 +352,14 @@ impl State {
                 self.map.capture = Some(user_dir("Pictures").join(format!("Sprawl treemap {}.png", stamp())));
             }
             "mOpen" => {
-                if let Some(p) = self.selected_path() {
-                    let _ = std::process::Command::new("explorer.exe").arg(&p).spawn();
+                // in Search: every picked result opens (a file with its program, a folder in Explorer)
+                let paths = self.menu_paths();
+                if self.view == View::Search {
+                    for p in paths {
+                        self.search_open(&p);
+                    }
+                } else if let Some(p) = paths.first() {
+                    let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
                 }
             }
             "mInTree" if self.view == View::Search => {
@@ -356,12 +375,27 @@ impl State {
                 }
             }
             "mExplore" => {
-                if let Some(p) = self.selected_path() {
-                    crate::win32::reveal(&p);
+                // every picked result: one folder's files together in one window
+                let paths = self.menu_paths();
+                if paths.len() > 1 {
+                    crate::win32::reveal_all(&paths);
+                } else if let Some(p) = paths.first() {
+                    crate::win32::reveal(p);
+                }
+            }
+            "mScanHere" => {
+                if let Some(p) = self.menu_primary_path() {
+                    let folder = if p.is_dir() { p } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) };
+                    if folder.exists() {
+                        self.set_view(View::Tree);
+                        self.start_scan(folder);
+                    } else {
+                        text(&self.root, "SearchInfo", "That folder is gone.");
+                    }
                 }
             }
             "mCmd" => {
-                if let Some(mut p) = self.selected_path() {
+                if let Some(mut p) = self.menu_primary_path() {
                     if !p.is_dir() {
                         p.pop();
                     }
@@ -370,17 +404,14 @@ impl State {
                 }
             }
             "mCopyPath" => {
-                // in Search: every picked row of the scan, in the order shown; else a row from
-                // another drive that is picked
-                let picked = if self.view == View::Search { crate::search::picked_in_order(&self.rows, &self.marked, self.selected) } else { Vec::new() };
-                if let (Some(t), true) = (&self.tree, picked.len() > 1) {
-                    let all: Vec<String> = picked.iter().map(|&n| t.path_of(n).display().to_string()).collect();
+                // in Search: every picked row, in the order shown
+                let paths = self.menu_paths();
+                if paths.len() > 1 {
+                    let all: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
                     win32::copy_text(self.hwnd, &all.join("\r\n"));
                     text(&self.root, "SearchInfo", &format!("{} paths copied.", all.len()));
-                } else if let Some(p) = self.selected_path() {
+                } else if let Some(p) = paths.first() {
                     win32::copy_text(self.hwnd, &p.display().to_string());
-                } else if let (View::Search, Some((k, id))) = (self.view, self.search.more.sel) {
-                    self.more_command('C', k, id);
                 }
             }
             "mCopyInfo" if has_tree => {
@@ -398,7 +429,11 @@ impl State {
             }
             // only from the tables: the Advisor removes things only through its own review
             "mShell" => {
-                if let Some(p) = self.selected_path() {
+                if self.view == View::Search && self.search.more.sel.is_some() {
+                    if let Some((k, id)) = self.search.more.sel {
+                        self.more_command('W', k, id);
+                    }
+                } else if let Some(p) = self.selected_path() {
                     self.shell_menu(p, true);
                 }
             }
