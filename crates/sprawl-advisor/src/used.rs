@@ -96,21 +96,61 @@ pub(crate) fn drive_of(path: &std::path::Path) -> Option<char> {
 pub enum LastOpened {
     /// The newest access time, and whether everything at the path was read.
     At(SystemTime, bool),
+    /// The newest time of the part that was read, but the reading limit ran out before the
+    /// rest: never take the rest for "not opened", and never decide the whole path either way.
+    Limited(SystemTime),
     /// Not read: this answer's reading limit ran out first. Never take it for "not opened".
     Unread,
-    /// No time here: this PC keeps none, or the drive can't be read for them.
+    /// No time here: this PC keeps none, the drive can't be read for them, or there is nothing
+    /// to have one from (a folder holding no files).
     Unknown,
+}
+
+/// What one match's last-opened time said about a `da:` range. One value per state, so a caller
+/// can't pass a reading limit or a partly read folder off as "not opened".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InRange {
+    /// Read, and its newest time is inside the range.
+    Yes,
+    /// Read, and its newest time is outside the range.
+    No,
+    /// The reading limit ran out before all of it was read.
+    Unread,
+    /// Read only in part (a folder inside was skipped or couldn't be read): never decided.
+    Partial,
+    /// No time here (this PC, the drive, a skip, or nothing to have one from).
+    Unknown,
+}
+
+/// What `gave` says about a match whose time must be inside `[from, to)` (seconds since 1970):
+/// kept, out of range, or never decided and why.
+pub fn in_range(gave: LastOpened, from: i64, to: i64) -> InRange {
+    match gave {
+        LastOpened::At(t, true) => {
+            let s = sprawl_core::query::unix_secs(t);
+            if from <= s && s < to {
+                InRange::Yes
+            } else {
+                InRange::No
+            }
+        }
+        LastOpened::At(_, false) => InRange::Partial,
+        LastOpened::Limited(_) => InRange::Unread,
+        LastOpened::Unread => InRange::Unread,
+        LastOpened::Unknown => InRange::Unknown,
+    }
 }
 
 /// The most entries one answer reads for last-access times.
 pub const ANSWER_BUDGET: usize = 40_000;
 /// The most entries read for one path asked about.
-const PER_PATH: usize = 4_000;
+pub const PER_PATH: usize = 4_000;
 const NOT_KEPT: &str = "this PC has Windows' last-access updates turned off";
 const NOT_FIXED: &str = "this drive isn't a local fixed disk, so its times aren't read";
 const NOT_NTFS: &str = "this drive isn't NTFS";
 const SKIPPED: &str = "it is in a folder skipped in Settings > Scanning";
 const SKIPPED_UNKNOWN: &str = "the folders to skip in Settings > Scanning couldn't be read";
+const NO_FILES: &str = "it holds no files to have one from";
 
 /// Last-access times for one answer: the setting and the folders to skip are read once, each
 /// drive is asked about once, and the work is bounded, so an answer about a folder of a million
@@ -156,9 +196,9 @@ impl Accessed {
         Accessed { kept: false, unseen: Some(unseen), left: 0, excluded: Vec::new(), parent: None, drives: Default::default(), why: None }
     }
 
-    /// The same with a given reading limit, to see what running out says.
-    #[cfg(test)]
-    pub(crate) fn with_budget(left: usize) -> Accessed {
+    /// The same with a given reading limit, to see what running out says (a test, or an answer
+    /// smaller than [`ANSWER_BUDGET`]).
+    pub fn with_budget(left: usize) -> Accessed {
         Accessed { kept: true, unseen: None, left, excluded: Vec::new(), parent: None, drives: Default::default(), why: None }
     }
 
@@ -233,9 +273,19 @@ impl Accessed {
         let (t, complete) = self.read(path, &mut budget);
         self.left -= self.left.min(PER_PATH) - budget;
         match t {
-            Some(t) => LastOpened::At(t, complete),
+            // everything read: a file that used the budget's last unit was still read whole
+            Some(t) if complete => LastOpened::At(t, true),
+            // the reading limit stopped the walk before the end: a guide, never a decision
+            Some(t) if budget == 0 => LastOpened::Limited(t),
+            // a skipped or unreadable folder inside: read only in part
+            Some(t) => LastOpened::At(t, false),
             // the limit stopped it, or nothing there could be read: an answer, not a "no"
             None if budget == 0 => LastOpened::Unread,
+            // everything was read and no file was there to have a time (times-16)
+            None if complete => {
+                self.why.get_or_insert(NO_FILES);
+                LastOpened::Unknown
+            }
             None => LastOpened::Unknown,
         }
     }
@@ -262,7 +312,11 @@ impl Accessed {
             let time = m.accessed().ok();
             return (time, time.is_some());
         }
-        walk_accessed(path, budget, &self.excluded)
+        // a folder: pinned again through its own handle for the walk (no delete sharing), as it
+        // was before the file leaves were opened with full sharing, so the folder can't be flipped
+        // for a junction between the check here and the walk below
+        drop(file);
+        accessed_in_with(path, budget, &self.excluded)
     }
 
     /// The folder at `path` pinned, reusing the one already held when it is the same folder.
@@ -281,6 +335,8 @@ impl Accessed {
     pub fn time(&mut self, path: &std::path::Path, unread: &mut usize, unknown: &mut usize) -> Option<(SystemTime, bool)> {
         match self.of(path) {
             LastOpened::At(t, complete) => Some((t, complete)),
+            // the newest time among what was read: shown, and said as only part of it
+            LastOpened::Limited(t) => Some((t, false)),
             LastOpened::Unread => {
                 *unread += 1;
                 None
@@ -581,6 +637,59 @@ mod tests {
         assert!(partial_note(0, "match", "matches").is_none());
         assert!(partial_note(1, "match", "matches").unwrap().contains("its last-opened time"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A walk the reading limit stopped is the reading limit (times-12); a part skipped or
+    /// unreadable is the partial note, and never the limit (times-12); a folder that holds no
+    /// files says so instead of "the time couldn't be read" (times-16).
+    #[test]
+    fn a_cut_walk_and_a_partial_walk_are_told_apart() {
+        let dir = std::env::temp_dir().join(format!("sprawl-accessed-cut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("skipped")).unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        std::fs::write(dir.join("skipped").join("s.txt"), b"x").unwrap();
+        // a limit smaller than the folder: Limited, counted as the reading limit, never as a "no"
+        let mut cut = Accessed::with_budget(3);
+        let r = cut.of(&dir);
+        assert!(matches!(r, LastOpened::Limited(_)), "the limit stopped the walk: {r:?}");
+        assert_eq!(in_range(r, 0, i64::MAX), InRange::Unread);
+        let (mut unread, mut unknown) = (0, 0);
+        let mut shown = Accessed::with_budget(3);
+        let t = shown.time(&dir, &mut unread, &mut unknown);
+        assert!(t.is_some_and(|(_, complete)| !complete), "the newest of what was read is shown, said as only part");
+        assert_eq!((unread, unknown), (0, 0), "a shown time isn't also counted as not read");
+        // the same folder read whole, with a skipped part: partial, not the limit
+        let mut part = Accessed::with_excluded(10, vec![dir.join("skipped")]);
+        let r = part.of(&dir);
+        assert!(matches!(r, LastOpened::At(_, false)), "a skipped part is not the limit: {r:?}");
+        assert_eq!(part.left, 4, "six entries read (five files and the skipped folder), the skipped folder not entered");
+        assert_eq!(in_range(r, 0, i64::MAX), InRange::Partial);
+        // an empty folder is not "couldn't be read"
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        let mut a = Accessed::with_budget(10);
+        assert_eq!(a.of(&dir.join("empty")), LastOpened::Unknown);
+        let said = notes(0, 1, "folder", "folders", &a);
+        assert!(said[0].contains("holds no files"), "{said:?}");
+        drop(a);
+        drop(cut);
+        drop(shown);
+        drop(part);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A `da:` range's decision keeps every state apart: only a whole read can be a yes or a no.
+    #[test]
+    fn a_time_that_was_not_fully_read_is_never_a_no() {
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        assert_eq!(in_range(LastOpened::At(t, true), 0, 2000), InRange::Yes);
+        assert_eq!(in_range(LastOpened::At(t, true), 0, 1000), InRange::No, "the range is half-open");
+        assert_eq!(in_range(LastOpened::At(t, false), 0, 2000), InRange::Partial);
+        assert_eq!(in_range(LastOpened::Limited(t), 0, 2000), InRange::Unread);
+        assert_eq!(in_range(LastOpened::Unread, 0, 2000), InRange::Unread);
+        assert_eq!(in_range(LastOpened::Unknown, 0, 2000), InRange::Unknown);
     }
 
     /// A link with only a LinkInfo: an ANSI base path and suffix, and the Unicode ones when given.

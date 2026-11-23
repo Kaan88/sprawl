@@ -23,8 +23,8 @@ pub enum Born {
     At(SystemTime),
     /// Not read: this answer's reading limit ran out first. Never take it for "not created".
     Unread,
-    /// No time here: this drive isn't a local fixed disk, the path is skipped or gone, or the
-    /// view holds no times.
+    /// No time here: this drive isn't a local fixed disk, the path is skipped, gone, a link or a
+    /// cloud file that isn't on this PC, or the view holds no times.
     Unknown,
 }
 
@@ -34,7 +34,11 @@ pub const ANSWER_BUDGET: usize = crate::used::ANSWER_BUDGET;
 const NOT_FIXED: &str = "this drive isn't a local fixed disk, so its times aren't read";
 const SKIPPED: &str = "it is in a folder skipped in Settings > Scanning";
 const SKIPPED_UNKNOWN: &str = "the folders to skip in Settings > Scanning couldn't be read";
-const NO_TIME: &str = "the item is gone, or Windows keeps no creation time for it";
+/// The only reason that means the item isn't there: an open that says NotFound.
+const GONE: &str = "the item is gone";
+/// Everything else an open refuses: a link or a cloud file is never followed or recalled, and a
+/// name Windows can't take is never opened. None of these means the item is gone (times-13).
+const NOT_READ: &str = "it is a link, a cloud file that isn't on this PC, a name Windows can't open, or under a link, so it isn't read";
 
 /// Creation times for one answer: each path is one call, the folders to skip are read once, and
 /// the work is bounded.
@@ -106,8 +110,10 @@ impl Created {
         self.left -= 1;
         match self.time_of(path) {
             Ok(t) => Born::At(t),
-            Err(_) => {
-                self.why.get_or_insert(NO_TIME);
+            Err(e) => {
+                // only NotFound means it is gone: a link, a cloud-only file, a name Windows
+                // can't open or a folder that can't be pinned is a different answer
+                self.why.get_or_insert(if e.kind() == std::io::ErrorKind::NotFound { GONE } else { NOT_READ });
                 Born::Unknown
             }
         }
@@ -194,6 +200,36 @@ mod tests {
         assert_eq!(Created::off_for(Unseen::ScanOnly).of(&dir.join("kept.txt")), Born::Unknown);
         // the folder last read stays pinned for its siblings: let it go before the folder goes
         drop(c);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A refused open says why it wasn't read and never that the item is gone; only a real
+    /// `NotFound` says that (times-13).
+    #[test]
+    fn a_refused_open_is_not_said_to_be_gone() {
+        let dir = std::env::temp_dir().join(format!("sprawl-born-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 264 bytes of name (134 UTF-16 units): Windows can hold it, Sprawl's plain-name check
+        // can't take it, and that is not "the item is gone"
+        let long = format!("{}.txt", "\u{e9}".repeat(130));
+        std::fs::write(dir.join(&long), b"x").unwrap();
+        let mut refused = Created::with_budget(10);
+        assert_eq!(refused.of(&dir.join(&long)), Born::Unknown);
+        let why = refused.why().unwrap();
+        assert!(!why.contains("gone"), "{why}");
+        assert!(why.contains("isn't read"), "{why}");
+        // a folder that can't be pinned is the same kind of answer
+        let mut off = Created::with_budget(10);
+        assert_eq!(off.of(&dir.join("no-such-folder").join("x.txt")), Born::Unknown);
+        assert!(!off.why().unwrap().contains("gone"), "{}", off.why().unwrap());
+        // only a leaf that is really gone says so
+        let mut gone = Created::with_budget(10);
+        assert_eq!(gone.of(&dir.join("gone.txt")), Born::Unknown);
+        assert!(gone.why().unwrap().contains("is gone"), "{}", gone.why().unwrap());
+        drop(refused);
+        drop(off);
+        drop(gone);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

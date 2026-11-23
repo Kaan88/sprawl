@@ -233,7 +233,8 @@ fn accessed_hits(
                 }
             }
             LastOpened::At(_, false) => partial += 1,
-            LastOpened::Unread => unread += 1,
+            // the reading limit ran out before the end of it: never decided either way
+            LastOpened::Limited(_) | LastOpened::Unread => unread += 1,
             LastOpened::Unknown => unknown += 1,
         }
     }

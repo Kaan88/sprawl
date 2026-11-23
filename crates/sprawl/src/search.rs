@@ -43,6 +43,9 @@ pub(crate) struct Reads {
     /// read, for the one-line count, and the same said whole for the no-match panel.
     pub(crate) unread: usize,
     pub(crate) unknown: usize,
+    /// Matches read only in part (a folder inside was skipped or couldn't be read): never
+    /// decided either way, so never dropped without a word.
+    pub(crate) partial: usize,
     /// More matches than one answer reads: none of them was checked, and this is how many.
     pub(crate) too_many: usize,
     pub(crate) notes: Vec<String>,
@@ -54,6 +57,7 @@ pub(crate) struct Said {
     pub(crate) notes: Vec<String>,
     pub(crate) unread: usize,
     pub(crate) unknown: usize,
+    pub(crate) partial: usize,
     /// Matches too many to read: nothing was checked, and this is how many there were.
     pub(crate) too_many: usize,
 }
@@ -65,7 +69,7 @@ const READ_MOST: usize = sprawl_advisor::used::ANSWER_BUDGET;
 
 /// What the times read for the matches left: the matches inside the ranges, and what wasn't read.
 enum ReadOutcome {
-    Kept { kept: Vec<usize>, notes: Vec<String>, unread: usize, unknown: usize },
+    Kept { kept: Vec<usize>, notes: Vec<String>, unread: usize, partial: usize, unknown: usize },
     /// Too many matches to read without narrowing: how many there were.
     TooMany(usize),
 }
@@ -75,11 +79,23 @@ enum ReadOutcome {
 /// nothing that wasn't read can be taken for a "no", and a newer search stops it (`None`) so a
 /// stale query never keeps reading the disk.
 fn read_filter(tree: &sprawl_core::Tree, hits: Vec<usize>, dates: &sprawl_core::query::ReadDates, cancel: &AtomicBool) -> Option<ReadOutcome> {
+    read_filter_with(tree, hits, dates, cancel, None)
+}
+
+/// [`read_filter`], with the `da:` reads already made when a test needs a given reading limit.
+fn read_filter_with(
+    tree: &sprawl_core::Tree,
+    hits: Vec<usize>,
+    dates: &sprawl_core::query::ReadDates,
+    cancel: &AtomicBool,
+    opened: Option<sprawl_advisor::used::Accessed>,
+) -> Option<ReadOutcome> {
+    use sprawl_advisor::used::InRange;
     if hits.len() > READ_MOST {
         return Some(ReadOutcome::TooMany(hits.len()));
     }
     let mut born = dates.created.map(|_| sprawl_advisor::born::Created::new());
-    let mut opened = dates.accessed.map(|_| sprawl_advisor::used::Accessed::new());
+    let mut opened = dates.accessed.map(|_| opened.unwrap_or_else(sprawl_advisor::used::Accessed::new));
     let (mut unread_c, mut unknown_c, mut unread_a, mut partial_a, mut unknown_a) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut kept = Vec::with_capacity(hits.len());
     for n in hits {
@@ -107,20 +123,20 @@ fn read_filter(tree: &sprawl_core::Tree, hits: Vec<usize>, dates: &sprawl_core::
         }
         if ok {
             if let (Some(r), Some(a)) = (dates.accessed, opened.as_mut()) {
-                match a.of(&path) {
-                    sprawl_advisor::used::LastOpened::At(t, true) => {
-                        let s = sprawl_core::query::unix_secs(t);
-                        ok = r.0 <= s && s < r.1;
-                    }
-                    sprawl_advisor::used::LastOpened::At(_, false) => {
-                        partial_a += 1;
-                        ok = false;
-                    }
-                    sprawl_advisor::used::LastOpened::Unread => {
+                // every state has its own count: a limit or a partly read folder is never
+                // dropped as if it had been decided (times-12)
+                match sprawl_advisor::used::in_range(a.of(&path), r.0, r.1) {
+                    InRange::Yes => {}
+                    InRange::No => ok = false,
+                    InRange::Unread => {
                         unread_a += 1;
                         ok = false;
                     }
-                    sprawl_advisor::used::LastOpened::Unknown => {
+                    InRange::Partial => {
+                        partial_a += 1;
+                        ok = false;
+                    }
+                    InRange::Unknown => {
                         unknown_a += 1;
                         ok = false;
                     }
@@ -158,7 +174,7 @@ fn read_filter(tree: &sprawl_core::Tree, hits: Vec<usize>, dates: &sprawl_core::
     if unknown_a > 0 {
         notes.extend(sprawl_advisor::used::notes(0, unknown_a, "match", "matches", opened.as_ref().expect("one was made")));
     }
-    Some(ReadOutcome::Kept { kept, notes, unread: unread_c + unread_a, unknown: unknown_c + unknown_a })
+    Some(ReadOutcome::Kept { kept, notes, unread: unread_c + unread_a, partial: partial_a, unknown: unknown_c + unknown_a })
 }
 
 /// Whether other drives and saved scans are searched for a query: `dc:` and `da:` read each
@@ -205,6 +221,7 @@ fn reads_for(query: &str, now: std::time::SystemTime, tree: Option<&sprawl_core:
         reads.notes = old.notes.clone();
         reads.unread = old.unread;
         reads.unknown = old.unknown;
+        reads.partial = old.partial;
         reads.too_many = old.too_many;
     }
     reads
@@ -213,7 +230,7 @@ fn reads_for(query: &str, now: std::time::SystemTime, tree: Option<&sprawl_core:
 /// The first line of the no-match panel: what a `dc:`/`da:` search read is said first, because
 /// "Nothing matches" would pass matches that were never checked off as a no.
 fn none_headline(q: &str, place: &str, reads: &Reads) -> String {
-    if reads.notes.is_empty() && reads.unread + reads.unknown + reads.too_many == 0 {
+    if reads.notes.is_empty() && reads.unread + reads.unknown + reads.partial + reads.too_many == 0 {
         format!("Nothing matches \u{201c}{q}\u{201d} in {place}.")
     } else {
         format!("Nothing could be checked for \u{201c}{q}\u{201d} in {place}.")
@@ -227,6 +244,9 @@ fn count_suffix(reads: &Reads) -> String {
         s += &format!("; {} not checked (too many to read: narrow the search)", thousands(reads.too_many as u64));
     } else if reads.unread > 0 {
         s += &format!("; {} not read (reading limit)", thousands(reads.unread as u64));
+    }
+    if reads.partial > 0 {
+        s += &format!("; {} not fully read", thousands(reads.partial as u64));
     }
     if reads.unknown > 0 {
         s += &format!("; {} with no time to read", thousands(reads.unknown as u64));
@@ -454,8 +474,14 @@ impl State {
         self.search.sorting = None;
         self.search.reads.notes.clear();
         // `dc:`/`da:` read each match's own time, which needs a scan and can't be done for a
-        // CSV view: the error (and the hint line under the box) is set here, once
+        // CSV view: the error is set here, once. A scan finishing (or a CSV view opening) while
+        // the tab shows such a query changes it, so the hint line is redrawn with it and never
+        // contradicts the list (times-14).
+        let before = self.search.reads.error.clone();
         self.search_reads();
+        if self.search.reads.error != before {
+            self.search_hint_state();
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.search.cancel = cancel.clone();
         // outside the scan: saved scans and other drives
@@ -520,8 +546,8 @@ impl State {
             if !dates.is_empty() {
                 r = match r {
                     Some(hits) => match read_filter(&tree, hits, &dates, &cancel) {
-                        Some(ReadOutcome::Kept { kept, notes, unread, unknown }) => {
-                            said = Said { notes, unread, unknown, too_many: 0 };
+                        Some(ReadOutcome::Kept { kept, notes, unread, partial, unknown }) => {
+                            said = Said { notes, unread, partial, unknown, too_many: 0 };
                             Some(kept)
                         }
                         Some(ReadOutcome::TooMany(n)) => {
@@ -532,6 +558,7 @@ impl State {
                                 )],
                                 unread: n,
                                 unknown: 0,
+                                partial: 0,
                                 too_many: n,
                             };
                             Some(Vec::new())
@@ -661,6 +688,7 @@ impl State {
                     self.search.reads.notes = said.notes;
                     self.search.reads.unread = said.unread;
                     self.search.reads.unknown = said.unknown;
+                    self.search.reads.partial = said.partial;
                     self.search.reads.too_many = said.too_many;
                 }
                 if let Some(found) = r.filter(|_| gen == self.tree_gen && q == self.search.query) {
@@ -1200,7 +1228,7 @@ mod places_tests {
 
 #[cfg(test)]
 mod reads_tests {
-    use super::{count_suffix, none_headline, read_filter, reads_for, Reads};
+    use super::{count_suffix, none_headline, read_filter, read_filter_with, reads_for, ReadOutcome, Reads};
     use std::sync::atomic::AtomicBool;
     use std::time::SystemTime;
 
@@ -1228,12 +1256,13 @@ mod reads_tests {
         old.notes = vec!["300 matches not checked for when it was last opened: the reading limit ran out".into()];
         old.unread = 300;
         old.unknown = 2;
+        old.partial = 5;
         let again = reads_for("*.mkv da:<2024", now, Some(&with_scan), &old);
         assert_eq!(again.notes, old.notes, "a redraw keeps the notes");
-        assert_eq!((again.unread, again.unknown), (300, 2));
+        assert_eq!((again.unread, again.unknown, again.partial), (300, 2, 5));
         // another word: the old search's counts are about other matches
         let changed = reads_for("*.mkv da:<2024 holiday", now, Some(&with_scan), &old);
-        assert!(changed.notes.is_empty() && changed.unread == 0 && changed.unknown == 0);
+        assert!(changed.notes.is_empty() && changed.unread == 0 && changed.unknown == 0 && changed.partial == 0);
     }
 
     /// `dc:`/`da:` with no scan says so in the reads themselves, so the hint under the box and
@@ -1295,6 +1324,39 @@ mod reads_tests {
         assert!(count_suffix(&Reads { unread: 3, ..Default::default() }).contains("3 not read (reading limit)"));
         assert!(count_suffix(&Reads { unknown: 2, ..Default::default() }).contains("2 with no time to read"));
         assert!(count_suffix(&Reads::default()).is_empty());
+    }
+
+    /// A folder the reading limit stopped is not dropped from the list without a word, and is
+    /// the reading limit, not a partial read; a partly read match has its own count in the line
+    /// (times-12).
+    #[test]
+    fn a_match_read_only_in_part_is_counted_and_said() {
+        use sprawl_advisor::used::{Accessed, ANSWER_BUDGET, PER_PATH};
+        let dir = std::env::temp_dir().join(format!("sprawl-read-part-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let big = dir.join("big");
+        std::fs::create_dir_all(&big).unwrap();
+        // one more than the most entries read for one path
+        for i in 0..=PER_PATH {
+            std::fs::write(big.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        std::fs::write(dir.join("small.txt"), b"x").unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let node = |name: &str| tree.nodes.iter().position(|n| n.name == name).unwrap_or_else(|| panic!("{name} in the scan"));
+        let hits = vec![node("big"), node("small.txt")];
+        let dates = sprawl_core::query::ReadDates { created: None, accessed: Some((0, i64::MAX)) };
+        let outcome = read_filter_with(&tree, hits, &dates, &AtomicBool::new(false), Some(Accessed::with_budget(ANSWER_BUDGET)));
+        let Some(ReadOutcome::Kept { kept, unread, partial, .. }) = outcome else { panic!("an answer") };
+        assert_eq!(kept, vec![node("small.txt")], "the small match is still listed");
+        assert_eq!((unread, partial), (1, 0), "the folder the limit stopped is the reading limit, not a partial read");
+        let line = count_suffix(&Reads { unread, partial, ..Default::default() });
+        assert!(line.contains("1 not read (reading limit)"), "{line}");
+        // a part skipped or unreadable has its own count, and the panel never calls it a no
+        let line = count_suffix(&Reads { partial: 20, ..Default::default() });
+        assert!(line.contains("; 20 not fully read"), "{line}");
+        assert!(!line.contains("reading limit"), "{line}");
+        assert!(none_headline("q", "this scan", &Reads { partial: 2, ..Default::default() }).starts_with("Nothing could be checked"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
