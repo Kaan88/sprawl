@@ -5,6 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
+- Search: groups nest whatever comes first (`<<a b>|c d>`, `!<<a b>|c>`), a size at the end of a group (`<a <1gb>`) counts, text glued to a group's `>` (`<a b>>1gb`) is an error instead of being dropped, `!<dm:2026>` skips items with no date as `!dm:2026` does, and `len:` counts the path as it is on disk.
 - Ask your disk: a last-run date is matched by program name, so it now reads as "a program named 7zFM.exe last ran Nov 2026 (by name, any folder)" instead of passing for that copy's own date; last-access times are also read on a PC where Windows manages them itself ("System Managed, updates enabled").
 - Search: `dc:` and `da:` say when the view has no times to read (no scan open, or a scan loaded from a CSV file) in the line under the box, a search too big to read says how many matches weren't checked instead of "Nothing found", and a redraw no longer drops what the reading limit said.
 - Search: `dc:` and `da:` now count the matches read only in part in the status line instead of leaving them out of the list without a word, say "reading limit" only when the limit really stopped the reading (a skipped or unreadable part says so instead), call an empty folder empty instead of unreadable, no longer say a match `dc:` can't open is gone, and the line under the box follows a scan that finishes while the Search tab shows such a query.

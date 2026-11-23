@@ -160,7 +160,7 @@ impl Pat {
             Pat::Child(_) | Pat::ChildCount(..) | Pat::ChildFiles(..) => 0,
             Pat::Attrib { .. } => 0,
             Pat::Parent { case, .. } => if *case { NEED_CASE_PATH } else { NEED_PATH },
-            Pat::Len(..) => NEED_PATH,
+            Pat::Len(..) => NEED_CASE_PATH,
         }
     }
 
@@ -209,8 +209,10 @@ impl Pat {
             Pat::ChildFiles(a, b) => it.is_dir() && (*a..=*b).contains(&it.child_files()),
             Pat::Attrib { mask, compressed } => it.attributes() & mask == *mask && (!*compressed || it.compressed()),
             Pat::Len(a, b) => {
-                let p = trim_sep(it.path());
-                let n = std::str::from_utf8(p).map_or(p.len(), |s| s.chars().count());
+                // the path as it is on disk, in UTF-16 units as Windows counts it (lower-casing
+                // changes the length of some letters: a Turkish İ becomes two characters)
+                let p = trim_sep(it.orig_path());
+                let n = std::str::from_utf8(p).map_or(p.len(), |s| s.encode_utf16().count());
                 (*a as usize..=*b as usize).contains(&n)
             }
         }
@@ -302,6 +304,15 @@ impl Alt {
         match self {
             Alt::Pat(p) => p.matches(it),
             Alt::Group(ts) => ts.iter().all(|t| t.matches(it)),
+        }
+    }
+
+    /// A date, or a group of nothing but dated words (`!<dm:2026>` skips an item with no time
+    /// as `!dm:2026` does).
+    fn is_dated(&self) -> bool {
+        match self {
+            Alt::Pat(p) => matches!(p, Pat::Date(..)),
+            Alt::Group(ts) => !ts.is_empty() && ts.iter().all(|t| t.dated),
         }
     }
 
@@ -916,11 +927,13 @@ fn marks(c: &[Ch]) -> Vec<u8> {
         } else if ch == '!' && start {
             // `!<a b>` negates the group: the `<` still starts a word
         } else if ch == '<' && start {
-            if !bare_size_word(c, i) {
+            if bare_size_word(c, i) {
+                // not a group: an ordinary character, as before
+                start = false;
+            } else {
+                // a group's `<` still leaves a word start behind it, so groups nest at once
                 open.push(i);
             }
-            // the `<` is not a group after all: it is an ordinary character, as before
-            start = false;
         } else if ch == '>' && after_word(c, i + 1, c.len()) {
             if let Some(o) = open.pop() {
                 m[o] = MARK_OPEN;
@@ -937,14 +950,26 @@ fn marks(c: &[Ch]) -> Vec<u8> {
 /// Whether the word starting at `i` (a `<` up to the next space, `|` or `;`) is a bare size
 /// comparison, `<10mb`, `<=5kb` or `<0`: such a `<` is never a group's.
 fn bare_size_word(c: &[Ch], i: usize) -> bool {
+    // a size starts with a digit or a dot (after `<` or `<=`): most `<` are not worth a scan
+    let mut at = i + 1;
+    if matches!(c.get(at), Some(&('=', false))) {
+        at += 1;
+    }
+    if !matches!(c.get(at), Some(&(d, false)) if d.is_ascii_digit() || d == '.') {
+        return false;
+    }
     let mut s = String::new();
     for &(ch, quoted) in &c[i..] {
         if !quoted && (ch.is_whitespace() || ch == '|' || ch == ';') {
             break;
         }
         s.push(ch);
+        if s.len() > 64 {
+            return false;
+        }
     }
-    size_compare(&s).is_some()
+    // the last word of a group ends in the group's `>`: `<a <1gb>`
+    size_compare(s.trim_end_matches('>')).is_some()
 }
 
 /// Whether position `i` is at a word's start (the end, a space, `|`, `;` or a group's `>`).
@@ -1397,6 +1422,11 @@ fn terms_of(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<O
         }
         break;
     }
+    if i < t.len() {
+        // whatever follows a group's `>` in its word is never read: say so
+        let rest: String = t[i..].iter().map(|&(c, _)| c).collect();
+        q.errors.push(format!("{rest}: put a space, | or ; after a group's >"));
+    }
     // a plain alternative without a keyword of its own takes the first plain one's (`ext:a|b`)
     let first = raws.iter().find(|(g, _)| g.is_none()).map(|(_, c)| prefix(c).0);
     let mut alts: Vec<Alt> = Vec::new();
@@ -1422,7 +1452,7 @@ fn terms_of(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<O
         return Vec::new();
     }
     let needs = alts.iter().fold(0, |a, p| a | p.needs());
-    let dated = alts.iter().all(|p| matches!(p.plain(), Some(Pat::Date(..))));
+    let dated = alts.iter().all(Alt::is_dated);
     vec![Term { not, alts, needs, dated }]
 }
 
@@ -1486,7 +1516,7 @@ fn plain_term(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option
     }
     if !alts.is_empty() {
         let needs = alts.iter().fold(0, |a, p| a | p.needs());
-        let dated = alts.iter().all(|p| matches!(p.plain(), Some(Pat::Date(..))));
+        let dated = alts.iter().all(Alt::is_dated);
         out.push(Term { not, alts, needs, dated });
     }
     out
@@ -2050,6 +2080,29 @@ mod tests {
         assert!(m("<a <b c>|d>", &file("a b c.txt")));
         assert!(m("<a <b c>|d>", &file("a d.txt")));
         assert!(!m("<a <b c>|d>", &file("a b.txt")));
+        // an inner group may come first, or follow a `!`
+        assert!(m("<<a b>|c d>", &file("a b d.txt")));
+        assert!(m("<<a b>|c d>", &file("c d.txt")));
+        assert!(!m("<<a b>|c d>", &file("a b.txt")));
+        assert!(m("<<a b> c>", &file("a b c.txt")));
+        assert!(!m("<<a b> c>", &file("a b.txt")));
+        assert!(m("x|<<a b>|c d>", &file("c d.txt")));
+        assert!(m("<!<a b> c>", &file("c.txt")));
+        assert!(!m("<!<a b> c>", &file("a b c.txt")));
+        assert!(!m("!<<temp cache>|backup>", &file("temp cache.txt")));
+        assert!(m("!<<temp cache>|backup>", &file("temp.txt")));
+        assert!(!m("!<<a b>>", &file("a b.txt")));
+        assert!(m("!<<a b>>", &file("a.txt")));
+        // a size as the last word of a group is a size all the same
+        let mut five = file("a.txt");
+        five.size = 5;
+        assert!(m("<a <1gb>", &five));
+        assert!(m("<a <=1gb>", &five));
+        assert!(!m("<a >1gb>", &five));
+        let mut log = file("x.log");
+        log.size = 5;
+        assert!(m("<*.log <1mb>|*.tmp", &log));
+        assert!(m("<*.log <1mb>|*.tmp", &file("x.tmp")));
         // `;` splits as `|` does, in a group too
         assert!(m("<a b;c>", &file("a c.txt")));
         assert!(!m("<a b;c>", &file("b c.txt")));
@@ -2082,6 +2135,40 @@ mod tests {
         let mut deep = file("x.log");
         deep.path = "C:\\Data\\logs\\x.log".into();
         assert!(m("<\\logs\\ *.log>", &deep));
+    }
+
+    /// Whatever follows a group's `>` in its word is never read, so it is an error, not a
+    /// silently widened list.
+    #[test]
+    fn text_glued_to_a_groups_end_is_an_error() {
+        for q in ["<a b>>1gb", "<a b>>=5mb", "<a b>>"] {
+            assert_eq!(Query::parse(q).errors().len(), 1, "{q}");
+        }
+        assert!(Query::parse("<a b> >1gb").errors().is_empty());
+        assert!(Query::parse("<a b>|c").errors().is_empty());
+    }
+
+    /// `!<dm:2026>` skips items with no modified time as `!dm:2026` does; a group with another
+    /// word in it still follows the usual `!`.
+    #[test]
+    fn negated_group_of_dates_skips_untimed_items() {
+        let now = local(2026, 6, 1, 12);
+        let none = file("a.txt");
+        assert!(!md("!dm:2026", now, &none));
+        assert!(!md("!<dm:2026>", now, &none));
+        assert!(md("!<dm:2026>", now, &dated(local(2025, 3, 1, 12))));
+        assert!(!md("!<dm:2026>", now, &dated(local(2026, 3, 1, 12))));
+        assert!(md("!<dm:2026 a>", now, &none));
+    }
+
+    /// A `<` costs a short look, not a scan of the rest of the word, so a run of them is cheap.
+    #[test]
+    fn many_open_brackets_are_cheap() {
+        let start = std::time::Instant::now();
+        let _ = Query::parse(&"<".repeat(4096));
+        let _ = Query::parse(&"<=".repeat(2048));
+        let _ = Query::parse(&"<1".repeat(2048));
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
     }
 
     /// A `<` with no `>` after it is read in one pass whatever the text holds: the old matcher
@@ -2254,6 +2341,10 @@ mod tests {
         assert!(!m("len:<13", &file("a.txt")));
         assert!(m("len:13", &file("a.txt")));
         assert!(!m("len:13 folder:", &file("a.txt")));
+        // a Turkish İ lower-cases to two characters; the path is counted as it is on disk
+        let dotted = T { path: r"C:\İİİ.txt".into(), ..file("x") };
+        assert!(m("len:10", &dotted));
+        assert!(!m("len:13", &dotted));
         // characters, not bytes
         let nonascii = T { path: "C:\\é\\b.txt".into(), ..file("b.txt") };
         assert!(m("len:10", &nonascii), "C:\\é\\b.txt is 10 characters, {} bytes", "C:\\é\\b.txt".len());
