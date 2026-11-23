@@ -627,11 +627,12 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
             let _ = e.SetHandled(true);
         }
     })?);
-    // a question open in Sprawl's own box has the keyboard (ask.rs dialog_key)
+    // a question open in Sprawl's own box has the keyboard (ask.rs dialog_key); with none, Esc
+    // closes the setup wizard or Settings, as Cancel does (wizard.rs wizard_key)
     keep(root.cast::<UIElement>()?.PreviewKeyDown(|_, e| {
         let Some(e) = e.as_ref() else { return };
         let Ok(k) = e.Key() else { return };
-        if with(|st| st.dialog_key(k.0)).unwrap_or(false) {
+        if with(|st| st.dialog_key(k.0) || st.wizard_key(k.0)).unwrap_or(false) {
             let _ = e.SetHandled(true);
         }
     })?);

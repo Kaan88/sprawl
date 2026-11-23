@@ -5,11 +5,14 @@
 
 use std::collections::HashMap;
 
+use windows_core::Interface;
+
 use sprawl_advisor::config::{self, AiConfig, Detected, Provider};
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, PasswordBox, TextBox, ToggleSwitch};
-use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement, Visibility};
+use crate::bindings::Microsoft::UI::Xaml::Media::VisualTreeHelper;
+use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
 use crate::prefs::{self, Kind, Pref, Sec, PREFS, WIZARD};
 use crate::state::{find, keep, load, text, with, State};
 use crate::ui;
@@ -39,6 +42,19 @@ pub(crate) struct PrefUi {
     pub(crate) note: Option<String>,
     /// The Theme page's picks (themepage.rs).
     pub(crate) theme: crate::themepage::ThemeUi,
+    /// The focus the overlay gives its page once it is on screen (whether it was opened from
+    /// the keyboard), and how many frames are left to try: a control cannot take the focus
+    /// before it is loaded and laid out, and that is not on the frame the overlay opens.
+    focus_in: Option<(FocusState, u8)>,
+    /// The focus it was opened with, for when the window comes to the front again.
+    pub(crate) open_state: FocusState,
+    /// What had the keyboard's focus before it opened, and in which state: where it goes back.
+    focus_back: Option<(UIElement, FocusState)>,
+    /// The frames left to give that focus back (the overlay may still be going).
+    back_tries: u8,
+    /// The window was in front at the last frame (a focus given while it was behind does not
+    /// hold, so a focus still outside the overlay is tried again when it comes to the front).
+    front: bool,
 }
 
 fn label(t: &str) -> String {
@@ -123,7 +139,7 @@ pub fn xaml() -> String {
     let lit = crate::look::top_light("hlcard", &crate::tokens::rc(14.0), false);
     format!(
         r##"
-  <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="{{$scrim}}">
+  <Grid x:Name="Wizard" Grid.RowSpan="8" Visibility="Collapsed" Background="{{$scrim}}" TabFocusNavigation="Cycle">
     <Grid HorizontalAlignment="Center" VerticalAlignment="Center">{shadow}<Border x:Name="WizCard" Width="640" Height="610" CornerRadius="{{$rc14}}" BorderBrush="{{$edge}}" BorderThickness="1" Background="{{$popup}}" Padding="28,22,28,20">
       <Grid RowSpacing="14">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -203,14 +219,254 @@ fn on(v: &str) -> &'static str {
     }
 }
 
+/// The focus the overlay gives its page: the keyboard's with a ring when it was opened from the
+/// keyboard, the pointer's (no ring) when a click opened it.
+fn focus_state(keyboard: bool) -> FocusState {
+    if keyboard {
+        FocusState::Keyboard
+    } else {
+        FocusState::Pointer
+    }
+}
+
+fn state_name(state: FocusState) -> &'static str {
+    match state.0 {
+        1 => "pointer",
+        2 => "keyboard",
+        3 => "programmatic",
+        _ => "unfocused",
+    }
+}
+
+/// How a timing line names an element: its class and x:Name.
+fn focus_label(el: &UIElement) -> String {
+    let name = el.cast::<FrameworkElement>().and_then(|f| f.Name()).map(|n| n.to_string_lossy()).unwrap_or_default();
+    let class = el.cast::<windows_core::IInspectable>().and_then(|i| i.GetRuntimeClassName()).map(|c| c.to_string_lossy()).unwrap_or_default();
+    let class = class.rsplit('.').next().unwrap_or("").to_string();
+    format!("{class} {name:?}")
+}
+
+/// Whether `el` is a control on screen that could take the focus now: enabled, visible and laid
+/// out. (A hidden or not yet laid out control's `Focus` does nothing. Whether a Tab would reach
+/// it is WinUI's tab stop, which only `Focus` itself can answer.)
+fn laid_out_control(el: &UIElement) -> bool {
+    let enabled = el.cast::<Control>().is_ok_and(|c| c.IsEnabled().unwrap_or(true));
+    let sized = el.cast::<FrameworkElement>().is_ok_and(|f| f.ActualWidth().unwrap_or(0.0) > 0.0 && f.ActualHeight().unwrap_or(0.0) > 0.0);
+    enabled && sized && el.Visibility().is_ok_and(|v| v == Visibility::Visible)
+}
+
+/// Every control in `el`'s visual tree, in the order a Tab would meet them (the panel itself
+/// excluded). The focus is given to the first that takes it, so Settings' first box or button
+/// does when the section list's entry cannot.
+fn controls_in(el: &UIElement, out: &mut Vec<UIElement>) {
+    if out.len() >= 400 {
+        return;
+    }
+    if el.cast::<Control>().is_ok() && laid_out_control(el) {
+        out.push(el.clone());
+    }
+    for i in 0..VisualTreeHelper::GetChildrenCount(el).unwrap_or(0) {
+        if let Ok(child) = VisualTreeHelper::GetChild(el, i).and_then(|c| c.cast::<UIElement>()) {
+            controls_in(&child, out);
+        }
+    }
+}
+
 impl State {
+    /// The overlay (the setup wizard or Settings) is on screen.
+    pub(crate) fn wizard_shown(&self) -> bool {
+        find::<UIElement>(&self.root, "Wizard").and_then(|w| w.Visibility()).is_ok_and(|v| v == Visibility::Visible)
+    }
+
+    /// Whether `el` is the overlay, or inside it.
+    fn in_overlay(&self, el: &UIElement) -> bool {
+        let Ok(overlay) = find::<UIElement>(&self.root, "Wizard") else { return false };
+        let mut now = el.clone();
+        for _ in 0..64 {
+            if now == overlay {
+                return true;
+            }
+            let Ok(parent) = VisualTreeHelper::GetParent(&now).and_then(|p| p.cast::<UIElement>()) else { return false };
+            now = parent;
+        }
+        false
+    }
+
+    /// The controls the overlay may give the focus to when it opens, in order: the selected
+    /// section's entry in the list (Settings), then the controls of the open section (the
+    /// wizard's pages have no list), then the wizard's own button. Empty until it is laid out.
+    fn wizard_focus_targets(&self) -> Vec<UIElement> {
+        let mut out: Vec<UIElement> = Vec::new();
+        if self.wizard_all {
+            let sec = self.prefs.sec.min(Sec::ALL.len().saturating_sub(1));
+            if let Ok(entry) = find::<UIElement>(&self.root, &format!("PfSec{sec}")) {
+                if entry.Visibility().is_ok_and(|v| v == Visibility::Visible) {
+                    out.push(entry);
+                }
+            }
+        }
+        if let Some(page) = self.prefs.fe.as_ref().and_then(|f| f.cast::<UIElement>().ok()) {
+            controls_in(&page, &mut out);
+        }
+        for name in ["WizNext", "WizSkip", "WizBack"] {
+            if let Ok(b) = find::<UIElement>(&self.root, name) {
+                if laid_out_control(&b) {
+                    out.push(b);
+                }
+            }
+        }
+        out
+    }
+
+    /// The overlay opened (from the keyboard, or from a click): note what had the focus, and
+    /// give it the page once the page is on screen. A click leaves no focus ring.
+    pub(crate) fn wizard_focus_arm(&mut self, keyboard: bool) {
+        let state = focus_state(keyboard);
+        if self.prefs.focus_back.is_none() {
+            // from a menu, the focus is one of its rows: the element the menu took it from is
+            // the one to return to (menu.rs keeps it)
+            let page = self.root.cast::<UIElement>().ok();
+            let before = crate::menu::outside().or_else(|| page.as_ref().and_then(crate::menu::focused));
+            if let Some(el) = before {
+                let had = el.FocusState().unwrap_or(FocusState::Unfocused);
+                let had = if had == FocusState::Unfocused { FocusState::Programmatic } else { had };
+                self.prefs.focus_back = Some((el, had));
+            }
+        }
+        self.prefs.open_state = state;
+        self.prefs.focus_in = Some((state, 12));
+        self.prefs.back_tries = 0;
+    }
+
+    /// Each frame while the overlay is open: the focus goes into it once it is laid out. The
+    /// window in front, a focus still outside it is tried again (a focus given while the window
+    /// was behind does not hold).
+    pub(crate) fn wizard_frame(&mut self) {
+        if !self.wizard_shown() {
+            self.prefs.focus_in = None;
+            self.prefs.front = false;
+            if self.prefs.back_tries > 0 {
+                self.wizard_focus_back();
+            }
+            return;
+        }
+        let front = crate::win32::is_foreground(self.hwnd);
+        let came_front = front && !self.prefs.front;
+        self.prefs.front = front;
+        // a question is over the overlay: its button is the one to have the focus
+        if self.dialogs.open() {
+            return;
+        }
+        if came_front && self.prefs.focus_in.is_none() {
+            let inside = self.root.cast::<UIElement>().ok().and_then(|r| crate::menu::focused(&r)).is_some_and(|f| self.in_overlay(&f));
+            if !inside {
+                self.prefs.focus_in = Some((self.prefs.open_state, 12));
+            }
+        }
+        let Some((state, tries)) = self.prefs.focus_in else { return };
+        let took = self.wizard_focus_targets().into_iter().find(|t| t.Focus(state).unwrap_or(false));
+        if let Some(target) = took {
+            self.prefs.focus_in = None;
+            let el = target.FocusState().unwrap_or(state);
+            crate::state::timing(&format!("{} focus: {} ({})", if self.wizard_all { "Settings" } else { "Setup" }, focus_label(&target), state_name(el)), std::time::Instant::now());
+        } else if tries > 1 {
+            self.prefs.focus_in = Some((state, tries - 1));
+        } else {
+            self.prefs.focus_in = None;
+            crate::state::timing(&format!("{} focus: none (not laid out)", if self.wizard_all { "Settings" } else { "Setup" }), std::time::Instant::now());
+        }
+    }
+
+    /// The overlay closed: the focus goes back where it was before it opened, or to the tree
+    /// view when that element is gone (or there was none: a click on the tree leaves none).
+    fn wizard_focus_back(&mut self) {
+        if self.wizard_shown() {
+            self.prefs.back_tries = 0;
+            return;
+        }
+        // a question that opened as the overlay closed is the one to have the focus
+        if self.dialogs.open() {
+            return;
+        }
+        let Some((el, state)) = self.prefs.focus_back.clone() else {
+            self.prefs.back_tries = 0;
+            self.focus_tree();
+            return;
+        };
+        // the page may have been made again (a theme change while Settings was open): the same
+        // control by its x:Name is the one to go back to
+        let same_name = el.cast::<FrameworkElement>().ok().and_then(|f| f.Name().ok()).map(|n| n.to_string_lossy()).unwrap_or_default();
+        let by_name = (!same_name.is_empty()).then(|| find::<UIElement>(&self.root, &same_name).ok()).flatten();
+        let back = [Some(el.clone()), by_name].into_iter().flatten().find(|e| e.XamlRoot().is_ok() && e.Focus(state).unwrap_or(false));
+        if let Some(back) = back {
+            self.prefs.focus_back = None;
+            self.prefs.back_tries = 0;
+            crate::state::timing(&format!("focus back to {}", focus_label(&back)), std::time::Instant::now());
+            return;
+        }
+        self.prefs.back_tries -= 1;
+        if self.prefs.back_tries == 0 {
+            self.prefs.focus_back = None;
+            self.focus_tree();
+            crate::state::timing("focus back on the tree", std::time::Instant::now());
+        }
+    }
+
+    fn focus_tree(&self) {
+        if let Ok(tree) = find::<UIElement>(&self.root, "TreeScroll") {
+            let _ = tree.Focus(FocusState::Programmatic);
+        }
+    }
+
+    /// The overlay closed by Cancel, Esc or its close button: the focus goes back (at the next
+    /// frames, once it is gone), and the theme tried on its Theme page goes back too.
+    fn wizard_hide(&mut self) {
+        shown(self, "Wizard", false);
+        self.prefs.fe = None;
+        self.prefs.focus_in = None;
+        self.prefs.back_tries = 3;
+    }
+
+    /// Esc while the overlay is open closes it, as Cancel does. Not when a menu, a dropdown or a
+    /// question is open over it (Esc closes that: main.rs gives the key to the question first).
+    pub(crate) fn wizard_key(&mut self, key: i32) -> bool {
+        if key != 27 || !self.wizard_shown() || self.dialogs.open() || crate::menu::any_open() || self.popup_open() {
+            return false;
+        }
+        self.wizard_cancel();
+        true
+    }
+
+    /// A dropdown list or a flyout is open (one of WinUI's popups, not the overlay itself).
+    fn popup_open(&self) -> bool {
+        self.root
+            .XamlRoot()
+            .ok()
+            .and_then(|x| VisualTreeHelper::GetOpenPopupsForXamlRoot(&x).ok())
+            .is_some_and(|popups| popups.Size().unwrap_or(0) > 0)
+    }
+
+    fn wizard_cancel(&mut self) {
+        if self.wizard_all {
+            self.theme_cancel();
+        } else {
+            // skip setup: don't ask again
+            self.settings.set_bool("wizard_done", true);
+            self.settings.save();
+        }
+        self.wizard_hide();
+    }
+
     /// The setup wizard, from its first page.
     pub(crate) fn wizard_open(&mut self) {
+        // the page saw a key just now: it was opened from the keyboard, and shows the focus ring
+        let keyboard = crate::menu::key_recent();
         self.wizard_all = false;
         self.prefs_begin();
         self.wizard_page = 0;
         self.wizard_show();
         shown(self, "Wizard", true);
+        self.wizard_focus_arm(keyboard);
     }
 
     /// Options > Settings, at its first section.
@@ -220,11 +476,25 @@ impl State {
 
     /// Settings, at one section (`"ai"`, `"history"`...).
     pub(crate) fn settings_open_at(&mut self, section: &str) {
+        // the page saw a key just now: opened from the keyboard (Ctrl+Shift+S), it shows the
+        // focus ring; a click opens it without one
+        let keyboard = crate::menu::key_recent();
+        let sec = Sec::by_id(section).and_then(|s| Sec::ALL.iter().position(|x| *x == s)).unwrap_or(0);
+        // already open (the Advisor's buttons open it at a section): its unsaved changes stay,
+        // and only the section moves
+        if self.wizard_shown() {
+            self.prefs_harvest();
+            self.prefs.sec = sec;
+            self.wizard_show();
+            self.wizard_focus_arm(keyboard);
+            return;
+        }
         self.wizard_all = true;
         self.prefs_begin();
-        self.prefs.sec = Sec::by_id(section).and_then(|s| Sec::ALL.iter().position(|x| *x == s)).unwrap_or(0);
+        self.prefs.sec = sec;
         self.wizard_show();
         shown(self, "Wizard", true);
+        self.wizard_focus_arm(keyboard);
     }
 
     /// Fill the draft from what is in use now, and the AI provider's controls.
@@ -862,23 +1132,16 @@ impl State {
                 self.wizard_show();
             }
             "WizNext" if self.wizard_all => self.wizard_finish(),
-            "WizSkip" if self.wizard_all => {
-                // the look tried on the Theme page goes back to the one in use
-                self.theme_cancel();
-                shown(self, "Wizard", false);
-            }
+            // Cancel: nothing is saved, and the look tried on the Theme page goes back
+            "WizSkip" if self.wizard_all => self.wizard_cancel(),
             "WizNext" if self.wizard_page + 1 < PAGES => {
                 self.prefs_harvest();
                 self.wizard_page += 1;
                 self.wizard_show();
             }
             "WizNext" => self.wizard_finish(),
-            _ => {
-                // skip: don't ask again
-                self.settings.set_bool("wizard_done", true);
-                self.settings.save();
-                shown(self, "Wizard", false);
-            }
+            // skip setup (or the wizard's close button): don't ask again
+            _ => self.wizard_cancel(),
         }
     }
 
@@ -964,10 +1227,9 @@ impl State {
                 self.render_advisor();
             }
         }
-        shown(self, "Wizard", false);
+        self.wizard_hide();
         let msg = if notes.is_empty() { "Settings saved. Change them any time under Options > Settings (Ctrl+Shift+S).".to_string() } else { format!("Settings saved; {}.", notes.join("; ")) };
         text(&self.root, "FootLeft", &msg);
-        self.prefs.fe = None;
     }
 }
 
@@ -999,7 +1261,8 @@ impl State {
 
 #[cfg(test)]
 mod card_tests {
-    use super::card_size;
+    use super::{card_size, focus_state, xaml};
+    use crate::bindings::Microsoft::UI::Xaml::FocusState;
 
     #[test]
     fn the_card_keeps_its_size_with_room_and_shrinks_without() {
@@ -1010,5 +1273,25 @@ mod card_tests {
         assert_eq!(card_size(true, 760.0, 520.0), (712.0, 472.0));
         assert_eq!(card_size(false, 500.0, 300.0), (452.0, 252.0));
         assert_eq!(card_size(true, 100.0, 100.0), (240.0, 240.0));
+    }
+
+    /// The overlay covers the window, so Tab must stay in it: the root cycles the tab order, and
+    /// the section list's entries are there for the focus to land on.
+    #[test]
+    fn tab_stays_inside_the_overlay_and_the_sections_can_take_the_focus() {
+        let x = xaml();
+        assert!(x.contains(r#"x:Name="Wizard""#));
+        assert!(x.contains(r#"TabFocusNavigation="Cycle""#));
+        for i in 0..super::Sec::ALL.len() {
+            assert!(x.contains(&format!(r#"x:Name="PfSec{i}""#)));
+        }
+    }
+
+    /// A click opens Settings without a focus ring; a key (Ctrl+Shift+S, or the menu's row with
+    /// Enter) shows it.
+    #[test]
+    fn a_click_opens_without_a_focus_ring_and_the_keyboard_with_one() {
+        assert_eq!(focus_state(false), FocusState::Pointer);
+        assert_eq!(focus_state(true), FocusState::Keyboard);
     }
 }

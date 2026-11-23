@@ -994,6 +994,12 @@ pub(crate) fn note_key() {
     st(|b| b.last_key = Some(Instant::now()));
 }
 
+/// Whether the page saw a key just now: what opens after one (Settings from Ctrl+Shift+S, or a
+/// menu opened with the keyboard) was opened from the keyboard.
+pub(crate) fn key_recent() -> bool {
+    st(|b| b.key_recent()).unwrap_or(false)
+}
+
 pub(crate) fn root() -> Option<UIElement> {
     st(|b| b.root.clone())
 }
