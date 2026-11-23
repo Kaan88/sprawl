@@ -220,7 +220,7 @@ pub(crate) struct State {
     pub(crate) win_h: f64,
     /// The window's width (0 until it is laid out), for the Settings card to fit.
     pub(crate) win_w: f64,
-    pub(crate) shell_rescans: Option<std::sync::mpsc::Receiver<(std::path::PathBuf, Option<sprawl_core::Tree>)>>,
+    pub(crate) shell_rescans: Vec<std::sync::mpsc::Receiver<(std::path::PathBuf, Option<sprawl_core::Tree>)>>,
     pub(crate) pulses_on: bool,
     pub(crate) map_root: usize,
     pub(crate) map: MapView,
@@ -351,7 +351,7 @@ impl State {
             return;
         }
         // rereads after a Windows menu command were for the tree this scan replaces
-        self.shell_rescans = None;
+        self.shell_rescans.clear();
         let (path, csv) = match &source {
             Source::Folders(v) if v.len() == 1 => (v[0].clone(), false),
             Source::Folders(v) if v.is_empty() => return,
