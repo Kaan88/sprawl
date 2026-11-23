@@ -516,7 +516,7 @@ impl State {
         let m = &mut self.search.more;
         m.running = None;
         m.resorting = None;
-        let q = Query::parse(&self.search.query);
+        let q = Query::parse(&self.search.reads.plain);
         if q.is_empty() || !q.errors().is_empty() || !m.has_places() {
             m.hits.clear();
             m.all = Arc::new(Vec::new());

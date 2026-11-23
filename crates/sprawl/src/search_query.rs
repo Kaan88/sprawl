@@ -99,9 +99,19 @@ impl Chip {
                 ("A year or older".into(), Pick::Term(format!("dm:<{}", year_before(today)))),
                 ("Custom dates...".into(), Pick::Prompt("dm:")),
             ],
-            Chip::Where => vec![("Inside a folder...".into(), Pick::Folder), ("Path contains...".into(), Pick::Prompt("path:"))],
+            Chip::Where => vec![
+                ("Inside a folder...".into(), Pick::Folder),
+                ("Directly inside a folder...".into(), Pick::Prompt("parent:")),
+                ("Path contains...".into(), Pick::Prompt("path:")),
+            ],
             Chip::More => vec![
                 ("Compressed files and folders".into(), t("compressed:")),
+                ("Folders holding a match (child:)".into(), Pick::Prompt("child:")),
+                ("Folders with over 10,000 files inside".into(), t("childfilecount:>10000")),
+                ("Files or folders with a copy (dupe:)".into(), t("dupe:")),
+                ("Files the same size (sizedupe:)".into(), t("sizedupe:")),
+                ("Hidden and system".into(), t("attrib:hs")),
+                ("Paths over 260 characters".into(), t("len:>260")),
                 ("Whole name (exact:)".into(), Pick::Modifier("exact:")),
                 ("Match case (case:)".into(), Pick::Modifier("case:")),
                 ("Regular expression (regex:)".into(), Pick::Prompt("regex:")),
@@ -160,6 +170,9 @@ pub(crate) fn chips_of(w: &Word) -> Vec<Chip> {
         WordKey::Size | WordKey::Compare => v.push(Chip::Size),
         WordKey::Date => v.push(Chip::Modified),
         WordKey::Depth | WordKey::Regex | WordKey::Compressed => v.push(Chip::More),
+        WordKey::Child | WordKey::ChildCount | WordKey::ChildFiles => v.push(Chip::More),
+        WordKey::Attrib | WordKey::Len | WordKey::Dupe | WordKey::SizeDupe => v.push(Chip::More),
+        WordKey::Parent => v.push(Chip::Where),
         WordKey::Text => {
             if w.path {
                 v.push(Chip::Where);
@@ -214,6 +227,13 @@ pub(crate) fn lit(text: &str) -> [Option<String>; 6] {
             WordKey::Depth => add(format!("depth {}", w.value)),
             WordKey::Regex => add("regex".into()),
             WordKey::Compressed => add(if w.value.is_empty() { "compressed".into() } else { format!("compressed {}", w.value) }),
+            WordKey::Child => add(format!("child: {}", w.value)),
+            WordKey::ChildCount => add(format!("child count {}", w.value)),
+            WordKey::ChildFiles => add(format!("child files {}", w.value)),
+            WordKey::Attrib => add(format!("attrib {}", w.value)),
+            WordKey::Len => add(format!("path length {}", w.value)),
+            WordKey::Dupe => add("duplicates".into()),
+            WordKey::SizeDupe => add("same size".into()),
             _ => {
                 if w.exact {
                     add("whole name".into());
@@ -325,7 +345,27 @@ pub(crate) fn append(text: &str, term: &str) -> (String, usize) {
 /// sort go (a depth replaces a depth; a regex a regex).
 pub(crate) fn put(text: &str, chip: Chip, term: &str) -> (String, usize) {
     let base = if chip == Chip::More {
-        let key = if term.starts_with("depth:") { WordKey::Depth } else if term.starts_with("compressed:") { WordKey::Compressed } else { WordKey::Regex };
+        let key = if term.starts_with("depth:") {
+            WordKey::Depth
+        } else if term.starts_with("compressed:") {
+            WordKey::Compressed
+        } else if term.starts_with("childcount:") {
+            WordKey::ChildCount
+        } else if term.starts_with("childfilecount:") {
+            WordKey::ChildFiles
+        } else if term.starts_with("child:") {
+            WordKey::Child
+        } else if term.starts_with("attrib:") {
+            WordKey::Attrib
+        } else if term.starts_with("len:") {
+            WordKey::Len
+        } else if term.starts_with("dupe:") {
+            WordKey::Dupe
+        } else if term.starts_with("sizedupe:") {
+            WordKey::SizeDupe
+        } else {
+            WordKey::Regex
+        };
         let words = Query::words(text);
         let edits: Vec<Edit> = words
             .iter()
@@ -363,7 +403,10 @@ pub(crate) struct Suggestions {
     pub(crate) items: Vec<(String, String)>,
 }
 
-const KEYWORDS: [&str; 11] = ["ext:", "dm:", "size:", "depth:", "compressed:", "regex:", "path:", "case:", "exact:", "folder:", "file:"];
+const KEYWORDS: [&str; 27] = [
+    "ext:", "dm:", "dc:", "da:", "size:", "depth:", "compressed:", "regex:", "path:", "case:", "exact:", "folder:", "file:", "parent:",
+    "child:", "childcount:", "childfilecount:", "attrib:", "len:", "dupe:", "sizedupe:", "audio:", "video:", "pic:", "doc:", "exe:", "zip:",
+];
 const MODIFIERS: [&str; 7] = ["folder:", "file:", "case:", "exact:", "wholename:", "path:", "!"];
 const MAX_SUGGESTIONS: usize = 8;
 /// After `ext:` the seven families come first, then the scan's own types.
@@ -414,7 +457,7 @@ pub(crate) fn suggest(text: &str, caret: usize, exts: &[String]) -> Option<Sugge
                 }
             };
             match kw_l.as_str() {
-                "dm" | "datemodified" => {
+                "dm" | "datemodified" | "dc" | "datecreated" | "da" | "dateaccessed" => {
                     for (d, name) in DATES {
                         offer(format!("{kw}:{d}   {name}"), d);
                     }
@@ -430,6 +473,21 @@ pub(crate) fn suggest(text: &str, caret: usize, exts: &[String]) -> Option<Sugge
                 }
                 "depth" => {
                     for (val, name) in [("<=1", "in the scanned folder"), ("<=2", "at most 2 levels down"), ("<=3", "at most 3 levels down")] {
+                        offer(format!("{kw}:{val}   {name}"), val);
+                    }
+                }
+                "childcount" | "childfilecount" => {
+                    for (val, name) in [(">10000", "more than 10,000"), (">1000", "more than 1,000"), ("0", "none")] {
+                        offer(format!("{kw}:{val}   {name}"), val);
+                    }
+                }
+                "attrib" => {
+                    for (val, name) in [("hs", "hidden and system"), ("h", "hidden"), ("s", "system"), ("r", "read-only"), ("l", "link")] {
+                        offer(format!("{kw}:{val}   {name}"), val);
+                    }
+                }
+                "len" => {
+                    for (val, name) in [(">260", "longer than 260 characters"), ("<=200", "up to 200"), (">100", "longer than 100")] {
                         offer(format!("{kw}:{val}   {name}"), val);
                     }
                 }
@@ -714,6 +772,9 @@ mod tests {
         assert_eq!(lit_at("folder:cache", Chip::Kind).as_deref(), Some("folders"));
         assert_eq!(lit_at("file: folder:", Chip::Kind).as_deref(), Some("folders"), "the last one counts, as in the query");
         assert_eq!(lit_at("path:\"C:\\My Dir\\\"", Chip::Where).as_deref(), Some("C:\\My Dir\\"));
+        assert_eq!(lit_at("parent:C:\\Games", Chip::Where).as_deref(), Some("C:\\Games"));
+        assert_eq!(lit_at("child:*.tmp childcount:>100", Chip::More).as_deref(), Some("child: *.tmp, child count >100"));
+        assert_eq!(lit_at("childfilecount:0", Chip::More).as_deref(), Some("child files 0"));
         assert_eq!(lit_at("case:exact:README depth:<=2", Chip::More).as_deref(), Some("whole name, match case, depth <=2"));
         // a negated word is not a filter the chip can show
         assert_eq!(lit_at("!ext:tmp", Chip::Type), None);
@@ -737,6 +798,9 @@ mod tests {
         assert_eq!(remove("\"a  b\" ext:jpg", Chip::Type), "\"a  b\"", "spaces in quotes stay");
         // More: a depth replaces a depth, the rest of More stays
         assert_eq!(put("exact:a depth:<=1", Chip::More, "depth:<=3").0, "exact:a depth:<=3");
+        // a child: takes another child:, its count its own
+        assert_eq!(put("child:*.tmp x", Chip::More, "child:*.iso").0, "x child:*.iso");
+        assert_eq!(put("childcount:>1 x", Chip::More, "childfilecount:0").0, "childcount:>1 x childfilecount:0");
         // modifiers go on the last name word
         assert_eq!(add_modifier("report ext:pdf", "exact:"), ("exact:report ext:pdf".to_string(), "exact:report".len()));
         assert_eq!(add_modifier("!tmp", "case:").0, "!case:tmp");
@@ -773,9 +837,23 @@ mod tests {
         assert_eq!(s.items.iter().map(|i| &i.1[..]).collect::<Vec<_>>(), ["ext:png;jpg", "ext:png;json"]);
         // modifiers in front stay
         let s = suggest("!folder:si", 10, &exts).unwrap();
-        assert_eq!(s.items, [("size:".to_string(), "!folder:size:".to_string())]);
+        assert_eq!(
+            s.items,
+            [("size:".to_string(), "!folder:size:".to_string()), ("sizedupe:".to_string(), "!folder:sizedupe:".to_string())]
+        );
         // the start of a keyword offers it; a plain word or one letter offers nothing
         assert_eq!(suggest("ex", 2, &exts).unwrap().items[0].1, "ext:");
+        assert_eq!(suggest("par", 3, &exts).unwrap().items[0].1, "parent:");
+        assert_eq!(suggest("childc", 6, &exts).unwrap().items[0].1, "childcount:");
+        assert!(suggest("childcount:", 11, &exts).unwrap().items.iter().any(|i| i.1 == "childcount:>10000"));
+        // `dc:` and `da:` offer the same named dates `dm:` does
+        let s = suggest("dc:", 3, &exts).unwrap();
+        assert_eq!(s.items.len(), DATES.len());
+        assert_eq!(s.items.iter().map(|i| &i.1[..]).collect::<Vec<_>>(), ["dc:today", "dc:yesterday", "dc:lastweek", "dc:lastmonth", "dc:thismonth", "dc:thisyear"]);
+        assert!(suggest("da:la", 5, &exts).unwrap().items.iter().any(|i| i.1 == "da:lastweek"));
+        assert_eq!(suggest("attrib:", 7, &exts).unwrap().items[0].1, "attrib:hs");
+        assert!(suggest("len:", 4, &exts).unwrap().items.iter().any(|i| i.1 == "len:>260"));
+        assert!(suggest("du", 2, &exts).unwrap().items.iter().any(|i| i.1 == "dupe:"));
         assert_eq!(suggest("e", 1, &exts), None);
         assert_eq!(suggest("report", 6, &exts), None);
         assert_eq!(suggest("", 0, &exts), None);

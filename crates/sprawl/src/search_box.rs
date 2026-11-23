@@ -284,8 +284,12 @@ impl State {
 
     /// The hint line and the empty state, for what is typed now.
     pub(crate) fn search_box_state(&mut self) {
-        let q = Query::parse(&self.search.query);
-        let errors = q.errors();
+        self.search_reads();
+        let q = Query::parse(&self.search.reads.plain);
+        let mut errors: Vec<String> = q.errors().to_vec();
+        if let Some(e) = &self.search.reads.error {
+            errors.push(e.clone());
+        }
         let hint = if errors.is_empty() {
             TIP.to_string()
         } else {
@@ -315,7 +319,7 @@ impl State {
     /// A search was used (Enter to the results, a result opened or shown in the tree): it
     /// goes first among the recent ones, unless the history is off.
     pub(crate) fn search_note(&mut self) {
-        if !self.search_keeps_history() || !Query::parse(&self.search.query).errors().is_empty() {
+        if !self.search_keeps_history() || !Query::parse(&self.search.reads.plain).errors().is_empty() || self.search.reads.error.is_some() {
             return;
         }
         let h = self.search.history.get_or_insert_with(sq::history_load);
