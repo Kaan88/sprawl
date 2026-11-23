@@ -166,12 +166,6 @@ impl crate::state::State {
             crate::state::text(&self.root, "FootLeft", "A scan is running: the Windows menu for its rows is back when it has finished.");
             return;
         }
-        // a reread after an earlier command (or a Search rename) is still coming: this one's
-        // would replace it and the tree would keep the old state
-        if self.shell_rescans.is_some() {
-            crate::state::text(&self.root, "FootLeft", "The folder is still being read after the last change: the Windows menu is back when that has finished.");
-            return;
-        }
         let picked = if in_scan { self.picked_nodes().len() } else { 1 };
         if let Some(why) = unavailable(picked) {
             crate::state::text(&self.root, "FootLeft", &format!("Windows menu: {why}"));
@@ -197,7 +191,9 @@ impl crate::state::State {
                 // the menu's command may still be working (a copy, a delete with its own progress):
                 // read now and once more a little later
                 let (tx, rx) = std::sync::mpsc::channel();
-                self.shell_rescans = Some(rx);
+                // (rereads still coming from an earlier command or a Search rename are kept: each
+                // has its own, and Delete waits until all are done)
+                self.shell_rescans.push(rx);
                 std::thread::spawn(move || {
                     for wait in [1500, 8000] {
                         std::thread::sleep(std::time::Duration::from_millis(wait));
@@ -216,22 +212,24 @@ impl crate::state::State {
     /// A rescan after the Windows menu, when one has come in. When both reads are done (the
     /// thread has gone) it is over, and Delete, which waits for it, works again.
     pub(crate) fn drain_shell_rescans(&mut self) {
-        let Some(rx) = &self.shell_rescans else { return };
-        let mut got = Vec::new();
-        let done = loop {
-            match rx.try_recv() {
-                Ok(r) => got.push(r),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break false,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
-            }
-        };
-        if done {
-            self.shell_rescans = None;
-        }
+        let got = drain_receivers(&mut self.shell_rescans);
         if !got.is_empty() {
             self.apply_rescans(got);
         }
     }
+}
+
+/// What has come in on each receiver; one whose sender has gone (its thread is done) is dropped.
+fn drain_receivers<T>(all: &mut Vec<std::sync::mpsc::Receiver<T>>) -> Vec<T> {
+    let mut got = Vec::new();
+    all.retain(|rx| loop {
+        match rx.try_recv() {
+            Ok(r) => got.push(r),
+            Err(std::sync::mpsc::TryRecvError::Empty) => break true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
+        }
+    });
+    got
 }
 
 #[cfg(test)]
@@ -245,6 +243,25 @@ mod tests {
         assert_eq!(t(Path::new(r"C:\Data\a.jpg"), Path::new(r"C:\Data")), PathBuf::from(r"C:\Data\a.jpg"));
         assert_eq!(t(Path::new(r"C:\Data\a.jpg"), Path::new(r"c:\data\")), PathBuf::from(r"C:\Data\a.jpg"));
         assert_eq!(t(Path::new(r"C:\Windows"), Path::new(r"C:\")), PathBuf::from(r"C:\Windows"));
+    }
+
+    #[test]
+    fn a_second_reread_does_not_replace_the_first() {
+        use std::sync::mpsc::channel;
+        let (tx1, rx1) = channel();
+        let (tx2, rx2) = channel();
+        let mut all = vec![rx1, rx2];
+        tx1.send(1).unwrap();
+        tx2.send(2).unwrap();
+        assert_eq!(super::drain_receivers(&mut all), vec![1, 2]);
+        assert_eq!(all.len(), 2, "both threads are still running");
+        drop(tx1);
+        tx2.send(3).unwrap();
+        assert_eq!(super::drain_receivers(&mut all), vec![3]);
+        assert_eq!(all.len(), 1, "the finished one is dropped, the other is kept");
+        drop(tx2);
+        assert!(super::drain_receivers(&mut all).is_empty());
+        assert!(all.is_empty());
     }
 
     #[test]

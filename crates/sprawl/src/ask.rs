@@ -50,6 +50,11 @@ pub(crate) struct Pending {
     input: Option<Input>,
 }
 
+/// The `in_box` and `on_yes` flags for where the keyboard really is.
+fn spot_flags(spot: Spot) -> (bool, bool) {
+    (spot == Spot::Box, spot == Spot::Yes)
+}
+
 /// The questions waiting: the first is on screen, the rest follow in turn.
 #[derive(Default)]
 pub(crate) struct Dialogs {
@@ -115,7 +120,7 @@ impl State {
             None => p.text.split('\n').map(|l| format!(r##"<TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs13}}" Foreground="{{$text1}}" IsTextSelectionEnabled="True"/>"##, ui::esc(l))).collect(),
         };
         let body = match &p.input {
-            Some(i) => body + &format!(r##"<TextBox x:Name="DlgInput" Text="{}" FontSize="{{$fs13}}" Margin="0,10,0,0" AutomationProperties.Name="{}"/>"##, ui::esc(&i.initial), ui::esc(&p.title)),
+            Some(_) => body + &format!(r##"<TextBox x:Name="DlgInput" FontSize="{{$fs13}}" Margin="0,10,0,0" AutomationProperties.Name="{}"/>"##, ui::esc(&p.title)),
             None => body,
         };
         let (max_w, max_h) = if p.rich.is_some() { (940, 720) } else { (560, 420) };
@@ -148,6 +153,9 @@ impl State {
         self.dialogs.in_box = self.dialogs.queue.front().is_some_and(|p| p.input.is_some());
         let Ok(fe) = el.cast::<crate::bindings::Microsoft::UI::Xaml::FrameworkElement>() else { return };
         if let (Some(i), Ok(b)) = (self.dialogs.queue.front().and_then(|p| p.input.as_ref()), find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&fe, "DlgInput")) {
+            // the text is set here and not written into the XAML: a value like #FF102030 there
+            // would be read as a colour (and changed in the light theme), a control character lost
+            let _ = b.SetText(&i.initial.as_str().into());
             let _ = b.Select(i.select.0, i.select.1);
         }
         for (name, yes) in [("DlgYes", true), ("DlgNo", false)] {
@@ -170,6 +178,13 @@ impl State {
             return;
         }
         let front = crate::win32::is_foreground(self.hwnd);
+        // while the window was in front the user may have clicked into the box or onto a button:
+        // keep what the focus goes back to in step with where they were
+        if self.dialogs.front && self.dialogs.queue.front().is_some_and(|p| p.input.is_some()) {
+            if let Some(spot) = self.dialog_spot() {
+                (self.dialogs.in_box, self.dialogs.on_yes) = spot_flags(spot);
+            }
+        }
         if front && !self.dialogs.front {
             self.dialog_focus();
         }
@@ -290,5 +305,19 @@ impl State {
                 (input.then)(self, typed);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flags_follow_where_the_keyboard_really_is() {
+        // Tab to Rename, then a click back into the box: coming back to the window must put the
+        // focus in the box, not on the button
+        assert_eq!(spot_flags(Spot::Yes), (false, true));
+        assert_eq!(spot_flags(Spot::Box), (true, false));
+        assert_eq!(spot_flags(Spot::No), (false, false));
     }
 }

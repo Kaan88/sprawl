@@ -62,6 +62,10 @@ fn extension(name: &str) -> Option<&str> {
 /// What `typed` makes of the name `old`: a file keeps its extension unless what was typed has a
 /// dot of its own. Err says what is wrong with it.
 pub(crate) fn new_name(old: &str, is_dir: bool, typed: &str) -> Result<String, String> {
+    // untouched (or typed the same) is no change, even when trimming would make one
+    if typed == old {
+        return Err("That is already its name.".into());
+    }
     let typed = typed.trim();
     if typed.is_empty() {
         return Err("Type a name.".into());
@@ -145,6 +149,8 @@ fn kept_list(live: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
 /// Why folder item `id` of `place` (as `path`) can't be renamed for what it holds: the folder
 /// changed after its drive was read, or something in it (or it) is protected by the end of its
 /// path (a disk image, a mail profile, a vault), which `Never::hit` on the folder doesn't see.
+/// The change check looks only at the folder's own modified time, which a file added deeper
+/// down doesn't move: what is below is as the drive's read found it.
 fn more_folder_refusal(place: &crate::search_more::Place, id: usize, path: &Path) -> Option<String> {
     let ix = &place.ix;
     let id = id as u32;
@@ -152,26 +158,51 @@ fn more_folder_refusal(place: &crate::search_more::Place, id: usize, path: &Path
         return Some("The folder changed since its drive was read, so what it holds isn't known. Refresh the drive's results (or scan the folder) and try again.".into());
     }
     let never = sprawl_advisor::safety::Never::default_list();
+    // the end-of-path entries taken once, and each item's name tested against their endings
+    // before any path is built: a folder of a million items takes a fraction of a second
+    let matcher = never.tail_matcher();
     let d = ix.depth(id);
     let n = ix.len() as u32;
     let mut j = id;
-    while j < n && (j == id || ix.depth(j) > d) {
-        // the item's last names, as far as a never-list entry looks
-        let mut names = Vec::new();
-        let mut at = Some(j);
-        while let Some(i) = at.filter(|_| names.len() < 4) {
-            names.push(ix.name(i));
-            at = ix.parent(i);
-        }
-        names.reverse();
-        let tail: PathBuf = names.iter().collect();
-        if let Some(p) = never.path_hit(&tail) {
-            let held = ix.path_of(j);
-            return Some(format!("This folder holds\n{}\n\nwhich is protected ({p}), so it can't be renamed.", held.display()));
+    while j < n && (j == id || inside(ix, j, id, d)) {
+        let raw = ix.name(j);
+        if matcher.maybe(&raw) {
+            // the item's last names (lower case, last first), as far as a never-list entry looks
+            let mut names = vec![raw.to_lowercase()];
+            let mut at = ix.parent(j);
+            while let Some(i) = at.filter(|_| names.len() < 4) {
+                names.push(ix.name(i).to_lowercase());
+                at = ix.parent(i);
+            }
+            if let Some(p) = matcher.hit(&names) {
+                let held = ix.path_of(j);
+                return Some(format!("This folder holds
+{}
+
+which is protected ({p}), so it can't be renamed.", held.display()));
+            }
         }
         j += 1;
     }
     None
+}
+
+/// Whether item `j` (after folder `id`, which is at depth `d`) is inside it. The index's depth
+/// stops at 255, so below a folder that deep the depth can't tell what is inside from what
+/// follows: the parent chain does.
+fn inside(ix: &sprawl_core::compact::CompactIndex, j: u32, id: u32, d: u32) -> bool {
+    if d < 255 {
+        return ix.depth(j) > d;
+    }
+    let mut k = j;
+    while k > id {
+        match ix.parent(k) {
+            None => return false,
+            Some(p) if p == id => return true,
+            Some(p) => k = p,
+        }
+    }
+    false
 }
 
 /// What a rename is for.
@@ -331,7 +362,7 @@ impl State {
                 let Some(root) = self.scan_renamed(n, &path, &name) else { return };
                 let again = crate::shellmenu::rescan_target(&to, &root);
                 let (tx, rx) = std::sync::mpsc::channel();
-                self.shell_rescans = Some(rx);
+                self.shell_rescans.push(rx);
                 std::thread::spawn(move || {
                     if let Some(now) = crate::shellmenu::read_now(&again) {
                         let _ = tx.send((again, now));
@@ -342,7 +373,9 @@ impl State {
             Target::More(..) => {
                 // that drive's read still has the old name: the result leaves the list
                 self.more_forget_deleted(std::slice::from_ref(&path));
-                text(&self.root, "SearchInfo", &format!("{done}. It shows under its new name once the drive is read again (Refresh under the results)."));
+                let case_only = old_name.to_lowercase() == name.to_lowercase();
+                let line = if case_only { "The list may still show the old spelling until the drive is read again" } else { "It shows under its new name once the drive is read again" };
+                text(&self.root, "SearchInfo", &format!("{done}. {line} (Refresh under the results)."));
             }
         }
     }
@@ -387,7 +420,7 @@ impl State {
         let note = if crate::win32::copy_files(self.hwnd, &paths) {
             format!("{} copied as {}: Paste in Explorer to copy {}.", crate::format::thousands(n as u64), if n == 1 { "a file" } else { "files" }, if n == 1 { "it" } else { "them" })
         } else {
-            "Couldn't put the results on the clipboard (another program has it, or there isn't enough memory). What was on it is as it was.".to_string()
+            "Couldn't put the results on the clipboard (another program has it, or there isn't enough memory). If the clipboard had been emptied, what was on it is gone.".to_string()
         };
         text(&self.root, "SearchInfo", &note);
     }
@@ -586,6 +619,77 @@ mod tests {
         assert!(more_folder_refusal(&old, docs, &t.0.join("docs")).is_some());
         // a relative spelling is refused too
         assert!(path_refusal_for_rename(Path::new("relative.txt"), &[]).is_some());
+    }
+
+    #[test]
+    fn an_untouched_name_is_no_rename_even_when_trimming_would_change_it() {
+        assert_eq!(new_name(" notes.txt", false, " notes.txt"), Err("That is already its name.".into()));
+        assert_eq!(new_name(" notes.txt", false, "notes.txt"), Ok("notes.txt".into()), "typing it trimmed is a choice");
+    }
+
+    #[test]
+    fn a_path_of_more_than_260_characters_is_renamed() {
+        let t = Temp::new("long");
+        let mut dir = t.0.clone();
+        for i in 0..7 {
+            dir.push(format!("{i}{}", "d".repeat(49)));
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        std::fs::write(&a, b"x").unwrap();
+        assert!(a.as_os_str().len() > 260, "{}", a.as_os_str().len());
+        let to = rename_on_disk(&a, "b.txt", &allow).unwrap();
+        assert!(std::fs::metadata(&to).is_ok() && std::fs::metadata(&a).is_err());
+        // and a new name that is what pushes it past 259
+        let c = rename_on_disk(&to, &format!("{}.txt", "n".repeat(240)), &allow).unwrap();
+        assert!(std::fs::metadata(&c).is_ok());
+        // the verbatim spelling itself
+        let w = |p: &Path| String::from_utf16(&crate::win32::verbatim(p)).unwrap();
+        assert_eq!(w(Path::new(r"C:\x\y")), "\\\\?\\C:\\x\\y\0");
+        assert_eq!(w(Path::new(r"\\srv\share\x")), "\\\\?\\UNC\\srv\\share\\x\0");
+        assert_eq!(w(Path::new(r"\\?\C:\x")), "\\\\?\\C:\\x\0");
+    }
+
+    /// A tree as an index: (name, is_dir, parent index) in order.
+    fn index_of(root: &str, items: &[(String, bool, usize)]) -> std::sync::Arc<sprawl_core::compact::CompactIndex> {
+        use sprawl_core::{Node, Tree};
+        let mut nodes = vec![Node { name: root.into(), is_dir: true, ..Default::default() }];
+        for (name, dir, parent) in items {
+            let i = nodes.len();
+            nodes.push(Node { name: name.clone(), is_dir: *dir, parent: Some(*parent), ..Default::default() });
+            nodes[*parent].children.push(i);
+        }
+        let mut tree = Tree { volumes: Vec::new(), root_path: PathBuf::from(root), nodes, errors: 0, method: Default::default() };
+        tree.compute_totals();
+        std::sync::Arc::new(sprawl_core::compact::CompactIndex::build(&tree))
+    }
+
+    #[test]
+    fn a_big_folder_is_looked_through_quickly_and_a_very_deep_one_completely() {
+        let t = Temp::new("big");
+        let root = t.0.display().to_string();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let place = |ix| crate::search_more::Place { ix, as_of: None, read_at: later, errors: 0, drive: Some("D:\\".into()) };
+        // 200,000 items in one folder and none protected
+        let mut items = vec![("big".to_string(), true, 0)];
+        items.extend((0..200_000).map(|i| (format!("file{i}.dat"), false, 1)));
+        let p = place(index_of(&root, &items));
+        let big = (0..p.ix.len() as u32).find(|&i| p.ix.name(i) == "big").unwrap() as usize;
+        let start = std::time::Instant::now();
+        assert_eq!(more_folder_refusal(&p, big, &t.0), None);
+        assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
+        // a folder 256 levels down: below depth 255 the index's depth no longer separates what
+        // is inside from what follows, and a disk image at the bottom is still found
+        let mut items = Vec::new();
+        for i in 0..260 {
+            items.push((format!("d{i}"), true, i));
+        }
+        items.push(("win11.vhdx".to_string(), false, 260));
+        let p = place(index_of(&root, &items));
+        let at = (0..p.ix.len() as u32).find(|&i| p.ix.name(i) == "d256").unwrap();
+        assert_eq!(p.ix.depth(at), 255, "depth is saturated here");
+        let why = more_folder_refusal(&p, at as usize, &t.0).unwrap_or_default();
+        assert!(why.contains("win11.vhdx"), "{why}");
     }
 
     #[test]

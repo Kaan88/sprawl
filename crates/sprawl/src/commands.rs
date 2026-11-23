@@ -778,7 +778,7 @@ impl State {
     pub(crate) fn delete_busy_refusal(&self) -> Option<String> {
         if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) || self.job.is_some()
             || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.update.applying
-            || self.advisor.reading() || self.shell_rescans.is_some() {
+            || self.advisor.reading() || !self.shell_rescans.is_empty() {
             return Some("Deletion waits until scanning, Check again and other file operations finish; screenshot runs cannot delete.".into());
         }
         None

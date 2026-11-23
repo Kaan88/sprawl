@@ -370,7 +370,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         watcher: None,
         changes: 0,
         own_deletes: Vec::new(),
-        shell_rescans: None,
+        shell_rescans: Vec::new(),
         win_h: 0.0,
         win_w: 0.0,
         pulses_on: true,
