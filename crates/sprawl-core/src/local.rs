@@ -197,7 +197,7 @@ pub const SHARE_DELETE: u32 = 4;
 /// One plain name: no separator, stream, wildcard or device character, not `.` or `..`, and
 /// not ending in a dot or space (which Windows paths would drop).
 fn plain_name(name: &str) -> io::Result<Vec<u16>> {
-    if name.is_empty() || name.len() > 255 || matches!(name, "." | "..") || name.ends_with(['.', ' '])
+    if name.is_empty() || name.encode_utf16().count() > 255 || matches!(name, "." | "..") || name.ends_with(['.', ' '])
         || name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) || name.chars().any(|c| (c as u32) < 32) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not one plain name"));
     }

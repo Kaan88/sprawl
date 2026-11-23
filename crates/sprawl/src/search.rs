@@ -91,11 +91,14 @@ fn read_filter_with(
     opened: Option<sprawl_advisor::used::Accessed>,
 ) -> Option<ReadOutcome> {
     use sprawl_advisor::used::InRange;
-    if hits.len() > READ_MOST {
+    let mut opened = dates.accessed.map(|_| opened.unwrap_or_else(sprawl_advisor::used::Accessed::new));
+    // a PC that keeps no last-access times can't answer `da:` however far the search is narrowed,
+    // so that is said before "too many to read" (times-18); nothing is read for such a search
+    let no_access = opened.as_ref().is_some_and(|a| !a.kept());
+    if hits.len() > READ_MOST && !no_access {
         return Some(ReadOutcome::TooMany(hits.len()));
     }
-    let mut born = dates.created.map(|_| sprawl_advisor::born::Created::new());
-    let mut opened = dates.accessed.map(|_| opened.unwrap_or_else(sprawl_advisor::used::Accessed::new));
+    let mut born = dates.created.filter(|_| !no_access).map(|_| sprawl_advisor::born::Created::new());
     let (mut unread_c, mut unknown_c, mut unread_a, mut partial_a, mut unknown_a) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut kept = Vec::with_capacity(hits.len());
     for n in hits {
@@ -155,12 +158,8 @@ fn read_filter_with(
             count(unread_c, "match", "matches")
         ));
     }
-    if unknown_c > 0 {
-        notes.push(format!(
-            "{} with no creation time to check: {}.",
-            count(unknown_c, "match", "matches"),
-            born.as_ref().and_then(|b| b.why()).unwrap_or("the time couldn't be read")
-        ));
+    if let Some(b) = born.as_ref() {
+        notes.extend(b.notes("match", "matches"));
     }
     if unread_a > 0 {
         notes.push(format!(
@@ -1363,6 +1362,26 @@ mod reads_tests {
         assert!(!line.contains("reading limit"), "{line}");
         assert!(none_headline("q", "this scan", &Reads { partial: 2, ..Default::default() }).starts_with("Nothing could be checked"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A PC that keeps no last-access times says so before "too many to read": narrowing the
+    /// search could never help (times-18).
+    #[test]
+    fn no_access_times_is_said_before_too_many() {
+        use sprawl_advisor::used::Accessed;
+        let mut a = Accessed::with_budget(10);
+        a.set_kept_for_test(false);
+        let dates = sprawl_core::query::ReadDates { created: None, accessed: Some((0, i64::MAX)) };
+        let nodes = vec![sprawl_core::Node { name: "x".into(), ..Default::default() }];
+        let tree = sprawl_core::Tree { volumes: Vec::new(), root_path: "C:\\".into(), nodes, errors: 0, method: Default::default() };
+        let hits = vec![0usize; super::READ_MOST + 1];
+        match read_filter_with(&tree, hits, &dates, &AtomicBool::new(false), Some(a)) {
+            Some(ReadOutcome::Kept { notes, unknown, .. }) => {
+                assert_eq!(unknown, super::READ_MOST + 1);
+                assert!(notes.iter().any(|n| n.contains("last-access updates turned off")), "{notes:?}");
+            }
+            _ => panic!("the machine's reason, not too many"),
+        }
     }
 }
 

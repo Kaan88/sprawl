@@ -98,7 +98,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
             ));
         }
         let mut born = crate::born::Created::new();
-        let (mut unread, mut unknown) = (0usize, 0usize);
+        let mut unread = 0usize;
         hits.retain(|&n| match born.of(&tree.path_of(n)) {
             crate::born::Born::At(t) => {
                 let s = sprawl_core::query::unix_secs(t);
@@ -108,17 +108,13 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
                 unread += 1;
                 false
             }
-            crate::born::Born::Unknown => {
-                unknown += 1;
-                false
-            }
+            // counted with its reason inside `born`
+            crate::born::Born::Unknown => false,
         });
         if unread > 0 {
             created_notes.push(format!("{unread} matches not checked for created: the reading limit ran out."));
         }
-        if unknown > 0 {
-            created_notes.push(format!("{unknown} matches with no creation time to check: {}.", born.why().unwrap_or("the time couldn't be read")));
-        }
+        created_notes.extend(born.notes("match", "matches"));
     }
     // `da:`: each match's time is read once and used again for the list; what the reading limit
     // left out is counted and said, never taken for a non-match
