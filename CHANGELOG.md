@@ -8,6 +8,7 @@ in-app updater shows.
 - Settings takes the keyboard focus when it opens, and gives it back when it closes.
 - Scan history takes much less space: each scan saves only what changed since the one before.
 - Scanning a folder again is not saved as its own history point when a scan of the drive above it, made in the last day, already shows it.
+- Cleaners, Privacy: with "Show privacy cleaners" on, Sprawl can now clear the short lists Explorer keeps in your own account's registry: the Run box, paths typed in the address bar, the Explorer search box, the Open and Save dialogs' recent files and folders, and recent documents. Each list is one part you tick yourself, and the review shows how many entries it would remove (they free no disk space). Every value is copied to a backup in Sprawl's data folder before anything goes, the keys themselves stay, and after the clean-up "Put back" writes the removed values back (values written since stay). The backups are also listed in Settings > Cleaning, and the last ten are kept. Explorer keeps some of these lists in memory, so a change may only show after you sign out and back in.
 
 ## 1.0.7 — 2026-11-23
 

@@ -46,6 +46,7 @@ pub mod prevention;
 pub mod privacy;
 pub mod procs;
 pub mod projects;
+pub mod regclean;
 pub mod remedies;
 pub mod rules;
 pub mod safety;
@@ -336,23 +337,30 @@ pub struct Advice {
 /// a list of their own. With it off, nothing about them is read or computed.
 pub fn advise_report(tree: &Tree, packs: &[RulePack], facts: &facts::Facts, privacy_cleaners: bool) -> Advice {
     let places = if privacy_cleaners { privacy::Places::current() } else { None };
-    advise_report_in(tree, packs, facts, privacy_cleaners, places.as_ref(), std::env::var_os("USERPROFILE").as_deref().map(Path::new))
+    advise_report_in(tree, packs, facts, privacy_cleaners, places.as_ref(), std::env::var_os("USERPROFILE").as_deref().map(Path::new), "")
 }
 
-pub(crate) fn advise_report_in(tree: &Tree, packs: &[RulePack], facts: &facts::Facts, privacy_cleaners: bool, places: Option<&privacy::Places>, home: Option<&Path>) -> Advice {
+/// The registry root `advise_report_in` reads the fixed lists under: this account's HKCU in
+/// production; a test key, or one that isn't there, in the tests (which never read Explorer's
+/// own lists).
+pub(crate) fn advise_report_in(tree: &Tree, packs: &[RulePack], facts: &facts::Facts, privacy_cleaners: bool, places: Option<&privacy::Places>, home: Option<&Path>, reg_root: &str) -> Advice {
     let (findings, held) = advise_all(tree, packs, facts);
     let mut out = Advice { findings, held, ..Advice::default() };
     if !privacy_cleaners {
         return out;
     }
-    let Some(places) = places else { return out };
     let never = safety::Never::default_list();
-    for f in privacy::find_in(tree, places) {
-        match safety::check_in(&f, tree, &never, safety::CACHE_CARVE_OUTS, home, Some(places)) {
-            Ok(f) => out.privacy.push(f),
-            Err(r) => out.privacy_held.push((f, r)),
+    if let Some(places) = places {
+        for f in privacy::find_in(tree, places) {
+            match safety::check_in(&f, tree, &never, safety::CACHE_CARVE_OUTS, home, Some(places)) {
+                Ok(f) => out.privacy.push(f),
+                Err(r) => out.privacy_held.push((f, r)),
+            }
         }
     }
+    // the fixed registry lists: not files, so not checked against the tree; their own module
+    // decides what may be read, written and put back
+    out.privacy.extend(regclean::find_in(reg_root));
     out
 }
 

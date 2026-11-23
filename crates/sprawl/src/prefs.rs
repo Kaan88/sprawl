@@ -109,7 +109,7 @@ pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "
 /// The Options menu switches a setting stands for: read from and applied through the menu.
 pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
 
-pub static PREFS: [Pref; 61] = [
+pub static PREFS: [Pref; 62] = [
     // General
     p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons, for example D:\\Games; C:\\Work\\Private. New app, Search, Cleaners and MCP scans omit them. Fast MFT scans still work: skipped folders are left out as the tree is built. Cleanup actions covering a skipped folder are refused. Existing History and CSV imports remain unchanged; rescan to replace old results.", Kind::Text("D:\\Games; C:\\Work\\Private")),
     p("theme", Sec::Theme, "Light or dark", "Light or dark. Like Windows follows Settings > Personalisation > Colours. A change shows as soon as you save.", Kind::Choice(&crate::theme::CHOICES, 0)),
@@ -211,9 +211,10 @@ pub static PREFS: [Pref; 61] = [
         "privacyCleaners",
         Sec::Cleaning,
         "Show privacy cleaners",
-        "Adds a Privacy group to Cleaners: cookies and history of this account's browsers, by profile. They free almost no space, and each is ticked on its own. Off, Sprawl doesn't look at them.",
+        "Adds a Privacy group to Cleaners: cookies and history of this account's browsers, by profile, and the short lists Explorer keeps in this account's own registry. They free almost no space, and each is ticked on its own. Off, Sprawl doesn't look at them.",
         Kind::Switch(false),
     ),
+    p("registryBackups", Sec::Cleaning, "Registry backups", "The backups Sprawl wrote before clearing Explorer's registry lists in Cleaners. Put back writes the removed values back; values written since stay. The last ten are kept, in %LOCALAPPDATA%\\Sprawl\\registry-backups.", Kind::Custom),
     p("neverTouch", Sec::Cleaning, "Never touch", "Folders and files you chose to keep: Sprawl never offers them and a clean-up leaves them. Add one, or take one off the list.", Kind::Custom),
     p("clUsualTicks", Sec::Cleaning, "Open Cleaners with my usual ticks", "Cleaners opens with the parts you ticked last time. Sprawl never ticks anything for you.", Kind::Switch(true)),
     p("tuneCommunityDays", Sec::Cleaning, "Community cleaners: fetch every", "When fetching is on (Network).", Kind::Number(&tuning::COMMUNITY_DAYS, "days")),

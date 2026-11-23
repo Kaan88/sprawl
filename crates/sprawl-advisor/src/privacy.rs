@@ -896,12 +896,12 @@ pub(crate) mod tests {
         let off = crate::advise_report(&tree, &packs, &facts, false);
         assert!(off.privacy.is_empty() && off.privacy_held.is_empty());
         assert!(off.findings.iter().chain(off.held.iter().map(|(f, _)| f)).all(|f| !f.privacy()));
-        let off_in = crate::advise_report_in(&tree, &packs, &facts, false, Some(&places), Some(&base));
+        let off_in = crate::advise_report_in(&tree, &packs, &facts, false, Some(&places), Some(&base), r"Software\SprawlTest-advise-off");
         assert!(off_in.privacy.is_empty() && off_in.privacy_held.is_empty(), "off, even with the profiles in the scan");
         assert!(crate::cleaners::catalogue_with(&packs, false).iter().all(|d| d.parts.iter().all(|p| p.class == Class::Space) && !d.id.starts_with("privacy.")));
         assert!(crate::cleaners::catalogue(&packs).iter().all(|d| d.parts.iter().all(|p| p.class == Class::Space)));
         // on
-        let on = crate::advise_report_in(&tree, &packs, &facts, true, Some(&places), Some(&base));
+        let on = crate::advise_report_in(&tree, &packs, &facts, true, Some(&places), Some(&base), r"Software\SprawlTest-advise-on");
         assert_eq!(on.privacy.len(), 6, "{:?}", on.privacy_held.iter().map(|(f, r)| format!("{}: {r}", f.title)).collect::<Vec<_>>());
         assert!(on.findings.iter().all(|f| !f.privacy()), "never among what frees space");
         assert_eq!(on.findings.len(), off_in.findings.len());

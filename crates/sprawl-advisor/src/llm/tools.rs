@@ -509,9 +509,9 @@ impl<'a> Tools<'a> {
                 let parts: Vec<String> = input["parts"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(200).collect()).unwrap_or_default();
                 // a privacy part is ticked by the user alone, never on a suggestion
                 let all = parts.len();
-                let parts: Vec<String> = parts.into_iter().filter(|s| !crate::privacy::is_privacy_id(s) && !s.to_lowercase().starts_with("privacy.")).collect();
+                let parts: Vec<String> = parts.into_iter().filter(|s| !crate::rules::reserved_id(s) && !crate::privacy::is_privacy_id(s) && !crate::regclean::is_id(s)).collect();
                 if parts.is_empty() && all > 0 {
-                    return Err("privacy parts (cookies, history) are never suggested: only the user ticks them".into());
+                    return Err("privacy parts (cookies, history, the registry lists) are never suggested: only the user ticks them".into());
                 }
                 if parts.is_empty() {
                     return Err("give `parts`: ids from the cleaners list".into());

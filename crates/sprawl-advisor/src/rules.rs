@@ -224,6 +224,13 @@ pub struct RulePack {
     pub trusted: bool,
 }
 
+/// Ids Sprawl keeps for itself: the privacy cleaners built into it, and the registry privacy
+/// parts ([`crate::regclean`]) that write the registry. No pack, import or model may use them.
+pub fn reserved_id(id: &str) -> bool {
+    let low = id.to_lowercase();
+    low.starts_with("privacy.") || low.starts_with("registry.")
+}
+
 impl RulePack {
     /// A pack with nothing in it.
     pub fn empty(name: &str) -> RulePack {
@@ -237,9 +244,9 @@ impl RulePack {
 
     pub fn parse(text: &str) -> Result<RulePack, String> {
         let mut p: RulePack = toml::from_str(text).map_err(|e| e.to_string())?;
-        // the privacy cleaners' ids are Sprawl's own (crate::privacy), in no pack
-        if let Some(id) = p.rules.iter().map(|r| &r.id).chain(p.cleaners.iter().map(|c| &c.id)).find(|id| id.to_lowercase().starts_with("privacy.")) {
-            return Err(format!("{id}: ids starting with privacy. are kept for the privacy cleaners built into Sprawl"));
+        // the privacy cleaners' and registry parts' ids are Sprawl's own, in no pack
+        if let Some(id) = p.rules.iter().map(|r| &r.id).chain(p.cleaners.iter().map(|c| &c.id)).find(|id| reserved_id(id)) {
+            return Err(format!("{id}: ids starting with privacy. or registry. are kept for the cleaners built into Sprawl"));
         }
         p.part_rules = crate::cleaners::expand(&p)?;
         let mut ids = std::collections::HashSet::new();
@@ -639,6 +646,19 @@ mod tests {
             }
         }
         assert!(acting > 20);
+    }
+
+    /// The registry privacy parts' prefix is Sprawl's, like the privacy cleaners': no rule pack
+    /// or cleaner may take an id starting with `registry.` (or `privacy.`).
+    #[test]
+    fn privacy_and_registry_ids_are_reserved() {
+        let rule = |id: &str| format!("[pack]\nname = 'x'\n[[rule]]\nid = '{id}'\ntitle = 'T'\nwhy = 'w'\nrisk = 'green'\nremedy = 'delete'\npaths = ['C:\\\\a\\\\b']\n");
+        let cleaner = |id: &str| format!("[pack]\nname = 'x'\n[[cleaner]]\nid = '{id}'\nname = 'X'\ngroup = 'Other'\n[[cleaner.part]]\nid = 'cache'\ntitle = 'Cache'\nrisk = 'green'\npaths = ['C:\\\\a\\\\b']\nwhy = 'w'\n");
+        for id in ["registry.explorer", "Registry.Explorer", "registry.x", "privacy.chrome"] {
+            assert!(RulePack::parse(&rule(id)).is_err(), "rule {id}");
+            assert!(RulePack::parse(&cleaner(id)).is_err(), "cleaner {id}");
+        }
+        assert!(RulePack::parse(&rule("local.registry")).is_ok(), "only the start counts");
     }
 
     #[test]

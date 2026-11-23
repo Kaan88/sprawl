@@ -37,6 +37,13 @@ pub fn action(f: &Finding) -> Option<(Action, bool)> {
             return None;
         }
     }
+    // a registry part: only as regclean made it, for one of its fixed parts
+    if let Action::Reg { part } = &a {
+        let own = matches!(&f.source, crate::finding::Source::Rule(id) if id == part);
+        if !(own && f.trusted && f.builtin && f.command.is_none() && crate::regclean::is_id(part)) {
+            return None;
+        }
+    }
     if let Action::Match { pattern } = &a {
         if pattern.is_empty() || pattern.contains(['\\', '/']) {
             return None;
@@ -63,6 +70,8 @@ pub fn script(path: &Path, action: &Action, admin: bool) -> String {
         Action::Tool { command } => command.clone(),
         // never run from a script: the browser must be closed, checked by Sprawl
         Action::Set { .. } => "# Not in a script: privacy parts are cleaned only inside Sprawl, with the browser closed.".to_string(),
+        // never run from a script: the values are backed up first, and put back by Sprawl
+        Action::Reg { .. } => "# Not in a script: registry parts are cleaned only inside Sprawl, with a backup written first.".to_string(),
         // never run from a script: each copy is compared again just before
         Action::Link { .. } => "# Not in a script: copies are linked only inside Sprawl, after comparing them again.".to_string(),
     };
@@ -158,6 +167,8 @@ pub struct Outcome {
     /// A compress: what it did, file by file (what it saved is `before - after`, measured on
     /// the files themselves).
     pub compress: Option<sprawl_core::wof::Done>,
+    /// A registry part's values removed, with the backup they can be put back from.
+    pub registry: Option<crate::regclean::Done>,
 }
 
 /// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
@@ -324,6 +335,24 @@ pub fn run(path: &Path, action: &Action, spare: &Spare, stop: &AtomicBool, progr
 /// it is never deleted instead. `progress` gets the bytes freed and sent to the bin so far.
 pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result<crate::recycle::Bin, String>>, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
     let mut o = Outcome::default();
+    // A registry part: no file is touched. The fixed keys are read again now, every value is
+    // backed up, and only then are the values removed; the backup's reason comes back as a
+    // problem, with nothing removed when it couldn't be written.
+    if let Action::Reg { part } = action {
+        if !crate::regclean::is_id(part) {
+            o.problem(path, "left alone: not a registry part Sprawl knows");
+            return o;
+        }
+        let (reg, problems) = crate::regclean::remove(part);
+        for p in problems {
+            o.problem(path, p);
+        }
+        o.registry = reg;
+        if stop.load(Ordering::Relaxed) {
+            o.stopped = true;
+        }
+        return o;
+    }
     // Network shares and mapped network drives are scanned read only: no action of any kind
     // (a tool command, a privacy set, hard links, a delete) runs on one, whatever offered it.
     // A tool also names its targets inside the command (compact on a folder, a disk image to
@@ -634,7 +663,7 @@ pub fn preview(path: &Path, action: &Action, spare: &Spare, keep: usize) -> Opti
     }
     let cut = match action {
         Action::Clear { days } if *days > 0 => Some(SystemTime::now().checked_sub(Duration::from_secs(*days as u64 * 86_400)).unwrap_or(SystemTime::UNIX_EPOCH)),
-        Action::Tool { .. } | Action::Link { .. } => return None,
+        Action::Tool { .. } | Action::Link { .. } | Action::Reg { .. } => return None,
         _ => None,
     };
     let pattern = match action {
