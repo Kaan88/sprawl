@@ -724,13 +724,13 @@ impl State {
         let mut x = String::from(r##"<Border Margin="34,0,0,4" Padding="12,8" CornerRadius="{$rc7}" Background="{$surface1}"><StackPanel Spacing="2">"##);
         x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(&p.why));
         for &i in &p.findings {
-            x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
+            x += &format!(r##"<TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" Foreground="{{$text3}}" IsTextSelectionEnabled="True" TextTrimming="CharacterEllipsis"/>"##, ui::esc(&r.findings[i].path.display().to_string()));
         }
         x += &format!(r##"<TextBlock Text="{} files, the biggest:" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,4,0,0"/>"##, crate::format::thousands(count));
         for &k in files.iter().take(12) {
             let name = t.nodes[k].name.clone();
             x += &format!(
-                r##"<Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" HorizontalAlignment="Right" Foreground="{{$text2}}"/></Grid>"##,
+                r##"<Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" FontFamily="Consolas" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" HorizontalAlignment="Right" Foreground="{{$text2}}"/></Grid>"##,
                 ui::esc(&name),
                 self.size(t.nodes[k].size)
             );
@@ -1383,7 +1383,7 @@ impl State {
                 r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{tick}<Border Grid.Column="1" CornerRadius="{{$rc7}}" Background="{bg}"/><Button x:Name="AdvClO{ci}" Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="10,6" CornerRadius="{{$rc7}}" BorderThickness="0" Background="Transparent" AutomationProperties.Name="{name}">
 <Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
 <FontIcon Glyph="{chev}" FontSize="{{$fs10}}" Foreground="{{$text3}}" VerticalAlignment="Center"/>
-<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
+<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{name}" ToolTipService.ToolTip="{name}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" ToolTipService.ToolTip="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/></StackPanel>
 <TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" HorizontalAlignment="Right" VerticalAlignment="Center" Opacity="{op}"/>
 </Grid></Button>{side}</Grid>"##,
                 bg = if open { crate::tokens::refer("rowopen") } else { crate::tokens::refer("surface2") },
@@ -1466,7 +1466,7 @@ impl State {
         let (true_bytes, counted) = self.part_true(r, p);
         format!(
             r##"<Grid ColumnSpacing="6" Opacity="{op}"><Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>{tick}<Button x:Name="AdvClP{n}" Grid.Column="1" {bg} HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="8,4" CornerRadius="{{$rc6}}" AutomationProperties.Name="{title}: details">
-<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{dot}<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{dot}<StackPanel Grid.Column="1" Spacing="1"><TextBlock Text="{title}" ToolTipService.ToolTip="{title}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{sub}" ToolTipService.ToolTip="{sub}" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextTrimming="CharacterEllipsis"/>{cost}</StackPanel><TextBlock Grid.Column="2" Text="{size}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid></Button>{sug}</Grid>"##,
             op = if bytes > 0 { "1" } else { "0.55" },
             bg = crate::look::pick(crate::look::Pick::Tab, sel),
             dot = if p.info { crate::advisor::tip_mark(8, r#"VerticalAlignment="Top" Margin="0,6,0,0""#) } else { crate::advisor::risk_mark(p.risk, 8, r#"VerticalAlignment="Top" Margin="0,6,0,0""#) },
@@ -1677,7 +1677,7 @@ impl State {
                         None => "its program decides".into(),
                     };
                     x += &format!(
-                        r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></Grid>"##,
+                        r##"<Grid ColumnSpacing="8" Margin="0,2,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></Grid>"##,
                         ui::esc(&it.title),
                         ui::esc(&what)
                     );
@@ -1861,7 +1861,7 @@ impl State {
             };
             let n = c.parts.iter().filter(|p| p.findings.iter().any(|i| mine.contains(i))).count();
             x += &format!(
-                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center"><TextBlock Text="{}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid>"##,
+                r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{}<StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center"><TextBlock Text="{}" ToolTipService.ToolTip="{1}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text3}}"/></StackPanel><TextBlock Grid.Column="2" Text="{}" FontSize="{{$fs13}}" VerticalAlignment="Center"/></Grid>"##,
                 match state {
                     Some(s) => format!(
                         r##"<CheckBox x:Name="AdvClA{ci}" MinWidth="0" Padding="0" VerticalAlignment="Center" IsChecked="{s}" IsEnabled="{}" AutomationProperties.Name="Clean up {}" ToolTipService.ToolTip="Ticks its caches and logs. Privacy parts are ticked one by one, in Cleaners."/>"##,
