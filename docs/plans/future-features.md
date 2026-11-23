@@ -351,7 +351,7 @@ DeepSeek Flash, reviewed by Opus, merges d1267d9, c9294b0, ffb4e10).
   takes `da:`. Read per path on local fixed NTFS drives only, never for a client that may only see the
   scan; what the reading limit leaves unread is said.
 
-**Open: Fable's two findings on the Search delete path** (2026-11-23, quick review of 782229e..b01bdb0;
+**Fixed 2026-11-24 (sonnet/searchui, merge 78af62c; full Fable review still queued): Fable's two findings on the Search delete path** (2026-11-23, quick review of 782229e..b01bdb0;
 shipped as is on the user's word, nothing deletes unannounced since the dialog names every item).
 
 - Low, older, now reachable from the row menu: picks can outlive their rows. Other drives give more
@@ -369,7 +369,7 @@ shipped as is on the user's word, nothing deletes unannounced since the dialog n
 - Still to do: the full Fable review of this release (all three changes, not only the delete path);
   entry in .claude/fable-review-queue.md.
 
-**Requested later (2026-11-23): Search, folders first when sorted by name.** Sorting Search results
+**Done 2026-11-24 (merge 78af62c): Search, folders first when sorted by name.** Sorting Search results
 by Name should put folders before files (both ways round, as Everything does: folders A-Z then files
 A-Z, and reversed within each group). Name sorting runs in more than one place, and each needs it:
 the scan's results (search.rs ~482), the other drives' and saved scans' rows (search_more.rs
@@ -386,6 +386,15 @@ depth:, folder:/file:, compressed:, match highlighting, filter chips (Kind, Type
 Where, More), saved and recent searches, keyword suggestions, Enter / Ctrl+Enter, and the picks menu.
 The audit decision stands: powerful search, not a second Everything (no background service, no
 always-live index). In order of value for a disk tool:
+
+Shipped 2026-11-24 on sonnet/searchui (merge 78af62c): item 1 (folders first), item 2 (the
+whole list is sorted before the cap; the status says "showing the first N of M"), item 10 (F2
+renames one result, Ctrl+C copies the picks as files; drag out skipped: Sprawl runs elevated and
+Windows blocks drag from an elevated window to Explorer; Ctrl+Shift+C kept as it was), item 11
+(right-click the header to choose columns). Still open: item 7 (`dr:`, needs a cached `Facts` in
+Search), Created and Accessed columns, a "duplicates together" sort using `group_key`, and dc:/da:
+on other drives (now refused there, said plainly). Not yet seen on screen by Opus: the column menu
+and the rename card.
 
 Shipped on flash/query (items 3 to 9 but 7): `dc:` (created) and `da:` (last opened) read per
 match, `parent:`, `child:`, `childcount:`, `childfilecount:`, `dupe:`, `sizedupe:`, `attrib:`,
