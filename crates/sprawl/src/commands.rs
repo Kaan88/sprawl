@@ -1061,7 +1061,7 @@ impl State {
             if more {
                 let _ = tx.send(DelMsg::Touched(touched));
             }
-            let _ = tx.send(DelMsg::Done(results, notes));
+            let _ = tx.send(DelMsg::Done(results, notes, Vec::new()));
         });
     }
 
@@ -1089,7 +1089,7 @@ impl State {
                     self.delete_card(Some(bytes));
                 }
                 DelMsg::Touched(paths) => self.more_forget_deleted(&paths),
-                DelMsg::Done(results, notes) => {
+                DelMsg::Done(results, notes, damaged) => {
                     finished = true;
                     self.delete_card(None);
                     self.advisor.deleting = None;
@@ -1097,7 +1097,16 @@ impl State {
                     if self.advisor.close_after_delete { return self.exit_now(); }
                     crate::state::text(&self.root, "FootLeft", "");
                     self.apply_rescans(results);
-                    if !notes.is_empty() {
+                    // files that took some of the overwrite are the first thing to say, and the
+                    // list is never cut: each one is a file the user must know about
+                    if !damaged.is_empty() {
+                        let mut body = damaged.join("\n");
+                        if !notes.is_empty() {
+                            body.push_str("\n\nLeft as they were:\n");
+                            body.push_str(&notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
+                        }
+                        self.tell("Some files were damaged", &body);
+                    } else if !notes.is_empty() {
                         self.tell("Some items were left alone", &notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
                     }
                 }
@@ -1180,7 +1189,7 @@ pub(crate) enum DelMsg {
     /// A Delete of Search rows from other drives or saved scans (there is no scan tree to read
     /// the paths back into): the paths it went through, to see which are gone.
     Touched(Vec<PathBuf>),
-    Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>),
+    Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>, Vec<String>),
 }
 
 /// Why `path` may not be deleted whatever it is: inside a folder skipped in Settings >
