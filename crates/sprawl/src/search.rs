@@ -959,23 +959,34 @@ impl State {
 
     /// "Use as filter": the words go to the filter box (which narrows the whole analysis).
     pub(crate) fn search_to_filter(&mut self) {
-        let q = Query::parse(&self.search.query);
-        let words: Vec<&str> = self.search.query.split_whitespace().filter(|w| !w.starts_with(['>', '<', '!']) && !w.contains(':')).collect();
-        if words.is_empty() || q.kind == Kind::Folders {
-            text(&self.root, "SearchInfo", "Only names and patterns can become a filter (not sizes, ! or folder:).");
-            return;
-        }
-        // a search's space means "and", which a filter can't say
-        if words.len() > 1 {
-            text(&self.root, "SearchInfo", "A filter takes one pattern (or a|b); it can't say \"this and that\".");
-            return;
-        }
-        let f = words[0].to_string();
+        let f = match filter_word(&self.search.query) {
+            Ok(f) => f,
+            Err(why) => {
+                text(&self.root, "SearchInfo", why);
+                return;
+            }
+        };
         if let Ok(b) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::TextBox>(&self.root, "FilterBox") {
             let _ = b.SetText(&f.into());
         }
         self.set_view(View::Files);
     }
+}
+
+/// The word "Use as filter" would put in the filter box, or what the Search line says instead.
+fn filter_word(query: &str) -> Result<String, &'static str> {
+    let q = Query::parse(query);
+    // a group is not one pattern: its `<` and `>` would become letters of a filter meant
+    // something else, and half of it would be sent
+    let words: Vec<&str> = query.split_whitespace().filter(|w| !w.starts_with(['>', '<', '!']) && !w.contains(':')).collect();
+    if words.is_empty() || q.kind == Kind::Folders || Query::has_group(query) {
+        return Err("Only names and patterns can become a filter (not sizes, ! or folder:).");
+    }
+    // a search's space means "and", which a filter can't say
+    if words.len() > 1 {
+        return Err("A filter takes one pattern (or a|b); it can't say \"this and that\".");
+    }
+    Ok(words[0].to_string())
 }
 
 type Tap = ((usize, usize), std::time::Instant, bool);
@@ -986,6 +997,27 @@ fn second_tap(last: Option<Tap>, row: (usize, usize), now: std::time::Instant, w
     let taken = recent.is_some_and(|(_, _, taken)| taken);
     let double = if gesture { !taken } else { recent.is_some() && !taken };
     (double, (row, now, double || (gesture && taken)))
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::filter_word;
+
+    #[test]
+    fn a_group_is_not_a_filter() {
+        // the group's halves must not be cut into a pattern
+        assert!(filter_word("<report 2024>|draft").is_err());
+        assert!(filter_word("<a <b c> d>|e").is_err());
+        // a pattern on its own still goes
+        assert_eq!(filter_word("*.iso").unwrap(), "*.iso");
+        assert_eq!(filter_word("*.log|*.tmp").unwrap(), "*.log|*.tmp");
+        // a bare size is still a size, not a group
+        assert!(filter_word(">1gb").is_err());
+        assert!(filter_word("<10mb").is_err());
+        assert!(filter_word("report 2024").is_err());
+        assert!(filter_word("folder:cache").is_err());
+        assert!(filter_word("").is_err());
+    }
 }
 
 #[cfg(test)]

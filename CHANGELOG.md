@@ -13,6 +13,13 @@ in-app updater shows.
 - Search: F2 renames the picked result (one at a time). The new name is checked first: nothing Windows doesn't allow, never onto a name that is already there, and a file keeps its extension unless you type a new one. Protected places and results from saved scans are refused, and Windows' own message is shown if it says no.
 - Search: Ctrl+C copies the picked results as files, so Paste in Explorer copies them.
 - Search: right-click the list's header to choose which columns to show (Size, Allocated, Modified, Folder; Name always stays). Your choice is remembered.
+- Search: `attrib:h`, `attrib:s`, `attrib:r` and `attrib:l` now work on the scan on screen as they did on other drives, so `!attrib:h` no longer lists hidden files.
+- Search: `childcount:0` and `childfilecount:0` list empty folders, not every file.
+- Search: `dupe:` and `sizedupe:` say so instead of quietly changing the whole search when written as `!dupe:`, inside `<...>`, in `child:` or in `a|b`.
+- Search: a half-typed size like `<10mb >` stays a size instead of becoming a group, and a deeply nested query or a pasted address list no longer freezes the window.
+- Search: `exact:` and `case:` skip `dc:`/`da:` words (they stopped being dates), a quoted `"audio:"` is plain text, and `ext:jpg|audio:` keeps both lists.
+- Search: the type examples in the help and the empty state are on two lines, so none is cut off.
+- Search: "Use as filter" says it can't take a group instead of sending half of `<report 2024>|draft` to the filter box.
 
 ## 1.0.8 — 2026-11-23
 - Search can find what was created, not only what was changed: `dc:` takes the same dates as `dm:` (`dc:2026`, `dc:2026-01-15`, `dc:>2026-01-01`, `dc:2026-01..2026-03`, `dc:lastweek`). A scan doesn't keep creation times, so they are read for the matches the rest of the search leaves; that needs another word to narrow it, only local fixed disks are read, and what the reading limit left out is said in the status line instead of being passed off as "no match".
