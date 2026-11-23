@@ -277,14 +277,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.bin"), vec![0u8; 300]).unwrap();
+        std::fs::write(dir.join("tool.exe"), vec![0u8; 300]).unwrap();
         let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
-        let facts = Facts::from_apps(Vec::new());
+        let mut facts = Facts::from_apps(Vec::new());
         let n = tree.nodes[ROOT].children[0];
         let when = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600);
         let opened = format!("last opened {}", month_year(when));
         assert!(node_line_at(&tree, &facts, n, Some((when, true))).contains(&opened));
         assert!(node_line_at(&tree, &facts, n, Some((when, false))).contains("(part of it read)"));
         assert!(!node_line(&tree, &facts, n).contains("last opened"), "the report reads nothing");
+        // a last run names the program and says it is by name, not this copy's own date
+        facts.set_run("tool.exe", when);
+        let exe = tree.nodes[ROOT].children.iter().copied().find(|&c| tree.nodes[c].name == "tool.exe").unwrap();
+        let line = node_line(&tree, &facts, exe);
+        assert!(line.contains("a program named tool.exe last ran") && line.contains("by name, any folder"), "{line}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
