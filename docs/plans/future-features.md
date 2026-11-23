@@ -369,6 +369,16 @@ shipped as is on the user's word, nothing deletes unannounced since the dialog n
 - Still to do: the full Fable review of this release (all three changes, not only the delete path);
   entry in .claude/fable-review-queue.md.
 
+**Requested later (2026-11-23): Search, folders first when sorted by name.** Sorting Search results
+by Name should put folders before files (both ways round, as Everything does: folders A-Z then files
+A-Z, and reversed within each group). Name sorting runs in more than one place, and each needs it:
+the scan's results (search.rs ~482), the other drives' and saved scans' rows (search_more.rs
+`compact_val` / `scan_val`, `SortVal::Text`) and the compact index's own sort
+(`sprawl_core::compact`, `ix.sort(.., SortBy::Name, ..)`). Check first whether Tree View and File
+View already do folders first by name, and keep the Search picks and the 10-at-once limits as they
+are. Done when: a mixed result list sorted by Name shows every folder above every file, in either
+direction, on the scan on screen and on other drives, with a test for each sort path.
+
 ---
 
 ## Left out on purpose
