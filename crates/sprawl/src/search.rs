@@ -432,6 +432,10 @@ impl State {
         self.settings.set("searchColsHidden", v);
         self.settings.save();
         if self.view == View::Search {
+            // the folder paths take the width the shown columns leave
+            if let Some(w) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "TreeScroll").ok().and_then(|s| s.ViewportWidth().ok()).filter(|w| *w > 0.0) {
+                self.tables.folder_chars = crate::tables::folder_chars_in(w, &self.search_cols());
+            }
             self.refresh_rows();
         }
     }
@@ -717,7 +721,9 @@ impl State {
         let key = COLS[c.min(COLS.len() - 1)].key();
         let gen = self.tree_gen;
         let ranks = self.ranks_for(gen);
-        if let Some(t) = self.tree.clone() {
+        // results of an older tree hold indices that tree doesn't have: the search that is owed
+        // sorts by this column when it has run
+        if let Some(t) = self.tree.clone().filter(|_| self.search.results_gen == self.tree_gen) {
             if self.search.results.len() <= SORT_HERE {
                 let mut v = std::mem::take(&mut self.search.results);
                 crate::tables::sort_nodes(&t, &self.alloc, key, desc, &mut v, ranks.as_deref().map_or(&[], |r| &r[..]));
