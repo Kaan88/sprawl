@@ -235,6 +235,8 @@ impl State {
             }
         }
         let _slow = Slow(now);
+        // dev (SPRAWL_TIMING): where a long frame's time went (bench.rs)
+        let mut split = crate::bench::Split::new();
         if (now - self.map.last).as_millis() >= 50 {
             crate::state::timing("gap before frame", self.map.last);
         }
@@ -250,13 +252,19 @@ impl State {
             crate::shade::track_scale(&root);
             crate::shade::popups(&root);
         }
+        crate::bench::Split::at(&mut split, "shade");
         self.poll();
+        crate::bench::Split::at(&mut split, "poll");
         self.dialog_frame();
         self.wizard_frame();
         self.ranks_poll(false);
+        crate::bench::Split::at(&mut split, "dialog+ranks");
         self.busy_poll();
+        crate::bench::Split::at(&mut split, "busy_poll");
         self.welcome_frame();
+        crate::bench::Split::at(&mut split, "welcome");
         self.hud_frame(dt);
+        crate::bench::Split::at(&mut split, "hud");
         if self.filter_pending.is_some_and(|t| t.elapsed().as_millis() > 350) {
             self.apply_filter();
         }
@@ -334,10 +342,15 @@ impl State {
                 None => {}
             }
         }
+        crate::bench::Split::at(&mut split, "panel size");
         if self.map.dirty {
             self.relayout();
             self.map.drawn_once = false;
+            if crate::bench::on() {
+                crate::bench::line(&format!("bench map relayout: {} rects", self.map.scene.rect_count()));
+            }
         }
+        crate::bench::Split::at(&mut split, "map relayout");
         self.map.scene.selected = self.selected;
         self.map.scene.highlight_ext = self.ext_selected.as_deref().map(ext_key);
         let preview: Option<std::sync::Arc<Vec<u8>>> = self.cleaner_preview();
@@ -363,7 +376,9 @@ impl State {
             // nothing lit: no darkened map
             .filter(|(l, _)| l.iter().any(|&c| c > 0))
         };
+        crate::bench::Split::at(&mut split, "map lens");
         self.update_map_key();
+        crate::bench::Split::at(&mut split, "map key");
         // A selected folder lights up its whole block on the map.
         if self.map.live.is_none() {
             if let Some(t) = &self.tree {
@@ -371,8 +386,10 @@ impl State {
                 self.map.scene.set_hover_folder(t, folder);
             }
         }
+        crate::bench::Split::at(&mut split, "hover folder");
         self.drain_changes();
         self.hist_tick();
+        crate::bench::Split::at(&mut split, "changes+history");
         let galaxy = self.galaxy_on();
         let views = self.views_on();
         let busy = if views {
@@ -387,6 +404,7 @@ impl State {
         } else {
             self.map.scene.update(dt)
         };
+        crate::bench::Split::at(&mut split, if busy { "map animate (moving)" } else { "map animate (settled)" });
         let want_capture = self.map.capture.is_some();
         if busy || !self.map.drawn_once || want_capture {
             if let Some(g) = &self.map.gpu {
@@ -405,6 +423,7 @@ impl State {
                 }
                 if ready || want_capture || overdue {
                     let labels = if self.map.show_labels && !views { self.map_labels(galaxy) } else { Vec::new() };
+                    crate::bench::Split::at(&mut split, "map labels");
                     let m = &mut self.map;
                     let (vp, eye) = if views { (m.views.vp, m.views.eye) } else if galaxy { (m.galaxy.vp, m.galaxy.eye) } else { (m.scene.vp, m.scene.eye) };
                     let flat = views && !m.views.kind.is_some_and(|k| k.is_3d());
@@ -446,8 +465,12 @@ impl State {
                     if let Err(e) = g.render(&frame) {
                         eprintln!("render: {e}");
                         lost = g.lost();
+                    } else if crate::bench::on() {
+                        static FIRST: std::sync::Once = std::sync::Once::new();
+                        FIRST.call_once(|| crate::bench::mark("map first presented"));
                     }
                     m.drawn_once = !lost;
+                    crate::bench::Split::at(&mut split, "map draw (GPU)");
                     if let Some(path) = m.capture.take() {
                         let msg = match g.captured.take() {
                             Some((cw, ch, mut px)) => {
@@ -472,7 +495,9 @@ impl State {
                 }
             }
         }
+        crate::bench::Split::at(&mut split, "map draw wait");
         self.shot_tick();
+        crate::bench::Split::at(&mut split, "dev step");
     }
 
     fn map_labels(&self, galaxy: bool) -> Vec<crate::gpu::Label> {

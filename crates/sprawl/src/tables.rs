@@ -336,6 +336,16 @@ pub(crate) fn pct_bar(col: usize, pct: f64) -> String {
 impl State {
     // ------------------------------------------------------------ sorting
 
+    /// dev: the middle of the main table's column `k` at this width (the benchmark's sort step).
+    pub(crate) fn main_col_middle(&self, k: usize, width: f64) -> f64 {
+        let cols = self.main_cols().0;
+        let fixed: f64 = cols.iter().filter(|c| c.width > 0.0).map(|c| c.width).sum();
+        let stars: f64 = cols.iter().filter(|c| c.width < 0.0).map(|c| -c.width).sum();
+        let per_star = ((width - fixed) / stars.max(1.0)).max(0.0);
+        let w = |c: &Col| if c.width > 0.0 { c.width } else { -c.width * per_star };
+        cols.iter().take(k).map(w).sum::<f64>() + cols.get(k).map_or(0.0, |c| w(c) / 2.0)
+    }
+
     fn main_cols(&self) -> (&'static [Col], (usize, bool)) {
         if self.view == View::Files {
             (FILES, self.tables.files_sort)

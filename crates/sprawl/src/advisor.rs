@@ -960,7 +960,10 @@ impl State {
             self.advisor.note = Some("Scan a drive or folder, and the advisor shows what can be won back.");
             return self.advisor_changed();
         };
-        if t.method == sprawl_core::ScanMethod::Csv {
+        // dev: the benchmark's large synthetic CSV is checked as a scan would be (its paths are
+        // made up, on a drive that isn't there: nothing on disk is touched), to time the Advisor
+        let bench = self.shot.is_some() && std::env::var_os("SPRAWL_BENCH").is_some();
+        if t.method == sprawl_core::ScanMethod::Csv && !bench {
             self.advisor.note = Some("This view came from a CSV file, which may not match the disk. Scan the folder to get advice.");
             return self.advisor_changed();
         }
@@ -1124,6 +1127,7 @@ impl State {
                         r.growth = g.clone();
                     }
                     self.advisor.report = Some(r);
+                    crate::bench::note("advisor report ready");
                     // a check owed for changed rules is settled by this one, if it saw them all
                     if let Some(b) = self.advisor.check_began.take() {
                         if self.advisor.memory.check_finished(b) {

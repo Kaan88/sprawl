@@ -893,6 +893,7 @@ impl State {
     /// The drive toggles beside the chips, and the strip under the results: what is included,
     /// when each drive was read (with Refresh), what is being read or failed, and what is not.
     pub(crate) fn render_more(&mut self) {
+        crate::bench::note("search drives panel drawn");
         self.render_drive_toggles();
         let Ok(host) = find::<Border>(&self.root, "SearchMore") else { return };
         let cur = self.current_root();

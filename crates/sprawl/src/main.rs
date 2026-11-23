@@ -10,6 +10,7 @@
 #[allow(dead_code, unused_imports, non_snake_case, non_camel_case_types, non_upper_case_globals, clippy::all)]
 mod bindings;
 mod advisor;
+mod bench;
 mod ask;
 mod bridge;
 mod app;
@@ -166,6 +167,7 @@ fn remove_per_user_copy() {
 }
 
 pub(crate) fn launch() -> windows_core::Result<()> {
+    bench::mark("launch entered (OnLaunched)");
     let a = args();
     // The helper: remove the per-user copy as the user, then end, with no window. Only from the
     // copy in Program Files, and only without administrator rights (the per-user uninstaller is
@@ -238,16 +240,27 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     if a.shot.is_none() && (settings.bool("alertLow") == Some(true) || settings.bool("alertGrowth") == Some(true)) {
         std::thread::spawn(|| alert::schedule(true));
     }
+    bench::mark("launch: settings read");
     let drives = win32::drives();
     let labels: Vec<String> = drives.iter().map(|d| format!("[{}] {}", d.root.trim_end_matches('\\'), d.label)).collect();
+    bench::mark("launch: drives listed");
 
     let window = Window::new()?;
-    let root: FrameworkElement = load(&ui::page(&labels))?;
+    bench::mark("window created");
+    let page = ui::page(&labels);
+    bench::mark("page XAML written");
+    let root: FrameworkElement = load(&page)?;
+    bench::mark("page XAML loaded (first XAML load done)");
+    bench::watch_root(&root);
     window.SetContent(&root.cast::<UIElement>()?)?;
+    bench::mark("window: content set");
     window.SetTitle(&HSTRING::from("Sprawl"))?;
     look::apply_backdrop(&window);
+    bench::mark("window: backdrop set");
     window.SetExtendsContentIntoTitleBar(true)?;
+    bench::mark("window: content extended into the title bar");
     window.SetTitleBar(&find::<UIElement>(&root, "TitleBar")?)?;
+    bench::mark("window: title bar set");
     // dev: SPRAWL_SIZE=1280x800 sets the window's size for a screenshot
     let (w, h) = std::env::var("SPRAWL_SIZE").ok().filter(|_| a.shot.is_some()).and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))).unwrap_or((1680, 1080));
     window.AppWindow()?.Resize(SizeInt32 { Width: w, Height: h })?;
@@ -257,8 +270,10 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         let theme = if crate::theme::light() { TitleBarTheme::Light } else { TitleBarTheme::Dark };
         let _ = window.AppWindow().and_then(|a| a.TitleBar()).and_then(|t| t.SetPreferredTheme(theme));
     }
+    bench::mark("window: sized and themed");
     let hwnd = app::hwnd_of(&window)?;
     win32::set_app_icon(hwnd);
+    bench::mark("window: icon set");
 
     // closing mid clean-up asks first (what is gone stays gone; the rest is left as it was)
     // (Sprawl's own box doesn't block: the close is called off, and "Close anyway" exits)
@@ -289,11 +304,14 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     } else {
         window.Activate()?;
     }
+    bench::mark("window shown");
 
     let panel = bind(&root)?;
+    bench::mark("page bound (bind)");
 
     // Everything that moves (scan polling, the overlay, the treemap) runs once per frame.
     keep(CompositionTarget::Rendering(|_, _| {
+        crate::bench::frame_begin();
         // a menu that has just opened plays its opening before it is drawn (popups.rs)
         crate::popups::watch();
         // the menus: the bar's titles, the pointer moving over them, a menu's first item (menu.rs)
@@ -303,6 +321,9 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         // sub-menu after the pointer rested, a step of a screenshot run): caught before the
         // frame is laid out and drawn, invisible and with its shadow from its first frame
         crate::popups::settle();
+        if crate::bench::on() {
+            crate::bench::frame_end(with(|s| s.view == View::Search).unwrap_or(false));
+        }
     })?);
 
     let shot = a.shot.clone();
@@ -397,12 +418,17 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
         if a.folders.len() > 1 {
             s.start(state::Source::Folders(a.folders.clone()));
+        } else if let Some(f) = first.clone().filter(|f| s.shot.is_some() && f.is_file() && f.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"))) {
+            // dev: a screenshot run given a .csv opens it as File > Open CSV would (the benchmark's
+            // large synthetic scan, tools/bench.ps1)
+            s.start(state::Source::Csv(f));
         } else if let Some(f) = first {
             s.start_scan(f);
         } else if let Some(c) = s.drives.first().cloned() {
             s.update_header(std::path::Path::new(&c));
         }
     });
+    bench::mark("launch done (state made, start tab opened)");
     Ok(())
 }
 
@@ -703,6 +729,7 @@ fn main() {
         sprawl_install::setup::uninstall(args.iter().any(|a| a == "/S"));
         return;
     }
+    bench::mark("main entered");
     if let Ok(exe) = std::env::current_exe() {
         sprawl_advisor::llm::set_mcp_exe(exe);
     }
@@ -725,7 +752,9 @@ fn main() {
         eprintln!("Could not load the Windows App Runtime 1.8 (error 0x{:08X}).", hr as u32);
         std::process::exit(1);
     }
+    bench::mark("Windows App Runtime loaded (bootstrap)");
     let result = Application::Start(&ApplicationInitializationCallback::new(|_| {
+        bench::mark("WinUI started (Application::Start callback)");
         let app = Application::compose(App { provider: OnceLock::new() })?;
         let mut stored = crate::settings::Settings::load();
         // ONE-TIME, 1.0.7 only (remove in the release after): a screenshot run doesn't save it

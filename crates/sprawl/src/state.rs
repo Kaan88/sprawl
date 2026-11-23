@@ -276,7 +276,13 @@ pub(crate) fn timing(what: &str, since: Instant) {
 /// string the app loads, `reconcile`'s one-attribute loads included; `reconcile` compares the
 /// strings as they are written and lets `set` resolve a token for a value it reads itself.
 pub(crate) fn load<T: Interface>(xaml: &str) -> windows_core::Result<T> {
+    // dev (SPRAWL_TIMING): each parse's cost, for the benchmark (bench.rs)
+    let t0 = crate::bench::on().then(Instant::now);
     let made = XamlReader::Load(&HSTRING::from(&*crate::popups::menus(&crate::tokens::expand(&crate::theme::themed(xaml)))))?;
+    if let Some(t0) = t0 {
+        let name = xaml.split("x:Name=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("?");
+        crate::bench::loaded(t0.elapsed().as_secs_f64() * 1000.0, xaml.len(), name);
+    }
     // the drop shadows it marks are hung on once it is laid out (shade.rs)
     if let Ok(el) = made.cast::<crate::bindings::Microsoft::UI::Xaml::UIElement>() {
         crate::shade::watch(&el);
@@ -401,11 +407,19 @@ impl State {
             self.wizard_all = false;
             self.wizard_open();
         }
+        let t = Instant::now();
         self.advisor_poll();
+        crate::bench::slow("poll: advisor_poll", t);
+        let t = Instant::now();
         self.cleanup_poll();
         self.update_poll();
+        crate::bench::slow("poll: cleanup+update", t);
+        let t = Instant::now();
         self.search_poll();
+        crate::bench::slow("poll: search_poll", t);
+        let t = Instant::now();
         self.filter_poll();
+        crate::bench::slow("poll: filter_poll", t);
         if self.wiz_models.poll() {
             self.wizard_models();
         }
@@ -479,6 +493,8 @@ impl State {
                         let (network, unknown) = crate::coverage::network_roots(&job.roots, &job.progress.roots());
                         self.coverage = Some(crate::coverage::Coverage { network, unknown, roots: job.roots.clone(), skips: job.skips.clone(), elevated: sprawl_core::is_elevated() });
                         let t = Instant::now();
+                        crate::bench::mark("scan result on the window's thread");
+                        crate::bench::scan_shown();
                         self.set_tree(prepared, &header);
                         timing("scan: set_tree", t);
                         self.map.scene.start_wave();
@@ -836,6 +852,11 @@ impl State {
         if self.tree.is_none() && std::env::var_os("SPRAWL_EMPTY").is_none() {
             return;
         }
+        // dev: SPRAWL_BENCH waits for a step's frames to be quiet before counting on to the next
+        // (bench.rs), so a slow step is measured whole at any refresh rate
+        if (crate::bench::measuring() || crate::bench::holding(self.advisor.running || self.advisor.report.is_none())) && std::env::var_os("SPRAWL_BENCH").is_some() {
+            return;
+        }
         self.shot_ticks += 1;
         // dev: SPRAWL_HISTORY=n opens the History panel at slider position n for the picture
         if self.shot_ticks == 1 {
@@ -860,8 +881,15 @@ impl State {
         if self.shot_ticks % 30 == 0 {
             if let Some(c) = std::env::var("SPRAWL_SWITCH").ok().and_then(|v| v.split(',').nth(self.shot_ticks as usize / 30 - 1).map(str::to_string)) {
                 let (w, h) = (self.map.scene.w as f64, self.map.scene.h as f64);
-                for k in 0..40 {
-                    self.map_hover(w * (0.3 + k as f64 * 0.01), h * 0.5, false, false);
+                // dev: SPRAWL_BENCH leaves the pointer out, so a step's time is its own (bench.rs)
+                let bench = std::env::var_os("SPRAWL_BENCH").is_some();
+                if !bench {
+                    for k in 0..40 {
+                        self.map_hover(w * (0.3 + k as f64 * 0.01), h * 0.5, false, false);
+                    }
+                }
+                if c != "wait" && c != "untiladvisor" {
+                    crate::bench::action_begin(&c);
                 }
                 match c.as_str() {
                     // dev: wheel-zoom in at the middle, or drag the view to the right
@@ -880,6 +908,8 @@ impl State {
                         self.render_advisor();
                     }
                     "wait" => {}
+                    // dev: the next steps wait until the Advisor's check is done (bench.rs)
+                    "untiladvisor" => crate::bench::hold_for_advisor(),
                     // dev: the window resized mid-run (size=2000x1100), as dragging its edge,
                     // maximising or restoring it would
                     s if s.starts_with("size=") => {
@@ -1006,6 +1036,13 @@ impl State {
                         let width = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "TreeScroll").ok().and_then(|s| s.ViewportWidth().ok()).unwrap_or(1200.0);
                         self.header_clicked(crate::tables::Which::Main, h[4..].parse().unwrap_or(0.0), width);
                     }
+                    // dev: a click on the middle of the main table's column k (hdrcol=2 is Size
+                    // in Tree View, 1 in File View)
+                    h if h.starts_with("hdrcol=") => {
+                        let width = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "TreeScroll").ok().and_then(|s| s.ViewportWidth().ok()).unwrap_or(1200.0);
+                        let x = self.main_col_middle(h[7..].parse().unwrap_or(0), width);
+                        self.header_clicked(crate::tables::Which::Main, x, width);
+                    }
                     // dev: type into the search box
                     q if q.starts_with("find=") => {
                         let t = q[5..].to_string();
@@ -1128,6 +1165,7 @@ impl State {
                     w if w.starts_with("PfSec") || w.starts_with("Wiz") => self.wizard_command(w),
                     _ => self.command(&c),
                 }
+                crate::bench::action_handled();
             }
         }
         // Let the finish wave and morphs play out first (about 3 s at 60 frames a second).
