@@ -1608,6 +1608,8 @@ pub(crate) mod win {
         pub created: i64,
         /// The latest of its write and change times (a rename or move counts), as a FILETIME.
         pub newest: i64,
+        /// Its last-write time alone (clearing a read-only mark moves the change time, not this).
+        pub written: i64,
         /// Which file it is on its volume (`nFileIndexHigh:Low`).
         pub id: u64,
         /// The volume's serial (FILE_ID_INFO), when Windows gives it.
@@ -1700,9 +1702,9 @@ pub(crate) mod win {
     }
 
     /// The same item, opened again for reading and writing its data (the checked handle's file
-    /// object, so the file can't be a different one). Shared for reading and deleting only, which
-    /// the checked handle's own access requires: no new writer or deleter can get in while this
-    /// is held, though a program that already had it open for writing could still write it. The
+    /// object, so the file can't be a different one). Its share mode is the narrowest the checked
+    /// handle's own access allows (read and delete): another program holding the file open for
+    /// writing makes this fail with a sharing violation, so such a file is left alone. The
     /// checked handle stays open throughout, and it is what keeps the name from being renamed or
     /// deleted. Taken after every check has passed.
     pub(crate) fn reopen_write(h: &Handle) -> std::io::Result<Handle> {
@@ -1742,7 +1744,9 @@ pub(crate) mod win {
     }
 
     /// The names of the file's named data streams, each as Windows writes it (":name:$DATA"),
-    /// the unnamed one (its ordinary content) left out. An empty list for a file with none.
+    /// the unnamed one (its ordinary content) left out. An empty list for a file with none, and
+    /// for a volume that has no named streams at all (FAT32, exFAT): those report the call as
+    /// unsupported rather than "no streams", which is not a problem to report.
     pub(crate) fn streams(p: &Path) -> std::io::Result<Vec<String>> {
         // WIN32_FIND_STREAM_DATA { LARGE_INTEGER StreamSize; WCHAR cStreamName[MAX_PATH + 36] }
         #[repr(C)]
@@ -1755,7 +1759,11 @@ pub(crate) mod win {
         // SAFETY: `data` is one WIN32_FIND_STREAM_DATA; level 0 is FindStreamInfoStandard.
         let find = unsafe { FindFirstStreamW(w.as_ptr(), 0, (&mut data as *mut Data).cast(), 0) };
         if find as isize == -1 {
-            return Err(std::io::Error::last_os_error());
+            let e = std::io::Error::last_os_error();
+            if no_named_streams(e.raw_os_error()) {
+                return Ok(Vec::new());
+            }
+            return Err(e);
         }
         let find = Handle(find);
         let mut names = Vec::new();
@@ -1781,6 +1789,13 @@ pub(crate) mod win {
         Ok(names)
     }
 
+    /// Whether a file-listing error means there are no named streams to list: exFAT and FAT32
+    /// answer `FindFirstStreamW` with "invalid parameter", "invalid function" or "not
+    /// supported", and a folder answers "end of file", rather than an empty list.
+    pub(crate) fn no_named_streams(code: Option<i32>) -> bool {
+        matches!(code, Some(1) | Some(38) | Some(50) | Some(87))
+    }
+
     /// The space the open file takes on the disk, in bytes (its allocated length; a sparse or
     /// compressed file's is less than its size). Its size when Windows can't tell.
     pub(crate) fn allocation(h: &Handle, size: u64) -> u64 {
@@ -1797,6 +1812,29 @@ pub(crate) mod win {
         } else {
             Err(std::io::Error::last_os_error())
         }
+    }
+
+    /// The open file's last-write time (a FILETIME). A change time moves when a read-only mark is
+    /// cleared; this doesn't, so it says whether the file itself was written.
+    pub(crate) fn written_time(h: &Handle) -> std::io::Result<i64> {
+        let mut basic = Basic { created: 0, accessed: 0, written: 0, changed: 0, attrs: 0 };
+        // SAFETY: one FILE_BASIC_INFO, class 0.
+        if unsafe { GetFileInformationByHandleEx(h.0, 0, (&mut basic as *mut Basic).cast(), std::mem::size_of::<Basic>() as u32) } != 0 {
+            Ok(basic.written)
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Whether the open file's data is kept behind an external backing provider: a Windows
+    /// (WOF) compressed or sparse file. An ordinary open does not show its reparse point, so
+    /// this call is how it is told apart from a plain file.
+    pub(crate) fn wof_backed(h: &Handle) -> bool {
+        const FSCTL_GET_EXTERNAL_BACKING: u32 = 0x0009_00EC;
+        let mut out = [0u8; 64];
+        let mut got = 0u32;
+        // SAFETY: no input; a fixed output buffer, whose size is given.
+        (unsafe { DeviceIoControl(h.0, FSCTL_GET_EXTERNAL_BACKING, std::ptr::null(), 0, out.as_mut_ptr().cast(), out.len() as u32, &mut got, std::ptr::null_mut()) }) != 0
     }
 
     /// The parts of the open file's data that are on the disk, as (offset, length) within its
@@ -1985,9 +2023,11 @@ pub(crate) mod win {
         }
         let ft = |t: [u32; 2]| ((t[1] as u64) << 32 | t[0] as u64) as i64;
         let (mut created, mut newest) = (ft(b.created), ft(b.written));
+        let mut written = ft(b.written);
         let mut basic = Basic { created: 0, accessed: 0, written: 0, changed: 0, attrs: 0 };
         if unsafe { GetFileInformationByHandleEx(h.0, 0, (&mut basic as *mut Basic).cast(), std::mem::size_of::<Basic>() as u32) } != 0 {
             created = created.max(basic.created);
+            written = written.max(basic.written);
             newest = newest.max(basic.written).max(basic.changed);
         }
         let id = (b.index_high as u64) << 32 | b.index_low as u64;
@@ -1998,7 +2038,7 @@ pub(crate) mod win {
         } else {
             (None, false)
         };
-        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest, id, volume, id_exact })
+        Ok(Info { attrs: b.attrs, tag: tag[1], size: (b.size_high as u64) << 32 | b.size_low as u64, links: b.links, created, newest, written, id, volume, id_exact })
     }
 
     // Borrow the File's handle only for the synchronous call; ownership remains with File.
@@ -2600,7 +2640,7 @@ mod tests {
 
     #[test]
     fn recycle_never_falls_back_to_deleting_wof_cloud_or_unknown_reparse_files() {
-        let mut info = win::Info { attrs: REPARSE, tag: 0x8000_0017, size: 99, links: 1, created: 0, newest: 0, id: 0, volume: None, id_exact: false };
+        let mut info = win::Info { attrs: REPARSE, tag: 0x8000_0017, size: 99, links: 1, created: 0, newest: 0, written: 0, id: 0, volume: None, id_exact: false };
         assert!(recycling_refused(&info), "WOF is ordinary data, not a disposable link");
         info.tag = 0;
         assert!(recycling_refused(&info), "an unknown tag must stay");

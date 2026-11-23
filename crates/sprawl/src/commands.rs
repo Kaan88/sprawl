@@ -1103,11 +1103,11 @@ impl State {
                         let mut body = damaged.join("\n");
                         if !notes.is_empty() {
                             body.push_str("\n\nLeft as they were:\n");
-                            body.push_str(&notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
+                            body.push_str(&notes_text(notes));
                         }
                         self.tell("Some files were damaged", &body);
                     } else if !notes.is_empty() {
-                        self.tell("Some items were left alone", &notes.into_iter().take(12).collect::<Vec<_>>().join("\n"));
+                        self.tell("Some items were left alone", &notes_text(notes));
                     }
                 }
             }
@@ -1190,6 +1190,17 @@ pub(crate) enum DelMsg {
     /// the paths back into): the paths it went through, to see which are gone.
     Touched(Vec<PathBuf>),
     Done(Vec<(PathBuf, Option<sprawl_core::Tree>)>, Vec<String>, Vec<String>),
+}
+
+/// What a card says about the items left alone: the first twelve, and how many more there were.
+fn notes_text(notes: Vec<String>) -> String {
+    let shown: Vec<String> = notes.iter().take(12).cloned().collect();
+    let more = notes.len().saturating_sub(shown.len());
+    let mut text = shown.join("\n");
+    if more > 0 {
+        text.push_str(&format!("\n...and {more} more"));
+    }
+    text
 }
 
 /// Why `path` may not be deleted whatever it is: inside a folder skipped in Settings >

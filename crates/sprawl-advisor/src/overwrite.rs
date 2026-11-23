@@ -5,7 +5,8 @@
 //! - One pass of random data over each file: the parts that are on the disk (a sparse file's
 //!   holes are left out), its named streams, then its ordinary content; then each stream and the
 //!   file are flushed, set to 0 bytes, the file renamed to a random name in its own folder, and
-//!   only then deleted. Nothing goes to the Recycle Bin.
+//!   only then deleted. A folder's own named streams are written over the same way before the
+//!   folder goes. Nothing goes to the Recycle Bin.
 //! - Nothing here claims the data is unrecoverable. On an SSD the drive moves writes around; a
 //!   compressed, sparse, encrypted or WOF file and a copy-on-write volume may put the new data
 //!   somewhere else; a cloud-synced folder may keep older versions online; old names can stay in
@@ -194,6 +195,11 @@ pub fn run(path: &Path, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnM
         }
         let Some(k) = top.kids.next() else {
             let f = stack.pop().unwrap();
+            // a folder can carry named streams of its own (Zone.Identifier is one): they are
+            // written over before the folder goes, or the folder stays with its reason
+            if !scrub_folder_streams(&f.path, &mut o) {
+                continue;
+            }
             match win::delete(&f.h) {
                 Ok(()) => o.folders += 1,
                 // what must stay inside is already noted: the folder stays with it
@@ -227,9 +233,10 @@ pub fn run(path: &Path, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnM
             o.kept_new += 1;
             continue;
         }
-        if info.attrs & REPARSE != 0 {
-            // a link is never followed, and a WOF-compressed file is data behind one: both stay
-            o.problem(&k, if info.tag == WOF_TAG { "left alone: a Windows-compressed (WOF) file" } else { "left alone: a link or junction" });
+        if info.attrs & REPARSE != 0 && info.tag != WOF_TAG {
+            // a link is never followed; a WOF file is data behind a hidden reparse point and is
+            // written out like a compressed one
+            o.problem(&k, "left alone: a link or junction");
             continue;
         }
         if info.attrs & DIRECTORY == 0 {
@@ -289,15 +296,50 @@ impl Plan {
     }
 }
 
-/// The parts of a file that will be written over, from the open, checked handle.
+/// Whether the file's data is kept behind an external backing provider (a Windows, WOF,
+/// compressed file). An ordinary open hides its reparse point, so the checked handle is asked
+/// as well as its tag.
+fn wof(h: &win::Handle, info: &win::Info) -> bool {
+    (info.attrs & REPARSE != 0 && info.tag == WOF_TAG) || win::wof_backed(h)
+}
+
+/// The parts of a file that will be written over, from the open, checked handle. A WOF file and
+/// an NTFS-compressed one are written out in full (that is what turning them into plain data
+/// costs); a sparse file only where its data is; a plain one over the space it already takes.
 fn plan_for(h: &win::Handle, info: &win::Info) -> Result<Plan, String> {
-    if info.attrs & SPARSE != 0 {
+    if wof(h, info) || info.attrs & COMPRESSED != 0 {
+        Ok(Plan::Whole(info.size))
+    } else if info.attrs & SPARSE != 0 {
         let ranges = win::allocated_ranges(h, info.size).map_err(|e| format!("left alone: the parts of it on the disk couldn't be read ({e})"))?;
         Ok(Plan::Ranges(ranges))
-    } else if info.attrs & COMPRESSED != 0 {
-        Ok(Plan::Whole(info.size))
     } else {
         Ok(Plan::Whole(win::allocation(h, info.size)))
+    }
+}
+
+/// The room a plan needs beyond what the file already takes: none for a plain or sparse file
+/// (it is written where it already is), about its whole length for a compressed or WOF one,
+/// which grows to its full size as it is written over.
+fn extra_room(h: &win::Handle, plan: &Plan) -> u64 {
+    let already = win::standard(h).map(|(alloc, _)| alloc).unwrap_or(0);
+    plan.total().saturating_sub(already)
+}
+
+/// Why there isn't room to write `plan` over the open file, if there isn't: it needs
+/// `extra_room` more, and a GB must stay free besides.
+fn room_refusal(p: &Path, h: &win::Handle, plan: &Plan) -> Option<String> {
+    let extra = extra_room(h, plan);
+    if extra == 0 {
+        return None;
+    }
+    match free_space(p) {
+        Some(free) if extra > free.saturating_sub(FREE_MARGIN) => Some(format!(
+            "left alone: writing over it needs {} more and the drive has {} free, which isn't enough to spare a GB besides",
+            bytes(extra),
+            bytes(free)
+        )),
+        Some(_) => None,
+        None => Some("left alone: how much room is left on its drive couldn't be read".to_string()),
     }
 }
 
@@ -310,8 +352,8 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
         o.problem(p, "left alone: it became a folder");
         return;
     }
-    if info.attrs & REPARSE != 0 {
-        o.problem(p, if info.tag == WOF_TAG { "left alone: a Windows-compressed (WOF) file" } else { "left alone: a link or junction" });
+    if info.attrs & REPARSE != 0 && info.tag != WOF_TAG {
+        o.problem(p, "left alone: a link or junction");
         return;
     }
     if info.attrs & NOT_LOCAL != 0 {
@@ -344,21 +386,11 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
             return;
         }
     };
-    // a compressed file takes its whole length on the disk while it is written over: leave it
-    // when the drive hasn't room for that plus a margin
-    let need = plan.total();
-    if need > 0 {
-        match free_space(p) {
-            Some(free) if need > free.saturating_sub(FREE_MARGIN) => {
-                o.problem(p, format!("left alone: writing over it needs {} and the drive has {} free, which isn't enough to spare a GB more", bytes(need), bytes(free)));
-                return;
-            }
-            Some(_) => {}
-            None => {
-                o.problem(p, "left alone: how much room is left on its drive couldn't be read");
-                return;
-            }
-        }
+    // writing over a compressed or WOF file grows it to its full size: leave it when the drive
+    // hasn't room for that much more
+    if let Some(why) = room_refusal(p, &h, &plan) {
+        o.problem(p, why);
+        return;
     }
     // its named streams first: all of them are opened before any is written, so a stream that
     // can't be overwritten leaves the whole file as it was
@@ -376,11 +408,39 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
             return;
         }
     }
-    let mut streams: Vec<(String, win::Handle, u64)> = Vec::new();
+    let mut streams: Vec<(String, win::Handle, win::Info, Plan)> = Vec::new();
     for name in names {
         let sp = stream_path(p, &name);
         match win::open_data(&sp) {
-            Ok((sh, si)) => streams.push((name, sh, si.size)),
+            Ok((sh, si)) => {
+                // the stream is the same file's (never another's), and its own parts and room
+                // are planned as the file's are
+                if si.id != info.id || si.volume != info.volume {
+                    if was_readonly {
+                        let _ = win::set_readonly(&h, info.attrs);
+                    }
+                    o.problem(p, format!("left alone: its stream {name} isn't on the file Sprawl checked"));
+                    return;
+                }
+                let plan = match plan_for(&sh, &si) {
+                    Ok(plan) => plan,
+                    Err(why) => {
+                        if was_readonly {
+                            let _ = win::set_readonly(&h, info.attrs);
+                        }
+                        o.problem(p, format!("left alone: its stream {name}: {why}"));
+                        return;
+                    }
+                };
+                if let Some(why) = room_refusal(p, &sh, &plan) {
+                    if was_readonly {
+                        let _ = win::set_readonly(&h, info.attrs);
+                    }
+                    o.problem(p, format!("left alone: its stream {name}: {why}"));
+                    return;
+                }
+                streams.push((name, sh, si, plan));
+            }
             Err(e) => {
                 if was_readonly {
                     let _ = win::set_readonly(&h, info.attrs);
@@ -400,27 +460,36 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
             return;
         }
     };
-    // a program that already had it open for writing may have changed it since the checks
-    match win::standard(&data) {
-        Ok((_, eof)) if eof == info.size => {}
-        Ok(_) => {
+    // the reopen is refused while another program holds it for writing; one that slipped a
+    // write in just before is caught by its length and last-write time
+    let before_written = win::written_time(&h).unwrap_or(info.written);
+    match (win::standard(&data), win::written_time(&data)) {
+        (Ok((_, eof)), Ok(written)) if eof == info.size && written == before_written => {}
+        (Ok((_, eof)), Ok(_)) if eof != info.size => {
             if was_readonly {
                 let _ = win::set_readonly(&h, info.attrs);
             }
             o.problem(p, "left alone: it changed while Sprawl was checking it (its length is not the one it had)");
             return;
         }
-        Err(e) => {
+        (Ok(_), Ok(_)) => {
             if was_readonly {
                 let _ = win::set_readonly(&h, info.attrs);
             }
-            o.problem(p, format!("left alone: its length couldn't be read again ({e})"));
+            o.problem(p, "left alone: it changed while Sprawl was checking it (it was written)");
+            return;
+        }
+        _ => {
+            if was_readonly {
+                let _ = win::set_readonly(&h, info.attrs);
+            }
+            o.problem(p, "left alone: it couldn't be checked again");
             return;
         }
     }
     let mut written = 0u64;
-    for (name, sh, eof) in &streams {
-        if let Err(e) = wipe(sh, &Plan::Whole(*eof), &mut written) {
+    for (name, sh, _si, plan) in &streams {
+        if let Err(e) = wipe(sh, plan, &mut written) {
             if was_readonly {
                 let _ = win::set_readonly(&h, info.attrs);
             }
@@ -499,6 +568,60 @@ fn scrub_file(p: &Path, h: win::Handle, info: win::Info, spare: &Spare, o: &mut 
             o.damage(&to, format!("overwritten once and set to 0 bytes, but it couldn't be deleted ({e}); it stays under this name"));
         }
     }
+}
+
+/// Write over the named streams a folder itself carries, while its checked handle is held.
+/// True when the folder can go; false (with the reason recorded) when a stream couldn't be read,
+/// opened, planned, given room or written, in which case the folder is left.
+fn scrub_folder_streams(path: &Path, o: &mut Outcome) -> bool {
+    let names = match win::streams(path) {
+        Ok(n) => n,
+        Err(e) => {
+            o.problem(path, format!("left as it is: its named streams couldn't be read ({e})"));
+            return false;
+        }
+    };
+    let mut streams: Vec<(String, win::Handle, Plan)> = Vec::new();
+    for name in names {
+        let sp = stream_path(path, &name);
+        match win::open_data(&sp) {
+            Ok((sh, si)) => {
+                // the folder's own handle keeps the folder from being renamed or replaced while
+                // it is held, so a stream opened by this path is this folder's
+                let plan = match plan_for(&sh, &si) {
+                    Ok(plan) => plan,
+                    Err(why) => {
+                        o.problem(path, format!("left as it is: its stream {name}: {why}"));
+                        return false;
+                    }
+                };
+                if let Some(why) = room_refusal(path, &sh, &plan) {
+                    o.problem(path, format!("left as it is: its stream {name}: {why}"));
+                    return false;
+                }
+                streams.push((name, sh, plan));
+            }
+            Err(e) => {
+                o.problem(path, format!("left as it is: its stream {name} couldn't be opened ({e})"));
+                return false;
+            }
+        }
+    }
+    let mut written = 0u64;
+    for (name, sh, plan) in &streams {
+        if let Err(e) = wipe(sh, plan, &mut written) {
+            o.overwritten += written;
+            o.damage(path, format!("partly overwritten (its stream {name} couldn't be written: {e}); the folder is left"));
+            return false;
+        }
+        if let Err(e) = win::set_end(sh, 0).and_then(|()| win::flush(sh)) {
+            o.overwritten += written;
+            o.damage(path, format!("partly overwritten (its stream {name} couldn't be set to 0 bytes: {e}); the folder is left"));
+            return false;
+        }
+    }
+    o.overwritten += written;
+    true
 }
 
 /// The same file, opened again for its data once every check passed. ReOpenFile keeps the file
@@ -746,7 +869,8 @@ pub fn wipe_plan(root: &Path, marker_dir: &Path) -> Result<WipePlan, String> {
     if unsafe { GetDriveTypeW(wide(&root).as_ptr()) } != 3 {
         return Err(format!("{} isn't a fixed local drive: a network, removable or CD drive can't have its free space wiped from here.", root.display()));
     }
-    let letter = root.to_string_lossy().trim_end_matches('\\').to_string();
+    let letter = root.to_string_lossy();
+    let letter = letter.trim_end_matches('\\').trim_end_matches(':');
     let marker = marker_dir.join(format!("wipe-{letter}.txt"));
     let ours = read_marker(&marker).filter(|m| m.root.eq_ignore_ascii_case(&root.to_string_lossy()));
     let scratch = root.join("EFSTMPWP");
@@ -757,7 +881,7 @@ pub fn wipe_plan(root: &Path, marker_dir: &Path) -> Result<WipePlan, String> {
         Err(_) => true,
     };
     let (scratch_bytes, scratch_items) = if scratch_present { measure(&scratch) } else { (0, 0) };
-    let live = ours.as_ref().filter(|m| process_alive(m.pid)).map(|m| m.pid);
+    let live = ours.as_ref().filter(|m| marker_live(m)).map(|m| m.pid);
     Ok(WipePlan {
         root,
         marker,
@@ -833,52 +957,74 @@ pub fn wipe_free_space(root: &Path, marker_dir: &Path, stop: &AtomicBool) -> Wip
     Wiped { outcome, ok }
 }
 
-/// A marker Sprawl leaves while it wipes a drive.
+/// A marker Sprawl leaves while it wipes a drive: the drive, and which process (and which run of
+/// it: the process's own start time) is doing the wiping.
 struct Marker {
     root: String,
     pid: u32,
+    start: u64,
 }
 
 fn read_marker(p: &Path) -> Option<Marker> {
     let text = std::fs::read_to_string(p).ok()?;
-    let mut root = None;
-    let mut pid = None;
+    let (mut root, mut pid, mut start) = (None, None, None);
     for line in text.lines() {
         if let Some(v) = line.strip_prefix("root=") {
             root = Some(v.trim().to_string());
         } else if let Some(v) = line.strip_prefix("pid=") {
             pid = v.trim().parse::<u32>().ok();
+        } else if let Some(v) = line.strip_prefix("start=") {
+            start = v.trim().parse::<u64>().ok();
         }
     }
-    Some(Marker { root: root?, pid: pid? })
+    Some(Marker { root: root?, pid: pid?, start: start? })
 }
 
+/// Whether the Sprawl named in `m` is still running: its id and its own start time must both
+/// match, so a reused id doesn't pass for a wipe that is long gone.
+fn marker_live(m: &Marker) -> bool {
+    process_alive(m.pid) && process_start(m.pid) == Some(m.start)
+}
+
+/// Claim the marker for this drive. The first Sprawl to make it wins; a marker left by a Sprawl
+/// that is gone is removed and a fresh one made, and if another instance makes one in that
+/// instant, this one gives up rather than wipe alongside it.
 fn write_marker(p: &Path, root: &Path) -> std::io::Result<()> {
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let when = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let body = format!("root={}\npid={}\ntime={when}\n", root.display(), std::process::id());
-    // the first one to make it wins: a marker already there is read for its pid, and only a
-    // stale one (that Sprawl is gone) is written over
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(p) {
-        Ok(mut f) => {
-            use std::io::Write;
-            f.write_all(body.as_bytes())
-        }
+    let body = format!(
+        "root={}\npid={}\nstart={}\ntime={when}\n",
+        root.display(),
+        std::process::id(),
+        process_start(std::process::id()).unwrap_or(0)
+    );
+    let make = |body: &str| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(p)?;
+        f.write_all(body.as_bytes())
+    };
+    match make(&body) {
+        Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // another process got here first: a live one means a wipe is running right now
-            if read_marker(p).is_some_and(|m| m.pid != std::process::id() && process_alive(m.pid)) {
-                return Err(std::io::Error::other("another Sprawl has just started wiping this drive"));
+            if read_marker(p).is_some_and(|m| marker_live(&m)) {
+                return Err(std::io::Error::other("another Sprawl is wiping this drive right now"));
             }
-            std::fs::write(p, body)
+            let _ = std::fs::remove_file(p);
+            make(&body).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    std::io::Error::other("another Sprawl has just started wiping this drive")
+                } else {
+                    e
+                }
+            })
         }
         Err(e) => Err(e),
     }
 }
 
-/// Whether a process with this id is still running (a stale marker of a Sprawl that is gone is
-/// not a running wipe).
+/// Whether a process with this id is still running.
 fn process_alive(pid: u32) -> bool {
     const SYNCHRONIZE: u32 = 0x0010_0000;
     const WAIT_TIMEOUT: u32 = 0x102;
@@ -892,13 +1038,44 @@ fn process_alive(pid: u32) -> bool {
     alive
 }
 
-/// Remove cipher's working folder: only a plain folder, never a link or junction, and never
-/// something Sprawl didn't make.
+/// When a process began, as a FILETIME: two runs never share both an id and a start time.
+fn process_start(pid: u32) -> Option<u64> {
+    const QUERY: u32 = 0x1000;
+    let current = pid == std::process::id();
+    // SAFETY: a query about a process by its id (or this one); the handle is closed below.
+    let h = if current { unsafe { GetCurrentProcess() } } else { unsafe { OpenProcess(QUERY, 0, pid) as *mut std::ffi::c_void } };
+    if h.is_null() {
+        return None;
+    }
+    let (mut made, mut exit, mut kernel, mut user) = ([0u32; 2], [0u32; 2], [0u32; 2], [0u32; 2]);
+    // SAFETY: four FILETIMEs are written into the arrays.
+    let ok = unsafe { GetProcessTimes(h as isize, made.as_mut_ptr(), exit.as_mut_ptr(), kernel.as_mut_ptr(), user.as_mut_ptr()) } != 0;
+    if !current {
+        unsafe { CloseHandle(h as isize) };
+    }
+    ok.then(|| (made[1] as u64) << 32 | made[0] as u64)
+}
+
+/// Remove cipher's working folder: only a plain folder holding plain files (cipher makes its
+/// temporary files straight in it, never folders), never a link or junction, and never something
+/// Sprawl didn't make.
 fn remove_scratch(scratch: &Path) -> std::io::Result<()> {
     use std::os::windows::fs::MetadataExt;
-    let m = std::fs::symlink_metadata(scratch)?;
+    let m = match std::fs::symlink_metadata(scratch) {
+        Ok(m) => m,
+        // cipher takes its folder away itself when it finishes: nothing left to remove
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
     if !m.is_dir() || m.file_attributes() & REPARSE != 0 {
         return Err(std::io::Error::other("it isn't a plain folder any more"));
+    }
+    for e in std::fs::read_dir(scratch)? {
+        let e = e?;
+        let em = std::fs::symlink_metadata(e.path())?;
+        if em.is_dir() || em.file_attributes() & REPARSE != 0 {
+            return Err(std::io::Error::other("it holds something that isn't one of cipher's own files, so it is left as it is"));
+        }
     }
     std::fs::remove_dir_all(scratch)
 }
@@ -955,6 +1132,8 @@ extern "system" {
     fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *mut std::ffi::c_void, disposition: u32, flags: u32, template: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
     fn DeviceIoControl(h: *mut std::ffi::c_void, code: u32, inbuf: *const std::ffi::c_void, inlen: u32, outbuf: *mut std::ffi::c_void, outlen: u32, returned: *mut u32, overlapped: *mut std::ffi::c_void) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn GetProcessTimes(h: isize, made: *mut u32, exit: *mut u32, kernel: *mut u32, user: *mut u32) -> i32;
     fn WaitForSingleObject(h: *mut std::ffi::c_void, ms: u32) -> u32;
     #[link_name = "CloseHandle"]
     fn CloseHandle(h: isize) -> i32;
@@ -964,11 +1143,33 @@ extern "system" {
 mod tests {
     use super::*;
 
-    pub(super) fn temp(name: &str) -> PathBuf {
+    /// A temporary folder for one test, removed when the test ends, even when it fails.
+    pub(super) struct Temp(PathBuf);
+
+    impl Temp {
+        pub(super) fn join(&self, p: impl AsRef<Path>) -> PathBuf {
+            self.0.join(p)
+        }
+    }
+
+    impl std::ops::Deref for Temp {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub(super) fn temp(name: &str) -> Temp {
         let base = std::env::temp_dir().join(format!("sprawl-overwrite-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
-        base
+        Temp(base)
     }
 
     fn zeros(dir: &Path) -> usize {
@@ -994,7 +1195,6 @@ mod tests {
         let hit = after.windows(pattern.len()).any(|w| w == pattern.as_slice());
         assert!(!hit, "none of the pattern is left after one pass");
         assert!(after.iter().any(|&b| b != 0), "the pass wrote data, not just zeros");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1007,7 +1207,6 @@ mod tests {
         assert_eq!(o.files, 1, "{:?} {:?}", o.problems, o.damaged);
         assert!(!f.exists(), "the old name is gone");
         assert_eq!(zeros(&base), 0, "nothing is left behind");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1032,7 +1231,6 @@ mod tests {
         assert!(base.exists());
         std::fs::remove_file(&b).unwrap();
         std::fs::remove_file(&a).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1063,7 +1261,6 @@ mod tests {
         let as_root = run(&link, &Spare::default(), &stop, &mut |_| {});
         assert!(!as_root.problems.is_empty() && as_root.files == 0, "{:?}", as_root.problems);
         assert!(keep.join("inner").join("precious.txt").exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1079,7 +1276,6 @@ mod tests {
         let o = run(&f, &spare, &stop, &mut |_| {});
         assert_eq!((o.files, o.kept_new), (0, 1), "{:?}", o.problems);
         assert_eq!(std::fs::read(&f).unwrap(), b"after the scan began");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1093,9 +1289,8 @@ mod tests {
         });
         assert!(o.stopped, "it stopped");
         assert_eq!(o.files, 1, "the file it was on finished: {:?}", o.problems);
-        let left: Vec<String> = std::fs::read_dir(&base).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let left: Vec<String> = std::fs::read_dir(&*base).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(left, vec!["b.bin".to_string()], "the rest stayed, and no random name was left behind");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1113,7 +1308,6 @@ mod tests {
         assert_eq!(o.folders, 3, "the folder, its sub and the folder inside it");
         assert!(!root.exists(), "the folder picked went too");
         assert_eq!(zeros(&base), 0, "nothing was left behind");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1130,7 +1324,6 @@ mod tests {
         assert_eq!((o.files, o.kept_chosen), (1, 1), "{:?}", o.problems);
         assert_eq!(std::fs::read(&stay).unwrap(), b"mine");
         assert!(root.exists(), "the folder stays, holding the kept file");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1145,7 +1338,6 @@ mod tests {
         let o = run(&f, &Spare::default(), &stop, &mut |_| {});
         assert_eq!(o.files, 1, "{:?} {:?}", o.problems, o.damaged);
         assert!(!f.exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1167,7 +1359,6 @@ mod tests {
         let mut perm = std::fs::metadata(&f).unwrap().permissions();
         perm.set_readonly(false);
         std::fs::set_permissions(&f, perm).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1206,7 +1397,6 @@ mod tests {
         let o = run(&f, &Spare::default(), &stop, &mut |_| {});
         assert_eq!(o.files, 1, "{:?}", o.problems);
         assert!(!f.exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1242,7 +1432,6 @@ mod tests {
         let o = run(&f, &Spare::default(), &stop, &mut |_| {});
         assert_eq!(o.files, 1, "{:?} {:?}", o.problems, o.damaged);
         assert!(!f.exists(), "the file and its stream went with it");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1259,22 +1448,36 @@ mod tests {
         drop(h);
         let after = std::fs::read(&f).unwrap();
         assert_ne!(after, b"0123456789");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn a_marker_says_which_drive_is_being_wiped_and_by_which_process() {
         let base = temp("marker");
-        let marker = base.join("wipe-C.txt");
+        // the real name Sprawl uses: the drive letter, and no colon (a colon would name a
+        // stream on a file rather than the file)
+        let plan = wipe_plan(&base, &base).unwrap();
+        let marker = plan.marker.clone();
+        assert_eq!(marker.file_name().unwrap(), "wipe-C.txt");
+        assert!(!marker.file_name().unwrap().to_string_lossy().contains(':'));
         assert!(read_marker(&marker).is_none(), "no marker, no wipe");
-        write_marker(&marker, Path::new(r"C:\")).unwrap();
+        write_marker(&marker, &plan.root).unwrap();
         let m = read_marker(&marker).unwrap();
         assert_eq!(m.root, r"C:\");
         assert_eq!(m.pid, std::process::id());
-        assert!(process_alive(m.pid), "this very process is alive");
+        assert_eq!(process_start(m.pid), Some(m.start), "the run's own start time is kept");
+        assert!(marker_live(&m), "this very process is alive");
         assert!(!process_alive(u32::MAX - 1), "a made-up id is not");
-        std::fs::remove_file(&marker).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
+        // a live marker is not taken over
+        assert!(write_marker(&marker, &plan.root).is_err(), "a wipe already running is refused");
+        // one from a run that is gone (its process, or its start time, no longer matches) is
+        // replaced
+        std::fs::write(&marker, "root=C:\\\npid=4294967295\nstart=1\ntime=0\n").unwrap();
+        write_marker(&marker, &plan.root).unwrap();
+        assert_eq!(read_marker(&marker).unwrap().pid, std::process::id());
+        let mut other = Marker { root: m.root.clone(), pid: m.pid, start: m.start ^ 1 };
+        assert!(!marker_live(&other), "an id reused by another run is not this wipe");
+        other.start = m.start;
+        assert!(marker_live(&other));
     }
 
     #[test]
@@ -1307,24 +1510,82 @@ mod tests {
         let lines = foreign.scratch_lines().join("\n");
         assert!(lines.contains("didn't make") && lines.contains("left as it is"), "one Sprawl didn't make is left: {lines}");
         assert!(!lines.contains("process"), "{lines}");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn cipher_leaves_its_working_folder_removed_only_when_it_made_it() {
         let base = temp("cipher-leftover");
+        // cipher makes its temporary files straight in the folder: only files, no folders
         let known = base.join("known");
-        std::fs::create_dir_all(known.join("inner")).unwrap();
-        std::fs::write(known.join("inner").join("part"), b"x").unwrap();
+        std::fs::create_dir_all(&known).unwrap();
+        std::fs::write(known.join("fil1.tmp"), b"x").unwrap();
         remove_scratch(&known).unwrap();
         assert!(!known.exists(), "one Sprawl made (and said so) is removed");
 
-        // one that was there before this run is not this run's to remove
-        let unknown = base.join("unknown");
-        std::fs::create_dir_all(unknown.join("inner")).unwrap();
-        std::fs::write(unknown.join("inner").join("part"), b"x").unwrap();
-        assert!(remove_scratch(&unknown).is_ok() || unknown.exists());
-        let _ = std::fs::remove_dir_all(&base);
+        // cipher takes its own folder away when it finishes: nothing left to remove is fine
+        remove_scratch(&known).unwrap();
+
+        // a folder holding a subfolder (or a link) is not cipher's own: left, with the reason
+        let strange = base.join("strange");
+        std::fs::create_dir_all(strange.join("inner")).unwrap();
+        std::fs::write(strange.join("inner").join("part"), b"x").unwrap();
+        let e = remove_scratch(&strange).unwrap_err();
+        assert!(e.to_string().contains("left as it is"), "{e}");
+        assert!(strange.join("inner").join("part").exists(), "it is left as it is");
+    }
+
+    #[test]
+    fn a_folders_own_named_stream_is_written_over_before_it_goes() {
+        let base = temp("folder-stream");
+        let dir = base.join("with-stream");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.bin"), b"x").unwrap();
+        let sp = stream_path(&dir, ":extra:$DATA");
+        let pattern = b"FOLDER-STREAM-PATTERN-0123456789";
+        std::fs::write(&sp, pattern).unwrap();
+
+        // the folder's own stream, through the same calls the engine uses
+        let mut o = Outcome::default();
+        assert!(scrub_folder_streams(&dir, &mut o), "{:?}", o.problems);
+        let after = std::fs::read(&sp).unwrap();
+        assert_eq!(after.len(), 0, "the folder's stream is emptied");
+        assert!(!after.windows(pattern.len()).any(|w| w == pattern.as_slice()));
+
+        // and the whole folder, with its file and its own stream, goes
+        let stop = AtomicBool::new(false);
+        let o = run(&dir, &Spare::default(), &stop, &mut |_| {});
+        assert_eq!(o.files, 1, "{:?}", o.problems);
+        assert!(o.problems.is_empty(), "{:?}", o.problems);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_volume_without_named_streams_is_not_an_error() {
+        // exFAT and FAT32 answer FindFirstStreamW with these rather than an empty list
+        for c in [1, 50, 87] {
+            assert!(win::no_named_streams(Some(c)), "{c}");
+        }
+        // a folder has no streams to list
+        assert!(win::no_named_streams(Some(38)));
+        for c in [2, 5, 234] {
+            assert!(!win::no_named_streams(Some(c)), "{c}");
+        }
+        assert!(!win::no_named_streams(None));
+    }
+
+    #[test]
+    fn a_plain_file_needs_no_room_of_its_own_to_be_written_over() {
+        let base = temp("room");
+        let f = base.join("plain.bin");
+        std::fs::write(&f, vec![4u8; 200_000]).unwrap();
+        let (h, info) = win::open_checked(&f).unwrap();
+        let plan = plan_for(&h, &info).unwrap();
+        assert_eq!(extra_room(&h, &plan), 0, "plain data is written where it already is");
+        assert!(room_refusal(&f, &h, &plan).is_none(), "so no free space is needed for it");
+        // a compressed or WOF plan takes its whole length: that much more must be free
+        let alloc = win::standard(&h).unwrap().0;
+        assert_eq!(extra_room(&h, &Plan::Whole(alloc + 12_345)), 12_345);
+        assert!(room_refusal(&f, &h, &Plan::Whole(u64::MAX)).is_some(), "more than any drive has");
     }
 
     #[test]

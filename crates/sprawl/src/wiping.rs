@@ -140,17 +140,17 @@ impl State {
         if encrypted {
             marks.push("encrypted (EFS)");
         }
-        if wof {
-            marks.push("Windows-compressed (WOF)");
-        }
         if !marks.is_empty() {
             limits.push(format!(
                 "Some of these files are {}: the overwrite may land in new places, leaving the old data.",
                 marks.join(", ")
             ));
         }
-        if compressed {
-            limits.push("Overwriting an NTFS-compressed file writes it out in full, so it takes its whole length on the disk until it is deleted; Sprawl leaves one alone when the drive hasn't room for it.".to_string());
+        if wof {
+            limits.push("Some of these files are Windows-compressed (WOF): they are written out in full while they are overwritten, and the compressed bytes already on the disk may not be overwritten, so the old data may stay there.".to_string());
+        }
+        if compressed || wof {
+            limits.push("Overwriting a compressed file writes it out in full, so it takes its whole length on the disk until it is deleted; Sprawl leaves one alone when the drive hasn't room for the extra room it needs.".to_string());
         }
         if cloud || in_cloud_folder(path) {
             limits.push("Files in a OneDrive or other cloud-synced folder: older versions may stay online.".to_string());
