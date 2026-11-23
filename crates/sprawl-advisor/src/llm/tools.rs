@@ -323,6 +323,12 @@ impl<'a> Tools<'a> {
         Self::with_never(tree, facts, model, already, memory, Never::default_list())
     }
 
+    /// The folder labels this tool set works with (the report leaves them out of the
+    /// unexplained list).
+    pub(crate) fn memory_labels(&self) -> &[crate::memory::Label] {
+        &self.memory.labels
+    }
+
     /// For a client that may only see the scan on screen: nothing is read to make these tools
     /// (the never-list is [`Never::inert`]); only the tree and the facts given answer.
     pub fn restricted(tree: &'a Tree, facts: &'a Facts, memory: &Memory) -> Tools<'a> {

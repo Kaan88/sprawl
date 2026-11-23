@@ -173,7 +173,7 @@ impl<'a> Local<'a> {
         }
         if name == "scan_report" {
             let found = self.found.get_or_insert_with(|| rules_for(self.tree, self.facts));
-            return Ok(crate::llm::report::build(self.tree, self.facts, Some(found), None, None));
+            return Ok(crate::llm::report::build(self.tree, self.facts, Some(found), None, None, self.tools.memory_labels()));
         }
         let chat = matches!(self.mode, Mode::Chat { .. });
         // every call is noted, so the app can show what Claude Code is doing; the reports are
@@ -408,8 +408,8 @@ pub fn answer_bridge(line: &str, tree: Option<&Tree>, scan_before: Option<std::t
             reply(true, if c.trim().is_empty() { "The Advisor hasn't listed cleaners yet (or is still looking).".into() } else { c.to_string() })
         }
         "scan_report" => match facts {
-            Some(facts) if !disk => reply(true, crate::llm::report::build_restricted(tree, facts, found)),
-            Some(facts) => reply(true, crate::llm::report::build(tree, facts, found, None, None)),
+            Some(facts) if !disk => reply(true, crate::llm::report::build_restricted(tree, facts, found, &memory.labels)),
+            Some(facts) => reply(true, crate::llm::report::build(tree, facts, found, None, None, &memory.labels)),
             None => not_ready(),
         },
         "owner_of" | "search" if facts.is_none() => not_ready(),

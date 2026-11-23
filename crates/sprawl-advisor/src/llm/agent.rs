@@ -135,7 +135,7 @@ pub fn chat(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, fou
     events(ChatEvent::Progress("Reading the scan...".into()));
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, found, None, None) + notes + &memory.context();
+    let report = super::report::build(tree, &facts, found, None, None, &memory.labels) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, &[], memory).at_scan(scan_before);
     tools.consent = Some(consent);
     // the web search exists only while the user's switch is on
@@ -817,7 +817,7 @@ pub fn run(tree: &Tree, scan_before: std::time::SystemTime, cfg: &AiConfig, alre
     progress("Gathering what Windows knows about your apps".into());
     let mut facts = Facts::gather();
     facts.attach_usage(tree);
-    let report = super::report::build(tree, &facts, Some(already), hidden, goal) + notes + &memory.context();
+    let report = super::report::build(tree, &facts, Some(already), hidden, goal, &memory.labels) + notes + &memory.context();
     let mut tools = Tools::new(tree, &facts, &model, already, memory).at_scan(scan_before);
     tools.allowed = Some(specs().iter().map(|t| t.name).collect());
     let mut run = AiRun { model: named(cfg.provider, &model), ..AiRun::default() };

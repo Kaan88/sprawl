@@ -3,6 +3,10 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Folders the rules haven't explained now stay explained once you know what they are: Hide takes a folder off that list (Remembered keeps the label, where Forget brings it back), and the AI marks every folder it looked at so the same ones aren't sent to it again and again.
+
 ## 1.0.8 — 2026-11-23
 
 - Search results can be right-clicked without losing the rows you picked, and the menu now offers Open, Show in Explorer, Copy Path, Delete and Delete Permanently on every picked result (the items that only work on the scan on screen are shown greyed on results from other drives or saved scans). Open and Show in Explorer work on up to 10 picked results or folders at a time and say so rather than opening a burst of windows. Pick several with Ctrl+click, Shift+click or Ctrl+A, then Del or Shift+Del deletes them all.
