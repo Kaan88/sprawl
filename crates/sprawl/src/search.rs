@@ -48,8 +48,14 @@ pub(crate) struct Reads {
     pub(crate) partial: usize,
     /// More matches than one answer reads: none of them was checked, and this is how many.
     pub(crate) too_many: usize,
+    /// Matches whose times were read and gave a yes or a no: what separates "none of them is in
+    /// the range" from "nothing could be checked" (times-20).
+    pub(crate) decided: usize,
     pub(crate) notes: Vec<String>,
 }
+
+/// The count line while a `dc:`/`da:` search reads the matches' times.
+const READING_NOTE: &str = "Reading when the matches were created / last opened...";
 
 /// What one search's `dc:`/`da:` reads said, for the frame that collects them.
 #[derive(Default, Clone)]
@@ -60,6 +66,8 @@ pub(crate) struct Said {
     pub(crate) partial: usize,
     /// Matches too many to read: nothing was checked, and this is how many there were.
     pub(crate) too_many: usize,
+    /// Matches read and decided, yes or no.
+    pub(crate) decided: usize,
 }
 
 /// The most matches a `dc:`/`da:` search reads times for: past it, the words are not checked and
@@ -69,7 +77,7 @@ const READ_MOST: usize = sprawl_advisor::used::ANSWER_BUDGET;
 
 /// What the times read for the matches left: the matches inside the ranges, and what wasn't read.
 enum ReadOutcome {
-    Kept { kept: Vec<usize>, notes: Vec<String>, unread: usize, partial: usize, unknown: usize },
+    Kept { kept: Vec<usize>, notes: Vec<String>, unread: usize, partial: usize, unknown: usize, decided: usize },
     /// Too many matches to read without narrowing: how many there were.
     TooMany(usize),
 }
@@ -95,12 +103,20 @@ fn read_filter_with(
     // a PC that keeps no last-access times can't answer `da:` however far the search is narrowed,
     // so that is said before "too many to read" (times-18); nothing is read for such a search
     let no_access = opened.as_ref().is_some_and(|a| !a.kept());
-    if hits.len() > READ_MOST && !no_access {
+    // a scan of a drive whose times are never read (a share, a removable disk, not NTFS for
+    // `da:`) says that for each match, not "too many to read": narrowing could never help
+    let first = hits.first().map(|&n| tree.path_of(n));
+    let never_read = hits.len() > READ_MOST
+        && first.as_ref().is_some_and(|p| {
+            opened.as_mut().is_some_and(|a| !a.reads_drive(p)) || (dates.created.is_some() && !sprawl_advisor::born::Created::new().reads_drive(p))
+        });
+    if hits.len() > READ_MOST && !no_access && !never_read {
         return Some(ReadOutcome::TooMany(hits.len()));
     }
     let mut born = dates.created.filter(|_| !no_access).map(|_| sprawl_advisor::born::Created::new());
     let (mut unread_c, mut unknown_c, mut unread_a, mut partial_a, mut unknown_a) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut kept = Vec::with_capacity(hits.len());
+    let total = hits.len();
     for n in hits {
         // a newer search started: this one's answer would be thrown away, so stop reading
         if cancel.load(Ordering::Relaxed) {
@@ -173,7 +189,8 @@ fn read_filter_with(
     if unknown_a > 0 {
         notes.extend(sprawl_advisor::used::notes(0, unknown_a, "match", "matches", opened.as_ref().expect("one was made")));
     }
-    Some(ReadOutcome::Kept { kept, notes, unread: unread_c + unread_a, partial: partial_a, unknown: unknown_c + unknown_a })
+    let missed = unread_c + unread_a + partial_a + unknown_c + unknown_a;
+    Some(ReadOutcome::Kept { kept, notes, unread: unread_c + unread_a, partial: partial_a, unknown: unknown_c + unknown_a, decided: total.saturating_sub(missed) })
 }
 
 /// Whether other drives and saved scans are searched for a query: `dc:` and `da:` read each
@@ -222,6 +239,7 @@ fn reads_for(query: &str, now: std::time::SystemTime, tree: Option<&sprawl_core:
         reads.unknown = old.unknown;
         reads.partial = old.partial;
         reads.too_many = old.too_many;
+        reads.decided = old.decided;
     }
     reads
 }
@@ -229,8 +247,15 @@ fn reads_for(query: &str, now: std::time::SystemTime, tree: Option<&sprawl_core:
 /// The first line of the no-match panel: what a `dc:`/`da:` search read is said first, because
 /// "Nothing matches" would pass matches that were never checked off as a no.
 fn none_headline(q: &str, place: &str, reads: &Reads) -> String {
-    if reads.notes.is_empty() && reads.unread + reads.unknown + reads.partial + reads.too_many == 0 {
+    let missed = reads.unread + reads.unknown + reads.partial + reads.too_many;
+    if reads.notes.is_empty() && missed == 0 {
         format!("Nothing matches \u{201c}{q}\u{201d} in {place}.")
+    } else if reads.decided > 0 {
+        // some were read and are out of the range: only the rest couldn't be checked (times-20)
+        format!(
+            "None of the {} read for \u{201c}{q}\u{201d} in {place} is in the range; {missed} couldn't be checked.",
+            thousands(reads.decided as u64)
+        )
     } else {
         format!("Nothing could be checked for \u{201c}{q}\u{201d} in {place}.")
     }
@@ -541,6 +566,12 @@ impl State {
         let alloc = if key == crate::tables::Key::Alloc { self.alloc.clone() } else { Vec::new() };
         let ranks = self.ranks_for(gen);
         let dates = self.search.reads.dates;
+        // a `dc:`/`da:` read takes seconds: the older query's rows are never left on screen, ready
+        // to be picked and deleted, while the times are read (times-23)
+        if !dates.is_empty() {
+            self.search.reads.decided = 0;
+            self.search_show(Vec::new(), READING_NOTE.to_string(), false);
+        }
         std::thread::spawn(move || {
             let mut r = search(&tree, &index, &q, &cancel);
             let mut said = Said::default();
@@ -549,8 +580,8 @@ impl State {
             if !dates.is_empty() {
                 r = match r {
                     Some(hits) => match read_filter(&tree, hits, &dates, &cancel) {
-                        Some(ReadOutcome::Kept { kept, notes, unread, partial, unknown }) => {
-                            said = Said { notes, unread, partial, unknown, too_many: 0 };
+                        Some(ReadOutcome::Kept { kept, notes, unread, partial, unknown, decided }) => {
+                            said = Said { notes, unread, partial, unknown, too_many: 0, decided };
                             Some(kept)
                         }
                         Some(ReadOutcome::TooMany(n)) => {
@@ -563,6 +594,7 @@ impl State {
                                 unknown: 0,
                                 partial: 0,
                                 too_many: n,
+                                decided: 0,
                             };
                             Some(Vec::new())
                         }
@@ -693,6 +725,7 @@ impl State {
                     self.search.reads.unknown = said.unknown;
                     self.search.reads.partial = said.partial;
                     self.search.reads.too_many = said.too_many;
+                    self.search.reads.decided = said.decided;
                 }
                 if let Some(found) = r.filter(|_| gen == self.tree_gen && q == self.search.query) {
                     let resort = sort != self.search.sort;
@@ -1362,6 +1395,51 @@ mod reads_tests {
         assert!(!line.contains("reading limit"), "{line}");
         assert!(none_headline("q", "this scan", &Reads { partial: 2, ..Default::default() }).starts_with("Nothing could be checked"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Matches read and out of the range are said as such; only the unread are "not checked"
+    /// (times-20).
+    #[test]
+    fn a_range_with_no_match_says_how_many_were_read() {
+        let dir = std::env::temp_dir().join(format!("sprawl-read-decided-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["a.txt", "b.txt", "gone.txt"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        let hits: Vec<usize> = tree.nodes.iter().enumerate().filter(|&(i, n)| i != sprawl_core::ROOT && !n.is_dir).map(|(i, _)| i).collect();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        let dates = sprawl_core::query::ReadDates { created: Some((0, 86_400)), accessed: None };
+        let Some(ReadOutcome::Kept { kept, notes, unknown, decided, .. }) = read_filter(&tree, hits, &dates, &AtomicBool::new(false)) else { panic!("an answer") };
+        assert!(kept.is_empty());
+        assert_eq!((unknown, decided), (1, 2));
+        let reads = Reads { notes, unknown, decided, ..Default::default() };
+        let line = none_headline("q", "this scan", &reads);
+        assert!(line.starts_with("None of the 2 read for") && line.contains("1 couldn't be checked"), "{line}");
+        // nothing decided stays "could be checked"
+        let unread = Reads { unread: 3, notes: vec!["3 not read".into()], ..Default::default() };
+        assert!(none_headline("q", "this scan", &unread).starts_with("Nothing could be checked"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A drive whose times are never read says so for each match, not "too many to read"
+    /// (times-18).
+    #[test]
+    fn a_drive_that_is_never_read_is_said_before_too_many() {
+        use sprawl_advisor::used::Accessed;
+        let nodes = vec![sprawl_core::Node { name: "x".into(), ..Default::default() }];
+        let tree = sprawl_core::Tree { volumes: Vec::new(), root_path: format!("{b}{b}server{b}share", b = char::from(92)).into(), nodes, errors: 0, method: Default::default() };
+        for dates in [
+            sprawl_core::query::ReadDates { created: None, accessed: Some((0, i64::MAX)) },
+            sprawl_core::query::ReadDates { created: Some((0, i64::MAX)), accessed: None },
+        ] {
+            let hits = vec![0usize; super::READ_MOST + 1];
+            match read_filter_with(&tree, hits, &dates, &AtomicBool::new(false), Some(Accessed::with_budget(10))) {
+                Some(ReadOutcome::Kept { unknown, .. }) => assert_eq!(unknown, super::READ_MOST + 1),
+                _ => panic!("the drive's reason, not too many"),
+            }
+        }
     }
 
     /// A PC that keeps no last-access times says so before "too many to read": narrowing the
