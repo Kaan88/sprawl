@@ -68,7 +68,7 @@ exact:desktop.ini\tthe whole name, not part of it (also wholename:)
 depth:<=2\tat most two levels below the scanned folder
 parent:C:\\Games\\Steam\tonly what is directly inside that folder (parent:steam: a folder named steam)
 child:*.tmp\tfolders that directly hold a *.tmp file or folder
-childcount:>10000\tfolders directly holding more than 10,000 files and folders (what this scan saw: a link, a folder it could not read or whose contents are excluded is left out)
+childcount:>10000\tfolders directly holding more than 10,000 files and folders (what this scan saw: a link with nothing read under it is left out; a folder it could not read, or whose contents are excluded from scanning, counts as empty)
 childfilecount:>10000\tfolders directly holding more than 10,000 files (same)
 dupe:\tfiles and folders with another match of the same name (any case, names only), looked for within one scan before dc: and da:
 sizedupe:\tfiles with another match of the same size (sizes only, not contents), looked for within one scan before dc: and da:
@@ -206,8 +206,16 @@ impl Pat {
             // counts are of a folder's children: a file has none, and `childcount:0` means the
             // empty folders, not every file; a junction or symlink is never followed by the scan,
             // so its 0 is not a count
-            Pat::ChildCount(a, b) => it.is_dir() && it.attributes() & crate::attr::REPARSE_POINT == 0 && (*a..=*b).contains(&it.children()),
-            Pat::ChildFiles(a, b) => it.is_dir() && it.attributes() & crate::attr::REPARSE_POINT == 0 && (*a..=*b).contains(&it.child_files()),
+            // (a cloud folder the MFT scan did read has children and is counted)
+            Pat::ChildCount(a, b) => {
+                it.is_dir() && {
+                    let n = it.children();
+                    (n > 0 || it.attributes() & crate::attr::REPARSE_POINT == 0) && (*a..=*b).contains(&n)
+                }
+            }
+            Pat::ChildFiles(a, b) => {
+                it.is_dir() && (it.children() > 0 || it.attributes() & crate::attr::REPARSE_POINT == 0) && (*a..=*b).contains(&it.child_files())
+            }
             Pat::Attrib { mask, compressed } => it.attributes() & mask == *mask && (!*compressed || it.compressed()),
             Pat::Len(a, b) => {
                 // the path as it is on disk, in UTF-16 units as Windows counts it (lower-casing
@@ -958,7 +966,13 @@ fn marks_of(c: &[Ch], sized: bool) -> (Vec<u8>, Option<usize>) {
                 open.push((i, None));
             }
         } else if ch == '>' && after_word(c, i + 1, c.len()) {
+            // a bare size's `<` is a would-be group only when no real group is open: otherwise
+            // this `>` closes the real one (`<a <1gb b>`)
+            let real = open.iter().any(|e| e.1.is_none());
             while let Some((o, bare)) = open.pop() {
+                if bare.is_some() && real {
+                    continue;
+                }
                 if let Some(s) = bare {
                     let prev = if i > 0 { c[i - 1].0 } else { ' ' };
                     let ordinary = !(prev.is_whitespace() || matches!(prev, ':' | '=' | '|' | ';' | '<' | '>' | '!'));
@@ -1504,6 +1518,11 @@ fn terms_of(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<O
             let (own, rest) = prefix(chars);
             let (p, rest) = if own.is_some() || !plain_seen { (own, rest) } else { (first.unwrap_or_default(), chars) };
             plain_seen = true;
+            // `x|file:<a b>`: a kind or `!` only goes in front of the whole word
+            if marks(chars).contains(&MARK_OPEN) {
+                let shown: String = chars.iter().map(|&(c, _)| c).collect();
+                q.errors.push(format!("{shown}: put folder:, file: or ! in front of the whole word"));
+            }
             // a `dupe:` only means something as a top-level word of its own
             match build(p, rest, chars, false, depth, q, today, now) {
                 Ok(pats) => alts.extend(pats.into_iter().map(Alt::Pat)),
@@ -2365,9 +2384,20 @@ mod tests {
         assert!(q.min.is_none() && q.max.is_none());
         assert!(hit(&q, &file("2024 report")) && hit(&q, &file("draft")) && !hit(&q, &file("2024")));
         // the states of typing a size are not mistakes
-        for ok in ["<10mb", "<10mb >", "<10mb >1mb", "<10mb dm:>", "<0 x", "<a <1gb>", "<10mb>", "a <1gb> b", "<1gb|x"] {
+        for ok in ["<10mb", "<10mb >", "<10mb >1mb", "<10mb dm:>", "<0 x", "<a <1gb>", "<a <1gb b>", "<<1gb a>", "<report <10mb 2024>|draft", "<*.tmp <1mb !old>|*.log", "x <a <=5 b>|c", "<a <b <1k c>>", "<10mb>", "a <1gb> b", "<1gb|x"] {
             assert!(!Query::parse(ok).errors().iter().any(|e| e.contains("group can't")), "{ok}: {:?}", Query::parse(ok).errors());
         }
+    }
+
+    /// A size word inside a group is a word of it wherever it stands, and the group still matches.
+    #[test]
+    fn a_size_word_inside_a_group_is_a_word_of_it() {
+        let q = Query::parse("<a <1gb b>");
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert!(hit(&q, &file("a b")));
+        let q = Query::parse("<report <10mb 2024>|draft");
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert!(hit(&q, &file("draft")) && hit(&q, &file("report 2024")) && !hit(&q, &file("report")));
     }
 
     /// The counts are what the scan saw: a link is never followed, so its 0 is not a count.
@@ -2381,6 +2411,26 @@ mod tests {
             assert!(!m(q, &link), "{q}");
         }
         assert!(m("attrib:l", &link));
+        // a cloud folder the scan did read has children and is counted
+        let mut cloud = folder("Camera Roll");
+        cloud.attrs = crate::attr::REPARSE_POINT;
+        cloud.kids = vec![("a.jpg".into(), false), ("b.jpg".into(), false)];
+        assert!(m("childcount:2", &cloud));
+        assert!(m("childfilecount:>1", &cloud));
+        assert!(!m("!childcount:>0", &cloud));
+    }
+
+    /// A kind or `!` after `|` is not read as one: the user is told.
+    #[test]
+    fn a_kind_or_not_before_a_group_after_a_bar_is_said() {
+        for bad in ["x|file:<a b>", "x|!<a b>", "x;folder:<a b>"] {
+            let q = Query::parse(bad);
+            assert_eq!(q.errors().len(), 1, "{bad}: {:?}", q.errors());
+            assert!(q.errors()[0].contains("in front of the whole word"), "{:?}", q.errors());
+        }
+        for ok in ["file:<a b>|x", "!<a b>|x", "x|<a b>", "x|!a"] {
+            assert!(Query::parse(ok).errors().is_empty(), "{ok}: {:?}", Query::parse(ok).errors());
+        }
     }
 
     /// `child:` and the counts walk a folder's children: they are checked after the names, so a
