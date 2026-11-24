@@ -432,6 +432,40 @@ thumbnails and the preview pane: costly, against the audit decision, or not what
 
 ---
 
+## Fable review nits (left open)
+
+From the 2026-11-24 review of everything since 1.0.8 (782229e..a49d7b6). Fable approved every area and the final sign-off; these are the nits it listed, kept here instead of fixed. None can delete or rename the wrong thing or skip a check.
+
+**Search picks and delete**
+- picks-21 (tables.rs): three rare routes leave the keyboard on a row that isn't picked while picks remain: Down from the search box when the selected pick is no longer listed, type-to-find hitting row 0 from a stale selection, and F4 (redraw before the picks are pruned). Fix: clear picks on those moves; keep picks on type-to-find only when the hit is itself a pick; prune before refresh_rows in mReset.
+- picks-22 (tables.rs keep_picks_on_rows): quadratic, marked × rows; Ctrl+A then F4 in a folder of 200,000 files freezes for seconds. Fix: retain against a HashSet of row nodes.
+
+**Rename and copy as files**
+- rename-11: rereads are applied in arrival order, not start order (a long reread can put back a file deleted meanwhile until the next read); path_refusal's "won't delete" wording shows under "Not renamed"; case-only rename uses Rust's lowercase, not NTFS's (σ/ς answered "already in that folder"; never unsafe). Fix: stamp rereads with their start; give path_refusal a verb; compare volume + file index.
+- rename-12: F2 can't take an extension off (the old one is glued back on); COM0 and LPT0 are missing from the device-name list.
+
+**Disk times (dc:/da:, last opened, created)**
+- times-24: switching a "Search in" drive off re-runs a dc:/da: search, which empties the list, drops picks and reads every time again. Fix: re-run only when that drive was being searched.
+- times-25 (more_tools.rs): the AI's search says "narrow the search" on a drive that is never read, and reads creation times before finding da: can't work. Fix: check the never-read / access-off reasons first.
+- times-26 (search.rs): a drive known never to be read is still answered by looping over every match. Fix: answer once with the count.
+- times-27 (query.rs help): the Search tab's da: help lacks the folder-date caveat the AI tools have ("a folder's date is the newest of its files as its listing shows them").
+
+**Search language**
+- lang-28: `<10mb regex:a\>` is refused as a group starting with a number (regression from lang-22). Fix: a `>` ending a regex word doesn't close a bare size's `<`.
+- lang-29: a number-first group nested in another group (`<<2024 report>|draft>`) is read as a size with no message.
+- lang-30: `folder: !childcount:>0` also lists junctions. Fix: count words never match an unread link, negated or not, or say so in the help.
+- lang-31: `x|file:<a|b>` and `x|!<a|b c>` drop the group without a message.
+
+**Advisor labels**
+- advisor-16 (memory.rs label_for): every label is compiled again for each Tree row's Owner, and labels now pile up. Fix: compile once per labels version.
+- advisor-17 (wizard.rs PfB_aiForget): Settings' "forget what the AI said" removes AI labels without bringing their folders back to the unexplained list. Fix: call rules_changed() as AdvForgetL does.
+
+**Sign-off (dc:/da: waiting for a Delete)**
+- r3-1 (search.rs DATED_WAIT_NOTE): the wait line is ~120 characters in a count line cut at 420 px, so its reason is cut off. Fix: shorten it, or show the reason in the no-match panel.
+- r3-2: a dc:/da: search also waits for a free-space wipe or an uncompress, which remove no folders. Fix: wait only for Delete/Overwrite (`deleting`) and clean-up.
+- r3-3: the owed dc:/da: search starts while the Search tab is hidden and can refuse a Delete in Tree View for a few seconds. Fix: re-run it only when the Search tab is shown.
+- Not yet tried by hand in the running app: the wait-and-run-again behaviour (only its helpers are unit-tested).
+
 ## Left out on purpose
 
 Registry cleaning, empty-folder and broken-shortcut finders, "not opened in years" lists, scheduled automatic cleaning, a quarantine folder. Reasons are in the conversation that produced this plan: low value against real risk, unreliable Windows dates, or removing the review that keeps clean-ups safe.
