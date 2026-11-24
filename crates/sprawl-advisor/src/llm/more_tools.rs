@@ -23,7 +23,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 so give it with another narrowing word), folder: or file:, path:steam (in the path), depth:<3, regex:^IMG_\\d+$, parent:C:\\Games (directly \
                 inside it), child:*.tmp (folders holding one), dupe:, sizedupe:, attrib:hs, len:>260, audio: video: pic: doc: exe: zip:, and groups <a b>|c. \
                 With path, only inside that folder (and the scan holding it is the one searched). Biggest first. \
-                Each result says when it was last opened and changed, and, for a program, when one with its name last ran (by program name, any folder).",
+                Each result says when it was last opened and changed, and, for a program, when one with its name last ran (by program name, any folder). \n                A folder's last-opened date comes from its listing: files open right now, or used under another hard-link name, can show an older date.",
             schema: json!({"type": "object", "properties": {
                 "query": {"type": "string", "description": "The search, as typed in the Search tab, e.g. ext:iso >1gb or node_modules folder:"},
                 "path": {"type": "string", "description": "Only inside this folder."},
@@ -86,6 +86,9 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     let mut hits: Vec<usize> = hits.into_iter().filter(|&n| n != top && within(tree, n, top)).collect();
     // `dc:`: each match's creation time, read for the matches the other words left
     let mut created_notes: Vec<String> = Vec::new();
+    // matches the other words left, and how many of them no time could be read for (times-20)
+    let asked = hits.len();
+    let mut created_missed = 0usize;
     if let Some((from, to)) = dates.created {
         // a view that holds no disk times reads nothing, and says so instead of looking
         if let Some(unseen) = access.unseen() {
@@ -99,6 +102,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
         }
         let mut born = crate::born::Created::new();
         let mut unread = 0usize;
+        let mut unknown_made = 0usize;
         hits.retain(|&n| match born.of(&tree.path_of(n)) {
             crate::born::Born::At(t) => {
                 let s = sprawl_core::query::unix_secs(t);
@@ -109,8 +113,12 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
                 false
             }
             // counted with its reason inside `born`
-            crate::born::Born::Unknown => false,
+            crate::born::Born::Unknown => {
+                unknown_made += 1;
+                false
+            }
         });
+        created_missed = unread + unknown_made;
         if unread > 0 {
             created_notes.push(format!("{unread} matches not checked for created: the reading limit ran out."));
         }
@@ -132,8 +140,16 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     }
     let partial_note = crate::used::partial_note(partial, "match", "matches");
     if hits.is_empty() {
-        let missed = unread + unknown + partial;
-        let mut s = if (by_time || !created_notes.is_empty()) && missed + created_notes.len() > 0 {
+        let missed = unread + unknown + partial + created_missed;
+        let decided = asked.saturating_sub(missed);
+        let mut s = if missed > 0 && decided > 0 {
+            // some were read and none is in the range: not "nothing could be checked"
+            format!(
+                "None of the {decided} {} read for {text} in {} is in the range; {missed} couldn't be checked.",
+                if decided == 1 { "match" } else { "matches" },
+                tree.path_of(top).display()
+            )
+        } else if missed > 0 {
             format!("Nothing in {} could be checked for {text}: their times weren't read.", tree.path_of(top).display())
         } else {
             format!("Nothing in {} matches {text}.", tree.path_of(top).display())
@@ -382,6 +398,30 @@ mod tests {
         let tiny = search(&t, &facts, &json!({"query": "*.txt da:today"}), &mut crate::used::Accessed::with_budget(0)).unwrap();
         assert!(tiny.contains("could be checked"), "{tiny}");
         assert!(tiny.contains("1 match not checked for a last-opened time: the reading limit ran out"), "{tiny}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Matches that were read and are out of the range say so; only matches no time could be read
+    /// for are "not checked" (times-20).
+    #[test]
+    fn an_empty_range_is_not_reported_as_nothing_checked() {
+        let dir = std::env::temp_dir().join(format!("sprawl-more-decided-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["a.txt", "b.txt", "c.txt", "gone.txt"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let t = tree_of(&dir);
+        // gone since the scan: no time to read for this one
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        let facts = Facts::from_apps(Vec::new());
+        let r = search(&t, &facts, &json!({"query": "*.txt dc:<2000"}), &mut crate::used::Accessed::new()).unwrap();
+        assert!(r.starts_with("None of the 3 matches read for *.txt dc:<2000"), "{r}");
+        assert!(r.contains("1 couldn't be checked") && !r.contains("Nothing"), "{r}");
+        assert!(r.contains("gone"), "the reason is still said: {r}");
+        // all unread: still "could be checked"
+        let tiny = search(&t, &facts, &json!({"query": "*.txt da:today"}), &mut crate::used::Accessed::with_budget(0)).unwrap();
+        assert!(tiny.contains("could be checked"), "{tiny}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

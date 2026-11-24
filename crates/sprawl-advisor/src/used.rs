@@ -291,15 +291,7 @@ impl Accessed {
             self.tally(NOT_FIXED);
             return LastOpened::Unknown;
         };
-        match *self.drives.entry(drive).or_insert_with(|| {
-            if !fixed_drive(drive) {
-                Drive::NotFixed
-            } else if !ntfs(drive) {
-                Drive::NotNtfs
-            } else {
-                Drive::FixedNtfs
-            }
-        }) {
+        match self.drive_kind(drive) {
             Drive::FixedNtfs => {}
             Drive::NotFixed => {
                 self.tally(NOT_FIXED);
@@ -333,6 +325,29 @@ impl Accessed {
                 self.tally(why);
                 LastOpened::Unknown
             }
+        }
+    }
+
+    /// What kind of volume `drive` is, asked once for the answer.
+    fn drive_kind(&mut self, drive: char) -> Drive {
+        *self.drives.entry(drive).or_insert_with(|| {
+            if !fixed_drive(drive) {
+                Drive::NotFixed
+            } else if !ntfs(drive) {
+                Drive::NotNtfs
+            } else {
+                Drive::FixedNtfs
+            }
+        })
+    }
+
+    /// Whether `path` is on a drive whose last-access times are read at all (a local fixed NTFS
+    /// disk). A search asks this before "too many to read": narrowing it could never help on a
+    /// drive that is never read.
+    pub fn reads_drive(&mut self, path: &std::path::Path) -> bool {
+        match drive_of(path) {
+            Some(d) => self.drive_kind(d) == Drive::FixedNtfs,
+            None => false,
         }
     }
 
