@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::used::{drive_of, Unseen};
+use crate::used::{drive_of, refusal_of, tally_reason, Unseen};
 
 /// What one path's creation time gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,11 +34,6 @@ pub const ANSWER_BUDGET: usize = crate::used::ANSWER_BUDGET;
 const NOT_FIXED: &str = "this drive isn't a local fixed disk, so its times aren't read";
 const SKIPPED: &str = "it is in a folder skipped in Settings > Scanning";
 const SKIPPED_UNKNOWN: &str = "the folders to skip in Settings > Scanning couldn't be read";
-/// The only reason that means the item isn't there: an open that says NotFound.
-const GONE: &str = "the item is gone";
-/// Everything else an open refuses: a link or a cloud file is never followed or recalled, and a
-/// name Windows can't take is never opened. None of these means the item is gone (times-13).
-const NOT_READ: &str = "it is a link, a cloud file that isn't on this PC, a name Windows can't open, or under a link, so it isn't read";
 
 /// Creation times for one answer: each path is one call, the folders to skip are read once, and
 /// the work is bounded.
@@ -54,32 +49,32 @@ pub struct Created {
     parent: Option<(PathBuf, sprawl_core::local::Directory)>,
     /// Nothing is read: a client that may only see the scan, or a view from a CSV file.
     unseen: Option<Unseen>,
-    /// Why no time can be read, when that is the drive or a skip rather than the limit.
-    why: Option<&'static str>,
+    /// How many answers had no time for each reason, each said with its own.
+    reasons: Vec<(&'static str, usize)>,
 }
 
 impl Created {
     /// For an answer that may look at the disk.
     pub fn new() -> Created {
-        Created { left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), drives: Default::default(), parent: None, unseen: None, why: None }
+        Created { left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), drives: Default::default(), parent: None, unseen: None, reasons: Vec::new() }
     }
 
     /// For a view that holds no disk times at all (a client that may only see the scan, or a
     /// view loaded from a CSV file): nothing is read, and no note is added about the disk.
     pub fn off_for(unseen: Unseen) -> Created {
-        Created { left: 0, excluded: Vec::new(), drives: Default::default(), parent: None, unseen: Some(unseen), why: None }
+        Created { left: 0, excluded: Vec::new(), drives: Default::default(), parent: None, unseen: Some(unseen), reasons: Vec::new() }
     }
 
     /// The same with a given reading limit, to see what running out says.
     #[cfg(test)]
     pub(crate) fn with_budget(left: usize) -> Created {
-        Created { left, excluded: Vec::new(), drives: Default::default(), parent: None, unseen: None, why: None }
+        Created { left, excluded: Vec::new(), drives: Default::default(), parent: None, unseen: None, reasons: Vec::new() }
     }
 
     /// The same with given folders to skip, to see what a skipped folder says.
     #[cfg(test)]
     pub(crate) fn with_excluded(left: usize, excluded: Vec<PathBuf>) -> Created {
-        Created { left, excluded, drives: Default::default(), parent: None, unseen: None, why: None }
+        Created { left, excluded, drives: Default::default(), parent: None, unseen: None, reasons: Vec::new() }
     }
 
     /// When the item at `path` was created.
@@ -92,28 +87,28 @@ impl Created {
         }
         // a folder the user skips is not read, and a list that can't be read refuses them all
         if crate::exclusions::unreadable(&self.excluded) {
-            self.why.get_or_insert(SKIPPED_UNKNOWN);
+            self.tally(SKIPPED_UNKNOWN);
             return Born::Unknown;
         }
         if self.excluded.iter().any(|p| crate::finding::within(path, p)) {
-            self.why.get_or_insert(SKIPPED);
+            self.tally(SKIPPED);
             return Born::Unknown;
         }
         let Some(drive) = drive_of(path) else {
-            self.why.get_or_insert(NOT_FIXED);
+            self.tally(NOT_FIXED);
             return Born::Unknown;
         };
         if !*self.drives.entry(drive).or_insert_with(|| crate::used::fixed_drive(drive)) {
-            self.why.get_or_insert(NOT_FIXED);
+            self.tally(NOT_FIXED);
             return Born::Unknown;
         }
         self.left -= 1;
         match self.time_of(path) {
             Ok(t) => Born::At(t),
             Err(e) => {
-                // only NotFound means it is gone: a link, a cloud-only file, a name Windows
-                // can't open or a folder that can't be pinned is a different answer
-                self.why.get_or_insert(if e.kind() == std::io::ErrorKind::NotFound { GONE } else { NOT_READ });
+                // only NotFound (of the item or of its folder) means it is gone: a link, a
+                // cloud-only file or a name Sprawl doesn't open is a different answer
+                self.tally(refusal_of(&e));
                 Born::Unknown
             }
         }
@@ -127,9 +122,7 @@ impl Created {
             // a drive's root: nothing above it to pin
             return std::fs::symlink_metadata(path)?.created();
         };
-        if !self.pin(parent) {
-            return Err(std::io::Error::other("the folder couldn't be pinned"));
-        }
+        self.pin(parent)?;
         let Some((_, dir)) = self.parent.as_ref() else { return Err(std::io::Error::other("the folder couldn't be pinned")) };
         use sprawl_core::local::{Disposition, Kind, READ_ATTRIBUTES, SHARE_DELETE, SHARE_READ, SHARE_WRITE};
         let file = dir.open_in(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either, false)?;
@@ -137,19 +130,29 @@ impl Created {
     }
 
     /// The folder at `path` pinned, reusing the one already held when it is the same folder.
-    fn pin(&mut self, path: &Path) -> bool {
+    fn pin(&mut self, path: &Path) -> std::io::Result<()> {
         if self.parent.as_ref().is_some_and(|(p, _)| p == path) {
-            return true;
+            return Ok(());
         }
         self.parent = None;
-        let Ok(dir) = sprawl_core::local::directory(path) else { return false };
+        let dir = sprawl_core::local::directory(path)?;
         self.parent = Some((path.to_path_buf(), dir));
-        true
+        Ok(())
     }
 
-    /// Why no time can be read, when that is the drive rather than the limit.
-    pub fn why(&self) -> Option<&'static str> {
-        self.why
+    fn tally(&mut self, why: &'static str) {
+        tally_reason(&mut self.reasons, why);
+    }
+
+    /// The first reason no time could be read (a test's shorthand).
+    #[cfg(test)]
+    fn why(&self) -> Option<&'static str> {
+        self.reasons.first().map(|r| r.0)
+    }
+
+    /// One line per reason a match had no creation time.
+    pub fn notes(&self, one: &str, many: &str) -> Vec<String> {
+        crate::used::reason_lines(&self.reasons, one, many, "with no creation time to check")
     }
 
     /// Reads still allowed for this answer.
@@ -210,19 +213,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sprawl-born-refused-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // 264 bytes of name (134 UTF-16 units): Windows can hold it, Sprawl's plain-name check
-        // can't take it, and that is not "the item is gone"
-        let long = format!("{}.txt", "\u{e9}".repeat(130));
-        std::fs::write(dir.join(&long), b"x").unwrap();
+        // a name Sprawl's plain-name check refuses (a trailing dot): not "the item is gone"
+        let long = "bad.";
         let mut refused = Created::with_budget(10);
-        assert_eq!(refused.of(&dir.join(&long)), Born::Unknown);
+        assert_eq!(refused.of(&dir.join(long)), Born::Unknown);
         let why = refused.why().unwrap();
         assert!(!why.contains("gone"), "{why}");
         assert!(why.contains("isn't read"), "{why}");
         // a folder that can't be pinned is the same kind of answer
         let mut off = Created::with_budget(10);
         assert_eq!(off.of(&dir.join("no-such-folder").join("x.txt")), Born::Unknown);
-        assert!(!off.why().unwrap().contains("gone"), "{}", off.why().unwrap());
+        // a folder that is gone since the scan means the item is gone with it
+        assert!(off.why().unwrap().contains("is gone"), "{}", off.why().unwrap());
         // only a leaf that is really gone says so
         let mut gone = Created::with_budget(10);
         assert_eq!(gone.of(&dir.join("gone.txt")), Born::Unknown);
@@ -230,6 +232,30 @@ mod tests {
         drop(refused);
         drop(off);
         drop(gone);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// One answer over a deleted file, a refused name and a file under a deleted folder gives a
+    /// count for each reason: only the vanished ones say gone, and a long non-Latin name (an
+    /// ordinary NTFS name) is read (times-17, times-19).
+    #[test]
+    fn each_reason_has_its_own_line() {
+        let dir = std::env::temp_dir().join(format!("sprawl-born-lines-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let long = format!("{}.txt", "\u{4e2d}".repeat(100));
+        std::fs::write(dir.join(&long), b"x").unwrap();
+        let mut c = Created::with_budget(10);
+        assert!(matches!(c.of(&dir.join(&long)), Born::At(_)), "a 100 character CJK name is read");
+        assert_eq!(c.of(&dir.join("gone.txt")), Born::Unknown);
+        assert_eq!(c.of(&dir.join("bad.")), Born::Unknown);
+        assert_eq!(c.of(&dir.join("no-folder").join("x.txt")), Born::Unknown);
+        let lines = c.notes("match", "matches");
+        let said = lines.join("\n");
+        assert_eq!(lines.len(), 2, "{said}");
+        assert!(lines.iter().any(|l| l.starts_with("2 matches") && l.contains("the item is gone")), "{said}");
+        assert!(lines.iter().any(|l| l.starts_with("1 match ") && l.contains("isn't read") && !l.contains("gone")), "{said}");
+        drop(c);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

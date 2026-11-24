@@ -151,6 +151,34 @@ const NOT_NTFS: &str = "this drive isn't NTFS";
 const SKIPPED: &str = "it is in a folder skipped in Settings > Scanning";
 const SKIPPED_UNKNOWN: &str = "the folders to skip in Settings > Scanning couldn't be read";
 const NO_FILES: &str = "it holds no files to have one from";
+/// An open that says NotFound: the item (or the folder it was in) was removed since the scan.
+pub(crate) const GONE: &str = "the item is gone";
+/// Everything else an open refuses: a link or a cloud file is never followed or recalled, and a
+/// name Sprawl doesn't open is never opened. None of these means the item is gone.
+pub(crate) const NOT_READ: &str = "it is a link, a cloud file that isn't on this PC, a name Sprawl doesn't open, or Windows wouldn't let it be opened, so it isn't read";
+const UNREADABLE: &str = "the time couldn't be read";
+
+/// Counts one more answer without a time under `why`.
+pub(crate) fn tally_reason(reasons: &mut Vec<(&'static str, usize)>, why: &'static str) {
+    match reasons.iter_mut().find(|(w, _)| *w == why) {
+        Some((_, n)) => *n += 1,
+        None => reasons.push((why, 1)),
+    }
+}
+
+/// One line per reason an answer had no time: `{n} {one|many} {what}: {reason}.`
+pub(crate) fn reason_lines(reasons: &[(&'static str, usize)], one: &str, many: &str, what: &str) -> Vec<String> {
+    reasons.iter().map(|&(why, n)| format!("{n} {} {what}: {why}.", if n == 1 { one } else { many })).collect()
+}
+
+/// The error an open gave, as the reason said for it: only NotFound means gone.
+pub(crate) fn refusal_of(e: &std::io::Error) -> &'static str {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        GONE
+    } else {
+        NOT_READ
+    }
+}
 
 /// Last-access times for one answer: the setting and the folders to skip are read once, each
 /// drive is asked about once, and the work is bounded, so an answer about a folder of a million
@@ -167,8 +195,11 @@ pub struct Accessed {
     /// all instead of opening the whole chain for each file.
     parent: Option<(PathBuf, sprawl_core::local::Directory)>,
     drives: std::collections::HashMap<char, Drive>,
-    /// Why no time can be read, when that is the machine or the drive rather than the limit.
-    why: Option<&'static str>,
+    /// How many answers had no time for each reason (the machine, the drive, a skip, a refused
+    /// or vanished item, nothing to have one from): each count is said with its own reason.
+    reasons: Vec<(&'static str, usize)>,
+    /// Why the last [`Accessed::read`] found nothing, when the item itself was refused or gone.
+    refusal: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -181,7 +212,7 @@ enum Drive {
 impl Accessed {
     /// For an answer that may look at the disk.
     pub fn new() -> Accessed {
-        Accessed { kept: access_times_kept(), unseen: None, left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), parent: None, drives: Default::default(), why: None }
+        Accessed { kept: access_times_kept(), unseen: None, left: ANSWER_BUDGET, excluded: crate::exclusions::configured(), parent: None, drives: Default::default(), reasons: Vec::new(), refusal: None }
     }
 
     /// For a client that may only see the scan on screen: nothing is read, and no note is added
@@ -193,19 +224,29 @@ impl Accessed {
     /// For a view that holds no disk times at all: a client that may only see the scan, or a
     /// view loaded from a CSV file. Nothing is read.
     pub fn off_for(unseen: Unseen) -> Accessed {
-        Accessed { kept: false, unseen: Some(unseen), left: 0, excluded: Vec::new(), parent: None, drives: Default::default(), why: None }
+        Accessed { kept: false, unseen: Some(unseen), left: 0, excluded: Vec::new(), parent: None, drives: Default::default(), reasons: Vec::new(), refusal: None }
     }
 
     /// The same with a given reading limit, to see what running out says (a test, or an answer
     /// smaller than [`ANSWER_BUDGET`]).
     pub fn with_budget(left: usize) -> Accessed {
-        Accessed { kept: true, unseen: None, left, excluded: Vec::new(), parent: None, drives: Default::default(), why: None }
+        Accessed { kept: true, unseen: None, left, excluded: Vec::new(), parent: None, drives: Default::default(), reasons: Vec::new(), refusal: None }
     }
 
     /// The same with given folders to skip, to see what a skipped folder says.
     #[cfg(test)]
     pub(crate) fn with_excluded(left: usize, excluded: Vec<PathBuf>) -> Accessed {
-        Accessed { kept: true, unseen: None, left, excluded, parent: None, drives: Default::default(), why: None }
+        Accessed { kept: true, unseen: None, left, excluded, parent: None, drives: Default::default(), reasons: Vec::new(), refusal: None }
+    }
+
+    fn tally(&mut self, why: &'static str) {
+        tally_reason(&mut self.reasons, why);
+    }
+
+    /// Pretends the machine keeps (or doesn't keep) last-access times, for a test in another crate.
+    #[doc(hidden)]
+    pub fn set_kept_for_test(&mut self, kept: bool) {
+        self.kept = kept;
     }
 
     /// Whether this machine keeps last-access times at all.
@@ -231,7 +272,7 @@ impl Accessed {
             return LastOpened::Unknown;
         }
         if !self.kept {
-            self.why.get_or_insert(NOT_KEPT);
+            self.tally(NOT_KEPT);
             return LastOpened::Unknown;
         }
         if self.left == 0 {
@@ -239,15 +280,15 @@ impl Accessed {
         }
         // a folder the user skips is not read, and a list that can't be read refuses them all
         if crate::exclusions::unreadable(&self.excluded) {
-            self.why.get_or_insert(SKIPPED_UNKNOWN);
+            self.tally(SKIPPED_UNKNOWN);
             return LastOpened::Unknown;
         }
         if self.excluded.iter().any(|p| crate::finding::within(path, p)) {
-            self.why.get_or_insert(SKIPPED);
+            self.tally(SKIPPED);
             return LastOpened::Unknown;
         }
         let Some(drive) = drive_of(path) else {
-            self.why.get_or_insert(NOT_FIXED);
+            self.tally(NOT_FIXED);
             return LastOpened::Unknown;
         };
         match *self.drives.entry(drive).or_insert_with(|| {
@@ -261,15 +302,16 @@ impl Accessed {
         }) {
             Drive::FixedNtfs => {}
             Drive::NotFixed => {
-                self.why.get_or_insert(NOT_FIXED);
+                self.tally(NOT_FIXED);
                 return LastOpened::Unknown;
             }
             Drive::NotNtfs => {
-                self.why.get_or_insert(NOT_NTFS);
+                self.tally(NOT_NTFS);
                 return LastOpened::Unknown;
             }
         }
         let mut budget = self.left.min(PER_PATH);
+        self.refusal = None;
         let (t, complete) = self.read(path, &mut budget);
         self.left -= self.left.min(PER_PATH) - budget;
         match t {
@@ -283,10 +325,14 @@ impl Accessed {
             None if budget == 0 => LastOpened::Unread,
             // everything was read and no file was there to have a time (times-16)
             None if complete => {
-                self.why.get_or_insert(NO_FILES);
+                self.tally(NO_FILES);
                 LastOpened::Unknown
             }
-            None => LastOpened::Unknown,
+            None => {
+                let why = self.refusal.take().unwrap_or(UNREADABLE);
+                self.tally(why);
+                LastOpened::Unknown
+            }
         }
     }
 
@@ -298,13 +344,18 @@ impl Accessed {
             // a drive's root: nothing above it to pin
             return accessed_in_with(path, budget, &self.excluded);
         };
-        if !self.pin(parent) {
+        if let Err(e) = self.pin(parent) {
+            self.refusal = Some(refusal_of(&e));
             return (None, false);
         }
         let Some((_, dir)) = self.parent.as_ref() else { return (None, false) };
         use sprawl_core::local::{Disposition, Kind, READ_ATTRIBUTES, SHARE_DELETE, SHARE_READ, SHARE_WRITE};
-        let Ok(file) = dir.open_in(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either, false) else {
-            return (None, false);
+        let file = match dir.open_in(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either, false) {
+            Ok(f) => f,
+            Err(e) => {
+                self.refusal = Some(refusal_of(&e));
+                return (None, false);
+            }
         };
         let Ok(m) = file.metadata() else { return (None, false) };
         if m.is_file() {
@@ -320,14 +371,14 @@ impl Accessed {
     }
 
     /// The folder at `path` pinned, reusing the one already held when it is the same folder.
-    fn pin(&mut self, path: &std::path::Path) -> bool {
+    fn pin(&mut self, path: &std::path::Path) -> std::io::Result<()> {
         if self.parent.as_ref().is_some_and(|(p, _)| p == path) {
-            return true;
+            return Ok(());
         }
         self.parent = None;
-        let Ok(dir) = sprawl_core::local::directory(path) else { return false };
+        let dir = sprawl_core::local::directory(path)?;
         self.parent = Some((path.to_path_buf(), dir));
-        true
+        Ok(())
     }
 
     /// [`Accessed::of`] as a line builder takes it: the time and whether all of the path was
@@ -362,7 +413,11 @@ pub fn notes(unread: usize, unknown: usize, one: &str, many: &str, access: &Acce
         out.push(format!("{} not checked for a last-opened time: the reading limit ran out (a smaller folder or a narrower search gives more).", count(unread)));
     }
     if unknown > 0 {
-        out.push(format!("{} with no last-opened time here: {}.", count(unknown), access.why.unwrap_or("the time couldn't be read")));
+        if access.reasons.is_empty() {
+            out.push(format!("{} with no last-opened time here: {UNREADABLE}.", count(unknown)));
+        } else {
+            out.extend(reason_lines(&access.reasons, one, many, "with no last-opened time here"));
+        }
     }
     out
 }
@@ -614,7 +669,7 @@ mod tests {
         assert_eq!(said, vec!["1 match not checked for a last-opened time: the reading limit ran out (a smaller folder or a narrower search gives more)."]);
         assert!(notes(2, 0, "item", "items", &a)[0].starts_with("2 items not checked"));
         // a PC that keeps none says why, once
-        let mut none = Accessed { kept: false, unseen: None, left: 10, excluded: Vec::new(), parent: None, drives: Default::default(), why: None };
+        let mut none = Accessed { kept: false, unseen: None, left: 10, excluded: Vec::new(), parent: None, drives: Default::default(), reasons: Vec::new(), refusal: None };
         assert_eq!(none.of(&file), LastOpened::Unknown);
         assert!(notes(0, 1, "item", "items", &none)[0].contains("last-access updates turned off"));
         // a restricted client may not see the disk: nothing is said
@@ -800,6 +855,51 @@ mod tests {
         assert_eq!(find(r"C:\Apps\game\bin"), Some(4), "the second root's app gets its own usage");
         assert_eq!(find(r"c:\Apps\game"), Some(2), "the drive letter's case doesn't count");
         assert_eq!(find(r"C:\Apps\GAME\bin"), None, "neither by chance");
+    }
+
+    /// Items with no time are counted per reason: an empty folder holds no files, a file gone
+    /// since the scan is gone, a link is refused, and none is said for another (times-17).
+    #[test]
+    fn each_reason_for_no_time_has_its_own_count() {
+        let dir = std::env::temp_dir().join(format!("sprawl-reasons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        std::fs::write(dir.join("kept.txt"), b"x").unwrap();
+        // a long non-Latin name is an ordinary NTFS name: 100 characters, 300 UTF-8 bytes
+        let long = format!("{}.txt", "\u{4e2d}".repeat(100));
+        std::fs::write(dir.join(&long), b"x").unwrap();
+        let junction = dir.join("junc");
+        let linked = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(dir.join("empty"))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let mut a = Accessed::with_budget(100);
+        let (mut unread, mut unknown) = (0, 0);
+        assert!(a.time(&dir.join(&long), &mut unread, &mut unknown).is_some(), "a long non-Latin name is read");
+        assert!(a.time(&dir.join("kept.txt"), &mut unread, &mut unknown).is_some());
+        assert!(a.time(&dir.join("empty"), &mut unread, &mut unknown).is_none());
+        assert!(a.time(&dir.join("gone.txt"), &mut unread, &mut unknown).is_none());
+        assert!(a.time(&dir.join("no-folder").join("x.txt"), &mut unread, &mut unknown).is_none());
+        let mut expected = 3;
+        if linked {
+            assert!(a.time(&junction, &mut unread, &mut unknown).is_none());
+            expected += 1;
+        }
+        assert_eq!(unknown, expected);
+        let lines = notes(unread, unknown, "item", "items", &a);
+        let said = lines.join("\n");
+        assert_eq!(lines.iter().filter(|l| l.contains("holds no files")).count(), 1, "{said}");
+        assert!(lines.iter().any(|l| l.starts_with("1 item") && l.contains("holds no files")), "{said}");
+        assert!(lines.iter().any(|l| l.starts_with("2 items") && l.contains("the item is gone")), "{said}");
+        assert!(lines.iter().all(|l| !(l.contains("holds no files") && l.contains("gone"))), "{said}");
+        drop(a);
+        if linked {
+            let _ = std::fs::remove_dir(&junction);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// The real readers on a small folder of this repository (run by hand).
