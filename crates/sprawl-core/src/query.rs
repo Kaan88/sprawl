@@ -68,10 +68,10 @@ exact:desktop.ini\tthe whole name, not part of it (also wholename:)
 depth:<=2\tat most two levels below the scanned folder
 parent:C:\\Games\\Steam\tonly what is directly inside that folder (parent:steam: a folder named steam)
 child:*.tmp\tfolders that directly hold a *.tmp file or folder
-childcount:>10000\tfolders directly holding more than 10,000 files and folders
-childfilecount:>10000\tfolders directly holding more than 10,000 files
-dupe:\tfiles and folders with another match of the same name (any case)
-sizedupe:\tfiles with another match of the same size
+childcount:>10000\tfolders directly holding more than 10,000 files and folders (what this scan saw: a link, a folder it could not read or whose contents are excluded is left out)
+childfilecount:>10000\tfolders directly holding more than 10,000 files (same)
+dupe:\tfiles and folders with another match of the same name (any case, names only), looked for within one scan before dc: and da:
+sizedupe:\tfiles with another match of the same size (sizes only, not contents), looked for within one scan before dc: and da:
 attrib:hs\thidden and system: h hidden, s system, r read-only, l link or junction, c compressed
 len:>260\ta full path longer than 260 characters (also len:<=200, len:100..260)
 audio:  video:  pic:\tfiles of that kind, the same lists as the Type filter
@@ -204,9 +204,10 @@ impl Pat {
             }
             Pat::Child(ts) => it.child_matches(ts),
             // counts are of a folder's children: a file has none, and `childcount:0` means the
-            // empty folders, not every file
-            Pat::ChildCount(a, b) => it.is_dir() && (*a..=*b).contains(&it.children()),
-            Pat::ChildFiles(a, b) => it.is_dir() && (*a..=*b).contains(&it.child_files()),
+            // empty folders, not every file; a junction or symlink is never followed by the scan,
+            // so its 0 is not a count
+            Pat::ChildCount(a, b) => it.is_dir() && it.attributes() & crate::attr::REPARSE_POINT == 0 && (*a..=*b).contains(&it.children()),
+            Pat::ChildFiles(a, b) => it.is_dir() && it.attributes() & crate::attr::REPARSE_POINT == 0 && (*a..=*b).contains(&it.child_files()),
             Pat::Attrib { mask, compressed } => it.attributes() & mask == *mask && (!*compressed || it.compressed()),
             Pat::Len(a, b) => {
                 // the path as it is on disk, in UTF-16 units as Windows counts it (lower-casing
@@ -916,35 +917,79 @@ const MARK_CLOSE: u8 = 2;
 /// scan of the query however many `<` it holds: 30 unclosed ones or a pasted address list used
 /// to take seconds to minutes, and it runs on every text change.
 fn marks(c: &[Ch]) -> Vec<u8> {
+    marks_of(c, false).0
+}
+
+/// [`marks`]; with `sized`, a bare size's `<` also opens a group when a later word's `>` follows
+/// an ordinary character (`<2024 report>`), and the second answer is the `<` of the first such
+/// one. That reading is only used to tell the user (the query itself keeps reading it as a
+/// size: `<0 x>` limits sizes).
+fn marks_of(c: &[Ch], sized: bool) -> (Vec<u8>, Option<usize>) {
+    let mut found = None;
     let mut m = vec![0u8; c.len()];
-    let mut open: Vec<usize> = Vec::new();
+    // an open `<`; for a bare size's (`<2024 report>`), how many separators came before it and
+    // true: it is a group's only if a later word's `>` closes it
+    let mut open: Vec<(usize, Option<usize>)> = Vec::new();
     let mut start = true;
+    // where the current word's first character is, and how many word separators went by
+    let mut wb = 0usize;
+    let mut seps = 0usize;
     for (i, &(ch, quoted)) in c.iter().enumerate() {
         if quoted {
+            if start {
+                wb = i;
+            }
             start = false;
         } else if ch == '|' || ch == ';' || ch.is_whitespace() {
             start = true;
+            seps += 1;
         } else if ch == '!' && start {
             // `!<a b>` negates the group: the `<` still starts a word
         } else if ch == '<' && start {
             if bare_size_word(c, i) {
                 // not a group: an ordinary character, as before
+                if sized {
+                    open.push((i, Some(seps)));
+                }
+                wb = i;
                 start = false;
             } else {
                 // a group's `<` still leaves a word start behind it, so groups nest at once
-                open.push(i);
+                open.push((i, None));
             }
         } else if ch == '>' && after_word(c, i + 1, c.len()) {
-            if let Some(o) = open.pop() {
+            while let Some((o, bare)) = open.pop() {
+                if let Some(s) = bare {
+                    let prev = if i > 0 { c[i - 1].0 } else { ' ' };
+                    let ordinary = !(prev.is_whitespace() || matches!(prev, ':' | '=' | '|' | ';' | '<' | '>' | '!'));
+                    if s == seps || !ordinary {
+                        continue;
+                    }
+                }
+                if bare.is_some() {
+                    found.get_or_insert(o);
+                }
                 m[o] = MARK_OPEN;
                 m[i] = MARK_CLOSE;
+                break;
             }
             start = true;
+        } else if ch == ':' && !start && kind_word(&c[wb.min(i)..=i]) && !(wb > 0 && c[wb - 1] == ('!', false)) {
+            // `folder:<a b>|c`: the kind is not part of the group, a word starts after it
+            start = true;
         } else {
+            if start {
+                wb = i;
+            }
             start = false;
         }
     }
-    m
+    (m, found)
+}
+
+/// Whether `t` is exactly an unquoted `folder:` or `file:` (any case).
+fn kind_word(t: &[Ch]) -> bool {
+    strip_kw(t, "folder:").is_some_and(<[Ch]>::is_empty) || strip_kw(t, "file:").is_some_and(<[Ch]>::is_empty)
 }
 
 /// Whether the word starting at `i` (a `<` up to the next space, `|` or `;`) is a bare size
@@ -1109,17 +1154,26 @@ impl Query {
             let n = tok.chars.len();
             // a word with a group `<a b>|c` is no single filter: the chips leave it alone
             if marks(&tok.chars).contains(&MARK_OPEN) {
+                let mut kind = Kind::Any;
+                let mut kind_end = tok.start;
+                for (kw, k) in [("folder:", Kind::Folders), ("file:", Kind::Files)] {
+                    if strip_kw(&tok.chars, kw).is_some() {
+                        kind = k;
+                        kind_end = tok.at[kw.len() - 1] + 1;
+                        break;
+                    }
+                }
                 out.push(Word {
                     span: tok.start..tok.end,
-                    kind: Kind::Any,
-                    kind_end: tok.start,
+                    kind,
+                    kind_end,
                     not: false,
-                    prefix_end: tok.start,
+                    prefix_end: kind_end,
                     key: WordKey::None,
                     case: false,
                     exact: false,
                     path: false,
-                    value_at: tok.start,
+                    value_at: kind_end,
                     value: String::new(),
                 });
                 continue;
@@ -1378,10 +1432,24 @@ fn parse_words(c: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Optio
 /// The terms of one word: `!`, then its alternatives (`a|b`, `a;b`), any of which may be a
 /// group `<...>`: `<a b>|c` is all of a and b, or c.
 fn terms_of(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<Option<Day>>, now: SystemTime) -> Vec<Term> {
-    let m = marks(t);
-    if !m.contains(&MARK_OPEN) {
+    if !marks(t).contains(&MARK_OPEN) {
         return plain_term(t, top, depth, q, today, now);
     }
+    // an unquoted `folder:`/`file:` in front belongs to the word as in plain_term
+    let mut out = Vec::new();
+    let mut t: &[Ch] = t;
+    for (kw, k) in [("folder:", Kind::Folders), ("file:", Kind::Files)] {
+        if let Some(r) = strip_kw(t, kw) {
+            if top {
+                q.kind = k;
+            } else {
+                out.push(Term { not: false, alts: vec![Alt::Pat(Pat::Kind(k))], needs: 0, dated: false });
+            }
+            t = r;
+            break;
+        }
+    }
+    let m = marks(t);
     let mut i = 0usize;
     let not = t.first() == Some(&('!', false));
     if not {
@@ -1449,11 +1517,12 @@ fn terms_of(t: &[Ch], top: bool, depth: u32, q: &mut Query, today: &mut Option<O
         }
     }
     if alts.is_empty() {
-        return Vec::new();
+        return out;
     }
     let needs = alts.iter().fold(0, |a, p| a | p.needs());
     let dated = alts.iter().all(Alt::is_dated);
-    vec![Term { not, alts, needs, dated }]
+    out.push(Term { not, alts, needs, dated });
+    out
 }
 
 /// The terms of a word with no group in it: `folder:`, a bare size, `!` and `a|b`. At the top
@@ -1536,8 +1605,15 @@ impl Query {
             return query;
         }
         let mut today: Option<Option<Day>> = None;
-        let terms = parse_words(&chars_of(q), true, 0, &mut query, &mut today, now);
+        let chars = chars_of(q);
+        let terms = parse_words(&chars, true, 0, &mut query, &mut today, now);
         query.terms = terms;
+        // `<2024 report>` limits sizes (a bare size never opens a group): say so
+        if let Some(o) = marks_of(&chars, true).1 {
+            let word: String = chars[o..].iter().take_while(|&&(c, qd)| qd || !(c.is_whitespace() || c == '|' || c == ';')).map(|c| c.0).collect();
+            let num = word.trim_start_matches(['<', '=']).trim_end_matches('>');
+            query.errors.push(format!("{word}: a group can't start with a number (it reads as a size); quote it: <\"{num}\" ...>"));
+        }
         query
     }
     
@@ -2228,6 +2304,83 @@ mod tests {
         assert!(!q.size_ok(0) && !q.size_ok(1 << 40), "<0 is nothing, not a group");
         // a group whose first word is such text can be quoted
         assert!(m("\"<10mb\"", &file("<10mb")));
+    }
+
+    fn folder(name: &str) -> T {
+        T { dir: true, ..file(name) }
+    }
+
+    /// `folder:` and `file:` in front of a word that holds a group still set the kind.
+    #[test]
+    fn a_kind_in_front_of_a_group() {
+        let q = Query::parse("file:*.tmp|<cache old>");
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert_eq!(q.kind, Kind::Files);
+        assert!(hit(&q, &file("old.tmp")));
+        assert!(!hit(&q, &folder("cache old")), "files only");
+        assert!(!hit(&q, &folder("x.tmp")));
+        let q = Query::parse("folder:empty|<x txt>");
+        assert_eq!(q.kind, Kind::Folders);
+        assert!(hit(&q, &folder("Empty")));
+        assert!(hit(&q, &folder("x txt")));
+        assert!(!hit(&q, &file("x.txt")), "a folder, not the file");
+        // the group itself follows the kind
+        let q = Query::parse("folder:<a b>|c");
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert_eq!(q.kind, Kind::Folders);
+        assert!(hit(&q, &folder("b a")) && hit(&q, &folder("c")) && !hit(&q, &folder("a")) && !hit(&q, &file("c")));
+        let q = Query::parse("FILE:!<a b>");
+        assert_eq!(q.kind, Kind::Files);
+        assert!(hit(&q, &file("a")) && !hit(&q, &file("a b")));
+        // inside a group it is a word of the group
+        let q = Query::parse("<x folder:a|<b c>>|zzz");
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert_eq!(q.kind, Kind::Any);
+        assert!(hit(&q, &folder("x a")) && hit(&q, &folder("x b c")));
+        assert!(!hit(&q, &file("x a")) && hit(&q, &file("zzz")));
+        // quoted, it is plain text; `!folder:` is no kind
+        assert_eq!(Query::parse("\"file:\"<a b>").kind, Kind::Any);
+        // a bare size after the kind stays a size
+        let q = Query::parse("file:<10mb");
+        assert_eq!((q.kind, q.max), (Kind::Files, Some((10u64 << 20) - 1)));
+        // the chips see the kind of such a word and where it ends
+        let w = &Query::words("a file:*.tmp|<cache old>")[1];
+        assert_eq!(w.kind, Kind::Files);
+        assert_eq!(&"a file:*.tmp|<cache old>"[w.span.start..w.kind_end], "file:");
+        assert_eq!(Query::words("<a b>")[0].kind, Kind::Any);
+    }
+
+    /// A group can't start with a number: `<2024 report>` is a size limit, and the user is told.
+    #[test]
+    fn a_group_starting_with_a_number_is_said() {
+        for bad in ["<2024 report>|draft", "<4k video>|uhd", "<10 a>|b", "<1m x>|y", "x <2024 y>"] {
+            let q = Query::parse(bad);
+            assert_eq!(q.errors().len(), 1, "{bad}: {:?}", q.errors());
+            assert!(q.errors()[0].contains("group can't start with a number"), "{:?}", q.errors());
+        }
+        assert!(Query::parse("<2024 report>").errors()[0].contains("<\"2024\" ...>"));
+        // quoted, it is a group
+        let q = Query::parse("<\"2024\" report>|draft");
+        assert!(q.errors().is_empty(), "{:?}", q.errors());
+        assert!(q.min.is_none() && q.max.is_none());
+        assert!(hit(&q, &file("2024 report")) && hit(&q, &file("draft")) && !hit(&q, &file("2024")));
+        // the states of typing a size are not mistakes
+        for ok in ["<10mb", "<10mb >", "<10mb >1mb", "<10mb dm:>", "<0 x", "<a <1gb>", "<10mb>", "a <1gb> b", "<1gb|x"] {
+            assert!(!Query::parse(ok).errors().iter().any(|e| e.contains("group can't")), "{ok}: {:?}", Query::parse(ok).errors());
+        }
+    }
+
+    /// The counts are what the scan saw: a link is never followed, so its 0 is not a count.
+    #[test]
+    fn counts_leave_out_links() {
+        let mut link = folder("Documents and Settings");
+        link.attrs = crate::attr::REPARSE_POINT | crate::attr::HIDDEN;
+        let empty = folder("Empty");
+        for q in ["childcount:0", "folder: childcount:0", "childfilecount:0", "childcount:..5"] {
+            assert!(m(q, &empty), "{q}");
+            assert!(!m(q, &link), "{q}");
+        }
+        assert!(m("attrib:l", &link));
     }
 
     /// `child:` and the counts walk a folder's children: they are checked after the names, so a
