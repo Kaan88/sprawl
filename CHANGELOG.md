@@ -3,7 +3,7 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.9 — 2026-11-24
 
 - Search: after F2 renames a result of the scan, the results come back instead of the list staying on "Getting the names ready...", and the Advisor checks the renamed scan again instead of saying to scan a drive; Delete, Overwrite and rename wait while a `dc:` or `da:` search reads times (it holds those folders open), and a `dc:` or `da:` search started while a Delete, Overwrite or clean-up runs waits for it to finish and then runs by itself; Ctrl+C and Copy Path copy up to 100,000 picked results and say "pick fewer" above that instead of freezing; past 500 labels an AI label no longer pushes out a folder you hid.
 - Tree View: Overwrite and delete from the map's right-click menu acts on the tile again when its row is folded away, as Delete does; typing a name to jump to another row, Left to the folder above and F4 (reset expansion) no longer leave picks the keyboard isn't on or can't see (Shift+Left picks the folder above).

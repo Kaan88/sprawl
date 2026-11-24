@@ -5,7 +5,7 @@ default-members = ["crates/sprawl-core", "crates/sprawl-advisor", "crates/sprawl
 
 [workspace.package]
 edition = "2021"
-version = "1.0.8"
+version = "1.0.9"
 license = "MIT"
 
 [profile.release]
