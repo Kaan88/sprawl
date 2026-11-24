@@ -56,6 +56,8 @@ pub(crate) struct Reads {
 
 /// The count line while a `dc:`/`da:` search reads the matches' times.
 const READING_NOTE: &str = "Reading when the matches were created / last opened...";
+/// What the list says while a `dc:`/`da:` search waits for a Delete or another file operation.
+const DATED_WAIT_NOTE: &str = "dc: and da: wait until the Delete or other file operation has finished (they hold each match's folder open while reading).";
 
 /// What one search's `dc:`/`da:` reads said, for the frame that collects them.
 #[derive(Default, Clone)]
@@ -298,6 +300,13 @@ pub(crate) fn reading_times(running: bool, dates: &sprawl_core::query::ReadDates
     running && !dates.is_empty()
 }
 
+/// Whether a search with these `dc:`/`da:` words may start reading now, a Delete, Overwrite,
+/// uncompress, wipe or clean-up running (`file_op`) or not: the read would hold the folders that
+/// operation is removing, so it waits, and is run again once the operation ends (Fable r2-1).
+pub(crate) fn dated_may_read(dates: &sprawl_core::query::ReadDates, file_op: bool) -> bool {
+    dates.is_empty() || !file_op
+}
+
 /// How many picked results Ctrl+C (copy as files) and Copy Path put on the clipboard at once.
 /// Each path is built and the clipboard's block made on the window's thread: Ctrl+A on a scan
 /// of millions would freeze it for seconds and take gigabytes (Fable final-4).
@@ -356,6 +365,8 @@ pub(crate) struct Search {
     running: Option<Receiver<Found>>,
     /// The search to run once the index is ready.
     pending: bool,
+    /// A `dc:`/`da:` search waits for a file operation to end, and is run again then.
+    dated_owed: bool,
     /// Matches, sorted, for `results_gen`.
     pub(crate) results: Vec<usize>,
     pub(crate) results_gen: u64,
@@ -531,6 +542,7 @@ impl State {
         self.search.cancel.store(true, Ordering::Relaxed);
         self.search.running = None;
         self.search.sorting = None;
+        self.search.dated_owed = false;
         self.search.reads.notes.clear();
         // `dc:`/`da:` read each match's own time, which needs a scan and can't be done for a
         // CSV view: the error is set here, once. A scan finishing (or a CSV view opening) while
@@ -597,6 +609,14 @@ impl State {
         let alloc = if key == crate::tables::Key::Alloc { self.alloc.clone() } else { Vec::new() };
         let ranks = self.ranks_for(gen);
         let dates = self.search.reads.dates;
+        // a Delete, Overwrite or clean-up removes folders the read would hold open, so they'd be
+        // skipped: the read waits for it, with an empty list, and search_poll runs it again then
+        if !dated_may_read(&dates, self.file_op_running()) {
+            self.search.dated_owed = true;
+            self.search.reads.decided = 0;
+            self.search_show(Vec::new(), DATED_WAIT_NOTE.to_string(), false);
+            return;
+        }
         // a `dc:`/`da:` read takes seconds: the older query's rows are never left on screen, ready
         // to be picked and deleted, while the times are read (times-23)
         if !dates.is_empty() {
@@ -644,6 +664,11 @@ impl State {
         self.search.running = Some(rx);
     }
 
+    /// A Delete, Overwrite, uncompress, wipe or clean-up is running.
+    fn file_op_running(&self) -> bool {
+        self.advisor.file_op() || self.advisor.cleanup.running.is_some()
+    }
+
     /// Read the `dc:`/`da:` words of what is typed into [`Search::reads`]: the query without
     /// them, the two times to read, and why they can't be used here.
     pub(crate) fn search_reads(&mut self) {
@@ -662,6 +687,7 @@ impl State {
         let settled = self.search.running.is_none()
             && self.search.sorting.is_none()
             && !self.search.pending
+            && !self.search.dated_owed
             && self.search.typed.is_none()
             && (!m.is_reading() || !reads_places);
         let none = self.view == View::Search
@@ -715,6 +741,11 @@ impl State {
         self.search_none_state();
         if self.search.typed.is_some_and(|t| t.elapsed().as_millis() >= TYPING_PAUSE_MS) {
             self.search.typed = None;
+            self.search_run();
+        }
+        // a `dc:`/`da:` search that waited for a file operation runs once none is running: the
+        // tree generation may not move when it ends, so it is not left to the rerun below
+        if self.search.dated_owed && !self.file_op_running() {
             self.search_run();
         }
         self.more_poll();
@@ -1711,6 +1742,18 @@ mod menu_tests {
         assert!(!dates.is_empty());
         assert!(super::reading_times(true, &dates));
         assert!(!super::reading_times(false, &dates), "a finished read holds nothing");
+    }
+
+    /// r2-1: a dc:/da: read waits while a Delete or other file operation runs; other searches don't.
+    #[test]
+    fn a_date_search_waits_for_a_running_delete() {
+        let none = sprawl_core::query::ReadDates::default();
+        assert!(super::dated_may_read(&none, true), "a search without dc:/da: holds nothing open");
+        assert!(super::dated_may_read(&none, false));
+        let (_, r) = sprawl_core::query::split_read_dates("folder: da:<2023", std::time::SystemTime::now());
+        let dates = r.expect("da: understood");
+        assert!(!super::dated_may_read(&dates, true), "it would hold the folders being deleted");
+        assert!(super::dated_may_read(&dates, false));
     }
 
     /// final-4: Ctrl+C and Copy Path go up to their limit, counted before any path is built.
