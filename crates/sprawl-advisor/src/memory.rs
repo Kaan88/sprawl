@@ -703,13 +703,23 @@ impl Memory {
     }
 
     /// Make room after one more label was pushed: past 500 the oldest AI guess goes, else the
-    /// oldest other entry. The entry just added never goes, and a Hide outlives an AI label.
-    fn trim_labels(&mut self) {
+    /// oldest other entry. A Hide or label of the user's outlives an AI label: when every older
+    /// entry is the user's and the one just added is the AI's, that new one goes instead (and
+    /// false is returned). Otherwise the entry just added never goes.
+    fn trim_labels(&mut self) -> bool {
         if self.labels.len() > 500 {
             let last = self.labels.len() - 1;
-            let at = self.labels[..last].iter().position(|l| l.from == From::Model).unwrap_or(0);
+            let at = match self.labels[..last].iter().position(|l| l.from == From::Model) {
+                Some(at) => at,
+                None if self.labels[last].from == From::Model => {
+                    self.labels.pop();
+                    return false;
+                }
+                None => 0,
+            };
             self.labels.remove(at);
         }
+        true
     }
 
     pub fn add_pref(&mut self, text: &str, from: From) -> Result<(), String> {
@@ -745,7 +755,9 @@ impl Memory {
         }
         self.labels.retain(|l| !l.pattern.eq_ignore_ascii_case(&pattern));
         self.labels.push(Label { pattern, label, from });
-        self.trim_labels();
+        if !self.trim_labels() {
+            return Err("there are already 500 labels and Hides of the user's own; no AI label can be added until the user removes some".into());
+        }
         Ok(())
     }
 
@@ -759,7 +771,7 @@ impl Memory {
             return;
         }
         self.labels.push(l);
-        self.trim_labels();
+        let _ = self.trim_labels();
     }
 
     /// Check a rule the model proposes and keep it for the user to approve.
@@ -1397,6 +1409,16 @@ mod tests {
         assert_eq!(m.labels.len(), 500);
         assert!(labelled(&m.labels, Path::new(r"D:\Games")));
         assert!(!labelled(&m.labels, Path::new(r"D:\Folder0")));
+        // 500 Hides, then an AI label: no Hide goes to make room, the AI label is refused
+        // (Fable final-5)
+        let mut m = Memory::default();
+        for i in 0..500 {
+            m.hide_unexplained(Path::new(&format!(r"D:\Hidden{i}")));
+        }
+        assert!(m.add_label(r"D:\Games", "Steam games", From::Model).is_err());
+        assert_eq!(m.labels.len(), 500);
+        assert!(labelled(&m.labels, Path::new(r"D:\Hidden0")), "the oldest Hide stays");
+        assert!(!labelled(&m.labels, Path::new(r"D:\Games")));
     }
 
     /// Hide holds for a folder whose name is a real %VARIABLE%; an AI label still expands one.
