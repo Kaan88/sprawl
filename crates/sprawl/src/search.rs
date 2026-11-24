@@ -1114,18 +1114,17 @@ impl State {
             let t = self.tree.as_ref();
             return self.scan_targets().iter().filter_map(|&n| t.filter(|t| n < t.nodes.len()).map(|t| t.path_of(n))).collect();
         }
-        self.rows
-            .iter()
-            .filter_map(|&(n, d)| {
-                if d == 0 {
-                    return None;
-                }
-                let (k, id) = (d - 1, n);
-                let (ix, i) = more.item(k, id)?;
-                let p = ix.path_of(i);
-                crate::search_delete::counts(more.sel, &more.picks, (k, id), &p).then_some(p)
-            })
-            .collect()
+        // a path two places list (saved scans whose roots nest) is one pick: opened, shown and
+        // copied once, as Open's limit counts it
+        once_each(self.rows.iter().filter_map(|&(n, d)| {
+            if d == 0 {
+                return None;
+            }
+            let (k, id) = (d - 1, n);
+            let (ix, i) = more.item(k, id)?;
+            let p = ix.path_of(i);
+            crate::search_delete::counts(more.sel, &more.picks, (k, id), &p).then_some(p)
+        }))
     }
 
     /// The scan's nodes Delete, Open, Show in Explorer and Copy Path act on in Search: the picked
@@ -1555,6 +1554,12 @@ pub(crate) fn gone_note(total: usize, gone: usize, nowhere: usize) -> String {
     }
 }
 
+/// `paths` in order, each path (as picks key it) once.
+pub(crate) fn once_each(paths: impl Iterator<Item = std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    paths.filter(|p| seen.insert(crate::search_delete::key(p))).collect()
+}
+
 /// What Search's menu and Delete act on in the scan: [`picked_in_order`], then the map's `tile`
 /// when it is the selected node and not a row already.
 pub(crate) fn scan_targets(rows: &[(usize, usize)], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>, tile: Option<usize>) -> Vec<usize> {
@@ -1652,7 +1657,18 @@ mod picked_tests {
 
 #[cfg(test)]
 mod menu_tests {
-    use super::{can_open, item_applies, MAX_OPEN, SCAN_ONLY};
+    use super::{can_open, item_applies, once_each, MAX_OPEN, SCAN_ONLY};
+
+    /// Two saved scans whose roots nest both list D:\Games\x.iso: the menu opens it once.
+    #[test]
+    fn a_path_two_places_list_is_one_target() {
+        use std::path::PathBuf;
+        let ps = [r"D:\Games\x.iso", r"D:\a.txt", r"D:\Games\x.iso", r"d:\games\X.ISO"].map(PathBuf::from);
+        let out = once_each(ps.into_iter());
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0], PathBuf::from(r"D:\Games\x.iso"));
+        assert_eq!(out[1], PathBuf::from(r"D:\a.txt"));
+    }
 
     /// Open starts a program or an Explorer window for each result, so only up to the limit at
     /// once; one more is refused.
