@@ -1241,6 +1241,10 @@ impl State {
                     }
                     37 => {
                         if let Some(p) = node.parent {
+                            // Shift: the folder above joins the picks (it covers the row left),
+                            // so the keyboard rests on a picked row; without Shift the picks
+                            // went above
+                            shift_left_picks(&mut self.marked, shift, p);
                             self.selected = Some(p);
                             self.refresh_rows();
                             self.scroll_to_selected();
@@ -1272,7 +1276,15 @@ impl State {
                 let n = self.rows.len();
                 let hit = (0..n).map(|i| (start + i) % n.max(1)).find(|&i| self.row_name(i).starts_with(&typed));
                 match hit {
-                    Some(i) => target = i,
+                    Some(i) => {
+                        // a plain move, as an arrow without Shift: the picks go when the keyboard
+                        // goes to another row, so it never rests on a row that is not picked
+                        if !type_find_keeps_picks(k, i) {
+                            self.marked.clear();
+                            self.search.more.picks.clear();
+                        }
+                        target = i;
+                    }
                     None => return true,
                 }
             }
@@ -1364,6 +1376,28 @@ pub(crate) fn tree_arrow_keeps_picks(key: i32, is_dir: bool, open: bool, has_par
     }
 }
 
+/// Type-to-find from row `from` to row `to`: the picks stay only when the keyboard stays on its
+/// row (more letters refining the same name); any other jump is a plain move and drops them.
+pub(crate) fn type_find_keeps_picks(from: usize, to: usize) -> bool {
+    from == to
+}
+
+/// Tree View, Left to the folder above `parent`: with Shift the folder joins the picks (the row
+/// left was added before, and the folder covers it), without Shift the picks were dropped already.
+pub(crate) fn shift_left_picks(marked: &mut std::collections::BTreeSet<usize>, shift: bool, parent: usize) {
+    if shift {
+        marked.insert(parent);
+    } else {
+        marked.clear();
+    }
+}
+
+/// Tree View after its rows change without a move (F4 folds everything): only the picks still on
+/// screen stay picked, so nothing folded away is counted or deleted.
+pub(crate) fn keep_picks_on_rows(marked: &mut std::collections::BTreeSet<usize>, rows: &[(usize, usize)]) {
+    marked.retain(|n| rows.iter().any(|r| r.0 == *n));
+}
+
 /// The keyboard's row after a Ctrl+click on `n`: `n` when it was just picked, else (it was taken
 /// out) a row still picked, or none when nothing is left.
 pub(crate) fn ctrl_click_selected(marked: &std::collections::BTreeSet<usize>, left_out: bool, n: usize) -> Option<usize> {
@@ -1391,10 +1425,43 @@ pub(crate) fn menu_pick(marked: &mut std::collections::BTreeSet<usize>, more_sel
 
 #[cfg(test)]
 mod menu_pick_tests {
-    use super::{ctrl_click_selected, listed_in, menu_pick, shell_allowed, tree_arrow_keeps_picks};
+    use super::{ctrl_click_selected, keep_picks_on_rows, listed_in, menu_pick, shell_allowed, shift_left_picks, tree_arrow_keeps_picks, type_find_keeps_picks};
     use crate::search_delete::{Pick, Picks};
     use crate::state::View;
     use std::collections::BTreeSet;
+
+    /// picks-20 (1): type-to-find jumping to another row drops the picks, as a plain arrow does.
+    #[test]
+    fn type_to_find_on_another_row_drops_the_picks() {
+        assert!(!type_find_keeps_picks(2, 7), "a jump to another row is a plain move");
+        assert!(type_find_keeps_picks(3, 3), "more letters on the same row keep them");
+    }
+
+    /// picks-20 (2): Shift+Left from file a (11) to its folder P (4) picks P, which covers a, so
+    /// the keyboard rests on a picked row and Del and the Menu key both act on P.
+    #[test]
+    fn tree_shift_left_picks_the_folder_above() {
+        // the Shift branch has already added a, the keyboard's row
+        let mut marked = BTreeSet::from([11]);
+        shift_left_picks(&mut marked, true, 4);
+        assert_eq!(marked, BTreeSet::from([4, 11]));
+        assert_eq!(crate::search::picked_selected(&marked, Some(4)), Some(4), "the keyboard's row is picked");
+        // without Shift nothing stays picked
+        let mut marked = BTreeSet::from([11]);
+        shift_left_picks(&mut marked, false, 4);
+        assert!(marked.is_empty());
+        // Left to the folder above is not one of the moves that keep the picks
+        assert!(!tree_arrow_keeps_picks(37, false, false, true));
+    }
+
+    /// picks-20 (3): F4 folds the tree; picks folded away are no longer picked.
+    #[test]
+    fn tree_reset_drops_picks_folded_away() {
+        let mut marked = BTreeSet::from([4, 11, 12]);
+        // after the reset only the root (0) and its children 4 and 6 are rows
+        keep_picks_on_rows(&mut marked, &[(0, 0), (4, 1), (6, 1)]);
+        assert_eq!(marked, BTreeSet::from([4]));
+    }
 
     /// Tree View: a node selected in File View that sits under folded folders is not a row, so
     /// a Ctrl+click on one folder picks that folder alone.

@@ -323,6 +323,11 @@ impl State {
             "mReset" if has_tree => {
                 self.expanded = HashSet::from([ROOT]);
                 self.refresh_rows();
+                // Tree View: picks folded away are picks no more (Del and the count go by rows)
+                if self.view == View::Tree {
+                    crate::tables::keep_picks_on_rows(&mut self.marked, &self.rows);
+                    self.show_selection();
+                }
             }
             "mExpandAll" if has_tree => {
                 let t = self.tree.as_ref().unwrap();
