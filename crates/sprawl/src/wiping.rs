@@ -30,7 +30,17 @@ impl State {
             text(&self.root, "FootLeft", "Overwrite and delete works in Tree View and File View (on rows of this scan).");
             return;
         }
-        let nodes = self.picked_nodes();
+        // File View: what Delete takes there (the files listed and picked, or the map's tile
+        // the menu was opened on); a pick the list no longer shows refuses, as Delete does
+        let nodes = if self.view == View::Files {
+            if self.scan_picks_hidden() {
+                text(&self.root, "FootLeft", "Some of what is picked is not a file in this list, so nothing was overwritten. Pick the files again.");
+                return;
+            }
+            self.scan_targets_top()
+        } else {
+            self.picked_nodes()
+        };
         let Some(t) = self.tree.clone() else { return };
         if nodes.is_empty() {
             text(&self.root, "FootLeft", "Pick the file or folder to overwrite and delete first.");

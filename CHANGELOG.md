@@ -5,6 +5,9 @@ in-app updater shows.
 
 ## Unreleased
 
+- File View: Delete, Delete Permanently and Overwrite and delete from the map's right-click menu on a folder act on that folder again, asking about it with every check, as the menu's other items do.
+- Tree View: a file selected in another tab and not on screen no longer joins the picks on a Ctrl+click or Shift+arrow, and Left or Right drops the picks when it moves to another row or folds a folder away.
+- Search: a result listed by two saved scans is opened, shown and copied once, and counts once toward Open's limit.
 - Delete: in File View, Delete and Overwrite and delete only take the files you picked (a folder left selected in Tree View is no longer asked about); Ctrl+click on a picked row now really takes it out; picks are dropped when you switch tab; a Delete still measuring other drives' folders stops when the result list changes; turning the Treemap off forgets a tile you right-clicked.
 - Search: while `dc:` or `da:` reads the matches' times, the list is emptied and the status says it is reading, so the rows of the search before can't be picked and deleted meanwhile; a range that no read match falls in says "None of the 36,313 read is in the range; 35 couldn't be checked" instead of "Nothing could be checked"; and on a drive whose times are never read, the status gives that reason instead of "too many to read".
 - Ask your disk: a folder's last-opened date comes from its listing, so the AI is told it can look older when its files are open right now or used under another hard-link name.

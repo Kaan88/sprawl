@@ -837,6 +837,12 @@ impl State {
         self.topmost(all)
     }
 
+    /// [`State::scan_targets`] as top-most nodes: what Delete, Overwrite and the row menu's count
+    /// go by in Search and File View.
+    pub(crate) fn scan_targets_top(&self) -> Vec<usize> {
+        self.topmost(self.scan_targets().into_iter().collect())
+    }
+
     /// `all` as top-most nodes of this scan (ROOT and numbers past the tree dropped).
     fn topmost(&self, mut all: std::collections::BTreeSet<usize>) -> Vec<usize> {
         let Some(t) = &self.tree else { return Vec::new() };
@@ -882,7 +888,7 @@ impl State {
                 return;
             }
             // exactly the listed targets, whatever a stale `selected` still holds
-            let nodes = self.topmost(self.scan_targets().into_iter().collect());
+            let nodes = self.scan_targets_top();
             match nodes.as_slice() {
                 [] => self.say_pick(none),
                 [n] => self.delete_single(*n, permanent),
@@ -1467,6 +1473,17 @@ fn forget_missing(t: &mut sprawl_core::Tree, k: usize, sub: &sprawl_core::Tree, 
 }
 
 /// Still in the tree: every step up is among its parent's children (a detached branch isn't).
+/// The selected node after a rescan: in Search and File View one that is gone is dropped (its
+/// folder is not a row there, and may be a map tile right-clicked earlier); elsewhere it moves up
+/// to its nearest folder still there.
+pub(crate) fn selected_after_rescan(view: View, selected: Option<usize>, alive: impl Fn(usize) -> bool, up: impl Fn(usize) -> usize) -> Option<usize> {
+    if matches!(view, View::Search | View::Files) {
+        selected.filter(|&n| alive(n))
+    } else {
+        selected.map(up)
+    }
+}
+
 pub(crate) fn alive(t: &sprawl_core::Tree, mut n: usize) -> bool {
     while let Some(p) = t.nodes.get(n).and_then(|x| x.parent) {
         if !t.nodes[p].children.contains(&n) {
@@ -1552,9 +1569,10 @@ impl State {
             }
             n
         };
-        // in Search a selected node that is gone is dropped: moved up to its folder it would be a
-        // node the list does not show, and Delete would ask about the whole folder
-        self.selected = if self.view == View::Search { self.selected.filter(|&n| alive(t, n)) } else { self.selected.map(up) };
+        // in Search and File View a selected node that is gone is dropped: moved up to its
+        // folder it would be a node the list does not show (or the map's tile right-clicked
+        // before), and Delete would ask about the whole folder
+        self.selected = selected_after_rescan(self.view, self.selected, |n| alive(t, n), up);
         self.map_root = up(self.map_root);
         self.expanded.retain(|&n| alive(t, n));
         // rows picked with Ctrl or Shift are indices too: a detached one would still be
@@ -1579,6 +1597,23 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selected_node_gone_in_a_rescan_is_dropped_in_file_view() {
+        // node 9 (a file) is gone; its folder 4 is still there
+        let alive = |n: usize| n != 9;
+        let up = |n: usize| if n == 9 { 4 } else { n };
+        assert_eq!(selected_after_rescan(View::Files, Some(9), alive, up), None);
+        assert_eq!(selected_after_rescan(View::Search, Some(9), alive, up), None);
+        assert_eq!(selected_after_rescan(View::Tree, Some(9), alive, up), Some(4));
+        assert_eq!(selected_after_rescan(View::Files, Some(3), alive, up), Some(3));
+        // lifted to 4 in File View it would equal a tile right-clicked on folder 4 before, and
+        // the next Delete would take the whole folder
+        let rows = [(9, 0), (3, 0)];
+        let none = std::collections::BTreeSet::new();
+        assert_eq!(crate::search::scan_targets(&rows, &none, Some(4), Some(4)), [4]);
+        assert!(crate::search::scan_targets(&rows, &none, selected_after_rescan(View::Files, Some(9), alive, up), Some(4)).is_empty());
+    }
 
     #[test]
     fn drive_picker_scans_selected_drive_while_f5_repeats_displayed_root() {

@@ -809,6 +809,8 @@ impl State {
     fn row_tapped_inner(&mut self, x: f64, y: f64, double: bool) {
         let k = self.rows_now(Which::Main).at(y);
         let Some(&(n, d)) = self.rows.get(k) else { return };
+        // a click on a row ends the map tile's turn as the menu's target
+        self.search.tile = None;
         let double = if self.view == View::Search { self.tap_is_double((n, d), double) } else { double };
         if self.view == View::Search {
             if d > 0 {
@@ -983,7 +985,12 @@ impl State {
     /// with the row right-clicked.
     fn menu_pick_count(&self, scan: bool) -> usize {
         if scan {
-            return if self.view == View::Search { self.scan_targets().len() } else { self.picked_nodes().len() };
+            return match self.view {
+                View::Search => self.scan_targets().len(),
+                // as Delete and Overwrite count them there: the map's tile included
+                View::Files => self.scan_targets_top().len(),
+                _ => self.picked_nodes().len(),
+            };
         }
         let m = &self.search.more;
         crate::search_delete::count(&m.picks, m.sel.is_some_and(|(k, id)| m.item(k, id).is_some()))
@@ -1061,12 +1068,8 @@ impl State {
     /// The selected node, but in Search only while it is a row of the list (a node left over
     /// from Tree View or an earlier list is not one, and must not join the picks).
     pub(crate) fn selected_listed(&self) -> Option<usize> {
-        self.selected.filter(|&s| match self.view {
-            View::Search => self.rows.iter().any(|r| r.0 == s && self.scan_row(r)),
-            // File View lists files only: a folder left selected in Tree View is not a row
-            View::Files => self.tree.as_ref().is_some_and(|t| t.nodes.get(s).is_some_and(|x| !x.is_dir)),
-            _ => true,
-        })
+        let is_file = |s: usize| self.tree.as_ref().is_some_and(|t| t.nodes.get(s).is_some_and(|x| !x.is_dir));
+        self.selected.filter(|&s| listed_in(self.view, &self.rows, s, is_file))
     }
 
     pub(crate) fn scan_row(&self, r: &(usize, usize)) -> bool {
@@ -1166,6 +1169,7 @@ impl State {
                 return true;
             }
             65 if ctrl => {
+                self.search.tile = None;
                 self.search.more.picks.clear();
                 self.marked = self.rows.iter().filter(|r| self.scan_row(r)).map(|r| r.0).collect();
                 if self.selected_listed().is_none() {
@@ -1177,8 +1181,16 @@ impl State {
             }
             _ => {}
         }
+        // Tree View: Left/Right keep the picks only where the keyboard stays on its row
+        let arrow_keeps = self.view == View::Tree
+            && self.rows.get(k).zip(self.tree.as_ref()).is_some_and(|(&(n, _), t)| {
+                let node = &t.nodes[n];
+                tree_arrow_keeps_picks(key, node.is_dir, self.expanded.contains(&n), node.parent.is_some())
+            });
         // moving: Shift extends the picks, otherwise they go
         if matches!(key, 33..=40) {
+            // and the map's tile is no longer what the menu or Delete acts on
+            self.search.tile = None;
             if shift {
                 self.marked.extend(self.selected_listed());
                 // a row from another drive the keyboard is on starts the run of picks there
@@ -1187,7 +1199,7 @@ impl State {
                         self.more_pick(p, n);
                     }
                 }
-            } else if !(self.view == View::Tree && matches!(key, 37 | 39)) {
+            } else if !arrow_keeps {
                 self.marked.clear();
                 self.search.more.picks.clear();
             }
@@ -1266,6 +1278,7 @@ impl State {
             }
             _ => return false,
         }
+        self.search.tile = None;
         if let Some(&(n, d)) = self.rows.get(target) {
             if !self.scan_row(&(n, d)) {
                 // a row from another drive: only looked at, never part of the scan's picks
@@ -1326,6 +1339,31 @@ impl State {
     }
 }
 
+/// Whether the selected node `s` is a row of the table in `view`: in Search a row of the scan, in
+/// File View a file (its rows are files only), in Tree View a row on screen (not one under a
+/// folded folder, nor one left selected in File View). `is_file` is asked in File View only.
+pub(crate) fn listed_in(view: View, rows: &[(usize, usize)], s: usize, is_file: impl Fn(usize) -> bool) -> bool {
+    match view {
+        View::Search => rows.iter().any(|r| r.0 == s && r.1 == 0),
+        View::Files => is_file(s),
+        View::Tree => rows.iter().any(|r| r.0 == s),
+        _ => true,
+    }
+}
+
+/// Tree View: whether Left or Right keeps the picks. Only when the keyboard stays on its row and
+/// nothing folds away: Right on a closed folder (it opens in place) or on a file (nothing
+/// happens), Left on a closed top row. Right into an open folder moves the keyboard to a row not
+/// picked, Left folds rows (perhaps picked ones) out of sight or moves to the folder above: the
+/// picks go, as on every other move.
+pub(crate) fn tree_arrow_keeps_picks(key: i32, is_dir: bool, open: bool, has_parent: bool) -> bool {
+    match key {
+        39 => !(is_dir && open),
+        37 => !open && !has_parent,
+        _ => false,
+    }
+}
+
 /// The keyboard's row after a Ctrl+click on `n`: `n` when it was just picked, else (it was taken
 /// out) a row still picked, or none when nothing is left.
 pub(crate) fn ctrl_click_selected(marked: &std::collections::BTreeSet<usize>, left_out: bool, n: usize) -> Option<usize> {
@@ -1353,9 +1391,45 @@ pub(crate) fn menu_pick(marked: &mut std::collections::BTreeSet<usize>, more_sel
 
 #[cfg(test)]
 mod menu_pick_tests {
-    use super::{ctrl_click_selected, menu_pick, shell_allowed};
+    use super::{ctrl_click_selected, listed_in, menu_pick, shell_allowed, tree_arrow_keeps_picks};
     use crate::search_delete::{Pick, Picks};
+    use crate::state::View;
     use std::collections::BTreeSet;
+
+    /// Tree View: a node selected in File View that sits under folded folders is not a row, so
+    /// a Ctrl+click on one folder picks that folder alone.
+    #[test]
+    fn tree_view_counts_the_selected_node_only_as_a_row_on_screen() {
+        // rows on screen: the root (0), D:\Projects (4) and D:\Games (6); a.bin (11) is folded away
+        let rows = [(0, 0), (4, 1), (6, 1)];
+        assert!(!listed_in(View::Tree, &rows, 11, |_| true), "a.bin is not on screen");
+        assert!(listed_in(View::Tree, &rows, 4, |_| false));
+        // the first Ctrl+click folds in the keyboard's row only when it is listed
+        let mut marked = BTreeSet::new();
+        if marked.is_empty() && listed_in(View::Tree, &rows, 11, |_| true) {
+            marked.insert(11);
+        }
+        marked.insert(4);
+        assert_eq!(crate::search::picked_selected(&marked, Some(11)), None);
+        assert_eq!(marked, BTreeSet::from([4]), "one row picked, one target");
+        // File View and Search keep their rules
+        assert!(listed_in(View::Files, &[], 11, |n| n == 11));
+        assert!(!listed_in(View::Files, &[(4, 0)], 4, |_| false), "a folder is not a File View row");
+        assert!(!listed_in(View::Search, &[(4, 1)], 4, |_| true), "another drive's row 4 is not node 4");
+    }
+
+    /// Left and Right keep the picks only where the keyboard stays on its row and nothing folds.
+    #[test]
+    fn tree_left_and_right_drop_the_picks_when_the_keyboard_moves_or_rows_fold() {
+        // (key, is_dir, open, has_parent)
+        assert!(tree_arrow_keeps_picks(39, true, false, true), "Right opens a closed folder in place");
+        assert!(tree_arrow_keeps_picks(39, false, false, true), "Right on a file does nothing");
+        assert!(!tree_arrow_keeps_picks(39, true, true, true), "Right into an open folder moves to its first child");
+        assert!(!tree_arrow_keeps_picks(37, true, true, true), "Left folds an open folder, picks in it out of sight");
+        assert!(!tree_arrow_keeps_picks(37, false, false, true), "Left moves to the folder above");
+        assert!(tree_arrow_keeps_picks(37, true, false, false), "Left on a closed top row does nothing");
+        assert!(!tree_arrow_keeps_picks(40, false, false, true));
+    }
 
     #[test]
     fn the_windows_menu_needs_one_result_no_clean_up_and_the_administrator_switch() {
