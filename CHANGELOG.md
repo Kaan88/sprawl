@@ -5,6 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
+- Tree View: Overwrite and delete from the map's right-click menu acts on the tile again when its row is folded away, as Delete does; typing a name to jump to another row, Left to the folder above and F4 (reset expansion) no longer leave picks the keyboard isn't on or can't see (Shift+Left picks the folder above).
 - File View: Delete, Delete Permanently and Overwrite and delete from the map's right-click menu on a folder act on that folder again, asking about it with every check, as the menu's other items do.
 - Tree View: a file selected in another tab and not on screen no longer joins the picks on a Ctrl+click or Shift+arrow, and Left or Right drops the picks when it moves to another row or folds a folder away.
 - Search: a result listed by two saved scans is opened, shown and copied once, and counts once toward Open's limit.

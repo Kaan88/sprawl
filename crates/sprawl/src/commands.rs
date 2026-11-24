@@ -323,6 +323,11 @@ impl State {
             "mReset" if has_tree => {
                 self.expanded = HashSet::from([ROOT]);
                 self.refresh_rows();
+                // Tree View: picks folded away are picks no more (Del and the count go by rows)
+                if self.view == View::Tree {
+                    crate::tables::keep_picks_on_rows(&mut self.marked, &self.rows);
+                    self.show_selection();
+                }
             }
             "mExpandAll" if has_tree => {
                 let t = self.tree.as_ref().unwrap();
@@ -835,6 +840,12 @@ impl State {
         // only a row the table lists (File View: a file) joins the picks
         all.extend(crate::search::picked_selected(&self.marked, self.selected_listed()));
         self.topmost(all)
+    }
+
+    /// Tree View's targets ([`tree_targets`]) as top-most nodes: what Overwrite and delete takes
+    /// there, as Delete does.
+    pub(crate) fn tree_targets_top(&self) -> Vec<usize> {
+        self.topmost(tree_targets(&self.marked, self.selected, self.selected_listed()))
     }
 
     /// [`State::scan_targets`] as top-most nodes: what Delete, Overwrite and the row menu's count
@@ -1594,9 +1605,36 @@ impl State {
     }
 }
 
+/// Tree View: what Delete and Overwrite and delete act on. With nothing marked, the selected node
+/// (a map tile right-clicked among them, whether or not its row is on screen); otherwise the
+/// marked rows and the keyboard's row when it is one of them and on screen (`selected_listed`).
+pub(crate) fn tree_targets(marked: &std::collections::BTreeSet<usize>, selected: Option<usize>, selected_listed: Option<usize>) -> std::collections::BTreeSet<usize> {
+    if marked.is_empty() {
+        return selected.into_iter().collect();
+    }
+    let mut all = marked.clone();
+    all.extend(crate::search::picked_selected(marked, selected_listed));
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// picks-19: a map tile whose row is folded away is still what Overwrite and delete asks
+    /// about when nothing is marked, as Delete does; with a row marked, only the marked row.
+    #[test]
+    fn tree_overwrite_takes_the_tile_when_nothing_is_marked() {
+        use std::collections::BTreeSet;
+        // tile 11 right-clicked: selected, but not a row on screen (selected_listed is None)
+        assert_eq!(tree_targets(&BTreeSet::new(), Some(11), None), BTreeSet::from([11]));
+        assert_eq!(tree_targets(&BTreeSet::new(), None, None), BTreeSet::new());
+        // one row marked, the keyboard elsewhere: only the marked row
+        assert_eq!(tree_targets(&BTreeSet::from([4]), Some(11), None), BTreeSet::from([4]));
+        assert_eq!(tree_targets(&BTreeSet::from([4]), Some(6), Some(6)), BTreeSet::from([4]));
+        // the keyboard's row among the picks joins once
+        assert_eq!(tree_targets(&BTreeSet::from([4, 6]), Some(6), Some(6)), BTreeSet::from([4, 6]));
+    }
 
     #[test]
     fn a_selected_node_gone_in_a_rescan_is_dropped_in_file_view() {

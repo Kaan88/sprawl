@@ -39,7 +39,9 @@ impl State {
             }
             self.scan_targets_top()
         } else {
-            self.picked_nodes()
+            // Tree View: what Delete takes there (the selected node, a map tile among them, when
+            // nothing is marked; otherwise the picked rows)
+            self.tree_targets_top()
         };
         let Some(t) = self.tree.clone() else { return };
         if nodes.is_empty() {
