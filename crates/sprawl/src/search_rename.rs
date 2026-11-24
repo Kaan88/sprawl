@@ -113,7 +113,8 @@ pub(crate) fn rename_on_disk(old: &Path, name: &str, refusal: &dyn Fn(&Path) -> 
 
 /// Why `path` may not be renamed from or to, wherever it is: not a local drive path (a network
 /// share is shown read only, as for every other action), protected, excluded in Settings, or
-/// one the user told Sprawl to Keep (or holding or inside one: a rename would orphan the Keep).
+/// one the user told Sprawl to Keep or holding one (a rename would orphan the Keep; an item
+/// merely inside a kept folder stays spared, since a Keep works by prefix).
 pub(crate) fn path_refusal_for_rename(path: &Path, kept: &[PathBuf]) -> Option<String> {
     if sprawl_core::local::lexical(path).is_err() {
         return Some(format!("{}\n\nisn't on a local drive. Sprawl shows network folders read only and renames only on local drives; rename it in Explorer.", path.display()));
@@ -124,16 +125,18 @@ pub(crate) fn path_refusal_for_rename(path: &Path, kept: &[PathBuf]) -> Option<S
     kept_refusal(path, kept)
 }
 
-/// The Keep decision (what clean-ups spare) that a rename of `path` would orphan, if any.
+/// The Keep decision (what clean-ups spare) that a rename of `path` would orphan, if any: a kept
+/// path that is `path` or is inside it. An item inside a kept folder is renamed freely, because
+/// a Keep works by prefix and still names the folder.
 pub(crate) fn kept_refusal(path: &Path, kept: &[PathBuf]) -> Option<String> {
     use crate::search_more::{norm, within};
     let a = norm(path);
     kept.iter()
         .find(|k| {
             let b = norm(k);
-            !b.is_empty() && (within(&a, &b) || within(&b, &a))
+            !b.is_empty() && within(&b, &a)
         })
-        .map(|k| format!("You told Sprawl to Keep {}, which this is, holds or is inside. A rename would leave the Keep naming a path that is gone, and clean-ups would no longer spare the item. Forget that Keep first.", k.display()))
+        .map(|k| format!("You told Sprawl to Keep {}, which this is or holds. A rename would leave the Keep naming a path that is gone, and clean-ups would no longer spare the item. Forget that Keep first.", k.display()))
 }
 
 /// Every path the user chose to Keep (saved, and decided since); Err when the saved list can't
@@ -554,12 +557,13 @@ mod tests {
     #[test]
     fn a_kept_path_is_never_orphaned_by_a_rename() {
         let kept = vec![PathBuf::from(r"D:\Projects\old-build")];
-        // the kept folder, one above it and one inside it
-        for p in [r"D:\Projects\old-build", r"d:\projects", r"D:\Projects\old-build\src\a.rs"] {
+        // the kept folder, and one above it (which holds it)
+        for p in [r"D:\Projects\old-build", r"d:\projects"] {
             assert!(kept_refusal(Path::new(p), &kept).is_some(), "{p}");
         }
         // beside it, or a name that merely starts alike
-        for p in [r"D:\Projects\other", r"D:\Projects\old-build-2", r"D:\Work"] {
+        // (an item inside the kept folder is spared by prefix, so it may be renamed)
+        for p in [r"D:\Projects\other", r"D:\Projects\old-build-2", r"D:\Work", r"D:\Projects\old-build\src\a.rs"] {
             assert!(kept_refusal(Path::new(p), &kept).is_none(), "{p}");
         }
         assert!(kept_refusal(Path::new(r"D:\x"), &[]).is_none());
