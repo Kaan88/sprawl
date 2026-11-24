@@ -5,6 +5,7 @@ in-app updater shows.
 
 ## Unreleased
 
+- Search: after F2 renames a result of the scan, the results come back instead of the list staying on "Getting the names ready...", and the Advisor checks the renamed scan again instead of saying to scan a drive; Delete, Overwrite and rename wait while a `dc:` or `da:` search reads times (it holds those folders open); Ctrl+C and Copy Path copy up to 100,000 picked results and say "pick fewer" above that instead of freezing; past 500 labels an AI label no longer pushes out a folder you hid.
 - Tree View: Overwrite and delete from the map's right-click menu acts on the tile again when its row is folded away, as Delete does; typing a name to jump to another row, Left to the folder above and F4 (reset expansion) no longer leave picks the keyboard isn't on or can't see (Shift+Left picks the folder above).
 - File View: Delete, Delete Permanently and Overwrite and delete from the map's right-click menu on a folder act on that folder again, asking about it with every check, as the menu's other items do.
 - Tree View: a file selected in another tab and not on screen no longer joins the picks on a Ctrl+click or Shift+arrow, and Left or Right drops the picks when it moves to another row or folds a folder away.
