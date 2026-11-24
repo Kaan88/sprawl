@@ -282,6 +282,32 @@ fn count_suffix(reads: &Reads) -> String {
 /// window for each folder holding picked files or picked itself.
 pub(crate) const MAX_OPEN: usize = 10;
 
+/// A names index built for tree generation `built` has arrived, the tree being at `now`, with a
+/// search waiting on it (`pending`) or not: whether to keep it, and whether to search again.
+/// One for an older tree is dropped, but a waiting search is run again all the same, which
+/// builds the index for the tree on screen: left waiting, nothing else would start it, and the
+/// tab would stay on "Getting the names ready..." with no results (Fable final-1).
+pub(crate) fn index_built(built: u64, now: u64, pending: bool) -> (bool, bool) {
+    (built == now, pending)
+}
+
+/// Whether a search is reading `dc:`/`da:` times now: the reader holds each match's folder open
+/// without delete sharing meanwhile, so a Delete or Overwrite would skip what it holds, and a
+/// rename could fail (Fable final-3).
+pub(crate) fn reading_times(running: bool, dates: &sprawl_core::query::ReadDates) -> bool {
+    running && !dates.is_empty()
+}
+
+/// How many picked results Ctrl+C (copy as files) and Copy Path put on the clipboard at once.
+/// Each path is built and the clipboard's block made on the window's thread: Ctrl+A on a scan
+/// of millions would freeze it for seconds and take gigabytes (Fable final-4).
+pub(crate) const MAX_COPY: usize = 100_000;
+
+/// Whether Ctrl+C or Copy Path may go ahead for `n` picked results.
+pub(crate) fn can_copy(n: usize) -> bool {
+    n <= MAX_COPY
+}
+
 /// Whether Open (or Show in Explorer) may go ahead for `n` results or windows at once.
 pub(crate) fn can_open(n: usize) -> bool {
     n <= MAX_OPEN
@@ -391,6 +417,11 @@ pub(crate) const COL_MENU: [(&str, &str, usize); 4] = [("scSize", "Size", 1), ("
 pub(crate) const COLS: &[Col] = FILES_LIKE;
 
 impl Search {
+    /// A `dc:`/`da:` search is reading times now (see [`reading_times`]).
+    pub(crate) fn reading_times(&self) -> bool {
+        reading_times(self.running.is_some(), &self.reads.dates)
+    }
+
     /// The watcher saw a change at node `n` (the nearest part of the tree that still exists).
     pub(crate) fn changed(&mut self, gen: u64, n: usize) {
         if self.changed.0 != gen {
@@ -691,11 +722,12 @@ impl State {
             if let Ok(ix) = rx.try_recv() {
                 let g = *g;
                 self.search.building = None;
-                if g == self.tree_gen {
+                let (keep, rerun) = index_built(g, self.tree_gen, self.search.pending);
+                if keep {
                     self.search.index = Some((g, Arc::new(ix)));
-                    if self.search.pending {
-                        self.search_run();
-                    }
+                }
+                if rerun {
+                    self.search_run();
                 }
             }
         }
@@ -1657,7 +1689,37 @@ mod picked_tests {
 
 #[cfg(test)]
 mod menu_tests {
-    use super::{can_open, item_applies, once_each, MAX_OPEN, SCAN_ONLY};
+    use super::{can_copy, can_open, index_built, item_applies, once_each, MAX_COPY, MAX_OPEN, SCAN_ONLY};
+
+    /// final-1: a names index for an older tree is dropped, but a search waiting on it is run
+    /// again (which builds one for the tree on screen) instead of waiting for ever.
+    #[test]
+    fn a_stale_index_still_reruns_the_waiting_search() {
+        assert_eq!(index_built(5, 5, true), (true, true));
+        assert_eq!(index_built(5, 5, false), (true, false));
+        assert_eq!(index_built(4, 6, true), (false, true), "the waiting search starts a build for the tree on screen");
+        assert_eq!(index_built(4, 6, false), (false, false));
+    }
+
+    /// final-3: only a running search with a `dc:`/`da:` word holds folders open.
+    #[test]
+    fn only_a_running_date_search_holds_deletes_back() {
+        let none = sprawl_core::query::ReadDates::default();
+        assert!(!super::reading_times(true, &none));
+        let (_, r) = sprawl_core::query::split_read_dates("*.tmp da:<2024", std::time::SystemTime::now());
+        let dates = r.expect("da: understood");
+        assert!(!dates.is_empty());
+        assert!(super::reading_times(true, &dates));
+        assert!(!super::reading_times(false, &dates), "a finished read holds nothing");
+    }
+
+    /// final-4: Ctrl+C and Copy Path go up to their limit, counted before any path is built.
+    #[test]
+    fn copying_goes_up_to_the_limit_and_no_further() {
+        assert!(can_copy(0) && can_copy(1) && can_copy(MAX_COPY));
+        assert!(!can_copy(MAX_COPY + 1));
+        assert!(!can_copy(3_400_000));
+    }
 
     /// Two saved scans whose roots nest both list D:\Games\x.iso: the menu opens it once.
     #[test]

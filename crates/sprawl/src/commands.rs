@@ -443,7 +443,13 @@ impl State {
                 }
             }
             "mCopyPath" => {
-                // in Search: every picked row, in the order shown
+                // in Search: every picked row, in the order shown, up to a limit (counted before
+                // any path is built: Ctrl+A may have picked millions of rows)
+                let count = self.menu_target_count();
+                if !crate::search::can_copy(count) {
+                    text(&self.root, "SearchInfo", &format!("{} results are picked. Copy Path copies up to {} at a time; pick fewer.", crate::format::thousands(count as u64), crate::format::thousands(crate::search::MAX_COPY as u64)));
+                    return;
+                }
                 let paths = self.menu_paths();
                 if paths.len() > 1 {
                     let all: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
@@ -799,6 +805,10 @@ impl State {
             || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.update.applying
             || self.advisor.reading() || !self.shell_rescans.is_empty() {
             return Some("Deletion waits until scanning, Check again and other file operations finish; screenshot runs cannot delete.".into());
+        }
+        // a dc:/da: search holds each match's folder open while it reads its time
+        if self.search.reading_times() {
+            return Some("Deletion waits until Search has read the times its dc: or da: word asks for, as it holds those folders open meanwhile.".into());
         }
         None
     }

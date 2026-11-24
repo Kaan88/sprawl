@@ -363,6 +363,11 @@ impl State {
                 // folder is read as itself, which the old name no longer is.
                 let to = path.with_file_name(&name);
                 let Some(root) = self.scan_renamed(n, &path, &name) else { return };
+                // the tree is a new generation now: the Advisor's report is for the old one and
+                // would be dropped, so it checks again. The read below may never come back (a
+                // link or a cloud-only file is not read as a folder), and without this the tab
+                // would say to scan a drive with a scan on screen (Fable final-2).
+                self.advisor_start();
                 let again = crate::shellmenu::rescan_target(&to, &root);
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.shell_rescans.push(rx);
@@ -414,6 +419,12 @@ impl State {
     /// Ctrl+C in Search: the picked results go on the clipboard as files, so Paste in Explorer
     /// copies them.
     pub(crate) fn search_copy_files(&mut self) {
+        // counted before any path is built: Ctrl+A may have picked millions of rows
+        let count = self.menu_target_count();
+        if !crate::search::can_copy(count) {
+            text(&self.root, "SearchInfo", &format!("{} results are picked. Ctrl+C copies up to {} at a time; pick fewer.", crate::format::thousands(count as u64), crate::format::thousands(crate::search::MAX_COPY as u64)));
+            return;
+        }
         let paths = self.menu_paths();
         if paths.is_empty() {
             text(&self.root, "SearchInfo", "Pick the results to copy first.");
