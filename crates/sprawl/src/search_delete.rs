@@ -158,6 +158,15 @@ pub(crate) fn all_listed(rows: &[(usize, usize)], picks: &[(usize, usize)]) -> b
     picks.iter().all(|&(place, id)| shown.contains(&(id, place + 1)))
 }
 
+/// Every pick `(place, id)` is still among the matches from other drives the list holds.
+pub(crate) fn picks_still_hit(hits: &[(usize, usize)], picks: &[(usize, usize)]) -> bool {
+    if picks.is_empty() {
+        return true;
+    }
+    let listed: std::collections::HashSet<(usize, usize)> = hits.iter().copied().collect();
+    picks.iter().all(|p| listed.contains(p))
+}
+
 /// A right-click on the Search result at `path` (or the menu key on it): a row that is picked
 /// keeps every pick, because the menu acts on them all; any other row is acted on alone, so the
 /// picks go. True when they stayed. The menu key (`by_key`) on a row that was just un-picked keeps
@@ -405,6 +414,15 @@ impl State {
         self.search.more.prep = Some(Prep { rx, progress, label, gen, permanent, refused });
     }
 
+    /// The list changed under a Delete that is still measuring: stop it and say so.
+    pub(crate) fn cancel_prep(&mut self) {
+        if let Some(p) = self.search.more.prep.take() {
+            p.progress.cancel();
+            text(&self.root, "FootLeft", "");
+            self.tell("Not deleted", "The results changed while Sprawl was checking, so nothing was deleted.");
+        }
+    }
+
     /// Each frame: the fresh check of a Delete came back (or is still measuring).
     pub(crate) fn more_prep_poll(&mut self) {
         let Some(p) = &self.search.more.prep else { return };
@@ -430,6 +448,12 @@ impl State {
     /// The fresh check is done: one question for what passed.
     fn more_prepared(&mut self, prep: Prep, done: Prepared) {
         if prep.gen != self.search.more.gen {
+            self.tell("Not deleted", "The results changed while Sprawl was checking, so nothing was deleted.");
+            return;
+        }
+        // a new list or a re-sort that cut the list short can leave a measured folder off it
+        let at: Vec<(usize, usize)> = done.ready.iter().map(|r| (r.pick.place, r.pick.id)).collect();
+        if !picks_still_hit(&self.search.more.hits, &at) {
             self.tell("Not deleted", "The results changed while Sprawl was checking, so nothing was deleted.");
             return;
         }
@@ -580,6 +604,15 @@ mod tests {
     fn pick_of_disk(path: &Path) -> Pick {
         let m = std::fs::symlink_metadata(path).unwrap();
         Pick { path: path.to_path_buf(), is_dir: m.is_dir(), size: m.len(), secs: m.modified().ok().map(secs), place: 0, id: 1, gen: 0 }
+    }
+
+    #[test]
+    fn a_measured_pick_must_still_be_on_the_list() {
+        let hits = [(0, 1), (0, 2), (1, 5)];
+        assert!(super::picks_still_hit(&hits, &[(0, 2), (1, 5)]));
+        assert!(!super::picks_still_hit(&hits, &[(0, 2), (1, 6)]), "cut off by a re-sort");
+        assert!(super::picks_still_hit(&[], &[]));
+        assert!(!super::picks_still_hit(&[], &[(0, 1)]), "a new, empty list");
     }
 
     #[test]

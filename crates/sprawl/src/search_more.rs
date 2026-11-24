@@ -96,7 +96,7 @@ pub(crate) struct More {
     /// the cap is taken from them again when the sort changes.
     all: Arc<Vec<Vec<u32>>>,
     /// (place, id) in the Search sort order, at most MAX_HITS; and how many there were.
-    hits: Vec<(usize, usize)>,
+    pub(crate) hits: Vec<(usize, usize)>,
     pub(crate) total: usize,
     hits_gen: u64,
     hits_query: String,
@@ -568,6 +568,7 @@ impl State {
             m.hits_query = self.search.query.clone();
             // nothing is listed now: nothing is picked
             m.drop_picks();
+            self.cancel_prep();
             self.render_more();
             return;
         }
@@ -637,6 +638,7 @@ impl State {
             }
         }
         if changed {
+            self.cancel_prep();
             self.search.stamp += 1;
             self.more_forget_covered();
             // a drive that finished reading only matters to a query that searches it: `dc:`/`da:`
@@ -676,6 +678,10 @@ impl State {
                     // a re-sort takes the cap again: a pick the new order cut off is not on the
                     // list any more, so it is not picked any more
                     dropped = m.prune_picks();
+                }
+                // a Delete still measuring went with the picks it was for
+                if !which || dropped > 0 {
+                    self.cancel_prep();
                 }
                 if sort != self.search.sort {
                     self.more_sort();
