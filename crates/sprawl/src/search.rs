@@ -939,7 +939,7 @@ impl State {
         }
         let t = self.tree.as_ref().unwrap();
         let node = &t.nodes[n];
-        let sel = Some(n) == self.selected || self.marked.contains(&n);
+        let sel = Some(n) == crate::search::picked_selected(&self.marked, self.selected) || self.marked.contains(&n);
         let (bg, sel_bar) = (self.row_bg(k, sel), crate::tables::row_bar(sel));
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
@@ -1427,9 +1427,17 @@ fn folder_ranks_if(tree: &sprawl_core::Tree, key: crate::tables::Key, rows: usiz
     Some(r)
 }
 
+/// The keyboard's row counts as picked when nothing else is picked, or when it is one of the
+/// picks: Ctrl+click on a picked row takes it out, and it stays the keyboard's row without
+/// being picked any more.
+pub(crate) fn picked_selected(marked: &std::collections::BTreeSet<usize>, selected: Option<usize>) -> Option<usize> {
+    selected.filter(|s| marked.is_empty() || marked.contains(s))
+}
+
 /// The scan's rows that are picked (`marked` and `selected`), in the order shown. A row from
 /// another drive or a saved scan is never one of them, whatever its number.
 pub(crate) fn picked_in_order(rows: &[(usize, usize)], marked: &std::collections::BTreeSet<usize>, selected: Option<usize>) -> Vec<usize> {
+    let selected = picked_selected(marked, selected);
     let mut seen = std::collections::BTreeSet::new();
     rows.iter().filter(|r| r.1 == 0 && (marked.contains(&r.0) || selected == Some(r.0)) && seen.insert(r.0)).map(|r| r.0).collect()
 }
@@ -1491,6 +1499,29 @@ mod picked_tests {
     use super::{picked_in_order, picks_hidden, scan_targets};
 
     #[test]
+    fn ctrl_click_out_of_the_picks_leaves_the_row_out() {
+        let rows = [(1, 0), (2, 0), (3, 0)];
+        let m = |v: &[usize]| v.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        // A, B, C picked; Ctrl+click C took it out of `marked` but it is still `selected`
+        assert_eq!(picked_in_order(&rows, &m(&[1, 2]), Some(3)), [1, 2]);
+        assert_eq!(scan_targets(&rows, &m(&[1, 2]), Some(3), None), [1, 2]);
+        // a plain click's row is the pick while nothing else is
+        assert_eq!(picked_in_order(&rows, &m(&[]), Some(3)), [3]);
+    }
+
+    #[test]
+    fn file_view_picks_are_only_the_files_listed() {
+        // File View's rows are files; a folder left selected in Tree View (node 7) is not one
+        let rows = [(1, 0), (2, 0)];
+        let m = |v: &[usize]| v.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        // Ctrl+click on two files: the folder is not folded in
+        assert_eq!(scan_targets(&rows, &m(&[1, 2]), Some(7), None), [1, 2]);
+        assert!(scan_targets(&rows, &m(&[]), Some(7), None).is_empty());
+        assert!(!picks_hidden(&[1, 2], &m(&[1, 2])));
+        assert!(picks_hidden(&[1, 2], &m(&[1, 2, 7])), "a pick that is not a row refuses");
+    }
+
+    #[test]
     fn a_gone_result_shows_its_nearest_folder_and_says_so() {
         use super::{gone_note, nearest_existing};
         use std::path::{Path, PathBuf};
@@ -1534,7 +1565,7 @@ mod picked_tests {
     fn only_the_scans_rows_in_the_order_shown() {
         // node 5 of the scan and item 5 of another drive (place 0) are different things
         let rows = [(9, 0), (5, 1), (5, 0), (2, 0), (7, 2)];
-        let marked = [2, 5, 7].into_iter().collect();
+        let marked = [2, 5, 7, 9].into_iter().collect();
         assert_eq!(picked_in_order(&rows, &marked, Some(9)), [9, 5, 2]);
         assert_eq!(picked_in_order(&rows, &Default::default(), Some(7)), Vec::<usize>::new(), "7 is only another drive's row");
         assert_eq!(picked_in_order(&rows, &Default::default(), None), Vec::<usize>::new());

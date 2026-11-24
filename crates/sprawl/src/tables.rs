@@ -680,7 +680,7 @@ impl State {
         let t = self.tree.as_ref().unwrap();
         let (n, d) = self.rows[k];
         let node = &t.nodes[n];
-        let sel = Some(n) == self.selected || self.marked.contains(&n);
+        let sel = Some(n) == crate::search::picked_selected(&self.marked, self.selected) || self.marked.contains(&n);
         let (bg, sel_bar) = (self.row_bg(k, sel), row_bar(sel));
         let pct = t.percent_of_parent(n);
         let has_kids = node.is_dir && !node.children.is_empty();
@@ -738,7 +738,7 @@ impl State {
         let t = self.tree.as_ref().unwrap();
         let n = self.rows[k].0;
         let node = &t.nodes[n];
-        let sel = Some(n) == self.selected || self.marked.contains(&n);
+        let sel = Some(n) == crate::search::picked_selected(&self.marked, self.selected) || self.marked.contains(&n);
         let (bg, sel_bar) = (self.row_bg(k, sel), row_bar(sel));
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
@@ -833,13 +833,19 @@ impl State {
             return;
         }
         if ctrl {
-            if let Some(s) = self.selected_listed() {
-                self.marked.insert(s);
+            // the first Ctrl+click picks the row the keyboard was on too; later ones only toggle
+            if self.marked.is_empty() {
+                if let Some(s) = self.selected_listed() {
+                    self.marked.insert(s);
+                }
             }
-            if !self.marked.remove(&n) {
+            let left_out = self.marked.remove(&n);
+            if !left_out {
                 self.marked.insert(n);
             }
-            self.selected = Some(n);
+            // the keyboard never stays on a row that is not picked (the Menu key and Delete
+            // would then act on different rows): it moves to a pick left, or to none
+            self.selected = ctrl_click_selected(&self.marked, left_out, n);
             self.refresh_rows();
             self.show_selection();
             return;
@@ -1055,7 +1061,12 @@ impl State {
     /// The selected node, but in Search only while it is a row of the list (a node left over
     /// from Tree View or an earlier list is not one, and must not join the picks).
     pub(crate) fn selected_listed(&self) -> Option<usize> {
-        self.selected.filter(|&s| self.view != View::Search || self.rows.iter().any(|r| r.0 == s && self.scan_row(r)))
+        self.selected.filter(|&s| match self.view {
+            View::Search => self.rows.iter().any(|r| r.0 == s && self.scan_row(r)),
+            // File View lists files only: a folder left selected in Tree View is not a row
+            View::Files => self.tree.as_ref().is_some_and(|t| t.nodes.get(s).is_some_and(|x| !x.is_dir)),
+            _ => true,
+        })
     }
 
     pub(crate) fn scan_row(&self, r: &(usize, usize)) -> bool {
@@ -1306,8 +1317,19 @@ impl State {
         }
         if let (Some(t), Some(n)) = (&self.tree, self.selected) {
             text(&self.root, "FootLeft", &format!("{}   -   {}", t.path_of(n).display(), self.size(t.nodes[n].size)));
+            return;
+        }
+        // nothing picked or selected: the "N picked" line of a moment ago must not stay
+        if self.marked.is_empty() && self.selected.is_none() {
+            text(&self.root, "FootLeft", "");
         }
     }
+}
+
+/// The keyboard's row after a Ctrl+click on `n`: `n` when it was just picked, else (it was taken
+/// out) a row still picked, or none when nothing is left.
+pub(crate) fn ctrl_click_selected(marked: &std::collections::BTreeSet<usize>, left_out: bool, n: usize) -> Option<usize> {
+    if left_out { marked.iter().next_back().copied() } else { Some(n) }
 }
 
 /// Whether the row menu's Windows item may open: one result picked (it acts on one), no clean-up
@@ -1331,7 +1353,7 @@ pub(crate) fn menu_pick(marked: &mut std::collections::BTreeSet<usize>, more_sel
 
 #[cfg(test)]
 mod menu_pick_tests {
-    use super::{menu_pick, shell_allowed};
+    use super::{ctrl_click_selected, menu_pick, shell_allowed};
     use crate::search_delete::{Pick, Picks};
     use std::collections::BTreeSet;
 
@@ -1347,6 +1369,15 @@ mod menu_pick_tests {
         let mut p = Picks::default();
         p.add(Pick { path: r"D:\other\a.bin".into(), is_dir: false, size: 1, secs: None, place: 0, id: 1, gen: 0 });
         p
+    }
+
+    #[test]
+    fn ctrl_click_out_of_the_picks_moves_the_keyboard_to_a_pick() {
+        // A, B picked, C just picked then clicked again: C is out, the keyboard is on a pick,
+        // so the Menu key and Del act on the same rows
+        assert_eq!(ctrl_click_selected(&BTreeSet::from([1, 2]), true, 3), Some(2));
+        assert_eq!(ctrl_click_selected(&BTreeSet::new(), true, 3), None, "the last pick went");
+        assert_eq!(ctrl_click_selected(&BTreeSet::from([1, 3]), false, 3), Some(3));
     }
 
     #[test]

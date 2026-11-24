@@ -39,6 +39,11 @@ impl State {
     }
 
     fn set_view_inner(&mut self, v: View) {
+        // the picks belong to the list they were made on
+        let changed = self.view != v;
+        if changed {
+            self.marked.clear();
+        }
         self.view = v;
         self.search.tile = None;
         // the welcome page is drawn again for this view on the next frame
@@ -80,6 +85,11 @@ impl State {
         }
         if table {
             self.refresh_rows();
+            if changed {
+                // a result list that arrived while another tab was open: picks not on it go
+                self.prune_marked();
+                self.show_selection();
+            }
         }
         if v == View::Advisor {
             self.render_advisor();
@@ -511,6 +521,10 @@ impl State {
             "oHeader" | "oTypes" | "oTreemap" => {
                 let on = crate::menubar::checked(&self.root, name).unwrap_or(true);
                 let vis = if on { Visibility::Visible } else { Visibility::Collapsed };
+                if name == "oTreemap" && !on {
+                    // a tile right-clicked on the map goes with the map
+                    self.search.tile = None;
+                }
                 match name {
                     "oHeader" => {
                         if let Ok(e) = find::<UIElement>(&self.root, "Header") {
@@ -818,7 +832,8 @@ impl State {
     /// The picked rows (Ctrl/Shift) as top-most nodes: one inside another goes with it.
     pub(crate) fn picked_nodes(&self) -> Vec<usize> {
         let mut all: std::collections::BTreeSet<usize> = self.marked.clone();
-        all.extend(self.selected);
+        // only a row the table lists (File View: a file) joins the picks
+        all.extend(crate::search::picked_selected(&self.marked, self.selected_listed()));
         self.topmost(all)
     }
 
@@ -850,19 +865,26 @@ impl State {
         // Search: only what is listed and picked (or the map's tile the menu was opened on);
         // anything else left in `marked`/`selected` (an earlier list, a folder picked in Tree
         // View, a rescan) is never deleted from here
-        if self.view == View::Search {
+        // File View goes by the files listed the same way
+        if matches!(self.view, View::Search | View::Files) {
+            let files = self.view == View::Files;
+            let (none, stale) = if files {
+                ("Pick the files to delete first (Ctrl+click or Shift+click for several).", "Some of what is picked is not a file in this list, so nothing was deleted. Pick the files to delete again.")
+            } else {
+                ("Pick the results to delete first (Ctrl+click or Shift+click for several).", "The results changed since they were picked, so nothing was deleted. Pick the ones to delete again.")
+            };
             if self.scan_targets().is_empty() {
-                text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several).");
+                self.say_pick(none);
                 return;
             }
             if self.scan_picks_hidden() {
-                text(&self.root, "SearchInfo", "The results changed since they were picked, so nothing was deleted. Pick the ones to delete again.");
+                self.say_pick(stale);
                 return;
             }
             // exactly the listed targets, whatever a stale `selected` still holds
             let nodes = self.topmost(self.scan_targets().into_iter().collect());
             match nodes.as_slice() {
-                [] => text(&self.root, "SearchInfo", "Pick the results to delete first (Ctrl+click or Shift+click for several)."),
+                [] => self.say_pick(none),
                 [n] => self.delete_single(*n, permanent),
                 _ => self.delete_nodes(nodes, permanent),
             }
@@ -878,6 +900,15 @@ impl State {
             return;
         };
         self.delete_single(n, permanent);
+    }
+
+    /// A "pick first" note: in Search its own line, in File View a dialog (it has no such line).
+    fn say_pick(&mut self, why: &str) {
+        if self.view == View::Search {
+            text(&self.root, "SearchInfo", why);
+        } else {
+            self.tell("Not deleted", why);
+        }
     }
 
     /// Delete one node of the scan: checked, then one confirm naming its path.
