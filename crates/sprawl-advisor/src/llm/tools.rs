@@ -174,12 +174,12 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "list_children",
             description: "What is directly inside a folder, biggest first: size (with exact bytes), item counts, newest change, when it was last \
-                opened (Windows' last-access time) and owning app.",
+                opened (Windows' last-access time) and owning app.\n                A folder's last-opened date comes from its listing: files open right now, or used under another hard-link name, can show an older date.",
             schema: json!({"type": "object", "properties": {"path": path, "limit": {"type": "integer", "description": "At most this many (default 40, max 80)"}}, "required": ["path"]}),
         },
         ToolSpec {
             name: "largest",
-            description: "The biggest files, or the biggest folders, anywhere below a folder. Each says when it last changed, was last opened and, for a program, when one with its name last ran (by program name, any folder).",
+            description: "The biggest files, or the biggest folders, anywhere below a folder. Each says when it last changed, was last opened and, for a program, when one with its name last ran (by program name, any folder).\n                A folder's last-opened date comes from its listing: files open right now, or used under another hard-link name, can show an older date.",
             schema: json!({"type": "object", "properties": {"path": path, "what": {"type": "string", "enum": ["files", "folders"]}, "limit": {"type": "integer", "description": "Default 25, max 60"}}, "required": ["path", "what"]}),
         },
         ToolSpec {

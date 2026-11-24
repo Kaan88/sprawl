@@ -144,6 +144,14 @@ impl Created {
         tally_reason(&mut self.reasons, why);
     }
 
+    /// Whether `path` is on a local fixed disk, whose creation times are read at all.
+    pub fn reads_drive(&mut self, path: &Path) -> bool {
+        match drive_of(path) {
+            Some(d) => *self.drives.entry(d).or_insert_with(|| crate::used::fixed_drive(d)),
+            None => false,
+        }
+    }
+
     /// The first reason no time could be read (a test's shorthand).
     #[cfg(test)]
     fn why(&self) -> Option<&'static str> {
