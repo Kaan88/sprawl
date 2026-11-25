@@ -432,6 +432,28 @@ thumbnails and the preview pane: costly, against the audit decision, or not what
 
 ---
 
+## Port to mdshared-ui (on hold)
+
+Reviewed on 2026-11-25. The question was moving Sprawl from WinUI 3 to the in-house toolkit (Kaan88/markdown-shared-rs, crate mdshared-ui, drawn on the CPU). The review, with two mockups, is in [docs/mockups/port-mdshared-2026-11-25/index.html](../mockups/port-mdshared-2026-11-25/index.html). Mockup A is today's layout redrawn, and every part is marked ready, on a branch, drawn by hand, or still to build. Mockup B is a compact-chrome alternative.
+
+**Decision: not now.** The toolkit was changing daily. The items it still lacks, and how to keep the 3D map, get decided once it calms down.
+
+- **About 90% of the 2D look carries over** (estimate). sprawl-core and sprawl-advisor (~50k lines) move unchanged. About 30k lines of UI would be rewritten.
+- **3D map:** the toolkit draws on the CPU. The options are:
+  - render with today's gpu.rs offscreen and copy each frame back into the drawing (recommended);
+  - a child window with its own swap chain, which nothing can draw over;
+  - a GPU backend in the toolkit.
+- **Still to build:**
+  - a tree over an in-memory model (the toolkit's FileTree reads the disk and stops at 4,000 rows);
+  - a button set;
+  - a Segoe Fluent Icons face;
+  - password and multi-line fields;
+  - the markdown view for the AI chat (in mdview-render today);
+  - percent bars in cells, chips, and the underline tab row;
+  - UIA multi-select, and a pass with Narrator;
+  - the Theme page's options.
+- **Proposed first step when it resumes:** a one-week spike of Tree View, the types table and the map, with first paint, scroll and resize measured against 1.0.9. Re-check the toolkit's main and branches first: this gap list will be out of date by then.
+
 ## Fable review nits (left open)
 
 From the 2026-11-24 review of everything since 1.0.8 (782229e..a49d7b6). Fable approved every area and the final sign-off; these are the nits it listed, kept here instead of fixed. None can delete or rename the wrong thing or skip a check.

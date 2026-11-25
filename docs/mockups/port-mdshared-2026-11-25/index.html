@@ -1,0 +1,513 @@
+<title>Sprawl on mdshared-ui</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (review) that widens to full width for the two app mockups. */
+:root{
+  --bg:#f4f6f8; --panel:#ffffff; --fg:#141a22; --muted:#56606f; --line:#dde2e8;
+  --accent:#2f7a8a; --accent-soft:#e1eff2;
+  --ok:#1f8a4c; --branch:#2f6fd0; --hand:#b87400; --build:#c4432b;
+  --ok-bg:#e3f4ea; --branch-bg:#e4edfb; --hand-bg:#fbf0dc; --build-bg:#fbe6e1;
+  --sans:"Inter","Segoe UI",system-ui,sans-serif; --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12161c; --panel:#1a1f27; --fg:#e8edf3; --muted:#9aa5b4; --line:#2b323d;
+  --accent:#97c8ce; --accent-soft:#1f3237;
+  --ok:#5cc98a; --branch:#7fa8f0; --hand:#f0b44a; --build:#ff8a70;
+  --ok-bg:#16301f; --branch-bg:#182640; --hand-bg:#33270f; --build-bg:#3a1c16; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12161c; --panel:#1a1f27; --fg:#e8edf3; --muted:#9aa5b4; --line:#2b323d;
+  --accent:#97c8ce; --accent-soft:#1f3237;
+  --ok:#5cc98a; --branch:#7fa8f0; --hand:#f0b44a; --build:#ff8a70;
+  --ok-bg:#16301f; --branch-bg:#182640; --hand-bg:#33270f; --build-bg:#3a1c16; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding-block:40px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.col{max-width:760px}
+h1{font-size:2.1rem;line-height:1.15;margin:0 0 .4rem;letter-spacing:-.02em;text-wrap:balance}
+h2{font-size:1.35rem;margin:3.2rem 0 .8rem;letter-spacing:-.01em;text-wrap:balance}
+h3{font-size:1.02rem;margin:1.6rem 0 .5rem}
+p{margin:.6rem 0}
+.lede{font-size:1.08rem;color:var(--fg)}
+.meta{color:var(--muted);font-size:.86rem}
+code,.mono{font-family:var(--mono);font-size:.86em}
+code{background:var(--accent-soft);padding:.05em .35em;border-radius:4px}
+.eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.72rem;font-weight:600;color:var(--accent)}
+.verdict{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:1.6rem 0}
+.vcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.vcard b{display:block;font-size:1.6rem;line-height:1.1;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.vcard span{color:var(--muted);font-size:.86rem}
+.tag{display:inline-block;font-size:.72rem;font-weight:600;padding:.1em .55em;border-radius:999px;white-space:nowrap;vertical-align:.08em}
+.t-ok{background:var(--ok-bg);color:var(--ok)} .t-branch{background:var(--branch-bg);color:var(--branch)}
+.t-hand{background:var(--hand-bg);color:var(--hand)} .t-build{background:var(--build-bg);color:var(--build)}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:640px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:0}
+td:first-child{font-weight:500;white-space:nowrap}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.pc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 18px 14px}
+.pc h3{display:flex;gap:8px;align-items:center}
+.pc ul{padding-left:1.1rem;margin:.4rem 0} .pc li{margin:.45rem 0}
+.build-list{counter-reset:none;padding:0;list-style:none;display:grid;gap:10px}
+.build-list li{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px}
+.build-list .sz{font-family:var(--mono);font-size:.74rem;font-weight:500;border:1px solid var(--line);border-radius:6px;padding:1px 6px;height:fit-content;color:var(--muted);text-align:center;min-width:2.6em}
+.build-list b{font-weight:600}
+.build-list p{grid-column:2;margin:0;color:var(--muted);font-size:.88rem}
+figure{margin:1.2rem 0}
+figcaption{color:var(--muted);font-size:.84rem;margin-top:.5rem}
+.shot{width:100%;border-radius:8px;border:1px solid var(--line);display:block}
+.legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:.84rem;margin:.6rem 0;align-items:center}
+.toggle{font:inherit;font-size:.84rem;border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:999px;padding:4px 12px;cursor:pointer}
+.toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.toggle[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent)}
+.pinlist{columns:2 300px;column-gap:28px;padding:0;list-style:none;font-size:.86rem;margin:.8rem 0}
+.pinlist li{break-inside:avoid;display:grid;grid-template-columns:24px 1fr;gap:8px;margin:0 0 .55rem}
+.pinlist .n{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:.72rem;font-weight:700;color:#fff}
+.n.ok{background:var(--ok)}.n.branch{background:var(--branch)}.n.hand{background:var(--hand)}.n.build{background:var(--build)}
+.note{border-left:3px solid var(--accent);padding:2px 0 2px 14px;color:var(--fg);margin:1rem 0}
+
+/* ---------- app mockups (deliberately one dark look: Sprawl's own tokens) ---------- */
+.stage{position:relative;width:100%;aspect-ratio:1360/860;overflow:hidden;border-radius:10px;border:1px solid var(--line);background:#191E25;margin-top:.6rem}
+.app{position:absolute;left:0;top:0;width:1360px;height:860px;transform-origin:0 0;
+  --ground:#191E25;--card:#212630;--row:#282F3C;--popup:#252C39;--rowopen:#343B47;--sel:#405059;
+  --acc:#97C8CE;--onacc:#0b1014;--t0:#fff;--t1:#EEF1F8;--t2:#B9C2D6;--t3:#8791A8;--faint:#6C7487;
+  --l1:rgba(160,180,255,.12);--l2:rgba(160,180,255,.2);--hov:rgba(255,255,255,.1);--stripe:rgba(255,255,255,.03);--folder:#FFC83D;
+  background:var(--ground);color:var(--t1);font:12px/1.2 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  display:grid;overflow:hidden}
+.app svg{flex:none}
+.ico{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.mA{grid-template-rows:34px 34px 82px 36px 1fr 34px 262px 26px}
+.tb{display:flex;align-items:center;gap:10px;padding:0 0 0 14px}
+.logo{width:18px;height:18px;border-radius:5px;background:linear-gradient(135deg,#FFB347,#FF5E62 55%,#8E54E9);display:grid;place-items:center}
+.logo i{display:flex;gap:1.5px;align-items:flex-end;height:9px}.logo i b{width:2px;background:#fff;border-radius:1px}
+.caps{margin-left:auto;display:flex;height:100%}.caps span{width:46px;display:grid;place-items:center;color:var(--t2)}
+.menubar{display:flex;gap:2px;padding:0 6px;align-items:center;font-size:14px}.menubar span{padding:6px 10px;border-radius:6px}
+.header{display:grid;grid-template-columns:380px 1fr auto;gap:10px;padding:4px 12px 8px}
+.card{background:var(--card);border:1px solid var(--l1);border-radius:10px}
+.c1{padding:10px 12px;display:grid;gap:7px;align-content:start}
+.row1{display:flex;align-items:center;gap:8px}
+.lbl{color:var(--t2);font-size:13px}
+.dd{flex:1;height:30px;background:var(--ground);border:1px solid var(--l2);border-radius:6px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:13px;color:var(--t1)}
+.btn{flex:none;white-space:nowrap;height:30px;display:inline-flex;align-items:center;gap:7px;padding:0 12px;border-radius:6px;font-size:13px;border:1px solid var(--l2);background:var(--row);color:var(--t1)}
+.btn.pri{background:var(--acc);color:var(--onacc);border-color:var(--acc);font-weight:600}
+.status{color:var(--t2);font-size:12px}
+.prog{height:4px;border-radius:3px;background:var(--acc)}
+.c2{padding:10px 14px;display:grid;grid-template-columns:auto auto 1fr;gap:7px 14px;align-content:start;font-size:12px}
+.c2 .k{color:var(--t3)} .c2 .v{color:var(--t1)} .c2 .s{font-weight:600;color:var(--t0)}
+.dbar{height:8px;border-radius:6px;background:var(--hov);align-self:center;overflow:hidden;display:flex}
+.c3{padding:10px 22px 10px 16px;display:flex;gap:12px;align-items:center}
+.biglogo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,#FFB347,#FF5E62 55%,#8E54E9);display:grid;place-items:center}
+.biglogo i{display:flex;gap:3px;align-items:flex-end;height:20px}.biglogo i b{width:4px;background:#fff;border-radius:1px}
+.tabs{display:flex;align-items:center;gap:4px;padding:0 12px 6px}
+.tab{padding:6px 14px 8px;font-size:14px;position:relative;display:flex;gap:7px;align-items:center;color:var(--t1)}
+.tab.on::after{content:"";position:absolute;left:12px;right:12px;bottom:2px;height:3px;border-radius:2px;background:var(--acc)}
+.badge{min-width:20px;padding:0 6px 1px;border-radius:9px;background:rgba(151,200,206,.22);color:var(--t1);font-size:11px;text-align:center}
+.filter{margin-left:auto;width:340px;height:30px;border:1px solid var(--l2);background:var(--ground);border-radius:6px;display:flex;align-items:center;padding:0 10px;color:var(--t3);gap:7px}
+.panes{display:grid;grid-template-columns:2fr 1fr;gap:10px;padding:0 12px;min-height:0}
+.pane{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.thead{display:grid;height:30px;align-items:center;background:rgba(0,0,0,.2);border-bottom:1px solid rgba(255,255,255,.2);color:var(--t2);font-weight:600;flex:none}
+.thead span,.tr span{padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r{text-align:right}
+.tr{display:grid;height:24px;align-items:center;color:var(--t1);font-variant-numeric:tabular-nums;position:relative}
+.tr:nth-child(odd){background:var(--stripe)}
+.tr.sel{background:var(--sel)}
+.tr.sel::before{content:"";position:absolute;left:1px;top:4px;bottom:4px;width:3px;border-radius:2px;background:var(--acc)}
+.tr.hid{color:var(--faint)}
+.nm{display:flex;align-items:center;gap:5px}
+.chev{width:12px;color:var(--t3);display:inline-grid;place-items:center}
+.fold{color:var(--folder)}
+.pbar{position:relative;height:16px;margin:0 6px;border-radius:3px;background:var(--l1);overflow:hidden}
+.pbar i{position:absolute;inset:0 auto 0 0;background:rgba(151,200,206,.45)}
+.pbar em{position:relative;display:block;text-align:right;padding-right:5px;font-style:normal;line-height:16px;color:var(--t1)}
+.sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+.mapbar{display:flex;align-items:center;gap:12px;padding:4px 12px}
+.seg{display:flex;padding:2px;border-radius:9px;background:var(--hov);gap:2px}
+.seg span{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;color:var(--t1)}
+.seg span.on{background:var(--acc);color:var(--onacc)}
+.mpath{color:var(--t2);flex:1;text-align:center}
+.mapwrap{margin:0 12px;border-radius:10px;border:1px solid var(--l1);overflow:hidden;position:relative;background:#0c0e13}
+.mapwrap canvas{display:block;width:100%;height:100%}
+.mkey{position:absolute;left:10px;bottom:10px;background:rgba(20,22,30,.78);border-radius:6px;padding:6px 10px;display:flex;gap:10px;color:var(--t1)}
+.mkey span{display:flex;gap:5px;align-items:center}
+.foot{display:flex;align-items:center;justify-content:space-between;padding:0 16px;color:var(--t3);font-variant-numeric:tabular-nums}
+/* Mockup B */
+.mB{grid-template-rows:44px 40px 38px 1fr 360px 26px}
+.tbB{display:flex;align-items:center;gap:6px;padding-left:14px;border-bottom:1px solid var(--l1)}
+.tbB .menubar{padding:0 4px}
+.tbB .dd{flex:none;width:200px;height:30px}
+.crumbs{display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12px}
+.crumbs .path{display:flex;align-items:center;gap:4px;font-size:13px;color:var(--t1)}
+.crumbs .path b{font-weight:600;color:var(--t0)} .crumbs .path span{padding:3px 6px;border-radius:5px}
+.crumbs .path span:hover{background:var(--hov)}
+.crumbs .stats{color:var(--t2)}
+.typebar{flex:1;height:10px;border-radius:5px;display:flex;overflow:hidden;background:var(--hov);min-width:200px}
+.maptools{position:absolute;right:12px;bottom:12px;display:flex;gap:8px}
+.maptools .seg{background:rgba(25,30,37,.86);border:1px solid var(--l2)}
+.pinlayer{position:absolute;inset:0;pointer-events:none}
+.pin{position:absolute;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;display:grid;place-items:center;color:#fff;font:700 11px var(--sans);box-shadow:0 0 0 2px #fff,0 2px 6px rgba(0,0,0,.45)}
+.pin.ok{background:var(--ok)}.pin.branch{background:var(--branch)}.pin.hand{background:var(--hand)}.pin.build{background:var(--build)}
+.stage[data-pins="off"] .pinlayer{display:none}
+@media (max-width:640px){.pin{width:16px;height:16px;margin:-8px 0 0 -8px;font-size:8px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <defs>
+  <symbol id="i-chev-r" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4.5v8h13v-7h-6.5l-1.5-1.5h-5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 16 16"><path d="M4 1.5h5.5l3 3v10h-8.5z"/><path d="M9.5 1.5v3h3"/></symbol>
+  <symbol id="i-drive" viewBox="0 0 16 16"><rect x="1.5" y="5" width="13" height="6" rx="1.5"/><path d="M11 8h1.5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l4 4"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><rect x="9" y="9" width="5" height="5"/></symbol>
+  <symbol id="i-city" viewBox="0 0 16 16"><path d="M2 14V7l4-3 4 3v7M10 14V5h4v9M1 14h14"/></symbol>
+  <symbol id="i-galaxy" viewBox="0 0 16 16"><ellipse cx="8" cy="8" rx="6.5" ry="3"/><circle cx="8" cy="8" r="1.5"/></symbol>
+  <symbol id="i-tweak" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h10"/><circle cx="6" cy="4" r="1.3"/><circle cx="10" cy="8" r="1.3"/><circle cx="5" cy="12" r="1.3"/></symbol>
+  <symbol id="i-history" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.5h2.5"/><path d="M8 5v3l2 1.5"/></symbol>
+  <symbol id="i-min" viewBox="0 0 16 16"><path d="M3 8h10"/></symbol>
+  <symbol id="i-max" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+ </defs>
+</svg>
+
+<div class="wrap">
+ <div class="col">
+  <div class="eyebrow">Port review · Sprawl 1.0.9 against markdown-shared-rs at f45a71c</div>
+  <h1>Sprawl on mdshared-ui</h1>
+  <p class="lede">Most of Sprawl's look can be redrawn with this toolkit, because Sprawl already draws its own look on top of WinUI rather than using stock controls. The tokens, type, corners, tables, menus, dialogs, toasts and motion all have counterparts here. The one part that doesn't carry over directly is the tilted 3D treemap: it is Direct3D, and the toolkit draws on the CPU.</p>
+  <p class="meta">Read on 2026-11-25. Toolkit: main plus every unmerged branch, ROADMAP, PLAN, FEATURES, ANIMATION, PURGE-MOCKUP. Sprawl: main at 42bebcb. The toolkit's Purge mockup example was built and run to see its real output (pictures below).</p>
+ </div>
+
+ <div class="verdict">
+  <div class="vcard"><b>~90%</b><span>of the 2D look matches closely (my estimate): the same Segoe UI Variable text, your tokens, 6/10 corners, outlined fields and 24 px rows</span></div>
+  <div class="vcard"><b>~50k</b><span>lines of core and advisor code move over unchanged (sprawl-core 11.6k, sprawl-advisor 39.2k)</span></div>
+  <div class="vcard"><b>~30k</b><span>lines of UI to rewrite: screens 21k plus XAML plumbing 11.6k, minus what the toolkit already holds</span></div>
+  <div class="vcard"><b>−53k</b><span>generated WinRT binding lines and the Windows App Runtime install go away</span></div>
+ </div>
+
+ <h2>What the toolkit draws today</h2>
+ <div class="col"><p>These were rendered on this PC from <code>examples/purge_mockup.rs</code>, the toolkit's redraw of Purge, which is also a WinUI 3 app. It is the nearest precedent for a Sprawl port. Its own docs say no person has reviewed these sheets yet.</p></div>
+ <div class="two">
+  <figure><img class="shot" src="purge-programs-dark.webp" alt="Purge programs list drawn by mdshared-ui: nav pane, segmented filter, search field, table with size bars, detail pane" loading="lazy"><figcaption>Programs: nav pane, segment bar, search field, a table with size marks, a detail pane.</figcaption></figure>
+  <figure><img class="shot" src="purge-leftovers-dark.webp" alt="Purge leftovers screen drawn by mdshared-ui: info bar, multi-colour bar, grouped list with tri-state checks and chips" loading="lazy"><figcaption>Leftovers: info bar, a multi-colour bar, grouped rows with chips, a footer action bar.</figcaption></figure>
+ </div>
+
+ <h2>Mockup A: today's Sprawl, drawn by the toolkit</h2>
+ <div class="col"><p>This keeps the current layout and your live theme settings (Tinted surfaces, 6/10 corners, flat finish, outlined controls, Windows teal accent). The data is an example. The map is a flat cushion treemap, which a CPU painter draws easily. The tilted 3D map needs Direct3D; the options are under "What needs building".</p></div>
+ <div class="legend">
+  <span><span class="tag t-ok">Ready on main</span></span><span><span class="tag t-branch">On a branch</span></span><span><span class="tag t-hand">Drawn by hand from painter parts</span></span><span><span class="tag t-build">Needs building</span></span>
+  <button class="toggle" id="pinToggle" aria-pressed="true" type="button">Show numbered notes</button>
+ </div>
+ <div class="stage" id="stageA" data-pins="on">
+  <div class="app mA" id="appA">
+   <div class="tb">
+    <div class="logo"><i><b style="height:4px"></b><b style="height:7px"></b><b style="height:9px"></b><b style="height:6px"></b><b style="height:8px"></b></i></div>
+    <span style="color:var(--t1)">[D:\]  -  Sprawl</span>
+    <div class="caps"><span><svg class="ico"><use href="#i-min"/></svg></span><span><svg class="ico"><use href="#i-max"/></svg></span><span><svg class="ico"><use href="#i-x"/></svg></span></div>
+   </div>
+   <div class="menubar"><span>File</span><span>Options</span><span>Help</span></div>
+   <div class="header">
+    <div class="card c1">
+     <div class="row1"><span class="lbl">Select:</span><div class="dd">[D:] Data <svg class="ico"><use href="#i-chev-d"/></svg></div><span class="btn pri"><svg class="ico"><use href="#i-search"/></svg>Scan</span></div>
+     <div class="status">Scan complete in 3.1 seconds (MFT)</div>
+     <div class="prog"></div>
+    </div>
+    <div class="card c2">
+     <span class="k">Scanned:</span><span class="s" style="grid-column:span 2">D:\</span>
+     <span></span><span class="v" style="grid-column:span 2">412.6 GiB · 1,201,377 files, 83,134 folders · 0 unreadable · read in 3.1 s (MFT) · <span style="color:var(--acc)">Details</span></span>
+     <span class="k">Drive D:</span><span class="v">1.8 TiB · 412.6 GiB used (22.4%) · 1.4 TiB free</span><div class="dbar"><i style="width:22.4%;background:var(--acc)"></i></div>
+    </div>
+    <div class="card c3"><div class="biglogo"><i><b style="height:9px"></b><b style="height:15px"></b><b style="height:20px"></b><b style="height:12px"></b><b style="height:17px"></b></i></div><div><div style="font-size:18px;font-weight:600;color:var(--t0)">Sprawl <span style="font-size:14px;font-weight:400;color:var(--t3)">1.0.9</span></div><div style="color:var(--t3)">Disk space analyser</div></div></div>
+   </div>
+   <div class="tabs">
+    <span class="tab on">Tree View</span><span class="tab">File View</span><span class="tab">Advisor <span class="badge">4</span></span><span class="tab">Cleaners <span class="badge">2</span></span><span class="tab"><svg class="ico"><use href="#i-search"/></svg>Search</span>
+    <div class="filter">Filter: *.mp4;  node_modules;  *\cache\*</div>
+   </div>
+   <div class="panes">
+    <div class="card pane" id="treeA"></div>
+    <div class="card pane" id="typesA"></div>
+   </div>
+   <div class="mapbar">
+    <div class="seg"><span class="on"><svg class="ico"><use href="#i-grid"/></svg>Treemap</span><span><svg class="ico"><use href="#i-city"/></svg>City</span><span><svg class="ico"><use href="#i-galaxy"/></svg>Galaxy</span><span>More views <svg class="ico"><use href="#i-chev-d"/></svg></span><span>Colour: Types <svg class="ico"><use href="#i-chev-d"/></svg></span><span><svg class="ico"><use href="#i-tweak"/></svg>Tweaks</span></div>
+    <span class="mpath">D:\Projects\sprawl\target</span>
+    <span class="btn" style="height:26px"><svg class="ico"><use href="#i-history"/></svg>History</span>
+   </div>
+   <div class="mapwrap"><canvas id="mapA"></canvas><div class="mkey" id="keyA"></div></div>
+   <div class="foot"><span>D:\Projects\sprawl\target  -  22.2 GiB</span><span>14 items  │  22.2 GiB</span></div>
+  </div>
+  <div class="pinlayer" id="pinsA"></div>
+ </div>
+ <ol class="pinlist" id="pinlistA"></ol>
+
+ <h2>How much of the look carries over</h2>
+ <div class="tablewrap"><table>
+  <thead><tr><th>Element</th><th>Sprawl today (WinUI)</th><th>In the toolkit</th><th>Status</th></tr></thead>
+  <tbody>
+   <tr><td>Text</td><td>Segoe UI Variable, XAML's greyscale anti-aliasing</td><td>Same font through parley and swash; ClearType subpixel by default, or <code>Subpixel::None</code> to match XAML exactly</td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Colours and tokens</td><td><code>tokens.rs</code> (Ink, Tinted, finish tokens), plus a light rewrite at run time</td><td><code>Palette</code> and <code>Tokens</code>. Your token maths ports as it is, and light becomes a second palette instead of a rewrite and reload</td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Corners, outlines, focus ring</td><td>rc2–rc14, 1 px line2, accent ring at 32%</td><td><code>rbox</code>, <code>frame</code>, <code>rbox_a</code> and focus rings on keyboard use only</td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Soft depth shadows</td><td><code>shade.rs</code>: Composition DropShadow, D2D clip and hand-made corners (1,141 lines)</td><td><code>soft_shadow</code>, an exact Gaussian with CSS-style layers. The card, button and menu shadows from your Theme page map onto it directly</td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Mica, Acrylic</td><td>MicaBackdrop and DesktopAcrylicBackdrop</td><td><code>platform::set_backdrop</code> and <code>frost</code></td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Menus and the menu bar</td><td>Rebuilt by hand in <code>menu.rs</code> and <code>menubar.rs</code> (2,650 lines), because MenuFlyout clips shadows</td><td><code>menu::Menu</code> and <code>Cascade</code> with access keys. A drawn menu bar is on <code>feat/classic-widgets</code></td><td><span class="tag t-branch">Branch</span></td></tr>
+   <tr><td>Press styles</td><td>Lift and sink, press-in, fade, faint; VSM storyboards with split keyframes</td><td><code>Animator</code> with springs and <code>cubic_bezier</code>. Offset, scale and wash are plain draw parameters, with no keyframe workaround</td><td><span class="tag t-hand">By hand</span></td></tr>
+   <tr><td>Tab row and sliding line</td><td>Buttons plus a Composition ShapeVisual (<code>tabline.rs</code>)</td><td><code>segments</code> looks like a switch, not an underline. The line is one <code>rbox</code> moved by an <code>Animator</code> value</td><td><span class="tag t-hand">By hand</span></td></tr>
+   <tr><td>Tables</td><td>Own virtualisation in <code>tables.rs</code> with a 1,000,000 px scroll cap</td><td><code>rows</code>, <code>select</code> and <code>table::Table</code> (sort, resize, saved widths), tested to a million rows with no scroll cap. Hiding columns is planned (L4)</td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Folder tree</td><td>Tree rows built inside <code>tables.rs</code></td><td><code>FileTree</code> reads the disk itself and stops at 4,000 rows, so it can't be used. Build it on <code>rows</code>, <code>select</code> and <code>draw_disclosure_animated</code></td><td><span class="tag t-build">Build</span></td></tr>
+   <tr><td>% bars, drive bar, chips</td><td>Borders and Rectangles</td><td>Listed as gaps in PURGE-MOCKUP; each is a few <code>rbox</code> calls</td><td><span class="tag t-hand">By hand</span></td></tr>
+   <tr><td>Buttons (primary, danger, subtle, with icon, dropdown)</td><td>Ten styles on one template</td><td>Dialog buttons only on main; <code>classic::button</code> on the branch. A real button set is still needed</td><td><span class="tag t-build">Build</span></td></tr>
+   <tr><td>Icons</td><td>53 Segoe Fluent Icons glyphs</td><td>104 stroked path icons and no icon font. Segoe Fluent Icons is an ordinary font, so the text engine can draw it once a <code>Face::Icons</code> is added</td><td><span class="tag t-build">Build</span></td></tr>
+   <tr><td>Fields</td><td>40 TextBox, 14 PasswordBox, 20 ComboBox</td><td><code>textfield</code> with IME and <code>Dropdown</code>. No password mask, no leading icon, no multi-line field</td><td><span class="tag t-build">Build</span></td></tr>
+   <tr><td>Dialogs, flyouts, toasts, info bar</td><td>Own card on a scrim in <code>ask.rs</code>, plus Flyout</td><td><code>dialog_card</code>, <code>flyout</code>, <code>Stack</code>, <code>InfoBar</code>. Dialog bodies don't scroll yet</td><td><span class="tag t-ok">Ready</span></td></tr>
+   <tr><td>Settings and the Theme page</td><td>Overlay card in <code>wizard.rs</code> and <code>themepage.rs</code></td><td><code>settings::pages::Form</code> plus <code>appearance</code> (radius, shadow, motion). Sprawl's own options sit on top of it</td><td><span class="tag t-hand">By hand</span></td></tr>
+   <tr><td>AI chat answers</td><td>Markdown turned into XAML Runs in <code>ui.rs</code></td><td>Not in this repo. The renderer is in mdview's <code>mdview-render</code> and would have to be moved here first</td><td><span class="tag t-build">Build</span></td></tr>
+   <tr><td>Treemap, flat 2D</td><td>Not offered</td><td>Painter boxes, gradients and clip, or a per-pixel cushion like the mockup's</td><td><span class="tag t-hand">By hand</span></td></tr>
+   <tr><td>Treemap 3D, City, Galaxy, View Lab</td><td>D3D11 into a SwapChainPanel with MSAA and HLSL</td><td>No GPU path. See the map options below</td><td><span class="tag t-build">Build</span></td></tr>
+  </tbody>
+ </table></div>
+
+ <h2>Pros and cons</h2>
+ <div class="two">
+  <div class="pc"><h3><span class="tag t-ok">Pros</span></h3><ul>
+   <li><b>Most WinUI workarounds go away.</b> XAML string escaping, <code>reconcile.rs</code> diffing to stop rows flashing, generic.xaml template copies, AnimatedIcon crashes, Composition shadow plumbing, the hand-built MenuFlyout replacement and the reload on every theme change all disappear. Each was a fight with WinUI, not a feature.</li>
+   <li><b>Faster to first paint.</b> The toolkit measures 64 ms to the first frame for 2,000 rows with UIA on. Sprawl parses XAML strings on startup and on every click, and you put first launch and paint time first.</li>
+   <li><b>No Windows App Runtime.</b> No bootstrap, no runtime install for users, and no 53k-line bindings crate. The exe gets smaller (the Purge shape example is 3.5 MB).</li>
+   <li><b>Everything is drawn by your code.</b> Every no-shortcuts look is reachable, because nothing is a sealed template. Drawing is tested pixel for pixel, so a look regression shows up in a test instead of a screenshot review.</li>
+   <li><b>Gains Sprawl lacks today:</b> high contrast with system colours at 7:1, live theme change, a million-row list with no scroll cap, a tray, system toasts, single instance.</li>
+   <li><b>One toolkit for all your apps</b> (mdview, mdedit, Purge, Sprawl). A fix in one reaches all of them.</li>
+  </ul></div>
+  <div class="pc"><h3><span class="tag t-build">Cons</span></h3><ul>
+   <li><b>The 3D map has no free home.</b> A CPU surface can't host the D3D11 SwapChainPanel the way XAML does. It needs a readback, a child window, or a GPU surface in the toolkit.</li>
+   <li><b>Text input is thinner than WinUI's.</b> No multi-line editor for the AI chat, no password box, and no spell check or text services. TextBox gave all of that for free.</li>
+   <li><b>Accessibility is less proven.</b> AccessKit to UIA passes 50 scripted checks but has never been tried with Narrator, and UIA can't multi-select rows. WinUI's controls are tested with Narrator by Microsoft.</li>
+   <li><b>The toolkit is moving fast.</b> Most modules are marked provisional, and today alone added animation, menu looks and the toast stack. A port means tracking a moving API or pinning a commit, as the two apps do.</li>
+   <li><b>CPU drawing at 4K.</b> One damage rectangle per frame (several are planned, W1b), so an animation across a large window repaints a lot of pixels. It still needs measuring on Sprawl's map-sized surfaces.</li>
+   <li><b>A big rewrite.</b> Around 30k lines of UI, and the Theme page alone has about 25 options to re-express. The core is untouched, but every screen is new code to review.</li>
+  </ul></div>
+ </div>
+
+ <h2>What needs building</h2>
+ <div class="col"><p>Sizes are rough: <span class="mono">S</span> is a day or less, <span class="mono">M</span> a few days, <span class="mono">L</span> a week or more. "Toolkit" means it belongs in mdshared-ui, so your other apps get it too. "Sprawl" means it belongs in the app.</p></div>
+ <ol class="build-list">
+  <li><span class="sz">L</span><b>The map surface (toolkit and Sprawl)</b><p>Three ways to keep the 3D map. (1) Render with the existing <code>gpu.rs</code> offscreen, copy the frame back, and blit it into the painter's bitmap; overlays (HUD, legend, Tweaks) then draw on top in the same pass. This is the simplest and keeps today's look, at the cost of one GPU-to-CPU copy per animated frame. (2) A child window with its own swap chain; fast, but nothing the painter draws can overlap it, so the HUD would need its own window. (3) A GPU backend for the painter; the cleanest result and the largest job, and AGENTS.md rules a GPU out on purpose today. Recommended: (1), with a flat CPU cushion map as the fallback.</p></li>
+  <li><span class="sz">M</span><b>A tree over an in-memory model (toolkit)</b><p>Rows plus depth, open state, lazy children and keyboard Left and Right, built on <code>rows</code>, <code>select</code>, <code>TypeAhead</code> and the animated disclosure. <code>FileTree</code> can't serve: it reads the disk itself and stops at 4,000 rows. Sprawl, a file manager and Purge's groups all need this.</p></li>
+  <li><span class="sz">M</span><b>A button set (toolkit)</b><p>Standard, primary, danger, subtle, icon only, icon plus label, drop-down button and toggle button, each with the press styles as parameters. Start from <code>classic::button</code> on <code>feat/classic-widgets</code>.</p></li>
+  <li><span class="sz">S</span><b>Icon font (toolkit)</b><p>A <code>Face::Icons</code> that draws Segoe Fluent Icons code points through the text engine, so Sprawl's 53 glyphs keep their exact shapes. Keep the path icons for Linux.</p></li>
+  <li><span class="sz">M</span><b>Fields (toolkit)</b><p>A leading icon and a clear button, a password mask, and a multi-line field for the AI chat, with wrapping, scroll, IME and a selection that spans lines.</p></li>
+  <li><span class="sz">L</span><b>The markdown view (toolkit)</b><p>Move <code>mdview-render</code> into the toolkit, or a slim chat version of it, for the Advisor's AI answers. Code blocks, lists and links are enough, plus selection and copy.</p></li>
+  <li><span class="sz">S</span><b>Cell bars and chips (toolkit)</b><p>Percent bar in a cell, a multi-colour bar, chips, badges and a determinate ring. All of them are already listed as gaps in PURGE-MOCKUP.</p></li>
+  <li><span class="sz">S</span><b>Underline tab row (toolkit)</b><p>Tabs with badges and a line that slides on a spring. Pills as a second look, matching Sprawl's Tabs option.</p></li>
+  <li><span class="sz">M</span><b>Column chooser, rename in place, drag out (toolkit, already planned)</b><p>ROADMAP L4 (hide and reorder columns), L5 (rename in place, which Sprawl's F2 needs) and L7–L8 (drag and drop). Sprawl uses the first two today.</p></li>
+  <li><span class="sz">S</span><b>Shell pieces (Sprawl, mostly moved as they are)</b><p><code>shellmenu.rs</code> (IContextMenu), CF_HDROP copy, file dialogs, elevation, the watcher and the MCP bridge only need an HWND, which winit gives. The toolkit's F7 shell menu is deferred, so keep Sprawl's own.</p></li>
+  <li><span class="sz">M</span><b>Accessibility (toolkit)</b><p>Multi-select over UIA (an AccessKit limit) and a pass with Narrator before release. Sprawl has 44 AutomationProperties today; keep that coverage or better it.</p></li>
+  <li><span class="sz">L</span><b>The Theme page (Sprawl)</b><p>Surfaces, corners, chips, press, finish, controls, motion, bars, selection and small text, expressed as a <code>Palette</code> plus draw parameters. Easier than in XAML, since a choice no longer rebuilds the page, but there is a lot of it.</p></li>
+ </ol>
+
+ <h2>Mockup B: compact chrome</h2>
+ <div class="col"><p>An alternative, and I think a real improvement. Today about 250 px of the 860 px window goes on chrome before the first row: title bar, menu bar, three header cards, the tab row and the map bar. Because the toolkit draws the title row itself, with snap layouts kept, the menu, drive picker and Scan button can share that row. The scan facts become one line with a clickable path. The map tools float on the map. The result is about 115 px of chrome, and the map gains about 100 px. The drive bar is split by file type, which the header card can't show today.</p></div>
+ <div class="stage" id="stageB">
+  <div class="app mB" id="appB">
+   <div class="tbB">
+    <div class="logo"><i><b style="height:4px"></b><b style="height:7px"></b><b style="height:9px"></b><b style="height:6px"></b><b style="height:8px"></b></i></div>
+    <span style="font-weight:600;color:var(--t0);font-size:13px;margin-right:4px">Sprawl</span>
+    <div class="menubar"><span>File</span><span>Options</span><span>Help</span></div>
+    <div style="flex:1"></div>
+    <div class="dd"><span style="display:flex;gap:7px;align-items:center"><svg class="ico"><use href="#i-drive"/></svg>[D:] Data</span><svg class="ico"><use href="#i-chev-d"/></svg></div>
+    <span class="btn pri"><svg class="ico"><use href="#i-search"/></svg>Scan</span>
+    <div class="caps" style="margin-left:14px"><span><svg class="ico"><use href="#i-min"/></svg></span><span><svg class="ico"><use href="#i-max"/></svg></span><span><svg class="ico"><use href="#i-x"/></svg></span></div>
+   </div>
+   <div class="crumbs">
+    <div class="path"><span><b>D:\</b></span><svg class="ico" style="color:var(--t3)"><use href="#i-chev-r"/></svg><span>Projects</span><svg class="ico" style="color:var(--t3)"><use href="#i-chev-r"/></svg><span>sprawl</span><svg class="ico" style="color:var(--t3)"><use href="#i-chev-r"/></svg><span style="background:var(--sel)">target</span></div>
+    <span class="stats">412.6 GiB of 1.8 TiB · 1.2 M files · read in 3.1 s (MFT)</span>
+    <div class="typebar" id="typebarB"></div>
+    <span class="stats" style="color:var(--t3)">1.4 TiB free</span>
+   </div>
+   <div class="tabs" style="padding-bottom:4px">
+    <span class="tab on">Tree View</span><span class="tab">File View</span><span class="tab">Advisor <span class="badge">4</span></span><span class="tab">Cleaners <span class="badge">2</span></span><span class="tab"><svg class="ico"><use href="#i-search"/></svg>Search</span>
+    <div class="filter">Filter: *.mp4;  node_modules;  *\cache\*</div>
+   </div>
+   <div class="panes" style="padding-top:2px">
+    <div class="card pane" id="treeB"></div>
+    <div class="card pane" id="typesB"></div>
+   </div>
+   <div class="mapwrap" style="margin-top:10px"><canvas id="mapB"></canvas>
+    <div class="maptools">
+     <div class="seg"><span class="on"><svg class="ico"><use href="#i-grid"/></svg>Treemap</span><span><svg class="ico"><use href="#i-city"/></svg>City</span><span><svg class="ico"><use href="#i-galaxy"/></svg>Galaxy</span><span>More <svg class="ico"><use href="#i-chev-d"/></svg></span></div>
+     <div class="seg"><span>Colour: Types <svg class="ico"><use href="#i-chev-d"/></svg></span><span><svg class="ico"><use href="#i-tweak"/></svg></span><span><svg class="ico"><use href="#i-history"/></svg></span></div>
+    </div>
+    <div class="mkey" id="keyB"></div>
+   </div>
+   <div class="foot"><span>D:\Projects\sprawl\target  -  22.2 GiB</span><span>14 items  │  22.2 GiB</span></div>
+  </div>
+ </div>
+ <div class="col">
+  <h3>What changes, and why</h3>
+  <ul>
+   <li><b>Menu, drive and Scan move into the title row.</b> This works only because the toolkit draws the caption area and keeps the snap layouts flyout (<code>snap::set_maximize_button_rect</code>). In WinUI it would mean <code>SetTitleBar</code> drag regions around interactive controls.</li>
+   <li><b>One facts line instead of three cards.</b> The path is a breadcrumb, which ROADMAP L6 plans. The brand card goes; the version stays in Help › About.</li>
+   <li><b>The drive bar shows what is in it.</b> The used part is split by the top file types in the map's colours, and the rest is free space.</li>
+   <li><b>The map tools float on the map,</b> drawn in the same pass as the map, so the separate map bar row goes away.</li>
+   <li><b>Unchanged:</b> tokens, rows, tabs, the filter, both panes and the footer. Everything you tuned on the Theme page still applies.</li>
+  </ul>
+  <p class="note">Mockup B is a layout proposal, not something the port requires. It could be built in WinUI too, at the cost of fiddly title bar drag regions.</p>
+
+  <h2>Branches and plans that matter for Sprawl</h2>
+  <ul>
+   <li><code>feat/classic-widgets</code> (1 commit, 11-24, unmerged): a drawn menu bar, a column header and a button. Sprawl needs all three, but the branch has its own fixed dark look; it should move onto <code>Palette</code> before it merges.</li>
+   <li><code>feat/stack-wait-lift</code> (1 commit, today, unmerged): a toast waits until the others have lifted. Fits Sprawl's delete and update cards.</li>
+   <li><code>wk/a11y</code>, <code>wk/deps</code>, <code>wk/auditfix</code>, <code>f/copy-in</code>: already on main. The README's note that <code>feat/linux</code> will "become main" is out of date: main already contains it.</li>
+   <li>Planned and relevant: L4 column chooser, L5 rename in place, L6 breadcrumb, L7–L8 drag and drop, L9 files on the clipboard, W1b several damage rectangles and windows, W8 more accessibility adapters, F7 shell menu (deferred).</li>
+   <li>PLAN.md step 4 (a shared window loop) is still open. Neither app uses <code>host</code> yet, so Sprawl would be its first real user.</li>
+  </ul>
+
+  <h2>A sensible first step</h2>
+  <p>Before committing to the whole port, build one spike in the toolkit: the Tree View screen with a real 1.2-million-file scan, the types table, and the map through the GPU readback. Measure first paint, scroll and resize against 1.0.9. That answers the two open questions, CPU cost on a large window and the map, in about a week. The tree model, buttons and icon font built for it go into the toolkit either way.</p>
+ </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+// ---------- example data (not a real scan) ----------
+const PAL=[[235,125,20],[45,175,65],[195,205,25],[205,45,150],[25,145,235],[150,65,215],[125,115,245],[225,45,205],[235,25,35],[135,165,45],[25,205,175],[160,95,35]];
+const rgb=c=>`rgb(${c[0]},${c[1]},${c[2]})`;
+const TYPES=[[".pak","PAK File",31.4,"129.6 GiB","129.6 GiB","8,214"],[".mp4","MP4 Video",18.9,"78.0 GiB","78.0 GiB","1,402"],[".mkv","MKV Video",6.2,"25.6 GiB","25.6 GiB","118"],[".rlib","RLIB File",4.8,"19.8 GiB","19.9 GiB","31,906"],[".jpg","JPEG Image",4.1,"16.9 GiB","16.9 GiB","48,377"],[".zip","Compressed",3.9,"16.1 GiB","16.1 GiB","212"],[".dll","Application ext.",3.2,"13.2 GiB","13.3 GiB","22,481"],[".flac","FLAC Audio",1.5,"6.2 GiB","6.2 GiB","1,930"],[".pdb","Debug Symbols",1.4,"5.8 GiB","5.8 GiB","1,117"],[".vpk","VPK File",1.2,"5.0 GiB","5.0 GiB","96"],[".cr3","CR3 Raw Image",1.1,"4.5 GiB","4.5 GiB","902"],[".exe","Application",0.9,"3.7 GiB","3.7 GiB","3,240"]];
+const TI={};TYPES.forEach((t,i)=>TI[t[0]]=i);
+// depth, name, kind(r/f/x), pct, size, alloc, items, files, owner, open(1/0/-), flags
+const TREE=[
+ [0,"D:\\","r",100,"412.6 GiB","412.7 GiB","1,284,511","1,201,377","",1],
+ [1,"Games","f",46.2,"190.6 GiB","190.7 GiB","412,906","398,214","Steam",1],
+ [2,"SteamLibrary","f",88.4,"168.5 GiB","168.6 GiB","371,520","360,011","Steam",0],
+ [2,"Epic Games","f",11.6,"22.1 GiB","22.1 GiB","41,384","38,203","Epic Games Launcher",0],
+ [1,"Video","f",22.8,"94.1 GiB","94.1 GiB","1,544","1,520","",0],
+ [1,"Projects","f",14.1,"58.2 GiB","58.3 GiB","301,775","268,140","",1],
+ [2,"sprawl","f",41.2,"24.0 GiB","24.1 GiB","122,408","110,377","",1],
+ [3,"target","f",92.5,"22.2 GiB","22.2 GiB","98,114","90,286","",0,"sel"],
+ [3,"crates","f",0.4,"98.4 MiB","101.2 MiB","1,904","1,802","",0],
+ [3,"Cargo.lock","x",0.0,"88.1 KiB","88.0 KiB","","","",-1],
+ [2,"markdown-viewer-rs","f",18.3,"10.6 GiB","10.7 GiB","61,077","55,431","",0],
+ [2,"purge","f",9.7,"5.6 GiB","5.7 GiB","24,960","22,118","",0],
+ [1,"Photos","f",9.5,"39.2 GiB","39.2 GiB","50,013","49,279","",0],
+ [1,"Backups","f",5.2,"21.5 GiB","21.5 GiB","214","212","",0],
+ [1,"Music","f",1.6,"6.6 GiB","6.6 GiB","2,206","1,930","",0],
+ [1,"$RECYCLE.BIN","f",0.6,"2.5 GiB","2.5 GiB","88","61","",0,"hid"]
+];
+const svg=(id,cls)=>`<svg class="ico ${cls||""}"><use href="#${id}"/></svg>`;
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+// Sprawl's narrow layout (window under 1500 px): % column 100, Items, Files and Owner hidden
+const COLS="minmax(0,1fr) 100px 92px 92px";
+function tree(el){
+ let h=`<div class="thead" style="grid-template-columns:${COLS}"><span>Folder</span><span class="r">% of Parent</span><span class="r">Size ${svg("i-chev-d")}</span><span class="r">Allocated</span></div><div style="overflow:hidden">`;
+ for(const r of TREE){
+  const [d,n,k,p,s,a,it,f,o,op,fl]=r;
+  const chev=op===1?svg("i-chev-d"):op===0?svg("i-chev-r"):"";
+  const icon=k==="r"?`<span style="color:#8FB4FF">${svg("i-drive")}</span>`:k==="f"?`<span class="fold">${svg("i-folder")}</span>`:`<span style="color:${rgb(PAL[11])}">${svg("i-file")}</span>`;
+  h+=`<div class="tr ${fl||""}" style="grid-template-columns:${COLS}"><span class="nm" style="padding-left:${8+16*d}px"><span class="chev">${chev}</span>${icon}<span style="color:${fl==="hid"?"var(--faint)":"var(--t0)"}">${esc(n)}</span></span><span><div class="pbar"><i style="width:${p}%"></i><em>${p.toFixed(1)} %</em></div></span><span class="r">${s}</span><span class="r">${a}</span></div>`;
+ }
+ el.innerHTML=h+"</div>";
+}
+const TCOLS="22px 58px minmax(0,1fr) 92px 80px";
+function types(el){
+ let h=`<div class="thead" style="grid-template-columns:${TCOLS}"><span></span><span>Ext.</span><span>File Type</span><span class="r">Percent</span><span class="r">Size ${svg("i-chev-d")}</span></div><div style="overflow:hidden">`;
+ TYPES.forEach((t,i)=>{h+=`<div class="tr" style="grid-template-columns:${TCOLS}"><span style="padding:0 0 0 8px"><i class="sw" style="background:${rgb(PAL[i])}"></i></span><span>${t[0]}</span><span style="color:var(--t2)">${t[1]}</span><span><div class="pbar"><i style="width:${t[2]*2}%"></i><em>${t[2].toFixed(1)} %</em></div></span><span class="r">${t[3]}</span></div>`});
+ el.innerHTML=h+"</div>";
+}
+function key(el){el.innerHTML=TYPES.slice(0,8).map((t,i)=>`<span><i class="sw" style="background:${rgb(PAL[i])}"></i>${t[0]}</span>`).join("")}
+// ---------- treemap: squarified layout + WinDirStat-style cushions, all on the CPU ----------
+let seed=7;const rnd=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648;
+function files(n,total,mix){const w=[];for(let i=0;i<n;i++)w.push(Math.pow(rnd(),2.2)+0.02);const sum=w.reduce((a,b)=>a+b,0);
+ return w.map(x=>{let r=rnd(),acc=0,ty=mix[0][0];for(const [t,p] of mix){acc+=p;if(r<=acc){ty=t;break}}return{size:total*x/sum,type:TI[ty]}})}
+function folder(name,kids){return{name,children:kids,size:kids.reduce((a,k)=>a+k.size,0)}}
+function build(){seed=7;
+ const games=[];for(let g=0;g<11;g++){const s=[28,22,18,16,14,13,12,11,10,9,8][g]*1.0;games.push(folder("game"+g,files(5+Math.floor(rnd()*6),s,[[".pak",.72],[".vpk",.1],[".dll",.1],[".exe",.08]])))}
+ const steam=folder("SteamLibrary",games);
+ const epic=folder("Epic Games",[folder("e1",files(6,13,[[".pak",.8],[".dll",.2]])),folder("e2",files(5,9.1,[[".pak",.85],[".exe",.15]]))]);
+ const video=folder("Video",files(26,94.1,[[".mp4",.8],[".mkv",.2]]));
+ const sprawl=folder("sprawl",[folder("target",files(30,22.2,[[".rlib",.55],[".pdb",.2],[".exe",.1],[".dll",.15]])),folder("crates",files(4,1.8,[[".rlib",1]]))]);
+ const proj=folder("Projects",[sprawl,folder("markdown-viewer-rs",files(14,10.6,[[".rlib",.6],[".pdb",.25],[".dll",.15]])),folder("purge",files(10,5.6,[[".rlib",.6],[".pdb",.4]])),folder("other",files(12,18,[[".zip",.3],[".dll",.4],[".exe",.3]]))]);
+ const photos=folder("Photos",[2022,2023,2024,2025,2026].map(y=>folder(String(y),files(14,7.8,[[".jpg",.75],[".cr3",.25]]))));
+ return folder("D:\\",[folder("Games",[steam,epic]),video,proj,photos,folder("Backups",files(6,21.5,[[".zip",1]])),folder("Music",files(16,6.6,[[".flac",1]]))]);
+}
+function worst(row,w){const s=row.reduce((a,b)=>a+b.a,0);let mx=0,mn=Infinity;for(const r of row){mx=Math.max(mx,r.a);mn=Math.min(mn,r.a)}return Math.max(w*w*mx/(s*s),s*s/(w*w*mn))}
+function squarify(items,x,y,w,h,out){
+ items=items.filter(i=>i.a>0).sort((a,b)=>b.a-a.a);
+ while(items.length){const side=Math.min(w,h);let row=[items[0]],i=1;
+  while(i<items.length&&worst(row.concat([items[i]]),side)<=worst(row,side)){row.push(items[i]);i++}
+  const s=row.reduce((a,b)=>a+b.a,0);
+  if(w>=h){const cw=s/h;let cy=y;for(const r of row){const ch=r.a/cw;out.push([r.n,x,cy,cw,ch]);cy+=ch}x+=cw;w-=cw}
+  else{const ch=s/w;let cx=x;for(const r of row){const cw=r.a/ch;out.push([r.n,cx,y,cw,ch]);cx+=cw}y+=ch;h-=ch}
+  items=items.slice(i)}
+}
+function layout(node,x,y,w,h,depth,surf,leaves,heads){
+ const hh=0.5,f=0.75;
+ const s=surf.slice();const ht=hh*Math.pow(f,depth);
+ if(w>1){s[2]+=4*ht*(x+w+x)/w;s[0]-=4*ht/w}
+ if(h>1){s[3]+=4*ht*(y+h+y)/h;s[1]-=4*ht/h}
+ if(!node.children){leaves.push({x,y,w,h,s,type:node.type});return}
+ let iy=y,ih=h;
+ if(depth<=2&&depth>0&&w>60&&h>34){heads.push({x,y,w,name:node.name,size:node.size});iy+=15;ih-=15}
+ const pad=depth===0?0:1.2;const ix=x+pad,iw=w-2*pad;iy+=pad;ih-=2*pad;if(iw<=0||ih<=0)return;
+ const tot=node.size;const items=node.children.map(c=>({n:c,a:c.size/tot*iw*ih}));const out=[];
+ squarify(items,ix,iy,iw,ih,out);
+ for(const [c,cx,cy,cw,ch] of out)layout(c,cx,cy,cw,ch,depth+1,s,leaves,heads);
+}
+function drawMap(cv){
+ const W=cv.offsetWidth,H=cv.offsetHeight;if(!W||!H)return;
+ cv.width=W;cv.height=H;const ctx=cv.getContext("2d");
+ const root=build();const leaves=[],heads=[];
+ layout(root,0,0,W,H,0,[0,0,0,0],leaves,heads);
+ const img=ctx.createImageData(W,H),d=img.data;
+ const L=[-1,-1,10],ln=Math.hypot(...L),lx=L[0]/ln,ly=L[1]/ln,lz=L[2]/ln,Ia=0.18,Is=0.95;
+ for(let i=0;i<d.length;i+=4){d[i]=12;d[i+1]=14;d[i+2]=19;d[i+3]=255}
+ for(const t of leaves){const c=PAL[t.type]||[105,105,112];
+  const x0=Math.floor(t.x),y0=Math.floor(t.y),x1=Math.min(W,Math.ceil(t.x+t.w)),y1=Math.min(H,Math.ceil(t.y+t.h));
+  for(let py=y0;py<y1;py++){const ny=-(2*t.s[1]*(py+.5)+t.s[3]);
+   for(let px=x0;px<x1;px++){const nx=-(2*t.s[0]*(px+.5)+t.s[2]);
+    let cos=(nx*lx+ny*ly+lz)/Math.sqrt(nx*nx+ny*ny+1);if(cos<0)cos=0;const v=Math.min(1.25,Ia+Is*cos);
+    const o=(py*W+px)*4;d[o]=Math.min(255,c[0]*v);d[o+1]=Math.min(255,c[1]*v);d[o+2]=Math.min(255,c[2]*v)}}}
+ ctx.putImageData(img,0,0);
+ ctx.font='600 11px "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif';ctx.textBaseline="middle";
+ for(const h of heads){ctx.fillStyle="rgba(14,16,22,.82)";ctx.fillRect(h.x+1,h.y+1,h.w-2,14);
+  const gib=h.size>=1?h.size.toFixed(1)+" GiB":(h.size*1024).toFixed(0)+" MiB";
+  let label=h.name+"\\ ("+gib+")";ctx.fillStyle="#EEF1F8";
+  while(label.length>3&&ctx.measureText(label).width>h.w-10)label=label.slice(0,-2)+"…";
+  if(h.w>40)ctx.fillText(label,h.x+6,h.y+8.5)}
+}
+function typebar(el){const used=TYPES.slice(0,8).map((t,i)=>`<i style="width:${t[2]*0.224}%;background:${rgb(PAL[i])}"></i>`).join("");
+ el.innerHTML=used+`<i style="width:${(100-TYPES.slice(0,8).reduce((a,t)=>a+t[2],0))*0.224}%;background:rgb(105,105,112)"></i>`}
+// ---------- pins for mockup A (design coordinates 1360x860) ----------
+const PINS=[
+ [140,17,"ok","Drawn title row, caption buttons and the snap layouts flyout (chrome, snap, DWM corners and shadow)."],
+ [178,51,"branch","Menu bar: MenuBar on feat/classic-widgets; the menus themselves are menu::Menu and Cascade on main."],
+ [200,100,"ok","Drive picker: dropdown::Dropdown, with Windows keys."],
+ [392,84,"build","Primary button with an icon: no push or icon button on main yet."],
+ [392,140,"ok","Progress bar: draw_progress. The drive usage bar next door is one rbox."],
+ [1000,72,"hand","Header cards and the brand card: rbox, frame and soft_shadow when Soft depth is on."],
+ [20,160,"hand","Tabs with badges and a sliding line: an rbox moved by an Animator spring. segments is the wrong look."],
+ [1250,158,"ok","Filter field: textfield with IME. A leading icon would need the field work."],
+ [800,196,"ok","Sortable, resizable header: table::Table and draw_header. Column hiding is ROADMAP L4."],
+ [260,420,"build","Folder tree: build on rows, select, TypeAhead and draw_disclosure_animated. FileTree stops at 4,000 rows."],
+ [680,290,"build","% of parent bar inside a cell: a gap listed in PURGE-MOCKUP, a few rbox calls."],
+ [66,263,"build","Fluent icons: add a Segoe Fluent Icons face to the text engine, or path glyphs."],
+ [1180,330,"ok","Types table rows: rows and select, a million rows tested."],
+ [200,577,"hand","Mode strip: segments with icons, active fill in the accent."],
+ [700,700,"build","Treemap: drawn here flat with CPU cushions. The 3D map needs the GPU readback route."],
+ [14,773,"hand","Legend and footer: text and swatches over the map, in the same pass."]
+];
+function pins(){const layer=document.getElementById("pinsA"),list=document.getElementById("pinlistA");
+ layer.innerHTML=PINS.map((p,i)=>`<span class="pin ${p[2]}" style="left:${p[0]/1360*100}%;top:${p[1]/860*100}%">${i+1}</span>`).join("");
+ list.innerHTML=PINS.map((p,i)=>`<li><span class="n ${p[2]}">${i+1}</span><span>${esc(p[3])}</span></li>`).join("")}
+// ---------- scale the 1360x860 app into its stage ----------
+function fit(){for(const id of ["A","B"]){const st=document.getElementById("stage"+id),ap=document.getElementById("app"+id);ap.style.transform=`scale(${st.clientWidth/1360})`}}
+tree(document.getElementById("treeA"));tree(document.getElementById("treeB"));
+types(document.getElementById("typesA"));types(document.getElementById("typesB"));
+key(document.getElementById("keyA"));key(document.getElementById("keyB"));
+typebar(document.getElementById("typebarB"));pins();fit();
+requestAnimationFrame(()=>{drawMap(document.getElementById("mapA"));drawMap(document.getElementById("mapB"))});
+let t;addEventListener("resize",()=>{clearTimeout(t);t=setTimeout(fit,60)});
+const tg=document.getElementById("pinToggle");tg.addEventListener("click",()=>{const on=tg.getAttribute("aria-pressed")!=="true";tg.setAttribute("aria-pressed",on);document.getElementById("stageA").dataset.pins=on?"on":"off"});
+})();
+</script>
