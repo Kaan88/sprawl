@@ -367,7 +367,7 @@ fn done_words(d: &Done) -> String {
     parts.join(" ")
 }
 
-fn succeeded(out: &Outcome) -> bool { !out.stopped && out.problems.is_empty() && out.more_problems == 0 }
+fn succeeded(out: &Outcome) -> bool { !out.stopped && !out.timed_out && !out.tool_unconfirmed && out.problems.is_empty() && out.more_problems == 0 }
 
 /// A compress of `path` that ended (`ok`: with no problems) goes into the Compressed list.
 fn note_compressed(list: &mut Vec<sprawl_advisor::memory::Compressed>, path: &str, alg: &str, now: u64, bytes: u64, freed: u64, d: &sprawl_core::wof::Done, ok: bool) {
@@ -1070,6 +1070,11 @@ impl State {
                 } else {
                     clean::run_with(&path, &action, &spare, bin, &stop2, &mut progress)
                 };
+                if out.tool_unconfirmed {
+                    // Do not measure a still-running command as finished or continue the batch.
+                    let _ = tx.send(Msg::Finished(i, out, None));
+                    break;
+                }
                 // what is there now, for the tree
                 let _ = tx.send(Msg::Measuring(i));
                 let now = rescan_after(&path, compress, Some(&stop2));
@@ -1404,6 +1409,7 @@ impl State {
                     ItemState::Done(_) if it.privacy => ("&#xE7BA;", crate::tokens::refer("warn"), "Held back: nothing was changed".to_string()),
                     ItemState::Running(f) => ("&#xE895;", crate::tokens::refer("link"), running_label(it, *f)),
                     ItemState::Done(o) if it.fate == Fate::Compress => compress_label(o),
+                    ItemState::Done(o) if o.tool_unconfirmed => ("&#xE7BA;", crate::tokens::refer("warn"), "Windows hasn't confirmed the tool stopped".to_string()),
                     ItemState::Done(o) if it.recycle && o.problems.is_empty() => ("&#xE73E;", crate::tokens::refer("good"), format!("{} to the Recycle Bin", self.size(o.recycled))),
                     ItemState::Done(o) if it.recycle => ("&#xE7BA;", crate::tokens::refer("warn"), format!("{} to the Recycle Bin; some couldn't go", self.size(o.recycled))),
                     ItemState::Done(o) if o.saving_unknown && succeeded(o) => ("&#xE73E;", crate::tokens::refer("good"), "Done; the saving couldn't be measured".to_string()),

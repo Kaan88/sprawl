@@ -673,8 +673,7 @@ pub(crate) fn risk_words_for(f: &Finding) -> &'static str {
     }
 }
 
-/// The Recycle Bin and an old Windows: amber (nothing of the user's that they still use), but
-/// nothing brings them back.
+/// Removing the previous Windows installation is amber, but it cannot be brought back.
 pub(crate) fn gone_for_good(f: &Finding) -> bool {
     matches!(&f.source, Source::Rule(id) if id == "win.windows-old")
 }

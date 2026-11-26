@@ -28,6 +28,7 @@ mod external_tool;
 pub use external_tool::{review_external, run_reviewed_external, ReviewedExternal};
 #[path = "tool_job.rs"]
 mod tool_job;
+pub(crate) use tool_job::Pins as ToolPins;
 
 pub const RECYCLE_BIN_RULE: &str = "win.recycle-bin";
 
@@ -178,8 +179,12 @@ pub struct Outcome {
     /// A tool's last lines of output.
     pub output: Vec<String>,
     pub stopped: bool,
-    /// A tool ran past its limit and was ended: not a stop by the user, and not its own ending.
+    /// A tool ran past its limit: not a stop by the user, and not its own ending.
     pub timed_out: bool,
+    /// Windows has not confirmed the job emptied; its pins belong to the cleanup owner.
+    pub tool_unconfirmed: bool,
+    /// The runner interrupted a started tool (Stop, timeout or a host error).
+    pub tool_interrupted: bool,
     /// Items left because they were created or changed after the scan.
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
@@ -411,13 +416,7 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         // ended with the file attached, so it is detached (Fable re-review backlog 4)
         Action::Tool { command } if crate::remedies::is_shrink(action) => {
             tool(command, stop, &mut o);
-            if o.stopped {
-                let mut d = Outcome::default();
-                tool(&crate::remedies::detach_command(path), &AtomicBool::new(false), &mut d);
-                if !d.problems.is_empty() {
-                    o.problem(path, "the disk file may still be attached after the stop: restart Windows, or detach it in Disk Management (Action > Detach VHD), before starting WSL or Docker");
-                }
-            }
+            recover_shrink(path, &mut o, |out| tool(&crate::remedies::detach_command(path), &AtomicBool::new(false), out));
         }
         Action::Tool { .. } => o.problem(path, "left alone: an external cleanup needs its built-in rule and a reviewed scope"),
         Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
@@ -450,6 +449,19 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         o.stopped = true;
     }
     o
+}
+
+fn recover_shrink(path: &Path, shrink: &mut Outcome, detach: impl FnOnce(&mut Outcome)) {
+    if !(shrink.timed_out || shrink.tool_interrupted) { return; }
+    let mut recovery = Outcome::default();
+    if !shrink.tool_unconfirmed {
+        detach(&mut recovery);
+        shrink.tool_unconfirmed |= recovery.tool_unconfirmed;
+        if recovery.problems.is_empty() && recovery.more_problems == 0 && !recovery.stopped && !recovery.timed_out { return; }
+        if let Some(why) = recovery.problems.first() { shrink.problem(path, format!("detach recovery didn't finish: {why}")); }
+    }
+    let when = if shrink.tool_unconfirmed { " Once Windows has stopped the tool," } else { "" };
+    shrink.problem(path, format!("the disk file may still be attached.{when} Restart Windows or detach it in Disk Management (Action > Detach VHD) before starting WSL or Docker"));
 }
 
 pub fn run_reviewed_compression(path: &Path, receipt: &crate::remedies::ReviewedCompression, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64), batch: &mut crate::remedies::CompressionBatch) -> Outcome {
@@ -531,25 +543,29 @@ fn tool_path(path: &Path) -> PathBuf {
 fn run_package(
     path: &Path, binding: PackageTool, stop: &AtomicBool, out: &mut Outcome,
     mut policy: impl FnMut() -> Result<ToolProtection, String>,
-    mut invoke: impl FnMut(&str, &AtomicBool, &mut Outcome, &[(&str, &std::ffi::OsStr)]) -> Option<String>,
+    mut invoke: impl FnMut(&str, &AtomicBool, &mut Outcome, &[(&str, &std::ffi::OsStr)], ToolPins) -> Option<String>,
 ) -> Result<(), String> {
     if stop.load(Ordering::Relaxed) { return Ok(()); }
     // Before even asking the tool: npm writes its logs as it starts, including in the probe.
-    let before = hold_before(path, &binding, &policy()?)?;
+    let before = std::sync::Arc::new(hold_before(path, &binding, &policy()?)?);
     let root = &before[0].0.path;
     let vars = binding.env(root);
     let env: Vec<_> = vars.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
     let mut asked = Outcome::default();
-    let answer = invoke(binding.probe, stop, &mut asked, &env);
-    if asked.stopped || stop.load(Ordering::Relaxed) { out.stopped = true; return Ok(()); }
+    let pins = ToolPins::hold(before.clone());
+    let answer = invoke(binding.probe, stop, &mut asked, &env, pins.clone());
+    out.tool_unconfirmed |= asked.tool_unconfirmed;
+    out.timed_out |= asked.timed_out;
+    out.stopped |= asked.stopped || stop.load(Ordering::Relaxed);
     if let Some(why) = asked.problems.first() { return Err(format!("Sprawl couldn't check where the program keeps its cache ({why})")); }
+    if out.stopped { return Ok(()); }
     let answer = answer.ok_or("Sprawl couldn't read the program's full answer about where it keeps its cache")?;
     let held = scope_matches(root, &binding, &answer.lines().map(str::to_string).collect::<Vec<_>>())?;
     // Read both protections again at the launch boundary; a probe can take a while.
     let current = policy()?;
     current.check(path)?;
     for (dir, _) in before.iter().chain(&held) { current.check(&dir.path)?; }
-    if !stop.load(Ordering::Relaxed) { invoke(binding.run, stop, out, &env); }
+    if !stop.load(Ordering::Relaxed) { invoke(binding.run, stop, out, &env, pins.also(held)); }
     Ok(())
 }
 
@@ -2707,12 +2723,12 @@ fn encoded(s: &str) -> String {
 /// reads settings from the folder Sprawl started in); its last lines of output are kept. The
 /// tool and anything it starts run in a job, so Stop (or closing Sprawl) ends all of them.
 fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
-    tool_with(command, stop, o, &[]);
+    tool_with(command, stop, o, &[], ToolPins::default());
 }
 
 /// Uncompress only these exact targets, already pinned by the in-place remedy.
 /// It cannot use the generic external cleanup branch or pass an arbitrary command.
-pub(crate) fn uncompress_batch(pinned: &[sprawl_core::local::Directory], directories: bool) -> Outcome {
+pub(crate) fn uncompress_batch(pinned: Vec<sprawl_core::local::Directory>, directories: bool) -> Outcome {
     let mut out = Outcome::default();
     let Some(first) = pinned.first() else { return out; };
     if let Err(e) = crate::require_write() {
@@ -2721,7 +2737,7 @@ pub(crate) fn uncompress_batch(pinned: &[sprawl_core::local::Directory], directo
     }
     let args = pinned.iter().map(|p| crate::rules::ps_quote(&p.path.display().to_string())).collect::<Vec<_>>().join(" ");
     let command = format!("compact.exe /u /a /i /q {}{args}", if directories { "" } else { "/exe " });
-    tool(&command, &AtomicBool::new(false), &mut out);
+    tool_with(&command, &AtomicBool::new(false), &mut out, &[], ToolPins::hold(pinned));
     out
 }
 
@@ -2731,13 +2747,13 @@ const TOOL_OUTPUT: usize = 1 << 20;
 /// [`tool`], with `env` set for it. Its whole output (each line as the tool wrote it, never
 /// wrapped) when that was read completely and is at most [`TOOL_OUTPUT`]; None when it was
 /// longer, a read failed, or the run was stopped.
-fn tool_with(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
-    tool_with_limit(command, stop, o, env, Duration::from_secs(3600))
+fn tool_with(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], pins: ToolPins) -> Option<String> {
+    tool_with_limit(command, stop, o, env, pins, Duration::from_secs(3600))
 }
 
 /// The time a tool command may take before it is ended: an hour, as DISM can run long. The
 /// free-space wipe has its own, longer one ([`run_tool`]).
-fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration) -> Option<String> {
+fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], pins: ToolPins, limit: Duration) -> Option<String> {
     let Some(sys) = system_dir() else { o.problem(Path::new(command), "Windows' System32 folder wasn't found"); return None };
     let command = system_command(command, &sys);
     let command = command.as_str();
@@ -2749,7 +2765,7 @@ fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&s
         o.problem(Path::new(command), why);
         return None;
     }
-    run_powershell(command, &sys, elevated, stop, o, env, limit)
+    run_powershell(command, &sys, elevated, stop, o, env, pins, limit)
 }
 
 /// One built-in tool command on `path`, for a caller outside a clean-up (the free-space wipe),
@@ -2757,14 +2773,14 @@ fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&s
 /// everything it started, its last lines of output and any problem kept. It is not started at
 /// all when Windows won't let the job take it: a tool that Stop couldn't end is worse than a
 /// refusal. `limit` is how long it may take: a wipe of a big drive can run for days.
-pub fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, progress: &mut dyn FnMut(u64)) -> Outcome {
+pub(crate) fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, pins: ToolPins, progress: &mut dyn FnMut(u64)) -> Outcome {
     let mut o = Outcome::default();
     let targets: Vec<PathBuf> = std::iter::once(path.to_path_buf()).chain(quoted_paths(command)).collect();
     if let Some(e) = targets.iter().find_map(|t| sprawl_core::local::lexical(t).err()) {
         o.problem(path, format!("left alone: {e}"));
         return o;
     }
-    tool_with_limit(command, stop, &mut o, &[], limit);
+    tool_with_limit(command, stop, &mut o, &[], pins, limit);
     if stop.load(Ordering::Relaxed) {
         o.stopped = true;
     }
@@ -2773,9 +2789,8 @@ pub fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, 
 }
 
 /// The run itself, once [`tool_with`] has let `command` through: see there.
-fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration) -> Option<String> {
+fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], pins: ToolPins, limit: Duration) -> Option<String> {
     use std::ffi::OsStr;
-    use tool_job::Status;
     if stop.load(Ordering::Relaxed) { o.stopped = true; return None; }
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
@@ -2798,8 +2813,8 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
     }
     // GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, injected configs, and other inherited
     // Git overrides can redirect maintenance outside the reviewed repository.
-    let mut child = match tool_job::environment(command.starts_with("git "), &env)
-        .and_then(|env| tool_job::Running::start(&ps, &args, sys, &env)) {
+    let child = match tool_job::environment(command.starts_with("git "), &env)
+        .and_then(|env| tool_job::Running::start(&ps, &args, sys, &env, pins)) {
         Ok(c) => c,
         Err(e) => { o.problem(Path::new(command), format!("not started in a stoppable job: {e}")); return None }
     };
@@ -2812,23 +2827,31 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
             if keep.len() > 2 * TOOL_OUTPUT { keep.drain(..keep.len() - TOOL_OUTPUT); }
         }
     });
-    // On a wait error Drop also terminates and drains before returning to dispatch.
-    drop(child);
-    let end = match end { Ok(end) => end, Err(e) => { o.problem(Path::new(command), e); return None } };
+    finish_tool(command, o, limit, end, keep, cut)
+}
+
+fn finish_tool(command: &str, o: &mut Outcome, limit: Duration, end: tool_job::End, keep: Vec<u8>, cut: bool) -> Option<String> {
+    use tool_job::Status;
+    let path = Path::new(command);
     o.stopped |= matches!(end.status, Status::Stopped);
     o.timed_out |= matches!(end.status, Status::TimedOut);
+    o.tool_unconfirmed |= end.unconfirmed;
+    o.tool_interrupted |= end.interrupted;
+    let failed = !end.problems.is_empty();
+    for problem in end.problems { o.problem(path, problem); }
     let text = String::from_utf8_lossy(&keep).into_owned();
     let lines: Vec<String> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(|l| crate::llm::clip(l.to_string(), 200)).collect();
     o.output = lines[lines.len().saturating_sub(12)..].to_vec();
     if o.timed_out {
         let secs = limit.as_secs();
         let allowed = if secs >= 48 * 3600 { format!("{} days", secs / 86_400) } else { format!("{} hours", (secs / 3600).max(1)) };
-        o.problem(Path::new(command), format!("ran past the {allowed} Sprawl allows and was ended"));
+        let ended = if end.unconfirmed { "; Windows hasn't confirmed it ended" } else { " and was ended" };
+        o.problem(path, format!("ran past the {allowed} Sprawl allows{ended}"));
     }
     if let Status::Exited(c) = end.status {
         if c != 0 { o.problem(Path::new(command.split_whitespace().next().unwrap_or(command)), format!("ended with code {c}")); }
     }
-    (!cut && !end.cut && !o.stopped && !o.timed_out).then_some(text)
+    (!cut && !end.truncated && !failed && !end.unconfirmed && matches!(end.status, Status::Exited(0))).then_some(text)
 }
 
 #[cfg(test)]
@@ -3748,15 +3771,16 @@ mod tests {
         let mut o = Outcome::default();
         let long = "x".repeat(300);
         let sys = system_dir().unwrap();
-        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[], Duration::from_secs(3600)).expect("read whole");
+        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[], ToolPins::default(), Duration::from_secs(20)).expect("read whole");
         assert_eq!(text.lines().count(), 40, "{:?}", o.problems);
         assert!(text.lines().all(|l| l.len() > 300));
         let mut o = Outcome::default();
-        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[], Duration::from_secs(3600)).is_none(), "1.2 MB is cut");
+        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[], ToolPins::default(), Duration::from_secs(30)).is_none(), "1.2 MB is cut");
+        assert!(o.problems.is_empty() && !o.timed_out && !o.output.is_empty(), "truncation drains the job without marking an I/O failure: {o:?}");
         // the binding reaches the tool
         let mut o = Outcome::default();
         let dir = std::ffi::OsString::from(r"C:\Reviewed\cache");
-        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())], Duration::from_secs(3600)).unwrap();
+        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())], ToolPins::default(), Duration::from_secs(20)).unwrap();
         assert_eq!(text.trim(), r"C:\Reviewed\cache");
         drop(owned);
     }
@@ -3774,7 +3798,7 @@ mod tests {
             let mut calls = Vec::new();
             let result = run_package(&root, npm, &stop, &mut Outcome::default(),
                 || Ok(ToolProtection { kept: policy.kept.clone(), skipped: policy.skipped.clone() }),
-                |script, _, _, env| {
+                |script, _, _, env, _| {
                     calls.push(script.to_string());
                     let bound = env.iter().find(|(name, _)| *name == "SPRAWL_TOOL_DIR").unwrap().1;
                     assert!(same_path(Path::new(bound), &root));
@@ -3808,11 +3832,44 @@ mod tests {
                     let skipped = if updated && reads > 1 { vec![root.join("keep-now")] } else { vec![] };
                     Ok(ToolProtection { kept: vec![], skipped })
                 },
-                |script, _, _, _| { calls.push(script.to_string()); answer.as_ref().map(|p| p.display().to_string()) });
+                |script, _, _, _, _| { calls.push(script.to_string()); answer.as_ref().map(|p| p.display().to_string()) });
             assert!(result.is_err(), "bad scope/protection update must stop the cleanup");
             assert_eq!(calls, [package_tool("pip cache purge").unwrap().unwrap().probe]);
             assert_eq!(reads, if updated { 2 } else { 1 });
         }
+    }
+
+    #[test]
+    fn shrink_timeout_runs_detach_only_after_the_job_is_confirmed_empty() {
+        let path = Path::new("in-memory-vhd-fixture.vhdx");
+        let mut shrink = Outcome { timed_out: true, ..Default::default() };
+        let mut calls = 0;
+        recover_shrink(path, &mut shrink, |_| calls += 1);
+        assert_eq!(calls, 1);
+        assert!(shrink.timed_out);
+        shrink.tool_unconfirmed = true;
+        recover_shrink(path, &mut shrink, |_| panic!("detaching while diskpart might still be running"));
+        assert!(shrink.problems.iter().any(|p| p.contains("may still be attached")));
+        let mut before_launch = Outcome { stopped: true, ..Default::default() };
+        recover_shrink(path, &mut before_launch, |_| panic!("nothing was started"));
+    }
+
+    #[test]
+    fn tool_io_failure_is_reported_to_cleanup_not_returned_as_an_answer() {
+        let mut o = Outcome::default();
+        let end = tool_job::End { status: tool_job::Status::Failed, problems: vec!["couldn't read tool output: os error 6".into()],
+            truncated: false, unconfirmed: false, interrupted: true };
+        assert!(finish_tool("fixture", &mut o, Duration::from_secs(1), end, b"partial output".to_vec(), false).is_none());
+        assert!(o.tool_interrupted && !o.timed_out);
+        assert!(o.problems.iter().any(|p| p.contains("os error 6")));
+        assert_eq!(o.output, ["partial output"]);
+        let mut timeout = Outcome::default();
+        let end = tool_job::End { status: tool_job::Status::TimedOut, problems: vec!["couldn't terminate the tool job: os error 5".into()],
+            truncated: false, unconfirmed: true, interrupted: true };
+        assert!(finish_tool("fixture", &mut timeout, Duration::from_secs(3600), end, Vec::new(), false).is_none());
+        assert!(timeout.timed_out && timeout.tool_unconfirmed);
+        assert!(timeout.problems.iter().any(|p| p.contains("os error 5")));
+        assert!(timeout.problems.iter().all(|p| !p.contains("was ended")));
     }
 
     #[test]

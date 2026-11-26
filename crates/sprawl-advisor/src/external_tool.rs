@@ -4,7 +4,7 @@ use super::*;
 use crate::finding::Source;
 use std::ffi::OsStr;
 
-type Runner<'a> = dyn FnMut(&str, &AtomicBool, &mut Outcome, &[(&str, &OsStr)]) -> Option<String> + 'a;
+type Runner<'a> = dyn FnMut(&str, &AtomicBool, &mut Outcome, &[(&str, &OsStr)], ToolPins) -> Option<String> + 'a;
 const UNKNOWN: &str = "Sprawl can't verify everywhere this command could clean";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,14 +96,14 @@ pub fn run_reviewed_external(tool: &ReviewedExternal, spare: &Spare, stop: &Atom
     out
 }
 
-fn dispatch<H>(
+fn dispatch<H: Send + Sync + 'static>(
     tool: &ReviewedExternal, stop: &AtomicBool, out: &mut Outcome,
     mut policy: impl FnMut() -> Result<ToolProtection, String>, resolve_now: impl FnOnce() -> Result<(Scope, H), String>, invoke: &mut Runner<'_>,
 ) -> Result<(), String> {
     if tool.rule == RECYCLE_BIN_RULE { return Err("Sprawl leaves the Recycle Bin alone; review it in Windows".into()); }
     // Read policy first; take the fresh target identity/config as close to launch as possible.
     let current = policy()?;
-    let (scope, _settings_pin) = resolve_now()?;
+    let (scope, settings_pin) = resolve_now()?;
     if scope != tool.scope { return Err("the command's scope changed; review it again".into()); }
     match scope {
         Scope::Cache(binding) => {
@@ -111,9 +111,11 @@ fn dispatch<H>(
             run_package(&tool.path, binding, stop, out, || first.take().map_or_else(&mut policy, Ok), invoke)
         }
         Scope::Fixed(fixed) => {
-            let _pins = fixed.check(&current)?;
+            let pins = ToolPins::hold((fixed.check(&current)?, settings_pin));
             let env: Vec<_> = fixed.env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
-            if !stop.load(Ordering::Relaxed) { invoke(&fixed.run, stop, out, &env); }
+            // Scope validation succeeded; the runner records execution failures separately in
+            // Outcome and owns these pins even if termination needs an out-of-band retry.
+            if !stop.load(Ordering::Relaxed) { invoke(&fixed.run, stop, out, &env, pins); }
             Ok(())
         }
     }
@@ -281,7 +283,7 @@ mod tests {
         let scope = Scope::Fixed(windows_scope(rule, &store, command, &windows, vec![]).unwrap());
         let tool = ReviewedExternal { path: store.clone(), rule: rule.into(), command: command.into(), scope: scope.clone() };
         let mut calls = 0;
-        let invoke = &mut |script: &str, _: &AtomicBool, _: &mut Outcome, _: &[(&str, &OsStr)]| {
+        let invoke = &mut |script: &str, _: &AtomicBool, _: &mut Outcome, _: &[(&str, &OsStr)], _: ToolPins| {
             assert_eq!(script, command);
             calls += 1;
             None
@@ -304,7 +306,7 @@ mod tests {
         assert!(review_external(&f, &kept()).unwrap_err().contains("Keep list"));
         let tool = review_external(&f, &policy(vec![], vec![])).unwrap();
         assert!(dispatch(&tool, &AtomicBool::new(false), &mut Outcome::default(), || Ok(kept()),
-            || resolve_held(&tool.rule, &tool.path, &tool.command), &mut |_, _, _, _| panic!("held command launched"))
+            || resolve_held(&tool.rule, &tool.path, &tool.command), &mut |_, _, _, _, _| panic!("held command launched"))
             .unwrap_err().contains("Keep list"));
     }
 
@@ -339,7 +341,7 @@ mod tests {
         let mut out = Outcome::default();
         dispatch(&tool, &AtomicBool::new(false), &mut out, || Ok(policy(vec![repo.join("one.txt")], vec![])),
             || resolve_held(&tool.rule, &tool.path, &tool.command),
-            &mut |cmd, stop, out, env| run_powershell(cmd, &sys, false, stop, out, env, Duration::from_secs(30))).unwrap();
+            &mut |cmd, stop, out, env, pins| run_powershell(cmd, &sys, false, stop, out, env, pins, Duration::from_secs(30))).unwrap();
         assert!(out.problems.is_empty() && has_pack(), "{:?} {:?}", out.problems, out.output);
         assert_eq!(std::fs::read(repo.join("one.txt")).unwrap(), b"fixture content\n");
     }
@@ -360,7 +362,7 @@ mod tests {
         let sys = system_dir().unwrap();
         let mut out = Outcome::default();
         dispatch(&tool, &AtomicBool::new(false), &mut out, || Ok(policy(vec![], vec![])), || resolve_held(&tool.rule, &tool.path, &tool.command),
-            &mut |cmd, stop, out, env| run_powershell(cmd, &sys, false, stop, out, env, Duration::from_secs(30))).unwrap();
+            &mut |cmd, stop, out, env, pins| run_powershell(cmd, &sys, false, stop, out, env, pins, Duration::from_secs(30))).unwrap();
         assert!(out.problems.is_empty() && !worktree.exists() && !metadata.exists(), "{:?} {:?}", out.problems, out.output);
         assert_eq!(std::fs::read(repo.join("one.txt")).unwrap(), b"fixture content\n");
     }
@@ -379,7 +381,7 @@ mod tests {
         let scope = Scope::Fixed(Fixed::new(cmd, vec![path.clone()]));
         let tool = ReviewedExternal { path, rule: RECYCLE_BIN_RULE.into(), command: cmd.into(), scope: scope.clone() };
         assert!(dispatch(&tool, &AtomicBool::new(false), &mut Outcome::default(), || Ok(policy(vec![], vec![])),
-            || Ok((scope, ())), &mut |_, _, _, _| panic!("the former bin command was launched")).unwrap_err().contains("leaves the Recycle Bin alone"));
+            || Ok((scope, ())), &mut |_, _, _, _, _| panic!("the former bin command was launched")).unwrap_err().contains("leaves the Recycle Bin alone"));
     }
 
     #[test]
@@ -393,7 +395,7 @@ mod tests {
         let f = finding("versions.nvm", target, "nvm uninstall '18.1.0'");
         let tool = review_external(&f, &policy(vec![], vec![])).unwrap();
         dispatch(&tool, &AtomicBool::new(false), &mut Outcome::default(), || Ok(policy(vec![], vec![])),
-            || resolve_held(&tool.rule, &tool.path, &tool.command), &mut |_, _, _, _| {
+            || resolve_held(&tool.rule, &tool.path, &tool.command), &mut |_, _, _, _, _pins| {
                 assert!(std::fs::read_to_string(&settings).is_ok());
                 assert!(std::fs::write(&settings, "changed").is_err());
                 assert!(std::fs::rename(&settings, home.join("other")).is_err());
@@ -441,7 +443,7 @@ mod tests {
             });
             dispatch(&tool, &stop, &mut out, || Ok(policy(vec![], vec![])),
                 || resolve_held(&tool.rule, &tool.path, &tool.command),
-                &mut |_, stop, out, env| run_powershell(&script, &sys, false, stop, out, env, Duration::from_secs(20))).unwrap();
+                &mut |_, stop, out, env, pins| run_powershell(&script, &sys, false, stop, out, env, pins, Duration::from_secs(20))).unwrap();
             signal.join().unwrap()
         });
         assert!(out.stopped && !out.timed_out, "{:?}", out.problems);

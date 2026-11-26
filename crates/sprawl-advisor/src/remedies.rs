@@ -107,25 +107,65 @@ fn uncompress_current(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], polic
     uncompress_scope(path, keep, excluded, policy)
 }
 
-/// Library evidence is collected once per parent per cleanup run, never reused in another
-/// confirmation. The selected program still gets its own fresh held plan and identity check.
+/// Reuse the parent inventory only while its subtree has no name, size or attribute changes.
+/// The selected program still gets its own fresh held plan and identity check.
 #[derive(Default)]
 pub struct CompressionBatch {
-    libraries: std::collections::HashMap<(u64, u128), Vec<PathBuf>>,
+    libraries: std::collections::HashMap<(u64, u128), LibraryEvidence>,
     exclusions: Vec<PathBuf>,
 }
 
+struct LibraryEvidence { watch: LibraryWatch, members: Vec<PathBuf> }
+
+struct LibraryWatch(windows_sys::Win32::Foundation::HANDLE);
+
+impl LibraryWatch {
+    fn start(parent: &Path) -> Option<Self> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE, Storage::FileSystem::*};
+        let mut full = std::ffi::OsString::new();
+        if !parent.as_os_str().to_string_lossy().starts_with(r"\\?\") { full.push(r"\\?\"); }
+        full.push(parent);
+        let path: Vec<_> = full.encode_wide().chain(Some(0)).collect();
+        // A one-shot signal, never re-armed after a change. That avoids a gap between
+        // consuming a notification and taking the snapshot that will back the new cache.
+        let h = unsafe { FindFirstChangeNotificationW(path.as_ptr(), 1, FILE_NOTIFY_CHANGE_FILE_NAME
+            | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_ATTRIBUTES) };
+        (h != INVALID_HANDLE_VALUE && !h.is_null()).then(|| Self(h))
+    }
+
+    fn unchanged(&self) -> bool {
+        use windows_sys::Win32::{Foundation::WAIT_TIMEOUT, System::Threading::WaitForSingleObject};
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_TIMEOUT }
+    }
+}
+
+impl Drop for LibraryWatch {
+    fn drop(&mut self) { unsafe { windows_sys::Win32::Storage::FileSystem::FindCloseChangeNotification(self.0) }; }
+}
+
 impl CompressionBatch {
-    fn members(&mut self, id: (u64, u128), excluded: &[PathBuf], inventory: impl FnOnce() -> Option<Vec<PathBuf>>) -> Option<&[PathBuf]> {
+    fn is_member(&mut self, parent: &sprawl_core::local::Directory, path: &Path, excluded: &[PathBuf],
+        inventory: impl FnOnce() -> Option<Vec<PathBuf>>) -> bool {
         if self.exclusions != excluded {
             self.libraries.clear();
             self.exclusions = excluded.to_vec();
         }
-        use std::collections::hash_map::Entry;
-        Some(match self.libraries.entry(id) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => e.insert(inventory()?),
-        })
+        let Ok(id) = parent.identity() else { return false; };
+        let contains = |members: &[PathBuf]| members.iter().any(|p| same_path(p, path));
+        if let Some(entry) = self.libraries.get(&id) {
+            if entry.watch.unchanged() { return contains(&entry.members); }
+        }
+        self.libraries.remove(&id);
+        let watch = LibraryWatch::start(&parent.path); // Arm before reading any peer.
+        let Some(members) = inventory() else { return false; };
+        let eligible = contains(&members);
+        if let Some(watch) = watch {
+            if !watch.unchanged() { return false; } // Changed while reading: trust no partial snapshot.
+            self.libraries.insert(id, LibraryEvidence { watch, members });
+        }
+        // Without a watch the fresh scan is usable once, never cached.
+        eligible
     }
 }
 
@@ -134,13 +174,12 @@ fn live_eligible(path: &Path, origin: Origin, policy: &CompactPolicy, excluded: 
     if origin != Origin::Other { return true; } // Steam uses the same layout test as discovery.
     path.parent().filter(|p| p.parent().is_some()).is_some_and(|parent| {
         let Ok(parent) = sprawl_core::local::directory(parent) else { return false; };
-        let Ok(id) = parent.identity() else { return false; };
-        batch.members(id, excluded, || {
+        batch.is_member(&parent, path, excluded, || {
             let progress = sprawl_core::Progress::with_exclusions(excluded);
             let tree = sprawl_core::walk::inventory_until(&parent.path, &progress, &|| stop.load(Ordering::Relaxed)).ok()?;
             if tree.errors != 0 { return None; }
             detected_members(&tree, policy, stop)
-        }).is_some_and(|paths| paths.iter().any(|p| same_path(p, path)))
+        })
     })
 }
 
@@ -182,8 +221,7 @@ fn uncompress_scope(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy:
             }
             Ok(pinned)
         }).collect::<Result<_, _>>()?;
-        let result = crate::clean::uncompress_batch(&pins, dir);
-        drop(pins);
+        let result = crate::clean::uncompress_batch(pins, dir);
         if result.stopped || !result.problems.is_empty() || result.more_problems != 0 { return Err(result.problems.join("; ")); }
         offset = end;
     }
@@ -274,6 +312,11 @@ fn compress_scope_in(reviewed: &ReviewedCompression, spare: &crate::clean::Spare
     };
     if origin == Origin::Other && (!plan.has_executable || plan.logical_bytes < LIBRARY_CHILD) {
         return Err("the folder no longer has the program files required for a detected library".into());
+    }
+    // The plan can take a while. Invalidate and recheck if peers changed while it was built.
+    if origin == Origin::Other && !live_eligible(path, origin, policy, excluded, stop, batch) {
+        if stop.load(Ordering::Relaxed) { return Ok(sprawl_core::wof::Done { stopped: true, ..Default::default() }); }
+        return Err("the folder no longer qualifies as the program or library reviewed".into());
     }
     Ok(sprawl_core::wof::compress(&plan, alg, stop, progress))
 }
@@ -1184,15 +1227,46 @@ mod compress_tests {
         let mut batch = CompressionBatch::default();
         let stop = AtomicBool::new(false);
         assert!(live_eligible(&a, Origin::Other, &policy, &[], &stop, &mut batch));
-        let id = sprawl_core::local::directory(temp.path()).unwrap().identity().unwrap();
-        assert_eq!(batch.members(id, &[], || panic!("re-inventoried siblings")).unwrap().len(), 2);
+        let parent = sprawl_core::local::directory(temp.path()).unwrap();
+        assert!(batch.is_member(&parent, &b, &[], || panic!("re-inventoried unchanged siblings")));
         let command = format!("{COMPRESS}xpress8k {}", ps_quote(&format!("{}\\*", b.display())));
         let reviewed = review_compression_in(&b, &command, &policy).unwrap();
         std::fs::rename(b.join("program.exe"), b.join("personal.txt")).unwrap();
         let error = compress_scope_in(&reviewed, &crate::clean::Spare::default(), &stop, &mut |_| panic!("wrote a non-program"),
             &policy, &[], &mut batch).unwrap_err();
-        assert!(error.contains("no longer has the program files"));
-        assert!(batch.members(id, &[a], || None).is_none(), "new exclusions invalidate the inventory");
+        assert!(error.contains("no longer qualifies"));
+        assert!(!batch.is_member(&parent, &b, &[a], || None), "new exclusions invalidate the inventory");
+    }
+
+    #[test]
+    fn warm_library_cache_refuses_a_game_after_its_nested_peer_changes() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-compress-peer-change").unwrap();
+        let game = temp.path().join("Selected Game");
+        let peer = temp.path().join(r"Peer\bin");
+        std::fs::create_dir(&game).unwrap();
+        std::fs::create_dir_all(&peer).unwrap();
+        std::fs::File::create(game.join("game.exe")).unwrap().set_len(LIBRARY_CHILD).unwrap();
+        let witness = peer.join("peer.exe");
+        std::fs::File::create(&witness).unwrap().set_len(LIBRARY_CHILD).unwrap();
+        let mut policy = policy(fixture_profile(&game), &[]);
+        policy.allow_fixture_home = true;
+        let mut batch = CompressionBatch::default();
+        let stop = AtomicBool::new(false);
+        let keep = crate::clean::Spare::default();
+        let command = format!("{COMPRESS}xpress8k {}", ps_quote(&format!("{}\\*", game.display())));
+        let reviewed = review_compression_in(&game, &command, &policy).unwrap();
+        let parent = sprawl_core::local::directory(temp.path()).unwrap();
+        assert!(live_eligible(&game, Origin::Other, &policy, &[], &stop, &mut batch));
+        assert!(batch.is_member(&parent, &game, &[], || panic!("the inventory was not warm")));
+        // Changing a grandchild's size does not change the reviewed folder's identity; the
+        // selected folder still qualifies on its own, but no longer has a qualifying peer.
+        std::fs::OpenOptions::new().write(true).open(&witness).unwrap().set_len(1).unwrap();
+        let mut check = || compress_scope_in(&reviewed, &keep, &stop, &mut |_| panic!("compression began without a peer"), &policy, &[], &mut batch);
+        assert!(check().unwrap_err().contains("no longer qualifies"));
+        std::fs::OpenOptions::new().write(true).open(&witness).unwrap().set_len(LIBRARY_CHILD).unwrap();
+        assert!(live_eligible(&game, Origin::Other, &policy, &[], &stop, &mut batch));
+        std::fs::rename(&witness, peer.join("peer.txt")).unwrap();
+        assert!(!live_eligible(&game, Origin::Other, &policy, &[], &stop, &mut batch));
     }
 
     #[test]

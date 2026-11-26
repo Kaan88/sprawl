@@ -991,16 +991,18 @@ pub fn wipe_free_space(root: &Path, marker_dir: &Path, stop: &AtomicBool) -> Wip
             before.push(format!("{}: cipher's working folder was there before this wipe and Sprawl didn't make it; left as it is", plan.scratch.display()));
         }
     }
-    let mut outcome = crate::clean::run_tool(&plan.root, &cipher_command(&plan.root), stop, Duration::from_secs(7 * 86_400), &mut |_| {});
+    let hold = std::sync::Arc::new(hold);
+    let mut outcome = crate::clean::run_tool(&plan.root, &cipher_command(&plan.root), stop, Duration::from_secs(7 * 86_400),
+        crate::clean::ToolPins::hold(hold.clone()), &mut |_| {});
     let ok = !outcome.stopped && !outcome.timed_out && outcome.problems.is_empty();
-    if !foreign {
+    if !foreign && !outcome.tool_unconfirmed {
         if let Err(e) = remove_scratch(&plan.scratch) {
             outcome.problems.push(format!("{}: cipher's working folder couldn't be removed ({e}); it can be deleted once the drive is free", plan.scratch.display()));
         }
     }
-    // the note goes last, and only once it is let go of
+    // If the job still owns the marker, leave it and the scratch folder for recovery.
     drop(hold);
-    let _ = std::fs::remove_file(&plan.marker);
+    if !outcome.tool_unconfirmed { let _ = std::fs::remove_file(&plan.marker); }
     for line in before.into_iter().rev() {
         outcome.problems.insert(0, line);
     }
