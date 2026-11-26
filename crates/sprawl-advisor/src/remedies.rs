@@ -3,6 +3,7 @@
 //! only, and moving big things to a drive with room (tips, for the user to do).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sprawl_core::{format_size, Tree, ROOT};
 
@@ -65,10 +66,18 @@ pub fn uncompress_command(path: &Path) -> String {
     format!("compact.exe /u /a /i /q /exe {}", crate::rules::ps_quote(&path.display().to_string()))
 }
 
-/// Undo a recorded compression only in a current supported application/game scope.
-pub fn uncompress(path: &Path, keep: &[PathBuf], excluded: &[PathBuf]) -> Result<(), String> {
-    uncompress_dispatch(path, keep, crate::memory::refresh_keeps, |path, keep| {
-        let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+/// Which directory the user was shown when asked to confirm Undo.
+pub struct ReviewedUndo { path: PathBuf, id: (u64, u128) }
+
+pub fn review_uncompress(path: &Path) -> Result<ReviewedUndo, String> {
+    let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    Ok(ReviewedUndo { path: root.path.clone(), id: root.identity().map_err(|e| e.to_string())? })
+}
+
+/// Undo a recorded compression only on the reviewed directory in a current supported scope.
+pub fn uncompress(reviewed: &ReviewedUndo, keep: &[PathBuf], excluded: &[PathBuf]) -> Result<(), String> {
+    crate::require_write().map_err(|e| e.to_string())?;
+    uncompress_dispatch(reviewed, keep, crate::memory::refresh_keeps, |root, keep| {
         let policy = CompactPolicy::at_dispatch()?;
         let mut excluded = excluded.to_vec();
         excluded.extend(crate::exclusions::for_external_cleanup()?);
@@ -76,11 +85,15 @@ pub fn uncompress(path: &Path, keep: &[PathBuf], excluded: &[PathBuf]) -> Result
     })
 }
 
-fn uncompress_dispatch(path: &Path, keep: &[PathBuf], refresh: impl FnOnce(&mut Vec<PathBuf>) -> Result<(), String>,
-    run: impl FnOnce(&Path, &[PathBuf]) -> Result<(), String>) -> Result<(), String> {
+fn uncompress_dispatch(reviewed: &ReviewedUndo, keep: &[PathBuf], refresh: impl FnOnce(&mut Vec<PathBuf>) -> Result<(), String>,
+    run: impl FnOnce(&sprawl_core::local::Directory, &[PathBuf]) -> Result<(), String>) -> Result<(), String> {
     let mut keep = keep.to_vec();
     refresh(&mut keep)?;
-    run(path, &keep)
+    let root = sprawl_core::local::directory(&reviewed.path).map_err(|e| e.to_string())?;
+    if root.identity().map_err(|e| e.to_string())? != reviewed.id {
+        return Err("This isn't the folder you confirmed. Nothing was uncompressed.".into());
+    }
+    run(&root, &keep)
 }
 
 fn uncompress_current(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy: &CompactPolicy) -> Result<(), String> {
@@ -88,19 +101,46 @@ fn uncompress_current(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], polic
         return Err("This scope is excluded or kept.".into());
     }
     let scope = policy.scope(path)?;
-    if !live_eligible(path, scope.origin, policy, excluded) {
+    if !live_eligible(path, scope.origin, policy, excluded, &AtomicBool::new(false), &mut CompressionBatch::default()) {
         return Err("This record is no longer in a supported program folder or library. It was left alone.".into());
     }
     uncompress_scope(path, keep, excluded, policy)
 }
 
-fn live_eligible(path: &Path, origin: Origin, policy: &CompactPolicy, excluded: &[PathBuf]) -> bool {
+/// Library evidence is collected once per parent per cleanup run, never reused in another
+/// confirmation. The selected program still gets its own fresh held plan and identity check.
+#[derive(Default)]
+pub struct CompressionBatch {
+    libraries: std::collections::HashMap<(u64, u128), Vec<PathBuf>>,
+    exclusions: Vec<PathBuf>,
+}
+
+impl CompressionBatch {
+    fn members(&mut self, id: (u64, u128), excluded: &[PathBuf], inventory: impl FnOnce() -> Option<Vec<PathBuf>>) -> Option<&[PathBuf]> {
+        if self.exclusions != excluded {
+            self.libraries.clear();
+            self.exclusions = excluded.to_vec();
+        }
+        use std::collections::hash_map::Entry;
+        Some(match self.libraries.entry(id) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(inventory()?),
+        })
+    }
+}
+
+fn live_eligible(path: &Path, origin: Origin, policy: &CompactPolicy, excluded: &[PathBuf], stop: &AtomicBool, batch: &mut CompressionBatch) -> bool {
     if policy.configured_at_or_below(path) { return false; }
     if origin != Origin::Other { return true; } // Steam uses the same layout test as discovery.
     path.parent().filter(|p| p.parent().is_some()).is_some_and(|parent| {
-        let progress = sprawl_core::Progress::with_exclusions(excluded);
-        sprawl_core::walk::inventory(parent, &progress)
-            .is_ok_and(|tree| tree.errors == 0 && detected_member(&tree, path, policy))
+        let Ok(parent) = sprawl_core::local::directory(parent) else { return false; };
+        let Ok(id) = parent.identity() else { return false; };
+        batch.members(id, excluded, || {
+            let progress = sprawl_core::Progress::with_exclusions(excluded);
+            let tree = sprawl_core::walk::inventory_until(&parent.path, &progress, &|| stop.load(Ordering::Relaxed)).ok()?;
+            if tree.errors != 0 { return None; }
+            detected_members(&tree, policy, stop)
+        }).is_some_and(|paths| paths.iter().any(|p| same_path(p, path)))
     })
 }
 
@@ -187,13 +227,12 @@ fn review_compression_in(path: &Path, command: &str, policy: &CompactPolicy) -> 
 /// file is opened through its held folder; one with another name elsewhere (a hard link)
 /// is left as it is, since its storage is shared with a file outside the folder. Kept items are
 /// left too. `progress` gets how many bytes have been gone through, of the folder's total.
-pub(crate) fn compress_scope(reviewed: &ReviewedCompression, spare: &crate::clean::Spare, stop: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(u64)) -> Result<sprawl_core::wof::Done, String> {
+pub(crate) fn compress_scope(reviewed: &ReviewedCompression, spare: &crate::clean::Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64), batch: &mut CompressionBatch) -> Result<sprawl_core::wof::Done, String> {
     crate::require_write().map_err(|e| e.to_string())?;
-    compress_scope_in(reviewed, spare, stop, progress, &CompactPolicy::at_dispatch()?, &crate::exclusions::for_external_cleanup()?)
+    compress_scope_in(reviewed, spare, stop, progress, &CompactPolicy::at_dispatch()?, &crate::exclusions::for_external_cleanup()?, batch)
 }
 
-fn compress_scope_in(reviewed: &ReviewedCompression, spare: &crate::clean::Spare, stop: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(u64), policy: &CompactPolicy, excluded: &[PathBuf]) -> Result<sprawl_core::wof::Done, String> {
-    use std::sync::atomic::Ordering;
+fn compress_scope_in(reviewed: &ReviewedCompression, spare: &crate::clean::Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64), policy: &CompactPolicy, excluded: &[PathBuf], batch: &mut CompressionBatch) -> Result<sprawl_core::wof::Done, String> {
     let path = &reviewed.path;
     let alg = compress_alg(&reviewed.command).and_then(sprawl_core::wof::Alg::parse).ok_or("not one of Sprawl's compress commands")?;
     // a folder to skip in it or above it is known before anything is read: nothing is listed
@@ -212,7 +251,11 @@ fn compress_scope_in(reviewed: &ReviewedCompression, spare: &crate::clean::Spare
         return Err(format!("{} holds or is in a folder you skip, so nothing was compressed", path.display()));
     }
     let origin = policy.scope(path)?.origin;
-    if origin != reviewed.origin || !live_eligible(path, origin, policy, excluded) {
+    let eligible = origin == reviewed.origin && live_eligible(path, origin, policy, excluded, stop, batch);
+    if stop.load(Ordering::Relaxed) {
+        return Ok(sprawl_core::wof::Done { stopped: true, ..Default::default() });
+    }
+    if !eligible {
         return Err("the folder no longer qualifies as the program or library reviewed".into());
     }
     let tails = policy.never.tail_matcher();
@@ -229,6 +272,9 @@ fn compress_scope_in(reviewed: &ReviewedCompression, spare: &crate::clean::Spare
         Err(_) if stop.load(Ordering::Relaxed) => return Ok(sprawl_core::wof::Done { stopped: true, ..Default::default() }),
         r => r?,
     };
+    if origin == Origin::Other && (!plan.has_executable || plan.logical_bytes < LIBRARY_CHILD) {
+        return Err("the folder no longer has the program files required for a detected library".into());
+    }
     Ok(sprawl_core::wof::compress(&plan, alg, stop, progress))
 }
 
@@ -568,12 +614,13 @@ struct CompactSummary {
     library: bool,
 }
 
-fn compact_summaries(tree: &Tree, never: &Never) -> Vec<CompactSummary> {
+fn compact_summaries(tree: &Tree, never: &Never, stop: Option<&AtomicBool>) -> Option<Vec<CompactSummary>> {
     let tails = never.tail_matcher();
     let mut summary = vec![CompactSummary::default(); tree.nodes.len()];
     // Children always have higher indices. Each file's estimate and executable evidence
     // are read once, before deciding which of the directory scopes to show.
     for (n, node) in tree.nodes.iter().enumerate().rev() {
+        if stop.is_some_and(|s| s.load(Ordering::Relaxed)) { return None; }
         let bad_attributes = unsafe_compression_attributes(node);
         let mut here = CompactSummary {
             blocked: bad_attributes || blocked_name(&node.name)
@@ -602,19 +649,24 @@ fn compact_summaries(tree: &Tree, never: &Never) -> Vec<CompactSummary> {
         }
         summary[n] = here;
     }
-    summary
+    Some(summary)
 }
 
-fn detected_member(tree: &Tree, path: &Path, policy: &CompactPolicy) -> bool {
-    if tree.nodes.is_empty() || !library_path(&tree.root_path) || unsafe_compression_attributes(&tree.nodes[ROOT])
-        || !path.parent().is_some_and(|p| same_path(p, &tree.root_path)) || policy.configured_at_or_below(path) {
-        return false;
+fn detected_members(tree: &Tree, policy: &CompactPolicy, stop: &AtomicBool) -> Option<Vec<PathBuf>> {
+    if tree.nodes.is_empty() || !library_path(&tree.root_path) || unsafe_compression_attributes(&tree.nodes[ROOT]) {
+        return Some(Vec::new());
     }
-    let summary = compact_summaries(tree, &policy.never);
-    summary[ROOT].library && tree.nodes[ROOT].children.iter().any(|&c| {
+    let summary = compact_summaries(tree, &policy.never, Some(stop))?;
+    if !summary[ROOT].library { return Some(Vec::new()); }
+    let mut members = Vec::new();
+    for &c in &tree.nodes[ROOT].children {
+        if stop.load(Ordering::Relaxed) { return None; }
         let node = &tree.nodes[c];
-        node.is_dir && node.size >= LIBRARY_CHILD && summary[c].has_exe && !summary[c].blocked && same_path(&tree.path_of(c), path)
-    })
+        if node.is_dir && node.size >= LIBRARY_CHILD && summary[c].has_exe && !summary[c].blocked {
+            members.push(tree.path_of(c));
+        }
+    }
+    Some(members)
 }
 
 /// Worthwhile, non-overlapping compression scopes. Uses scan evidence, the in-memory
@@ -631,7 +683,7 @@ fn compact_in(tree: &Tree, policy: &CompactPolicy, is_local: impl Fn(&Path) -> b
         p.is_absolute() && is_local(&p)
     }).map(|n| (n, false)).collect();
     if stack.is_empty() { return Vec::new(); }
-    let summary = compact_summaries(tree, &policy.never);
+    let Some(summary) = compact_summaries(tree, &policy.never, None) else { return Vec::new(); };
     let mut out = Vec::new();
     while let Some((n, under_library)) = stack.pop() {
         let node = &tree.nodes[n];
@@ -947,8 +999,9 @@ mod compress_tests {
         ]);
         let library = tree.subtree(crate::find_path(&tree, Path::new(r"D:\Games")).unwrap());
         assert_eq!(offers(&library, &policy).len(), 2, "a scan rooted at the library works too");
-        assert!(detected_member(&library, Path::new(r"D:\Games\Cyberpunk 2077"), &policy));
-        assert!(!detected_member(&library, Path::new(r"D:\Games\Data"), &policy));
+        let members = detected_members(&library, &policy, &AtomicBool::new(false)).unwrap();
+        assert!(members.iter().any(|p| same_path(p, Path::new(r"D:\Games\Cyberpunk 2077"))));
+        assert!(!members.iter().any(|p| same_path(p, Path::new(r"D:\Games\Data"))));
     }
 
     #[test]
@@ -1107,13 +1160,39 @@ mod compress_tests {
         let command = format!("{COMPRESS}xpress8k {}", ps_quote(&format!("{}\\*", game.display())));
         let receipt = review_compression_in(&game, &command, &policy).unwrap();
         assert_eq!(receipt.origin, Origin::Other);
-        assert!(live_eligible(&game, receipt.origin, &policy, &[]));
-        let check = || compress_scope_in(&receipt, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {}, &policy, &[]);
+        let stop = AtomicBool::new(false);
+        assert!(live_eligible(&game, receipt.origin, &policy, &[], &stop, &mut CompressionBatch::default()));
+        let check = || compress_scope_in(&receipt, &crate::clean::Spare::default(), &stop, &mut |_| {}, &policy, &[], &mut CompressionBatch::default());
         std::fs::rename(peer.join("game.exe"), peer.join("game.txt")).unwrap();
         assert!(check().unwrap_err().contains("no longer qualifies"), "same directory, but the live library evidence is gone");
         std::fs::rename(game.as_path(), library.join("Old")).unwrap();
         std::fs::create_dir(&game).unwrap();
         assert!(check().unwrap_err().contains("not the one reviewed"));
+    }
+
+    #[test]
+    fn sibling_compression_reuses_one_inventory_but_rechecks_the_selected_program() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-compress-siblings").unwrap();
+        let a = temp.path().join("First Game");
+        let b = temp.path().join("Second Game");
+        for dir in [&a, &b] {
+            std::fs::create_dir(dir).unwrap();
+            std::fs::File::create(dir.join("program.exe")).unwrap().set_len(LIBRARY_CHILD).unwrap();
+        }
+        let mut policy = policy(fixture_profile(&a), &[]);
+        policy.allow_fixture_home = true;
+        let mut batch = CompressionBatch::default();
+        let stop = AtomicBool::new(false);
+        assert!(live_eligible(&a, Origin::Other, &policy, &[], &stop, &mut batch));
+        let id = sprawl_core::local::directory(temp.path()).unwrap().identity().unwrap();
+        assert_eq!(batch.members(id, &[], || panic!("re-inventoried siblings")).unwrap().len(), 2);
+        let command = format!("{COMPRESS}xpress8k {}", ps_quote(&format!("{}\\*", b.display())));
+        let reviewed = review_compression_in(&b, &command, &policy).unwrap();
+        std::fs::rename(b.join("program.exe"), b.join("personal.txt")).unwrap();
+        let error = compress_scope_in(&reviewed, &crate::clean::Spare::default(), &stop, &mut |_| panic!("wrote a non-program"),
+            &policy, &[], &mut batch).unwrap_err();
+        assert!(error.contains("no longer has the program files"));
+        assert!(batch.members(id, &[a], || None).is_none(), "new exclusions invalidate the inventory");
     }
 
     #[test]
@@ -1145,7 +1224,7 @@ mod compress_tests {
             let command = format!("{COMPRESS}{} {}", name.to_ascii_uppercase(), ps_quote(&format!("{}\\*", path.display())));
             assert_eq!(compress_alg(&command), Some(name));
             let receipt = review_compression_in(&path, &command, &policy).unwrap();
-            let d = compress_scope_in(&receipt, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {}, &policy, &[]).unwrap();
+            let d = compress_scope_in(&receipt, &crate::clean::Spare::default(), &AtomicBool::new(false), &mut |_| {}, &policy, &[], &mut CompressionBatch::default()).unwrap();
             assert_eq!(d.compressed, 1, "{name}: {d:?}");
             uncompress_current(&path, &[], &[], &policy).unwrap();
             assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
@@ -1159,13 +1238,34 @@ mod compress_tests {
         std::fs::create_dir(&game).unwrap();
         let policy = runtime_policy(&game);
         let earlier = temp.path().join("Other");
-        let checked = uncompress_dispatch(&game, std::slice::from_ref(&earlier), |seen| {
+        let reviewed = review_uncompress(&game).unwrap();
+        let checked = uncompress_dispatch(&reviewed, std::slice::from_ref(&earlier), |seen| {
             assert_eq!(seen, &[earlier.clone()]);
             seen.push(game.join("new-keep"));
             Ok(())
-        }, |path, keep| uncompress_current(path, keep, &[], &policy));
+        }, |root, keep| uncompress_current(&root.path, keep, &[], &policy));
         assert!(checked.unwrap_err().contains("kept"));
-        assert!(uncompress_dispatch(&game, &[], |_| Err("unreadable".into()), |_, _| panic!("Undo ran without a known Keep list")).is_err());
+        assert!(uncompress_dispatch(&reviewed, &[], |_| Err("unreadable".into()), |_, _| panic!("Undo ran without a known Keep list")).is_err());
+    }
+
+    #[test]
+    fn undo_refuses_directory_replaced_after_confirmation_was_shown() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-undo-replaced").unwrap();
+        let game = temp.path().join("Game");
+        let moved = temp.path().join("Old Game");
+        std::fs::create_dir(&game).unwrap();
+        let reviewed = review_uncompress(&game).unwrap();
+        std::fs::rename(&game, &moved).unwrap();
+        std::fs::create_dir(&game).unwrap();
+        let error = uncompress_dispatch(&reviewed, &[], |_| Ok(()), |_, _| panic!("Undo targeted the replacement")).unwrap_err();
+        assert!(error.contains("isn't the folder you confirmed"));
+        std::fs::remove_dir(&game).unwrap();
+        std::fs::rename(&moved, &game).unwrap();
+        uncompress_dispatch(&reviewed, &[], |_| Ok(()), |held, _| {
+            assert!(std::fs::rename(&game, &moved).is_err(), "matches and stays held while Undo runs");
+            assert_eq!(held.identity().unwrap(), reviewed.id);
+            Ok(())
+        }).unwrap();
     }
 
     #[test]
@@ -1210,7 +1310,7 @@ mod compress_tests {
         let policy = runtime_policy(&dir);
         let command = format!("{COMPRESS}xpress8k {}", ps_quote(&format!("{}\\*", dir.display())));
         let receipt = review_compression_in(&dir, &command, &policy).unwrap();
-        let o = compress_scope_in(&receipt, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {}, &policy, &[]).unwrap();
+        let o = compress_scope_in(&receipt, &crate::clean::Spare::default(), &AtomicBool::new(false), &mut |_| {}, &policy, &[], &mut CompressionBatch::default()).unwrap();
         let after = on_disk(&dir).unwrap();
         assert_eq!((o.compressed, o.failed), (2, 0), "{o:?}");
         assert!(after < before / 2, "before {before}, after {after}, {o:?}");
@@ -1224,7 +1324,8 @@ mod compress_tests {
         let undo = |keep: &[PathBuf], excluded: &[PathBuf]| uncompress_current(&dir, keep, excluded, &policy);
         assert!(undo(&[dir.join("sub/b.json")], &[]).is_err(), "kept descendants block the whole operation");
         assert!(undo(&[], &[dir.join("sub/b.json")]).is_err(), "excluded descendants block the whole operation");
-        assert!(uncompress(&dir, &[], &[]).is_err(), "an arbitrary remembered temp path is never an eligible application scope");
+        let unconfigured = self::policy(fixture_profile(&dir), &[]);
+        assert!(uncompress_current(&dir, &[], &[], &unconfigured).is_err(), "an arbitrary remembered temp path is never an eligible application scope");
         let protected = dir.join("sub/saved.kdbx");
         std::fs::write(&protected, b"protected").unwrap();
         assert!(undo(&[], &[]).is_err_and(|e| e.contains("protected")));
@@ -1253,7 +1354,7 @@ mod compress_tests {
         let spare = crate::clean::Spare::default();
         let policy = runtime_policy(&dir);
         let receipt = review_compression_in(&dir, &command, &policy).unwrap();
-        let compress = || compress_scope_in(&receipt, &spare, &stop, &mut |_| {}, &policy, &[]);
+        let compress = || compress_scope_in(&receipt, &spare, &stop, &mut |_| {}, &policy, &[], &mut CompressionBatch::default());
         // a command for another folder than the one given is refused
         assert!(review_compression_in(&base, &command, &policy).is_err());
         // a newly added protected file vetoes compression before another file is changed

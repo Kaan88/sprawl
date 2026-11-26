@@ -73,12 +73,17 @@ struct Shared<'a> {
     cv: Condvar,
     next_id: AtomicU32,
     progress: &'a Progress,
+    stop: Option<&'a (dyn Fn() -> bool + Sync)>,
     detect_wof: bool,
     /// Local inventories: the root's real path on its volume (lower case, no trailing `\`)
     /// and the length of the root job's path. Each folder is opened (links not followed),
     /// checked to be at this path plus its own relative path, and listed through that handle,
     /// so a folder or ancestor swapped for a junction after it was queued is never listed.
     verify: Option<(Vec<u16>, usize)>,
+}
+
+impl Shared<'_> {
+    fn cancelled(&self) -> bool { self.progress.is_cancelled() || self.stop.is_some_and(|stop| stop()) }
 }
 
 /// How many threads list folders. Listing is I/O- and kernel-bound; a handful more threads than
@@ -98,20 +103,27 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
 /// WOF compression hidden by Windows. Visible compression tags are still recorded.
 /// Use `walk` when an explicit storage operation needs complete WOF metadata.
 pub fn inventory(path: &Path, progress: &Progress) -> io::Result<Tree> {
-    walk_mode(path, progress, worker_count(), false)
+    walk_mode(path, progress, worker_count(), false, None)
+}
+
+/// Inventory with a caller's stop signal checked during enumeration, not just between folders.
+pub fn inventory_until(path: &Path, progress: &Progress, stop: &(dyn Fn() -> bool + Sync)) -> io::Result<Tree> {
+    walk_mode(path, progress, worker_count(), false, Some(stop))
 }
 
 /// [`inventory`] with an explicit number of worker threads (a quiet background scan).
 pub fn inventory_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
-    walk_mode(path, progress, threads, false)
+    walk_mode(path, progress, threads, false, None)
 }
 
 /// [`walk`] with an explicit number of worker threads (for benchmarks).
 pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result<Tree> {
-    walk_mode(path, progress, threads, true)
+    walk_mode(path, progress, threads, true, None)
 }
 
-fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool) -> io::Result<Tree> {
+fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool, stop: Option<&(dyn Fn() -> bool + Sync)>) -> io::Result<Tree> {
+    let interrupted = || io::Error::new(io::ErrorKind::Interrupted, "scan cancelled");
+    if progress.is_cancelled() || stop.is_some_and(|stop| stop()) { return Err(interrupted()); }
     let scan = crate::local::scan_root(path, true)?;
     let path = &scan.path;
     progress.note_root(path, scan.on_network());
@@ -169,6 +181,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
         cv: Condvar::new(),
         next_id: AtomicU32::new(1),
         progress,
+        stop,
         detect_wof,
         verify,
     };
@@ -176,8 +189,8 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
         let handles: Vec<_> = (0..threads.max(1)).map(|_| s.spawn(|| worker(&shared))).collect();
         handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
     });
-    if progress.is_cancelled() {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "scan cancelled"));
+    if shared.cancelled() {
+        return Err(interrupted());
     }
     progress.set_phase("Building tree");
 
@@ -195,10 +208,12 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     nodes.push(root);
     let mut queue: VecDeque<(usize, u32)> = VecDeque::from([(ROOT, 0u32)]);
     while let Some((ni, jid)) = queue.pop_front() {
+        if shared.cancelled() { return Err(interrupted()); }
         let entries = lists[jid as usize].take().unwrap_or_default();
         let mut children = Vec::with_capacity(entries.len());
         for e in entries {
             let idx = nodes.len();
+            if idx % 256 == 0 && shared.cancelled() { return Err(interrupted()); }
             children.push(idx);
             let is_dir = e.attrs & attr::DIRECTORY != 0;
             nodes.push(Node {
@@ -222,6 +237,7 @@ fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool)
     }
     let mut tree = Tree { volumes, root_path: path.to_path_buf(), nodes, errors: progress.errors() - errors_before, method: ScanMethod::Walk };
     tree.compute_totals();
+    if shared.cancelled() { return Err(interrupted()); }
     progress.top_reset(top_of(&tree));
     progress.set_phase("Done");
     Ok(tree)
@@ -264,7 +280,7 @@ fn worker(sh: &Shared) -> Vec<(u32, Vec<Entry>)> {
         let job = {
             let mut q = sh.queue.lock().unwrap_or_else(|e| e.into_inner());
             loop {
-                if sh.progress.is_cancelled() {
+                if sh.cancelled() {
                     return out;
                 }
                 if let Some(j) = q.jobs.pop() {
@@ -328,7 +344,7 @@ fn list_dir(
     let mut top_names: Vec<(String, u64)> = Vec::new();
     let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
     let mut visit = |wname: &[u16], raw_attrs: u32, tag: u32, size: u64, alloc: u64, modified: u64, id: u64| -> bool {
-        if sh.progress.is_cancelled() { return false; }
+        if sh.cancelled() { return false; }
         let dot = wname == [b'.' as u16] || wname == [b'.' as u16, b'.' as u16];
         let excluded = !dot && sh.progress.has_exclusions() && sh.progress.excludes(&Path::new(&display_path(&job.path)).join(String::from_utf16_lossy(wname)));
         if !dot && !excluded {
@@ -1017,6 +1033,7 @@ mod tests {
             cv: Condvar::new(),
             next_id: AtomicU32::new(1),
             progress: &progress,
+            stop: None,
             detect_wof: false,
             verify: None,
         };
@@ -1047,5 +1064,20 @@ mod tests {
         p.cancel();
         assert_eq!(walk(&dir, &p).unwrap_err().kind(), io::ErrorKind::Interrupted);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_stop_interrupts_inventory_inside_one_directory() {
+        let temp = crate::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-inventory-stop").unwrap();
+        for i in 0..256 { fs::write(temp.path().join(format!("{i}.txt")), b"fixture").unwrap(); }
+        let progress = Progress::new();
+        let calls = AtomicU32::new(0);
+        let stop = || calls.fetch_add(1, Ordering::Relaxed) >= 32;
+        let e = walk_mode(temp.path(), &progress, 1, false, Some(&stop)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::Interrupted);
+        // The root has no subdirectories. Reaching the stop threshold with one worker
+        // required the per-entry check, but listing all 256 would make far more calls.
+        assert!((33..48).contains(&calls.load(Ordering::Relaxed)));
+        assert!(!progress.is_cancelled(), "it used the cleanup stop source");
     }
 }

@@ -77,6 +77,9 @@ pub struct Plan {
     _root: local::Directory,
     /// What the planned files hold, in bytes.
     pub bytes: u64,
+    /// Fresh program-library evidence from entries enumerated in the checked plan.
+    pub logical_bytes: u64,
+    pub has_executable: bool,
 }
 
 impl Plan {
@@ -113,7 +116,7 @@ pub struct Done {
 pub fn plan(root: &Path, check: &dyn Fn(&Path, bool) -> Result<bool, String>, stop: &AtomicBool) -> Result<Plan, String> {
     let held = local::directory(root).map_err(|e| format!("{} couldn't be opened ({e})", root.display()))?;
     let first = held.handle().and_then(|h| h.try_clone()).map_err(|e| e.to_string())?;
-    let mut plan = Plan { dirs: vec![(first, held.path.clone())], files: Vec::new(), _root: held, bytes: 0 };
+    let mut plan = Plan { dirs: vec![(first, held.path.clone())], files: Vec::new(), _root: held, bytes: 0, logical_bytes: 0, has_executable: false };
     let mut buf = Vec::new();
     let mut at = 0;
     while at < plan.dirs.len() {
@@ -122,6 +125,7 @@ pub fn plan(root: &Path, check: &dyn Fn(&Path, bool) -> Result<bool, String>, st
         }
         let mut entries: Vec<(Vec<u16>, u32, u32, u64, u64)> = Vec::new();
         let listed = crate::walk::dir::list(&plan.dirs[at].0, &mut buf, &mut |name, attrs, tag, size, _, id| {
+            if stop.load(Ordering::Relaxed) { return false; }
             if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
                 entries.push((name.to_vec(), attrs, tag, size, id));
             }
@@ -132,6 +136,7 @@ pub fn plan(root: &Path, check: &dyn Fn(&Path, bool) -> Result<bool, String>, st
             return Err(format!("{} couldn't be read completely now, so nothing was compressed", here.display()));
         }
         for (wide, attrs, tag, size, id) in entries {
+            if stop.load(Ordering::Relaxed) { return Err("stopped".into()); }
             let Ok(name) = String::from_utf16(&wide) else {
                 return Err(format!("a name in {} can't be read, so nothing was compressed", here.display()));
             };
@@ -145,6 +150,10 @@ pub fn plan(root: &Path, check: &dyn Fn(&Path, bool) -> Result<bool, String>, st
             let wof = attrs & crate::attr::REPARSE_POINT != 0 && !dir && tag == WOF_TAG;
             if attrs & crate::attr::REPARSE_POINT != 0 && !wof {
                 return Err(format!("{} is a link, so nothing was compressed (it could lead out of the folder)", path.display()));
+            }
+            if !dir {
+                plan.logical_bytes = plan.logical_bytes.saturating_add(size);
+                plan.has_executable |= name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case("exe"));
             }
             if check(&path, dir)? || wof {
                 continue;

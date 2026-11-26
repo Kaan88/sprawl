@@ -26,11 +26,16 @@ pub use crate::finding::Action;
 #[path = "external_tool.rs"]
 mod external_tool;
 pub use external_tool::{review_external, run_reviewed_external, ReviewedExternal};
+#[path = "tool_job.rs"]
+mod tool_job;
+
+pub const RECYCLE_BIN_RULE: &str = "win.recycle-bin";
 
 /// A finding's action, and whether it needs administrator rights. The action is the one the
 /// code that wrote the finding gave it ([`Finding::set_action`]); command text is never read
 /// back. A tool command runs only when it comes from the built-in pack.
 pub fn action(f: &Finding) -> Option<(Action, bool)> {
+    if matches!(&f.source, crate::finding::Source::Rule(id) if id == RECYCLE_BIN_RULE) { return None; }
     let a = f.action.clone()?;
     if matches!(a, Action::Tool { .. }) && !(f.trusted && f.builtin && matches!(f.source, crate::finding::Source::Rule(_))) {
         return None;
@@ -447,9 +452,9 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     o
 }
 
-pub fn run_reviewed_compression(path: &Path, receipt: &crate::remedies::ReviewedCompression, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
+pub fn run_reviewed_compression(path: &Path, receipt: &crate::remedies::ReviewedCompression, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64), batch: &mut crate::remedies::CompressionBatch) -> Outcome {
     let mut o = Outcome::default();
-    match crate::remedies::compress_scope(receipt, spare, stop, progress) {
+    match crate::remedies::compress_scope(receipt, spare, stop, progress, batch) {
         Ok(d) => {
             o.stopped = d.stopped;
             o.files = d.compressed as u64;
@@ -1805,10 +1810,6 @@ pub(crate) mod win {
         fn FindNextStreamW(find: H, data: *mut c_void) -> i32;
         fn FindClose(find: isize) -> i32;
         pub(super) fn GetSystemDirectoryW(buf: *mut u16, size: u32) -> u32;
-        fn CreateJobObjectW(sa: *mut c_void, name: *const u16) -> H;
-        fn SetInformationJobObject(job: H, class: i32, info: *const c_void, size: u32) -> i32;
-        fn AssignProcessToJobObject(job: H, process: H) -> i32;
-        fn TerminateJobObject(job: H, code: u32) -> i32;
         fn LocalFree(p: *mut c_void) -> *mut c_void;
     }
 
@@ -2526,34 +2527,6 @@ pub(crate) mod win {
         }
     }
 
-    /// A job that ends every process in it when told to, or when Sprawl closes.
-    pub(super) struct Job(Handle);
-
-    impl Job {
-        pub(super) fn new() -> Option<Job> {
-            let h = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
-            if h.is_null() {
-                return None;
-            }
-            let job = Job(Handle(h));
-            // JOBOBJECT_EXTENDED_LIMIT_INFORMATION, with LimitFlags = KILL_ON_JOB_CLOSE
-            let mut info = [0u8; 144];
-            let flags_at = 16;
-            info[flags_at..flags_at + 4].copy_from_slice(&0x2000u32.to_le_bytes());
-            let size = if cfg!(target_pointer_width = "64") { 144 } else { 112 };
-            unsafe { SetInformationJobObject(job.0 .0, 9, info.as_ptr().cast(), size) };
-            Some(job)
-        }
-
-        pub(super) fn add(&self, child: &std::process::Child) -> bool {
-            use std::os::windows::io::AsRawHandle;
-            unsafe { AssignProcessToJobObject(self.0 .0, child.as_raw_handle()) != 0 }
-        }
-
-        pub(super) fn end(&self) {
-            unsafe { TerminateJobObject(self.0 .0, 1) };
-        }
-    }
 }
 
 pub(crate) fn system_dir() -> Option<PathBuf> {
@@ -2670,7 +2643,7 @@ pub(crate) fn elevated_tool_ok(command: &str, resolve: &dyn Fn(&str) -> Option<P
             } else { rest.split_whitespace().next().ok_or("not run as administrator: no program named")?.to_string() };
         return program_ok(&program);
     }
-    if ["Clear-RecycleBin", "Delete-DeliveryOptimizationCache", "Write-Output", "Write-Host", "exit", "throw"].iter().any(|c| first.eq_ignore_ascii_case(c)) { return Ok(()); }
+    if ["Delete-DeliveryOptimizationCache", "Write-Output", "Write-Host", "exit", "throw"].iter().any(|c| first.eq_ignore_ascii_case(c)) { return Ok(()); }
     program_ok(first)
 }
 /// Why a built-in tool command won't run from this Sprawl: it is elevated and the command starts
@@ -2759,13 +2732,12 @@ const TOOL_OUTPUT: usize = 1 << 20;
 /// wrapped) when that was read completely and is at most [`TOOL_OUTPUT`]; None when it was
 /// longer, a read failed, or the run was stopped.
 fn tool_with(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)]) -> Option<String> {
-    tool_with_limit(command, stop, o, env, Duration::from_secs(3600), false)
+    tool_with_limit(command, stop, o, env, Duration::from_secs(3600))
 }
 
 /// The time a tool command may take before it is ended: an hour, as DISM can run long. The
-/// free-space wipe has its own, longer one ([`run_tool`]). `require_job` refuses to run one that
-/// the job object could not take (so Stop can always end it).
-fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration, require_job: bool) -> Option<String> {
+/// free-space wipe has its own, longer one ([`run_tool`]).
+fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration) -> Option<String> {
     let Some(sys) = system_dir() else { o.problem(Path::new(command), "Windows' System32 folder wasn't found"); return None };
     let command = system_command(command, &sys);
     let command = command.as_str();
@@ -2777,7 +2749,7 @@ fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&s
         o.problem(Path::new(command), why);
         return None;
     }
-    run_powershell(command, &sys, elevated, stop, o, env, limit, require_job)
+    run_powershell(command, &sys, elevated, stop, o, env, limit)
 }
 
 /// One built-in tool command on `path`, for a caller outside a clean-up (the free-space wipe),
@@ -2792,7 +2764,7 @@ pub fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, 
         o.problem(path, format!("left alone: {e}"));
         return o;
     }
-    tool_with_limit(command, stop, &mut o, &[], limit, true);
+    tool_with_limit(command, stop, &mut o, &[], limit);
     if stop.load(Ordering::Relaxed) {
         o.stopped = true;
     }
@@ -2801,9 +2773,10 @@ pub fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, 
 }
 
 /// The run itself, once [`tool_with`] has let `command` through: see there.
-fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration, require_job: bool) -> Option<String> {
-    use std::io::Read;
-    use std::os::windows::process::CommandExt;
+fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, o: &mut Outcome, env: &[(&str, &std::ffi::OsStr)], limit: Duration) -> Option<String> {
+    use std::ffi::OsStr;
+    use tool_job::Status;
+    if stop.load(Ordering::Relaxed) { o.stopped = true; return None; }
     let ps = sys.join(r"WindowsPowerShell\v1.0\powershell.exe");
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
     // kept, and the output in UTF-8
@@ -2813,115 +2786,38 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
          $bad = @($Error | Where-Object {{ \"$($_.FullyQualifiedErrorId)\" -notlike 'NativeCommandError*' }})\n\
          if ($c) {{ exit $c }} elseif ($bad.Count) {{ exit 1 }}"
     );
-    let mut cmd = std::process::Command::new(ps);
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded(&script)])
-        .current_dir(&sys)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    if command.starts_with("git ") {
-        // GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, injected configs, and other inherited
-        // Git overrides can redirect maintenance outside the reviewed repository.
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") { cmd.env_remove(key); }
-        }
-    }
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+    let args = format!("-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}", encoded(&script));
+    let mut env = env.to_vec();
+    let modules = sys.join(r"WindowsPowerShell\v1.0\Modules");
     if elevated {
         // no PowerShell module from the user's own folders loads into an elevated run
-        cmd.env("PSModulePath", sys.join(r"WindowsPowerShell\v1.0\Modules"));
+        env.push(("PSModulePath", modules.as_os_str()));
         if !crate::ELEVATED_USER_TOOLS.load(Ordering::Relaxed) {
-            cmd.env("PATH", &sys).env("PATHEXT", ".EXE;.COM");
+            env.extend([("PATH", sys.as_os_str()), ("PATHEXT", OsStr::new(".EXE;.COM"))]);
         }
     }
-    let job = win::Job::new();
-    // a tool Stop couldn't end (no job to hold it) is not started at all
-    if require_job && job.is_none() {
-        o.problem(Path::new(command), "not started: Windows would not let Sprawl keep it in a job, so Stop could not end it");
-        return None;
-    }
-    let mut child = match cmd.spawn() {
+    // GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, injected configs, and other inherited
+    // Git overrides can redirect maintenance outside the reviewed repository.
+    let mut child = match tool_job::environment(command.starts_with("git "), &env)
+        .and_then(|env| tool_job::Running::start(&ps, &args, sys, &env)) {
         Ok(c) => c,
-        Err(e) => { o.problem(Path::new(command), e); return None }
+        Err(e) => { o.problem(Path::new(command), format!("not started in a stoppable job: {e}")); return None }
     };
-    let in_job = job.as_ref().is_some_and(|j| j.add(&child));
-    if require_job && !in_job {
-        // it never got to do any work: it is ended before its command runs
-        let _ = child.kill();
-        let _ = child.wait();
-        o.problem(Path::new(command), "not started: Windows would not let Sprawl keep it in a job, so Stop could not end it");
-        return None;
-    }
-    let mut out = child.stdout.take();
-    let reader = std::thread::spawn(move || {
-        // read to the end (a tool must never block on a full pipe); past TOOL_OUTPUT the
-        // answer is cut (only its last part is kept, to show), and a failed read cuts it too
-        let mut keep: Vec<u8> = Vec::new();
-        let mut cut = out.is_none();
-        let mut buf = [0u8; 8192];
-        while let Some(o) = out.as_mut() {
-            match o.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    keep.extend_from_slice(&buf[..n]);
-                    if keep.len() > TOOL_OUTPUT {
-                        cut = true;
-                        if keep.len() > 2 * TOOL_OUTPUT {
-                            keep.drain(..keep.len() - TOOL_OUTPUT);
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => {
-                    cut = true;
-                    break;
-                }
-            }
+    let mut keep = Vec::new();
+    let mut cut = false;
+    let end = child.wait(limit, || stop.load(Ordering::Relaxed), |chunk| {
+        keep.extend_from_slice(chunk);
+        if keep.len() > TOOL_OUTPUT {
+            cut = true;
+            if keep.len() > 2 * TOOL_OUTPUT { keep.drain(..keep.len() - TOOL_OUTPUT); }
         }
-        (String::from_utf8_lossy(&keep).into_owned(), cut)
     });
-    let started = std::time::Instant::now();
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s.code(),
-            Ok(None) => {
-                // a tool that hangs (DISM can take long; the caller's limit)
-                let by_stop = stop.load(Ordering::Relaxed);
-                if by_stop || started.elapsed() > limit {
-                    match &job {
-                        Some(j) if in_job => j.end(),
-                        _ => {
-                            let _ = child.kill();
-                        }
-                    }
-                    let _ = child.wait();
-                    // a tool that ran past its limit is not one the user stopped
-                    if by_stop {
-                        o.stopped = true;
-                    } else {
-                        o.timed_out = true;
-                    }
-                    break None;
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => {
-                o.problem(Path::new(command), e);
-                break None;
-            }
-        }
-    };
-    // what the tool started may still hold the pipe: end the job before waiting for the output
-    if let Some(j) = &job {
-        if in_job {
-            j.end();
-        }
-    }
-    let ended = o.stopped || o.timed_out;
-    let (text, cut) = if ended && !in_job { (String::new(), true) } else { reader.join().unwrap_or((String::new(), true)) };
+    // On a wait error Drop also terminates and drains before returning to dispatch.
+    drop(child);
+    let end = match end { Ok(end) => end, Err(e) => { o.problem(Path::new(command), e); return None } };
+    o.stopped |= matches!(end.status, Status::Stopped);
+    o.timed_out |= matches!(end.status, Status::TimedOut);
+    let text = String::from_utf8_lossy(&keep).into_owned();
     let lines: Vec<String> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(|l| crate::llm::clip(l.to_string(), 200)).collect();
     o.output = lines[lines.len().saturating_sub(12)..].to_vec();
     if o.timed_out {
@@ -2929,10 +2825,10 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
         let allowed = if secs >= 48 * 3600 { format!("{} days", secs / 86_400) } else { format!("{} hours", (secs / 3600).max(1)) };
         o.problem(Path::new(command), format!("ran past the {allowed} Sprawl allows and was ended"));
     }
-    if let Some(c) = code.filter(|&c| c != 0) {
-        o.problem(Path::new(command.split_whitespace().next().unwrap_or(command)), format!("ended with code {c}"));
+    if let Status::Exited(c) = end.status {
+        if c != 0 { o.problem(Path::new(command.split_whitespace().next().unwrap_or(command)), format!("ended with code {c}")); }
     }
-    (!cut && !ended).then_some(text)
+    (!cut && !end.cut && !o.stopped && !o.timed_out).then_some(text)
 }
 
 #[cfg(test)]
@@ -3489,7 +3385,7 @@ mod tests {
         };
         assert!(elevated_tool_ok("DISM /Online /Cleanup-Image /StartComponentCleanup   # as administrator", &resolve, &roots).is_ok());
         assert!(elevated_tool_ok("dotnet nuget locals all --clear", &resolve, &roots).is_err());
-        assert!(elevated_tool_ok("Clear-RecycleBin -Force", &resolve, &roots).is_ok());
+        assert!(elevated_tool_ok("Clear-RecycleBin -Force", &resolve, &roots).is_err());
         assert!(elevated_tool_ok("exit 3", &resolve, &roots).is_ok(), "a PowerShell word, not a program");
         assert!(elevated_tool_ok("npm-run cache", &resolve, &roots).is_err(), "a hyphen alone doesn't make a cmdlet");
         assert!(elevated_tool_ok("Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs", &resolve, &roots).is_ok());
@@ -3852,15 +3748,15 @@ mod tests {
         let mut o = Outcome::default();
         let long = "x".repeat(300);
         let sys = system_dir().unwrap();
-        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[], Duration::from_secs(3600), false).expect("read whole");
+        let text = run_powershell(&format!("1..40 | ForEach-Object {{ Write-Output ('{long}' + $_) }}"), &sys, false, &stop, &mut o, &[], Duration::from_secs(3600)).expect("read whole");
         assert_eq!(text.lines().count(), 40, "{:?}", o.problems);
         assert!(text.lines().all(|l| l.len() > 300));
         let mut o = Outcome::default();
-        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[], Duration::from_secs(3600), false).is_none(), "1.2 MB is cut");
+        assert!(run_powershell("1..3000 | ForEach-Object { Write-Output ('y' * 400) }", &sys, false, &stop, &mut o, &[], Duration::from_secs(3600)).is_none(), "1.2 MB is cut");
         // the binding reaches the tool
         let mut o = Outcome::default();
         let dir = std::ffi::OsString::from(r"C:\Reviewed\cache");
-        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())], Duration::from_secs(3600), false).unwrap();
+        let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())], Duration::from_secs(3600)).unwrap();
         assert_eq!(text.trim(), r"C:\Reviewed\cache");
         drop(owned);
     }

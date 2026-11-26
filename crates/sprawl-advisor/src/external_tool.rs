@@ -20,15 +20,11 @@ struct Fixed {
     pins: Vec<PathBuf>,
     env: Vec<(&'static str, PathBuf)>,
     run: String,
-    volumes: Vec<RecycleVolume>,
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RecycleVolume { letter: char, guid: String }
 
 impl Fixed {
     fn new(run: &str, roots: Vec<PathBuf>) -> Self {
-        Self { roots, pins: Vec::new(), env: Vec::new(), run: run.into(), volumes: Vec::new() }
+        Self { roots, pins: Vec::new(), env: Vec::new(), run: run.into() }
     }
 
     fn check(&self, policy: &ToolProtection) -> Result<Vec<Held>, String> {
@@ -104,6 +100,7 @@ fn dispatch<H>(
     tool: &ReviewedExternal, stop: &AtomicBool, out: &mut Outcome,
     mut policy: impl FnMut() -> Result<ToolProtection, String>, resolve_now: impl FnOnce() -> Result<(Scope, H), String>, invoke: &mut Runner<'_>,
 ) -> Result<(), String> {
+    if tool.rule == RECYCLE_BIN_RULE { return Err("Sprawl leaves the Recycle Bin alone; review it in Windows".into()); }
     // Read policy first; take the fresh target identity/config as close to launch as possible.
     let current = policy()?;
     let (scope, _settings_pin) = resolve_now()?;
@@ -115,9 +112,6 @@ fn dispatch<H>(
         }
         Scope::Fixed(fixed) => {
             let _pins = fixed.check(&current)?;
-            if !fixed.volumes.is_empty() && fixed.volumes != current_volume_ids(&fixed.volumes, recycle_identity)? {
-                return Err("a Recycle Bin volume changed; review it again".into());
-            }
             let env: Vec<_> = fixed.env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
             if !stop.load(Ordering::Relaxed) { invoke(&fixed.run, stop, out, &env); }
             Ok(())
@@ -125,19 +119,9 @@ fn dispatch<H>(
     }
 }
 
-fn current_volume_ids(volumes: &[RecycleVolume], read: impl Fn(char) -> Option<String>) -> Result<Vec<RecycleVolume>, String> {
-    volumes.iter().map(|v| read(v.letter).map(|guid| RecycleVolume { letter: v.letter, guid: guid.to_ascii_lowercase() })
-        .ok_or_else(|| format!("Windows couldn't verify which volume is at {}:", v.letter))).collect()
-}
-
-fn recycle_identity(letter: char) -> Option<String> {
-    let root = PathBuf::from(format!("{letter}:\\"));
-    (drive_kind(&root) == 3).then(|| crate::hidden::volume_guid(&root)).flatten()
-}
-
 const CACHE_RULES: &[&str] = &["dev.npm-cache", "dev.pip-cache", "dev.nuget-packages", "dev.pnpm-store",
     "dev.yarn-cache", "dev.go-build-cache", "dev.conda-pkgs"];
-const WINDOWS_RULES: &[&str] = &["win.component-store", "win.delivery-optimization", "win.recycle-bin", "win.windows-old"];
+const WINDOWS_RULES: &[&str] = &["win.component-store", "win.delivery-optimization", "win.windows-old"];
 
 fn pack_command(id: &str) -> Option<&'static str> {
     static PACK: std::sync::OnceLock<crate::rules::RulePack> = std::sync::OnceLock::new();
@@ -165,9 +149,8 @@ fn resolve_in(id: &str, path: &Path, command: &str, nvm: Option<&str>) -> Result
     }
     if WINDOWS_RULES.contains(&id) && pack_command(id) == Some(command) {
         let windows = windows_directory().ok_or("Windows couldn't identify its installation folder")?;
-        let volumes = if id == "win.recycle-bin" { recycle_volumes()? } else { Vec::new() };
         let redirects = if id == "win.delivery-optimization" { delivery_redirects(&windows)? } else { Vec::new() };
-        return windows_scope(id, path, command, &windows, &volumes, redirects).map(Scope::Fixed);
+        return windows_scope(id, path, command, &windows, redirects).map(Scope::Fixed);
     }
     if matches!(id, crate::devgit::GIT_GC | crate::devgit::WORKTREE) {
         let git = crate::devgit::cleanup_metadata(id, path, command)?;
@@ -208,7 +191,7 @@ fn drive(path: &Path) -> Option<char> {
     (b.len() >= 3 && b[0].is_ascii_alphabetic() && &b[1..3] == b":\\").then(|| b[0].to_ascii_uppercase() as char)
 }
 
-fn windows_scope(id: &str, path: &Path, command: &str, windows: &Path, volumes: &[RecycleVolume], redirects: Vec<PathBuf>) -> Result<Fixed, String> {
+fn windows_scope(id: &str, path: &Path, command: &str, windows: &Path, redirects: Vec<PathBuf>) -> Result<Fixed, String> {
     let system = drive(windows).ok_or(UNKNOWN)?;
     let volume = PathBuf::from(format!("{system}:\\"));
     let fixed = match id {
@@ -221,17 +204,10 @@ fn windows_scope(id: &str, path: &Path, command: &str, windows: &Path, volumes: 
             roots.extend(redirects);
             Fixed::new(command, roots)
         }
-        "win.recycle-bin" if same_path(path, &volume.join("$Recycle.Bin")) => {
-            if volumes.is_empty() || !volumes.iter().all(|v| v.letter.is_ascii_uppercase() && !v.guid.is_empty()) { return Err(UNKNOWN.into()); }
-            let list = volumes.iter().map(|v| v.letter.to_string()).collect::<Vec<_>>().join(",");
-            let roots = volumes.iter().map(|v| PathBuf::from(format!(r"{}:\$Recycle.Bin", v.letter))).collect();
-            let mut fixed = Fixed::new(&format!("Clear-RecycleBin -DriveLetter {list} -Force"), roots);
-            fixed.volumes = volumes.to_vec();
-            fixed
-        }
         "win.windows-old" if same_path(path, &volume.join("Windows.old")) => {
-            // Without /sagerun this opens Disk Cleanup's UI, not a Windows.old-only command.
-            Fixed::new(&format!("Start-Process cleanmgr -ArgumentList '/d {system}:' -Verb RunAs -Wait"), vec![volume])
+            // Without /sagerun this opens Disk Cleanup's UI. Do not use the elevation broker
+            // to start a separate process outside the job; the existing admin gate applies.
+            Fixed::new(&format!("Start-Process cleanmgr -ArgumentList '/d {system}:' -NoNewWindow -Wait"), vec![volume])
         }
         _ => return Err(UNKNOWN.into()),
     };
@@ -244,35 +220,6 @@ fn windows_directory() -> Option<PathBuf> {
     let mut buf = [0u16; 520];
     let n = unsafe { GetSystemWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
     (n > 0 && n < buf.len()).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..n])))
-}
-
-fn recycle_volumes() -> Result<Vec<RecycleVolume>, String> {
-    #[link(name = "kernel32")]
-    extern "system" { fn GetLogicalDrives() -> u32; }
-    let mask = unsafe { GetLogicalDrives() };
-    if mask == 0 { return Err("Windows couldn't list the Recycle Bin drives".into()); }
-    recycle_volumes_in(mask, drive_kind, crate::hidden::volume_guid)
-}
-
-fn drive_kind(root: &Path) -> u32 {
-    #[link(name = "kernel32")]
-    extern "system" { fn GetDriveTypeW(root: *const u16) -> u32; }
-    let w: Vec<u16> = root.to_string_lossy().encode_utf16().chain(Some(0)).collect();
-    unsafe { GetDriveTypeW(w.as_ptr()) }
-}
-
-fn recycle_volumes_in(mask: u32, kind: impl Fn(&Path) -> u32, guid: impl Fn(&Path) -> Option<String>) -> Result<Vec<RecycleVolume>, String> {
-    let mut volumes = Vec::new();
-    for i in 0..26 {
-        if mask & (1 << i) == 0 { continue; }
-        let letter = (b'A' + i) as char;
-        let root = PathBuf::from(format!("{letter}:\\"));
-        // The Windows command only takes a letter. Do not send it to removable or RAM disks.
-        if kind(&root) != 3 { continue; }
-        let guid = guid(&root).ok_or_else(|| format!("Windows couldn't verify which volume is at {letter}:"))?;
-        volumes.push(RecycleVolume { letter, guid: guid.to_ascii_lowercase() });
-    }
-    Ok(volumes)
 }
 
 fn delivery_redirects(windows: &Path) -> Result<Vec<PathBuf>, String> {
@@ -331,7 +278,7 @@ mod tests {
         let store = windows.join("WinSxS");
         let rule = "win.component-store";
         let command = pack_command(rule).unwrap();
-        let scope = Scope::Fixed(windows_scope(rule, &store, command, &windows, &[], vec![]).unwrap());
+        let scope = Scope::Fixed(windows_scope(rule, &store, command, &windows, vec![]).unwrap());
         let tool = ReviewedExternal { path: store.clone(), rule: rule.into(), command: command.into(), scope: scope.clone() };
         let mut calls = 0;
         let invoke = &mut |script: &str, _: &AtomicBool, _: &mut Outcome, _: &[(&str, &OsStr)]| {
@@ -344,7 +291,7 @@ mod tests {
         assert!(dispatch(&tool, &AtomicBool::new(false), &mut Outcome::default(),
             || Ok(policy(vec![store.join("keep")], vec![])), || Ok((scope.clone(), ())), invoke).unwrap_err().contains("Keep list"));
         assert_eq!(calls, 1);
-        assert!(windows_scope(rule, &windows.join("Other"), command, &windows, &[], vec![]).is_err());
+        assert!(windows_scope(rule, &windows.join("Other"), command, &windows, vec![]).is_err());
     }
 
     #[test]
@@ -392,7 +339,7 @@ mod tests {
         let mut out = Outcome::default();
         dispatch(&tool, &AtomicBool::new(false), &mut out, || Ok(policy(vec![repo.join("one.txt")], vec![])),
             || resolve_held(&tool.rule, &tool.path, &tool.command),
-            &mut |cmd, stop, out, env| run_powershell(cmd, &sys, false, stop, out, env, Duration::from_secs(30), false)).unwrap();
+            &mut |cmd, stop, out, env| run_powershell(cmd, &sys, false, stop, out, env, Duration::from_secs(30))).unwrap();
         assert!(out.problems.is_empty() && has_pack(), "{:?} {:?}", out.problems, out.output);
         assert_eq!(std::fs::read(repo.join("one.txt")).unwrap(), b"fixture content\n");
     }
@@ -413,34 +360,26 @@ mod tests {
         let sys = system_dir().unwrap();
         let mut out = Outcome::default();
         dispatch(&tool, &AtomicBool::new(false), &mut out, || Ok(policy(vec![], vec![])), || resolve_held(&tool.rule, &tool.path, &tool.command),
-            &mut |cmd, stop, out, env| run_powershell(cmd, &sys, false, stop, out, env, Duration::from_secs(30), false)).unwrap();
+            &mut |cmd, stop, out, env| run_powershell(cmd, &sys, false, stop, out, env, Duration::from_secs(30))).unwrap();
         assert!(out.problems.is_empty() && !worktree.exists() && !metadata.exists(), "{:?} {:?}", out.problems, out.output);
         assert_eq!(std::fs::read(repo.join("one.txt")).unwrap(), b"fixture content\n");
     }
 
     #[test]
-    fn changed_fixed_scope_cannot_use_old_review_consent() {
-        let rule = "win.recycle-bin";
-        let cmd = pack_command(rule).unwrap();
-        let windows = Path::new(r"C:\Windows");
-        let path = PathBuf::from(r"C:\$Recycle.Bin");
-        let old = Scope::Fixed(windows_scope(rule, &path, cmd, windows, &[volume('C', "disk-a")], vec![]).unwrap());
-        let new = Scope::Fixed(windows_scope(rule, &path, cmd, windows, &[volume('C', "disk-b")], vec![]).unwrap());
-        let tool = ReviewedExternal { path, rule: rule.into(), command: cmd.into(), scope: old };
+    fn recycle_bin_rule_is_information_and_former_receipts_cannot_launch() {
+        let pack = crate::rules::RulePack::builtin();
+        let rule = pack.all_rules().find(|r| r.id == RECYCLE_BIN_RULE).unwrap();
+        assert_eq!(rule.remedy, crate::Remedy::Info);
+        assert!(rule.command.is_none());
+        let cmd = "Clear-RecycleBin -DriveLetter E -Force";
+        let path = std::env::temp_dir().join("fixture-bin");
+        let f = finding(RECYCLE_BIN_RULE, path.clone(), cmd);
+        assert!(action(&f).is_none());
+        assert!(review_external(&f, &policy(vec![], vec![])).is_err());
+        let scope = Scope::Fixed(Fixed::new(cmd, vec![path.clone()]));
+        let tool = ReviewedExternal { path, rule: RECYCLE_BIN_RULE.into(), command: cmd.into(), scope: scope.clone() };
         assert!(dispatch(&tool, &AtomicBool::new(false), &mut Outcome::default(), || Ok(policy(vec![], vec![])),
-            || Ok((new, ())), &mut |_, _, _, _| panic!("a changed volume was launched")).unwrap_err().contains("scope changed"));
-    }
-
-    fn volume(letter: char, guid: &str) -> RecycleVolume { RecycleVolume { letter, guid: guid.into() } }
-
-    #[test]
-    fn only_fixed_bin_volumes_with_known_ids_are_reviewed() {
-        let mask = (1 << 2) | (1 << 4);
-        let kind = |p: &Path| if drive(p) == Some('E') { 2 } else { 3 };
-        let ids = recycle_volumes_in(mask, kind, |p| (drive(p) == Some('C')).then(|| "Disk-A".into())).unwrap();
-        assert_eq!(ids, [volume('C', "disk-a")]);
-        assert!(recycle_volumes_in(mask, kind, |_| None).is_err());
-        assert_ne!(current_volume_ids(&ids, |_| Some("disk-b".into())).unwrap(), ids);
+            || Ok((scope, ())), &mut |_, _, _, _| panic!("the former bin command was launched")).unwrap_err().contains("leaves the Recycle Bin alone"));
     }
 
     #[test]
@@ -464,6 +403,53 @@ mod tests {
     }
 
     #[test]
+    fn stopped_nvm_fixture_waits_for_native_child_before_releasing_settings() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-nvm-stop").unwrap();
+        let home = owned.path();
+        let target = home.join("v18.1.0");
+        let settings = home.join("settings.txt");
+        let ready = home.join("child-id.txt");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(&settings, format!("root: {}\npath: {}\n", home.display(), home.join("nodejs").display())).unwrap();
+        let f = finding("versions.nvm", target, "nvm uninstall '18.1.0'");
+        let tool = review_external(&f, &policy(vec![], vec![])).unwrap();
+        let sys = system_dir().unwrap();
+        let ps = crate::rules::ps_quote(&sys.join(r"WindowsPowerShell\v1.0\powershell.exe").display().to_string());
+        let child_script = format!("[IO.File]::WriteAllText({}, $PID); Start-Sleep -Seconds 60", crate::rules::ps_quote(&ready.display().to_string()));
+        let script = format!(r#"Start-Process -FilePath {ps} -NoNewWindow -ArgumentList '-NoProfile -NonInteractive -EncodedCommand {}'"#, encoded(&child_script));
+        let stop = AtomicBool::new(false);
+        let mut out = Outcome::default();
+        let child = std::thread::scope(|s| {
+            let signal = s.spawn(|| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                let pid = loop {
+                    if let Some(pid) = std::fs::read_to_string(&ready).ok().and_then(|s| s.parse::<u32>().ok()) { break pid; }
+                    if std::time::Instant::now() >= deadline { stop.store(true, Ordering::Relaxed); panic!("fixture child did not start"); }
+                    std::thread::sleep(Duration::from_millis(20));
+                };
+                // Hold the actual process identity, not a later lookup of a possibly reused PID.
+                let h = unsafe { OpenProcess(0x0010_0000, 0, pid) }; // SYNCHRONIZE
+                let child = (!h.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(h) });
+                let running = child.as_ref().is_some_and(|h| unsafe { WaitForSingleObject(h.as_raw_handle(), 0) } == WAIT_TIMEOUT);
+                let pinned = std::fs::write(&settings, "changed").is_err();
+                stop.store(true, Ordering::Relaxed);
+                assert!(running && pinned);
+                child.unwrap()
+            });
+            dispatch(&tool, &stop, &mut out, || Ok(policy(vec![], vec![])),
+                || resolve_held(&tool.rule, &tool.path, &tool.command),
+                &mut |_, stop, out, env| run_powershell(&script, &sys, false, stop, out, env, Duration::from_secs(20))).unwrap();
+            signal.join().unwrap()
+        });
+        assert!(out.stopped && !out.timed_out, "{:?}", out.problems);
+        assert_eq!(unsafe { WaitForSingleObject(child.as_raw_handle(), 0) }, WAIT_OBJECT_0);
+        std::fs::write(&settings, "now writable").unwrap();
+    }
+
+    #[test]
     fn compiled_pack_tool_rules_are_classified_and_non_builtin_text_is_not_authorized() {
         let pack = crate::rules::RulePack::builtin();
         let declared: std::collections::BTreeSet<_> = pack.all_rules().filter(|r| r.command.is_some()).map(|r| r.id.as_str()).collect();
@@ -483,21 +469,19 @@ mod tests {
     }
 
     #[test]
-    fn windows_scopes_cover_the_second_bin_drive_delivery_redirects_and_disk_cleanup_choices() {
+    fn windows_scopes_cover_delivery_redirects_and_disk_cleanup_choices() {
         let windows = Path::new(r"C:\Windows");
         let redirect = delivery_paths(windows, ["%SystemDrive%".into(), r"D:\ServiceCache".into()]).unwrap();
         assert_eq!(redirect, [PathBuf::from(r"C:\"), PathBuf::from(r"D:\ServiceCache")]);
         assert!(delivery_paths(windows, [r"%Unknown%\Cache".into()]).is_err());
         let id = "win.delivery-optimization";
-        let f = windows_scope(id, &windows.join(r"SoftwareDistribution\DeliveryOptimization"), pack_command(id).unwrap(), windows, &[], redirect).unwrap();
+        let f = windows_scope(id, &windows.join(r"SoftwareDistribution\DeliveryOptimization"), pack_command(id).unwrap(), windows, redirect).unwrap();
         assert!(f.roots.contains(&PathBuf::from(r"D:\ServiceCache")));
-        let id = "win.recycle-bin";
-        let f = windows_scope(id, Path::new(r"C:\$Recycle.Bin"), pack_command(id).unwrap(), windows, &[volume('C', "disk-a"), volume('D', "disk-b")], vec![]).unwrap();
-        assert_eq!(f.roots, [PathBuf::from(r"C:\$Recycle.Bin"), PathBuf::from(r"D:\$Recycle.Bin")]);
-        assert_eq!(f.run, "Clear-RecycleBin -DriveLetter C,D -Force");
         let id = "win.windows-old";
-        let f = windows_scope(id, Path::new(r"C:\Windows.old"), pack_command(id).unwrap(), windows, &[], vec![]).unwrap();
+        let f = windows_scope(id, Path::new(r"C:\Windows.old"), pack_command(id).unwrap(), windows, vec![]).unwrap();
         assert_eq!(f.roots, [PathBuf::from(r"C:\")]);
         assert!(f.run.contains("'/d C:'"));
+        assert!(f.run.contains("-NoNewWindow") && !f.run.contains("RunAs"));
+        assert!(crate::rules::RulePack::builtin().all_rules().find(|r| r.id == id).unwrap().admin);
     }
 }

@@ -440,7 +440,7 @@ fn still_open(path: &std::path::Path, app: &str, exes: &[String]) -> Option<Stri
 /// Windows, not on one account's folders, so the "another account's" gate doesn't apply; they
 /// still need administrator where they do (held with "Restart as administrator"), and run only
 /// as the built-in pack wrote them. Never a user's or the AI's rule.
-pub(crate) const MACHINE_WIDE: &[&str] = &["win.component-store", "win.recycle-bin", "win.windows-old"];
+pub(crate) const MACHINE_WIDE: &[&str] = &["win.component-store", "win.windows-old"];
 
 pub(crate) fn machine_wide(f: &Finding) -> bool {
     // (and git's own clean-ups of a repository, D: git acts on the folder it is named)
@@ -485,7 +485,7 @@ pub(crate) fn second_try(f: &Finding, counted: bool) -> bool {
     }
     // the interrupted-link notice names several files and Sprawl must touch none of them: a
     // "tick it anyway" delete would take only the first (Fable backlog P3-5)
-    if matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::dupes::INTERRUPTED) {
+    if matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::dupes::INTERRUPTED || id == clean::RECYCLE_BIN_RULE) {
         return false;
     }
     if second_try_place_refused(&PathBuf::from(key(&f.path))) {
@@ -560,24 +560,6 @@ pub(crate) fn goal_may_pick(f: &Finding) -> bool {
     !crate::advisor::gone_for_good(f) && !matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::devgit::WORKTREE || id == sprawl_advisor::devgit::CLONE)
 }
 
-/// The built-in rule that empties the Recycle Bin.
-pub(crate) const EMPTY_BIN: &str = "win.recycle-bin";
-
-/// When a run sends anything to the Recycle Bin, emptying the bin goes first: after, it would
-/// erase for good what the run just sent there (Fable 1.0.4-1.0.5 P1-1). `key`: whether an
-/// item empties the bin, and whether it goes to the bin.
-pub(crate) fn empty_bin_first<A, B>(work: &mut Vec<A>, items: &mut Vec<B>, key: impl Fn(&B) -> (bool, bool)) {
-    if !items.iter().any(|i| key(i).1) {
-        return;
-    }
-    if let Some(k) = items.iter().position(|i| key(i).0).filter(|&k| k > 0 && k < work.len()) {
-        let w = work.remove(k);
-        work.insert(0, w);
-        let it = items.remove(k);
-        items.insert(0, it);
-    }
-}
-
 /// Whether `f` may be in a sum of space, a tick Sprawl makes, the usual set or a suggestion:
 /// never a privacy part. The report keeps those apart already; this holds every such place to it.
 pub(crate) fn counts_as_space(f: &Finding) -> bool {
@@ -600,12 +582,6 @@ pub(crate) fn needs_admin(f: &Finding) -> bool {
 pub(crate) fn held_in_app(f: &Finding) -> Option<String> {
     if needs_admin(f) {
         return Some("needs administrator: restart as administrator, or save as a script".into());
-    }
-    // as another administrator account (its password typed at the prompt), Windows would
-    // empty that account's bin, not the signed-in user's, and free nothing shown (Fable
-    // 1.0.4-1.0.5 P3-9). Not knowing counts as another account.
-    if matches!(&f.source, Source::Rule(id) if id == EMPTY_BIN) && sprawl_core::elevation().unwrap_or(true) && sprawl_core::identity::shell_is_this_account() != Some(true) {
-        return Some("Sprawl runs as another account than the one signed in, so it would empty that account's Recycle Bin, not yours: empty it from the desktop".into());
     }
     match clean::action(f) {
         Some((Action::Tool { command }, _)) => clean::elevated_refusal(&command),
@@ -1020,7 +996,6 @@ impl State {
                 fate: outcome(&f, bin_on),
             });
         }
-        empty_bin_first(&mut work, &mut items, |i: &Item| (i.rule.as_deref() == Some(EMPTY_BIN), i.recycle));
         if items.is_empty() {
             if held.is_empty() {
                 self.adv_say("Nothing was cleaned: the items no longer pass the safety checks. Scan again.");
@@ -1035,6 +1010,7 @@ impl State {
         std::thread::spawn(move || {
             // each volume's Recycle Bin, found once; what this run sends counts against its room
             let mut bins: std::collections::HashMap<String, Result<sprawl_advisor::recycle::Bin, String>> = Default::default();
+            let mut compression_batch = sprawl_advisor::remedies::CompressionBatch::default();
             for (i, (path, action, gate, recycle, privacy, reviewed, compression)) in work.into_iter().enumerate() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
@@ -1090,7 +1066,7 @@ impl State {
                 let mut out = if let Some(reviewed) = &reviewed {
                     clean::run_reviewed_external(reviewed, &spare, &stop2)
                 } else if let Some(receipt) = &compression {
-                    clean::run_reviewed_compression(&path, receipt, &spare, &stop2, &mut progress)
+                    clean::run_reviewed_compression(&path, receipt, &spare, &stop2, &mut progress, &mut compression_batch)
                 } else {
                     clean::run_with(&path, &action, &spare, bin, &stop2, &mut progress)
                 };
@@ -2213,20 +2189,19 @@ mod admin_tests {
     use sprawl_advisor::finding::Source;
 
     #[test]
-    fn emptying_the_bin_goes_before_anything_sent_to_it() {
-        // (name, empties the bin, goes to the bin)
-        let run = |list: &[(&'static str, bool, bool)]| {
-            let mut work: Vec<&str> = list.iter().map(|x| x.0).collect();
-            let mut items = list.to_vec();
-            empty_bin_first(&mut work, &mut items, |i| (i.1, i.2));
-            assert_eq!(work, items.iter().map(|x| x.0).collect::<Vec<_>>());
-            work
-        };
-        assert_eq!(run(&[("own", false, true), ("cache", false, false), ("bin", true, false)]), ["bin", "own", "cache"]);
-        // nothing sent to the bin: the order stays
-        assert_eq!(run(&[("cache", false, false), ("bin", true, false)]), ["cache", "bin"]);
-        assert_eq!(run(&[("bin", true, false), ("own", false, true)]), ["bin", "own"]);
-        assert_eq!(run(&[("own", false, true)]), ["own"]);
+    fn recycle_bin_is_never_ticked_or_offered_as_delete() {
+        let mut f = privacy_finding(Risk::Amber);
+        // Use a path the second-click gate could otherwise turn into Delete.
+        f.path = r"C:\Fixture\Recycle Bin".into();
+        f.remedy = Remedy::Info;
+        f.action = None;
+        f.command = None;
+        f.source = Source::Rule("fixture.info".into());
+        assert!(second_try(&f, true));
+        f.source = Source::Rule(clean::RECYCLE_BIN_RULE.into());
+        assert!(untickable(&f, true).is_some());
+        assert!(!second_try(&f, true));
+        assert!(!crate::advisor::direct_delete(&f, false));
     }
 
     /// A privacy part as the engine makes one (cookies of a Chrome profile).

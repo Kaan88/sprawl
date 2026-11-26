@@ -342,10 +342,8 @@ id = "win.recycle-bin"
 title = "Recycle Bin"
 paths = ['%SystemDrive%\$Recycle.Bin']
 risk = "amber"
-remedy = "command"
-command = "Clear-RecycleBin -Force"
-allow_protected = true
-why = "Files you deleted. The command empties your Recycle Bin on every drive (the size shown is this drive's, for all users). Emptying it can't be undone."
+remedy = "info"
+why = "The size shown is for this drive, for all users. Sprawl leaves the Recycle Bin alone because Windows' cleanup command cannot stay bound to the drive you reviewed. You can review and empty your own bin in Windows. Emptying it can't be undone."
 
 [[rule]]
 id = "win.windows-old"
@@ -353,9 +351,10 @@ title = "Previous Windows installation"
 paths = ['%SystemDrive%\Windows.old']
 risk = "amber"
 remedy = "command"
-command = "Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -Verb RunAs -Wait   # tick 'Previous Windows installation(s)'"
+command = "Start-Process cleanmgr -ArgumentList \"/d $env:SystemDrive\" -NoNewWindow -Wait   # as administrator"
+admin = true
 allow_protected = true
-why = "The Windows you upgraded from. Removing it means you can't roll back the upgrade."
+why = "The Windows you upgraded from. In Disk Cleanup, choose 'Previous Windows installation(s)'. Removing it means you can't roll back the upgrade."
 
 [[rule]]
 id = "win.component-store"

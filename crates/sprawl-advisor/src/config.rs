@@ -131,7 +131,8 @@ impl AiConfig {
 
     /// Use the custom AI named `name`.
     pub fn use_custom(&mut self, name: &str) -> bool {
-        let Some(c) = self.customs.iter().find(|c| c.name == name).cloned() else { return false };
+        let mut found = self.customs.iter().filter(|c| c.name.eq_ignore_ascii_case(name));
+        let (Some(c), None) = (found.next().cloned(), found.next()) else { return false };
         self.provider = Provider::OpenAi;
         self.base_url = c.base_url;
         self.model = c.model;
@@ -198,7 +199,15 @@ impl AiConfig {
                 Err(e) => Some(Err(e)),
             }).collect()
         }
-        let custom_map = |c: &Self| c.customs.iter().map(|e| (e.name.to_lowercase(), e.clone())).collect();
+        fn custom_map(c: &AiConfig) -> std::io::Result<BTreeMap<String, CustomAi>> {
+            let mut entries = BTreeMap::new();
+            for entry in &c.customs {
+                if entries.insert(entry.name.to_ascii_lowercase(), entry.clone()).is_some() {
+                    return Err(std::io::Error::other("saved providers have the same name (ignoring ASCII case); no changes were written"));
+                }
+            }
+            Ok(entries)
+        }
         // Merge the active connection as a unit: a model/name intended for one host must
         // not be silently attached to a concurrently selected host.
         let conn = |c: &Self| (c.provider, c.base_url.clone(), c.model.clone(), c.custom.clone());
@@ -207,7 +216,7 @@ impl AiConfig {
             provider, base_url, model, custom,
             web_lookup: merge(self.web_lookup, base.web_lookup, disk.web_lookup)?,
             efforts: entries(&self.efforts, &base.efforts, &disk.efforts)?,
-            customs: entries(&custom_map(self), &custom_map(base), &custom_map(disk))?.into_values().collect(),
+            customs: entries(&custom_map(self)?, &custom_map(base)?, &custom_map(disk)?)?.into_values().collect(),
         })
     }
 }
@@ -251,6 +260,44 @@ mod edit_tests {
         new.save_edited_at(root, &old, false, |_| ()).unwrap();
         assert!(old.save_edited_at(root, &old, true, |_| panic!("typed key followed a different host")).is_err());
         assert_eq!(AiConfig::read_at(root).unwrap(), new);
+    }
+
+    #[test]
+    fn provider_merge_uses_editor_ascii_equivalence_and_refuses_collisions() {
+        let provider = |name: &str, port| CustomAi { name: name.into(), base_url: format!("http://localhost:{port}/v1"), model: String::new() };
+        let empty = AiConfig::default();
+        let baseline = AiConfig { customs: vec![provider("Élan", 3000), provider("élan", 3001)], ..empty.clone() };
+        let mut mine = baseline.clone();
+        mine.web_lookup = true;
+        assert_eq!(mine.merge_edit(&baseline, &baseline).unwrap().customs, baseline.customs, "Unicode case is not editor equivalence");
+        let mut invalid = baseline.clone();
+        invalid.customs.push(provider("ÉLAN", 3002));
+        assert!(!invalid.use_custom("Élan"));
+        assert!(mine.merge_edit(&baseline, &invalid).unwrap_err().to_string().contains("same name"));
+        let add = |name, port| AiConfig { customs: vec![provider(name, port)], ..empty.clone() };
+        assert!(add("Local", 3000).merge_edit(&empty, &add("LOCAL", 3001)).is_err(), "concurrent equivalent names conflict");
+    }
+
+    #[test]
+    fn writing_a_key_cancels_forget_only_for_the_same_credential_target() {
+        let config = AiConfig { provider: Provider::OpenAi, base_url: "https://EXAMPLE.invalid:443/new/path/".into(), ..AiConfig::default() };
+        let old = CredentialTarget::for_provider(Provider::OpenAi, "https://example.invalid/v1").unwrap();
+        let other = CredentialTarget::for_provider(Provider::OpenAi, "https://example.invalid:8443/v1").unwrap();
+        let mut calls = Vec::new();
+        let failed = key_changes(&config, Some("fixture"), Some(&old), |target, key, _| {
+            calls.push((target.name.clone(), !key.is_empty()));
+            false
+        });
+        assert_eq!(calls, [(old.name.clone(), true)]);
+        assert_eq!(failed, ["couldn't store the API key"]);
+        calls.clear();
+        assert!(key_changes(&config, Some("fixture"), Some(&other), |target, key, _| {
+            calls.push((target.name.clone(), !key.is_empty()));
+            true
+        }).is_empty());
+        assert_eq!(calls, [(old.name, true), (other.name, false)]);
+        assert_eq!(CredentialTarget::for_provider(Provider::OpenAi, ""), CredentialTarget::for_provider(Provider::OpenAi, "https://api.openai.com:443/v1"));
+        assert_eq!(CredentialTarget::for_provider(Provider::Anthropic, ""), CredentialTarget::for_provider(Provider::Anthropic, "https://api.anthropic.com"));
     }
 }
 
@@ -311,24 +358,58 @@ mod cred {
     }
 }
 
-/// Store (or with an empty string, remove) the API key for a provider, for the server at
-/// `base_url` (OpenAI-compatible: the key is only ever sent to that host).
-pub fn set_key(p: Provider, key: &str, base_url: &str) -> bool {
+/// The actual Credential Manager entry affected by putting or forgetting a key. Endpoint
+/// spellings (paths, host case, default ports) may refer to the same entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialTarget { provider: Provider, name: String, host: Option<String> }
+
+impl CredentialTarget {
+    pub fn for_provider(provider: Provider, address: &str) -> Option<Self> {
+        match provider {
+            Provider::OpenAi => {
+                let host = crate::llm::agent::host_of(address)?;
+                Some(Self { provider, name: host_credential(&host), host: Some(host) })
+            }
+            Provider::Anthropic => Some(Self { provider, name: provider.credential().into(), host: None }),
+            _ => None,
+        }
+    }
+}
+
+/// The new key replaces a pending Forget for the same credential. Even a failed write
+/// must not turn that replacement attempt into a deletion of the old key.
+pub fn save_key_changes(config: &AiConfig, typed: Option<&str>, forget: Option<&CredentialTarget>) -> Vec<&'static str> {
+    key_changes(config, typed, forget, set_key)
+}
+
+fn key_changes(config: &AiConfig, typed: Option<&str>, forget: Option<&CredentialTarget>,
+    mut set: impl FnMut(&CredentialTarget, &str, &str) -> bool) -> Vec<&'static str> {
+    let mut problems = Vec::new();
+    let mut put = None;
+    if let Some(key) = typed.map(str::trim).filter(|s| !s.is_empty()) {
+        put = CredentialTarget::for_provider(config.provider, &config.base_url);
+        let Some(target) = &put else { return vec!["couldn't identify where to store the API key"]; };
+        if !set(target, key, &config.base_url) { problems.push("couldn't store the API key"); }
+    }
+    if let Some(target) = forget.filter(|target| !put.as_ref().is_some_and(|put| put.name == target.name)) {
+        if !set(target, "", "") { problems.push("couldn't remove the saved API key"); }
+    }
+    problems
+}
+
+fn set_key(target: &CredentialTarget, key: &str, base_url: &str) -> bool {
     if crate::read_only() { return false; }
-    let key = key.trim();
-    if p == Provider::OpenAi {
-        // one key per server, under its host: several custom AIs keep their own
-        let Some(host) = crate::llm::agent::host_of(base_url) else { return false };
-        let target = host_credential(&host);
+    let p = target.provider;
+    if let Some(host) = &target.host {
         if key.is_empty() {
             // and the older single key, when it was this host's: it would be sent in its place
             if key_host(p).is_some_and(|h| h.eq_ignore_ascii_case(&host)) {
                 cred::delete(p.credential());
                 cred::delete(&format!("{}/host", p.credential()));
             }
-            return cred::delete(&target) || cred::read(&target).is_none();
+            return cred::delete(&target.name) || cred::read(&target.name).is_none();
         }
-        if !cred::write(&target, key) {
+        if !cred::write(&target.name, key) {
             return false;
         }
         // the older single key, when it was this host's, is replaced by this one
@@ -340,12 +421,12 @@ pub fn set_key(p: Provider, key: &str, base_url: &str) -> bool {
     }
     let host_target = format!("{}/host", p.credential());
     if key.is_empty() {
-        cred::delete(p.credential());
+        cred::delete(&target.name);
         cred::delete(&host_target);
         return true;
     }
     let host = crate::llm::agent::host_of(base_url).unwrap_or_default();
-    cred::write(p.credential(), key) && cred::write(&host_target, &host)
+    cred::write(&target.name, key) && cred::write(&host_target, &host)
 }
 
 /// Where an OpenAI-compatible server's key is kept: its host is in the name.

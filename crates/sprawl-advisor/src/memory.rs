@@ -1056,6 +1056,34 @@ mod keep_store_tests {
     }
 
     #[test]
+    fn native_short_name_keeps_the_same_long_directory_where_8dot3_is_enabled() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        #[link(name = "kernel32")]
+        extern "system" { fn GetShortPathNameW(long: *const u16, short: *mut u16, size: u32) -> u32; }
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-native-short-name").unwrap();
+        let long = temp.path().join("Long Directory For Keep Fixture");
+        std::fs::create_dir(&long).unwrap();
+        let wide: Vec<u16> = long.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut buf = vec![0; 32_768];
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        assert!(n > 0 && (n as usize) < buf.len(), "GetShortPathNameW for the existing fixture: {}", std::io::Error::last_os_error());
+        let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize]));
+        if short.file_name().unwrap().eq_ignore_ascii_case(long.file_name().unwrap()) {
+            println!("native 8.3 fixture skipped: Windows did not assign the fixture an 8.3 name");
+            return;
+        }
+        let canonical = keep_path(&short).unwrap();
+        assert!(crate::clean::same_path(&canonical, &long));
+        let mut saved = Memory::fresh();
+        saved.decide(&short, "native short name", Verdict::Keep);
+        let mut keep = Vec::new();
+        refresh_keeps_with(&mut keep, || Ok(saved), |p| sprawl_core::local::storage(p).map(|held| held.path)).unwrap();
+        let spare = crate::clean::Spare { keep, ..Default::default() };
+        assert!(spare.keeps(&long.join("protected.txt")));
+        println!("native 8.3 fixture exercised");
+    }
+
+    #[test]
     fn each_dispatch_adds_current_keeps_and_refuses_an_unreadable_list() {
         let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-keep-dispatch").unwrap();
         let before = temp.path().join("Before");

@@ -676,7 +676,7 @@ pub(crate) fn risk_words_for(f: &Finding) -> &'static str {
 /// The Recycle Bin and an old Windows: amber (nothing of the user's that they still use), but
 /// nothing brings them back.
 pub(crate) fn gone_for_good(f: &Finding) -> bool {
-    matches!(&f.source, Source::Rule(id) if id == "win.recycle-bin" || id == "win.windows-old")
+    matches!(&f.source, Source::Rule(id) if id == "win.windows-old")
 }
 
 /// The short form, for a row.
@@ -2484,11 +2484,15 @@ impl State {
             self.adv_say("That folder needs administrator rights: restart Sprawl as administrator, then Uncompress.");
             return;
         }
+        let reviewed = match sprawl_advisor::remedies::review_uncompress(&path) {
+            Ok(r) => r,
+            Err(e) => { self.adv_say(&format!("Couldn't identify the folder to uncompress: {e}")); return; }
+        };
         let text = format!("Every file in {} goes back to plain storage. That takes about {} more on the drive, and some minutes. Close the program first.", c.path, self.size(c.saved));
-        self.ask("Uncompress this folder?", &text, "Uncompress", false, move |s| s.uncompress_start(c));
+        self.ask("Uncompress this folder?", &text, "Uncompress", false, move |s| s.uncompress_start(c, reviewed));
     }
 
-    fn uncompress_start(&mut self, record: sprawl_advisor::memory::Compressed) {
+    fn uncompress_start(&mut self, record: sprawl_advisor::memory::Compressed, reviewed: sprawl_advisor::remedies::ReviewedUndo) {
         if self.advisor.file_op() || self.advisor.cleanup.running.is_some() || self.job.is_some() || self.update.applying
             || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
             return;
@@ -2497,12 +2501,11 @@ impl State {
             self.adv_say("The compression record changed or is not recognised; nothing was run.");
             return;
         }
-        let path = std::path::PathBuf::from(&record.path);
         let keep = self.advisor.memory.kept_paths();
         let excluded = sprawl_advisor::exclusions::configured();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let result = sprawl_advisor::remedies::uncompress(&path, &keep, &excluded);
+            let result = sprawl_advisor::remedies::uncompress(&reviewed, &keep, &excluded);
             let _ = tx.send((result.is_ok(), result.err().unwrap_or_default()));
         });
         self.advisor.uncompress = Some((record, rx, "Checking and uncompressing exact files... this takes a few minutes on a big folder.".into()));
@@ -4454,7 +4457,7 @@ impl State {
 /// or a tool's own clean-up (npm, DISM...: deleting its folder by hand is not the same).
 pub(crate) fn direct_delete(f: &Finding, runnable: bool) -> bool {
     !runnable
-        && !matches!(&f.source, sprawl_advisor::Source::Rule(id) if id == sprawl_advisor::dupes::INTERRUPTED)
+        && !matches!(&f.source, sprawl_advisor::Source::Rule(id) if id == sprawl_advisor::dupes::INTERRUPTED || id == sprawl_advisor::clean::RECYCLE_BIN_RULE)
         && !matches!(f.remedy, Remedy::Uninstall | Remedy::Command)
         && !f.action.as_ref().is_some_and(sprawl_advisor::remedies::in_place)
 }
@@ -4468,7 +4471,8 @@ pub(crate) fn direct_delete(f: &Finding, runnable: bool) -> bool {
 pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Finding>, usize, usize) {
     let guesses = ticked.iter().filter(|f| f.heuristic()).count();
     let excluded = sprawl_advisor::exclusions::configured();
-    let holds_kept = |f: &Finding| f.forced_from.is_some() || !f.carved.is_empty() || sprawl_advisor::exclusions::intersects(&f.path, &excluded)
+    let holds_kept = |f: &Finding| f.forced_from.is_some() || matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::clean::RECYCLE_BIN_RULE)
+        || !f.carved.is_empty() || sprawl_advisor::exclusions::intersects(&f.path, &excluded)
         || kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path) || sprawl_advisor::finding::within(&f.path, k));
     let keeping = ticked.iter().filter(|f| !f.heuristic() && holds_kept(f)).count();
     (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some() && !holds_kept(f)).collect(), guesses, keeping)

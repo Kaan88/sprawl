@@ -53,7 +53,7 @@ pub(crate) struct PrefUi {
     ai_efforts: std::collections::BTreeMap<String, String>,
     ai_edited: bool,
     ai_detected: Option<AiConfig>,
-    ai_forget_key: Option<(Provider, String)>,
+    ai_forget_key: Option<config::CredentialTarget>,
     /// "Clear history" was pressed once: the next press clears.
     clear_armed: bool,
     /// What the last action said, shown at the top of the page.
@@ -1542,7 +1542,8 @@ impl State {
     fn wizard_key_hint(&self, p: Provider) {
         let url = field(self, "WizUrl");
         let has = if p == Provider::OpenAi { sprawl_advisor::llm::agent::saved_key_for(&url) } else { p.needs_key() && config::has_key(p) };
-        let forget = self.prefs.ai_forget_key.as_ref().is_some_and(|(provider, addr)| *provider == p && addr == &url);
+        let target = config::CredentialTarget::for_provider(p, &url);
+        let forget = target.is_some() && target.as_ref() == self.prefs.ai_forget_key.as_ref();
         if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
             let hint = if forget { "Key will be removed on Save" } else if has { "Saved key; leave empty to keep it" } else { "Paste an API key" };
             let _ = k.SetPlaceholderText(&hint.into());
@@ -1642,8 +1643,12 @@ impl State {
             "WizForgetKey" if !crate::settings::read_only() => {
                 let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
                 if p.needs_key() {
+                    let Some(target) = config::CredentialTarget::for_provider(p, &field(self, "WizUrl")) else {
+                        self.pref_error("ai", "Enter a valid server address before removing its key.".into());
+                        return;
+                    };
                     self.wizard_discard_secret();
-                    self.prefs.ai_forget_key = Some((p, field(self, "WizUrl")));
+                    self.prefs.ai_forget_key = Some(target);
                     self.wizard_key_hint(p);
                 }
             }
@@ -1752,16 +1757,7 @@ impl State {
                 notes.push(format!("AI settings and keys were not changed: the opening config couldn't be read ({e}). Reopen Settings after fixing it."));
             } else {
                 match ai.save_edited(&self.prefs.ai_orig, putting, |saved| {
-                    if putting {
-                        let addr = if saved.provider == Provider::OpenAi && saved.base_url.is_empty() { "https://api.openai.com/v1" } else { &saved.base_url };
-                        if !config::set_key(saved.provider, &key, addr) { notes.push("couldn't store the API key".into()); }
-                    }
-                    if let Some((provider, url)) = &forget {
-                        let addr = if *provider == Provider::OpenAi && url.is_empty() { "https://api.openai.com/v1" } else { url };
-                        if (!putting || *provider != saved.provider || *url != saved.base_url) && !config::set_key(*provider, "", addr) {
-                            notes.push("couldn't remove the saved API key".into());
-                        }
-                    }
+                    notes.extend(config::save_key_changes(saved, putting.then_some(key.as_str()), forget.as_ref()).into_iter().map(str::to_owned));
                 }) {
                     Ok((changed, ())) => ai_changed = changed || putting || forget.is_some(),
                     Err(e) => notes.push(format!("AI settings and keys were not changed: {e}")),
