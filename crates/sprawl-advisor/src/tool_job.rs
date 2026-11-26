@@ -131,17 +131,17 @@ fn defer(lease: Lease) {
     }
 }
 
-struct Attributes { _buf: Vec<usize>, list: LPPROC_THREAD_ATTRIBUTE_LIST }
+struct Attributes<'a> { _buf: Vec<usize>, list: LPPROC_THREAD_ATTRIBUTE_LIST, _backing: [&'a [HANDLE]; 2] }
 
-impl Attributes {
-    fn for_launch(handles: &[HANDLE], jobs: &[HANDLE]) -> io::Result<Self> {
+impl<'a> Attributes<'a> {
+    fn for_launch(handles: &'a [HANDLE], jobs: &'a [HANDLE]) -> io::Result<Self> {
         let mut bytes = 0;
         unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes) };
         if bytes == 0 { return Err(io::Error::last_os_error()); }
         let mut buf = vec![0usize; bytes.div_ceil(size_of::<usize>())];
         let list = buf.as_mut_ptr().cast();
         checked(unsafe { InitializeProcThreadAttributeList(list, 2, 0, &mut bytes) })?;
-        let attrs = Self { _buf: buf, list };
+        let attrs = Self { _buf: buf, list, _backing: [handles, jobs] };
         checked(unsafe { UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize, handles.as_ptr().cast(),
             size_of_val(handles), null_mut(), null_mut()) })?;
         // Both attribute arrays live through CreateProcessW. The job handle itself is not inherited.
@@ -151,7 +151,7 @@ impl Attributes {
     }
 }
 
-impl Drop for Attributes {
+impl Drop for Attributes<'_> {
     fn drop(&mut self) { unsafe { DeleteProcThreadAttributeList(self.list) }; }
 }
 
@@ -468,6 +468,25 @@ mod tests {
             || std::thread::sleep(Duration::from_millis(20)), &mut problems)), "{problems:?}");
         std::fs::write(&settings, "now writable").unwrap();
         assert!(!tmp.path().join("started.txt").exists());
+    }
+
+    #[test]
+    fn deferred_teardown_retires_the_wipe_marker_only_after_confirmation() {
+        let tmp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-job-wipe-marker").unwrap();
+        let marker = tmp.path().join("wipe-E.txt");
+        let root = Path::new(r"E:\");
+        let hold = crate::overwrite::claim_marker(&marker, root).unwrap();
+        let mut child = Running::start(&cmd(), MARK, tmp.path(), &environment(false, &[]).unwrap(), Pins::hold(hold)).unwrap();
+        let mut pending = vec![child.lease.take().unwrap()];
+        assert!(!reap(&mut pending, |_| false), "same retention rule as deferred teardown");
+        assert!(std::fs::read_to_string(&marker).unwrap().contains("root=E:"));
+        assert!(crate::overwrite::claim_marker(&marker, root).is_err(), "the unconfirmed job still owns the marker");
+        let mut problems = Vec::new();
+        assert!(reap(&mut pending, |lease| teardown(50, || lease.quiet(), || lease.job.terminate(),
+            || std::thread::sleep(Duration::from_millis(20)), &mut problems)), "{problems:?}");
+        assert!(!marker.exists(), "the marker retires when the deferred lease is released");
+        assert!(!tmp.path().join("started.txt").exists());
+        assert!(crate::overwrite::claim_marker(&marker, root).is_ok(), "the marker can be claimed again");
     }
 
     #[test]

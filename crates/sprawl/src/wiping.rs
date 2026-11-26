@@ -311,6 +311,10 @@ impl State {
             self.tell("Not wiped", &format!("Another Sprawl (process {pid}) is wiping this drive's free space right now. Wait for it to finish, or stop it there."));
             return;
         }
+        if plan.scratch_present {
+            self.tell("Free space wipe not started", &plan.scratch_lines().join("\n"));
+            return;
+        }
         let letter = root.to_string_lossy();
         let letter = letter.trim_end_matches('\\');
         let mut body = String::new();
@@ -320,9 +324,7 @@ impl State {
         for line in wipe_limits(&root) {
             body.push_str(&format!("- {line}\n"));
         }
-        for line in plan.scratch_lines() {
-            body.push_str(&format!("- {line}\n"));
-        }
+        body.push_str(&format!("- If cipher leaves {} behind, Sprawl won't delete it. Once cipher has stopped, check the folder in File Explorer and only delete it if it contains cipher's temporary data.\n", plan.scratch.display()));
         body.push_str(&format!("- {OLDER_COPIES}\n\n"));
         body.push_str("Wiping the free space makes deleted data harder to recover; it does not make it unrecoverable.");
         self.ask(&format!("Wipe free space on {letter}?"), &body, "Wipe free space", true, move |s| s.wipe_free_start(root, marker_dir));
@@ -448,7 +450,19 @@ fn wipe_limits(root: &Path) -> Vec<String> {
 fn wipe_words(w: &sprawl_advisor::overwrite::Wiped) -> (&'static str, String) {
     let o = &w.outcome;
     let mut title = "Free space wiped";
-    let mut words = if o.stopped {
+    let mut words = if o.tool_unconfirmed {
+        title = "Free space wipe: end not confirmed";
+        if o.stopped {
+            "Stop was requested, but Windows hasn't confirmed that cipher ended. It may still be running."
+        } else if o.timed_out {
+            "The wipe ran out of time, but Windows hasn't confirmed that cipher ended. It may still be running."
+        } else {
+            "Windows hasn't confirmed that cipher ended. It may still be running."
+        }.to_string()
+    } else if w.left_before_start {
+        title = "Free space wipe not started";
+        "Windows' cipher was not started. Nothing was overwritten.".to_string()
+    } else if o.stopped {
         title = "Free space wiping stopped";
         "Windows' cipher was stopped before it finished. What it had written stays written; the rest of the free space was not overwritten.".to_string()
     } else if o.timed_out {
@@ -460,13 +474,17 @@ fn wipe_words(w: &sprawl_advisor::overwrite::Wiped) -> (&'static str, String) {
         title = "Free space wipe didn't finish";
         "Windows' cipher stopped with a problem. Its answer is below. Every file the drive holds is as it was; the free space may be partly overwritten.".to_string()
     };
-    if !o.output.is_empty() {
-        words.push_str("\n\ncipher said:\n");
-        words.push_str(&o.output.join("\n"));
+    if !o.notes.is_empty() {
+        words.push_str("\n\n");
+        words.push_str(&o.notes.join("\n"));
     }
     if !o.problems.is_empty() {
         words.push_str("\n\n");
         words.push_str(&o.problems.join("\n"));
+    }
+    if !o.output.is_empty() {
+        words.push_str("\n\ncipher said:\n");
+        words.push_str(&o.output.join("\n"));
     }
     (title, words)
 }
@@ -480,4 +498,40 @@ fn in_cloud_folder(path: &Path) -> bool {
             !dir.is_empty() && low.starts_with(dir.trim_end_matches('\\'))
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sprawl_advisor::{clean::Outcome, overwrite::Wiped};
+
+    #[test]
+    fn unconfirmed_cipher_end_takes_precedence_over_stop_and_timeout() {
+        for stopped in [true, false] {
+            let mut w = Wiped {
+                outcome: Outcome { stopped, timed_out: !stopped, tool_unconfirmed: true, ..Default::default() },
+                ok: false,
+                left_before_start: false,
+            };
+            let (title, body) = wipe_words(&w);
+            assert_eq!(title, "Free space wipe: end not confirmed");
+            assert!(body.contains(if stopped { "Stop was requested" } else { "ran out of time" }));
+            assert!(body.contains("may still be running") && !body.contains("was stopped") && !body.contains("was ended"));
+            w.outcome.tool_unconfirmed = false;
+            let (_, body) = wipe_words(&w);
+            assert!(body.contains(if stopped { "was stopped" } else { "was ended" }));
+        }
+    }
+
+    #[test]
+    fn scratch_refusal_card_says_cipher_never_started_and_shows_manual_steps() {
+        let w = Wiped {
+            outcome: Outcome { problems: vec![r"Leave E:\EFSTMPWP alone unless you recognise cipher's temporary files.".into()], ..Default::default() },
+            ok: false,
+            left_before_start: true,
+        };
+        let (title, body) = wipe_words(&w);
+        assert_eq!(title, "Free space wipe not started");
+        assert!(body.contains("Nothing was overwritten") && body.contains(r"E:\EFSTMPWP"));
+    }
 }

@@ -337,10 +337,8 @@ pub const SHRINK: &str = "# Sprawl: shrink a virtual disk file (nothing inside i
 /// How the follow-up to a stopped shrink begins.
 pub const DETACH: &str = "# Sprawl: detach a virtual disk file a stopped shrink left attached\n";
 
-/// After a shrink was stopped (or hit the time limit) diskpart may have been ended between
-/// attaching the file and detaching it, and an attachment outlives diskpart: WSL or Docker then
-/// can't start. This detaches it (no error when it wasn't attached) and fails when the file is
-/// still held.
+/// Only for recovery after this invocation confirmed that it attached the disk and its job
+/// ended before confirming detach. Fails when the file is still held after the attempt.
 pub fn detach_command(path: &Path) -> String {
     let Some(sys) = crate::clean::system_dir() else { return format!("{DETACH}throw 'The Windows system directory could not be verified.'"); };
     if path.to_string_lossy().contains(['"', '\r', '\n', '\0']) { return format!("{DETACH}throw 'The virtual disk path cannot be passed safely to diskpart.'"); }
@@ -370,10 +368,13 @@ pub fn in_place(a: &Action) -> bool {
     is_compress(a) || is_shrink(a)
 }
 
+pub(crate) const SHRINK_ATTACHED: &str = "SPRAWL_SHRINK_ATTACHED";
+pub(crate) const SHRINK_DETACHED: &str = "SPRAWL_SHRINK_DETACHED";
+
 /// The PowerShell that shrinks the disk file at `path`: Docker Desktop must be closed (for its
-/// disk), every WSL distribution is shut down and checked to be gone, then Windows' diskpart
-/// attaches the file read-only, compacts it and detaches it. diskpart is on every edition (the
-/// Hyper-V `Optimize-VHD` isn't on Home). Nothing is started again afterwards.
+/// disk) and every WSL distribution is shut down and checked to be gone. Mount-DiskImage has
+/// a terminating error on failure (including an already attached image), unlike interactive
+/// diskpart text. Then diskpart compacts the read-only attachment. Nothing is started again.
 pub fn shrink_command(path: &Path, docker: bool) -> String {
     let Some(sys) = crate::clean::system_dir() else { return format!("{SHRINK}throw 'The Windows system directory could not be verified.'"); };
     if path.to_string_lossy().contains(['"', '\r', '\n', '\0']) { return format!("{SHRINK}throw 'The virtual disk path cannot be passed safely to diskpart.'"); }
@@ -385,13 +386,20 @@ pub fn shrink_command(path: &Path, docker: bool) -> String {
     };
     let wsl = format!("& {}", ps_quote(&sys.join("wsl.exe").display().to_string()));
     let diskpart = ps_quote(&sys.join("diskpart.exe").display().to_string());
+    let storage = ps_quote(&sys.join(r"WindowsPowerShell\v1.0\Modules\Storage\Storage.psd1").display().to_string());
     format!(
         "{SHRINK}{docker_check}{wsl} --shutdown\n\
          Start-Sleep -Seconds 3\n\
          if (Get-Process vmmem, vmmemWSL -ErrorAction SilentlyContinue) {{ throw 'WSL is still running after wsl --shutdown: nothing was changed.' }}\n\
          $p = {q}\n\
          $a = (Get-Item -LiteralPath $p).Length\n\
-         \"select vdisk file=`\"$p`\"`nattach vdisk readonly`ncompact vdisk`ndetach vdisk`nexit\" | & {diskpart}\n\
+         Import-Module -Name {storage} -ErrorAction Stop\n\
+         $mounted = Storage\\Mount-DiskImage -ImagePath $p -Access ReadOnly -NoDriveLetter -PassThru -ErrorAction Stop\n\
+         if ($mounted.Attached -ne $true) {{ throw 'Windows did not confirm the virtual disk was attached.' }}\n\
+         [Console]::Out.WriteLine([string][char]30 + '{SHRINK_ATTACHED}'); [Console]::Out.Flush()\n\
+         \"select vdisk file=`\"$p`\"`ncompact vdisk`nexit\" | & {diskpart}\n\
+         Storage\\Dismount-DiskImage -ImagePath $p -ErrorAction Stop\n\
+         [Console]::Out.WriteLine([string][char]30 + '{SHRINK_DETACHED}'); [Console]::Out.Flush()\n\
          $b = (Get-Item -LiteralPath $p).Length\n\
          \"Before: $a bytes. After: $b bytes.\"\n\
          if ($b -ge $a) {{ throw 'The disk file is no smaller. diskpart says why in the lines above (in use, or nothing to give back).' }}"
@@ -420,7 +428,7 @@ pub fn shrinkable(f: &mut Finding) {
             "The disk of a Linux distribution. It grows but never shrinks by itself: delete files inside Linux first, then shrink it here.".into()
         },
         format!(
-            "Tick it and Clean up, and Sprawl {}shuts down WSL (everything running in Linux stops), then compacts the file with Windows' diskpart, as administrator. Nothing inside it is deleted, and nothing is started again.",
+            "Tick it and Clean up, and Sprawl {}shuts down WSL (everything running in Linux stops), then attaches the file read-only and compacts it with Windows' diskpart, as administrator. Nothing inside it is deleted, and nothing is started again.",
             if docker { "checks that Docker Desktop is closed, " } else { "" }
         ),
         "How much it gives back is known only after: the space files you deleted inside used to take.".into(),
@@ -1553,7 +1561,16 @@ mod shrink_tests {
             assert_eq!(lines.next().map(str::trim), Some("0"), "{cmd}\n{text}");
             // the only variables are the script's own: the path's `$x` is inside quotes
             let vars = lines.next().unwrap_or("").trim().to_string();
-            assert!(vars.split(',').all(|v| ["p", "a", "b", "env:SystemRoot"].contains(&v)), "{vars}");
+            assert!(vars.split(',').all(|v| ["p", "a", "b", "mounted", "true"].contains(&v)), "{vars}");
+            let shutdown = cmd.find("--shutdown").unwrap();
+            let mount = cmd.find(r"Storage\Mount-DiskImage").unwrap();
+            let check = cmd.find("if ($mounted.Attached -ne $true)").unwrap();
+            let attached = cmd.find(SHRINK_ATTACHED).unwrap();
+            let compact = cmd.find("compact vdisk").unwrap();
+            let dismount = cmd.find(r"Storage\Dismount-DiskImage").unwrap();
+            assert!(shutdown < mount && mount < check && check < attached && attached < compact && compact < dismount);
+            assert!(cmd[mount..check].contains("-Access ReadOnly -NoDriveLetter -PassThru -ErrorAction Stop"));
+            assert!(cmd[dismount..cmd.find(SHRINK_DETACHED).unwrap()].contains("-ErrorAction Stop"));
         }
     }
 }

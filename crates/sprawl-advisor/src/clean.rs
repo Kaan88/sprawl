@@ -185,6 +185,9 @@ pub struct Outcome {
     pub tool_unconfirmed: bool,
     /// The runner interrupted a started tool (Stop, timeout or a host error).
     pub tool_interrupted: bool,
+    /// Last confirmed shrink state: attached by this run, detached, or not reported.
+    #[doc(hidden)]
+    pub shrink_attachment: Option<bool>,
     /// Items left because they were created or changed after the scan.
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
@@ -412,11 +415,14 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         // the folder that was reviewed. So it is told that folder (a flag, or the variable it
         // reads before its settings files), asked with the very same binding where it would
         // clear, and run only when its whole answer is that folder, held meanwhile.
-        // a virtual disk shrink: when stopped (or past the time limit) diskpart may have been
-        // ended with the file attached, so it is detached (Fable re-review backlog 4)
         Action::Tool { command } if crate::remedies::is_shrink(action) => {
-            tool(command, stop, &mut o);
-            recover_shrink(path, &mut o, |out| tool(&crate::remedies::detach_command(path), &AtomicBool::new(false), out));
+            // The attachment signal only authorizes recovery for the very path in this command.
+            if [false, true].into_iter().any(|docker| crate::remedies::shrink_command(path, docker) == *command) {
+                tool(command, stop, &mut o);
+                recover_shrink(path, &mut o, |out| tool(&crate::remedies::detach_command(path), &AtomicBool::new(false), out));
+            } else {
+                o.problem(path, "left alone: the shrink command doesn't match this virtual disk");
+            }
         }
         Action::Tool { .. } => o.problem(path, "left alone: an external cleanup needs its built-in rule and a reviewed scope"),
         Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
@@ -452,16 +458,20 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
 }
 
 fn recover_shrink(path: &Path, shrink: &mut Outcome, detach: impl FnOnce(&mut Outcome)) {
-    if !(shrink.timed_out || shrink.tool_interrupted) { return; }
+    if shrink.shrink_attachment == Some(false)
+        || !(shrink.shrink_attachment == Some(true) || shrink.timed_out || shrink.tool_interrupted) { return; }
     let mut recovery = Outcome::default();
-    if !shrink.tool_unconfirmed {
+    if shrink.shrink_attachment == Some(true) && !shrink.tool_unconfirmed {
         detach(&mut recovery);
         shrink.tool_unconfirmed |= recovery.tool_unconfirmed;
-        if recovery.problems.is_empty() && recovery.more_problems == 0 && !recovery.stopped && !recovery.timed_out { return; }
+        if recovery.problems.is_empty() && recovery.more_problems == 0 && !recovery.stopped && !recovery.timed_out && !recovery.tool_unconfirmed {
+            shrink.shrink_attachment = Some(false);
+            return;
+        }
         if let Some(why) = recovery.problems.first() { shrink.problem(path, format!("detach recovery didn't finish: {why}")); }
     }
     let when = if shrink.tool_unconfirmed { " Once Windows has stopped the tool," } else { "" };
-    shrink.problem(path, format!("the disk file may still be attached.{when} Restart Windows or detach it in Disk Management (Action > Detach VHD) before starting WSL or Docker"));
+    shrink.problem(path, format!("Sprawl couldn't confirm that the disk is detached.{when} Check this exact disk in Disk Management before starting WSL or Docker. If it is still attached and not in use, detach it (Action > Detach VHD), or restart Windows"));
 }
 
 pub fn run_reviewed_compression(path: &Path, receipt: &crate::remedies::ReviewedCompression, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64), batch: &mut crate::remedies::CompressionBatch) -> Outcome {
@@ -2796,8 +2806,12 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
     // kept, and the output in UTF-8
     // A program's text on stderr is not a failure; any other error (not found, a cmdlet's) is.
+    let mut shrink = command.starts_with(crate::remedies::SHRINK).then(ShrinkSignals::default);
+    // Only the generated script can write the reserved records directly. Never interpret
+    // output from WSL, diskpart or a cmdlet as an attachment record.
+    let line = if shrink.is_some() { r#""$l".Replace([string][char]30, '')"# } else { r#""$l""# };
     let script = format!(
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$Error.Clear()\n$o = & {{\n{command}\n}} 2>&1; $c = $LASTEXITCODE\nforeach ($l in @($o)) {{ [Console]::Out.WriteLine(\"$l\") }}\n\
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$Error.Clear()\n$o = & {{\n{command}\n}} 2>&1; $c = $LASTEXITCODE\nforeach ($l in @($o)) {{ [Console]::Out.WriteLine({line}) }}\n\
          $bad = @($Error | Where-Object {{ \"$($_.FullyQualifiedErrorId)\" -notlike 'NativeCommandError*' }})\n\
          if ($c) {{ exit $c }} elseif ($bad.Count) {{ exit 1 }}"
     );
@@ -2821,13 +2835,47 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
     let mut keep = Vec::new();
     let mut cut = false;
     let end = child.wait(limit, || stop.load(Ordering::Relaxed), |chunk| {
+        if let Some(signals) = &mut shrink { signals.read(chunk); }
         keep.extend_from_slice(chunk);
         if keep.len() > TOOL_OUTPUT {
             cut = true;
             if keep.len() > 2 * TOOL_OUTPUT { keep.drain(..keep.len() - TOOL_OUTPUT); }
         }
     });
+    if let Some(signals) = shrink { o.shrink_attachment = signals.attached; }
     finish_tool(command, o, limit, end, keep, cut)
+}
+
+/// Observe complete control lines before the normal output limit can drop them. The script
+/// writes them directly to the pipe instead of waiting for PowerShell's buffered answer.
+#[derive(Default)]
+struct ShrinkSignals {
+    line: Vec<u8>,
+    overlong: bool,
+    attached: Option<bool>,
+}
+
+impl ShrinkSignals {
+    fn read(&mut self, bytes: &[u8]) {
+        use crate::remedies::{SHRINK_ATTACHED, SHRINK_DETACHED};
+        for segment in bytes.split_inclusive(|b| *b == b'\n') {
+            let complete = segment.ends_with(b"\n");
+            let part = if complete { &segment[..segment.len() - 1] } else { segment };
+            self.overlong |= self.line.len() + part.len() > 32;
+            if !self.overlong { self.line.extend_from_slice(part); }
+            if complete {
+                if !self.overlong {
+                    let line = self.line.strip_suffix(b"\r").unwrap_or(&self.line);
+                    if let Some(signal) = line.strip_prefix(b"\x1e") {
+                        if signal == SHRINK_ATTACHED.as_bytes() { self.attached = Some(true); }
+                        if signal == SHRINK_DETACHED.as_bytes() && self.attached == Some(true) { self.attached = Some(false); }
+                    }
+                }
+                self.line.clear();
+                self.overlong = false;
+            }
+        }
+    }
 }
 
 fn finish_tool(command: &str, o: &mut Outcome, limit: Duration, end: tool_job::End, keep: Vec<u8>, cut: bool) -> Option<String> {
@@ -2840,7 +2888,9 @@ fn finish_tool(command: &str, o: &mut Outcome, limit: Duration, end: tool_job::E
     let failed = !end.problems.is_empty();
     for problem in end.problems { o.problem(path, problem); }
     let text = String::from_utf8_lossy(&keep).into_owned();
-    let lines: Vec<String> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(|l| crate::llm::clip(l.to_string(), 200)).collect();
+    let lines: Vec<String> = text.lines().map(str::trim_end)
+        .filter(|l| !l.is_empty() && !(command.starts_with(crate::remedies::SHRINK) && l.starts_with('\x1e')))
+        .map(|l| crate::llm::clip(l.to_string(), 200)).collect();
     o.output = lines[lines.len().saturating_sub(12)..].to_vec();
     if o.timed_out {
         let secs = limit.as_secs();
@@ -3842,16 +3892,44 @@ mod tests {
     #[test]
     fn shrink_timeout_runs_detach_only_after_the_job_is_confirmed_empty() {
         let path = Path::new("in-memory-vhd-fixture.vhdx");
-        let mut shrink = Outcome { timed_out: true, ..Default::default() };
+        let mut signals = ShrinkSignals::default();
+        for chunk in b"\x1eSPRAWL_SHRINK_ATTACHED\r\n".chunks(3) { signals.read(chunk); }
+        // Attach evidence must survive output truncation.
+        signals.read(&vec![b'a'; TOOL_OUTPUT + 1]);
+        let mut shrink = Outcome { timed_out: true, shrink_attachment: signals.attached, ..Default::default() };
         let mut calls = 0;
         recover_shrink(path, &mut shrink, |_| calls += 1);
         assert_eq!(calls, 1);
         assert!(shrink.timed_out);
+        shrink.shrink_attachment = Some(true);
         shrink.tool_unconfirmed = true;
         recover_shrink(path, &mut shrink, |_| panic!("detaching while diskpart might still be running"));
-        assert!(shrink.problems.iter().any(|p| p.contains("may still be attached")));
+        assert!(shrink.problems.iter().any(|p| p.contains("Once Windows has stopped the tool")));
         let mut before_launch = Outcome { stopped: true, ..Default::default() };
         recover_shrink(path, &mut before_launch, |_| panic!("nothing was started"));
+    }
+
+    #[test]
+    fn shrink_timeout_during_wsl_shutdown_requires_manual_recovery_without_detach() {
+        let path = Path::new("in-memory-vhd-fixture.vhdx");
+        let mut signals = ShrinkSignals::default();
+        signals.read(b"wsl still running\r\nSPRAWL_SHRINK_ATTACHED\r\n\x1eSPRAWL_SHRINK_ATTACHED");
+        assert_eq!(signals.attached, None, "ordinary or incomplete output proves nothing");
+        let mut shrink = Outcome { timed_out: true, tool_interrupted: true, shrink_attachment: signals.attached, ..Default::default() };
+        recover_shrink(path, &mut shrink, |_| panic!("this invocation never confirmed attach"));
+        assert!(shrink.problems.iter().any(|p| p.contains("Check this exact disk in Disk Management")
+            && p.contains("If it is still attached and not in use")));
+    }
+
+    #[test]
+    fn shrink_interruption_after_a_confirmed_detach_does_not_detach_twice() {
+        let path = Path::new("in-memory-vhd-fixture.vhdx");
+        let mut signals = ShrinkSignals::default();
+        signals.read(b"\x1eSPRAWL_SHRINK_ATTACHED\r\n\x1eSPRAWL_SHRINK_DETACHED\r\n");
+        let mut shrink = Outcome { stopped: true, tool_interrupted: true, shrink_attachment: signals.attached, ..Default::default() };
+        assert_eq!(shrink.shrink_attachment, Some(false));
+        recover_shrink(path, &mut shrink, |_| panic!("the disk was already detached"));
+        assert!(shrink.problems.is_empty());
     }
 
     #[test]
