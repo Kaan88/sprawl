@@ -204,21 +204,27 @@ fn pipe_error(error: io::Error) -> io::Result<ReadState> {
 
 impl Running {
     pub(super) fn start(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins) -> io::Result<Self> {
+        Self::start_with_pins(app, args, cwd, env, pins, &[])
+    }
+
+    /// Native cipher holds the wipe pins too: even if the host crashes, a startup sweep
+    /// can't take the mount lease while the contained child still has it open.
+    pub(super) fn start_with_pins(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File]) -> io::Result<Self> {
         let mut problems = Vec::new();
         if !reap_pending(&mut problems) {
             return Err(io::Error::other(format!("an earlier tool hasn't been confirmed stopped; protections are still held{}",
                 if problems.is_empty() { String::new() } else { format!(" ({})", problems.join("; ")) })));
         }
         for problem in problems { log_cleanup(&problem); }
-        Self::create(app, args, cwd, env, pins, |job| job.0.as_raw_handle())
+        Self::create(app, args, cwd, env, pins, share, |job| job.0.as_raw_handle())
     }
 
-    fn create(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, job_attribute: impl FnOnce(&Job) -> HANDLE) -> io::Result<Self> {
+    fn create(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File], job_attribute: impl FnOnce(&Job) -> HANDLE) -> io::Result<Self> {
         let job = Job::new()?;
         let mut command = OsString::from("\"");
         command.push(app);
         command.push("\" ");
-        command.push(args); // caller passes only fixed switches and a base64 script
+        command.push(args); // fixed switches and a base64 script or a checked native argument
         let mut command = wide(&command)?;
         let app = wide(app.as_os_str())?;
         let cwd = wide(cwd.as_os_str())?;
@@ -246,7 +252,17 @@ impl Running {
         let process = unsafe { OwnedHandle::from_raw_handle(created.hProcess) };
         let primary = unsafe { OwnedHandle::from_raw_handle(created.hThread) };
         // The kernel has added the suspended process to the job before returning success.
-        Ok(Self { lease: Some(Lease { job, process, _pins: pins }), primary: Some(primary), output })
+        let running = Self { lease: Some(Lease { job, process, _pins: pins }), primary: Some(primary), output };
+        for file in share {
+            // Only this child gets these locks. Making them inheritable in Sprawl, even briefly,
+            // could let a concurrent unrelated process inherit them. On failure Running's Drop
+            // quarantines the still-suspended job and the original pins.
+            let mut child_copy = null_mut();
+            checked(unsafe { DuplicateHandle(GetCurrentProcess(), file.as_raw_handle(),
+                running.lease.as_ref().unwrap().process.as_raw_handle(), &mut child_copy, 0, 0, DUPLICATE_SAME_ACCESS) })?;
+            // child_copy is in the child's handle table; Windows closes it when the child dies.
+        }
+        Ok(running)
     }
 
     // No read ever waits on an empty pipe, even if an unrelated process inherited a writer.
@@ -380,7 +396,7 @@ mod tests {
         let marker = tmp.path().join("started.txt");
         let exe = cmd();
         let env = environment(false, &[]).unwrap();
-        let refused = Running::create(&exe, MARK, tmp.path(), &env, Pins::default(), |_| null_mut());
+        let refused = Running::create(&exe, MARK, tmp.path(), &env, Pins::default(), &[], |_| null_mut());
         assert!(refused.err().unwrap().raw_os_error().is_some());
         assert!(!marker.exists());
         let control = Running::start(&exe, MARK, tmp.path(), &env, Pins::default()).unwrap();
@@ -487,6 +503,28 @@ mod tests {
         assert!(!marker.exists(), "the marker retires when the deferred lease is released");
         assert!(!tmp.path().join("started.txt").exists());
         assert!(crate::overwrite::claim_marker(&marker, root).is_ok(), "the marker can be claimed again");
+    }
+
+    #[test]
+    fn child_wipe_lease_stays_locked_until_the_contained_child_exits() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-wipe-inherit").unwrap();
+        let path = tmp.path().join("mount.lease");
+        let lease = std::fs::OpenOptions::new().write(true).create_new(true).share_mode(1).open(&path).unwrap();
+        let child = Running::start_with_pins(&cmd(), MARK, tmp.path(), &environment(false, &[]).unwrap(), Pins::default(), &[&lease]).unwrap();
+        drop(lease); // Simulate loss of Sprawl's copy before the suspended child exits.
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        let end = child.wait(Duration::from_secs(5), || true, |_| {});
+        assert!(matches!(end.status, Status::Stopped) && !end.unconfirmed);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match std::fs::OpenOptions::new().write(true).open(&path) {
+                Ok(_) => break,
+                Err(e) if e.raw_os_error() == Some(32) && Instant::now() < deadline => std::thread::yield_now(),
+                Err(e) => panic!("finished fixture still holds its wipe lease: {e}"),
+            }
+        }
+        assert!(!tmp.path().join("started.txt").exists());
     }
 
     #[test]

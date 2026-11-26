@@ -26,6 +26,7 @@ pub use crate::finding::Action;
 #[path = "external_tool.rs"]
 mod external_tool;
 pub use external_tool::{review_external, run_reviewed_external, ReviewedExternal};
+pub(crate) use external_tool::windows_directory;
 #[path = "tool_job.rs"]
 mod tool_job;
 pub(crate) use tool_job::Pins as ToolPins;
@@ -185,9 +186,9 @@ pub struct Outcome {
     pub tool_unconfirmed: bool,
     /// The runner interrupted a started tool (Stop, timeout or a host error).
     pub tool_interrupted: bool,
-    /// Last confirmed shrink state: attached by this run, detached, or not reported.
+    /// Last reported shrink phase; an in-flight dismount is not safe to retry by path.
     #[doc(hidden)]
-    pub shrink_attachment: Option<bool>,
+    pub shrink_attachment: Option<ShrinkAttachment>,
     /// Items left because they were created or changed after the scan.
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
@@ -206,6 +207,10 @@ pub struct Outcome {
     /// A registry part's values removed, with the backup they can be put back from.
     pub registry: Option<crate::regclean::Done>,
 }
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShrinkAttachment { Attached, Dismounting, Detached }
 
 /// What a clean-up leaves alone besides the never-list. External clean-ups can't spare
 /// individual files, so their entire scope must be clear of kept and skipped paths.
@@ -458,14 +463,15 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
 }
 
 fn recover_shrink(path: &Path, shrink: &mut Outcome, detach: impl FnOnce(&mut Outcome)) {
-    if shrink.shrink_attachment == Some(false)
-        || !(shrink.shrink_attachment == Some(true) || shrink.timed_out || shrink.tool_interrupted) { return; }
+    use ShrinkAttachment::*;
+    if shrink.shrink_attachment == Some(Detached)
+        || !(shrink.shrink_attachment.is_some() || shrink.timed_out || shrink.tool_interrupted) { return; }
     let mut recovery = Outcome::default();
-    if shrink.shrink_attachment == Some(true) && !shrink.tool_unconfirmed {
+    if shrink.shrink_attachment == Some(Attached) && !shrink.tool_unconfirmed {
         detach(&mut recovery);
         shrink.tool_unconfirmed |= recovery.tool_unconfirmed;
         if recovery.problems.is_empty() && recovery.more_problems == 0 && !recovery.stopped && !recovery.timed_out && !recovery.tool_unconfirmed {
-            shrink.shrink_attachment = Some(false);
+            shrink.shrink_attachment = Some(Detached);
             return;
         }
         if let Some(why) = recovery.problems.first() { shrink.problem(path, format!("detach recovery didn't finish: {why}")); }
@@ -2571,7 +2577,7 @@ fn system_command(command: &str, sys: &Path) -> String {
     if let Some(rest) = command.strip_prefix("Start-Process cleanmgr ") {
         return format!("Start-Process {} {rest}", crate::rules::ps_quote(&sys.join("cleanmgr.exe").display().to_string()));
     }
-    for (prefix, file) in [("DISM ", "Dism.exe"), ("compact.exe ", "compact.exe"), ("wsl.exe ", "wsl.exe"), ("cipher ", "cipher.exe")] {
+    for (prefix, file) in [("DISM ", "Dism.exe"), ("compact.exe ", "compact.exe"), ("wsl.exe ", "wsl.exe")] {
         if let Some(rest) = command.strip_prefix(prefix) {
             return format!("& {} {rest}", crate::rules::ps_quote(&sys.join(file).display().to_string()));
         }
@@ -2778,23 +2784,25 @@ fn tool_with_limit(command: &str, stop: &AtomicBool, o: &mut Outcome, env: &[(&s
     run_powershell(command, &sys, elevated, stop, o, env, pins, limit)
 }
 
-/// One built-in tool command on `path`, for a caller outside a clean-up (the free-space wipe),
-/// through the same runner: Windows PowerShell from System32, hidden, in a job so Stop ends
-/// everything it started, its last lines of output and any problem kept. It is not started at
-/// all when Windows won't let the job take it: a tool that Stop couldn't end is worse than a
-/// refusal. `limit` is how long it may take: a wipe of a big drive can run for days.
-pub(crate) fn run_tool(path: &Path, command: &str, stop: &AtomicBool, limit: Duration, pins: ToolPins, progress: &mut dyn FnMut(u64)) -> Outcome {
+/// The only cipher launch: native (no shell). The direct system route verifies its binding
+/// here, at dispatch, rather than relying on the review-time check.
+pub(crate) fn run_wipe_cipher(args: impl FnOnce() -> std::io::Result<String>, stop: &AtomicBool, pins: ToolPins, share: &[&std::fs::File]) -> Outcome {
     let mut o = Outcome::default();
-    let targets: Vec<PathBuf> = std::iter::once(path.to_path_buf()).chain(quoted_paths(command)).collect();
-    if let Some(e) = targets.iter().find_map(|t| sprawl_core::local::lexical(t).err()) {
-        o.problem(path, format!("left alone: {e}"));
+    let path = Path::new("cipher");
+    if stop.load(Ordering::Relaxed) { o.stopped = true; return o; }
+    if !matches!(sprawl_core::elevation(), Ok(true)) {
+        o.problem(path, "not started: an administrator Sprawl is required");
         return o;
     }
-    tool_with_limit(command, stop, &mut o, &[], pins, limit);
-    if stop.load(Ordering::Relaxed) {
-        o.stopped = true;
+    let Some(sys) = system_dir() else { o.problem(path, "not started: Windows' System32 wasn't found"); return o };
+    let start = tool_job::environment(false, &[("PATH", sys.as_os_str())]).and_then(|env| {
+        let args = args()?;
+        tool_job::Running::start_with_pins(&sys.join("cipher.exe"), &args, &sys, &env, pins, share)
+    });
+    match start {
+        Ok(child) => { wait_output(child, "cipher", Duration::from_secs(7 * 86_400), stop, &mut o, None); }
+        Err(e) => o.problem(path, format!("not started in a stoppable job: {e}")),
     }
-    progress(o.freed);
     o
 }
 
@@ -2806,7 +2814,7 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
     // the command on lines of its own (a trailing comment can't swallow the rest), its exit code
     // kept, and the output in UTF-8
     // A program's text on stderr is not a failure; any other error (not found, a cmdlet's) is.
-    let mut shrink = command.starts_with(crate::remedies::SHRINK).then(ShrinkSignals::default);
+    let shrink = command.starts_with(crate::remedies::SHRINK).then(ShrinkSignals::default);
     // Only the generated script can write the reserved records directly. Never interpret
     // output from WSL, diskpart or a cmdlet as an attachment record.
     let line = if shrink.is_some() { r#""$l".Replace([string][char]30, '')"# } else { r#""$l""# };
@@ -2832,6 +2840,10 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
         Ok(c) => c,
         Err(e) => { o.problem(Path::new(command), format!("not started in a stoppable job: {e}")); return None }
     };
+    wait_output(child, command, limit, stop, o, shrink)
+}
+
+fn wait_output(child: tool_job::Running, command: &str, limit: Duration, stop: &AtomicBool, o: &mut Outcome, mut shrink: Option<ShrinkSignals>) -> Option<String> {
     let mut keep = Vec::new();
     let mut cut = false;
     let end = child.wait(limit, || stop.load(Ordering::Relaxed), |chunk| {
@@ -2842,7 +2854,14 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
             if keep.len() > 2 * TOOL_OUTPUT { keep.drain(..keep.len() - TOOL_OUTPUT); }
         }
     });
-    if let Some(signals) = shrink { o.shrink_attachment = signals.attached; }
+    if let Some(signals) = shrink {
+        o.shrink_attachment = signals.attached;
+        if o.shrink_attachment == Some(ShrinkAttachment::Attached)
+            && (end.truncated || end.problems.iter().any(|p| p.starts_with("couldn't read tool output"))) {
+            // The dismount-start record might have been in the output we couldn't read.
+            o.shrink_attachment = Some(ShrinkAttachment::Dismounting);
+        }
+    }
     finish_tool(command, o, limit, end, keep, cut)
 }
 
@@ -2852,12 +2871,13 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
 struct ShrinkSignals {
     line: Vec<u8>,
     overlong: bool,
-    attached: Option<bool>,
+    attached: Option<ShrinkAttachment>,
 }
 
 impl ShrinkSignals {
     fn read(&mut self, bytes: &[u8]) {
-        use crate::remedies::{SHRINK_ATTACHED, SHRINK_DETACHED};
+        use crate::remedies::{SHRINK_ATTACHED, SHRINK_DISMOUNTING, SHRINK_DETACHED};
+        use ShrinkAttachment::*;
         for segment in bytes.split_inclusive(|b| *b == b'\n') {
             let complete = segment.ends_with(b"\n");
             let part = if complete { &segment[..segment.len() - 1] } else { segment };
@@ -2867,8 +2887,12 @@ impl ShrinkSignals {
                 if !self.overlong {
                     let line = self.line.strip_suffix(b"\r").unwrap_or(&self.line);
                     if let Some(signal) = line.strip_prefix(b"\x1e") {
-                        if signal == SHRINK_ATTACHED.as_bytes() { self.attached = Some(true); }
-                        if signal == SHRINK_DETACHED.as_bytes() && self.attached == Some(true) { self.attached = Some(false); }
+                        self.attached = match self.attached {
+                            None if signal == SHRINK_ATTACHED.as_bytes() => Some(Attached),
+                            Some(Attached) if signal == SHRINK_DISMOUNTING.as_bytes() => Some(Dismounting),
+                            Some(Dismounting) if signal == SHRINK_DETACHED.as_bytes() => Some(Detached),
+                            other => other,
+                        };
                     }
                 }
                 self.line.clear();
@@ -3901,7 +3925,7 @@ mod tests {
         recover_shrink(path, &mut shrink, |_| calls += 1);
         assert_eq!(calls, 1);
         assert!(shrink.timed_out);
-        shrink.shrink_attachment = Some(true);
+        shrink.shrink_attachment = Some(ShrinkAttachment::Attached);
         shrink.tool_unconfirmed = true;
         recover_shrink(path, &mut shrink, |_| panic!("detaching while diskpart might still be running"));
         assert!(shrink.problems.iter().any(|p| p.contains("Once Windows has stopped the tool")));
@@ -3925,11 +3949,33 @@ mod tests {
     fn shrink_interruption_after_a_confirmed_detach_does_not_detach_twice() {
         let path = Path::new("in-memory-vhd-fixture.vhdx");
         let mut signals = ShrinkSignals::default();
-        signals.read(b"\x1eSPRAWL_SHRINK_ATTACHED\r\n\x1eSPRAWL_SHRINK_DETACHED\r\n");
+        signals.read(b"\x1eSPRAWL_SHRINK_ATTACHED\r\n\x1eSPRAWL_SHRINK_DISMOUNTING\r\n\x1eSPRAWL_SHRINK_DETACHED\r\n");
         let mut shrink = Outcome { stopped: true, tool_interrupted: true, shrink_attachment: signals.attached, ..Default::default() };
-        assert_eq!(shrink.shrink_attachment, Some(false));
+        assert_eq!(shrink.shrink_attachment, Some(ShrinkAttachment::Detached));
         recover_shrink(path, &mut shrink, |_| panic!("the disk was already detached"));
         assert!(shrink.problems.is_empty());
+    }
+
+    #[test]
+    fn shrink_interrupted_during_dismount_gives_manual_steps_without_a_second_detach() {
+        let mut signals = ShrinkSignals::default();
+        signals.read(b"\x1eSPRAWL_SHRINK_ATTACHED\r\n\x1eSPRAWL_SHRINK_DISMOUNTING\r\n\x1eSPRAWL_SHRINK_DETACH");
+        assert_eq!(signals.attached, Some(ShrinkAttachment::Dismounting));
+        let mut shrink = Outcome { stopped: true, tool_interrupted: true, shrink_attachment: signals.attached, ..Default::default() };
+        recover_shrink(Path::new("in-memory-vhd-fixture.vhdx"), &mut shrink, |_| panic!("dismount may already have completed"));
+        assert!(shrink.problems.iter().any(|p| p.contains("Check this exact disk in Disk Management")));
+    }
+
+    #[test]
+    fn shrink_absence_probe_does_not_poison_the_real_powershell_wrapper() {
+        // A colon can't occur in the base name of a Windows executable.
+        let probe = crate::remedies::absence_probe("'Sprawl:NoSuchProcess'");
+        let script = format!("{}if ({probe}) {{ throw 'fixture process unexpectedly exists' }}\n'fixture succeeded'", crate::remedies::SHRINK);
+        let mut o = Outcome::default();
+        let out = run_powershell(&script, &system_dir().unwrap(), false, &AtomicBool::new(false), &mut o,
+            &[], ToolPins::default(), Duration::from_secs(30));
+        assert_eq!(out.as_deref().map(str::trim), Some("fixture succeeded"), "{:?}", o.problems);
+        assert!(o.problems.is_empty());
     }
 
     #[test]

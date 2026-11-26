@@ -107,14 +107,23 @@ impl ScanRoot {
 /// `allow_wof` as in [`storage`]: a WOF file may itself be the root.
 pub fn scan_root(path: &Path, allow_wof: bool) -> io::Result<ScanRoot> {
     if let Some(path) = remote_scan_root(path) { return Ok(ScanRoot { path, pinned: None }); }
-    let d = pin(path, false, allow_wof)?;
+    let d = pin(path, false, allow_wof, false)?;
     Ok(ScanRoot { path: d.path.clone(), pinned: Some(d) })
 }
 
 pub fn final_path(file: &File) -> io::Result<PathBuf> {
+    final_path_as(file, 0)
+}
+
+/// The opened name on its stable volume GUID, without a drive-letter alias.
+pub fn volume_path(file: &File) -> io::Result<PathBuf> {
+    final_path_as(file, 1) // VOLUME_NAME_GUID
+}
+
+fn final_path_as(file: &File, flags: u32) -> io::Result<PathBuf> {
     let mut out = vec![0u16; 512];
     loop {
-        let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle().cast(), out.as_mut_ptr(), out.len() as u32, 0) } as usize;
+        let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle().cast(), out.as_mut_ptr(), out.len() as u32, flags) } as usize;
         if n == 0 { return Err(io::Error::last_os_error()); }
         if n < out.len() { return Ok(PathBuf::from(String::from_utf16_lossy(&out[..n]))); }
         if n > 32_768 { return Err(io::Error::other("The final path is too long")); }
@@ -282,6 +291,16 @@ impl Directory {
     pub(crate) fn handle(&self) -> io::Result<&File> {
         self._handles.last().ok_or_else(|| io::Error::other("No pinned folder"))
     }
+
+    /// For the wipe mount only: identify/check a leaf's reparse point without traversing it.
+    pub fn open_dir_itself(&self, name: &str, access: u32, share: u32) -> io::Result<File> {
+        open_rel(self.handle()?, name, access | READ_ATTRIBUTES, share, Disposition::Open, Kind::Folder).map(|(f, _)| f)
+    }
+
+    pub fn volume_path(&self) -> io::Result<PathBuf> { volume_path(self.handle()?) }
+
+    /// The direct cipher child also holds these pins until Windows closes its handles.
+    pub fn pins(&self) -> &[File] { &self._handles }
 
     /// The plain folder `name` in this one, opened through this folder's handle as itself (a
     /// link there is refused, never followed) and held like this one. `create`: made when
@@ -467,16 +486,19 @@ pub fn file_on_disk(path: &Path) -> io::Result<u64> {
 
 /// Open every ancestor as itself without delete sharing, from the local drive downward.
 pub fn directory(path: &Path) -> io::Result<Directory> {
-    pin(path, true, false)
+    pin(path, true, false, false)
 }
 
+/// Pin a mount's host path against both replacement and writable opens on every ancestor.
+pub fn mount_parent(path: &Path) -> io::Result<Directory> { pin(path, true, false, true) }
+
 /// A scan root may itself be a file; its ancestor chain must still be plain local folders.
-pub fn scope(path: &Path) -> io::Result<Directory> { pin(path, false, false) }
+pub fn scope(path: &Path) -> io::Result<Directory> { pin(path, false, false, false) }
 
 /// Pin a storage-operation leaf. WOF files are data; other reparse leaves stay refused.
-pub fn storage(path: &Path) -> io::Result<Directory> { pin(path, false, true) }
+pub fn storage(path: &Path) -> io::Result<Directory> { pin(path, false, true, false) }
 
-fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Directory> {
+fn pin(path: &Path, require_directory: bool, allow_wof: bool, mount_parent: bool) -> io::Result<Directory> {
     let path = lexical(path)?;
     let mut ancestors: Vec<PathBuf> = path.ancestors().map(Path::to_path_buf).collect();
     ancestors.reverse();
@@ -486,8 +508,8 @@ fn pin(path: &Path, require_directory: bool, allow_wof: bool) -> io::Result<Dire
         // held with an access that takes part in sharing (listing a folder, reading a file),
         // and without delete sharing: no one can rename, replace or delete it while it is held
         // (an attribute-only handle would let it be renamed away under its name).
-        let access = if p == path { READ_DATA | READ_ATTRIBUTES } else { READ_ATTRIBUTES };
-        let h = std::fs::OpenOptions::new().access_mode(access).share_mode(1 | 2).custom_flags(FLAGS).open(&p)?;
+        let access = if mount_parent || p == path { READ_DATA | READ_ATTRIBUTES } else { READ_ATTRIBUTES };
+        let h = std::fs::OpenOptions::new().access_mode(access).share_mode(if mount_parent { 1 } else { 1 | 2 }).custom_flags(FLAGS).open(&p)?;
         let m = h.metadata()?;
         let mut is_wof = false;
         if allow_wof && p == path && !m.is_dir() && m.file_attributes() & crate::attr::REPARSE_POINT != 0 {

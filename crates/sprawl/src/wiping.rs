@@ -264,13 +264,6 @@ impl State {
 
     // ------------------------------------------------------------- free space
 
-    /// The file that says Sprawl is wiping a drive, in Sprawl's own folder.
-    fn wipe_marker_dir() -> Result<PathBuf, String> {
-        std::env::var_os("LOCALAPPDATA")
-            .map(|d| PathBuf::from(d).join("Sprawl"))
-            .ok_or_else(|| "Sprawl's own folder (%LOCALAPPDATA%\\Sprawl) wasn't found, so a wipe can't be followed from one run to the next.".to_string())
-    }
-
     /// File > Wipe Free Space: checked, then asked about the drive on show.
     pub(crate) fn wipe_free_ask(&mut self) {
         if let Some(why) = self.delete_busy_refusal() {
@@ -293,41 +286,50 @@ impl State {
             self.tell("Not wiped", &format!("{} isn't a fixed local drive: a network, removable or CD drive can't have its free space wiped from here.", root.display()));
             return;
         }
-        let marker_dir = match Self::wipe_marker_dir() {
+        let marker_dir = match overwrite::wipe_data_dir() {
             Ok(dir) => dir,
             Err(why) => {
                 self.tell("Not wiped", &why);
                 return;
             }
         };
-        let plan = match overwrite::wipe_plan(&root, &marker_dir) {
+        let review = match overwrite::review_wipe(&root) {
+            Ok(review) => review,
+            Err(why) => {
+                self.tell("Not wiped", &why);
+                return;
+            }
+        };
+        let plan = match overwrite::wipe_plan(&review, &marker_dir) {
             Ok(plan) => plan,
             Err(why) => {
                 self.tell("Not wiped", &why);
                 return;
             }
         };
-        if let Some(pid) = plan.live {
-            self.tell("Not wiped", &format!("Another Sprawl (process {pid}) is wiping this drive's free space right now. Wait for it to finish, or stop it there."));
-            return;
-        }
-        if plan.scratch_present {
-            self.tell("Free space wipe not started", &plan.scratch_lines().join("\n"));
+        if let Some(why) = wipe_preflight(&plan) {
+            self.tell("Free space wipe not started", &why);
             return;
         }
         let letter = root.to_string_lossy();
         let letter = letter.trim_end_matches('\\');
         let mut body = String::new();
         body.push_str(&format!("Windows' cipher will overwrite the free space on {letter}: zeros, then ones, then random data. Every file on the drive stays as it is; only space nothing is using is written over.\n\n"));
-        body.push_str("It can take hours, and the drive fills up while it runs: other programs may have less room until it finishes. Windows' cipher needs administrator rights on most drives; without them it says so and nothing is overwritten.\n\n");
+        body.push_str(&format!("This approval is for volume {}, not for whatever may later use {letter}. ", review.volume_path().display()));
+        body.push_str(if review.uses_system_drive() {
+            "This is the volume running Windows. Sprawl rechecks its identity before starting cipher.\n\n"
+        } else {
+            "Sprawl uses a private mount on a different fixed volume. If it can't verify the mount, nothing is wiped.\n\n"
+        });
+        body.push_str("It can take hours, and the drive fills up while it runs: other programs may have less room until it finishes.\n\n");
         body.push_str("What this cannot promise:\n");
-        for line in wipe_limits(&root) {
+        for line in wipe_limits(review.volume_path()) {
             body.push_str(&format!("- {line}\n"));
         }
         body.push_str(&format!("- If cipher leaves {} behind, Sprawl won't delete it. Once cipher has stopped, check the folder in File Explorer and only delete it if it contains cipher's temporary data.\n", plan.scratch.display()));
         body.push_str(&format!("- {OLDER_COPIES}\n\n"));
         body.push_str("Wiping the free space makes deleted data harder to recover; it does not make it unrecoverable.");
-        self.ask(&format!("Wipe free space on {letter}?"), &body, "Wipe free space", true, move |s| s.wipe_free_start(root, marker_dir));
+        self.ask(&format!("Wipe free space on {letter}?"), &body, "Wipe free space", true, move |s| s.wipe_free_start(review, marker_dir));
     }
 
     /// The drive the File menu's wipe acts on: the row on show or the scan root's drive, else the
@@ -348,7 +350,7 @@ impl State {
     }
 
     /// "Yes": checked once more, then Windows' cipher on its own thread.
-    fn wipe_free_start(&mut self, root: PathBuf, marker_dir: PathBuf) {
+    fn wipe_free_start(&mut self, review: overwrite::WipeReview, marker_dir: PathBuf) {
         if self.advisor.wiping.is_some() {
             return;
         }
@@ -357,31 +359,27 @@ impl State {
             self.tell("Not wiped", &format!("{why}\n\nNothing was wiped."));
             return;
         }
-        if !crate::win32::drives().iter().any(|d| d.kind == 3 && d.root.eq_ignore_ascii_case(&root.to_string_lossy())) {
-            self.tell("Not wiped", &format!("{} isn't a fixed local drive any more, so nothing was wiped.", root.display()));
-            return;
-        }
-        match overwrite::wipe_plan(&root, &marker_dir) {
-            Ok(plan) if plan.live.is_none() => {}
-            Ok(plan) => {
-                self.tell("Not wiped", &format!("Another Sprawl (process {}) started wiping this drive while the question was open, so nothing was wiped.", plan.live.unwrap_or(0)));
-                return;
-            }
+        let plan = match overwrite::wipe_plan(&review, &marker_dir) {
+            Ok(plan) => plan,
             Err(why) => {
                 self.tell("Not wiped", &why);
                 return;
             }
+        };
+        if let Some(why) = wipe_preflight(&plan) {
+            self.tell("Free space wipe not started", &why);
+            return;
         }
         let stop = Arc::new(AtomicBool::new(false));
         self.advisor.delete_stop = Some(stop.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         self.advisor.wiping = Some((rx, stop.clone()));
-        let letter = root.to_string_lossy().trim_end_matches('\\').to_string();
-        crate::state::text(&self.root, "FootLeft", &format!("Wiping the free space on {letter}..."));
+        let letter = review.label.to_string_lossy().trim_end_matches('\\').to_string();
+        crate::state::text(&self.root, "FootLeft", &format!("Free space wipe for the volume reviewed as {letter}..."));
         self.wipe_card(true);
-        crate::state::text(&self.root, "DeleteTitle", &format!("Wiping free space on {letter}..."));
+        crate::state::text(&self.root, "DeleteTitle", &format!("Free space wipe for the volume reviewed as {letter}..."));
         std::thread::spawn(move || {
-            let w = overwrite::wipe_free_space(&root, &marker_dir, &stop);
+            let w = overwrite::wipe_free_space(&review, &marker_dir, &stop);
             let _ = tx.send(w);
         });
     }
@@ -423,12 +421,16 @@ impl State {
             return;
         }
         crate::state::text(&self.root, "DeleteTitle", "Wiping free space...");
-        crate::state::text(&self.root, "DeleteSub", "Windows' cipher is running. It can take hours; Stop ends it.");
+        crate::state::text(&self.root, "DeleteSub", "Sprawl checks the reviewed volume before running Windows' cipher. The wipe can take hours.");
         if let Ok(bar) = crate::state::find::<FrameworkElement>(&self.root, "DeleteBar") {
             let _ = bar.SetWidth(0.0);
         }
         let _ = card.SetVisibility(crate::bindings::Microsoft::UI::Xaml::Visibility::Visible);
     }
+}
+
+fn wipe_preflight(plan: &overwrite::WipePlan) -> Option<String> {
+    (plan.live.is_some() || plan.scratch_present).then(|| plan.scratch_lines().join("\n"))
 }
 
 /// The limits a free-space wipe can't promise, each detected: solid-state (or a drive Windows
@@ -533,5 +535,17 @@ mod tests {
         let (title, body) = wipe_words(&w);
         assert_eq!(title, "Free space wipe not started");
         assert!(body.contains("Nothing was overwritten") && body.contains(r"E:\EFSTMPWP"));
+    }
+
+    #[test]
+    fn occupied_scratch_is_a_preflight_refusal_even_without_another_wipe() {
+        let mut plan = overwrite::WipePlan {
+            marker: PathBuf::from("fixture marker"), scratch: PathBuf::from(r"E:\EFSTMPWP"),
+            scratch_present: true, live: None,
+        };
+        let refusal = wipe_preflight(&plan).unwrap();
+        assert!(refusal.contains(r"E:\EFSTMPWP") && refusal.contains("won't start a wipe"));
+        plan.scratch_present = false;
+        assert!(wipe_preflight(&plan).is_none());
     }
 }

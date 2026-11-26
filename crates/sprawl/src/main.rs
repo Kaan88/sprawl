@@ -739,6 +739,7 @@ fn main() {
     if !screenshot {
         bridge::start();
         sprawl_advisor::config::migrate_old_folders();
+        sprawl_advisor::overwrite::sweep_wipe_mounts();
         // a key from before hosts were recorded stays with the server it was saved for
         sprawl_advisor::config::record_key_host();
     }

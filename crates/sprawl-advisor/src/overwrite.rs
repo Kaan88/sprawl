@@ -25,12 +25,12 @@
 //!   then stops.
 //!
 //! Free-space wiping, which is Windows' own `cipher /w:` and not an overwrite of any file, lives
-//! at the end of this module: [`cipher_command`], [`wipe_plan`], [`wipe_free_space`] and the
+//! at the end of this module: [`review_wipe`], [`wipe_plan`], [`wipe_free_space`] and the
 //! volume facts both features' questions use ([`filesystem`], [`solid_state`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::clean::{same_path, win, Spare};
 
@@ -814,7 +814,7 @@ pub fn drive_root(path: &Path) -> Option<PathBuf> {
 
 /// The volume's file system name as Windows reports it ("NTFS", "ReFS"), from a path on it.
 pub fn filesystem(path: &Path) -> Option<String> {
-    let root = drive_root(path)?;
+    let root = drive_root(path).or_else(|| Some(Volume::parse(path.to_str()?).ok()?.path().to_owned()))?;
     let mut label = [0u16; 64];
     let mut fs = [0u16; 64];
     // SAFETY: both buffers are 64 units; the wide root is NUL-terminated.
@@ -836,9 +836,12 @@ pub fn filesystem(path: &Path) -> Option<String> {
 /// Whether Windows says the volume takes no seek penalty (a solid-state drive). None when it
 /// can't tell: an old drive, a volume that doesn't answer, or one this account can't query.
 pub fn solid_state(path: &Path) -> Option<bool> {
-    let root = drive_root(path)?;
-    let letter = root.to_string_lossy();
-    let device = format!(r"\\.\{}", letter.trim_end_matches('\\'));
+    let device = if let Some(root) = drive_root(path) {
+        format!(r"\\.\{}", root.to_string_lossy().trim_end_matches('\\'))
+    } else {
+        let volume = Volume::parse(path.to_str()?).ok()?;
+        volume.path().to_str()?.trim_end_matches('\\').to_owned()
+    };
     // no access at all, shared with everything: a query, not a read of the drive
     // SAFETY: the device name is NUL-terminated.
     let h = unsafe { CreateFileW(wide(Path::new(&device)).as_ptr(), 0, 0x1 | 0x2 | 0x4, std::ptr::null_mut(), 3, 0, std::ptr::null_mut()) };
@@ -862,17 +865,95 @@ pub fn solid_state(path: &Path) -> Option<bool> {
 
 // ---------------------------------------------------------------- wiping free space
 
-/// Windows' own free-space wipe for the drive `root` stands on, as the tool runner runs it:
-/// `cipher /w:<root>` writes zeros, then ones, then random data over the drive's unused space.
-pub fn cipher_command(root: &Path) -> String {
-    format!("cipher {}", crate::rules::ps_quote(&format!("/w:{}", root.display())))
+#[path = "wipe_mount.rs"]
+mod wipe_mount;
+use wipe_mount::{Mount, NativeMount, SystemVolume, Volume};
+
+/// Consent for one fixed volume. `label` is display only; only the verified system drive
+/// can be addressed by letter, and only after rechecking its GUID at launch.
+pub struct WipeReview {
+    volume: Volume,
+    system_root: Option<PathBuf>,
+    pub label: PathBuf,
+}
+
+impl WipeReview {
+    pub fn volume_path(&self) -> &Path { self.volume.path() }
+    pub fn uses_system_drive(&self) -> bool { self.system_root.is_some() }
+}
+
+pub fn wipe_data_dir() -> Result<PathBuf, String> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Sprawl"))
+        .ok_or_else(|| "Sprawl's local data folder could not be found".into())
+}
+
+fn ensure_wipe_allowed() -> Result<(), String> {
+    crate::require_write().map_err(|e| e.to_string())?;
+    match sprawl_core::elevation() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("Free-space wiping needs an administrator Sprawl. Nothing was wiped.".into()),
+        Err(e) => Err(format!("Sprawl couldn't verify administrator rights ({e}). Nothing was wiped.")),
+    }
+}
+
+pub fn review_wipe(root: &Path) -> Result<WipeReview, String> {
+    ensure_wipe_allowed()?;
+    let review = capture_wipe(root, |root| {
+        if !wipe_mount::fixed(root) { return Err(std::io::Error::other("not a fixed local drive")); }
+        let volume = wipe_mount::volume_at(root)?;
+        if !wipe_mount::fixed(volume.path()) { return Err(std::io::Error::other("not a fixed local volume")); }
+        Ok(volume)
+    })?;
+    let system = wipe_mount::system_volume().ok();
+    bind_system_route(review, system.as_ref(), std::env::var_os("SystemDrive").as_deref())
+        .map_err(|e| format!("Sprawl couldn't verify the Windows system drive ({e}). Nothing was wiped."))
+}
+
+fn capture_wipe(root: &Path, resolve: impl FnOnce(&Path) -> std::io::Result<Volume>) -> Result<WipeReview, String> {
+    let label = drive_root(root).ok_or_else(|| "that isn't on a local drive".to_string())?;
+    let volume = resolve(&label).map_err(|e| format!("Sprawl couldn't bind {} to a fixed volume ({e}). Nothing was wiped.", label.display()))?;
+    Ok(WipeReview { volume, label, system_root: None })
+}
+
+fn checked_system_root(system: &SystemVolume, env_drive: Option<&std::ffi::OsStr>) -> std::io::Result<PathBuf> {
+    let bad = || std::io::Error::other("SystemDrive doesn't match the drive holding the running Windows installation");
+    let drive = env_drive.and_then(std::ffi::OsStr::to_str).ok_or_else(bad)?;
+    let bytes = drive.as_bytes();
+    if bytes.len() != 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return Err(bad());
+    }
+    let root = format!("{}:\\", (bytes[0] as char).to_ascii_uppercase());
+    if !system.root.to_string_lossy().eq_ignore_ascii_case(&root) { return Err(bad()); }
+    Ok(root.into())
+}
+
+fn bind_system_route(mut review: WipeReview, system: Option<&SystemVolume>, env_drive: Option<&std::ffi::OsStr>) -> std::io::Result<WipeReview> {
+    if let Some(system) = system.filter(|s| s.volume == review.volume) {
+        review.system_root = Some(checked_system_root(system, env_drive)?);
+    }
+    Ok(review)
+}
+
+fn system_cipher_args(review: &WipeReview, system: &SystemVolume, env_drive: Option<&std::ffi::OsStr>) -> std::io::Result<String> {
+    let root = checked_system_root(system, env_drive)?;
+    if review.system_root.as_ref() != Some(&root) || review.volume != system.volume {
+        return Err(std::io::Error::other("the system drive no longer matches the reviewed volume GUID"));
+    }
+    // No quoting needed for the validated X:\ root (and no backslash before a closing quote).
+    Ok(format!("/w:{}", root.display()))
+}
+
+/// Do not create a directory, touch normal profile paths, or detach anything in screenshot mode.
+pub fn sweep_wipe_mounts() {
+    if ensure_wipe_allowed().is_err() { return; }
+    let system = wipe_mount::system_volume().ok();
+    wipe_mount::sweep(wipe_data_dir().ok().as_deref(), system.as_ref());
 }
 
 /// What a wipe would find before it starts, for the question and for the run itself: the drive,
 /// the file that says Sprawl is wiping it, cipher's working folder if one is there, and whether
 /// another Sprawl still has a wipe running on it.
 pub struct WipePlan {
-    pub root: PathBuf,
     pub marker: PathBuf,
     pub scratch: PathBuf,
     pub scratch_present: bool,
@@ -893,7 +974,7 @@ impl WipePlan {
 }
 
 fn scratch_instructions(path: &Path) -> String {
-    format!("Sprawl leaves {} alone and won't start a wipe while it exists or can't be checked. Once cipher is no longer running, open the drive in File Explorer (show hidden and protected operating system files if needed). Inspect EFSTMPWP and delete it yourself only if you recognise it as cipher's temporary data. Leave anything unfamiliar alone.", path.display())
+    format!("Sprawl leaves {} alone and won't start a wipe while it exists or can't be checked. Once cipher is no longer running, find that volume's current drive letter (don't assume the old letter is still right). Open it in File Explorer, show hidden and protected operating system files if needed, and inspect EFSTMPWP. Delete it yourself only if you recognise cipher's temporary data. Leave anything unfamiliar alone.", path.display())
 }
 
 fn scratch_present(path: &Path) -> bool {
@@ -901,26 +982,20 @@ fn scratch_present(path: &Path) -> bool {
     !std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
-/// What a wipe would do, checked without changing anything. Refuses anything but a fixed local
-/// drive, and reads the marker Sprawl writes while a wipe runs.
-pub fn wipe_plan(root: &Path, marker_dir: &Path) -> Result<WipePlan, String> {
-    let root = drive_root(root).ok_or_else(|| "that isn't on a local drive".to_string())?;
-    // SAFETY: the wide root is NUL-terminated.
-    if unsafe { GetDriveTypeW(wide(&root).as_ptr()) } != 3 {
-        return Err(format!("{} isn't a fixed local drive: a network, removable or CD drive can't have its free space wiped from here.", root.display()));
+/// Check the reviewed GUID itself, never the letter that was used to find it.
+pub fn wipe_plan(review: &WipeReview, marker_dir: &Path) -> Result<WipePlan, String> {
+    if !wipe_mount::fixed(review.volume_path()) {
+        return Err(format!("The reviewed volume {} is no longer available as a fixed drive. Nothing was wiped.", review.volume_path().display()));
     }
-    let letter = root.to_string_lossy();
-    let letter = letter.trim_end_matches('\\').trim_end_matches(':');
-    let marker = marker_dir.join(format!("wipe-{letter}.txt"));
-    Ok(wipe_plan_in(root.clone(), marker, &root))
+    let marker = marker_dir.join(format!("wipe-{}.txt", review.volume.id()));
+    Ok(wipe_plan_in(review.volume_path(), marker, review.volume_path()))
 }
 
-fn wipe_plan_in(root: PathBuf, marker: PathBuf, location: &Path) -> WipePlan {
+fn wipe_plan_in(root: &Path, marker: PathBuf, location: &Path) -> WipePlan {
     let ours = read_marker(&marker).filter(|m| m.root.eq_ignore_ascii_case(&root.to_string_lossy()));
     let scratch = location.join("EFSTMPWP");
     let live = ours.as_ref().filter(|m| !marker_is_this_run(m)).filter(|m| marker_live(m)).map(|m| m.pid);
     WipePlan {
-        root,
         marker,
         scratch_present: scratch_present(&scratch),
         scratch,
@@ -933,47 +1008,132 @@ fn wipe_plan_in(root: PathBuf, marker: PathBuf, location: &Path) -> WipePlan {
 pub struct Wiped {
     pub outcome: crate::clean::Outcome,
     pub ok: bool,
-    /// Cipher wasn't started because its scratch location was already occupied.
+    /// Cipher wasn't started.
     pub left_before_start: bool,
 }
 
-/// Wipe the free space of the drive holding `root` through Windows' cipher and the clean-up's
-/// tool runner (hidden, in a job so Stop ends it and what it started). A marker in `marker_dir`
-/// says a wipe is running on this drive. It is not an ownership record for scratch contents.
-pub fn wipe_free_space(root: &Path, marker_dir: &Path, stop: &AtomicBool) -> Wiped {
-    let plan = match wipe_plan(root, marker_dir) {
+/// Wipe the approved volume: directly for the running Windows volume, privately mounted for
+/// everything else. A failed system check never falls back to a mount or a different letter.
+pub fn wipe_free_space(review: &WipeReview, data: &Path, stop: &AtomicBool) -> Wiped {
+    if let Err(why) = ensure_wipe_allowed() { return not_wiped(why); }
+    let plan = match wipe_plan(review, data) {
         Ok(plan) => plan,
-        Err(why) => return not_wiped(why, false),
+        Err(why) => return not_wiped(why),
     };
-    wipe_free_in(plan, |root, pins| crate::clean::run_tool(root, &cipher_command(root), stop,
-        Duration::from_secs(7 * 86_400), pins, &mut |_| {}))
+    if review.uses_system_drive() {
+        let check = || system_cipher_args(review, &wipe_mount::system_volume()?, std::env::var_os("SystemDrive").as_deref());
+        return wipe_system_in(review, plan, stop, check, |_, marker, pins| {
+            crate::clean::run_wipe_cipher(check, stop, pins, &[&marker.0])
+        });
+    }
+    let system = wipe_mount::system_volume().ok();
+    wipe_free_in(review, plan, stop, || NativeMount::prepare(data, system.as_ref(), &review.volume),
+        |mount, args, marker, pins| {
+            let mut share = mount.pins();
+            share.push(&marker.0);
+            crate::clean::run_wipe_cipher(|| Ok(args.to_owned()), stop, pins, &share)
+        })
 }
 
-fn not_wiped(why: String, left_before_start: bool) -> Wiped {
+fn not_wiped(why: String) -> Wiped {
     let mut outcome = crate::clean::Outcome::default();
     outcome.problems.push(why);
-    Wiped { outcome, ok: false, left_before_start }
+    Wiped { outcome, ok: false, left_before_start: true }
 }
 
-fn wipe_free_in(plan: WipePlan, run: impl FnOnce(&Path, crate::clean::ToolPins) -> crate::clean::Outcome) -> Wiped {
+fn begin_wipe(review: &WipeReview, plan: &WipePlan, stop: &AtomicBool) -> Result<MarkerHold, String> {
     if let Some(pid) = plan.live {
-        return not_wiped(format!("Not started: another Sprawl (process {pid}) is wiping this drive's free space; wait for it to finish or stop it there."), false);
+        return Err(format!("Not started: another Sprawl (process {pid}) is wiping this volume's free space."));
     }
-    if plan.scratch_present { return not_wiped(scratch_instructions(&plan.scratch), true); }
-    let hold = match claim_marker(&plan.marker, &plan.root) {
+    if plan.scratch_present { return Err(scratch_instructions(&plan.scratch)); }
+    if stop.load(Ordering::Relaxed) { return Err("Stop was requested before cipher started.".into()); }
+    let hold = claim_marker(&plan.marker, review.volume_path())
+        .map_err(|e| format!("Not started: Sprawl couldn't note the wipe in {} ({e}).", plan.marker.display()))?;
+    if scratch_present(&plan.scratch) { return Err(scratch_instructions(&plan.scratch)); }
+    Ok(hold)
+}
+
+fn wipe_system_in(review: &WipeReview, plan: WipePlan, stop: &AtomicBool,
+    verify: impl FnOnce() -> std::io::Result<String>,
+    run: impl FnOnce(&str, &MarkerHold, crate::clean::ToolPins) -> crate::clean::Outcome,
+) -> Wiped {
+    let hold = match begin_wipe(review, &plan, stop) {
+        Ok(hold) => std::sync::Arc::new(hold),
+        Err(why) => return not_wiped(why),
+    };
+    let args = match verify() {
+        Ok(args) => args,
+        Err(e) => return not_wiped(format!("Sprawl couldn't recheck the Windows system drive ({e}).")),
+    };
+    let outcome = run(&args, &hold, crate::clean::ToolPins::hold(hold.clone()));
+    wipe_finished(outcome, &plan.scratch)
+}
+
+struct MountGuard<M: Mount> {
+    mount: M,
+    cleanup_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl<M: Mount> Drop for MountGuard<M> {
+    fn drop(&mut self) {
+        if let Err(e) = self.mount.cleanup() {
+            let note = format!("Sprawl couldn't clean up its private mount {} ({e}). The next administrator launch will check for a leftover mount.", self.mount.path().display());
+            eprintln!("{note}");
+            *self.cleanup_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
+        }
+    }
+}
+
+fn wipe_free_in<M: Mount>(review: &WipeReview, plan: WipePlan, stop: &AtomicBool,
+    prepare: impl FnOnce() -> std::io::Result<M>,
+    run: impl FnOnce(&M, &str, &MarkerHold, crate::clean::ToolPins) -> crate::clean::Outcome,
+) -> Wiped {
+    let hold = match begin_wipe(review, &plan, stop) {
         Ok(h) => h,
+        Err(why) => return not_wiped(why),
+    };
+    let cleanup_error = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mount = match prepare() {
+        Ok(mount) => mount,
+        Err(e) => return not_wiped(format!("Sprawl couldn't prepare a private mount for the reviewed volume ({e}).")),
+    };
+    let mut mount = MountGuard { mount, cleanup_error: cleanup_error.clone() };
+    let ready = (|| {
+        mount.mount.attach()?;
+        if mount.mount.verified_volume()? != review.volume {
+            return Err(std::io::Error::other("the mounted volume GUID doesn't match the reviewed volume"));
+        }
+        wipe_mount::cipher_args(mount.mount.path())
+    })();
+    let mut result = match ready {
         Err(e) => {
-            return not_wiped(format!("Not started: Sprawl couldn't note the wipe in {} ({e})", plan.marker.display()), false);
+            drop(mount);
+            not_wiped(format!("Sprawl couldn't verify the private mount for the reviewed volume ({e})."))
+        }
+        Ok(_) if stop.load(Ordering::Relaxed) || scratch_present(&plan.scratch) => {
+            let why = if stop.load(Ordering::Relaxed) { "Stop was requested before cipher started.".into() } else { scratch_instructions(&plan.scratch) };
+            drop(mount);
+            not_wiped(why)
+        }
+        Ok(args) => {
+            let mount = std::sync::Arc::new(mount);
+            let hold = std::sync::Arc::new(hold);
+            let outcome = run(&mount.mount, &args, &hold, crate::clean::ToolPins::hold((hold.clone(), mount.clone())));
+            drop(mount);
+            wipe_finished(outcome, &plan.scratch)
         }
     };
-    if scratch_present(&plan.scratch) {
-        return not_wiped(scratch_instructions(&plan.scratch), true);
+    if let Some(note) = cleanup_error.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        result.outcome.notes.push(note);
     }
-    let mut outcome = run(&plan.root, crate::clean::ToolPins::hold(hold));
+    result
+}
+
+fn wipe_finished(mut outcome: crate::clean::Outcome, scratch: &Path) -> Wiped {
     let ok = !outcome.stopped && !outcome.timed_out && !outcome.tool_unconfirmed
         && outcome.problems.is_empty() && outcome.more_problems == 0;
-    if scratch_present(&plan.scratch) || outcome.tool_unconfirmed {
-        outcome.notes.push(scratch_instructions(&plan.scratch));
+    if scratch_present(scratch) || outcome.tool_unconfirmed {
+        outcome.notes.push(scratch_instructions(scratch));
     }
     Wiped { outcome, ok, left_before_start: false }
 }
@@ -1020,7 +1180,7 @@ fn marker_is_this_run(m: &Marker) -> bool {
 /// A marker held open for the whole wipe, shared for reading only: another Sprawl can see that a
 /// wipe is running, but can neither change nor remove the note. Windows retires this exact
 /// file on close, including when the job's deferred teardown finally releases its pins.
-pub(crate) struct MarkerHold(#[allow(dead_code)] std::fs::File);
+pub(crate) struct MarkerHold(std::fs::File);
 
 /// Claim the marker for this drive. The first Sprawl to make it wins; a marker left by a Sprawl
 /// that is gone is removed and a fresh one made, and if another instance makes one in that
@@ -1140,7 +1300,6 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetVolumeInformationW(root: *const u16, label: *mut u16, label_len: u32, serial: *mut u32, max_len: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
-    fn GetDriveTypeW(root: *const u16) -> u32;
     fn GetDiskFreeSpaceExW(dir: *const u16, free: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
     fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *mut std::ffi::c_void, disposition: u32, flags: u32, template: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
     fn DeviceIoControl(h: *mut std::ffi::c_void, code: u32, inbuf: *const std::ffi::c_void, inlen: u32, outbuf: *mut std::ffi::c_void, outlen: u32, returned: *mut u32, overlapped: *mut std::ffi::c_void) -> i32;
@@ -1154,6 +1313,7 @@ extern "system" {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use super::*;
 
     /// A temporary folder for one test, removed when the test ends, even when it fails.
@@ -1514,27 +1674,24 @@ mod tests {
     #[test]
     fn a_marker_says_which_drive_is_being_wiped_and_by_which_process() {
         let base = temp("marker");
-        // the real name Sprawl uses: the drive letter, and no colon (a colon would name a
-        // stream on a file rather than the file)
-        let root = drive_root(&base).unwrap();
-        let plan = wipe_plan(&base, &base).unwrap();
-        let marker = plan.marker.clone();
-        assert_eq!(marker.file_name().unwrap(), format!("wipe-{}.txt", &root.to_string_lossy()[..1]).as_str());
+        let volume = fixture_volume(1);
+        let root = volume.path();
+        let marker = base.join(format!("wipe-{}.txt", volume.id()));
         assert!(!marker.file_name().unwrap().to_string_lossy().contains(':'));
         assert!(read_marker(&marker).is_none(), "no marker, no wipe");
-        let hold = claim_marker(&marker, &plan.root).unwrap();
+        let hold = claim_marker(&marker, root).unwrap();
         let seen = read_marker(&marker).expect("another Sprawl can read a held note and see the wipe");
         assert_eq!((seen.pid, seen.start), (std::process::id(), process_start(std::process::id()).unwrap()));
         assert!(std::fs::remove_file(&marker).is_err(), "the note can't be removed while it is held");
         assert!(std::fs::OpenOptions::new().write(true).open(&marker).is_err(), "nor written");
-        assert!(claim_marker(&marker, &plan.root).is_err(), "a second wipe is refused");
+        assert!(claim_marker(&marker, root).is_err(), "a second wipe is refused");
         assert!(!process_alive(u32::MAX - 1), "a made-up id is not");
 
         // a note left by a run that is gone is replaced
         drop(hold);
         assert!(!marker.exists(), "the marker retires with its handle");
         std::fs::write(&marker, "root=C:\\\npid=4294967295\nstart=1\ntime=0\n").unwrap();
-        let hold = claim_marker(&marker, &plan.root).unwrap();
+        let hold = claim_marker(&marker, root).unwrap();
         let m = read_marker(&marker).unwrap();
         assert_eq!(m.root, root.to_string_lossy());
         assert_eq!((m.pid, m.start), (std::process::id(), process_start(std::process::id()).unwrap()));
@@ -1549,11 +1706,94 @@ mod tests {
         assert!(!marker.exists());
     }
 
+    fn fixture_volume(n: u32) -> Volume {
+        Volume::parse(&format!("\\\\?\\Volume{{00000000-0000-0000-0000-{n:012x}}}\\")).unwrap()
+    }
+
+    fn fixture_review(n: u32) -> WipeReview {
+        capture_wipe(Path::new(r"E:\"), |_| Ok(fixture_volume(n))).unwrap()
+    }
+
+    #[test]
+    fn reviewed_system_volume_launches_with_systemdrive_not_the_selected_alias() {
+        let base = temp("wipe-system-root");
+        let system = SystemVolume { root: r"D:\".into(), volume: fixture_volume(1) };
+        let drive = Some(std::ffi::OsStr::new("d:"));
+        let review = bind_system_route(fixture_review(1), Some(&system), drive).unwrap();
+        assert!(review.uses_system_drive());
+        assert_eq!(review.label, Path::new(r"E:\"));
+        let marker = base.join("wipe-guid.txt");
+        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let result = wipe_system_in(&review, plan, &AtomicBool::new(false),
+            || system_cipher_args(&review, &system, drive), |args, _, _| {
+                assert_eq!(args, r"/w:D:\");
+                assert!(marker.exists());
+                crate::clean::Outcome::default()
+            });
+        assert!(result.ok && !marker.exists());
+        assert!(!bind_system_route(fixture_review(2), Some(&system), drive).unwrap().uses_system_drive());
+        assert!(bind_system_route(fixture_review(1), Some(&system), Some(std::ffi::OsStr::new("E:"))).is_err());
+    }
+
+    #[test]
+    fn system_guid_mismatch_after_review_refuses_before_launch() {
+        let base = temp("wipe-system-mismatch");
+        let mut system = SystemVolume { root: r"C:\".into(), volume: fixture_volume(1) };
+        let drive = Some(std::ffi::OsStr::new("C:"));
+        let review = bind_system_route(fixture_review(1), Some(&system), drive).unwrap();
+        system.volume = fixture_volume(2);
+        let marker = base.join("wipe-guid.txt");
+        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let result = wipe_system_in(&review, plan, &AtomicBool::new(false),
+            || system_cipher_args(&review, &system, drive),
+            |_, _, _| panic!("a mismatching GUID must not reach cipher"));
+        assert!(result.left_before_start && !result.ok && !marker.exists());
+        assert!(result.outcome.problems[0].contains("no longer matches the reviewed volume GUID"));
+    }
+
+    type Trace = std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
+
+    struct FakeMount {
+        path: PathBuf,
+        target: Volume,
+        reported: Volume,
+        attached: bool,
+        fail_attach: bool,
+        trace: Trace,
+    }
+
+    impl FakeMount {
+        fn new(target: Volume, trace: Trace) -> Self {
+            Self { path: fixture_volume(9).path().join(r"Sprawl\wipe-mounts-v1\mount-1-2-3"),
+                reported: target.clone(), target, attached: false, fail_attach: false, trace }
+        }
+        fn event(&self, s: &'static str) { self.trace.lock().unwrap().push(s); }
+    }
+
+    impl Mount for FakeMount {
+        fn attach(&mut self) -> std::io::Result<()> {
+            self.event("mount");
+            if self.fail_attach { return Err(std::io::Error::other("mount fixture failed")); }
+            self.attached = true;
+            Ok(())
+        }
+        fn verified_volume(&mut self) -> std::io::Result<Volume> {
+            self.event("verify");
+            Ok(self.reported.clone())
+        }
+        fn path(&self) -> &Path { &self.path }
+        fn cleanup(&mut self) -> std::io::Result<()> {
+            if self.attached { self.event("unmount"); }
+            self.event("remove directory");
+            Ok(())
+        }
+    }
+
     #[test]
     fn same_volume_replaced_scratch_survives_a_legacy_marker() {
         let base = temp("wipe-replaced-scratch");
         let marker = base.join("wipe-E.txt");
-        let root = PathBuf::from(r"E:\");
+        let review = fixture_review(1);
         std::fs::write(&marker, "root=E:\\\npid=4294967295\nstart=1\nforeign=0\n").unwrap();
         let old = base.join("EFSTMPWP");
         std::fs::create_dir(&old).unwrap();
@@ -1562,45 +1802,53 @@ mod tests {
         std::fs::create_dir(&old).unwrap();
         let unrelated = old.join("ordinary.txt");
         std::fs::write(&unrelated, "keep on this volume").unwrap();
-        let plan = wipe_plan_in(root, marker, &base);
+        let plan = wipe_plan_in(review.volume_path(), marker, &base);
         let lines = plan.scratch_lines().join("\n");
         assert!(lines.contains(&old.display().to_string()) && lines.contains("File Explorer") && lines.contains("Leave anything unfamiliar alone"));
-        let result = wipe_free_in(plan, |_, _| panic!("must not start cipher with an occupied scratch path"));
+        let result = wipe_free_in::<FakeMount>(&review, plan, &AtomicBool::new(false),
+            || panic!("must not mount with an occupied scratch path"), |_, _, _, _| panic!("must not run"));
         assert!(result.left_before_start && !result.ok);
         assert_eq!(result.outcome.problems, [lines]);
         assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "keep on this volume");
     }
 
     #[test]
-    fn rebound_drive_letter_leaves_the_new_volumes_files_alone() {
-        // Model E: being rebound with two isolated directories, not a real drive mapping.
+    fn rebound_letter_with_no_scratch_does_not_retarget_cipher() {
         let base = temp("wipe-rebound-letter");
-        let marker = base.join("wipe-E.txt");
-        let root = PathBuf::from(r"E:\");
-        let original = base.join("original-volume");
-        let rebound = base.join("replacement-volume");
-        std::fs::create_dir_all(original.join("EFSTMPWP")).unwrap();
-        std::fs::create_dir_all(rebound.join("EFSTMPWP")).unwrap();
-        std::fs::write(&marker, "root=E:\\\npid=4294967295\nstart=1\nforeign=0\n").unwrap();
-        let first = wipe_plan_in(root.clone(), marker.clone(), &original);
-        let new = wipe_plan_in(root, marker, &rebound);
-        assert_eq!(first.root, new.root);
-        assert_eq!(first.marker, new.marker);
-        let unrelated = new.scratch.join("ordinary.txt");
-        std::fs::write(&unrelated, "keep on the replacement volume").unwrap();
-        let result = wipe_free_in(new, |_, _| panic!("must not start cipher on a rebound drive with scratch"));
-        assert!(result.left_before_start);
-        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "keep on the replacement volume");
+        let letter = Path::new(r"E:\");
+        let mut current_e = fixture_volume(1);
+        let review = capture_wipe(letter, |p| { assert_eq!(p, letter); Ok(current_e.clone()) }).unwrap();
+        current_e = fixture_volume(2); // simulated rebind while the confirmation is open
+        let new_volume = base.join("replacement-volume");
+        std::fs::create_dir(&new_volume).unwrap();
+        assert!(!new_volume.join("EFSTMPWP").exists());
+        let marker = base.join("wipe-guid.txt");
+        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let trace = Trace::default();
+        let result = wipe_free_in(&review, plan, &AtomicBool::new(false),
+            || Ok(FakeMount::new(review.volume.clone(), trace.clone())),
+            |mount, args, _marker, _pins| {
+                assert_eq!(mount.target, fixture_volume(1));
+                assert_ne!(mount.target, current_e, "B was never passed to the runner");
+                assert_eq!(args, format!("\"/w:{}\"", mount.path.display()));
+                assert!(!args.contains("E:"));
+                mount.event("run");
+                crate::clean::Outcome::default()
+            });
+        assert!(result.ok && !marker.exists());
+        assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "run", "unmount", "remove directory"]);
     }
 
     #[test]
     fn a_wipe_that_leaves_scratch_reports_it_and_does_not_remove_it() {
         let base = temp("wipe-after-end");
         let marker = base.join("wipe-E.txt");
-        let plan = wipe_plan_in(PathBuf::from(r"E:\"), marker.clone(), &base);
+        let review = fixture_review(1);
+        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
         let scratch = plan.scratch.clone();
         let leftover = scratch.join("leftover.tmp");
-        let result = wipe_free_in(plan, |_, _pins| {
+        let result = wipe_free_in(&review, plan, &AtomicBool::new(false),
+            || Ok(FakeMount::new(review.volume.clone(), Trace::default())), |_, _, _, _pins| {
             std::fs::create_dir(&scratch).unwrap();
             std::fs::write(&leftover, "fixture").unwrap();
             crate::clean::Outcome { stopped: true, ..Default::default() }
@@ -1609,6 +1857,82 @@ mod tests {
         assert!(result.outcome.notes[0].contains(&scratch.display().to_string()));
         assert_eq!(std::fs::read_to_string(leftover).unwrap(), "fixture");
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn mount_mismatch_refuses_and_cleans_up_without_running_cipher() {
+        let base = temp("wipe-guid-mismatch");
+        let review = fixture_review(1);
+        let marker = base.join("wipe-guid.txt");
+        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let trace = Trace::default();
+        let result = wipe_free_in(&review, plan, &AtomicBool::new(false), || {
+            let mut mount = FakeMount::new(review.volume.clone(), trace.clone());
+            mount.reported = fixture_volume(2);
+            Ok(mount)
+        }, |_, _, _, _| panic!("cipher must not run after a GUID mismatch"));
+        assert!(result.left_before_start && result.outcome.problems[0].contains("doesn't match"));
+        assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "unmount", "remove directory"]);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn scratch_appearing_during_mount_still_refuses_cipher_and_cleans_up() {
+        let base = temp("wipe-late-scratch");
+        let review = fixture_review(1);
+        let marker = base.join("wipe-guid.txt");
+        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let scratch = plan.scratch.clone();
+        let trace = Trace::default();
+        let result = wipe_free_in(&review, plan, &AtomicBool::new(false), || {
+            std::fs::create_dir(&scratch).unwrap();
+            std::fs::write(scratch.join("ordinary.txt"), "untouched").unwrap();
+            Ok(FakeMount::new(review.volume.clone(), trace.clone()))
+        }, |_, _, _, _| panic!("the worker must recheck scratch"));
+        assert!(result.left_before_start);
+        assert_eq!(std::fs::read_to_string(scratch.join("ordinary.txt")).unwrap(), "untouched");
+        assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "unmount", "remove directory"]);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn private_mount_cleanup_covers_failed_mount_stop_timeout_failed_launch_and_deferred_end() {
+        for mode in ["mount failed", "stop before launch", "stop", "timeout", "launch failed", "deferred"] {
+            let base = temp("wipe-mount-lifetime");
+            let review = fixture_review(1);
+            let marker = base.join("wipe-guid.txt");
+            let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+            let trace = Trace::default();
+            let stop = AtomicBool::new(false);
+            let mut deferred = None;
+            let result = wipe_free_in(&review, plan, &stop, || {
+                let mut mount = FakeMount::new(review.volume.clone(), trace.clone());
+                mount.fail_attach = mode == "mount failed";
+                if mode == "stop before launch" { stop.store(true, Ordering::Relaxed); }
+                Ok(mount)
+            }, |mount, _, _, pins| {
+                assert!(!matches!(mode, "mount failed" | "stop before launch"));
+                mount.event("run");
+                if mode == "deferred" { deferred = Some(pins); }
+                let mut o = crate::clean::Outcome { stopped: mode == "stop", timed_out: mode == "timeout",
+                    tool_unconfirmed: mode == "deferred", ..Default::default() };
+                if mode == "launch failed" { o.problems.push("fixture launch failed".into()); }
+                o
+            });
+            assert!(!result.ok, "{mode}");
+            match mode {
+                "mount failed" => assert_eq!(*trace.lock().unwrap(), ["mount", "remove directory"]),
+                "stop before launch" => assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "unmount", "remove directory"]),
+                "deferred" => {
+                    assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "run"]);
+                    assert!(marker.exists());
+                    drop(deferred);
+                    assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "run", "unmount", "remove directory"]);
+                },
+                _ => assert_eq!(*trace.lock().unwrap(), ["mount", "verify", "run", "unmount", "remove directory"]),
+            }
+            assert!(!marker.exists(), "{mode}");
+        }
     }
 
     #[test]
@@ -1672,17 +1996,15 @@ mod tests {
     }
 
     #[test]
-    fn the_cipher_command_names_the_drive_root() {
-        assert_eq!(cipher_command(Path::new(r"C:\")), r"cipher '/w:C:\'");
-        assert_eq!(cipher_command(Path::new(r"D:\")), r"cipher '/w:D:\'");
+    fn the_review_rejects_network_paths_and_cipher_rejects_drive_letters() {
+        assert!(wipe_mount::cipher_args(Path::new(r"C:\")).is_err());
+        assert!(wipe_mount::cipher_args(Path::new(r"D:\fixture\mount-1-2-3")).is_err());
         assert_eq!(drive_root(Path::new(r"C:\Users\x")).as_deref(), Some(Path::new(r"C:\")));
         assert_eq!(drive_root(Path::new(r"C:\")), Some(PathBuf::from(r"C:\")));
         assert!(drive_root(Path::new(r"\\server\share\a")).is_none());
         assert!(filesystem(&std::env::temp_dir()).is_some_and(|fs| !fs.is_empty()), "the temp folder's file system is known");
         // the answer may be None (an old drive, a VM, no rights); it must never panic
         let _ = solid_state(&std::env::temp_dir());
-        // a wipe is only ever offered on a fixed local drive
-        assert!(wipe_plan(&std::env::temp_dir(), &std::env::temp_dir()).is_ok(), "the temp folder is on a fixed drive");
-        assert!(wipe_plan(Path::new(r"\\server\share"), &std::env::temp_dir()).is_err(), "a network path is refused");
+        assert!(capture_wipe(Path::new(r"\\server\share"), |_| panic!("must not call a volume API for a network path")).is_err());
     }
 }

@@ -216,7 +216,7 @@ fn windows_scope(id: &str, path: &Path, command: &str, windows: &Path, redirects
     Ok(fixed)
 }
 
-fn windows_directory() -> Option<PathBuf> {
+pub(crate) fn windows_directory() -> Option<PathBuf> {
     #[link(name = "kernel32")]
     extern "system" { fn GetSystemWindowsDirectoryW(path: *mut u16, len: u32) -> u32; }
     let mut buf = [0u16; 520];

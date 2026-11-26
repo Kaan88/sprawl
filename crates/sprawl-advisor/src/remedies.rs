@@ -369,7 +369,10 @@ pub fn in_place(a: &Action) -> bool {
 }
 
 pub(crate) const SHRINK_ATTACHED: &str = "SPRAWL_SHRINK_ATTACHED";
+pub(crate) const SHRINK_DISMOUNTING: &str = "SPRAWL_SHRINK_DISMOUNTING";
 pub(crate) const SHRINK_DETACHED: &str = "SPRAWL_SHRINK_DETACHED";
+
+pub(crate) fn absence_probe(names: &str) -> String { format!("Get-Process {names} -ErrorAction Ignore") }
 
 /// The PowerShell that shrinks the disk file at `path`: Docker Desktop must be closed (for its
 /// disk) and every WSL distribution is shut down and checked to be gone. Mount-DiskImage has
@@ -380,17 +383,19 @@ pub fn shrink_command(path: &Path, docker: bool) -> String {
     if path.to_string_lossy().contains(['"', '\r', '\n', '\0']) { return format!("{SHRINK}throw 'The virtual disk path cannot be passed safely to diskpart.'"); }
     let q = ps_quote(&path.display().to_string());
     let docker_check = if docker {
-        "if (Get-Process 'Docker Desktop', 'com.docker.backend' -ErrorAction SilentlyContinue) { throw 'Docker Desktop is running: quit it first (its icon by the clock > Quit Docker Desktop).' }\n"
+        format!("if ({}) {{ throw 'Docker Desktop is running: quit it first (its icon by the clock > Quit Docker Desktop).' }}\n",
+            absence_probe("'Docker Desktop', 'com.docker.backend'"))
     } else {
-        ""
+        String::new()
     };
     let wsl = format!("& {}", ps_quote(&sys.join("wsl.exe").display().to_string()));
     let diskpart = ps_quote(&sys.join("diskpart.exe").display().to_string());
     let storage = ps_quote(&sys.join(r"WindowsPowerShell\v1.0\Modules\Storage\Storage.psd1").display().to_string());
+    let wsl_processes = absence_probe("vmmem, vmmemWSL");
     format!(
         "{SHRINK}{docker_check}{wsl} --shutdown\n\
          Start-Sleep -Seconds 3\n\
-         if (Get-Process vmmem, vmmemWSL -ErrorAction SilentlyContinue) {{ throw 'WSL is still running after wsl --shutdown: nothing was changed.' }}\n\
+         if ({wsl_processes}) {{ throw 'WSL is still running after wsl --shutdown: nothing was changed.' }}\n\
          $p = {q}\n\
          $a = (Get-Item -LiteralPath $p).Length\n\
          Import-Module -Name {storage} -ErrorAction Stop\n\
@@ -398,6 +403,7 @@ pub fn shrink_command(path: &Path, docker: bool) -> String {
          if ($mounted.Attached -ne $true) {{ throw 'Windows did not confirm the virtual disk was attached.' }}\n\
          [Console]::Out.WriteLine([string][char]30 + '{SHRINK_ATTACHED}'); [Console]::Out.Flush()\n\
          \"select vdisk file=`\"$p`\"`ncompact vdisk`nexit\" | & {diskpart}\n\
+         try {{ [Console]::Out.WriteLine([string][char]30 + '{SHRINK_DISMOUNTING}'); [Console]::Out.Flush() }} catch {{ throw 'Sprawl could not report that dismount is about to start.' }}\n\
          Storage\\Dismount-DiskImage -ImagePath $p -ErrorAction Stop\n\
          [Console]::Out.WriteLine([string][char]30 + '{SHRINK_DETACHED}'); [Console]::Out.Flush()\n\
          $b = (Get-Item -LiteralPath $p).Length\n\
@@ -1567,10 +1573,12 @@ mod shrink_tests {
             let check = cmd.find("if ($mounted.Attached -ne $true)").unwrap();
             let attached = cmd.find(SHRINK_ATTACHED).unwrap();
             let compact = cmd.find("compact vdisk").unwrap();
+            let dismounting = cmd.find(SHRINK_DISMOUNTING).unwrap();
             let dismount = cmd.find(r"Storage\Dismount-DiskImage").unwrap();
-            assert!(shutdown < mount && mount < check && check < attached && attached < compact && compact < dismount);
+            assert!(shutdown < mount && mount < check && check < attached && attached < compact && compact < dismounting && dismounting < dismount);
             assert!(cmd[mount..check].contains("-Access ReadOnly -NoDriveLetter -PassThru -ErrorAction Stop"));
             assert!(cmd[dismount..cmd.find(SHRINK_DETACHED).unwrap()].contains("-ErrorAction Stop"));
+            assert_eq!(cmd.matches("-ErrorAction Ignore").count(), 2, "{cmd}");
         }
     }
 }

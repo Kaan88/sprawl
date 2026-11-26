@@ -72,8 +72,12 @@ app glue `crates/sprawl/src/wiping.rs`): one pass of random data (BCryptGenRando
 data and its named streams, through the checked handle, then delete. Hard links, reparse points and
 files changed since the check are left; sparse files are written by range; compressed and WOF files
 need their extra room first. A folder that keeps something is left with its own streams untouched.
-File > Wipe Free Space on the Selected Drive... runs `cipher /w:X:\` in a job object with a marker
-so two Sprawls never run it at once. The question says what can't be promised (SSD, shadow copies...).
+File > Wipe Free Space on the Selected Drive... records the reviewed volume GUID. Only the
+running Windows volume can use a drive letter, and its GUID is rechecked at launch. Other
+volumes use a verified private mount on a different fixed volume, using the Windows volume
+when local data is on the target. A per-volume marker and job pins stay held through teardown.
+Sprawl leaves `EFSTMPWP` alone and shows how to check it manually. The confirmation says what
+can't be promised (SSD, shadow copies...).
 
 ## F10. Editing browser databases
 
