@@ -34,7 +34,8 @@ pub(crate) struct Cleanup {
     /// The review panel is open.
     pub review: bool,
     /// External commands shown as runnable in the review, not just ticked.
-    reviewed_tools: std::cell::RefCell<std::collections::HashMap<(PathBuf, String), clean::ReviewedExternal>>,
+    reviewed_tools: std::cell::RefCell<std::collections::HashMap<(PathBuf, String), Result<clean::ReviewedExternal, String>>>,
+    reviewed_compressions: std::cell::RefCell<std::collections::HashMap<(PathBuf, String), Result<sprawl_advisor::remedies::ReviewedCompression, String>>>,
     /// "These are my own files and I want them gone" is ticked.
     pub own_ok: bool,
     /// The ticks are the ones Sprawl chose.
@@ -84,11 +85,18 @@ impl SelectionContext {
 }
 
 impl Cleanup {
+    pub(crate) fn begin_review(&mut self) {
+        self.reviewed_tools.get_mut().clear();
+        self.reviewed_compressions.get_mut().clear();
+        self.review = true;
+    }
+
     pub(crate) fn clear_privacy_selection(&mut self) {
         self.privacy_ticked.clear();
         self.privacy_ok = false;
         self.review = false;
         self.reviewed_tools.get_mut().clear();
+        self.reviewed_compressions.get_mut().clear();
         self.confirmation_selection = None;
         self.measuring = None;
     }
@@ -99,6 +107,7 @@ impl Cleanup {
         self.own_ok = false;
         self.privacy_ok = false;
         self.reviewed_tools.get_mut().clear();
+        self.reviewed_compressions.get_mut().clear();
         self.confirmation_selection = Some(next);
         true
     }
@@ -892,13 +901,6 @@ impl State {
             self.adv_say(&format!("Nothing was cleaned. {}", crate::advisor::memory_unreadable(&e)));
             return;
         }
-        let kept_on_disk = match sprawl_advisor::memory::Memory::load_checked() {
-            Ok(m) => m.kept_paths(),
-            Err(e) => {
-                self.adv_say(&format!("Nothing was cleaned: your Keep list couldn't be read just now ({e}). Try again."));
-                return;
-            }
-        };
         // A command held back on screen cannot become runnable behind that review, even if
         // another instance removed a protection. The executor also checks current protections.
         let (picked, mut held) = {
@@ -906,7 +908,7 @@ impl State {
             let mut held = Vec::new();
             let picked: Vec<_> = picked.into_iter().filter(|(_, f)| {
                 let Some(command) = external_command(f) else { return true; };
-                if self.advisor.cleanup.review && reviewed.get(&(f.path.clone(), command)).is_some_and(|r| r.matches_finding(f)) { return true; }
+                if self.advisor.cleanup.review && reviewed.get(&(f.path.clone(), command)).is_some_and(|r| r.as_ref().is_ok_and(|r| r.matches_finding(f))) { return true; }
                 held.push(format!("{}: not cleaned, the external command wasn't shown as runnable in this review", f.title));
                 false
             }).collect();
@@ -928,7 +930,10 @@ impl State {
         let never = sprawl_advisor::safety::Never::default_list();
         // what the run leaves: anything new since the scan began, and what the user keeps
         let mut spare = self.spare();
-        spare.keep.extend(kept_on_disk);
+        if let Err(e) = sprawl_advisor::memory::refresh_keeps(&mut spare.keep) {
+            self.adv_say(&format!("Nothing was cleaned: {e}. Try again."));
+            return;
+        }
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let bin_on = self.recycle_on();
@@ -969,8 +974,17 @@ impl State {
             };
             let reviewed = if let Some(command) = external_command(&f) {
                 let tools = self.advisor.cleanup.reviewed_tools.borrow();
-                let Some(receipt) = tools.get(&(f.path.clone(), command)).filter(|r| r.matches_finding(&f)) else {
+                let Some(Ok(receipt)) = tools.get(&(f.path.clone(), command)).filter(|r| r.as_ref().is_ok_and(|r| r.matches_finding(&f))) else {
                     held.push(format!("{}: not cleaned, review the external command again", f.title));
+                    continue;
+                };
+                Some(receipt.clone())
+            } else { None };
+            let compression = if let Some(command) = compression_command(&f) {
+                let reviewed = self.advisor.cleanup.reviewed_compressions.borrow();
+                let Some(Ok(receipt)) = reviewed.get(&(f.path.clone(), command.clone())).filter(|receipt|
+                    self.advisor.cleanup.review && receipt.as_ref().is_ok_and(|r| r.matches(&f.path, &command))) else {
+                    held.push(format!("{}: not compressed, review the directory again", f.title));
                     continue;
                 };
                 Some(receipt.clone())
@@ -982,7 +996,7 @@ impl State {
                 continue;
             }
             let recycle = goes_to_bin(&f, bin_on);
-            work.push((f.path.clone(), action, gate, recycle, f.privacy(), reviewed));
+            work.push((f.path.clone(), action, gate, recycle, f.privacy(), reviewed, compression));
             items.push(Item {
                 path: f.path.clone(),
                 title: f.title.clone(),
@@ -1021,7 +1035,7 @@ impl State {
         std::thread::spawn(move || {
             // each volume's Recycle Bin, found once; what this run sends counts against its room
             let mut bins: std::collections::HashMap<String, Result<sprawl_advisor::recycle::Bin, String>> = Default::default();
-            for (i, (path, action, gate, recycle, privacy, reviewed)) in work.into_iter().enumerate() {
+            for (i, (path, action, gate, recycle, privacy, reviewed, compression)) in work.into_iter().enumerate() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
                 }
@@ -1055,15 +1069,30 @@ impl State {
                 let before = if compress { None }
                     else if in_place { sprawl_advisor::remedies::on_disk(&path) }
                     else if tool { complete_size(rescan_after(&path, false, None).as_ref()) } else { None };
+                if let Err(why) = sprawl_advisor::memory::refresh_keeps(&mut spare.keep) {
+                    let mut out = Outcome::default();
+                    out.problems.push(why);
+                    let _ = tx.send(Msg::Finished(i, out, None));
+                    continue;
+                }
+                if spare.keeps(&path) {
+                    let mut out = Outcome::default();
+                    out.problems.push("You chose to keep this path after review.".into());
+                    let _ = tx.send(Msg::Finished(i, out, None));
+                    continue;
+                }
+                let mut progress = |freed| {
+                    if last.elapsed().as_millis() >= 200 {
+                        last = Instant::now();
+                        let _ = tx.send(Msg::Progress(i, freed));
+                    }
+                };
                 let mut out = if let Some(reviewed) = &reviewed {
                     clean::run_reviewed_external(reviewed, &spare, &stop2)
+                } else if let Some(receipt) = &compression {
+                    clean::run_reviewed_compression(&path, receipt, &spare, &stop2, &mut progress)
                 } else {
-                    clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
-                        if last.elapsed().as_millis() >= 200 {
-                            last = Instant::now();
-                            let _ = tx.send(Msg::Progress(i, freed));
-                        }
-                    })
+                    clean::run_with(&path, &action, &spare, bin, &stop2, &mut progress)
                 };
                 // what is there now, for the tree
                 let _ = tx.send(Msg::Measuring(i));
@@ -1585,15 +1614,26 @@ impl State {
             .then(|| clean::ToolProtection::load(&self.advisor.memory.kept_paths()));
         let mut held = Vec::new();
         let mut picked = Vec::new();
-        let mut reviewed = std::collections::HashMap::new();
+        let mut reviewed = self.advisor.cleanup.reviewed_tools.borrow_mut();
         for (i, f) in all {
+            let compression_error = compression_command(&f).and_then(|command| {
+                // Redraws must not replace the identity that was shown at review.
+                let mut receipts = self.advisor.cleanup.reviewed_compressions.borrow_mut();
+                receipts.entry((f.path.clone(), command.clone()))
+                    .or_insert_with(|| sprawl_advisor::remedies::review_compression(&f.path, &command))
+                    .as_ref().err().cloned()
+            });
             let tool = external_command(&f);
-            let scope = tool.as_ref().zip(policy.as_ref()).map(|(_, policy)|
-                policy.as_ref().map_err(String::clone).and_then(|policy| clean::review_external(&f, policy))).transpose();
-            if let Some(why) = scope.as_ref().err().cloned().or_else(|| self.held_here(&f)) {
+            let tool_error = tool.as_ref().zip(policy.as_ref()).and_then(|(command, policy)| {
+                let held_here = self.held_here(&f);
+                reviewed.entry((f.path.clone(), command.clone())).or_insert_with(|| {
+                    if let Some(why) = held_here { return Err(why); }
+                    policy.as_ref().map_err(String::clone).and_then(|policy| clean::review_external(&f, policy))
+                }).as_ref().err().cloned()
+            });
+            if let Some(why) = compression_error.or(tool_error).or_else(|| self.held_here(&f)) {
                 held.push((f, why));
             } else {
-                if let (Some(command), Ok(Some(receipt))) = (tool, scope) { reviewed.insert((f.path.clone(), command), receipt); }
                 picked.push((i, f));
             }
         }
@@ -1685,8 +1725,8 @@ impl State {
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
                     Some((Action::Tool { command }, _)) => match reviewed.get(&(f.path.clone(), command.clone())) {
-                        Some(receipt) => format!("{what} · {}", receipt.description()),
-                        None => format!("{what} · runs: {command}"),
+                        Some(Ok(receipt)) => format!("{what} · {}", receipt.description()),
+                        _ => format!("{what} · runs: {command}"),
                     },
                     Some((Action::Link { keep, copies }, _)) => format!("{} to {}, compared again first", if copies.len() == 1 { "1 copy made a link".to_string() } else { format!("{} copies made links", copies.len()) }, keep.display()),
                     // not "gone for good": the bin can give it back (its group says so)
@@ -1706,7 +1746,6 @@ impl State {
         if !held.is_empty() {
             x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$text3}}" Margin="0,4,0,0"/>"##, ui::esc(&format!("Held back, not run · {}", if held.len() == 1 { "1 item".to_string() } else { format!("{} items", held.len()) })));
         }
-        *self.advisor.cleanup.reviewed_tools.borrow_mut() = reviewed;
         for (f, why) in &held {
             x += &format!(
                 r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="&#xE7BA;" FontSize="{{$fs10}}" Foreground="{{$warn}}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis" Foreground="{{$text3}}"/><TextBlock Text="Held back: {}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="2" Text="not run" FontSize="{{$fs13}}" VerticalAlignment="Center" Foreground="{{$text3}}"/></Grid>"##,
@@ -1807,6 +1846,12 @@ impl State {
 fn external_command(f: &Finding) -> Option<String> {
     let (action, _) = clean::action(f)?;
     if !clean::is_external_cleanup(&action) { return None; }
+    match action { Action::Tool { command } => Some(command), _ => None }
+}
+
+fn compression_command(f: &Finding) -> Option<String> {
+    let (action, _) = clean::action(f)?;
+    if !sprawl_advisor::remedies::is_compress(&action) { return None; }
     match action { Action::Tool { command } => Some(command), _ => None }
 }
 

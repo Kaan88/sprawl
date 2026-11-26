@@ -38,6 +38,15 @@ impl Alg {
             _ => None,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Xpress4k => "xpress4k",
+            Self::Xpress8k => "xpress8k",
+            Self::Xpress16k => "xpress16k",
+            Self::Lzx => "lzx",
+        }
+    }
 }
 
 #[link(name = "wofutil")]

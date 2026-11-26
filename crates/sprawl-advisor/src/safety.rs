@@ -387,13 +387,17 @@ impl Never {
     }
 
     fn from_locations(home: Option<&str>, places: Result<Vec<String>, ()>) -> Never {
+        Self::with_locations(home, places, crate::exclusions::configured())
+    }
+
+    fn with_locations(home: Option<&str>, places: Result<Vec<String>, ()>, excluded: Vec<std::path::PathBuf>) -> Never {
         let (patterns, incomplete) = Self::compiled(home);
         let incomplete = incomplete || places.is_err();
         let mut user_paths = Self::projected(USER_DATA, home);
         user_paths.extend(places.unwrap_or_default().into_iter().map(|p| format!(r"{}\**", p.trim_end_matches('\\'))));
         let user_roots = user_paths.iter().map(|p| crate::rules::expand(p).trim_end_matches(r"\**").to_string())
             .filter(|p| !p.contains(['*', '?', '%']) && drive_forms(p).is_some()).collect();
-        Never { excluded: crate::exclusions::configured(), patterns, user_data: user_paths.iter().map(|p| Pattern::new(p)).collect(), user_roots, incomplete }
+        Never { excluded, patterns, user_data: user_paths.iter().map(|p| Pattern::new(p)).collect(), user_roots, incomplete }
     }
 
     fn projected(list: &[&str], home: Option<&str>) -> Vec<String> {
@@ -415,11 +419,15 @@ impl Never {
         (patterns, incomplete)
     }
 
-    /// The same protected path patterns, without resolving personal places or opening the
-    /// settings file. Compression is not deletion; callers check scan exclusions separately.
+    /// The protected paths and redirected personal folders; exclusions are checked
+    /// separately. The known-folder query doesn't open or create the folders.
     pub(crate) fn for_compression(home: Option<&str>) -> Never {
-        let (patterns, incomplete) = Self::compiled(home);
-        Never { excluded: Vec::new(), patterns, user_data: Vec::new(), user_roots: Vec::new(), incomplete }
+        Self::with_locations(home, personal_places(), Vec::new())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compression_places(home: Option<&str>, places: Vec<String>) -> Never {
+        Self { incomplete: false, ..Self::with_locations(home, Ok(places), Vec::new()) }
     }
 
     /// Only an already recognized Program Files product (or Steam game there) may waive the

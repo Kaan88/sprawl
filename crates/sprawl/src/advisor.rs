@@ -1428,7 +1428,7 @@ impl State {
                 self.advisor.section = Section::Findings;
                 let Some(k) = self.advisor.open.and_then(|i| self.advice().and_then(|r| r.findings.get(i))).map(|f| crate::cleanup::key(&f.path)) else { return };
                 self.advisor.cleanup.single = Some(k);
-                self.advisor.cleanup.review = true;
+                self.advisor.cleanup.begin_review();
                 self.advisor.cleanup.own_ok = false;
                 self.cleanup_measure();
             }
@@ -1440,7 +1440,7 @@ impl State {
                     return;
                 }
                 self.advisor.cleanup.single = None;
-                self.advisor.cleanup.review = true;
+                self.advisor.cleanup.begin_review();
                 self.advisor.cleanup.own_ok = false;
                 self.advisor.cleanup.privacy_ok = false;
                 // the browsers: as they are now
@@ -1568,7 +1568,7 @@ impl State {
                 self.cleaner_procs(true);
                 if !self.ticked_privacy().is_empty() {
                     self.advisor.cleanup.single = None;
-                    self.advisor.cleanup.review = true;
+                    self.advisor.cleanup.begin_review();
                     self.advisor.cleanup.own_ok = false;
                     self.advisor.cleanup.privacy_ok = false;
                 }
@@ -1777,7 +1777,13 @@ impl State {
                 return;
             }
             "AdvDelete" => {
-                let Some((f, n)) = self.advisor.open.and_then(|i| { let r = self.advice()?; Some((r.findings.get(i)?.clone(), (*r.nodes.get(i)?)?)) }) else { return };
+                let Some((f, n)) = self.advisor.open.and_then(|i| {
+                    let r = self.advice()?;
+                    let f = r.findings.get(i)?;
+                    let runnable = f.command.is_some() && crate::cleanup::untickable(f, *r.counted.get(i)?).is_none();
+                    direct_delete(f, runnable).then_some(())?;
+                    Some((f.clone(), (*r.nodes.get(i)?)?))
+                }) else { return };
                 // the row's node must still be the finding's path in the tree on screen
                 if self.tree.as_ref().is_none_or(|t| n >= t.nodes.len() || crate::cleanup::key(&t.path_of(n)).trim_end_matches('\\') != crate::cleanup::key(&f.path).trim_end_matches('\\')) {
                     self.tell("Not deleted", "The scan changed since this suggestion was made. Check again first.");
@@ -2487,7 +2493,7 @@ impl State {
             || crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        if !self.advisor.memory.compressed.contains(&record) || !matches!(record.alg.as_str(), "xpress8k" | "xpress16k") {
+        if !self.advisor.memory.compressed.contains(&record) || sprawl_core::wof::Alg::parse(&record.alg).is_none() {
             self.adv_say("The compression record changed or is not recognised; nothing was run.");
             return;
         }
@@ -3140,19 +3146,34 @@ impl State {
         (p.is_absolute() && p.is_file()).then_some(p)
     }
 
-    pub(crate) fn save_memory(&self) {
+    pub(crate) fn save_memory(&self) -> Option<Memory> {
         // a memory never read from disk is never written over it
-        let Some(m) = self.advisor.memory_to_save() else { return };
-        // another Sprawl window may have saved since: what it changed is kept
-        let merged = match (self.advisor.memory_base.borrow().as_ref(), Memory::load_checked()) {
-            (Some(base), Ok(disk)) if &disk != base => Some(Memory::merged(base, m, &disk)),
-            _ => None,
-        };
-        let out = merged.as_ref().unwrap_or(m);
-        crate::bridge::publish_memory(out);
-        match out.save() {
-            Ok(()) => *self.advisor.memory_base.borrow_mut() = Some(m.clone()),
-            Err(e) => self.adv_say(&format!("Couldn't save what the advisor remembers: {e}")),
+        let m = self.advisor.memory_to_save()?;
+        let result = self.advisor.memory_base.borrow().as_ref().map(|base| m.save_merged(base));
+        match result {
+            Some(Ok(out)) => {
+                crate::bridge::publish_memory(&out);
+                // The local draft still has only the changes from this window.
+                *self.advisor.memory_base.borrow_mut() = Some(m.clone());
+                Some(out)
+            }
+            Some(Err(e)) => {
+                self.adv_say(&format!("Couldn't save what the advisor remembers: {e}"));
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Settings' immediate edits display the saved list, not a stale window's draft.
+    pub(crate) fn save_keep_edit(&mut self, before: Memory) -> bool {
+        if let Some(saved) = self.save_memory() {
+            *self.advisor.memory_base.borrow_mut() = Some(saved.clone());
+            self.advisor.memory = saved;
+            true
+        } else {
+            self.advisor.memory = before;
+            false
         }
     }
 
@@ -3160,21 +3181,26 @@ impl State {
     fn advisor_decide(&mut self, verdict: Verdict) {
         let gen = self.tree_gen;
         let Some(i) = self.advisor.open else { return };
-        let (Some(t), Some(r)) = (self.tree.clone(), self.advisor.report.as_mut().filter(|r| r.tree == gen)) else { return };
-        if i >= r.findings.len() {
-            return;
+        let (Some(t), Some(f)) = (self.tree.clone(), self.advisor.report.as_ref().filter(|r| r.tree == gen).and_then(|r| r.findings.get(i)).cloned()) else { return };
+        let path = if verdict == Verdict::Keep {
+            match memory::keep_path(&f.path) {
+                Ok(path) => path,
+                Err(e) => { self.adv_say(&format!("Couldn't add this to the Keep list: {e}")); return; }
+            }
+        } else { f.path.clone() };
+        let before = self.advisor.memory.clone();
+        self.advisor.memory.learning.skip(&f);
+        // A Keep of an information finding only hides that suggestion; the path is still protected.
+        if verdict == Verdict::Keep && matches!(f.remedy, Remedy::Info | Remedy::Move) {
+            self.advisor.memory.keep_exact(&path, &f.title);
+        } else {
+            self.advisor.memory.decide(&path, &f.title, verdict);
         }
-        let f = r.findings.remove(i);
+        if !self.save_keep_edit(before) { return; }
+        let Some(r) = self.advisor.report.as_mut() else { return };
+        r.findings.remove(i);
         r.nodes.remove(i);
         r.counted.remove(i);
-        self.advisor.memory.learning.skip(&f);
-        // keeping an information finding about a whole folder keeps that one only, not all inside
-        // keeping a suggestion about a whole folder keeps that one only, not all inside
-        if verdict == Verdict::Keep && matches!(f.remedy, Remedy::Info | Remedy::Move) {
-            self.advisor.memory.keep_exact(&f.path, &f.title);
-        } else {
-            self.advisor.memory.decide(&f.path, &f.title, verdict);
-        }
         r.kept.push((f, verdict));
         // the lens without it
         let mut lens = vec![0u8; t.nodes.len()];
@@ -3191,7 +3217,6 @@ impl State {
         // indexes moved: the open finding and any plan go
         self.advisor.open = None;
         self.advisor.in_use = None;
-        self.save_memory();
         self.advisor_changed();
     }
 
@@ -3281,7 +3306,11 @@ impl State {
             self.adv_say("Nothing to export: tick what the script should clean first.");
             return;
         }
-        let kept = self.advisor.memory.kept_paths();
+        let mut kept = self.advisor.memory.kept_paths();
+        if let Err(e) = sprawl_advisor::memory::refresh_keeps(&mut kept) {
+            self.adv_say(&format!("Nothing was exported: {e}."));
+            return;
+        }
         let (owned, guesses, keeping) = script_items(ticked.into_iter().map(|(_, f)| f).collect(), &kept);
         if owned.is_empty() {
             self.adv_say("Nothing to export: what is ticked was found by its shape only, or holds something you chose to keep, so clean it here, where it is checked again first.");
@@ -4425,6 +4454,7 @@ impl State {
 /// or a tool's own clean-up (npm, DISM...: deleting its folder by hand is not the same).
 pub(crate) fn direct_delete(f: &Finding, runnable: bool) -> bool {
     !runnable
+        && !matches!(&f.source, sprawl_advisor::Source::Rule(id) if id == sprawl_advisor::dupes::INTERRUPTED)
         && !matches!(f.remedy, Remedy::Uninstall | Remedy::Command)
         && !f.action.as_ref().is_some_and(sprawl_advisor::remedies::in_place)
 }
@@ -4461,6 +4491,9 @@ mod script_tests {
         assert!(!direct_delete(&mk(Remedy::Delete), true), "Clean up just this... already deletes it");
         assert!(!direct_delete(&mk(Remedy::Uninstall), false));
         assert!(!direct_delete(&mk(Remedy::Command), false));
+        let mut recovery = mk(Remedy::Info);
+        recovery.source = sprawl_advisor::Source::Rule(sprawl_advisor::dupes::INTERRUPTED.into());
+        assert!(!direct_delete(&recovery, false), "interrupted links offer Show in tree, not Delete");
         let mut c = mk(Remedy::Info);
         c.set_action(sprawl_advisor::clean::Action::Tool { command: format!("{}xpress8k 'C:\\x\\*'", sprawl_advisor::remedies::COMPRESS) }, false);
         assert!(!direct_delete(&c, false), "a compress keeps the files");

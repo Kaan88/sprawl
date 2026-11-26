@@ -2035,7 +2035,7 @@ mod own_failed_tests {
         let mut c = crate::cleanup::Cleanup::default();
         c.ticked.insert("c:/x".into());
         c.ticked_for = Some(OWN_GEN + 3);
-        c.review = true;
+        c.begin_review();
         c.privacy_ticked.insert("c:/y".into());
         own_failed_drops(&mut c);
         assert!(c.ticked.is_empty() && c.ticked_for.is_none() && !c.review && c.privacy_ticked.is_empty());

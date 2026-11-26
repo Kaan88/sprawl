@@ -250,6 +250,53 @@ fn file() -> Option<PathBuf> {
     dir().map(|d| d.join("memory.toml"))
 }
 
+/// Resolve a new Keep to the checked long name of an existing plain local item.
+pub fn keep_path(path: &Path) -> std::io::Result<PathBuf> {
+    checked_keep_path(path, false, |p| sprawl_core::local::storage(p).map(|held| held.path))
+}
+
+fn checked_keep_path(path: &Path, saved: bool, resolve: impl FnOnce(&Path) -> std::io::Result<PathBuf>) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute() || path.components().any(|c| match c {
+        Component::ParentDir => true,
+        Component::Normal(n) => n.to_str().is_none_or(|n| n.ends_with(['.', ' ']) || n.contains(':')),
+        _ => false,
+    }) {
+        return Err(std::io::Error::other("a Keep must name a plain, absolute local path"));
+    }
+    // Do not drop an ordinary spelling just because the item is currently gone. A missing
+    // name that could be an 8.3 alias, however, tells us nothing about the long path to spare.
+    match resolve(path) {
+        Err(e) if saved && e.kind() == std::io::ErrorKind::NotFound
+            && !path.components().any(|c| matches!(c, Component::Normal(n) if n.to_string_lossy().contains('~'))) =>
+            sprawl_core::local::lexical(path),
+        result => result,
+    }
+}
+
+/// Reload on each worker dispatch and only add protections; never forget a path that
+/// this operation has already seen. A bad read or unresolvable alias refuses the item.
+pub fn refresh_keeps(seen: &mut Vec<PathBuf>) -> Result<(), String> {
+    refresh_keeps_with(seen, Memory::load_checked, |p| sprawl_core::local::storage(p).map(|held| held.path))
+}
+
+fn refresh_keeps_with(
+    seen: &mut Vec<PathBuf>, read: impl FnOnce() -> std::io::Result<Memory>,
+    resolve: impl Fn(&Path) -> std::io::Result<PathBuf>,
+) -> Result<(), String> {
+    let saved = read().map_err(|e| format!("your Keep list couldn't be read ({e})"))?.kept_paths();
+    let mut next = Vec::new();
+    for path in seen.iter().chain(&saved) {
+        let long = checked_keep_path(path, true, &resolve)
+            .map_err(|e| format!("the kept path {} couldn't be resolved ({e})", path.display()))?;
+        next.push(long);
+    }
+    next.sort_unstable();
+    next.dedup();
+    *seen = next;
+    Ok(())
+}
+
 pub fn rules_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("rules"))
 }
@@ -578,8 +625,8 @@ impl Memory {
     /// `mine` with what another Sprawl window saved since `base` (what this one loaded or last
     /// saved), as found in `theirs` (the file now): additions and changes there are kept,
     /// removals there are taken where this one didn't change the item, and this one's own
-    /// changes win (Fable AI review P2-6). For the lists that hold decisions: Keeps, preferences,
-    /// labels, proposals, compressed folders. The rest is this window's.
+    /// changes win, except that a concurrently added/changed Keep is not discarded
+    /// by a stale change to the same path.
     pub fn merged(base: &Memory, mine: &Memory, theirs: &Memory) -> Memory {
         fn merge3<T: Clone + PartialEq>(base: &[T], mine: &[T], theirs: &[T], key: impl Fn(&T) -> String) -> Vec<T> {
             let find = |list: &'_ [T], k: &str| list.iter().position(|x| key(x) == k);
@@ -608,19 +655,43 @@ impl Memory {
         let lower = |s: &str| s.to_lowercase();
         let mut out = mine.clone();
         out.decisions = merge3(&base.decisions, &mine.decisions, &theirs.decisions, |d| lower(&d.path.to_string_lossy()));
+        for d in theirs.decisions.iter().filter(|d| d.verdict == Verdict::Keep) {
+            let is_same = |other: &Decision| crate::clean::same_path(&other.path, &d.path);
+            if base.decisions.iter().find(|other| is_same(other)) == Some(d) { continue; }
+            if out.decisions.iter().any(|other| is_same(other) && other.verdict == Verdict::Keep) { continue; }
+            out.decisions.retain(|other| !is_same(other));
+            out.decisions.push(d.clone());
+        }
         out.prefs = merge3(&base.prefs, &mine.prefs, &theirs.prefs, |p| lower(&p.text));
         out.labels = merge3(&base.labels, &mine.labels, &theirs.labels, |l| lower(&l.pattern));
         out.proposals = merge3(&base.proposals, &mine.proposals, &theirs.proposals, |p| p.id.clone());
         out.cleaner_proposals = merge3(&base.cleaner_proposals, &mine.cleaner_proposals, &theirs.cleaner_proposals, |p| lower(&p.cleaner.id));
         out.compressed = merge3(&base.compressed, &mine.compressed, &theirs.compressed, |c| lower(&c.path));
+        macro_rules! unchanged {
+            ($($field:ident),* $(,)?) => { $(if mine.$field == base.$field { out.$field = theirs.$field.clone(); })* };
+        }
+        unchanged!(learning, part_days, usual, usual_definitions, cleaner_ticks, cleaner_tick_definitions,
+            declined_parts, freed, community_off, community_on);
+        out.rules_seen = mine.rules_seen.max(theirs.rules_seen);
         out.rules_gen = mine.rules_gen.max(theirs.rules_gen);
         out
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
+    pub fn save_merged(&self, base: &Memory) -> std::io::Result<Memory> {
         crate::require_write()?;
-        let f = file().ok_or_else(|| std::io::Error::other("APPDATA is not set"))?;
-        write_atomic(&f, &toml::to_string(self).map_err(std::io::Error::other)?)
+        let appdata = std::env::var_os("APPDATA").ok_or_else(|| std::io::Error::other("APPDATA is not set"))?;
+        self.save_merged_at(base, Path::new(&appdata), &["Sprawl", "advisor"])
+    }
+
+    fn save_merged_at(&self, base: &Memory, trusted: &Path, below: &[&str]) -> std::io::Result<Memory> {
+        use std::io::Write;
+        let dir = crate::store::ensure_dir(&below.iter().fold(trusted.to_path_buf(), |p, part| p.join(part)))?;
+        let _lock = crate::store::lock(&dir.path)?;
+        let disk = Self::read_from(trusted, below)?.unwrap_or_else(Self::fresh);
+        let merged = Self::merged(base, self, &disk);
+        let text = toml::to_string(&merged).map_err(std::io::Error::other)?;
+        crate::store::write_atomic(&dir.path, "memory.toml", true, |f| f.write_all(text.as_bytes()))?;
+        Ok(merged)
     }
 
     /// Record what the user decided about `f` (replacing an earlier decision on the same path).
@@ -628,11 +699,13 @@ impl Memory {
         let key = path.to_string_lossy().to_lowercase();
         self.decisions.retain(|d| d.path.to_string_lossy().to_lowercase() != key);
         self.decisions.push(Decision { path: path.to_path_buf(), title: clean_text(title), verdict, when: now(), exact: false });
-        // the oldest go first past 2000
-        if self.decisions.len() > 2000 {
-            let extra = self.decisions.len() - 2000;
-            self.decisions.drain(..extra);
-        }
+        // Trim only expiring/history decisions; saving a new Keep must not unprotect an old one.
+        let mut extra = self.decisions.iter().filter(|d| d.verdict != Verdict::Keep).count().saturating_sub(2000);
+        self.decisions.retain(|d| {
+            if extra == 0 || d.verdict == Verdict::Keep { return true; }
+            extra -= 1;
+            false
+        });
     }
 
     /// Keep this one suggestion only (see [`Decision::exact`]).
@@ -958,6 +1031,75 @@ impl Memory {
             s.push_str(&format!("\nDo not recommend cleaning {} again: {} refilled quickly after cleanup.\n", r.path.display(), r.rule));
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod keep_store_tests {
+    use super::*;
+
+    #[test]
+    fn keep_aliases_resolve_to_the_long_name_or_fail_closed() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-keep-alias").unwrap();
+        let long = temp.path().join("Long personal documents");
+        std::fs::create_dir(&long).unwrap();
+        assert_eq!(keep_path(&long).unwrap(), long);
+        let short = temp.path().join("LONGPE~1");
+        let resolved = checked_keep_path(&short, true, |_| Ok(long.clone())).unwrap();
+        let spare = crate::clean::Spare { keep: vec![resolved], ..Default::default() };
+        assert!(spare.keeps(&long.join("important.txt")));
+        let mut saved = Memory::fresh();
+        saved.decide(&short, "legacy short name", Verdict::Keep);
+        let mut seen = Vec::new();
+        assert!(refresh_keeps_with(&mut seen, || Ok(saved), |_| Err(std::io::ErrorKind::NotFound.into())).is_err());
+        assert!(keep_path(&temp.path().join("MISSING~99")).is_err());
+    }
+
+    #[test]
+    fn each_dispatch_adds_current_keeps_and_refuses_an_unreadable_list() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-keep-dispatch").unwrap();
+        let before = temp.path().join("Before");
+        let added = temp.path().join("Added");
+        let mut seen = vec![before.clone()];
+        let resolve = |p: &Path| Ok(p.to_path_buf());
+        let mut saved = Memory::fresh();
+        saved.decide(&added, "added after review", Verdict::Keep);
+        refresh_keeps_with(&mut seen, || Ok(saved), resolve).unwrap();
+        refresh_keeps_with(&mut seen, || Ok(Memory::fresh()), resolve).unwrap();
+        let spare = crate::clean::Spare { keep: seen.clone(), ..Default::default() };
+        assert!(spare.keeps(&before.join("a")) && spare.keeps(&added.join("b")));
+        assert!(refresh_keeps_with(&mut seen, || Err(std::io::ErrorKind::PermissionDenied.into()), resolve).is_err());
+        assert_eq!(spare.keep, seen);
+    }
+
+    #[test]
+    fn simultaneous_memory_saves_merge_keeps_and_invalid_disk_is_not_replaced() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-keep-merge").unwrap();
+        let root = temp.path();
+        let a = root.join("Keep A");
+        let b = root.join("Keep B");
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|s| {
+            let jobs: Vec<_> = [&a, &b].into_iter().map(|path| {
+                let gate = gate.clone();
+                s.spawn(move || {
+                    let base = Memory::fresh();
+                    let mut mine = base.clone();
+                    mine.decide(path, "keep", Verdict::Keep);
+                    gate.wait();
+                    mine.save_merged_at(&base, root, &["Sprawl", "advisor"]).unwrap();
+                })
+            }).collect();
+            for job in jobs { job.join().unwrap(); }
+        });
+        let base = Memory::load_checked_from(root, &["Sprawl", "advisor"]).unwrap();
+        let kept = base.kept_paths();
+        assert_eq!(kept.len(), 2);
+        assert!(kept.contains(&a) && kept.contains(&b));
+        let file = root.join(r"Sprawl\advisor\memory.toml");
+        std::fs::write(&file, "[broken").unwrap();
+        assert!(Memory::fresh().save_merged_at(&base, root, &["Sprawl", "advisor"]).is_err());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "[broken");
     }
 }
 

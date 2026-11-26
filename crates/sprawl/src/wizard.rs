@@ -47,6 +47,7 @@ pub(crate) struct PrefUi {
     drives: Vec<(usize, String)>,
     focus_name: Option<String>,
     ai_orig: AiConfig,
+    ai_load_error: Option<String>,
     ai_custom: String,
     ai_customs: Vec<config::CustomAi>,
     ai_efforts: std::collections::BTreeMap<String, String>,
@@ -115,8 +116,7 @@ fn button(name: &str, t: &str) -> String {
 
 /// Check a newly picked Program folder the way a scan opens one: a plain local folder, held
 /// while checked, returned in its long, canonical spelling. Existing entries are never read
-/// again, so a disconnected drive keeps the spelling it was saved with. A drive root and this
-/// user's profile root are refused; the compression rule checks the rest itself.
+/// again here, so a disconnected drive keeps the spelling it was saved with.
 fn checked_program_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     if !sprawl_advisor::program_folders::storable(path) {
         return Err("A folder name with ';' can't be stored here: semicolons separate the folders. Rename it or choose another folder.".into());
@@ -135,6 +135,7 @@ fn checked_program_folder(path: &std::path::Path) -> Result<std::path::PathBuf, 
             return Err("Your user profile folder itself can't be a program folder. Choose a folder inside it.".into());
         }
     }
+    sprawl_advisor::program_folders::validate_library(&path)?;
     Ok(path)
 }
 
@@ -657,7 +658,12 @@ impl State {
         self.theme_begin();
         // AI: what was saved (Off at first); what is installed is only offered, one click away
         self.prefs.ai_detected = None;
-        let ai = AiConfig::load();
+        let loaded = AiConfig::load_checked();
+        self.prefs.ai_load_error = loaded.as_ref().err().map(ToString::to_string);
+        let ai = loaded.unwrap_or_default();
+        let web = if ai.web_lookup { "1" } else { "0" }.to_string();
+        self.prefs.orig.insert("aiWebLookup", web.clone());
+        self.prefs.draft.insert("aiWebLookup", web);
         self.prefs.ai_orig = ai.clone();
         self.prefs.ai_custom = ai.custom.clone();
         self.prefs.ai_customs = ai.customs.clone();
@@ -1358,14 +1364,17 @@ impl State {
                 let fe = self.prefs.fe.clone();
                 let typed = fe.as_ref().and_then(|fe| find::<TextBox>(fe, "PfKeepPath").and_then(|t| t.Text()).ok()).map(|h| h.to_string_lossy()).unwrap_or_default();
                 let path = std::path::PathBuf::from(typed.trim().trim_matches('"'));
-                if path.is_absolute() && path.exists() {
-                    self.advisor.memory_ready();
-                    let title = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                    self.advisor.memory.decide(&path, &title, sprawl_advisor::memory::Verdict::Keep);
-                    self.save_memory();
-                    self.prefs.note = Some(format!("Sprawl will never offer {}.", path.display()));
-                } else {
-                    self.prefs.note = Some("Type the full path of a folder or file that exists, like D:\\Photos.".into());
+                match sprawl_advisor::memory::keep_path(&path) {
+                    Ok(path) => {
+                        self.advisor.memory_ready();
+                        let before = self.advisor.memory.clone();
+                        let title = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        self.advisor.memory.decide(&path, &title, sprawl_advisor::memory::Verdict::Keep);
+                        self.prefs.note = Some(if self.save_keep_edit(before) { format!("Added {} to the Keep list.", path.display()) } else {
+                            "Couldn't save the Keep list. Nothing was added.".into()
+                        });
+                    }
+                    Err(e) => self.prefs.note = Some(format!("Use the full path of an existing local file or folder. Sprawl couldn't check it ({e}).")),
                 }
             }
             n if n.starts_with("PfB_regBack") => {
@@ -1394,9 +1403,15 @@ impl State {
                 let i: usize = n["PfB_unkeep".len()..].parse().unwrap_or(usize::MAX);
                 self.advisor.memory_ready();
                 if let Some(p) = self.advisor.memory.kept_paths().get(i).cloned() {
+                    let before = self.advisor.memory.clone();
                     self.advisor.memory.undo(&p);
-                    self.save_memory();
-                    self.prefs.note = Some(format!("{} can be offered again (never ticked for you).", p.display()));
+                    self.prefs.note = Some(if !self.save_keep_edit(before) {
+                        "Couldn't save the Keep list. Nothing was removed.".into()
+                    } else if self.advisor.memory.kept_paths().iter().any(|k| crate::cleanup::key(k) == crate::cleanup::key(&p)) {
+                        "Another window changed this Keep. Review the updated list before removing it.".into()
+                    } else {
+                        format!("{} removed from the Keep list.", p.display())
+                    });
                 }
             }
             _ => {}
@@ -1729,18 +1744,28 @@ impl State {
             return;
         }
         self.settings = staged;
-        let ai_changed = ai_edit && ai != self.prefs.ai_orig;
-        if ai_changed {
-            if let Err(e) = ai.save() { notes.push(format!("AI settings not saved: {e}")); }
-        }
-        if ai_edit && ai.provider.needs_key() && !key.trim().is_empty() {
-            let addr = if ai.provider == Provider::OpenAi && ai.base_url.is_empty() { "https://api.openai.com/v1" } else { &ai.base_url };
-            if !config::set_key(ai.provider, &key, addr) { notes.push("couldn't store the API key".into()); }
-        }
-        if let Some((provider, url)) = self.prefs.ai_forget_key.take() {
-            let addr = if provider == Provider::OpenAi && url.is_empty() { "https://api.openai.com/v1" } else { &url };
-            if (provider != ai.provider || url != ai.base_url || key.is_empty()) && !config::set_key(provider, "", addr) {
-                notes.push("couldn't remove the saved API key".into());
+        let putting = ai_edit && ai.provider.needs_key() && !key.trim().is_empty();
+        let forget = self.prefs.ai_forget_key.take();
+        let mut ai_changed = false;
+        if (ai_edit && ai != self.prefs.ai_orig) || putting || forget.is_some() {
+            if let Some(e) = &self.prefs.ai_load_error {
+                notes.push(format!("AI settings and keys were not changed: the opening config couldn't be read ({e}). Reopen Settings after fixing it."));
+            } else {
+                match ai.save_edited(&self.prefs.ai_orig, putting, |saved| {
+                    if putting {
+                        let addr = if saved.provider == Provider::OpenAi && saved.base_url.is_empty() { "https://api.openai.com/v1" } else { &saved.base_url };
+                        if !config::set_key(saved.provider, &key, addr) { notes.push("couldn't store the API key".into()); }
+                    }
+                    if let Some((provider, url)) = &forget {
+                        let addr = if *provider == Provider::OpenAi && url.is_empty() { "https://api.openai.com/v1" } else { url };
+                        if (!putting || *provider != saved.provider || *url != saved.base_url) && !config::set_key(*provider, "", addr) {
+                            notes.push("couldn't remove the saved API key".into());
+                        }
+                    }
+                }) {
+                    Ok((changed, ())) => ai_changed = changed || putting || forget.is_some(),
+                    Err(e) => notes.push(format!("AI settings and keys were not changed: {e}")),
+                }
             }
         }
         // the administrator switches as they are before this save, to tell a real change

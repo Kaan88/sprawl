@@ -141,12 +141,9 @@ pub(crate) fn kept_refusal(path: &Path, kept: &[PathBuf]) -> Option<String> {
 
 /// Every path the user chose to Keep (saved, and decided since); Err when the saved list can't
 /// be read, which stops the rename.
-fn kept_list(live: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
-    let mut kept = sprawl_advisor::memory::Memory::load_checked()
-        .map_err(|e| format!("Sprawl couldn't read what you told it to Keep ({e}), so it won't rename anything now."))?
-        .kept_paths();
-    kept.extend(live);
-    Ok(kept)
+fn kept_list(mut live: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    sprawl_advisor::memory::refresh_keeps(&mut live).map_err(|e| format!("Nothing was renamed: {e}."))?;
+    Ok(live)
 }
 
 /// Why folder item `id` of `place` (as `path`) can't be renamed for what it holds: the folder

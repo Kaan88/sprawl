@@ -342,6 +342,11 @@ impl Directory {
         self._handles.last().ok_or_else(|| io::Error::other("No pinned path"))?.metadata()
     }
 
+    /// Stable identity of the path this handle chain actually opened.
+    pub fn identity(&self) -> io::Result<(u64, u128)> {
+        full_identity(self.handle()?)
+    }
+
     /// The names directly in this folder, as the filesystem lists them (each one is opened
     /// through this folder's handle before it is used, so the list is only a list).
     pub fn names(&self) -> io::Result<Vec<String>> {

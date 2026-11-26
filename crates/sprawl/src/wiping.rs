@@ -196,8 +196,8 @@ impl State {
         if self.advisor.deleting.is_some() {
             return;
         }
-        let mut confirmed = self.advisor.memory.kept_paths();
-        confirmed.extend(sprawl_advisor::exclusions::configured());
+        let confirmed = self.advisor.memory.kept_paths();
+        let skipped_at_confirmation = sprawl_advisor::exclusions::configured();
         let since = self.active_began();
         let seen = self.active_tree().map(sprawl_advisor::clean::seen_in);
         let stop = Arc::new(AtomicBool::new(false));
@@ -213,7 +213,7 @@ impl State {
         std::thread::spawn(move || {
             let (mut results, mut notes, mut damaged) = (Vec::new(), Vec::new(), Vec::new());
             let mut before = 0u64;
-            let mut kept_seen: Vec<PathBuf> = Vec::new();
+            let mut kept_seen = confirmed;
             for path in paths {
                 if stop.load(Ordering::Relaxed) {
                     notes.push(format!("{}: not overwritten, the run was stopped", path.display()));
@@ -225,22 +225,13 @@ impl State {
                     continue;
                 }
                 // a Keep added after the question must still count: an unreadable list stops it
-                match sprawl_advisor::memory::Memory::load_checked() {
-                    Ok(memory) => {
-                        for k in memory.kept_paths() {
-                            if !kept_seen.contains(&k) {
-                                kept_seen.push(k);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        notes.push(format!("{}: not overwritten, your Keep list could not be read ({e})", path.display()));
-                        continue;
-                    }
+                if let Err(e) = sprawl_advisor::memory::refresh_keeps(&mut kept_seen) {
+                    notes.push(format!("{}: not overwritten, {e}", path.display()));
+                    continue;
                 }
-                let mut keep = confirmed.clone();
+                let mut keep = kept_seen.clone();
                 keep.extend(skipped);
-                keep.extend(kept_seen.iter().cloned());
+                keep.extend(skipped_at_confirmation.iter().cloned());
                 let spare = Spare { since: Some(since), keep, seen: seen.clone() };
                 let outcome = overwrite::run(&path, &spare, &stop, &mut |n| {
                     let _ = tx.send(DelMsg::Progress(before + n));

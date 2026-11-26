@@ -44,13 +44,24 @@ pub struct Pins {
     pub android_unknown: bool,
 }
 
-fn bounded_text(path: &Path, max: u64) -> Result<String, String> {
+fn locked_text(path: &Path, max: u64) -> Result<(sprawl_core::local::LocalFile, String), String> {
     use std::io::Read;
     if crate::exclusions::intersects(path, &crate::exclusions::configured()) { return Err("This file is excluded".into()); }
     let mut held = sprawl_core::local::file(path, max).map_err(|e| e.to_string())?;
     let mut text = String::new();
     held.file.read_to_string(&mut text).map_err(|e| e.to_string())?;
-    Ok(text)
+    Ok((held, text))
+}
+
+fn bounded_text(path: &Path, max: u64) -> Result<String, String> {
+    locked_text(path, max).map(|(_, text)| text)
+}
+
+/// Hold the same settings nvm reads through launch and execution: read sharing only.
+pub(crate) fn nvm_cleanup_settings(path: &Path) -> Result<(sprawl_core::local::LocalFile, String), String> {
+    let home = path.parent().ok_or("nvm's version has no parent folder")?;
+    locked_text(&home.join("settings.txt"), 64 << 10)
+        .map_err(|e| format!("nvm's settings.txt couldn't be held ({e})"))
 }
 
 fn link_target(path: &Path) -> Option<PathBuf> {
@@ -179,11 +190,11 @@ fn home() -> Option<PathBuf> {
 
 /// Resolve the scope of the same uninstall command the rule generated. Bind the tool's
 /// home explicitly; an uninstall must not retarget when the tool's defaults change.
-pub(crate) fn cleanup_scope(id: &str, path: &Path, command: &str) -> Option<(Vec<PathBuf>, Vec<(&'static str, PathBuf)>, String)> {
-    cleanup_scope_in(id, path, command, android_sdk)
+pub(crate) fn cleanup_scope(id: &str, path: &Path, command: &str, nvm_settings: Option<&str>) -> Option<(Vec<PathBuf>, Vec<(&'static str, PathBuf)>, String)> {
+    cleanup_scope_in(id, path, command, nvm_settings, android_sdk)
 }
 
-fn cleanup_scope_in(id: &str, path: &Path, command: &str, sdk_root: impl FnOnce() -> Option<PathBuf>) -> Option<(Vec<PathBuf>, Vec<(&'static str, PathBuf)>, String)> {
+fn cleanup_scope_in(id: &str, path: &Path, command: &str, nvm_settings: Option<&str>, sdk_root: impl FnOnce() -> Option<PathBuf>) -> Option<(Vec<PathBuf>, Vec<(&'static str, PathBuf)>, String)> {
     let name = path.file_name()?.to_str()?.to_string();
     let parent = path.parent()?;
     if !plain(&name) { return None; }
@@ -212,7 +223,7 @@ fn cleanup_scope_in(id: &str, path: &Path, command: &str, sdk_root: impl FnOnce(
             if ver.split('.').count() != 3 || numbers(ver)?.len() != 3 { return None; }
             if id == "versions.nvm" {
                 if command != format!("nvm uninstall {}", ps_quote(ver)) { return None; }
-                let text = bounded_text(&parent.join("settings.txt"), 64 << 10).ok()?;
+                let text = nvm_settings?;
                 let setting = |key: &str| {
                     let mut values = text.lines().filter_map(|l| l.split_once(':'))
                         .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key)).map(|(_, v)| PathBuf::from(v.trim()));
@@ -289,7 +300,7 @@ mod cleanup_scope_tests {
         let rust = tmp.path().join("rustup");
         std::fs::create_dir(&rust).unwrap();
         let name = "1.91.0-x86_64-pc-windows-msvc";
-        let rust_scope = |name| cleanup_scope("versions.rust", &rust.join("toolchains").join(name), &format!("rustup toolchain uninstall {}", ps_quote(name)));
+        let rust_scope = |name| cleanup_scope("versions.rust", &rust.join("toolchains").join(name), &format!("rustup toolchain uninstall {}", ps_quote(name)), None);
         std::fs::write(rust.join("settings.toml"), "version = '12'\n").unwrap();
         let (paths, env, _) = rust_scope(name).unwrap();
         assert_eq!(paths, [rust.join("toolchains").join(name), rust.join("update-hashes").join(name), rust.join("tmp")]);
@@ -301,7 +312,11 @@ mod cleanup_scope_tests {
         let nvm = tmp.path().join("nvm");
         std::fs::create_dir(&nvm).unwrap();
         let link = tmp.path().join("nodejs");
-        let nvm_scope = || cleanup_scope("versions.nvm", &nvm.join("v18.1.0"), "nvm uninstall '18.1.0'");
+        let nvm_scope = || {
+            let version = nvm.join("v18.1.0");
+            let (_held, text) = nvm_cleanup_settings(&version).unwrap();
+            cleanup_scope("versions.nvm", &version, "nvm uninstall '18.1.0'", Some(&text))
+        };
         std::fs::write(nvm.join("settings.txt"), format!("root: {}\npath: {}\n", nvm.display(), link.display())).unwrap();
         let (paths, env, _) = nvm_scope().unwrap();
         assert_eq!(paths, [nvm.join("v18.1.0"), link.clone()]);
@@ -311,7 +326,7 @@ mod cleanup_scope_tests {
 
         let fnm = tmp.path().join("fnm");
         let version = fnm.join(r"node-versions\v18.1.0");
-        let (paths, env, _) = cleanup_scope("versions.fnm", &version, "fnm uninstall '18.1.0'").unwrap();
+        let (paths, env, _) = cleanup_scope("versions.fnm", &version, "fnm uninstall '18.1.0'", None).unwrap();
         assert_eq!(paths, [version, fnm.join("aliases")]);
         assert_eq!(env, [("FNM_DIR", fnm)]);
     }
@@ -326,11 +341,11 @@ mod cleanup_scope_tests {
         std::fs::write(&exe, b"fixture, not run").unwrap();
         let package = sdk.join(r"system-images\android-35\google_apis\x86_64");
         let cmd = format!("& {} --uninstall 'system-images;android-35;google_apis;x86_64'", ps_quote(exe.to_str().unwrap()));
-        let (paths, env, run) = cleanup_scope_in("versions.android", &package, &cmd, || Some(sdk.clone())).unwrap();
+        let (paths, env, run) = cleanup_scope_in("versions.android", &package, &cmd, None, || Some(sdk.clone())).unwrap();
         assert_eq!(paths, [package.clone(), sdk.join(".temp")]);
         assert_eq!(env, [("SPRAWL_TOOL_DIR", sdk.clone())]);
         assert!(run.ends_with(r#" "--sdk_root=$env:SPRAWL_TOOL_DIR""#));
-        assert!(cleanup_scope_in("versions.android", &package, &cmd.replace("android-35", "android-34"), || Some(sdk)).is_none());
+        assert!(cleanup_scope_in("versions.android", &package, &cmd.replace("android-35", "android-34"), None, || Some(sdk)).is_none());
     }
 }
 

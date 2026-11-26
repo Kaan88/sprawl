@@ -140,24 +140,117 @@ impl AiConfig {
     }
 }
 
-fn dir() -> Option<PathBuf> {
-    if crate::read_only() { return None; }
-    std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Sprawl").join("advisor"))
+fn config_root() -> std::io::Result<PathBuf> {
+    std::env::var_os("APPDATA").map(PathBuf::from).ok_or_else(|| std::io::Error::other("APPDATA is not set"))
 }
 
 impl AiConfig {
     pub fn load() -> AiConfig {
-        dir()
-            .and_then(|d| std::fs::read_to_string(d.join("ai.toml")).ok())
-            .and_then(|t| toml::from_str(t.trim_start_matches('\u{feff}')).ok())
-            .unwrap_or_default()
+        Self::load_checked().unwrap_or_default()
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
+    /// Missing is a new config; an existing invalid or unreadable file is never a baseline.
+    pub fn load_checked() -> std::io::Result<Self> {
+        if crate::read_only() { return Ok(Self::default()); }
+        Self::read_at(&config_root()?)
+    }
+
+    fn read_at(root: &std::path::Path) -> std::io::Result<Self> {
+        let Some(bytes) = sprawl_core::local::read_checked(root, &["Sprawl", "advisor"], "ai.toml", 1 << 20)? else {
+            return Ok(Self::default());
+        };
+        let text = std::str::from_utf8(&bytes).map_err(std::io::Error::other)?;
+        toml::from_str(text.trim_start_matches('\u{feff}')).map_err(std::io::Error::other)
+    }
+
+    /// Credentials are side effects of a successful checked save, never of a failed read
+    /// or replace. The callback runs while the same config lock is still held.
+    pub fn save_edited<T>(&self, base: &Self, putting_key: bool, credentials: impl FnOnce(&Self) -> T) -> std::io::Result<(bool, T)> {
         crate::require_write()?;
-        let d = dir().ok_or_else(|| std::io::Error::other("APPDATA is not set"))?;
-        let text = toml::to_string(self).map_err(std::io::Error::other)?;
-        crate::write_local(&d.join("ai.toml"), text.as_bytes(), true)
+        self.save_edited_at(&config_root()?, base, putting_key, credentials)
+    }
+
+    fn save_edited_at<T>(&self, root: &std::path::Path, base: &Self, putting_key: bool, credentials: impl FnOnce(&Self) -> T) -> std::io::Result<(bool, T)> {
+        use std::io::Write;
+        let dir = crate::store::ensure_dir(&root.join("Sprawl").join("advisor"))?;
+        let _lock = crate::store::lock(&dir.path)?;
+        let disk = Self::read_at(root)?;
+        let merged = self.merge_edit(base, &disk)?;
+        if putting_key && (merged.provider != self.provider || merged.base_url != self.base_url) {
+            return Err(std::io::Error::other("the selected provider or server changed in another window; reopen AI settings before storing a key"));
+        }
+        let text = toml::to_string(&merged).map_err(std::io::Error::other)?;
+        crate::store::write_atomic(&dir.path, "ai.toml", true, |f| f.write_all(text.as_bytes()))?;
+        Ok((merged != disk, credentials(&merged)))
+    }
+
+    fn merge_edit(&self, base: &Self, disk: &Self) -> std::io::Result<Self> {
+        use std::collections::{BTreeMap, BTreeSet};
+        fn merge<T: PartialEq>(mine: T, base: T, disk: T) -> std::io::Result<T> {
+            if mine == base { return Ok(disk); }
+            if disk == base || disk == mine { return Ok(mine); }
+            Err(std::io::Error::other("another window edited the same AI setting; reopen AI settings and try again"))
+        }
+        fn entries<T: Clone + PartialEq>(mine: &BTreeMap<String, T>, base: &BTreeMap<String, T>, disk: &BTreeMap<String, T>) -> std::io::Result<BTreeMap<String, T>> {
+            let keys: BTreeSet<_> = mine.keys().chain(base.keys()).chain(disk.keys()).collect();
+            keys.into_iter().filter_map(|k| match merge(mine.get(k), base.get(k), disk.get(k)) {
+                Ok(v) => v.map(|v| Ok((k.clone(), v.clone()))),
+                Err(e) => Some(Err(e)),
+            }).collect()
+        }
+        let custom_map = |c: &Self| c.customs.iter().map(|e| (e.name.to_lowercase(), e.clone())).collect();
+        // Merge the active connection as a unit: a model/name intended for one host must
+        // not be silently attached to a concurrently selected host.
+        let conn = |c: &Self| (c.provider, c.base_url.clone(), c.model.clone(), c.custom.clone());
+        let (provider, base_url, model, custom) = merge(conn(self), conn(base), conn(disk))?;
+        Ok(Self {
+            provider, base_url, model, custom,
+            web_lookup: merge(self.web_lookup, base.web_lookup, disk.web_lookup)?,
+            efforts: entries(&self.efforts, &base.efforts, &disk.efforts)?,
+            customs: entries(&custom_map(self), &custom_map(base), &custom_map(disk))?.into_values().collect(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn stale_ai_edit_keeps_added_provider_and_never_touches_keys_on_save_failure() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-ai-config").unwrap();
+        let root = temp.path();
+        let base = AiConfig::read_at(root).unwrap();
+        assert_eq!(base, AiConfig::default());
+        let provider = CustomAi { name: "Local".into(), base_url: "http://localhost:1234/v1".into(), model: "fixture".into() };
+        let other = AiConfig { customs: vec![provider.clone()], ..base.clone() };
+        other.save_edited_at(root, &base, false, |_| ()).unwrap();
+        let mut mine = base.clone();
+        mine.efforts.insert("fixture".into(), "high".into());
+        let (changed, ()) = mine.save_edited_at(root, &base, false, |saved| {
+            assert_eq!(saved.customs, [provider.clone()]);
+            assert_eq!(saved.efforts, mine.efforts);
+            assert_eq!(AiConfig::read_at(root).unwrap(), *saved, "publish before touching keys");
+        }).unwrap();
+        assert!(changed);
+        let path = root.join(r"Sprawl\advisor\ai.toml");
+        std::fs::write(&path, "[broken").unwrap();
+        assert!(AiConfig::read_at(root).is_err());
+        assert!(mine.save_edited_at(root, &base, false, |_| panic!("credential callback ran on failure")).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "[broken");
+    }
+
+    #[test]
+    fn a_typed_key_cannot_follow_a_concurrent_provider_change() {
+        let temp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-ai-config-key").unwrap();
+        let root = temp.path();
+        let initial = AiConfig::default();
+        let old = AiConfig { provider: Provider::OpenAi, base_url: "http://localhost:1234/v1".into(), ..initial.clone() };
+        old.save_edited_at(root, &initial, false, |_| ()).unwrap();
+        let new = AiConfig { base_url: "http://localhost:9999/v1".into(), ..old.clone() };
+        new.save_edited_at(root, &old, false, |_| ()).unwrap();
+        assert!(old.save_edited_at(root, &old, true, |_| panic!("typed key followed a different host")).is_err());
+        assert_eq!(AiConfig::read_at(root).unwrap(), new);
     }
 }
 

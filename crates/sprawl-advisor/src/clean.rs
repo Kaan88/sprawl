@@ -397,17 +397,7 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     match action {
         // Sprawl's own compression: each file checked now and compressed through its held
         // folder; `progress` gets the bytes gone through, not freed
-        Action::Tool { command } if crate::remedies::is_compress(action) => match crate::remedies::compress_scope(path, command, spare, stop, progress) {
-            Ok(d) => {
-                o.stopped = d.stopped;
-                o.files = d.compressed as u64;
-                if d.failed > 0 {
-                    o.problem(path, format!("{} file(s) couldn't be compressed ({})", d.failed, d.first_error.as_deref().unwrap_or("no reason given")));
-                }
-                o.compress = Some(d);
-            }
-            Err(e) => o.problem(path, format!("left alone: {e}")),
-        },
+        Action::Tool { .. } if crate::remedies::is_compress(action) => o.problem(path, "left alone: compression needs a reviewed directory"),
         // A package manager clears wherever it is set up to keep its cache, which need not be
         // the folder that was reviewed. So it is told that folder (a flag, or the variable it
         // reads before its settings files), asked with the very same binding where it would
@@ -457,6 +447,22 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
     o
 }
 
+pub fn run_reviewed_compression(path: &Path, receipt: &crate::remedies::ReviewedCompression, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> Outcome {
+    let mut o = Outcome::default();
+    match crate::remedies::compress_scope(receipt, spare, stop, progress) {
+        Ok(d) => {
+            o.stopped = d.stopped;
+            o.files = d.compressed as u64;
+            if d.failed > 0 {
+                o.problem(path, format!("{} file(s) couldn't be compressed ({})", d.failed, d.first_error.as_deref().unwrap_or("no reason given")));
+            }
+            o.compress = Some(d);
+        }
+        Err(e) => o.problem(path, format!("left alone: {e}")),
+    }
+    o
+}
+
 /// A program's own clean-up, not either of the in-place remedies.
 pub fn is_external_cleanup(action: &Action) -> bool {
     matches!(action, Action::Tool { .. }) && !crate::remedies::in_place(action)
@@ -472,11 +478,8 @@ pub struct ToolProtection {
 impl ToolProtection {
     pub fn load(kept: &[PathBuf]) -> Result<Self, String> {
         crate::require_write().map_err(|e| e.to_string())?;
-        let memory = crate::memory::Memory::load_checked()
-            .map_err(|e| format!("your Keep list couldn't be read ({e})"))?;
-        let mut kept = [kept, &memory.kept_paths()].concat();
-        kept.sort_unstable();
-        kept.dedup();
+        let mut kept = kept.to_vec();
+        crate::memory::refresh_keeps(&mut kept)?;
         let skipped = crate::exclusions::for_external_cleanup()
             .map_err(|e| format!("Folders to skip couldn't be read ({e})"))?;
         Ok(Self { kept, skipped })

@@ -10,6 +10,10 @@ in-app updater shows.
 - Settings: only changed INI keys are saved, errors are reported, and window placement alone no longer enables history or other-drive search. Screenshot mode skips profile migrations and blocks settings writes and related actions.
 - Cleaning: turning privacy cleaners off drops their existing picks and blocks stale cleanup requests. A program's own cleanup command is held back if Sprawl can't verify its scope or if it overlaps a kept path or skipped folder. The review says why. Compress and shrink are unchanged.
 - Cleaning: the review shows the scope for built-in Windows, Git and version-manager commands before they run. Disk Cleanup still lets you choose what to remove in its own window.
+- Cleaning: Keep entries use their checked long paths. Concurrent windows no longer overwrite each other's Keep changes, and queued cleanup and Undo compression re-read the Keep list before acting.
+- Cleaning: Empty Recycle Bin checks the identity of each reviewed fixed volume; removable drives are left alone. nvm cleanup holds its settings still while it runs. Interrupted-link recovery notices offer Show in tree, not Delete.
+- Compression: reviewed folders must still be the same eligible programs. Personal folders, including redirected Documents, Desktop and Pictures, can't be used as program libraries. Undo supports all four algorithms and uses the same Steam layout rule as discovery.
+- AI settings: simultaneous edits preserve unrelated changes. Unreadable config is left alone and a failed save doesn't change API keys.
 - Search: scope changes rebuild results, and turning recent searches off clears the saved list.
 - History and alerts: all snapshot writers use the same retention limits. Settings reports task scheduling errors without turning the alerts back off.
 

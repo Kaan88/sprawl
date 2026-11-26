@@ -1093,8 +1093,8 @@ impl State {
         if self.advisor.deleting.is_some() { return; }
         // what was kept and skipped when the user said yes; each item adds what is kept and
         // skipped by then (a folder skipped in Settings meanwhile is never deleted)
-        let mut confirmed = self.advisor.memory.kept_paths();
-        confirmed.extend(sprawl_advisor::exclusions::configured());
+        let confirmed = self.advisor.memory.kept_paths();
+        let skipped_at_confirmation = sprawl_advisor::exclusions::configured();
         let DeleteBasis { since, seen, total, precheck, more } = basis;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.advisor.delete_stop = Some(stop.clone());
@@ -1111,7 +1111,7 @@ impl State {
             let (mut before, mut last) = (0u64, std::time::Instant::now());
             // every Keep seen during this Delete keeps counting, even if a later read of the
             // list no longer has it
-            let mut kept_seen: Vec<std::path::PathBuf> = Vec::new();
+            let mut kept_seen = confirmed;
             let mut touched: Vec<PathBuf> = Vec::new();
             for path in paths {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1125,20 +1125,13 @@ impl State {
                 }
                 // a Keep added after the confirmation must still count: when the list can't be
                 // read now, nothing more is deleted (an empty list would mean "nothing kept")
-                match sprawl_advisor::memory::Memory::load_checked() {
-                    Ok(memory) => {
-                        for k in memory.kept_paths() {
-                            if !kept_seen.contains(&k) { kept_seen.push(k); }
-                        }
-                    }
-                    Err(e) => {
-                        notes.push(format!("{}: not deleted, your Keep list could not be read ({e})", path.display()));
-                        continue;
-                    }
+                if let Err(e) = sprawl_advisor::memory::refresh_keeps(&mut kept_seen) {
+                    notes.push(format!("{}: not deleted, {e}", path.display()));
+                    continue;
                 }
-                let mut keep = confirmed.clone();
+                let mut keep = kept_seen.clone();
                 keep.extend(skipped);
-                keep.extend(kept_seen.iter().cloned());
+                keep.extend(skipped_at_confirmation.iter().cloned());
                 // the last look at this very item, immediately before it goes (Search rows
                 // from other drives: still there, same kind, no link, not protected, a file
                 // still the size and date the result showed)

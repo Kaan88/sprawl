@@ -47,6 +47,21 @@ pub fn storable(path: &Path) -> bool {
     !path.to_string_lossy().contains(';')
 }
 
+pub(crate) fn allowed(path: &Path, home: Option<&Path>, never: &crate::safety::Never) -> bool {
+    path.is_absolute() && path.parent().is_some() && never.complete()
+        && !home.is_some_and(|h| crate::finding::within(h, path))
+        && path.to_str().is_some_and(|s| !never.is_user_data(s))
+}
+
+/// Validate a new entry after opening it by its long local name. The same rule
+/// is applied when a previously saved entry is used for compression.
+pub fn validate_library(path: &Path) -> Result<(), String> {
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+    let never = crate::safety::Never::for_compression(home.as_deref().and_then(Path::to_str));
+    allowed(path, home.as_deref(), &never).then_some(())
+        .ok_or_else(|| "Choose a program library, not a personal folder (such as Documents, Desktop or Pictures) or a folder that contains one.".into())
+}
+
 /// The settings value for `paths` (each one [`storable`]): the spelling [`parse`] reads back.
 pub fn value(paths: &[PathBuf]) -> String {
     paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("; ")
