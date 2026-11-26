@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "sprawl"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "serde_json",
  "sprawl-advisor",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "sprawl-advisor"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "rusqlite",
  "serde",
@@ -533,14 +533,14 @@ dependencies = [
 
 [[package]]
 name = "sprawl-bindgen"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "windows-bindgen",
 ]
 
 [[package]]
 name = "sprawl-core"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "regex",
  "windows-sys",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "sprawl-install"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "ed25519-dalek",
  "serde",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "sprawl-release"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",

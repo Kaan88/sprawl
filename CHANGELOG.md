@@ -3,8 +3,10 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
-## Unreleased
+## 1.0.10 — 2026-11-26
 
+- Advisor: suggestions with no clean-up of their own (moves, notes, guesses) have a Delete... button, the tree's own Delete to the Recycle Bin with the same checks and question, in place of Show in tree.
+- Compression: installed programs and games outside Program Files and Steam are suggested too. Sprawl finds library folders such as D:\Games by the programs inside them, and Settings > Scanning > Program folders adds libraries it doesn't find.
 - Settings: nine sections share one editor with setup, Search, Treemap and Advisor. Program folders stays next to Folders to skip. Long lists have pages and counts; Theme has a preset dropdown, a custom accent colour, text size and table density.
 - Theme: the colour picker has its own Custom accent group so it isn't cut off below the Colour options.
 - Settings: only changed INI keys are saved, errors are reported, and window placement alone no longer enables history or other-drive search. Screenshot mode skips profile migrations and blocks settings writes and related actions.
