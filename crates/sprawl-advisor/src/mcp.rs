@@ -518,9 +518,17 @@ mod tests {
         assert!(chat_config(Path::new("s.exe"), Path::new("t"), Path::new("o"), "m", true).contains("--web"));
     }
 
+    fn bridge_fixture() -> (PathBuf, Tree) {
+        let dir = std::env::temp_dir().join(format!("sprawl-bridge-{}", crate::store::nonce()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), b"// test fixture").unwrap();
+        let tree = sprawl_core::scan(&dir, |_| {}).unwrap();
+        (dir, tree)
+    }
+
     #[test]
     fn bridge_answers() {
-        let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
+        let (dir, tree) = bridge_fixture();
         let facts = Facts::from_apps(Vec::new());
         let mut shown = None;
         let root = tree.path_of(sprawl_core::ROOT).display().to_string();
@@ -565,11 +573,12 @@ mod tests {
         }
         let inside = answer_bridge(&json!({"tool": "scan_report", "input": {"path": root}}).to_string(), Some(&tree), Some(std::time::SystemTime::now()), Some(&facts), &Memory::default(), "", None, &mut crate::mcp_scan::Index::default(), true, &mut |_| {});
         assert!(inside.contains("\"ok\":true"), "{inside}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn elevated_app_reads_only_the_screen_for_a_client_that_isnt() {
-        let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
+        let (dir, tree) = bridge_fixture();
         let root = tree.path_of(sprawl_core::ROOT).display().to_string();
         let app = crate::facts::App { name: "Here".into(), publisher: None, kind: crate::facts::AppKind::Installed, locations: vec![PathBuf::from(&root)], last_used: Some((std::time::SystemTime::now(), crate::facts::UsedFrom::Prefetch)), how_to_remove: String::new() };
         let away = crate::facts::App { name: "Elsewhere app".into(), locations: vec![PathBuf::from(r"Q:\Programs\Away")], ..app.clone() };
@@ -610,5 +619,6 @@ mod tests {
         assert!(a.contains("\"ok\":true") && a.contains("lib.rs"), "{a}");
         let a = ask_with("largest", json!({"path": root}), false, None, &mut crate::mcp_scan::Index::for_app(false));
         assert!(a.contains("\"ok\":true"), "{a}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

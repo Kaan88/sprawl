@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn off_is_refused_without_sending_anything() {
-        let tree = sprawl_core::scan(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
+        let tree = Tree::default();
         let err = run(&tree, std::time::SystemTime::now(), &AiConfig::default(), &[], None, None, &Memory::default(), "", Stop::default(), &mut |_| {}).unwrap_err();
         assert!(err.contains("AI is off"));
     }

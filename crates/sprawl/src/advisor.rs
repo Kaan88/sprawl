@@ -234,7 +234,7 @@ const ADVISOR_COMMANDS: &[&str] = &[
     "AdvChatStop", "AdvMcpCopy", "AdvChatClear", "AdvEx0", "AdvEx1", "AdvEx2", "AdvEx3", "AdvEx4", "AdvEx5", "AdvClAi0",
     "AdvClAi1", "AdvClAi2", "AdvClAi3", "AdvClAi4", "AdvClAi5", "AdvClSugTick", "AdvClSugNo", "AdvClSetup", "AdvClAiFold", "AdvClPrev",
     "AdvClPrevX", "AdvClUAll", "AdvClScanSys", "AdvClGrp", "AdvClAll", "AdvWebOnce", "AdvWebSession", "AdvWebDeny", "AdvRefresh", "AdvGoApprove", "AdvHeld",
-    "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvExplore", "AdvAsk", "AdvSetup", "AdvExport",
+    "AdvActive", "AdvTips", "AdvKnow", "AdvLeft", "AdvCopy", "AdvShow", "AdvDelete", "AdvExplore", "AdvAsk", "AdvSetup", "AdvExport",
     "AdvVerify", "AdvShowCmd", "AdvAiShow", "AdvAiTickSafe", "AdvFnSugTick", "AdvFnSugNo", "AdvLog", "AdvRejected", "AdvClean", "AdvCleanNow",
     "AdvReviewBack", "AdvCleanStop", "AdvCleanedOk", "AdvCleanMore", "AdvCleanLog", "AdvGrowOpen", "AdvGrowPaint", "AdvGrowHist", "AdvGrowTide", "AdvSelSafe",
     "AdvSelNone", "AdvSelGoal", "AdvAdmin", "AdvOwnOk", "AdvPrivOk", "AdvPvAgain", "AdvGoalOptions", "AdvGoalHide", "AdvGoalGreen", "AdvGoalCleanup",
@@ -1945,6 +1945,16 @@ impl State {
                     self.set_view(View::Tree);
                     self.reveal(n);
                 }
+                return;
+            }
+            "AdvDelete" => {
+                let Some((f, n)) = self.advisor.open.and_then(|i| { let r = self.advice()?; Some((r.findings.get(i)?.clone(), (*r.nodes.get(i)?)?)) }) else { return };
+                // the row's node must still be the finding's path in the tree on screen
+                if self.tree.as_ref().is_none_or(|t| n >= t.nodes.len() || crate::cleanup::key(&t.path_of(n)).trim_end_matches('\\') != crate::cleanup::key(&f.path).trim_end_matches('\\')) {
+                    self.tell("Not deleted", "The scan changed since this suggestion was made. Check again first.");
+                    return;
+                }
+                self.delete_single(n, false);
                 return;
             }
             "AdvExplore" => {
@@ -4808,7 +4818,13 @@ impl State {
             }
         }
         if r.nodes[i].is_some() {
-            x += r##"<Button x:Name="AdvShow" Content="Show in tree"/><Button x:Name="AdvExplore" Content="Show in Explorer"/>"##;
+            let runnable = f.command.is_some() && crate::cleanup::untickable(f, r.counted[i]).is_none();
+            if direct_delete(f, runnable) {
+                x += r##"<Button x:Name="AdvDelete" Content="Delete..." ToolTipService.ToolTip="Moves it to the Recycle Bin, after the same checks and question as Delete in the tree"/>"##;
+            } else {
+                x += r##"<Button x:Name="AdvShow" Content="Show in tree"/>"##;
+            }
+            x += r##"<Button x:Name="AdvExplore" Content="Show in Explorer"/>"##;
         }
         // only where uninstalling is the suggestion, not on every cache an app owns
         let how = (f.remedy == Remedy::Uninstall).then(|| f.owner.as_ref().and_then(|o| r.apps.iter().position(|a| a == o)).and_then(|k| r.uninstall.get(k).cloned().flatten())).flatten();
@@ -4838,6 +4854,16 @@ impl State {
     }
 }
 
+/// A finding's row offers Delete (to the Recycle Bin, the tree's own Delete) in place of Show
+/// in tree: whenever Sprawl has no clean-up of its own to run for it. Never for an in-place
+/// remedy (a compress or a shrink keeps the files), an uninstall (the uninstaller does that),
+/// or a tool's own clean-up (npm, DISM...: deleting its folder by hand is not the same).
+pub(crate) fn direct_delete(f: &Finding, runnable: bool) -> bool {
+    !runnable
+        && !matches!(f.remedy, Remedy::Uninstall | Remedy::Command)
+        && !f.action.as_ref().is_some_and(sprawl_advisor::remedies::in_place)
+}
+
 /// What "Save as a script" writes: the ticked findings with a command, never a guess by shape
 /// (the script has fewer checks than Sprawl's own clean-up), and how many guesses were left out.
 /// The ticked findings a script may hold, and how many were left out: (items, guesses by
@@ -4856,6 +4882,24 @@ pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Findi
 #[cfg(test)]
 mod script_tests {
     use super::*;
+
+    #[test]
+    fn delete_is_offered_only_where_nothing_else_acts() {
+        let mk = |remedy| Finding {
+            path: r"C:\x".into(), owner: None, bytes: 1, risk: Risk::Green, remedy, command: None, title: "x".into(),
+            evidence: vec![], confidence: 1.0, source: sprawl_advisor::Source::Rule("r".into()), allow_protected: false,
+            trusted: true, builtin: true, on_path: true, action: None, admin: false, carved: Vec::new(), gain: None, forced_from: None,
+        };
+        assert!(direct_delete(&mk(Remedy::Info), false));
+        assert!(direct_delete(&mk(Remedy::Move), false));
+        assert!(direct_delete(&mk(Remedy::Delete), false), "a guess with no runnable clean-up");
+        assert!(!direct_delete(&mk(Remedy::Delete), true), "Clean up just this... already deletes it");
+        assert!(!direct_delete(&mk(Remedy::Uninstall), false));
+        assert!(!direct_delete(&mk(Remedy::Command), false));
+        let mut c = mk(Remedy::Info);
+        c.set_action(sprawl_advisor::clean::Action::Tool { command: format!("{}xpress8k 'C:\\x\\*'", sprawl_advisor::remedies::COMPRESS) }, false);
+        assert!(!direct_delete(&c, false), "a compress keeps the files");
+    }
 
     #[test]
     fn the_script_holds_the_ticks_only() {

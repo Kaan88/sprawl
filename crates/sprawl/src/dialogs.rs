@@ -68,6 +68,11 @@ pub fn pick_folders(owner: isize, multi: bool) -> Vec<PathBuf> {
     open_dialog(owner, title, true, multi, false)
 }
 
+/// Pick one folder for a setting, with a title that names what it is for.
+pub fn pick_setting_folder(owner: isize, title: &str) -> Option<PathBuf> {
+    open_dialog(owner, title, true, false, false).into_iter().next()
+}
+
 pub fn pick_csv(owner: isize) -> Option<PathBuf> {
     open_dialog(owner, "Open a CSV file exported by WizTree or Sprawl", false, false, true).into_iter().next()
 }

@@ -387,25 +387,56 @@ impl Never {
     }
 
     fn from_locations(home: Option<&str>, places: Result<Vec<String>, ()>) -> Never {
-        let projected = |list: &[&str]| -> Vec<String> {
-            let mut paths: Vec<String> = list.iter().map(|p| p.to_string()).collect();
-            if let Some(home) = home {
-                paths.extend(list.iter().filter_map(|p| p.strip_prefix(r"?:\Users\*\")).map(|tail| format!(r"{}\{tail}", home.trim_end_matches('\\'))));
-            }
-            paths
-        };
-        let patterns: Vec<(String, Pattern)> = projected(NEVER).into_iter().map(|p| { let pattern = Pattern::new(&p); (p, pattern) }).collect();
-        // %VAR% entries that couldn't be expanded protect nothing: fail closed. (The x86 and
-        // W6432 Program Files variables may legitimately be missing.)
-        let incomplete = places.is_err() || NEVER
-            .iter()
-            .filter(|p| !p.contains("(x86)") && !p.contains("W6432"))
-            .any(|p| crate::rules::expand(p).contains('%'));
-        let mut user_paths = projected(USER_DATA);
+        let (patterns, incomplete) = Self::compiled(home);
+        let incomplete = incomplete || places.is_err();
+        let mut user_paths = Self::projected(USER_DATA, home);
         user_paths.extend(places.unwrap_or_default().into_iter().map(|p| format!(r"{}\**", p.trim_end_matches('\\'))));
         let user_roots = user_paths.iter().map(|p| crate::rules::expand(p).trim_end_matches(r"\**").to_string())
             .filter(|p| !p.contains(['*', '?', '%']) && drive_forms(p).is_some()).collect();
         Never { excluded: crate::exclusions::configured(), patterns, user_data: user_paths.iter().map(|p| Pattern::new(p)).collect(), user_roots, incomplete }
+    }
+
+    fn projected(list: &[&str], home: Option<&str>) -> Vec<String> {
+        let mut paths: Vec<String> = list.iter().map(|p| p.to_string()).collect();
+        if let Some(home) = home {
+            paths.extend(list.iter().filter_map(|p| p.strip_prefix(r"?:\Users\*\")).map(|tail| format!(r"{}\{tail}", home.trim_end_matches('\\'))));
+        }
+        paths
+    }
+
+    fn compiled(home: Option<&str>) -> (Vec<(String, Pattern)>, bool) {
+        let patterns = Self::projected(NEVER, home).into_iter().map(|p| { let pattern = Pattern::new(&p); (p, pattern) }).collect();
+        // %VAR% entries that couldn't be expanded protect nothing: fail closed. (The x86 and
+        // W6432 Program Files variables may legitimately be missing.)
+        let incomplete = NEVER
+            .iter()
+            .filter(|p| !p.contains("(x86)") && !p.contains("W6432"))
+            .any(|p| crate::rules::expand(p).contains('%'));
+        (patterns, incomplete)
+    }
+
+    /// The same protected path patterns, without resolving personal places or opening the
+    /// settings file. Compression is not deletion; callers check scan exclusions separately.
+    pub(crate) fn for_compression(home: Option<&str>) -> Never {
+        let (patterns, incomplete) = Self::compiled(home);
+        Never { excluded: Vec::new(), patterns, user_data: Vec::new(), user_roots: Vec::new(), incomplete }
+    }
+
+    /// Only an already recognized Program Files product (or Steam game there) may waive the
+    /// Program Files cover. All other patterns still apply, even when that cover also matches.
+    pub(crate) fn compression_hit(&self, path: &str, program_files: bool) -> Option<&str> {
+        let Some(forms) = drive_forms(path) else { return Some("(a path Sprawl can't check)") };
+        self.patterns.iter().find(|(s, pat)| {
+            let waive_cover = program_files && matches!(s.as_str(),
+                r"?:\Program Files\**" | r"?:\Program Files (x86)\**"
+                | r"%ProgramFiles%\**" | r"%ProgramFiles(x86)%\**" | r"%ProgramW6432%\**");
+            forms.iter().any(|p| pat.is_above(p) || (!waive_cover && pat.matches(p)))
+        }).map(|(s, _)| s.as_str())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compression_fixture() -> Never {
+        Never { incomplete: false, ..Self::inert() }
     }
 
     /// Every `%VAR%` entry could be worked out. When not, callers refuse destructive actions.
@@ -793,6 +824,12 @@ impl<'a> TailMatcher<'a> {
     pub fn hit(&self, names: &[String]) -> Option<&'a str> {
         self.tails.iter().find(|(t, _, _)| ends_with(names, t)).map(|(_, s, _)| *s)
     }
+
+    pub(crate) fn at_path(&self, path: &std::path::Path) -> Option<&'a str> {
+        if !self.maybe(path.file_name()?.to_str()?) { return None; }
+        let names: Vec<_> = path.components().rev().take(4).map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
+        self.hit(&names)
+    }
 }
 
 fn ends_with(names: &[String], tail: &[String]) -> bool {
@@ -866,12 +903,15 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
     let path = f.path.to_string_lossy();
     let from_model = matches!(f.source, crate::finding::Source::Model(_));
     let removes = matches!(f.remedy, Remedy::Delete | Remedy::Move);
+    let compression = f.builtin && f.trusted && f.remedy == Remedy::Command
+        && matches!(&f.source, crate::finding::Source::Rule(id) if id == "remedy.compact")
+        && crate::remedies::compresses(f);
     // A curated built-in rule may run its owner's official clean-up (DISM on WinSxS) on a
     // protected path; the tool decides what goes, not a recursive delete.
     let exempt = f.allow_protected && f.builtin && f.trusted && f.remedy == Remedy::Command && !from_model;
     // Every other command is treated as acting on the files at `path`, and so is an exempt
     // one that names `path` itself (a recursive Remove-Item): only the never-list is waived.
-    let destructive = removes || (f.command.is_some() && (!exempt || f.on_path));
+    let destructive = !compression && (removes || (f.command.is_some() && (!exempt || f.on_path)));
     // Sprawl's own clean-up of a rule's finding: it skips never-list names at any depth and
     // removes links as links, so protected items inside are carved out rather than vetoing the
     // finding (a rule's "command" remedy with a typed clear is Sprawl's own run too). A move, a
@@ -895,11 +935,15 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
             }
         }
     }
-    // compression is waived from the never-list only, not from links: compact.exe /s could
-    // follow a junction inside to files outside the folder that was reviewed
-    if !destructive && crate::remedies::compresses(f) {
+    // Compression has its own narrow Program Files exception, not the blanket tool waiver.
+    if compression {
+        if !never.complete() { return Err(Rejection::NeverListIncomplete); }
+        if let Err(why) = crate::remedies::compression_scope_allowed(&f.path, never) {
+            return Err(Rejection::Never(why));
+        }
         // a WOF-compressed file is data behind a reparse point, not a link
-        let link = |k: usize| tree.nodes[k].is_reparse_point() && (tree.nodes[k].is_dir || tree.nodes[k].attributes & sprawl_core::attr::WOF == 0);
+        let link = |k: usize| crate::remedies::unsafe_compression_attributes(&tree.nodes[k]);
+        let tails = never.tail_matcher();
         let mut i = Some(n);
         while let Some(k) = i {
             if link(k) {
@@ -911,6 +955,11 @@ pub(crate) fn check_in(f: &Finding, tree: &Tree, never: &Never, carve_outs: &[Ca
         while let Some(k) = stack.pop() {
             if link(k) {
                 return Err(Rejection::LinksInside(tree.path_of(k).display().to_string()));
+            }
+            let name = &tree.nodes[k].name;
+            if (tails.maybe(name) || name.eq_ignore_ascii_case("windowsapps") || name.eq_ignore_ascii_case("steamapps"))
+                && crate::remedies::live_blocked_child(&tree.path_of(k), &tails) {
+                return Err(Rejection::Never(tree.path_of(k).display().to_string()));
             }
             stack.extend(tree.nodes[k].children.iter().copied());
         }

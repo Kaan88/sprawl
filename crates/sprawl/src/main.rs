@@ -198,6 +198,8 @@ pub(crate) fn launch() -> windows_core::Result<()> {
     }
     let mut settings = settings::Settings::load();
     settings.keep_old_defaults();
+    // once, before any rule runs: the compression rule reads this snapshot, never the file
+    sprawl_advisor::program_folders::load(settings.get(sprawl_advisor::program_folders::SETTING).unwrap_or(""));
     // Setup runs as administrator, and when Sprawl itself started it (an update, or Install for
     // all users), Setup has no other user to start the new Sprawl as: it comes up elevated. Open
     // again as the user, unless "Always run as administrator" is on.
@@ -722,6 +724,8 @@ fn main() {
     // `sprawl --mcp`: an MCP server on stdin and stdout for Claude Code, no window
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if args.first().map(String::as_str) == Some("--mcp") {
+        let settings = settings::Settings::load();
+        sprawl_advisor::program_folders::load(settings.get(sprawl_advisor::program_folders::SETTING).unwrap_or(""));
         sprawl_advisor::mcp::main(&args);
         return;
     }

@@ -80,6 +80,31 @@ fn button(name: &str, t: &str) -> String {
     format!(r##"<Button x:Name="{name}" Content="{}"/>"##, ui::esc(t))
 }
 
+/// Check a newly picked Program folder the way a scan opens one: a plain local folder, held
+/// while checked, returned in its long, canonical spelling. Existing entries are never read
+/// again, so a disconnected drive keeps the spelling it was saved with. A drive root and this
+/// user's profile root are refused; the compression rule checks the rest itself.
+fn checked_program_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if !sprawl_advisor::program_folders::storable(path) {
+        return Err("A folder name with ';' can't be stored here: semicolons separate the folders. Rename it or choose another folder.".into());
+    }
+    if path.parent().is_none() {
+        return Err("A drive itself can't be a program folder. Choose a folder on it.".into());
+    }
+    let held = sprawl_core::local::directory(path).map_err(|e| format!("That folder can't be used ({e}). Choose a plain local folder."))?;
+    let path = held.path.clone();
+    if path.parent().is_none() {
+        return Err("A drive itself can't be a program folder. Choose a folder on it.".into());
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from) {
+        let home = sprawl_core::canonical_root(&home);
+        if crate::cleanup::key(&path).trim_end_matches('\\') == crate::cleanup::key(&home).trim_end_matches('\\') {
+            return Err("Your user profile folder itself can't be a program folder. Choose a folder inside it.".into());
+        }
+    }
+    Ok(path)
+}
+
 fn page_title(glyph: &str, title: &str, sub: &str) -> String {
     format!(
         r##"<StackPanel {} Orientation="Horizontal" Spacing="12" Margin="0,0,0,4"><Border Width="40" Height="40" CornerRadius="{{$rc10}}" Background="{{$selected}}"><FontIcon Glyph="{glyph}" FontSize="{{$fs18}}" Foreground="{{$seltext}}"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="{}" FontSize="{{$fs20}}" FontWeight="SemiBold"/><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" TextWrapping="Wrap"/></StackPanel></StackPanel>"##,
@@ -554,6 +579,7 @@ impl State {
             }
             "uninstaller" => self.settings.get("uninstaller").unwrap_or("").to_string(),
             "scanExclude" => self.settings.get("scanExclude").unwrap_or("").to_string(),
+            "programFolders" => self.settings.get("programFolders").unwrap_or("").to_string(),
             "searchDrivesOn" => self.settings.get("searchDrivesOn").unwrap_or("").to_string(),
             // the administrator switches: in the store only an administrator can write
             k if crate::admin::is_switch(k) => b(crate::admin::store::get(k)),
@@ -628,6 +654,11 @@ impl State {
             "snapshot_cap_mb" => self.settings.set("snapshot_cap_mb", prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),
             "uninstaller" => self.settings.set("uninstaller", v.trim().trim_matches('"')),
             "scanExclude" => self.settings.set("scanExclude", v.trim()),
+            "programFolders" => {
+                let paths = sprawl_advisor::program_folders::parse(v).unwrap_or_default();
+                self.settings.set(sprawl_advisor::program_folders::SETTING, sprawl_advisor::program_folders::value(&paths));
+                sprawl_advisor::program_folders::replace(paths);
+            }
             "searchDrivesOn" => {
                 self.settings.set("searchDrivesOn", v);
                 self.settings.set("searchDrivesOff", "");
@@ -856,6 +887,28 @@ impl State {
                     x += &help("No fixed drive found.");
                 }
             }
+            "programFolders" => {
+                x += &help(p.help);
+                let paths = match sprawl_advisor::program_folders::parse(v) {
+                    Ok(paths) => paths,
+                    Err(e) => {
+                        x += &help(&e);
+                        Vec::new()
+                    }
+                };
+                if paths.is_empty() && v.trim().is_empty() {
+                    x += &help("Nothing added yet. Program Files is always checked.");
+                }
+                let add = b("PfB_progAdd", "Add folder...");
+                for (i, path) in paths.iter().enumerate() {
+                    x += &format!(
+                        r##"<Grid ColumnSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap" VerticalAlignment="Center" IsTextSelectionEnabled="True"/><Button x:Name="PfB_progDel{i}" Grid.Column="1" Content="Remove" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" VerticalAlignment="Top"/></Grid>"##,
+                        ui::esc(&path.display().to_string())
+                    );
+                    buttons.push(format!("PfB_progDel{i}"));
+                }
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">{add}</StackPanel>"##);
+            }
             "neverTouch" => {
                 x += &help(p.help);
                 self.advisor.memory_ready();
@@ -1030,6 +1083,38 @@ impl State {
                     }
                 }
                 self.prefs.note = Some(format!("Deleted {n} snapshots of History."));
+            }
+            "PfB_progAdd" => {
+                if let Some(picked) = crate::dialogs::pick_setting_folder(self.hwnd, "Select a program folder") {
+                    match checked_program_folder(&picked) {
+                        Err(e) => self.prefs.note = Some(e),
+                        Ok(path) => {
+                            let mut paths = sprawl_advisor::program_folders::parse(self.prefs.draft.get("programFolders").map_or("", String::as_str)).unwrap_or_default();
+                            let key = path.to_string_lossy();
+                            if paths.iter().any(|p| p.to_string_lossy().eq_ignore_ascii_case(&key)) {
+                                self.prefs.note = Some(format!("{} is already in the list.", path.display()));
+                            } else {
+                                paths.push(path);
+                                match sprawl_advisor::program_folders::parse(&sprawl_advisor::program_folders::value(&paths)) {
+                                    Ok(paths) => {
+                                        self.prefs.draft.insert("programFolders".into(), sprawl_advisor::program_folders::value(&paths));
+                                        self.prefs.note = Some("Program folder added. Press Save to keep it.".into());
+                                    }
+                                    Err(e) => self.prefs.note = Some(e),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            n if n.starts_with("PfB_progDel") => {
+                let i: usize = n["PfB_progDel".len()..].parse().unwrap_or(usize::MAX);
+                let mut paths = sprawl_advisor::program_folders::parse(self.prefs.draft.get("programFolders").map_or("", String::as_str)).unwrap_or_default();
+                if i < paths.len() {
+                    let removed = paths.remove(i);
+                    self.prefs.draft.insert("programFolders".into(), sprawl_advisor::program_folders::value(&paths));
+                    self.prefs.note = Some(format!("{} removed. Press Save to keep that.", removed.display()));
+                }
             }
             "PfB_keepAdd" => {
                 let fe = self.prefs.fe.clone();
@@ -1245,6 +1330,11 @@ impl State {
             self.wizard_show();
             return;
         }
+        if let Err(e) = sprawl_advisor::program_folders::parse(self.prefs.draft.get("programFolders").map_or("", String::as_str)) {
+            self.prefs.note = Some(e);
+            self.wizard_show();
+            return;
+        }
         let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
         let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
         // the effort picked per model is set in the Advisor's AI settings, and kept here
@@ -1282,7 +1372,7 @@ impl State {
             })
             .collect();
         // the administrator switches as they are before this save, to tell a real change
-        let exclusions_changed = changed.iter().any(|(p, _)| p.key == "scanExclude");
+        let lists_changed = changed.iter().any(|(p, _)| p.key == "scanExclude" || p.key == "programFolders");
         let admin_before: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         for (p, v) in changed {
             // into their store; a write that fails is said in the message, never "saved"
@@ -1305,7 +1395,7 @@ impl State {
         self.theme_commit();
         self.settings.set_bool("wizard_done", true);
         self.settings.save();
-        if exclusions_changed { self.advisor_refresh(); }
+        if lists_changed { self.advisor_refresh(); }
         // the administrator switches take effect now, not at the next start
         let admin_after: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         let admin_changed = admin_before != admin_after;

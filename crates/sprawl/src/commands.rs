@@ -939,7 +939,7 @@ impl State {
     }
 
     /// Delete one node of the scan: checked, then one confirm naming its path.
-    fn delete_single(&mut self, n: usize, permanent: bool) {
+    pub(crate) fn delete_single(&mut self, n: usize, permanent: bool) {
         let Some(path) = self.tree.as_ref().filter(|t| n < t.nodes.len()).map(|t| t.path_of(n)) else { return };
         if let Some(why) = self.delete_refusal(n, &path) {
             self.tell("Not deleted", &why);

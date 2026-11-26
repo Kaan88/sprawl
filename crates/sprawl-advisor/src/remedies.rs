@@ -2,16 +2,17 @@
 //! (`compact /exe:...`, which Sprawl runs when ticked: F1), letting OneDrive keep files online
 //! only, and moving big things to a drive with room (tips, for the user to do).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sprawl_core::{format_size, Tree, ROOT};
 
-use crate::finding::{Action, Finding, Remedy, Risk, Source};
+use crate::finding::{within, Action, Finding, Remedy, Risk, Source};
 use crate::rules::ps_quote;
+use crate::safety::{Never, TailMatcher};
 use crate::segments;
 
 const GB: u64 = 1 << 30;
-const COMPRESSED: u32 = 0x800;
+const LIBRARY_CHILD: u64 = 200 << 20;
 /// OneDrive and other cloud files: the data is online only (a placeholder).
 const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 const RECALL_ON_OPEN: u32 = 0x0004_0000;
@@ -64,40 +65,52 @@ pub fn uncompress_command(path: &Path) -> String {
 }
 
 /// Undo a recorded compression only in a current supported application/game scope.
-pub fn uncompress(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::path::PathBuf]) -> Result<(), String> {
+pub fn uncompress(path: &Path, keep: &[PathBuf], excluded: &[PathBuf]) -> Result<(), String> {
     let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
-    let path = &root.path;
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
-    if crate::finding::other_account(path, home.as_deref()) || crate::exclusions::intersects(path, excluded)
-        || keep.iter().any(|p| crate::finding::within(path, p) || crate::finding::within(p, path)) {
-        return Err("This scope is excluded, kept or belongs to another account.".into());
-    }
-    let pf = crate::reg::Key::open(crate::reg::HKLM, r"SOFTWARE\Microsoft\Windows\CurrentVersion", crate::reg::View::Native);
-    let program = path.parent().is_some_and(|parent| ["ProgramFilesDir", "ProgramFilesDir (x86)"].iter()
-        .filter_map(|name| pf.as_ref().and_then(|k| k.string(name)))
-        .any(|p| crate::finding::within(parent, Path::new(&p)) && crate::finding::within(Path::new(&p), parent)));
-    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let game = path.parent().and_then(Path::file_name).is_some_and(|p| p.eq_ignore_ascii_case("common"))
-        && crate::facts::Facts::gather().apps.iter().any(|a| a.kind == crate::facts::AppKind::Steam
-            && a.locations.iter().any(|p| crate::finding::within(path, p) && crate::finding::within(p, path)));
-    if (!program && !game) || matches!(name.as_str(), "windowsapps" | "common files" | "steam" | "") {
-        return Err("This record is no longer a supported Program Files product or registered Steam game. It was left alone.".into());
-    }
-    uncompress_scope(path, keep, excluded)
+    let policy = CompactPolicy::current();
+    uncompress_current(&root.path, keep, excluded, &policy, |path| {
+        crate::facts::Facts::gather().apps.iter().any(|a| a.kind == crate::facts::AppKind::Steam
+            && a.locations.iter().any(|p| same_path(p, path)))
+    })
 }
 
-fn uncompress_scope(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::path::PathBuf]) -> Result<(), String> {
+fn uncompress_current(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy: &CompactPolicy, registered_steam: impl FnOnce(&Path) -> bool) -> Result<(), String> {
+    if crate::exclusions::intersects(path, excluded) || keep.iter().any(|p| within(path, p) || within(p, path)) {
+        return Err("This scope is excluded or kept.".into());
+    }
+    let scope = policy.scope(path)?;
+    let eligible = match scope.origin {
+        Origin::Program | Origin::Configured => true,
+        Origin::Steam => registered_steam(path),
+        Origin::Other => {
+            // Recheck the record's own library, never its drive. Ignore the saving/allocation
+            // tests here: a successfully compressed program will no longer pass them.
+            let parent = path.parent().filter(|p| p.parent().is_some());
+            parent.is_some_and(|parent| {
+                let progress = sprawl_core::Progress::with_exclusions(excluded);
+                sprawl_core::walk::inventory(parent, &progress).is_ok_and(|tree| {
+                    tree.errors == 0 && detected_member(&tree, path, policy)
+                })
+            })
+        }
+    };
+    if !eligible {
+        return Err("This record is no longer in a supported program folder or library. It was left alone.".into());
+    }
+    uncompress_scope(path, keep, excluded, policy)
+}
+
+fn uncompress_scope(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy: &CompactPolicy) -> Result<(), String> {
     let _root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
     let tree = sprawl_core::walk::walk(path, &sprawl_core::Progress::new()).map_err(|e| e.to_string())?;
     if tree.errors != 0 { return Err("The folder could not be read completely; nothing was uncompressed.".into()); }
-    let never = crate::safety::Never::default_list();
-    if !never.complete() || !never.hits_inside(&tree, ROOT).is_empty() { return Err("This scope contains protected items or could not be checked.".into()); }
+    let tails = policy.never.tail_matcher();
     let mut work = Vec::new();
     for (n, node) in tree.nodes.iter().enumerate() {
         let p = tree.path_of(n);
-        if crate::exclusions::intersects(&p, excluded) || keep.iter().any(|k| crate::finding::within(&p, k) || crate::finding::within(k, &p))
-            || node.attributes & crate::dupes::NOT_LOCAL != 0 || node.is_reparse_point() && node.attributes & sprawl_core::attr::WOF == 0 {
-            return Err("A kept, excluded, cloud or linked item is inside this scope; nothing was uncompressed.".into());
+        if crate::exclusions::intersects(&p, excluded) || keep.iter().any(|k| within(&p, k) || within(k, &p))
+            || unsafe_compression_attributes(node) || live_blocked_child(&p, &tails) {
+            return Err("A protected, kept, excluded, cloud or linked item is inside this scope; nothing was uncompressed.".into());
         }
         // WOF files can appear as ordinary Archive files through the filter. Every plain
         // file in this explicitly approved scope is therefore an exact uncompress target.
@@ -117,10 +130,12 @@ fn uncompress_scope(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::p
             if chars + next > 4000 { break; }
             chars += next; end += 1;
         }
-        let pins: Vec<_> = work[offset..end].iter().map(|(p, expected_dir)| {
-            if never.path_hit(p).is_some() { return Err("A protected item appeared; it was left alone.".to_string()); }
+        let pins: Vec<_> = work[offset..end].iter().map(|(p, expected_dir)| -> Result<_, String> {
             let pinned = sprawl_core::local::storage(p).map_err(|e| e.to_string())?;
             if pinned.metadata().map_err(|e| e.to_string())?.is_dir() != *expected_dir { return Err("A file became a folder or the reverse; it was left alone.".into()); }
+            if !expected_dir && pinned.file_links().map_err(|e| e.to_string())? != 1 {
+                return Err("A file has another hard-link name; it was left alone.".into());
+            }
             Ok(pinned)
         }).collect::<Result<_, _>>()?;
         let args = work[offset..end].iter().map(|(p, _)| ps_quote(&p.display().to_string())).collect::<Vec<_>>().join(" ");
@@ -149,22 +164,35 @@ fn uncompress_scope(path: &Path, keep: &[std::path::PathBuf], excluded: &[std::p
 /// is left as it is, since its storage is shared with a file outside the folder. Kept items are
 /// left too. `progress` gets how many bytes have been gone through, of the folder's total.
 pub fn compress_scope(path: &Path, command: &str, spare: &crate::clean::Spare, stop: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(u64)) -> Result<sprawl_core::wof::Done, String> {
+    compress_scope_in(path, command, spare, stop, progress, &CompactPolicy::current(), &crate::exclusions::configured())
+}
+
+fn compress_scope_in(path: &Path, command: &str, spare: &crate::clean::Spare, stop: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(u64), policy: &CompactPolicy, excluded: &[PathBuf]) -> Result<sprawl_core::wof::Done, String> {
     use std::sync::atomic::Ordering;
     let alg = compress_alg(command).and_then(sprawl_core::wof::Alg::parse).ok_or("not one of Sprawl's compress commands")?;
     if !command.ends_with(&ps_quote(&format!("{}\\*", path.display()))) {
         return Err("the command names another folder than the one reviewed".into());
     }
     // a folder to skip in it or above it is known before anything is read: nothing is listed
-    let excluded = crate::exclusions::configured();
-    if crate::exclusions::intersects(path, &excluded) {
+    if crate::exclusions::intersects(path, excluded) {
         return Err(format!("{} holds or is in a folder you skip, so nothing was compressed", path.display()));
     }
     if stop.load(Ordering::Relaxed) {
         return Ok(sprawl_core::wof::Done { stopped: true, ..Default::default() });
     }
+    let root = sprawl_core::local::directory(path).map_err(|e| e.to_string())?;
+    let path = &root.path;
+    policy.scope(path)?;
+    if crate::exclusions::intersects(path, excluded) {
+        return Err(format!("{} holds or is in a folder you skip, so nothing was compressed", path.display()));
+    }
+    let tails = policy.never.tail_matcher();
     let check = |p: &Path, _dir: bool| -> Result<bool, String> {
-        if crate::exclusions::intersects(p, &excluded) {
+        if crate::exclusions::intersects(p, excluded) {
             return Err(format!("{} is a folder you skip, so nothing was compressed", p.display()));
+        }
+        if live_blocked_child(p, &tails) {
+            return Err(format!("{} is protected, so nothing was compressed", p.display()));
         }
         Ok(spare.keeps(p))
     };
@@ -379,64 +407,213 @@ fn lzx_ratio(ext: &str) -> f64 {
     }
 }
 
-/// Installed programs that `compact /exe:lzx` would shrink a lot: big folders right under
-/// Program Files (or a games library) whose files aren't compressed yet.
-pub fn compact(tree: &Tree) -> Vec<Finding> {
-    let mut out = Vec::new();
-    let mut stack = vec![ROOT];
-    while let Some(n) = stack.pop() {
-        let node = &tree.nodes[n];
-        if !node.is_dir || (n != ROOT && node.is_reparse_point()) {
-            continue;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin { Program, Steam, Configured, Other }
+
+struct CompactScope {
+    origin: Origin,
+    program_files: bool,
+}
+
+struct CompactPolicy {
+    folders: Vec<PathBuf>,
+    home: Option<PathBuf>,
+    program_data: Option<PathBuf>,
+    program_files: Vec<PathBuf>,
+    never: Never,
+}
+
+fn same_path(a: &Path, b: &Path) -> bool { within(a, b) && within(b, a) }
+
+fn library_path(path: &Path) -> bool {
+    path.is_absolute() && path.file_name().is_some()
+}
+
+impl CompactPolicy {
+    fn current() -> Self {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+        let never = Never::for_compression(home.as_deref().and_then(Path::to_str));
+        Self {
+            folders: crate::program_folders::configured(),
+            home,
+            program_data: std::env::var_os("ProgramData").map(PathBuf::from),
+            program_files: ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].iter()
+                .filter_map(std::env::var_os).map(PathBuf::from).filter(|p| library_path(p)).collect(),
+            never,
         }
-        let segs = segments(&tree.path_of(n).to_string_lossy());
-        let program_dir = segs.len() == 3 && (segs[1] == "program files" || segs[1] == "program files (x86)") || segs.len() >= 4 && segs[segs.len() - 2] == "common" && segs.iter().any(|s| s == "steamapps");
-        if !program_dir {
-            if segs.len() < 6 {
-                stack.extend(node.children.iter().copied().filter(|&c| tree.nodes[c].is_dir));
-            }
-            continue;
+    }
+
+    fn configured_parent(&self, path: &Path) -> bool {
+        path.parent().is_some_and(|p| library_path(p)
+            && !self.home.as_deref().is_some_and(|h| same_path(p, h))
+            && self.folders.iter().any(|f| same_path(p, f)))
+    }
+
+    fn configured_at_or_below(&self, path: &Path) -> bool {
+        // A named library is never a target. Also don't take an enclosing folder as a target
+        // in place of the individual programs in an explicitly named library farther down.
+        self.folders.iter().any(|f| within(f, path))
+    }
+
+    fn scope(&self, path: &Path) -> Result<CompactScope, String> {
+        self.scope_with_never(path, &self.never)
+    }
+
+    fn scope_with_never(&self, path: &Path, never: &Never) -> Result<CompactScope, String> {
+        if !never.complete() { return Err("The protected Windows folders couldn't be checked.".into()); }
+        let raw = path.to_str().ok_or("This folder name can't be checked.")?;
+        let segs = segments(raw.strip_prefix(r"\\?\").unwrap_or(raw));
+        let [_, top, ..] = segs.as_slice() else { return Err("A drive root can't be compressed or uncompressed.".into()); };
+        let (top, leaf) = (top.as_str(), segs.last().unwrap().as_str());
+        let parent = path.parent().ok_or("This folder has no parent.")?;
+        let configured = self.configured_parent(path);
+        if !path.is_absolute() || matches!(top, "windows" | "programdata")
+            || self.program_data.as_deref().is_some_and(|p| within(path, p) || within(p, path))
+            || segs.iter().any(|s| s == "windowsapps")
+            || crate::finding::other_account(path, self.home.as_deref())
+            || self.home.as_deref().is_some_and(|h| within(h, path) || (within(path, h) && !configured))
+        {
+            return Err("This is a protected Windows or user folder.".into());
         }
-        // Steam's own folder holds its games, which are suggested one by one: look inside it
-        if node.name.eq_ignore_ascii_case("steam") {
-            stack.extend(node.children.iter().copied().filter(|&c| tree.nodes[c].is_dir));
-            continue;
+        let steam = segs.iter().position(|s| s == "steamapps");
+        if steam.is_some_and(|at| segs.len() != at + 3 || segs[at + 1] != "common") {
+            return Err("Only individual programs in steamapps\\common can be compressed or uncompressed.".into());
         }
-        // Store apps: nobody may write there, and taking ownership breaks them
-        if node.size < 2 * GB || node.name.eq_ignore_ascii_case("windowsapps") {
-            continue;
+        let standard_pf = matches!(top, "program files" | "program files (x86)");
+        let program_files = standard_pf || self.program_files.iter().any(|p| within(path, p));
+        let program = (standard_pf && segs.len() == 3) || self.program_files.iter().any(|p| same_path(parent, p));
+        if (program_files && !program && steam.is_none())
+            || (program && matches!(leaf, "common files" | "steam"))
+        {
+            return Err("Only individual Program Files products can be compressed or uncompressed.".into());
         }
-        // already compressed (on disk smaller than the data)? then nothing to gain
-        if node.allocated < node.size / 10 * 9 {
-            continue;
+        if let Some(hit) = never.compression_hit(raw, program_files) {
+            return Err(format!("This scope is protected by {hit}."));
         }
-        let mut saving = 0f64;
-        let mut s2 = vec![n];
-        while let Some(k) = s2.pop() {
-            let x = &tree.nodes[k];
-            if x.is_dir {
-                if !x.is_reparse_point() {
-                    s2.extend_from_slice(&x.children);
+        let tails = never.tail_matcher();
+        if parent.ancestors().any(|p| tails.at_path(p).is_some()) {
+            return Err("This folder is inside a protected item.".into());
+        }
+        let origin = if steam.is_some() { Origin::Steam } else if program { Origin::Program }
+            else if configured { Origin::Configured } else { Origin::Other };
+        Ok(CompactScope { origin, program_files })
+    }
+}
+
+/// Safety checks may revalidate an existing finding after the settings or scan have changed.
+pub(crate) fn compression_scope_allowed(path: &Path, never: &Never) -> Result<(), String> {
+    let path = sprawl_core::local::lexical(path).map_err(|e| e.to_string())?;
+    CompactPolicy::current().scope_with_never(&path, never).map(|_| ())
+}
+
+fn blocked_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("windowsapps") || name.eq_ignore_ascii_case("steamapps")
+}
+
+pub(crate) fn live_blocked_child(path: &Path, tails: &TailMatcher<'_>) -> bool {
+    path.file_name().and_then(|n| n.to_str()).is_none_or(blocked_name) || tails.at_path(path).is_some()
+}
+
+pub(crate) fn unsafe_compression_attributes(node: &sprawl_core::Node) -> bool {
+    node.attributes & crate::dupes::NOT_LOCAL != 0
+        || node.is_reparse_point() && (node.is_dir || node.attributes & sprawl_core::attr::WOF == 0)
+}
+
+#[derive(Clone, Copy, Default)]
+struct CompactSummary {
+    saving: f64,
+    has_exe: bool,
+    blocked: bool,
+    library: bool,
+}
+
+fn compact_summaries(tree: &Tree, never: &Never) -> Vec<CompactSummary> {
+    let tails = never.tail_matcher();
+    let mut summary = vec![CompactSummary::default(); tree.nodes.len()];
+    // Children always have higher indices. Each file's estimate and executable evidence
+    // are read once, before deciding which of the directory scopes to show.
+    for (n, node) in tree.nodes.iter().enumerate().rev() {
+        let bad_attributes = unsafe_compression_attributes(node);
+        let mut here = CompactSummary {
+            blocked: bad_attributes || blocked_name(&node.name)
+                || (tails.maybe(&node.name) && tails.at_path(&tree.path_of(n)).is_some()),
+            ..Default::default()
+        };
+        if node.is_dir && !bad_attributes {
+            let (mut large, mut with_exe) = (0u64, 0u64);
+            for &c in &node.children {
+                let child = &tree.nodes[c];
+                let sub = summary[c];
+                here.has_exe |= sub.has_exe;
+                here.blocked |= sub.blocked;
+                here.saving += sub.saving;
+                if child.is_dir && child.size >= LIBRARY_CHILD {
+                    large += 1;
+                    with_exe += u64::from(sub.has_exe);
                 }
-            } else if x.attributes & (COMPRESSED | REPARSE) == 0 && x.size >= 4096 {
-                saving += x.size as f64 * lzx_ratio(&x.extension());
+            }
+            here.library = with_exe >= 2 && with_exe * 3 >= large * 2;
+        } else if !node.is_dir && !bad_attributes {
+            here.has_exe = node.name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case("exe"));
+            if !node.is_compressed() && node.attributes & REPARSE == 0 && node.size >= 4096 {
+                here.saving = node.size as f64 * lzx_ratio(&node.extension());
             }
         }
+        summary[n] = here;
+    }
+    summary
+}
+
+fn detected_member(tree: &Tree, path: &Path, policy: &CompactPolicy) -> bool {
+    if tree.nodes.is_empty() || !library_path(&tree.root_path) || unsafe_compression_attributes(&tree.nodes[ROOT])
+        || !path.parent().is_some_and(|p| same_path(p, &tree.root_path)) || policy.configured_at_or_below(path) {
+        return false;
+    }
+    let summary = compact_summaries(tree, &policy.never);
+    summary[ROOT].library && tree.nodes[ROOT].children.iter().any(|&c| {
+        let node = &tree.nodes[c];
+        node.is_dir && node.size >= LIBRARY_CHILD && summary[c].has_exe && !summary[c].blocked && same_path(&tree.path_of(c), path)
+    })
+}
+
+/// Worthwhile, non-overlapping compression scopes. The rule reads only the scan and the
+/// in-memory Program folders list. `lexical` only asks Windows for the drive-letter type.
+pub fn compact(tree: &Tree) -> Vec<Finding> {
+    compact_in(tree, &CompactPolicy::current(), |p| sprawl_core::local::lexical(p).is_ok())
+}
+
+fn compact_in(tree: &Tree, policy: &CompactPolicy, is_local: impl Fn(&Path) -> bool) -> Vec<Finding> {
+    if tree.nodes.is_empty() || tree.method == sprawl_core::ScanMethod::Csv || !policy.never.complete() { return Vec::new(); }
+    let roots: &[usize] = if tree.nodes[ROOT].name == sprawl_core::MULTIPLE { &tree.nodes[ROOT].children } else { &[ROOT] };
+    let mut stack: Vec<_> = roots.iter().copied().filter(|&n| {
+        let p = tree.path_of(n);
+        p.is_absolute() && is_local(&p)
+    }).map(|n| (n, false)).collect();
+    if stack.is_empty() { return Vec::new(); }
+    let summary = compact_summaries(tree, &policy.never);
+    let mut out = Vec::new();
+    while let Some((n, under_library)) = stack.pop() {
+        let node = &tree.nodes[n];
+        if !node.is_dir || node.size < 2 * GB || unsafe_compression_attributes(node) { continue; }
         let path = tree.path_of(n);
-        // compact.exe only on a local drive: a games library on a share is read only
-        if sprawl_core::local::lexical(&path).is_err() {
+        let here = summary[n];
+        let candidate = policy.scope(&path).ok().filter(|scope| {
+            !here.blocked && !policy.configured_at_or_below(&path)
+                && (scope.origin != Origin::Other || (under_library && here.has_exe))
+        });
+        let Some(scope) = candidate else {
+            // A drive root isn't a library. The first qualifying library on the way down
+            // takes its direct programs; a program's own layout cannot create extra cards.
+            let library = library_path(&path) && here.library;
+            stack.extend(node.children.iter().copied()
+                .filter(|&c| tree.nodes[c].is_dir && tree.nodes[c].size >= 2 * GB).map(|c| (c, library)));
             continue;
-        }
-        let game = segs.iter().any(|s| s == "steamapps");
-        // the plan's defaults (future-features.md F1): games read big files and gain from the
-        // bigger chunks; programs in daily use start faster with the smaller ones. Both save a
-        // little less than LZX, which the ratios are for.
-        let (alg, share) = if game { ("xpress16k", 0.85) } else { ("xpress8k", 0.75) };
-        let saving = (saving * share) as u64;
-        if saving < GB {
-            continue;
-        }
-        out.push(info(
+        };
+        if node.allocated < node.size - node.size / 10 { continue; }
+        let (alg, share) = if scope.program_files { ("xpress8k", 0.75) } else { ("xpress16k", 0.85) };
+        let saving = (here.saving * share) as u64;
+        if saving < GB { continue; }
+        let mut f = info(
             tree,
             n,
             "compact",
@@ -444,25 +621,19 @@ pub fn compact(tree: &Tree) -> Vec<Finding> {
             vec![
                 format!("Windows can store these program files compressed ({}): about {} of {} saved, the program runs as before. Nothing is deleted.", alg.to_uppercase(), format_size(saving), format_size(node.size)),
                 "Compress it now (or tick it and review), and Sprawl compresses its files with Windows' own compression, showing how far it is. Files in use are skipped: close the program first.".into(),
-                if game { "An update or 'verify files' in Steam writes some files back uncompressed; compress it again after big updates. A few games with anti-cheat check their files: if one complains, uncompress it.".into() } else { "An update writes changed files back uncompressed; compress it again after big updates.".into() },
+                if scope.origin == Origin::Steam { "An update or 'verify files' in Steam writes some files back uncompressed; compress it again after big updates. A few games with anti-cheat check their files: if one complains, uncompress it.".into() } else { "An update writes changed files back uncompressed; compress it again after big updates.".into() },
                 format!("Undo with: compact /u /s /a /i /exe {}", ps_quote(&format!("{}\\*", path.display()))),
             ],
             // the folder's own size (what the safety checks compare); the saving is its gain
             node.size,
             Risk::Green,
             Remedy::Command,
-        ));
-        if let Some(f) = out.last_mut() {
-            f.gain = Some(saving);
-            // Sprawl's own command, from the built-in rules: compact.exe on the folder's files.
-            // It deletes nothing, so the never-list (Program Files is on it) doesn't veto it, as
-            // for DISM; it acts on the files inside, never on the folder or through a link.
-            f.allow_protected = true;
-            let pf = |v: &str| std::env::var_os(v).is_some_and(|d| crate::finding::within(&path, Path::new(&d)));
-            let admin = pf("ProgramFiles") || pf("ProgramFiles(x86)");
-            // single-quoted: a folder name can't run anything
-            f.set_action(Action::Tool { command: format!("{COMPRESS}{alg} {}", ps_quote(&format!("{}\\*", path.display()))) }, admin);
-        }
+        );
+        f.gain = Some(saving);
+        let admin = policy.program_files.iter().any(|p| within(&path, p));
+        // Single-quoted: a folder name can't run anything.
+        f.set_action(Action::Tool { command: format!("{COMPRESS}{alg} {}", ps_quote(&format!("{}\\*", path.display()))) }, admin);
+        out.push(f);
     }
     out.sort_by(|a, b| b.expected_gain().cmp(&a.expected_gain()));
     out.truncate(10);
@@ -657,7 +828,9 @@ mod tests {
 
     #[test]
     fn moves_only_when_full_and_room_elsewhere() {
-        let tree = sprawl_core::scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), |_| {}).unwrap();
+        let tree = Tree { root_path: r"C:\Fixture".into(), nodes: vec![sprawl_core::Node {
+            name: r"C:\Fixture".into(), is_dir: true, ..Default::default()
+        }], ..Default::default() };
         // this scan's folder isn't on a drive that is nearly full: nothing
         assert!(moves(&tree, &[('C', 100 * GB, GB), ('D', 500 * GB, 400 * GB)]).is_empty());
     }
@@ -666,6 +839,215 @@ mod tests {
 #[cfg(test)]
 mod compress_tests {
     use super::*;
+
+    fn policy(home: Option<&Path>, folders: &[&Path]) -> CompactPolicy {
+        CompactPolicy {
+            folders: folders.iter().map(|p| p.to_path_buf()).collect(),
+            home: home.map(Path::to_path_buf),
+            program_data: None,
+            program_files: Vec::new(),
+            never: Never::compression_fixture(),
+        }
+    }
+
+    fn fixture(root: &str, files: &[(&str, u64)]) -> Tree {
+        use sprawl_core::Node;
+        let mut tree = Tree {
+            root_path: root.into(), method: sprawl_core::ScanMethod::Walk,
+            nodes: vec![Node { name: root.into(), is_dir: true, ..Node::default() }],
+            ..Tree::default()
+        };
+        for &(file, bytes) in files {
+            let mut parts = file.split('\\').peekable();
+            let mut dir = ROOT;
+            while let Some(name) = parts.next() {
+                if let Some(c) = tree.nodes[dir].children.iter().copied().find(|&c| tree.nodes[c].name == name) {
+                    dir = c;
+                    continue;
+                }
+                let n = tree.nodes.len();
+                let is_dir = parts.peek().is_some();
+                let size = if is_dir { 0 } else { bytes };
+                tree.nodes.push(Node { name: name.into(), parent: Some(dir), is_dir, size, allocated: size,
+                    files: u64::from(!is_dir), ..Node::default() });
+                tree.nodes[dir].children.push(n);
+                dir = n;
+            }
+        }
+        tree.compute_totals();
+        tree
+    }
+
+    fn offers(tree: &Tree, policy: &CompactPolicy) -> Vec<(PathBuf, String)> {
+        compact_in(tree, policy, |_| true).into_iter().map(|f| {
+            let alg = match f.action.unwrap() {
+                Action::Tool { command } => compress_alg(&command).unwrap().to_owned(),
+                _ => panic!("not compression"),
+            };
+            (f.path, alg)
+        }).collect()
+    }
+
+    #[test]
+    fn detected_library_offers_direct_exe_bearing_programs_only() {
+        let tree = fixture(r"D:\", &[
+            (r"Games\Cyberpunk 2077\bin\game.exe", 3 * GB),
+            (r"Games\Cyberpunk 2077\tools\helper.EXE", 3 * GB),
+            (r"Games\Assassin's Creed Shadows\bin\game.exe", 4 * GB),
+            (r"Games\Data\asset.json", 5 * GB),
+            (r"Games\SmallData\asset.json", LIBRARY_CHILD - 1),
+            (r"Other\big.exe", 7 * GB),
+        ]);
+        let policy = policy(None, &[]);
+        assert_eq!(offers(&tree, &policy), [
+            (r"D:\Games\Cyberpunk 2077".into(), "xpress16k".into()),
+            (r"D:\Games\Assassin's Creed Shadows".into(), "xpress16k".into()),
+        ]);
+        let library = tree.subtree(crate::find_path(&tree, Path::new(r"D:\Games")).unwrap());
+        assert_eq!(offers(&library, &policy).len(), 2, "a scan rooted at the library works too");
+        assert!(detected_member(&library, Path::new(r"D:\Games\Cyberpunk 2077"), &policy));
+        assert!(!detected_member(&library, Path::new(r"D:\Games\Data"), &policy));
+    }
+
+    #[test]
+    fn detection_needs_two_exe_children_and_two_thirds_of_sizeable_children() {
+        let policy = policy(None, &[]);
+        let make = |second, fourth| fixture(r"D:\Games", &[
+            (r"First\bin\game.exe", 4 * GB), (r"Second\game.exe", second),
+            (r"Data\file.txt", LIBRARY_CHILD), (r"Fourth\file.txt", fourth),
+        ]);
+        assert_eq!(offers(&make(LIBRARY_CHILD, LIBRARY_CHILD - 1), &policy).len(), 1);
+        assert!(offers(&make(LIBRARY_CHILD - 1, LIBRARY_CHILD - 1), &policy).is_empty());
+        assert!(offers(&make(LIBRARY_CHILD, LIBRARY_CHILD), &policy).is_empty());
+    }
+
+    #[test]
+    fn configured_library_needs_no_exe_and_checks_only_its_children() {
+        let tree = fixture(r"D:\Collections", &[
+            (r"Chosen\First\nested\data.txt", 5 * GB),
+            (r"Chosen\Second\data.dll", 4 * GB),
+            (r"Chosen\Small\data.txt", GB),
+            (r"Chosen\NoGain\asset.zip", 10 * GB),
+            (r"Other\Third\data.txt", 6 * GB),
+        ]);
+        let expected = [
+            (r"D:\Collections\Chosen\First".into(), "xpress16k".into()),
+            (r"D:\Collections\Chosen\Second".into(), "xpress16k".into()),
+        ];
+        let policy = policy(None, &[Path::new(r"d:\collections\CHOSEN\")]);
+        assert_eq!(offers(&tree, &policy), expected);
+        let mut tree = tree;
+        let first = crate::find_path(&tree, Path::new(r"D:\Collections\Chosen\First")).unwrap();
+        tree.nodes[first].allocated = tree.nodes[first].size - tree.nodes[first].size / 10 - 1;
+        assert_eq!(offers(&tree, &policy), expected[1..]);
+    }
+
+    #[test]
+    fn keeps_program_files_and_steam_conventions_without_exe_evidence() {
+        let tree = fixture(r"D:\", &[
+            (r"Program Files\Company\payload.dll", 4 * GB),
+            (r"Program Files (x86)\Another\payload.dll", 4 * GB),
+            (r"Program Files\Steam\steamapps\common\Old Game\asset.txt", 4 * GB),
+            (r"SteamLibrary\steamapps\common\New Game\asset.txt", 4 * GB),
+            (r"SteamLibrary\steamapps\downloading\Game\setup.exe", 4 * GB),
+        ]);
+        let policy = policy(None, &[Path::new(r"D:\SteamLibrary\steamapps\downloading")]);
+        let got: std::collections::HashMap<_, _> = offers(&tree, &policy).into_iter().collect();
+        assert_eq!(got.len(), 4, "{got:?}");
+        for path in [r"D:\Program Files\Company", r"D:\Program Files (x86)\Another", r"D:\Program Files\Steam\steamapps\common\Old Game"] {
+            assert_eq!(got.get(Path::new(path)).map(String::as_str), Some("xpress8k"));
+        }
+        assert_eq!(got.get(Path::new(r"D:\SteamLibrary\steamapps\common\New Game")).map(String::as_str), Some("xpress16k"));
+    }
+
+    #[test]
+    fn protected_scopes_stay_blocked_even_when_configured() {
+        let home = Path::new(r"C:\Users\sam");
+        for (root, configured, file) in [
+            (r"C:\Windows", r"C:\Windows", r"NotAnApp\payload.exe"),
+            (r"C:\Windows\WinSxS", r"C:\Windows\WinSxS", r"NotAnApp\payload.exe"),
+            (r"D:\ProgramData", r"D:\ProgramData", r"Vendor\payload.exe"),
+            (r"D:\ProgramData\Vendor", r"D:\ProgramData\Vendor", r"Package\payload.exe"),
+            (r"C:\Users\sam", r"C:\Users\sam", r"Programs\payload.exe"),
+            (r"C:\Users\other\Programs", r"C:\Users\other\Programs", r"Product\payload.exe"),
+            (r"D:\WindowsApps\Programs", r"D:\WindowsApps\Programs", r"Product\payload.exe"),
+            (r"D:\Store", r"D:\Store", r"WindowsApps\payload.exe"),
+            (r"D:\Steam", r"D:\Steam", r"steamapps\payload.exe"),
+            (r"D:\", r"D:\", r"Unscoped\payload.exe"),
+            (r"D:\Tools", r"D:\Tools", r"wallet.kdbx\payload.exe"),
+            (r"D:\Boot\Tools", r"D:\Boot\Tools", r"Product\payload.exe"),
+            (r"D:\Boxes\vault.kdbx\Tools", r"D:\Boxes\vault.kdbx\Tools", r"Product\payload.exe"),
+        ] {
+            let tree = fixture(root, &[(file, 4 * GB)]);
+            assert!(offers(&tree, &policy(Some(home), &[Path::new(configured)])).is_empty(), "{root}\\{file}");
+        }
+    }
+
+    #[test]
+    fn only_an_explicit_library_below_this_profile_is_allowed() {
+        let root = r"C:\Users\sam\Programs";
+        let home = Path::new(r"C:\Users\sam");
+        let tree = fixture(root, &[(r"One\file.exe", 4 * GB), (r"Two\data.exe", 3 * GB)]);
+        assert!(offers(&tree, &policy(Some(home), &[])).is_empty());
+        let tree = fixture(root, &[(r"One\file.txt", 4 * GB)]);
+        assert_eq!(offers(&tree, &policy(Some(home), &[Path::new(root)])), [
+            (r"C:\Users\sam\Programs\One".into(), "xpress16k".into()),
+        ]);
+        let tree = fixture(r"D:\Profiles\sam", &[(r"Library\One\file.txt", 4 * GB)]);
+        let home = Path::new(r"D:\Profiles\sam");
+        assert!(offers(&tree, &policy(Some(home), &[home])).is_empty());
+        assert_eq!(offers(&tree, &policy(Some(home), &[Path::new(r"D:\Profiles\sam\Library")])).len(), 1);
+    }
+
+    #[test]
+    fn never_list_inside_a_program_blocks_it_even_in_program_files() {
+        let root = r"D:\Program Files";
+        let tree = fixture(root, &[
+            (r"VaultApp\bin\code.exe", 4 * GB), (r"VaultApp\bin\content.kdbx", 1),
+            (r"LoginApp\bin\code.exe", 4 * GB), (r"LoginApp\Default\Cookies", 1),
+            (r"CloudApp\bin\code.exe", 4 * GB), (r"CloudApp\WindowsApps\Package\payload.dll", 1),
+            (r"SafeApp\bin\code.exe", 4 * GB),
+        ]);
+        let policy = policy(None, &[Path::new(root)]);
+        assert_eq!(offers(&tree, &policy), [(r"D:\Program Files\SafeApp".into(), "xpress8k".into())]);
+    }
+
+    #[test]
+    fn links_block_the_candidate_and_are_not_executable_evidence() {
+        let root = r"D:\Chosen";
+        let files = [(r"LinkedFolder\bin\code.exe", 4 * GB), (r"LinkedFile\bin\code.exe", 4 * GB), (r"Plain\bin\code.exe", 4 * GB)];
+        let mut tree = fixture(root, &files);
+        let index = |tree: &Tree, p: &str| crate::find_path(tree, &Path::new(root).join(p)).unwrap();
+        for p in [r"LinkedFolder\bin", r"LinkedFile\bin\code.exe"] {
+            let n = index(&tree, p);
+            tree.nodes[n].attributes |= REPARSE;
+        }
+        assert!(offers(&tree, &policy(None, &[])).is_empty());
+        let policy = policy(None, &[Path::new(root)]);
+        assert_eq!(offers(&tree, &policy), [(r"D:\Chosen\Plain".into(), "xpress16k".into())]);
+        tree.nodes[ROOT].attributes |= REPARSE;
+        assert!(offers(&tree, &policy).is_empty(), "a link ancestor also rules it out");
+    }
+
+    #[test]
+    fn no_network_paths_even_when_configured() {
+        for root in [r"\\server\share\Library", r"X:\Mapped\Library"] {
+            let tree = fixture(root, &[(r"One\payload.txt", 4 * GB)]);
+            let policy = policy(None, &[Path::new(root)]);
+            assert!(compact_in(&tree, &policy, |_| false).is_empty(), "{root}");
+        }
+        let root = Path::new(r"\\server\share\Library");
+        assert!(sprawl_core::local::lexical(root).is_err());
+        assert!(policy(None, &[root]).scope(&root.join("One")).is_err());
+    }
+
+    fn runtime_policy(dir: &Path) -> CompactPolicy {
+        let mut parts = dir.components();
+        let _ = [parts.next(), parts.next()];
+        let home: Option<PathBuf> = parts.next().filter(|c| c.as_os_str().eq_ignore_ascii_case("Users"))
+            .and_then(|_| parts.next()).map(|_| dir.components().take(4).collect());
+        policy(home.as_deref(), &[dir.parent().unwrap()])
+    }
 
     #[test]
     fn disk_size_is_complete_without_reading_file_contents() {
@@ -695,8 +1077,8 @@ mod compress_tests {
         assert_eq!(on_disk(&dir), None);
     }
 
-    /// Sprawl's own compress command, run as a clean-up runs it, makes the folder smaller on
-    /// disk and keeps every file as it was.
+    /// The command's normal safety and WOF path, and the undo of a configured program, on a
+    /// disposable tree. No real settings are used to opt this fixture in.
     #[test]
     fn compress_runs_and_keeps_the_files() {
         let dir = std::env::temp_dir().join(format!("sprawl-compress-{}", std::process::id()));
@@ -706,12 +1088,12 @@ mod compress_tests {
         std::fs::write(dir.join("a.txt"), &text).unwrap();
         std::fs::write(dir.join("sub").join("b.json"), &text).unwrap();
         let before = on_disk(&dir).unwrap();
-        let a = Action::Tool { command: format!("{COMPRESS}xpress8k {}", crate::rules::ps_quote(&format!("{}\\*", dir.display()))) };
-        assert!(is_compress(&a));
-        let o = crate::clean::run_with(&dir, &a, &crate::clean::Spare::default(), None, &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
+        let policy = runtime_policy(&dir);
+        let command = format!("{COMPRESS}xpress8k {}", ps_quote(&format!("{}\\*", dir.display())));
+        let o = compress_scope_in(&dir, &command, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {}, &policy, &[]).unwrap();
         let after = on_disk(&dir).unwrap();
-        assert!(o.problems.is_empty(), "{:?} {:?}", o.problems, o.output);
-        assert!(after < before / 2, "before {before}, after {after}, {:?}", o.output);
+        assert_eq!((o.compressed, o.failed), (2, 0), "{o:?}");
+        assert!(after < before / 2, "before {before}, after {after}, {o:?}");
         assert_eq!(std::fs::read_to_string(dir.join("sub").join("b.json")).unwrap(), text);
         let walk = sprawl_core::walk::walk(&dir, &sprawl_core::Progress::new()).unwrap();
         assert_eq!(walk.errors, 0);
@@ -719,10 +1101,16 @@ mod compress_tests {
         let file_walk = sprawl_core::walk::walk(&dir.join("a.txt"), &sprawl_core::Progress::new()).unwrap();
         assert!(file_walk.nodes[ROOT].is_compressed(), "an explicit compressed file root needs the same evidence");
         // and Uncompress puts them back as they were
-        assert!(uncompress_scope(&dir, &[dir.join("sub/b.json")], &[]).is_err(), "kept descendants block the whole operation");
-        assert!(uncompress_scope(&dir, &[], &[dir.join("sub/b.json")]).is_err(), "excluded descendants block the whole operation");
+        let undo = |keep: &[PathBuf], excluded: &[PathBuf]| uncompress_current(&dir, keep, excluded, &policy, |_| false);
+        assert!(undo(&[dir.join("sub/b.json")], &[]).is_err(), "kept descendants block the whole operation");
+        assert!(undo(&[], &[dir.join("sub/b.json")]).is_err(), "excluded descendants block the whole operation");
         assert!(uncompress(&dir, &[], &[]).is_err(), "an arbitrary remembered temp path is never an eligible application scope");
-        uncompress_scope(&dir, &[], &[]).expect("exact pinned file batches uncompress the disposable fixture");
+        let protected = dir.join("sub/saved.kdbx");
+        std::fs::write(&protected, b"protected").unwrap();
+        assert!(undo(&[], &[]).is_err_and(|e| e.contains("protected")));
+        assert!(sprawl_core::walk::walk(&dir.join("a.txt"), &sprawl_core::Progress::new()).unwrap().nodes[ROOT].is_compressed());
+        std::fs::remove_file(protected).unwrap();
+        undo(&[], &[]).expect("exact pinned file batches uncompress the configured fixture");
         let back = on_disk(&dir).unwrap();
         assert!(back >= before / 10 * 9, "before {before}, back {back}");
         assert_eq!(compress_alg(&format!("{COMPRESS}xpress16k 'x'")), Some("xpress16k"));
@@ -743,10 +1131,18 @@ mod compress_tests {
         let command = format!("{COMPRESS}xpress8k {}", crate::rules::ps_quote(&format!("{}\\*", dir.display())));
         let stop = std::sync::atomic::AtomicBool::new(false);
         let spare = crate::clean::Spare::default();
+        let policy = runtime_policy(&dir);
+        let compress = |p| compress_scope_in(p, &command, &spare, &stop, &mut |_| {}, &policy, &[]);
         // a command for another folder than the one given is refused
-        assert!(compress_scope(&base, &command, &spare, &stop, &mut |_| {}).is_err());
+        assert!(compress(&base).is_err());
+        // a newly added protected file vetoes compression before another file is changed
+        let vault = dir.join("sub/new.kdbx");
+        std::fs::write(&vault, b"protected").unwrap();
+        assert!(compress(&dir).is_err_and(|e| e.contains("protected")));
+        assert!(!sprawl_core::walk::walk(&dir.join("a.txt"), &sprawl_core::Progress::new()).unwrap().nodes[ROOT].is_compressed());
+        std::fs::remove_file(vault).unwrap();
         // the shared file is left uncompressed; the plain one is compressed
-        let d = compress_scope(&dir, &command, &spare, &stop, &mut |_| {}).unwrap();
+        let d = compress(&dir).unwrap();
         assert_eq!((d.compressed, d.changed), (1, 1), "{d:?}");
         assert!(d.after < d.before, "{d:?}");
         let walk = sprawl_core::walk::walk(&base, &sprawl_core::Progress::new()).unwrap();
@@ -754,13 +1150,13 @@ mod compress_tests {
         assert!(compressed("a.txt"));
         assert!(!compressed("shared.txt") && !compressed("outside.txt"));
         // compressed files are data, not links: compressing again is fine
-        let d = compress_scope(&dir, &command, &spare, &stop, &mut |_| {}).unwrap();
+        let d = compress(&dir).unwrap();
         assert_eq!((d.compressed, d.already), (0, 1), "{d:?}");
         // a junction that appeared after the scan: nothing is compressed
         std::fs::create_dir_all(base.join("elsewhere")).unwrap();
         let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(dir.join("sub").join("link")).arg(base.join("elsewhere")).output().is_ok_and(|o| o.status.success());
         if made {
-            assert!(compress_scope(&dir, &command, &spare, &stop, &mut |_| {}).is_err_and(|e| e.contains("is a link")));
+            assert!(compress(&dir).is_err_and(|e| e.contains("is a link")));
             let _ = std::fs::remove_dir(dir.join("sub").join("link"));
         }
         let _ = std::fs::remove_dir_all(&base);

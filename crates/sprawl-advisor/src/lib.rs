@@ -10,6 +10,7 @@
 //! * [`finding`]: the schema every finding follows, from rules and (later) from a model.
 //! * [`rules`]: TOML rule packs and the engine that matches them against a tree.
 //! * [`safety`]: the never-touch list and the checks every finding must pass.
+//! * [`program_folders`]: where programs live beyond Program Files, kept in the app's settings.
 //! * [`snapshot`]: a compact, compressed copy of a scan, for history and diffs.
 
 pub mod anomaly;
@@ -47,6 +48,7 @@ pub mod plan;
 pub mod prevention;
 pub mod privacy;
 pub mod procs;
+pub mod program_folders;
 pub mod projects;
 pub mod regclean;
 pub mod remedies;
@@ -441,11 +443,12 @@ mod tests {
         invented.path = dir.join("nope");
         assert_eq!(safety::check(&invented, &tree, &never), Err(safety::Rejection::NotInTree));
 
-        std::env::set_var("SystemDrive", "C:");
-        std::env::set_var("SystemRoot", r"C:\Windows");
-        let windows = sprawl_core::scan(Path::new(r"C:\Windows\Web"), |_| {}).unwrap();
-        let model = Finding { path: windows.path_of(ROOT), bytes: windows.nodes[ROOT].size, remedy: Remedy::Command, source: Source::Model("m".into()), ..good.clone() };
-        assert!(matches!(safety::check(&model, &windows, &never), Err(safety::Rejection::Never(_))));
+        let protected = dir.join("fixture.vhdx");
+        std::fs::create_dir(&protected).unwrap();
+        std::fs::write(protected.join("item.txt"), b"test").unwrap();
+        let protected = sprawl_core::scan(&protected, |_| {}).unwrap();
+        let model = Finding { path: protected.path_of(ROOT), bytes: protected.nodes[ROOT].size, remedy: Remedy::Command, source: Source::Model("m".into()), ..good.clone() };
+        assert!(matches!(safety::check(&model, &protected, &never), Err(safety::Rejection::Never(_))));
         let rule = Finding {
             source: Source::Rule("r".into()),
             command: Some("DISM /Online /Cleanup-Image /StartComponentCleanup".into()),
@@ -455,12 +458,12 @@ mod tests {
             on_path: false,
             ..model.clone()
         };
-        assert!(safety::check(&rule, &windows, &never).is_ok(), "curated command on a protected path is allowed");
+        assert!(safety::check(&rule, &protected, &never).is_ok(), "curated command on a protected path is allowed");
         // the same command from a local pack or a model is not
         let local = Finding { builtin: false, ..rule.clone() };
-        assert!(matches!(safety::check(&local, &windows, &never), Err(safety::Rejection::Never(_))));
+        assert!(matches!(safety::check(&local, &protected, &never), Err(safety::Rejection::Never(_))));
         let delete = Finding { remedy: Remedy::Delete, ..rule };
-        assert!(matches!(safety::check(&delete, &windows, &never), Err(safety::Rejection::Never(_))));
+        assert!(matches!(safety::check(&delete, &protected, &never), Err(safety::Rejection::Never(_))));
 
         // command text from a model or a local pack is never accepted
         let sneaky = Finding { command: Some(format!("Remove-Item -Recurse {}", dir.join("keep").display())), trusted: false, ..good.clone() };
