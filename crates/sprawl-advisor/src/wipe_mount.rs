@@ -177,7 +177,8 @@ struct Record { id: (u64, u128), volume: Volume }
 impl Record {
     fn read(file: &File) -> io::Result<Self> {
         let mut text = String::new();
-        file.take(256).read_to_string(&mut text)?;
+        file.take(257).read_to_string(&mut text)?;
+        if text.len() > 256 { return Err(io::Error::other("oversized private mount recovery record")); }
         let parse = || {
             let mut lines = text.lines();
             if lines.next()? != "sprawl-wipe-mount-v1" { return None; }
@@ -252,33 +253,25 @@ impl NativeMount {
         let host = Arc::new(other_host(data, system, |site| Host::open(site, true, Some(volume)))?);
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(io::Error::other)?.as_nanos();
-        let (name, hold) = loop {
+        let (name, created) = loop {
             let name = format!("mount-{}-{now}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-            match host.dir.open_in(&name, READ_DATA, SHARE_READ | SHARE_WRITE, Disposition::Create, Kind::Folder, false) {
+            match host.dir.create_empty_directory(&name) {
                 Ok(hold) => break (name, hold),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
             }
         };
-        let owned = Record { id: local::full_identity(&hold)?, volume: volume.clone() };
-        let mut mount = Self::from_owned(host, name, hold, owned)?;
-        let result = (|| {
-            let lease = mount.host.dir.open_in(&lease_name(&mount.name), READ_DATA | WRITE_DATA | DELETE, SHARE_READ,
-                Disposition::Create, Kind::File, true)?;
-            mount.lease = Some(lease);
-            mount.owned.write(mount.lease.as_ref().unwrap())
-        })();
-        if let Err(e) = result {
-            return Err(match mount.cleanup() {
-                Ok(()) => e,
-                Err(clean) => io::Error::other(format!("{e}; couldn't remove the private folder: {clean}")),
-            });
-        }
+        let (owned, anchor, lease) = prepare_lease(&host.dir, &name, &created, volume, local::full_identity, Record::write)?;
+        // The Win32 mount API must not have to share DELETE with our hold. If we cannot reopen,
+        // the synced lease now lets startup recover the same plain, empty directory.
+        drop(created);
+        let hold = host.dir.open_dir_itself(&name, READ_DATA, SHARE_READ | SHARE_WRITE)?;
+        let mut mount = Self::from_owned(host, name, hold, anchor, owned)?;
+        mount.lease = Some(lease);
         Ok(mount)
     }
 
-    fn from_owned(host: Arc<Host>, name: String, hold: File, owned: Record) -> io::Result<Self> {
-        let anchor = host.dir.open_dir_itself(&name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE)?;
+    fn from_owned(host: Arc<Host>, name: String, hold: File, anchor: File, owned: Record) -> io::Result<Self> {
         if local::full_identity(&anchor)? != owned.id || local::full_identity(&hold)? != owned.id {
             return Err(io::Error::other("the private mount folder was replaced"));
         }
@@ -290,19 +283,49 @@ impl NativeMount {
         self.host.dir.pins().iter().chain(self.freeze.iter()).chain(self.lease.iter()).collect()
     }
 
-    fn remove_owned(&mut self, must_be_mounted: bool) -> io::Result<()> {
+    fn remove_owned(&mut self) -> io::Result<()> {
         drop(self.freeze.take());
         let hold = self.hold.as_ref().ok_or_else(|| io::Error::other("no owned mount handle"))?;
-        if !detach_owned(binding(hold)?.as_ref(), &self.owned.volume, must_be_mounted,
-            || detach_mount(&self.path))? { return Ok(()); }
+        detach_owned(binding(hold)?.as_ref(), &self.owned.volume, || detach_mount(&self.path))?;
         drop(self.hold.take());
-        let dir = self.host.dir.open_in(&self.name, DELETE | READ_DATA, SHARE_READ | SHARE_WRITE, Disposition::Open, Kind::Folder, false)?;
+        let dir = self.host.dir.open_in(&self.name, DELETE | READ_DATA, SHARE_READ, Disposition::Open, Kind::Folder, false)?;
         if local::full_identity(&dir)? != local::full_identity(&self.anchor)? {
             return Err(io::Error::other("the private mount folder was replaced"));
         }
-        local::dispose(&dir)?; // Empty directory only. Never recurse into this name.
+        local::dispose_empty_directory(&dir)?;
         if let Some(lease) = self.lease.take() { local::dispose(&lease)?; }
         Ok(())
+    }
+}
+
+fn prepare_lease(dir: &Directory, name: &str, created: &File, volume: &Volume,
+    identity: impl FnOnce(&File) -> io::Result<(u64, u128)>,
+    persist: impl FnOnce(&Record, &File) -> io::Result<()>,
+) -> io::Result<(Record, File, File)> {
+    let mut lease = None;
+    let result = (|| {
+        let owned = Record { id: identity(created)?, volume: volume.clone() };
+        let anchor = dir.open_dir_itself(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE)?;
+        if local::full_identity(&anchor)? != owned.id {
+            return Err(io::Error::other("the new private mount folder was replaced"));
+        }
+        lease = Some(dir.open_in(&lease_name(name), READ_DATA | WRITE_DATA | DELETE, SHARE_READ,
+            Disposition::Create, Kind::File, true)?);
+        persist(&owned, lease.as_ref().unwrap())?;
+        Ok((owned, anchor))
+    })();
+    match result {
+        Ok((owned, anchor)) => Ok((owned, anchor, lease.unwrap())),
+        Err(e) => {
+            // No mount call yet. Only the handle from FILE_CREATE can authorize rollback,
+            // even if full_identity failed. A pre-existing lease was never opened.
+            let rollback = local::dispose_empty_directory(created)
+                .and_then(|()| lease.as_ref().map_or(Ok(()), local::dispose));
+            Err(match rollback {
+                Ok(()) => e,
+                Err(clean) => io::Error::other(format!("{e}; couldn't roll back the new private mount folder: {clean}")),
+            })
+        }
     }
 }
 
@@ -319,14 +342,12 @@ fn detach_mount(path: &Path) -> io::Result<()> {
     }
 }
 
-fn detach_owned(mounted: Option<&Volume>, expected: &Volume, must_be_mounted: bool, detach: impl FnOnce() -> io::Result<()>) -> io::Result<bool> {
+fn detach_owned(mounted: Option<&Volume>, expected: &Volume, detach: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
     match mounted {
-        Some(volume) if volume == expected => detach()?,
-        Some(_) => return Err(io::Error::other("the private mount no longer has its recorded binding")),
-        None if must_be_mounted => return Ok(false),
-        None => {}
+        Some(volume) if volume == expected => detach(),
+        Some(_) => Err(io::Error::other("the private mount no longer has its recorded binding")),
+        None => Ok(()), // Already detached or never attached. The empty folder can still be ours.
     }
-    Ok(true)
 }
 
 impl Mount for NativeMount {
@@ -345,7 +366,7 @@ impl Mount for NativeMount {
 
     fn path(&self) -> &Path { &self.path }
 
-    fn cleanup(&mut self) -> io::Result<()> { self.remove_owned(false) }
+    fn cleanup(&mut self) -> io::Result<()> { self.remove_owned() }
 }
 
 /// The Windows runner only takes a GUID-rooted child directory, never a target drive letter.
@@ -371,6 +392,10 @@ fn sweep_site(site: &HostSite) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e),
     };
+    sweep_host(host)
+}
+
+fn sweep_host(host: Arc<Host>) -> io::Result<()> {
     for f in fs::read_dir(&host.path)? {
         let Ok(f) = f else { continue; };
         let file = f.file_name();
@@ -392,13 +417,14 @@ fn sweep_one(host: Arc<Host>, file: &str, name: &str) -> io::Result<()> {
     if !sweep_matches(&record, local::full_identity(&hold)?, binding(&hold)?.as_ref(), &host.volume) {
         return Ok(());
     }
-    let mut mount = NativeMount::from_owned(host, name.to_owned(), hold, record)?;
+    let anchor = host.dir.open_dir_itself(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE)?;
+    let mut mount = NativeMount::from_owned(host, name.to_owned(), hold, anchor, record)?;
     mount.lease = Some(lease);
-    mount.remove_owned(true)
+    mount.remove_owned()
 }
 
 fn sweep_matches(record: &Record, id: (u64, u128), mounted: Option<&Volume>, host: &Volume) -> bool {
-    id == record.id && mounted == Some(&record.volume) && host != &record.volume
+    id == record.id && mounted.is_none_or(|volume| volume == &record.volume) && host != &record.volume
 }
 
 #[cfg(test)]
@@ -431,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_sweep_only_accepts_the_recorded_still_mounted_folder() {
+    fn startup_sweep_only_accepts_the_recorded_folder_and_binding() {
         let a = volume(1);
         let b = volume(2);
         let host = volume(9);
@@ -440,7 +466,7 @@ mod tests {
         assert!(!sweep_matches(&record, (11, 23), Some(&a), &host), "replacement folder");
         assert!(!sweep_matches(&record, (12, 22), Some(&a), &host), "replacement host");
         assert!(!sweep_matches(&record, (11, 22), Some(&b), &host), "different mount");
-        assert!(!sweep_matches(&record, (11, 22), None, &host), "already unmounted");
+        assert!(sweep_matches(&record, (11, 22), None, &host), "already detached is allowed with the exact recorded ID");
         assert!(!sweep_matches(&record, (11, 22), Some(&a), &a), "same-volume mount");
         assert!(!valid_name("mount-1-2-3-not-sprawl"));
     }
@@ -449,14 +475,66 @@ mod tests {
     fn cleanup_detaches_only_an_owned_binding_before_removing_the_empty_folder() {
         let a = volume(1);
         let b = volume(2);
-        assert!(detach_owned(None, &a, false, || panic!("the initial mount failed")).unwrap());
-        assert!(!detach_owned(None, &a, true, || panic!("startup must leave plain directories alone")).unwrap());
-        assert!(detach_owned(Some(&b), &a, false, || panic!("the binding was replaced")).is_err());
+        detach_owned(None, &a, || panic!("already detached")).unwrap();
+        assert!(detach_owned(Some(&b), &a, || panic!("the binding was replaced")).is_err());
         let mut called = false;
-        assert!(detach_owned(Some(&a), &a, true, || { called = true; Ok(()) }).unwrap());
+        detach_owned(Some(&a), &a, || { called = true; Ok(()) }).unwrap();
         assert!(called);
-        assert!(detach_owned(Some(&a), &a, false, || Err(io::Error::other("simulated detach error"))).is_err(),
+        assert!(detach_owned(Some(&a), &a, || Err(io::Error::other("simulated detach error"))).is_err(),
             "a failed detach never authorizes directory removal");
+    }
+
+    #[test]
+    fn failed_prelease_setup_rolls_back_only_the_exact_new_directory_and_lease() {
+        let tmp = local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-lease-setup").unwrap();
+        let dir = local::directory(tmp.path()).unwrap();
+        let target = volume(2);
+        for (name, stage) in [("mount-1-2-3", "identity"), ("mount-1-2-4", "collision"), ("mount-1-2-5", "write")] {
+            let created = dir.create_empty_directory(name).unwrap();
+            let note = tmp.path().join(lease_name(name));
+            if stage == "collision" { fs::write(&note, "foreign lease").unwrap(); }
+            let result = prepare_lease(&dir, name, &created, &target, |file| {
+                if stage == "identity" { Err(io::Error::other("identity failure")) } else { local::full_identity(file) }
+            }, |_, mut file| {
+                assert_eq!(stage, "write");
+                file.write_all(b"unfinished record")?;
+                Err(io::Error::other("lease write failure"))
+            });
+            assert!(result.is_err(), "{stage}");
+            drop(created);
+            assert!(!tmp.path().join(name).exists(), "{stage}");
+            if stage == "collision" {
+                assert_eq!(fs::read_to_string(note).unwrap(), "foreign lease");
+            } else {
+                assert!(!note.exists(), "{stage}");
+            }
+        }
+    }
+
+    #[test]
+    fn startup_recovers_detached_empty_folder_but_not_an_unrecorded_crash_or_nonempty_folder() {
+        let tmp = local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-lease-crash").unwrap();
+        let host = Arc::new(Host { dir: local::directory(tmp.path()).unwrap(), path: tmp.path().to_owned(), volume: volume(1) });
+        let target = volume(2);
+        let unrecorded = "mount-1-2-3";
+        drop(host.dir.create_empty_directory(unrecorded).unwrap());
+        for (name, contents) in [("mount-1-2-4", false), ("mount-1-2-5", true)] {
+            let created = host.dir.create_empty_directory(name).unwrap();
+            let (_, anchor, lease) = prepare_lease(&host.dir, name, &created, &target, local::full_identity, Record::write).unwrap();
+            drop((created, anchor, lease)); // valid lease on disk, but no live worker or mount
+            if contents { fs::write(tmp.path().join(name).join("ordinary.txt"), "keep").unwrap(); }
+        }
+        let malformed = "mount-1-2-6";
+        drop(host.dir.create_empty_directory(malformed).unwrap());
+        fs::write(tmp.path().join(lease_name(malformed)), "incomplete record").unwrap();
+        sweep_host(host).unwrap();
+        assert!(tmp.path().join(unrecorded).is_dir(), "no lease means no ownership");
+        assert!(!tmp.path().join("mount-1-2-4").exists(), "the recorded, detached empty folder was removed");
+        assert!(!tmp.path().join("mount-1-2-4.lease").exists());
+        assert!(tmp.path().join("mount-1-2-5.lease").exists());
+        assert_eq!(fs::read_to_string(tmp.path().join(r"mount-1-2-5\ordinary.txt")).unwrap(), "keep");
+        assert!(tmp.path().join(malformed).is_dir());
+        assert_eq!(fs::read_to_string(tmp.path().join(lease_name(malformed))).unwrap(), "incomplete record");
     }
 
     #[test]

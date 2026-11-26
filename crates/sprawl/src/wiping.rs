@@ -307,7 +307,7 @@ impl State {
                 return;
             }
         };
-        if let Some(why) = wipe_preflight(&plan) {
+        if let Some(why) = plan.refusal() {
             self.tell("Free space wipe not started", &why);
             return;
         }
@@ -366,7 +366,7 @@ impl State {
                 return;
             }
         };
-        if let Some(why) = wipe_preflight(&plan) {
+        if let Some(why) = plan.refusal() {
             self.tell("Free space wipe not started", &why);
             return;
         }
@@ -427,10 +427,6 @@ impl State {
         }
         let _ = card.SetVisibility(crate::bindings::Microsoft::UI::Xaml::Visibility::Visible);
     }
-}
-
-fn wipe_preflight(plan: &overwrite::WipePlan) -> Option<String> {
-    (plan.live.is_some() || plan.scratch_present).then(|| plan.scratch_lines().join("\n"))
 }
 
 /// The limits a free-space wipe can't promise, each detected: solid-state (or a drive Windows
@@ -541,11 +537,11 @@ mod tests {
     fn occupied_scratch_is_a_preflight_refusal_even_without_another_wipe() {
         let mut plan = overwrite::WipePlan {
             marker: PathBuf::from("fixture marker"), scratch: PathBuf::from(r"E:\EFSTMPWP"),
-            scratch_present: true, live: None,
+            scratch_present: true, marker_refusal: None,
         };
-        let refusal = wipe_preflight(&plan).unwrap();
+        let refusal = plan.refusal().unwrap();
         assert!(refusal.contains(r"E:\EFSTMPWP") && refusal.contains("won't start a wipe"));
         plan.scratch_present = false;
-        assert!(wipe_preflight(&plan).is_none());
+        assert!(plan.refusal().is_none());
     }
 }

@@ -216,6 +216,10 @@ fn plain_name(name: &str) -> io::Result<Vec<u16>> {
 /// Open `name` in the folder `dir` is open on, through that handle (synchronous, as with
 /// backup semantics, the link itself, no cloud recall). (handle, whether it was made now).
 pub(crate) fn open_rel(dir: &File, name: &str, access: u32, share: u32, how: Disposition, kind: Kind) -> io::Result<(File, bool)> {
+    open_rel_with(dir, name, access, share, how, kind, 0)
+}
+
+fn open_rel_with(dir: &File, name: &str, access: u32, share: u32, how: Disposition, kind: Kind, extra_options: u32) -> io::Result<(File, bool)> {
     use std::os::windows::io::FromRawHandle;
     let wide = plain_name(name)?;
     let us = UnicodeString { len: (wide.len() * 2) as u16, max: (wide.len() * 2) as u16, buf: wide.as_ptr() };
@@ -225,7 +229,7 @@ pub(crate) fn open_rel(dir: &File, name: &str, access: u32, share: u32, how: Dis
     let mut h: *mut core::ffi::c_void = std::ptr::null_mut();
     // FILE_SYNCHRONOUS_IO_NONALERT, FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT,
     // FILE_OPEN_NO_RECALL; FILE_DIRECTORY_FILE or FILE_NON_DIRECTORY_FILE
-    let options = 0x20 | 0x4000 | 0x0020_0000 | match kind { Kind::Folder => 0x1, Kind::File => 0x40 | 0x0040_0000, Kind::Either => 0 };
+    let options = 0x20 | 0x4000 | 0x0020_0000 | extra_options | match kind { Kind::Folder => 0x1, Kind::File => 0x40 | 0x0040_0000, Kind::Either => 0 };
     // SAFETY: every pointer is valid for the call; the handle is owned below.
     let status = unsafe { NtCreateFile(&mut h, access | 0x0010_0000, &oa, &mut status_block, std::ptr::null(), 0, share, how as u32, options, std::ptr::null(), 0) };
     if status < 0 {
@@ -287,6 +291,12 @@ pub fn dispose(f: &File) -> io::Result<()> {
     if unsafe { SetFileInformationByHandle(f.as_raw_handle().cast(), 4, (&delete as *const u8).cast(), 1) } != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
+/// Remove a plain empty directory through its DELETE handle. Never recurse or follow a link.
+pub fn dispose_empty_directory(f: &File) -> io::Result<()> {
+    check_plain(f, Kind::Folder)?;
+    dispose(f) // Windows refuses to dispose of a nonempty directory.
+}
+
 impl Directory {
     pub(crate) fn handle(&self) -> io::Result<&File> {
         self._handles.last().ok_or_else(|| io::Error::other("No pinned folder"))
@@ -295,6 +305,21 @@ impl Directory {
     /// For the wipe mount only: identify/check a leaf's reparse point without traversing it.
     pub fn open_dir_itself(&self, name: &str, access: u32, share: u32) -> io::Result<File> {
         open_rel(self.handle()?, name, access | READ_ATTRIBUTES, share, Disposition::Open, Kind::Folder).map(|(f, _)| f)
+    }
+
+    /// Create a new empty directory relative to this pin. The returned DELETE handle
+    /// lets its creator roll back even when reading its identity fails.
+    pub fn create_empty_directory(&self, name: &str) -> io::Result<File> {
+        open_rel(self.handle()?, name, READ_DATA | READ_ATTRIBUTES | DELETE, SHARE_READ, Disposition::Create, Kind::Folder)
+            .map(|(f, _)| f)
+    }
+
+    /// Atomically create a new plain file relative to this pin with FILE_DELETE_ON_CLOSE.
+    /// A collision is never reopened or scheduled for deletion.
+    pub fn create_ephemeral_file(&self, name: &str) -> io::Result<File> {
+        const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
+        open_rel_with(self.handle()?, name, READ_DATA | READ_ATTRIBUTES | WRITE_DATA | DELETE, SHARE_READ,
+            Disposition::Create, Kind::File, FILE_DELETE_ON_CLOSE).map(|(f, _)| f)
     }
 
     pub fn volume_path(&self) -> io::Result<PathBuf> { volume_path(self.handle()?) }

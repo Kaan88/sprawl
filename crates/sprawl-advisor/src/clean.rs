@@ -2797,7 +2797,7 @@ pub(crate) fn run_wipe_cipher(args: impl FnOnce() -> std::io::Result<String>, st
     let Some(sys) = system_dir() else { o.problem(path, "not started: Windows' System32 wasn't found"); return o };
     let start = tool_job::environment(false, &[("PATH", sys.as_os_str())]).and_then(|env| {
         let args = args()?;
-        tool_job::Running::start_with_pins(&sys.join("cipher.exe"), &args, &sys, &env, pins, share)
+        tool_job::Running::start_native(&sys.join("cipher.exe"), &args, &sys, &env, pins, share)
     });
     match start {
         Ok(child) => { wait_output(child, "cipher", Duration::from_secs(7 * 86_400), stop, &mut o, None); }
@@ -3976,6 +3976,19 @@ mod tests {
             &[], ToolPins::default(), Duration::from_secs(30));
         assert_eq!(out.as_deref().map(str::trim), Some("fixture succeeded"), "{:?}", o.problems);
         assert!(o.problems.is_empty());
+    }
+
+    #[test]
+    fn native_tool_stderr_reaches_the_result_even_with_no_stdout() {
+        let tmp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-stderr").unwrap();
+        let child = tool_job::Running::start_native(&system_dir().unwrap().join("cmd.exe"),
+            r#"/d /c "(echo only-on-stderr) 1>&2 & exit /b 17""#, tmp.path(),
+            &tool_job::environment(false, &[]).unwrap(), ToolPins::default(), &[]).unwrap();
+        let mut o = Outcome::default();
+        let output = wait_output(child, "native fixture", Duration::from_secs(20), &AtomicBool::new(false), &mut o, None);
+        assert!(output.is_none());
+        assert_eq!(o.output, ["only-on-stderr"]);
+        assert!(o.problems.iter().any(|p| p.contains("ended with code 17")), "{:?}", o.problems);
     }
 
     #[test]

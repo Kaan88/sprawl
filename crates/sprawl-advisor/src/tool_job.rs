@@ -196,6 +196,9 @@ pub(super) fn environment(git: bool, overrides: &[(&str, &OsStr)]) -> io::Result
 
 pub(super) struct Running { lease: Option<Lease>, primary: Option<OwnedHandle>, output: std::fs::File }
 
+#[derive(Clone, Copy)]
+enum Stderr { Discard, Capture }
+
 enum ReadState { Data(usize), Empty, Eof }
 
 fn pipe_error(error: io::Error) -> io::Result<ReadState> {
@@ -204,22 +207,26 @@ fn pipe_error(error: io::Error) -> io::Result<ReadState> {
 
 impl Running {
     pub(super) fn start(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins) -> io::Result<Self> {
-        Self::start_with_pins(app, args, cwd, env, pins, &[])
+        Self::start_job(app, args, cwd, env, pins, &[], Stderr::Discard)
     }
 
     /// Native cipher holds the wipe pins too: even if the host crashes, a startup sweep
     /// can't take the mount lease while the contained child still has it open.
-    pub(super) fn start_with_pins(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File]) -> io::Result<Self> {
+    pub(super) fn start_native(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File]) -> io::Result<Self> {
+        Self::start_job(app, args, cwd, env, pins, share, Stderr::Capture)
+    }
+
+    fn start_job(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File], stderr: Stderr) -> io::Result<Self> {
         let mut problems = Vec::new();
         if !reap_pending(&mut problems) {
             return Err(io::Error::other(format!("an earlier tool hasn't been confirmed stopped; protections are still held{}",
                 if problems.is_empty() { String::new() } else { format!(" ({})", problems.join("; ")) })));
         }
         for problem in problems { log_cleanup(&problem); }
-        Self::create(app, args, cwd, env, pins, share, |job| job.0.as_raw_handle())
+        Self::create(app, args, cwd, env, pins, share, stderr, |job| job.0.as_raw_handle())
     }
 
-    fn create(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File], job_attribute: impl FnOnce(&Job) -> HANDLE) -> io::Result<Self> {
+    fn create(app: &Path, args: &str, cwd: &Path, env: &[u16], pins: Pins, share: &[&std::fs::File], stderr: Stderr, job_attribute: impl FnOnce(&Job) -> HANDLE) -> io::Result<Self> {
         let job = Job::new()?;
         let mut command = OsString::from("\"");
         command.push(app);
@@ -242,7 +249,7 @@ impl Running {
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = handles[0];
-        startup.StartupInfo.hStdError = handles[0];
+        startup.StartupInfo.hStdError = match stderr { Stderr::Discard => handles[0], Stderr::Capture => handles[1] };
         startup.StartupInfo.hStdOutput = handles[1];
         startup.lpAttributeList = attrs.list;
         let mut created = PROCESS_INFORMATION::default();
@@ -396,7 +403,7 @@ mod tests {
         let marker = tmp.path().join("started.txt");
         let exe = cmd();
         let env = environment(false, &[]).unwrap();
-        let refused = Running::create(&exe, MARK, tmp.path(), &env, Pins::default(), &[], |_| null_mut());
+        let refused = Running::create(&exe, MARK, tmp.path(), &env, Pins::default(), &[], Stderr::Discard, |_| null_mut());
         assert!(refused.err().unwrap().raw_os_error().is_some());
         assert!(!marker.exists());
         let control = Running::start(&exe, MARK, tmp.path(), &env, Pins::default()).unwrap();
@@ -511,7 +518,7 @@ mod tests {
         let tmp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-wipe-inherit").unwrap();
         let path = tmp.path().join("mount.lease");
         let lease = std::fs::OpenOptions::new().write(true).create_new(true).share_mode(1).open(&path).unwrap();
-        let child = Running::start_with_pins(&cmd(), MARK, tmp.path(), &environment(false, &[]).unwrap(), Pins::default(), &[&lease]).unwrap();
+        let child = Running::start_native(&cmd(), MARK, tmp.path(), &environment(false, &[]).unwrap(), Pins::default(), &[&lease]).unwrap();
         drop(lease); // Simulate loss of Sprawl's copy before the suspended child exits.
         assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
         let end = child.wait(Duration::from_secs(5), || true, |_| {});

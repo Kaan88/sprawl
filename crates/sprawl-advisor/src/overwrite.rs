@@ -30,7 +30,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::clean::{same_path, win, Spare};
 
@@ -950,26 +949,17 @@ pub fn sweep_wipe_mounts() {
     wipe_mount::sweep(wipe_data_dir().ok().as_deref(), system.as_ref());
 }
 
-/// What a wipe would find before it starts, for the question and for the run itself: the drive,
-/// the file that says Sprawl is wiping it, cipher's working folder if one is there, and whether
-/// another Sprawl still has a wipe running on it.
+/// What a wipe finds before it starts: the coordination marker and cipher's scratch path.
 pub struct WipePlan {
     pub marker: PathBuf,
     pub scratch: PathBuf,
     pub scratch_present: bool,
-    /// A Sprawl whose marker this is is still running, and still wiping this drive.
-    pub live: Option<u32>,
+    pub marker_refusal: Option<String>,
 }
 
 impl WipePlan {
-    /// The lines the question must carry about cipher's working folder.
-    pub fn scratch_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        if let Some(pid) = self.live {
-            lines.push(format!("Another Sprawl (process {pid}) is wiping this drive's free space right now; wait for it to finish or stop it there."));
-        }
-        if self.scratch_present { lines.push(scratch_instructions(&self.scratch)); }
-        lines
+    pub fn refusal(&self) -> Option<String> {
+        if self.scratch_present { Some(scratch_instructions(&self.scratch)) } else { self.marker_refusal.clone() }
     }
 }
 
@@ -988,18 +978,16 @@ pub fn wipe_plan(review: &WipeReview, marker_dir: &Path) -> Result<WipePlan, Str
         return Err(format!("The reviewed volume {} is no longer available as a fixed drive. Nothing was wiped.", review.volume_path().display()));
     }
     let marker = marker_dir.join(format!("wipe-{}.txt", review.volume.id()));
-    Ok(wipe_plan_in(review.volume_path(), marker, review.volume_path()))
+    Ok(wipe_plan_in(marker, review.volume_path()))
 }
 
-fn wipe_plan_in(root: &Path, marker: PathBuf, location: &Path) -> WipePlan {
-    let ours = read_marker(&marker).filter(|m| m.root.eq_ignore_ascii_case(&root.to_string_lossy()));
+fn wipe_plan_in(marker: PathBuf, location: &Path) -> WipePlan {
     let scratch = location.join("EFSTMPWP");
-    let live = ours.as_ref().filter(|m| !marker_is_this_run(m)).filter(|m| marker_live(m)).map(|m| m.pid);
     WipePlan {
+        marker_refusal: marker_absent(&marker).err().map(|e| marker_refusal(&marker, e)),
         marker,
         scratch_present: scratch_present(&scratch),
         scratch,
-        live,
     }
 }
 
@@ -1023,14 +1011,14 @@ pub fn wipe_free_space(review: &WipeReview, data: &Path, stop: &AtomicBool) -> W
     if review.uses_system_drive() {
         let check = || system_cipher_args(review, &wipe_mount::system_volume()?, std::env::var_os("SystemDrive").as_deref());
         return wipe_system_in(review, plan, stop, check, |_, marker, pins| {
-            crate::clean::run_wipe_cipher(check, stop, pins, &[&marker.0])
+            crate::clean::run_wipe_cipher(check, stop, pins, &marker.pins().collect::<Vec<_>>())
         });
     }
     let system = wipe_mount::system_volume().ok();
     wipe_free_in(review, plan, stop, || NativeMount::prepare(data, system.as_ref(), &review.volume),
         |mount, args, marker, pins| {
             let mut share = mount.pins();
-            share.push(&marker.0);
+            share.extend(marker.pins());
             crate::clean::run_wipe_cipher(|| Ok(args.to_owned()), stop, pins, &share)
         })
 }
@@ -1042,13 +1030,9 @@ fn not_wiped(why: String) -> Wiped {
 }
 
 fn begin_wipe(review: &WipeReview, plan: &WipePlan, stop: &AtomicBool) -> Result<MarkerHold, String> {
-    if let Some(pid) = plan.live {
-        return Err(format!("Not started: another Sprawl (process {pid}) is wiping this volume's free space."));
-    }
-    if plan.scratch_present { return Err(scratch_instructions(&plan.scratch)); }
+    if let Some(why) = plan.refusal() { return Err(why); }
     if stop.load(Ordering::Relaxed) { return Err("Stop was requested before cipher started.".into()); }
-    let hold = claim_marker(&plan.marker, review.volume_path())
-        .map_err(|e| format!("Not started: Sprawl couldn't note the wipe in {} ({e}).", plan.marker.display()))?;
+    let hold = claim_marker(&plan.marker, review.volume_path()).map_err(|e| marker_refusal(&plan.marker, e))?;
     if scratch_present(&plan.scratch) { return Err(scratch_instructions(&plan.scratch)); }
     Ok(hold)
 }
@@ -1138,146 +1122,57 @@ fn wipe_finished(mut outcome: crate::clean::Outcome, scratch: &Path) -> Wiped {
     Wiped { outcome, ok, left_before_start: false }
 }
 
-/// A marker Sprawl leaves while it wipes a drive: the drive, which process (and which run of it:
-/// the process's own start time) is doing the wiping.
-struct Marker {
-    root: String,
-    pid: u32,
-    start: u64,
+fn marker_refusal(p: &Path, e: std::io::Error) -> String {
+    format!("Not started: the wipe marker {} already exists or could not be safely checked or created ({e}). Sprawl left any existing marker alone. If another wipe is running, wait for it to finish.", p.display())
 }
 
-fn read_marker(p: &Path) -> Option<Marker> {
-    let text = std::fs::read_to_string(p).ok()?;
-    parse_marker(&text)
+fn marker_place(p: &Path) -> std::io::Result<(&Path, &str)> {
+    p.parent().zip(p.file_name().and_then(|n| n.to_str()))
+        .ok_or_else(|| std::io::Error::other("invalid marker path"))
 }
 
-fn parse_marker(text: &str) -> Option<Marker> {
-    let (mut root, mut pid, mut start) = (None, None, None);
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("root=") {
-            root = Some(v.trim().to_string());
-        } else if let Some(v) = line.strip_prefix("pid=") {
-            pid = v.trim().parse::<u32>().ok();
-        } else if let Some(v) = line.strip_prefix("start=") {
-            start = v.trim().parse::<u64>().ok();
-        }
+/// Preflight is read-only and never interprets existing marker contents.
+fn marker_absent(p: &Path) -> std::io::Result<()> {
+    use sprawl_core::local::*;
+    let (dir, name) = marker_place(p)?;
+    let dir = match directory(dir) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    match dir.open_in(name, READ_ATTRIBUTES, SHARE_READ | SHARE_WRITE | SHARE_DELETE, Disposition::Open, Kind::Either, false) {
+        Ok(_) => Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "a marker is already present")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
-    Some(Marker { root: root?, pid: pid?, start: start? })
-}
-
-/// Whether the Sprawl named in `m` is still running: its id and its own start time must both
-/// match, so a reused id doesn't pass for a wipe that is long gone.
-fn marker_live(m: &Marker) -> bool {
-    process_alive(m.pid) && process_start(m.pid) == Some(m.start)
-}
-
-/// Whether the note names this very run: a wipe this process started, or the note it leaves
-/// after a failed start. It is not "another Sprawl", and the user isn't told to wait for it.
-fn marker_is_this_run(m: &Marker) -> bool {
-    m.pid == std::process::id() && Some(m.start) == process_start(std::process::id())
 }
 
 /// A marker held open for the whole wipe, shared for reading only: another Sprawl can see that a
 /// wipe is running, but can neither change nor remove the note. Windows retires this exact
 /// file on close, including when the job's deferred teardown finally releases its pins.
-pub(crate) struct MarkerHold(std::fs::File);
+pub(crate) struct MarkerHold { file: std::fs::File, dir: sprawl_core::local::Directory }
 
-/// Claim the marker for this drive. The first Sprawl to make it wins; a marker left by a Sprawl
-/// that is gone is removed and a fresh one made, and if another instance makes one in that
-/// instant (or holds the old one open), this one gives up rather than wipe alongside it.
+impl MarkerHold {
+    fn pins(&self) -> impl Iterator<Item = &std::fs::File> {
+        std::iter::once(&self.file).chain(self.dir.pins())
+    }
+}
+
+/// Create the marker through its pinned, no-reparse parent. Never reopen, overwrite or
+/// unlink an existing name, even if it looks like a marker from a previous run.
 pub(crate) fn claim_marker(p: &Path, root: &Path) -> std::io::Result<MarkerHold> {
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::os::windows::fs::OpenOptionsExt;
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let when = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let start = process_start(std::process::id()).unwrap_or(0);
+    let (dir, name) = marker_place(p)?;
+    let dir = crate::store::ensure_dir(dir)?;
+    let mut f = dir.create_ephemeral_file(name)?;
     // Older Sprawl builds may still read this note. Never let them infer scratch ownership.
-    let body = format!("root={}\npid={}\nstart={start}\nforeign=1\ntime={when}\n", root.display(), std::process::id());
-    let make = || {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            // shared for reading only: another Sprawl sees the wipe running, and can neither
-            // write the note nor remove it while it is held
-            .share_mode(1)
-            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_DELETE_ON_CLOSE)
-            .open(p)
-    };
-    let mut f = match make() {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            match read_marker(p) {
-                Some(m) if !marker_is_this_run(&m) && marker_live(&m) => return Err(std::io::Error::other("another Sprawl is wiping this drive right now")),
-                // a stale or unreadable note goes; one that can't be removed is being held by a
-                // live wipe, which is a refusal, not a reason to carry on
-                _ => {}
-            }
-            if let Err(e) = std::fs::remove_file(p) {
-                return Err(if matches!(e.raw_os_error(), Some(5) | Some(32)) {
-                    std::io::Error::other("another Sprawl is wiping this drive right now")
-                } else {
-                    e
-                });
-            }
-            make().map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    std::io::Error::other("another Sprawl has just started wiping this drive")
-                } else {
-                    e
-                }
-            })?
-        }
-        Err(e) => return Err(e),
-    };
-    // written and read back through the same handle: it must be this run's note
-    let checked = (|| -> std::io::Result<()> {
-        f.write_all(body.as_bytes())?;
-        f.seek(SeekFrom::Start(0))?;
-        let mut read = String::new();
-        f.read_to_string(&mut read)?;
-        let m = parse_marker(&read).ok_or_else(|| std::io::Error::other("the wipe's own note couldn't be read back"))?;
-        if m.pid != std::process::id() || m.start != start {
-            return Err(std::io::Error::other("another Sprawl's note was found in place of this one's"));
-        }
-        Ok(())
-    })();
-    checked?; // A half-written note also retires on close, not by looking up its path again.
-    Ok(MarkerHold(f))
-}
-
-/// Whether a process with this id is still running.
-fn process_alive(pid: u32) -> bool {
-    const SYNCHRONIZE: u32 = 0x0010_0000;
-    const WAIT_TIMEOUT: u32 = 0x102;
-    // SAFETY: a query about a process by its id; the handle is closed below.
-    let h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
-    if h == 0 {
-        return false;
-    }
-    let alive = unsafe { WaitForSingleObject(h as *mut std::ffi::c_void, 0) } == WAIT_TIMEOUT;
-    unsafe { CloseHandle(h) };
-    alive
-}
-
-/// When a process began, as a FILETIME: two runs never share both an id and a start time.
-fn process_start(pid: u32) -> Option<u64> {
-    const QUERY: u32 = 0x1000;
-    let current = pid == std::process::id();
-    // SAFETY: a query about a process by its id (or this one); the handle is closed below.
-    let h = if current { unsafe { GetCurrentProcess() } } else { unsafe { OpenProcess(QUERY, 0, pid) as *mut std::ffi::c_void } };
-    if h.is_null() {
-        return None;
-    }
-    let (mut made, mut exit, mut kernel, mut user) = ([0u32; 2], [0u32; 2], [0u32; 2], [0u32; 2]);
-    // SAFETY: four FILETIMEs are written into the arrays.
-    let ok = unsafe { GetProcessTimes(h as isize, made.as_mut_ptr(), exit.as_mut_ptr(), kernel.as_mut_ptr(), user.as_mut_ptr()) } != 0;
-    if !current {
-        unsafe { CloseHandle(h as isize) };
-    }
-    ok.then(|| (made[1] as u64) << 32 | made[0] as u64)
+    let body = format!("root={}\npid={}\nforeign=1\n", root.display(), std::process::id());
+    f.write_all(body.as_bytes())?;
+    f.seek(SeekFrom::Start(0))?;
+    let mut read = String::new();
+    f.read_to_string(&mut read)?;
+    if read != body { return Err(std::io::Error::other("the new wipe marker did not read back unchanged")); }
+    Ok(MarkerHold { file: f, dir })
 }
 
 fn wide(p: &Path) -> Vec<u16> {
@@ -1303,17 +1198,13 @@ extern "system" {
     fn GetDiskFreeSpaceExW(dir: *const u16, free: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
     fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *mut std::ffi::c_void, disposition: u32, flags: u32, template: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
     fn DeviceIoControl(h: *mut std::ffi::c_void, code: u32, inbuf: *const std::ffi::c_void, inlen: u32, outbuf: *mut std::ffi::c_void, outlen: u32, returned: *mut u32, overlapped: *mut std::ffi::c_void) -> i32;
-    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-    fn GetCurrentProcess() -> *mut std::ffi::c_void;
-    fn GetProcessTimes(h: isize, made: *mut u32, exit: *mut u32, kernel: *mut u32, user: *mut u32) -> i32;
-    fn WaitForSingleObject(h: *mut std::ffi::c_void, ms: u32) -> u32;
     #[link_name = "CloseHandle"]
     fn CloseHandle(h: isize) -> i32;
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
     use super::*;
 
     /// A temporary folder for one test, removed when the test ends, even when it fails.
@@ -1672,38 +1563,69 @@ mod tests {
     }
 
     #[test]
-    fn a_marker_says_which_drive_is_being_wiped_and_by_which_process() {
+    fn the_new_marker_is_exclusive_and_retires_when_its_handle_closes() {
         let base = temp("marker");
         let volume = fixture_volume(1);
         let root = volume.path();
         let marker = base.join(format!("wipe-{}.txt", volume.id()));
         assert!(!marker.file_name().unwrap().to_string_lossy().contains(':'));
-        assert!(read_marker(&marker).is_none(), "no marker, no wipe");
+        assert!(marker_absent(&marker).is_ok());
         let hold = claim_marker(&marker, root).unwrap();
-        let seen = read_marker(&marker).expect("another Sprawl can read a held note and see the wipe");
-        assert_eq!((seen.pid, seen.start), (std::process::id(), process_start(std::process::id()).unwrap()));
+        let seen = std::fs::read_to_string(&marker).expect("a held note is readable");
+        assert!(seen.contains(&format!("root={}\npid={}\n", root.display(), std::process::id())));
+        assert!(seen.contains("foreign=1"), "legacy readers must never infer ownership");
         assert!(std::fs::remove_file(&marker).is_err(), "the note can't be removed while it is held");
         assert!(std::fs::OpenOptions::new().write(true).open(&marker).is_err(), "nor written");
         assert!(claim_marker(&marker, root).is_err(), "a second wipe is refused");
-        assert!(!process_alive(u32::MAX - 1), "a made-up id is not");
-
-        // a note left by a run that is gone is replaced
-        drop(hold);
-        assert!(!marker.exists(), "the marker retires with its handle");
-        std::fs::write(&marker, "root=C:\\\npid=4294967295\nstart=1\ntime=0\n").unwrap();
-        let hold = claim_marker(&marker, root).unwrap();
-        let m = read_marker(&marker).unwrap();
-        assert_eq!(m.root, root.to_string_lossy());
-        assert_eq!((m.pid, m.start), (std::process::id(), process_start(std::process::id()).unwrap()));
-        assert!(std::fs::read_to_string(&marker).unwrap().contains("foreign=1"), "legacy readers must never infer ownership");
-        assert!(marker_live(&m), "this very process is alive");
-        let mut other = Marker { root: m.root.clone(), pid: m.pid, start: m.start ^ 1 };
-        assert!(!marker_live(&other), "an id reused by another run is not this wipe");
-        other.start = m.start;
-        assert!(marker_live(&other));
-        assert!(marker_is_this_run(&other), "this run's own note is not 'another Sprawl'");
         drop(hold);
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn foreign_marker_appearing_after_review_is_never_replaced_or_dispatched() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let base = temp("foreign-marker");
+        let review = fixture_review(1);
+        let marker = base.join(format!("wipe-{}.txt", review.volume.id()));
+        for locked in [false, true] {
+            let plan = wipe_plan_in(marker.clone(), &base);
+            assert!(plan.refusal().is_none());
+            let foreign = [0xff, 0xfe, 1, 3];
+            std::fs::write(&marker, foreign).unwrap();
+            let lock = locked.then(|| std::fs::OpenOptions::new().write(true).share_mode(0).open(&marker).unwrap());
+            assert!(wipe_plan_in(marker.clone(), &base).refusal().is_some());
+            let result = wipe_system_in(&review, plan, &AtomicBool::new(false),
+                || panic!("must refuse prior to launch checks"), |_, _, _| panic!("must not run cipher"));
+            assert!(result.left_before_start && result.outcome.problems[0].contains("left any existing marker alone"));
+            drop(lock);
+            assert_eq!(std::fs::read(&marker).unwrap(), foreign);
+            std::fs::remove_file(&marker).unwrap(); // remove only the test's own fixture
+        }
+    }
+
+    #[test]
+    fn a_redirected_marker_parent_survives_and_refuses_dispatch() {
+        use std::os::windows::fs::MetadataExt;
+        let base = temp("marker-parent");
+        let review = fixture_review(1);
+        let redirected = base.join("Sprawl");
+        let other = base.join("outside");
+        std::fs::create_dir(&other).unwrap();
+        let name = format!("wipe-{}.txt", review.volume.id());
+        let marker = redirected.join(&name);
+        let plan = wipe_plan_in(marker.clone(), &base);
+        assert!(plan.refusal().is_none());
+        let unrelated = other.join(name);
+        std::fs::write(&unrelated, "unrelated data").unwrap();
+        let cmd = crate::clean::system_dir().unwrap().join("cmd.exe");
+        let linked = std::process::Command::new(cmd).args(["/d", "/c", "mklink", "/J"]).arg(&redirected).arg(&other).output().unwrap();
+        assert!(linked.status.success(), "{:?}", linked);
+        assert!(wipe_plan_in(marker, &base).refusal().is_some());
+        let result = wipe_free_in::<FakeMount>(&review, plan, &AtomicBool::new(false),
+            || panic!("must refuse before making a mount"), |_, _, _, _| panic!("must not run cipher"));
+        assert!(result.left_before_start && result.outcome.problems[0].contains("wipe marker"));
+        assert_ne!(std::fs::symlink_metadata(&redirected).unwrap().file_attributes() & REPARSE, 0);
+        assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "unrelated data");
     }
 
     fn fixture_volume(n: u32) -> Volume {
@@ -1723,7 +1645,7 @@ mod tests {
         assert!(review.uses_system_drive());
         assert_eq!(review.label, Path::new(r"E:\"));
         let marker = base.join("wipe-guid.txt");
-        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let plan = wipe_plan_in(marker.clone(), &base);
         let result = wipe_system_in(&review, plan, &AtomicBool::new(false),
             || system_cipher_args(&review, &system, drive), |args, _, _| {
                 assert_eq!(args, r"/w:D:\");
@@ -1743,7 +1665,7 @@ mod tests {
         let review = bind_system_route(fixture_review(1), Some(&system), drive).unwrap();
         system.volume = fixture_volume(2);
         let marker = base.join("wipe-guid.txt");
-        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let plan = wipe_plan_in(marker.clone(), &base);
         let result = wipe_system_in(&review, plan, &AtomicBool::new(false),
             || system_cipher_args(&review, &system, drive),
             |_, _, _| panic!("a mismatching GUID must not reach cipher"));
@@ -1802,8 +1724,8 @@ mod tests {
         std::fs::create_dir(&old).unwrap();
         let unrelated = old.join("ordinary.txt");
         std::fs::write(&unrelated, "keep on this volume").unwrap();
-        let plan = wipe_plan_in(review.volume_path(), marker, &base);
-        let lines = plan.scratch_lines().join("\n");
+        let plan = wipe_plan_in(marker, &base);
+        let lines = plan.refusal().unwrap();
         assert!(lines.contains(&old.display().to_string()) && lines.contains("File Explorer") && lines.contains("Leave anything unfamiliar alone"));
         let result = wipe_free_in::<FakeMount>(&review, plan, &AtomicBool::new(false),
             || panic!("must not mount with an occupied scratch path"), |_, _, _, _| panic!("must not run"));
@@ -1823,7 +1745,7 @@ mod tests {
         std::fs::create_dir(&new_volume).unwrap();
         assert!(!new_volume.join("EFSTMPWP").exists());
         let marker = base.join("wipe-guid.txt");
-        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let plan = wipe_plan_in(marker.clone(), &base);
         let trace = Trace::default();
         let result = wipe_free_in(&review, plan, &AtomicBool::new(false),
             || Ok(FakeMount::new(review.volume.clone(), trace.clone())),
@@ -1844,7 +1766,7 @@ mod tests {
         let base = temp("wipe-after-end");
         let marker = base.join("wipe-E.txt");
         let review = fixture_review(1);
-        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let plan = wipe_plan_in(marker.clone(), &base);
         let scratch = plan.scratch.clone();
         let leftover = scratch.join("leftover.tmp");
         let result = wipe_free_in(&review, plan, &AtomicBool::new(false),
@@ -1864,7 +1786,7 @@ mod tests {
         let base = temp("wipe-guid-mismatch");
         let review = fixture_review(1);
         let marker = base.join("wipe-guid.txt");
-        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let plan = wipe_plan_in(marker.clone(), &base);
         let trace = Trace::default();
         let result = wipe_free_in(&review, plan, &AtomicBool::new(false), || {
             let mut mount = FakeMount::new(review.volume.clone(), trace.clone());
@@ -1881,7 +1803,7 @@ mod tests {
         let base = temp("wipe-late-scratch");
         let review = fixture_review(1);
         let marker = base.join("wipe-guid.txt");
-        let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+        let plan = wipe_plan_in(marker.clone(), &base);
         let scratch = plan.scratch.clone();
         let trace = Trace::default();
         let result = wipe_free_in(&review, plan, &AtomicBool::new(false), || {
@@ -1901,7 +1823,7 @@ mod tests {
             let base = temp("wipe-mount-lifetime");
             let review = fixture_review(1);
             let marker = base.join("wipe-guid.txt");
-            let plan = wipe_plan_in(review.volume_path(), marker.clone(), &base);
+            let plan = wipe_plan_in(marker.clone(), &base);
             let trace = Trace::default();
             let stop = AtomicBool::new(false);
             let mut deferred = None;
