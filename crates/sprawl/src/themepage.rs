@@ -1,4 +1,5 @@
-//! The Theme page of Settings: a sample that follows each pick, the presets, and the options in four groups of labelled dropdowns, two to a row. A preset is only a set of option values; Custom is the
+//! The Theme page of Settings: a live sample, presets, and groups of labelled controls,
+//! two to a row. A preset is only a set of option values; Custom is the
 //! user's own picks, kept apart so a preset tried and left does not lose them. The options are
 //! kept in `settings.ini` as one `look.<option>` key each (a missing key is Sprawl's own value),
 //! read before any XAML loads, and applied live on Save through [`crate::restyle::apply_look`].
@@ -7,7 +8,7 @@
 
 use windows_core::{Interface, HSTRING};
 
-use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
 use crate::bindings::Microsoft::UI::Xaml::Controls::Border;
 use crate::bindings::Microsoft::UI::Xaml::Markup::XamlReader;
 use crate::bindings::Microsoft::UI::Xaml::{FrameworkElement, UIElement};
@@ -27,14 +28,15 @@ pub(crate) struct Opt {
     pub choices: &'static [(&'static str, &'static str)],
 }
 
-pub(crate) const GROUPS: [&str; 4] = ["Colour", "Shape", "Feel", "Text and space"];
+pub(crate) const GROUPS: [&str; 5] = ["Colour", "Shape", "Feel", "Text and space", "Custom accent"];
+const CUSTOM_ACCENT_GROUP: usize = 4;
 /// The dropdowns sit in two columns, as the mockup's grid does.
 const COLUMNS: usize = 2;
 
-/// Only options that exist are here; each group holds at most eight.
-pub(crate) const OPTS: [Opt; 19] = [
+/// Only options that exist are here; each group fits at most four rows of two controls.
+pub(crate) const OPTS: [Opt; 21] = [
     Opt { key: "mode", label: "Light or dark", group: 0, choices: &[("like", "Like Windows"), ("light", "Light"), ("dark", "Dark")] },
-    Opt { key: "accent", label: "Accent", group: 0, choices: &[("windows", "Windows accent"), ("azure", "Azure"), ("iris", "Iris"), ("violet", "Violet"), ("sunset", "Sunset")] },
+    Opt { key: "accent", label: "Accent", group: 0, choices: &[("windows", "Windows accent"), ("azure", "Azure"), ("iris", "Iris"), ("violet", "Violet"), ("sunset", "Sunset"), ("custom", "Custom colour")] },
     Opt { key: "strength", label: "Accent strength", group: 0, choices: &[("aswindows", "As Windows gives it"), ("stronger", "Stronger")] },
     Opt { key: "surfaces", label: "Surfaces", group: 0, choices: &[("ink", "Ink"), ("graphite", "Graphite"), ("tinted", "Tinted"), ("black", "Black"), ("slate", "Slate"), ("warmgrey", "Warm grey")] },
     Opt { key: "backdrop", label: "Backdrop", group: 0, choices: &[("solid", "Solid"), ("mica", "Mica"), ("acrylic", "Acrylic")] },
@@ -52,6 +54,8 @@ pub(crate) const OPTS: [Opt; 19] = [
     Opt { key: "motion", label: "Motion", group: 2, choices: &[("subtle", "Subtle"), ("lively", "Lively"), ("none", "None")] },
     Opt { key: "finish", label: "Finish", group: 2, choices: &[("soft", "Soft depth"), ("flat", "Flat")] },
     Opt { key: "smalltext", label: "Small text", group: 3, choices: &[("leadwords", "13 px, lead words"), ("plain", "13 px"), ("grey12", "12 px, grey")] },
+    Opt { key: "text", label: "Text size", group: 3, choices: &[("aswritten", "100%"), ("110", "110%"), ("125", "125%")] },
+    Opt { key: "density", label: "Table density", group: 3, choices: &[("compact", "Compact"), ("comfortable", "Comfortable"), ("roomy", "Roomy")] },
 ];
 
 pub(crate) const PRESETS: [&str; 5] = ["Sprawl", "Windows", "Midnight", "Paper", "Custom"];
@@ -76,6 +80,9 @@ pub(crate) fn index(look: &Look, mode: usize, key: &str) -> usize {
         return mode.min(o.choices.len() - 1);
     }
     let name = name_of(look, key).unwrap_or_default();
+    if key == "accent" && matches!(look.accent, tokens::Accent::Custom(_)) {
+        return o.choices.len() - 1;
+    }
     o.choices.iter().position(|c| c.0 == name).unwrap_or(0)
 }
 
@@ -85,6 +92,11 @@ pub(crate) fn with_pick(look: &Look, mode: usize, key: &str, i: usize) -> (Look,
     let i = i.min(o.choices.len() - 1);
     if key == "mode" {
         return (look.clone(), i);
+    }
+    if key == "accent" && o.choices[i].0 == "custom" {
+        let mut next = look.clone();
+        if !matches!(next.accent, tokens::Accent::Custom(_)) { next.accent = tokens::Accent::Custom(0x00_78D4); }
+        return (next, mode);
     }
     (Look::from_kv(&format!("{};{key}={}", look.to_kv(), o.choices[i].0)), mode)
 }
@@ -139,7 +151,11 @@ pub(crate) fn line(look: &Look, mode: usize) -> String {
 
 /// How many parts of `s` are a known option with a known value.
 fn known(s: &str) -> usize {
-    s.split(';').filter_map(|p| p.split_once('=')).filter(|(k, v)| opt(k.trim()).is_some_and(|o| o.choices.iter().any(|c| c.0 == v.trim()))).count()
+    s.split(';').filter_map(|p| p.split_once('=')).filter(|(k, v)| {
+        let (k, v) = (k.trim(), v.trim());
+        if k == "accent" && tokens::Accent::from_rgb(v).is_some() { return true; }
+        opt(k).is_some_and(|o| o.choices.iter().any(|c| c.0 == v && v != "custom"))
+    }).count()
 }
 
 /// A line as Copy theme wrote it, or outside text claiming to be one: only known options with
@@ -166,7 +182,8 @@ pub(crate) fn read(s: &Settings) -> Look {
     Look::from_kv(&line)
 }
 
-pub(crate) fn write(s: &mut Settings, look: &Look) {
+#[cfg(test)]
+fn write(s: &mut Settings, look: &Look) {
     for o in OPTS.iter().filter(|o| o.key != "mode") {
         if let Some(v) = name_of(look, o.key) {
             s.set(&format!("look.{}", o.key), v);
@@ -193,6 +210,7 @@ pub(crate) fn overlaid(look: &Look, over: &str) -> Look {
 /// screenshot runs, never written back).
 pub(crate) fn startup_look(s: &Settings) -> Look {
     let look = read(s);
+    if !crate::settings::read_only() { return look; }
     match std::env::var("SPRAWL_LOOK") {
         Ok(over) => overlaid(&look, &over),
         Err(_) => look,
@@ -332,6 +350,50 @@ fn button(name: &str, t: &str, primary: bool) -> String {
     format!(r##"<Button x:Name="{name}" Content="{}"{style}/>"##, ui::esc(t))
 }
 
+impl ThemeUi {
+    /// The page's XAML, and the names of its buttons.
+    pub(crate) fn page(&self) -> (String, Vec<String>) {
+        let mut buttons = ["TmCopy", "TmPaste", "TmBack"].map(String::from).to_vec();
+        let mut x = r##"<Border x:Name="TmSample"/>"##.to_string();
+        x += &ui::note_text(r#"Margin="0,2,0,0""#, "Each pick shows at once on the whole window. Save keeps it; Cancel goes back.");
+        x += &theme_dropdown("TmPreset", "Preset", &PRESETS, which(&self.look, self.mode));
+        x += &format!(
+            r##"<StackPanel Orientation="Horizontal" Spacing="6">{}{}{}</StackPanel>"##,
+            button("TmCopy", "Copy theme", false),
+            button("TmPaste", "Paste theme", false),
+            button("TmBack", "Back to Sprawl's own", false)
+        );
+        x += &theme_dropdown("TmGroup", "Customise", &GROUPS, self.tab);
+        let in_group: Vec<&Opt> = OPTS.iter().filter(|o| o.group == self.tab).collect();
+        let custom_accent = self.tab == CUSTOM_ACCENT_GROUP;
+        let cells = in_group.len() + usize::from(custom_accent);
+        let rows = r##"<RowDefinition Height="Auto"/>"##.repeat(cells.div_ceil(COLUMNS));
+        x += &format!(
+            r##"<Grid x:Name="TmOptions" ColumnSpacing="16" RowSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions>{rows}</Grid.RowDefinitions>"##
+        );
+        for (n, o) in in_group.iter().enumerate() {
+            let items: String = o.choices.iter().map(|(_, l)| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(l))).collect();
+            x += &format!(
+                // a labelled row: the name in a column of its own, the dropdown filling the rest
+                r##"<Grid Grid.Row="{0}" Grid.Column="{1}" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="102"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock x:Name="TmLabel_{3}" Text="{2}" FontSize="{{$fs12}}" Foreground="{{$label}}" VerticalAlignment="Center" TextWrapping="Wrap"/><ComboBox x:Name="TmPick_{3}" AutomationProperties.LabeledBy="{{Binding ElementName=TmLabel_{3}}}" Grid.Column="1" HorizontalAlignment="Stretch" MaxDropDownHeight="300" SelectedIndex="{4}">{items}</ComboBox></Grid>"##,
+                n / COLUMNS,
+                n % COLUMNS,
+                ui::esc(o.label),
+                o.key,
+                index(&self.look, self.mode, o.key)
+            );
+        }
+        if custom_accent {
+            let caption = if let tokens::Accent::Custom(rgb) = self.look.accent { format!("Edit custom colour (#{rgb:06X})…") } else { "Choose custom colour…".into() };
+            x += &format!(r##"<Grid Grid.Row="{}" Grid.Column="{}" HorizontalAlignment="Left">{}</Grid>"##,
+                in_group.len() / COLUMNS, in_group.len() % COLUMNS, button("TmColour", &caption, false));
+            buttons.push("TmColour".into());
+        }
+        x += "</Grid>";
+        (x, buttons)
+    }
+}
+
 impl State {
     /// Settings opened: the page starts from what is in use.
     pub(crate) fn theme_begin(&mut self) {
@@ -344,71 +406,19 @@ impl State {
         t.custom = custom.clone();
         t.orig_custom = custom;
         t.tab = 0;
-        // a new page: its line starts on its tab, not where it was last time
-        crate::tabline::forget(&crate::tabline::THEME);
     }
 
-    /// The page's XAML, and the names of its buttons.
-    pub(crate) fn theme_page(&self) -> (String, Vec<String>) {
-        let t = &self.prefs.theme;
-        let mut buttons: Vec<String> = Vec::new();
-        let mut x = String::new();
-        x += &format!(r##"<Border x:Name="TmSample"/>"##);
-        x += &ui::note_text(r#"Margin="0,2,0,0""#, "Each pick shows at once on the whole window. Save keeps it; Cancel goes back.");
-        x += r##"<Border x:Name="TmPresets"/>"##;
-        x += &format!(
-            r##"<StackPanel Orientation="Horizontal" Spacing="6">{}{}{}</StackPanel>"##,
-            button("TmCopy", "Copy theme", false),
-            button("TmPaste", "Paste theme", false),
-            button("TmBack", "Back to Sprawl's own", false)
-        );
-        buttons.extend(["TmCopy", "TmPaste", "TmBack"].map(String::from));
-        {
-            // the groups, with one line under them that slides (tabline.rs): the line is a border
-            // over the same cell as the buttons, and the buttons' padding is the line's inset
-            let pad = if crate::tokens::current().tabs == Tabs::Pills { String::new() } else { format!(r#" Padding="{0},4,{0},7""#, crate::tabline::THEME_INSET) };
-            x += r##"<Grid HorizontalAlignment="Left" Margin="0,6,0,0"><StackPanel Orientation="Horizontal" Spacing="2">"##;
-            for (g, name) in GROUPS.iter().enumerate() {
-                x += &format!(
-                    r##"<Button x:Name="TmTab{g}" {}{pad}><TextBlock Text="{}" FontSize="{{$fs13}}"/></Button>"##,
-                    crate::look::pick_nav(g == t.tab),
-                    ui::esc(name)
-                );
-                buttons.push(format!("TmTab{g}"));
-            }
-            x += r##"</StackPanel><Border x:Name="TmTabLine" Height="3" VerticalAlignment="Bottom" IsHitTestVisible="False"/></Grid>"##;
-            let in_group: Vec<&Opt> = OPTS.iter().filter(|o| o.group == t.tab).collect();
-            let rows = r##"<RowDefinition Height="Auto"/>"##.repeat(in_group.len().div_ceil(COLUMNS));
-            x += &format!(
-                r##"<Grid ColumnSpacing="16" RowSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions>{rows}</Grid.RowDefinitions>"##
-            );
-            for (n, o) in in_group.iter().enumerate() {
-                let items: String = o.choices.iter().map(|(_, l)| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(l))).collect();
-                x += &format!(
-                    // a labelled row: the name in a column of its own, the dropdown filling the rest
-                    r##"<Grid Grid.Row="{}" Grid.Column="{}" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="102"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" VerticalAlignment="Center" TextWrapping="Wrap"/><ComboBox x:Name="TmPick_{}" Grid.Column="1" HorizontalAlignment="Stretch" SelectedIndex="{}">{items}</ComboBox></Grid>"##,
-                    n / COLUMNS,
-                    n % COLUMNS,
-                    ui::esc(o.label),
-                    o.key,
-                    index(&t.look, t.mode, o.key)
-                );
-            }
-            x += "</Grid>";
-        }
-        (x, buttons)
-    }
-
-    /// The preset buttons, the one the picks match drawn as the main one.
-    fn theme_presets(&self) -> String {
-        let t = &self.prefs.theme;
-        let on = which(&t.look, t.mode);
-        let b: String = PRESETS.iter().enumerate().map(|(i, name)| button(&format!("TmPre{i}"), name, i == on)).collect();
-        format!(r##"<StackPanel {} Orientation="Horizontal" Spacing="6">{b}</StackPanel>"##, ui::NS)
-    }
-
-    /// The page was loaded: its dropdowns are heard, its sample and presets put in.
+    /// Wire the page's dropdowns and draw its sample.
     pub(crate) fn theme_wire(&self, fe: &FrameworkElement) {
+        for (name, action) in [("TmPreset", "TmPre"), ("TmGroup", "TmTab")] {
+            if let Ok(s) = find::<Selector>(fe, name) {
+                if let Ok(t) = s.SelectionChanged(move |sel, _| {
+                    if let Some(i) = sel.as_ref().and_then(|o| o.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok()) {
+                        with(move |st| { st.wizard_focus_control(name); st.prefs_button(&format!("{action}{i}")); });
+                    }
+                }) { keep(t); }
+            }
+        }
         for o in OPTS.iter() {
             let key = o.key;
             if let Ok(s) = find::<Selector>(fe, &format!("TmPick_{key}")) {
@@ -423,8 +433,6 @@ impl State {
             }
         }
         self.theme_refresh(fe);
-        // the line under the groups slides to the lit one
-        crate::tabline::select(fe, &crate::tabline::THEME, Some(&format!("TmTab{}", self.prefs.theme.tab)));
     }
 
     /// The sample and the presets, made again for the picks (the dropdowns stay as they are).
@@ -433,25 +441,16 @@ impl State {
         if let (Ok(host), Some(el)) = (find::<Border>(fe, "TmSample"), sample_element(&t.look, t.mode)) {
             let _ = host.SetChild(&el);
         }
-        if let (Ok(host), Ok(el)) = (find::<Border>(fe, "TmPresets"), crate::state::load::<FrameworkElement>(&self.theme_presets())) {
-            let _ = host.SetChild(&el);
-            // the row was loaded on its own, so its names are found in it, not in the page
-            for i in 0..PRESETS.len() {
-                let name = format!("TmPre{i}");
-                if let Ok(b) = find::<ButtonBase>(&el, &name) {
-                    if let Ok(tok) = b.Click(move |_, _| {
-                        let n = name.clone();
-                        with(move |s| s.prefs_button(&n));
-                    }) {
-                        keep(tok);
-                    }
-                }
-            }
-        }
     }
 
     /// A dropdown's pick: the picks change, and it is the user's own set now.
     fn theme_pick(&mut self, key: &str, i: usize) {
+        self.wizard_focus_control(&format!("TmPick_{key}"));
+        if key == "accent" && OPTS[1].choices.get(i).is_some_and(|c| c.0 == "custom") {
+            self.theme_button("TmColour");
+            self.prefs_render();
+            return;
+        }
         let t = &mut self.prefs.theme;
         if index(&t.look, t.mode, key) == i {
             return;
@@ -514,6 +513,12 @@ impl State {
                 self.prefs.draft.insert("theme", "0".into());
                 self.prefs.note = Some("Back to Sprawl's own look. Press Save to keep that, or Cancel.".into());
             }
+            "TmColour" => {
+                let rgb = match t.look.accent { tokens::Accent::Custom(rgb) => rgb, _ => 0x0078D4 };
+                let Some(rgb) = crate::dialogs::pick_colour(self.hwnd, rgb) else { return; };
+                t.look.accent = tokens::Accent::Custom(rgb);
+                t.custom = Some((t.look.clone(), t.mode));
+            }
             n if n.starts_with("TmTab") => t.tab = n[5..].parse().unwrap_or(0).min(GROUPS.len() - 1),
             n if n.starts_with("TmPre") => {
                 let i: usize = n[5..].parse().unwrap_or(0);
@@ -533,7 +538,7 @@ impl State {
             }
             _ => {}
         }
-        if matches!(name, "TmPaste" | "TmBack") || name.starts_with("TmPre") {
+        if matches!(name, "TmPaste" | "TmBack" | "TmColour") || name.starts_with("TmPre") {
             self.theme_live();
         }
     }
@@ -549,16 +554,22 @@ impl State {
 
     /// Save: the picks are kept in the settings, and a changed look is applied now. The light
     /// or dark choice is the `theme` setting, applied by the page's own path.
+    pub(crate) fn theme_stage(&self, staged: &mut Settings) {
+        let t = &self.prefs.theme;
+        if t.custom != t.orig_custom { write_custom(staged, t.custom.as_ref()); }
+        for o in OPTS.iter().filter(|o| o.key != "mode") {
+            if let Some(v) = name_of(&t.look, o.key).filter(|v| name_of(&t.orig, o.key).as_ref() != Some(v)) {
+                staged.set(&format!("look.{}", o.key), v);
+            }
+        }
+    }
+
     pub(crate) fn theme_commit(&mut self) {
         // the light or dark choice is the saved setting again (it was tried while picking)
         crate::restyle::end_preview();
         let t = &self.prefs.theme;
-        if t.custom != t.orig_custom {
-            write_custom(&mut self.settings, t.custom.as_ref());
-        }
         if t.look != t.orig {
             let look = t.look.clone();
-            write(&mut self.settings, &look);
             // already on screen when it was tried
             if crate::tokens::current() != look {
                 crate::restyle::apply_look(look.clone());
@@ -594,15 +605,19 @@ impl State {
     }
 }
 
+fn theme_dropdown(name: &str, label: &str, items: &[&str], index: usize) -> String {
+    let items: String = items.iter().map(|title| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(title))).collect();
+    format!(r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="102"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock x:Name="{name}_Label" Text="{label}" FontSize="{{$fs12}}" VerticalAlignment="Center"/><ComboBox x:Name="{name}" AutomationProperties.LabeledBy="{{Binding ElementName={name}_Label}}" Grid.Column="1" HorizontalAlignment="Stretch" SelectedIndex="{index}" MaxDropDownHeight="300">{items}</ComboBox></Grid>"##)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tokens::Ticks;
 
     #[test]
-    fn every_choice_round_trips_and_every_group_fits() {
+    fn every_choice_round_trips() {
         for o in OPTS.iter() {
-            assert!(OPTS.iter().filter(|p| p.group == o.group).count() <= 8, "{}", GROUPS[o.group]);
             for i in 0..o.choices.len() {
                 let (look, mode) = with_pick(&Look::default(), 0, o.key, i);
                 assert_eq!(index(&look, mode, o.key), i, "{} {i}", o.key);
@@ -620,6 +635,28 @@ mod tests {
                 assert_eq!(o.choices.iter().filter(|c| c.0 == v).count(), 1, "{k}: the default is one of the choices");
             }
         }
+    }
+
+    #[test]
+    fn customise_groups_use_at_most_four_rows_in_the_normal_card() {
+        // Four rows were visible in the 940×680 Settings card. Count rendered rows,
+        // including the picker button, rather than counting only dropdown options.
+        assert_eq!(crate::wizard::card_size(true, 1680.0, 1080.0), (940.0, 680.0));
+        let counts: Vec<_> = GROUPS.iter().enumerate().map(|(tab, group)| {
+            let (x, buttons) = ThemeUi { tab, ..ThemeUi::default() }.page();
+            let (_, options) = x.split_once(r#"<Grid x:Name="TmOptions""#).unwrap();
+            let (definitions, controls) = options.split_once("</Grid.RowDefinitions>").unwrap();
+            assert!(options.ends_with("</Grid>") && !x.contains("<ScrollViewer"), "{group}: no extra control below the grid or scrollbar");
+            assert_eq!(controls.contains(r#"x:Name="TmColour""#), tab == CUSTOM_ACCENT_GROUP);
+            assert_eq!(buttons.iter().any(|name| name == "TmColour"), tab == CUSTOM_ACCENT_GROUP);
+            let rows = definitions.matches(r#"<RowDefinition Height="Auto"/>"#).count();
+            assert!(rows <= 4, "{group}: {rows} rows exceeds the normal card budget");
+            rows
+        }).collect();
+        assert_eq!(counts, [4, 4, 2, 2, 1]);
+        let look = Look { accent: tokens::Accent::Custom(0x123456), ..Look::default() };
+        let (x, _) = ThemeUi { look, tab: CUSTOM_ACCENT_GROUP, ..ThemeUi::default() }.page();
+        assert!(x.contains("Edit custom colour (#123456)…"));
     }
 
     #[test]

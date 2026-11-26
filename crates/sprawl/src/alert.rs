@@ -149,8 +149,10 @@ fn growth_alerts(settings: &crate::settings::Settings, state: &mut BTreeMap<Stri
             unsafe { SetPriorityClass(-1, PROCESS_MODE_BACKGROUND_BEGIN) };
             let progress = sprawl_advisor::exclusions::progress();
             if let Ok(tree) = sprawl_core::walk::inventory_with(&profile, &progress, 2) {
-                let cap = (settings.num("snapshot_cap_mb").unwrap_or(1024.0) * 1024.0 * 1024.0) as u64;
-                let _ = history::prepare(&tree, std::time::SystemTime::now(), false).save(&base, cap);
+                let policy = history::Retention::load();
+                if policy.enabled {
+                    let _ = history::prepare(&tree, std::time::SystemTime::now(), false).save_retained(&base, policy);
+                }
             }
         }
     }
@@ -191,9 +193,9 @@ fn secs(t: std::time::SystemTime) -> u64 {
 fn gb(b: u64) -> String {
     let g = b as f64 / GB as f64;
     if g >= 100.0 {
-        format!("{g:.0} GB")
+        format!("{g:.0} GiB")
     } else {
-        format!("{g:.1} GB")
+        format!("{g:.1} GiB")
     }
 }
 
@@ -215,6 +217,25 @@ pub fn schtasks_args(on: bool, exe: &std::path::Path) -> Vec<String> {
 /// Create or remove the scheduled task, for this account only (no administrator). Never for a
 /// screenshot run. True when schtasks did it.
 pub fn schedule(on: bool) -> bool {
+    let ok = update_task(on);
+    TASK_RESULT.store(match (on, ok) { (true, true) => 1, (true, false) => 2, (false, true) => 3, (false, false) => 4 }, std::sync::atomic::Ordering::Relaxed);
+    ok
+}
+
+static TASK_RESULT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub(crate) fn task_status(wanted: bool) -> &'static str {
+    use std::sync::atomic::Ordering::Relaxed;
+    match (wanted, TASK_RESULT.load(Relaxed)) {
+        (true, 1) => "Windows accepted the alert task for this session.",
+        (true, 2) => "Windows couldn't schedule the task. Sprawl retries at the next launch.",
+        (true, _) => "Alerts are enabled, but this launch hasn't confirmed the Windows task.",
+        (false, 4) => "The task couldn't be removed. It exits without checking while both alerts are off.",
+        (false, _) => "Both saved alerts are off.",
+    }
+}
+
+fn update_task(on: bool) -> bool {
     if sprawl_install::recovery::running_copy() { return false; }
     if crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
         return true;

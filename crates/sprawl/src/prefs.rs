@@ -9,31 +9,29 @@ use sprawl_advisor::tuning::{self, Knob};
 pub enum Sec {
     General,
     Theme,
-    Ai,
-    Network,
     Scanning,
     Search,
     Map,
     Cleaning,
-    Advisor,
     History,
+    Ai,
+    Data,
 }
 
 impl Sec {
-    pub const ALL: [Sec; 10] = [Sec::General, Sec::Theme, Sec::Ai, Sec::Network, Sec::Scanning, Sec::Search, Sec::Map, Sec::Cleaning, Sec::Advisor, Sec::History];
+    pub const ALL: [Sec; 9] = [Sec::General, Sec::Theme, Sec::Scanning, Sec::Search, Sec::Map, Sec::Cleaning, Sec::History, Sec::Ai, Sec::Data];
 
     pub fn title(self) -> &'static str {
         match self {
             Sec::General => "General",
             Sec::Theme => "Theme",
-            Sec::Ai => "AI and privacy",
-            Sec::Network => "Network",
+            Sec::Ai => "AI and connections",
             Sec::Scanning => "Scanning",
             Sec::Search => "Search",
-            Sec::Map => "Map and look",
+            Sec::Map => "Treemap",
             Sec::Cleaning => "Cleaning",
-            Sec::Advisor => "Advisor",
-            Sec::History => "History",
+            Sec::History => "History and alerts",
+            Sec::Data => "Data and recovery",
         }
     }
 
@@ -42,19 +40,34 @@ impl Sec {
             Sec::General => "&#xE713;",
             Sec::Theme => "&#xE771;",
             Sec::Ai => "&#xE945;",
-            Sec::Network => "&#xE774;",
             Sec::Scanning => "&#xEDA2;",
             Sec::Search => "&#xE71E;",
             Sec::Map => "&#xE790;",
             Sec::Cleaning => "&#xE74D;",
-            Sec::Advisor => "&#xE82F;",
             Sec::History => "&#xE81C;",
+            Sec::Data => "&#xE8B7;",
         }
     }
 
     /// The section a link names (`"ai"`, `"history"`...).
     pub fn by_id(id: &str) -> Option<Sec> {
+        if id.eq_ignore_ascii_case("advisor") { return Some(Sec::Cleaning); }
+        if id.eq_ignore_ascii_case("network") { return Some(Sec::Ai); }
         Sec::ALL.into_iter().find(|s| format!("{s:?}").eq_ignore_ascii_case(id))
+    }
+
+    pub fn groups(self) -> &'static [(&'static str, &'static [&'static str])] {
+        match self {
+            Sec::General => &[("Startup and navigation", &["startTab", "afterScan"]), ("Sizes and panels", &["units", "decimal", "oHeader", "oTypes", "oTreemap"])],
+            Sec::Theme => &[],
+            Sec::Scanning => &[("Folders", &["scanExclude", "programFolders"]), ("Drive selection and Explorer", &["oAuto", "oExplorer"]), ("Administrator permissions", &["oAlwaysAdmin", "adminShellMenu", "adminHandOff", "adminClaudeCode", "adminUserTools", "adminMcpDisk"])],
+            Sec::Search => &[("Where Search looks", &["searchDrivesOn", "searchSnapshots"]), ("Saved and recent searches", &["searchHistory", "recentSearches"]), ("Results", &["searchColumns", "searchMaxHits"])],
+            Sec::Map => &[("Colours and tiles", &["palette", "oNames", "oFree", "oAlloc"]), ("Motion and 3D", &["animate", "oPulses", "oTilt", "oMirror", "aa"]), ("Tile details", &["oCushion", "lift", "cushion", "tilt"])],
+            Sec::Cleaning => &[("Cleanup choices", &["recycleOwn", "clUsualTicks", "oldScanMinutes"]), ("Keep list", &["neverTouch"]), ("Privacy and backups", &["privacyCleaners", "registryBackups"]), ("Advisor rules", &["uninstaller", "tuneFindingMinMb", "tunePartMinKb", "tuneLaterDays"]), ("Idle applications and projects", &["tuneProjectIdleDays", "tuneUnusedAppDays", "tuneLeftoverIdleDays", "tuneLeftoverMinMb"]), ("Duplicates", &["tuneDupesMinMb", "tuneDupesBudgetGb"])],
+            Sec::History => &[("Scan history", &["snapshots", "snapshot_cap_mb", "tuneKeepFull", "historyDisk"]), ("Low space", &["alertLow", "alertFreeGb"]), ("Folder growth", &["alertGrowth", "alertGrowGb", "alertDailyScan"])],
+            Sec::Ai => &[("Provider and permissions", &["ai", "aiWebLookup"]), ("Logs and integrations", &["aiLog", "mcp"]), ("Offline and downloads", &["offline", "oUpdates", "communityFetch", "tuneCommunityDays"])],
+            Sec::Data => &[("Data and recovery", &["dataFolder"])],
+        }
     }
 }
 
@@ -68,6 +81,8 @@ pub enum Kind {
     Choice(&'static [&'static str], usize),
     /// Free text (a path), with a placeholder.
     Text(&'static str),
+    /// Percentage in a bounded slider; persisted as the renderer's own scale.
+    Range(u32, u32),
     /// Built by its own code: a list, buttons, the AI provider.
     Custom,
 }
@@ -78,40 +93,35 @@ pub struct Pref {
     pub label: &'static str,
     pub help: &'static str,
     pub kind: Kind,
-    /// Under "Advanced" in its section.
-    pub advanced: bool,
 }
 
 const fn p(key: &'static str, sec: Sec, label: &'static str, help: &'static str, kind: Kind) -> Pref {
-    Pref { key, sec, label, help, kind, advanced: false }
-}
-
-const fn adv(key: &'static str, sec: Sec, label: &'static str, help: &'static str, kind: Kind) -> Pref {
-    Pref { key, sec, label, help, kind, advanced: true }
+    Pref { key, sec, label, help, kind }
 }
 
 pub const UNITS: [&str; 6] = ["Best fit", "Bytes", "KB", "MB", "GB", "TB"];
 pub const UNIT_ITEMS: [&str; 6] = ["uDyn", "uB", "uKB", "uMB", "uGB", "uTB"];
 pub const AA: [&str; 4] = ["Off", "Low (2x)", "Medium (4x)", "High (8x)"];
 pub const AA_ITEMS: [&str; 4] = ["aaOff", "aaLow", "aaMedium", "aaHigh"];
-pub const CAPS: [&str; 4] = ["500 MB", "1 GB", "2 GB", "5 GB"];
-pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
+pub const CAPS: [&str; 4] = ["500 MiB", "1 GiB", "2 GiB", "5 GiB"];
+pub const CAPS_MB: [u32; 4] = sprawl_advisor::history::Retention::CAPS_MB;
 pub const AFTER_SCAN: [&str; 2] = ["Stay where I am", "Open the Advisor"];
 /// "Open Sprawl on": the tab used last, or one of the tabs (look::start_tab reads the index).
 /// "Warn me below": the free space a drive may fall to before the low-space notice.
-pub const ALERT_AT: [&str; 4] = ["5 GB", "10 GB", "20 GB", "50 GB"];
+pub const ALERT_AT: [&str; 4] = ["5 GiB", "10 GiB", "20 GiB", "50 GiB"];
 pub const ALERT_GB: [u64; 4] = [5, 10, 20, 50];
 /// "Grew by more than": how much a folder may grow in about a week before the growth notice.
-pub const GROW_AT: [&str; 4] = ["2 GB", "5 GB", "10 GB", "20 GB"];
+pub const GROW_AT: [&str; 4] = ["2 GiB", "5 GiB", "10 GiB", "20 GiB"];
 pub const GROW_GB: [u64; 4] = [2, 5, 10, 20];
 pub const OPEN_ON: [&str; 6] = ["The tab used last", "Tree View", "File View", "Advisor", "Cleaners", "Search"];
 
 /// The Options menu switches a setting stands for: read from and applied through the menu.
-pub const MENU: [&str; 11] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc"];
+pub const MENU: [&str; 14] = ["oUpdates", "oAlwaysAdmin", "oExplorer", "oAuto", "oPulses", "oTilt", "oNames", "oCushion", "oMirror", "oFree", "oAlloc", "oHeader", "oTypes", "oTreemap"];
+pub const ANIMATE: [&str; 3] = ["Follow Windows", "On", "Off"];
 
-pub static PREFS: [Pref; 63] = [
+pub static PREFS: &[Pref] = &[
     // General
-    p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons, for example D:\\Games; C:\\Work\\Private. New app, Search, Cleaners and MCP scans omit them. Fast MFT scans still work: skipped folders are left out as the tree is built. Cleanup actions covering a skipped folder are refused. Existing History and CSV imports remain unchanged; rescan to replace old results.", Kind::Text("D:\\Games; C:\\Work\\Private")),
+    p("scanExclude", Sec::Scanning, "Folders to skip", "Full paths separated by semicolons. Rescan to update results. Sprawl also refuses a program's cleanup command if its scope overlaps a skipped folder or can't be verified.", Kind::Text("D:\\Games; C:\\Work\\Private")),
     p("programFolders", Sec::Scanning, "Program folders", "Folders where installed programs live, beyond Program Files. The Advisor checks the large folders directly inside each entry for Windows compression. Nothing is deleted.", Kind::Custom),
     p("theme", Sec::Theme, "Light or dark", "Light or dark. Like Windows follows Settings > Personalisation > Colours. A change shows as soon as you save.", Kind::Choice(&crate::theme::CHOICES, 0)),
     p("units", Sec::General, "Sizes in", "Best fit or a fixed unit. The base below determines GB versus GiB. Search sizes, goals and alert thresholds keep their stated binary meaning.", Kind::Choice(&UNITS, 0)),
@@ -120,33 +130,36 @@ pub static PREFS: [Pref; 63] = [
         "startTab",
         Sec::General,
         "Open Sprawl on",
-        "The tab shown when Sprawl starts; nothing is scanned because of it. A folder opened from Explorer or the command line is scanned and shown in Tree View whatever this says.",
+        "Takes effect next launch. Opening a folder from Explorer or the command line still starts a scan in Tree View.",
         Kind::Choice(&OPEN_ON, 0),
     ),
     p(
         "alertLow",
-        Sec::General,
+        Sec::History,
         "Tell me when a drive is nearly full",
         "Every 4 hours a scheduled task of your account looks at how much space each drive has free, nothing more, and shows a Windows notice when one is below the limit: at most once a week per drive. A click opens Sprawl on it. Nothing is scanned or cleaned by it.",
         Kind::Switch(false),
     ),
-    p("alertFreeGb", Sec::General, "Nearly full means less free than", "", Kind::Choice(&ALERT_AT, 1)),
+    p("alertFreeGb", Sec::History, "Nearly full means less free than", "", Kind::Choice(&ALERT_AT, 1)),
     p(
         "alertGrowth",
-        Sec::General,
+        Sec::History,
         "Tell me when a folder grows fast",
-        "The same check compares your scans in History (keep scan history must be on) and shows a notice when a folder grew by more than the amount below in about a week: once per scan, at most once a week per folder.",
+        "Uses existing scans in History. Turn on Keep scan history to include future scans.",
         Kind::Switch(false),
     ),
-    p("alertGrowGb", Sec::General, "Fast means it grew by more than", "", Kind::Choice(&GROW_AT, 1)),
+    p("alertGrowGb", Sec::History, "Fast means it grew by more than", "", Kind::Choice(&GROW_AT, 1)),
     p(
         "alertDailyScan",
-        Sec::General,
+        Sec::History,
         "Also read my user folder once a day for it",
-        "Off: only the scans you make count. On: once a day the check also reads your user folder, folder sizes only, with your own rights and at low priority, and keeps it in History.",
+        "Requires growth alerts and Keep scan history. Saves folder sizes only, at low priority.",
         Kind::Switch(false),
     ),
-    p("dataFolder", Sec::General, "Your data", "Settings, what the Advisor remembers, scan history and logs: all on this PC, in your own folders.", Kind::Custom),
+    p("dataFolder", Sec::Data, "Your data", "Settings and logs are in Roaming. Scan history and backups are in Local.", Kind::Custom),
+    p("oHeader", Sec::General, "Show header", "", Kind::Switch(true)),
+    p("oTypes", Sec::General, "Show file types", "", Kind::Switch(true)),
+    p("oTreemap", Sec::General, "Show treemap", "", Kind::Switch(true)),
     // AI and privacy
     p("ai", Sec::Ai, "AI provider", "", Kind::Custom),
     p(
@@ -158,21 +171,21 @@ pub static PREFS: [Pref; 63] = [
     ),
     p("aiLog", Sec::Ai, "AI request log", "Every request to an AI provider and every web lookup, kept on this PC. Forget removes the names the AI gave folders and the rules and cleaners it proposed that you haven't approved.", Kind::Custom),
     // Network
-    p("oUpdates", Sec::Network, "Check for updates automatically", "When it starts, and once a day while it stays open, Sprawl asks GitHub for a newer signed release. Nothing about this PC is sent.", Kind::Switch(true)),
+    p("oUpdates", Sec::Ai, "Check for updates automatically", "At startup and once a day while open, check GitHub for a signed release.", Kind::Switch(true)),
     p(
         "communityFetch",
-        Sec::Network,
+        Sec::Ai,
         "Fetch community cleaners",
-        "Once a week, winapp2.ini and BleachBit's cleaners are downloaded from GitHub (a plain download; nothing about this PC is sent). Each does nothing until you turn it on in Cleaners.",
+        "Download winapp2.ini and BleachBit definitions from GitHub. Each cleaner stays off until enabled.",
         Kind::Switch(false),
     ),
-    p("offline", Sec::Network, "Work offline: no update check, no community download, no AI", "While on, nothing leaves this PC, whatever else is set.", Kind::Switch(false)),
+    p("offline", Sec::Ai, "Work offline", "Save to block new update, community and AI requests. Requests already sent may finish.", Kind::Switch(false)),
     // Scanning
     p(
         "oAlwaysAdmin",
         Sec::Scanning,
         "Always run as administrator",
-        "Reads the NTFS master file table directly: a whole drive in seconds instead of a minute or more. Windows asks each time Sprawl starts. As administrator, the four things in the box below are off unless you allow them.",
+        "Takes effect next launch, from a copy installed for all users. Windows asks before granting administrator rights.",
         Kind::Switch(false),
     ),
     // While Sprawl runs as administrator, also allow (off by default; never on the wizard)
@@ -183,23 +196,28 @@ pub static PREFS: [Pref; 63] = [
     p("adminMcpDisk", Sec::Scanning, "MCP tools reading the disk (as administrator)", "", Kind::Switch(false)),
     p("oExplorer", Sec::Scanning, "Add \"Scan with Sprawl\" to Explorer", "Right-click any folder or drive in Explorer to scan it. Only for your account; no administrator needed.", Kind::Switch(false)),
     p("oAuto", Sec::Scanning, "Scan as soon as a drive is picked", "Picking a drive in the list starts its scan.", Kind::Switch(true)),
-    p("oPulses", Sec::Scanning, "Watch for changes after a scan", "Tiles pulse when their files change (Live Change Pulses).", Kind::Switch(true)),
-    p("afterScan", Sec::Scanning, "After a scan", "Where Sprawl takes you when a scan finishes.", Kind::Choice(&AFTER_SCAN, 0)),
+    p("oPulses", Sec::Map, "Watch for changes after a scan", "Tiles pulse when their files change (Live Change Pulses).", Kind::Switch(true)),
+    p("afterScan", Sec::General, "After a scan", "Where Sprawl takes you when a scan finishes.", Kind::Choice(&AFTER_SCAN, 0)),
     // Search
     p("searchDrivesOn", Sec::Search, "Other drives Search may read", "A ticked drive is read when Search opens, so Search finds files there too. None is ticked until you choose.", Kind::Custom),
-    p("searchHistory", Sec::Search, "Keep recent searches", "Your recent and saved searches, in %APPDATA%\\Sprawl\\searches.txt on this PC.", Kind::Switch(true)),
+    p("searchHistory", Sec::Search, "Keep recent searches", "Turning it off clears recent searches. Pinned searches stay.", Kind::Switch(true)),
+    p("recentSearches", Sec::Search, "Recent searches", "Pinned searches are managed from the Saved and recent searches menu.", Kind::Custom),
+    p("searchColumns", Sec::Search, "Search columns", "Name is always shown.", Kind::Custom),
     p("searchSnapshots", Sec::Search, "Saved scans Search may use", "Search also looks in the newest saved scans of History that nothing else covers.", Kind::Number(&tuning::SEARCH_SNAPSHOTS, "scans")),
-    adv("searchMaxHits", Sec::Search, "Most results shown from other drives", "More takes more memory and time to sort.", Kind::Number(&tuning::SEARCH_MAX_HITS, "rows")),
+    p("searchMaxHits", Sec::Search, "Most results shown from other drives", "More takes more memory and time to sort.", Kind::Number(&tuning::SEARCH_MAX_HITS, "rows")),
     // Map and look
     p("palette", Sec::Map, "Colours", "The colours of the map and the file types.", Kind::Choice(&crate::paint::PALETTES, 0)),
-    p("animate", Sec::Map, "Animations", "Turn off for a calmer, lighter map. Until you choose, it follows Windows' Animation effects (Accessibility > Visual effects).", Kind::Switch(true)),
+    p("animate", Sec::Map, "Map animations", "Follow Windows uses its Animation effects preference.", Kind::Choice(&ANIMATE, 0)),
     p("oTilt", Sec::Map, "3D and tilt", "The map as lit 3D tiles, tilted.", Kind::Switch(true)),
     p("oNames", Sec::Map, "Folder and file names", "Names on the map's tiles.", Kind::Switch(true)),
     p("oCushion", Sec::Map, "Shading", "Cushion shading on the tiles.", Kind::Switch(true)),
     p("oMirror", Sec::Map, "Mirror floor", "A glossy reflection under the map.", Kind::Switch(true)),
     p("oFree", Sec::Map, "Free space", "The drive's free space as a tile.", Kind::Switch(false)),
     p("oAlloc", Sec::Map, "Size by allocated space", "Tiles sized by the space files take on disk, not their length.", Kind::Switch(false)),
-    p("aa", Sec::Map, "Antialiasing", "Smoother 3D edges; higher takes more of the graphics card.", Kind::Choice(&AA, 2)),
+    p("aa", Sec::Map, "Smooth 3D edges", "Higher uses more graphics power.", Kind::Choice(&AA, 2)),
+    p("lift", Sec::Map, "Tile height on hover", "", Kind::Range(250, 100)),
+    p("cushion", Sec::Map, "Shading strength", "", Kind::Range(200, 100)),
+    p("tilt", Sec::Map, "Tilt amount", "", Kind::Range(100, 55)),
     // Cleaning
     p(
         "recycleOwn",
@@ -216,22 +234,22 @@ pub static PREFS: [Pref; 63] = [
         Kind::Switch(false),
     ),
     p("registryBackups", Sec::Cleaning, "Registry backups", "The backups Sprawl wrote before clearing Explorer's registry lists in Cleaners. Put back writes the removed values back; values written since stay. The last ten are kept, in %LOCALAPPDATA%\\Sprawl\\registry-backups.", Kind::Custom),
-    p("neverTouch", Sec::Cleaning, "Never touch", "Folders and files you chose to keep: Sprawl never offers them and a clean-up leaves them. Add one, or take one off the list.", Kind::Custom),
+    p("neverTouch", Sec::Cleaning, "Keep during cleanup", "Sprawl refuses a program's cleanup command if its scope overlaps a kept path or can't be verified. The review says why. To omit a folder from new scans, use Scanning > Folders to skip.", Kind::Custom),
     p("clUsualTicks", Sec::Cleaning, "Open Cleaners with my usual ticks", "Cleaners opens with the parts you ticked last time. Sprawl never ticks anything for you.", Kind::Switch(true)),
-    p("tuneCommunityDays", Sec::Cleaning, "Community cleaners: fetch every", "When fetching is on (Network).", Kind::Number(&tuning::COMMUNITY_DAYS, "days")),
-    adv("oldScanMinutes", Sec::Cleaning, "Old scan warning after", "A clean-up says so when its scan is older than this.", Kind::Number(&tuning::OLD_SCAN_MINUTES, "minutes")),
+    p("tuneCommunityDays", Sec::Ai, "Fetch community definitions every", "Only when community fetching is on.", Kind::Number(&tuning::COMMUNITY_DAYS, "days")),
+    p("oldScanMinutes", Sec::Cleaning, "Old scan warning after", "A clean-up says so when its scan is older than this.", Kind::Number(&tuning::OLD_SCAN_MINUTES, "minutes")),
     // Advisor
-    p("uninstaller", Sec::Advisor, "Uninstaller", "\"Hand to...\" in the Advisor hands an application to it (Revo, Bulk Crap Uninstaller and the like) instead of Windows' own uninstaller.", Kind::Text("A full path to its .exe (optional)")),
-    p("mcp", Sec::Advisor, "Use Sprawl from your own Claude Code", "Run this once in a terminal; then your own Claude Code can ask Sprawl about your disk while Sprawl is open.", Kind::Custom),
-    adv("tuneFindingMinMb", Sec::Advisor, "Smallest finding listed", "Can only be raised: lower would list more safe findings.", Kind::Number(&tuning::FINDING_MIN_MB, "MB")),
-    adv("tunePartMinKb", Sec::Advisor, "Smallest cleaner part listed", "Can only be raised, for the same reason.", Kind::Number(&tuning::PART_MIN_KB, "KB")),
-    adv("tuneProjectIdleDays", Sec::Advisor, "A project counts as idle after", "Its build output is offered once nothing in the project changed for this long.", Kind::Number(&tuning::PROJECT_IDLE_DAYS, "days")),
-    adv("tuneUnusedAppDays", Sec::Advisor, "An application counts as unused after", "Not started for this long (and 1 GB or more).", Kind::Number(&tuning::UNUSED_APP_DAYS, "days")),
-    adv("tuneLeftoverIdleDays", Sec::Advisor, "A leftover needs no change for", "A folder of an application that is gone.", Kind::Number(&tuning::LEFTOVER_IDLE_DAYS, "days")),
-    adv("tuneLeftoverMinMb", Sec::Advisor, "A leftover's smallest size", "", Kind::Number(&tuning::LEFTOVER_MIN_MB, "MB")),
-    adv("tuneLaterDays", Sec::Advisor, "\"Not now\" hides a finding for", "", Kind::Number(&tuning::LATER_DAYS, "days")),
-    adv("tuneDupesMinMb", Sec::Advisor, "Duplicates: smallest file", "", Kind::Number(&tuning::DUPES_MIN_MB, "MB")),
-    adv("tuneDupesBudgetGb", Sec::Advisor, "Duplicates: how much to read", "Files are read to compare them; more finds more and takes longer.", Kind::Number(&tuning::DUPES_BUDGET_GB, "GB")),
+    p("uninstaller", Sec::Cleaning, "Uninstaller", "\"Hand to...\" in Advisor uses this instead of Windows' own uninstaller.", Kind::Text("Full path to an .exe (optional)")),
+    p("mcp", Sec::Ai, "Use Sprawl from your own Claude Code", "Run this once in a terminal; Claude Code can then ask Sprawl about your disk while Sprawl is open.", Kind::Custom),
+    p("tuneFindingMinMb", Sec::Cleaning, "Smallest finding listed", "", Kind::Number(&tuning::FINDING_MIN_MB, "MiB")),
+    p("tunePartMinKb", Sec::Cleaning, "Smallest cleaner part listed", "", Kind::Number(&tuning::PART_MIN_KB, "KiB")),
+    p("tuneProjectIdleDays", Sec::Cleaning, "A project counts as idle after", "Its build output is offered once nothing in the project changed for this long.", Kind::Number(&tuning::PROJECT_IDLE_DAYS, "days")),
+    p("tuneUnusedAppDays", Sec::Cleaning, "An application counts as unused after", "Not started for this long (and 1 GiB or more).", Kind::Number(&tuning::UNUSED_APP_DAYS, "days")),
+    p("tuneLeftoverIdleDays", Sec::Cleaning, "A leftover needs no change for", "A folder of an application that is gone.", Kind::Number(&tuning::LEFTOVER_IDLE_DAYS, "days")),
+    p("tuneLeftoverMinMb", Sec::Cleaning, "A leftover's smallest size", "", Kind::Number(&tuning::LEFTOVER_MIN_MB, "MiB")),
+    p("tuneLaterDays", Sec::Cleaning, "\"Not now\" hides a finding for", "", Kind::Number(&tuning::LATER_DAYS, "days")),
+    p("tuneDupesMinMb", Sec::Cleaning, "Duplicates: smallest file", "", Kind::Number(&tuning::DUPES_MIN_MB, "MiB")),
+    p("tuneDupesBudgetGb", Sec::Cleaning, "Duplicates: how much to read", "Files are read to compare them; more finds more and takes longer.", Kind::Number(&tuning::DUPES_BUDGET_GB, "GiB")),
     // History
     p(
         "snapshots",
@@ -240,7 +258,7 @@ pub static PREFS: [Pref; 63] = [
         "After each scan Sprawl saves a snapshot of it: every file name of each scanned folder, with sizes and dates, on this PC only (%LOCALAPPDATA%\\Sprawl\\snapshots). About 5 MB for a whole system drive, the newest in full detail. It powers growth over time, the time-lapse and comparing scans.",
         Kind::Switch(false),
     ),
-    p("snapshot_cap_mb", Sec::History, "Space for history", "The oldest snapshots are thinned out first when it is full.", Kind::Choice(&CAPS, 1)),
+    p("snapshot_cap_mb", Sec::History, "Space for history", "Applied the next time a snapshot is saved; the oldest ones are thinned out first.", Kind::Choice(&CAPS, 1)),
     p("historyDisk", Sec::History, "History on disk", "Clear deletes every saved snapshot; scans you make later are kept again if history is on.", Kind::Custom),
     p("tuneKeepFull", Sec::History, "Full snapshots kept per folder", "Older ones keep only folder totals.", Kind::Number(&tuning::KEEP_FULL, "snapshots")),
 ];
@@ -268,6 +286,7 @@ impl Pref {
             Kind::Number(k, _) => Some(k.default.to_string()),
             Kind::Choice(_, i) => Some(i.to_string()),
             Kind::Text(_) => Some(String::new()),
+            Kind::Range(_, start) => Some(start.to_string()),
             Kind::Custom => None,
         }
     }
@@ -295,6 +314,17 @@ impl Pref {
 mod tests {
     use super::*;
 
+    #[test]
+    fn preferences_have_one_home_and_program_folders_stay_by_exclusions() {
+        for p in PREFS.iter().filter(|p| p.sec != Sec::Theme) {
+            let places: Vec<_> = Sec::ALL.into_iter()
+                .filter(|sec| sec.groups().iter().any(|(_, keys)| keys.contains(&p.key))).collect();
+            assert_eq!(places, [p.sec], "{}", p.key);
+            assert_eq!(p.sec.groups().iter().filter(|(_, keys)| keys.contains(&p.key)).count(), 1, "{}", p.key);
+        }
+        assert_eq!(Sec::Scanning.groups()[0].1, &["scanExclude", "programFolders"]);
+    }
+
     /// Each setting's default is the documented one (handoff-opus.md, "Settings and the wizard").
     #[test]
     fn defaults_are_the_documented_ones() {
@@ -317,7 +347,13 @@ mod tests {
             ("searchSnapshots", "3"),
             ("searchMaxHits", "100000"),
             ("palette", "0"),
-            ("animate", "1"),
+            ("animate", "0"),
+            ("oHeader", "1"),
+            ("oTypes", "1"),
+            ("oTreemap", "1"),
+            ("lift", "100"),
+            ("cushion", "100"),
+            ("tilt", "55"),
             ("clUsualTicks", "1"),
             ("recycleOwn", "1"),
             ("privacyCleaners", "0"),

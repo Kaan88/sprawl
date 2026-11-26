@@ -177,6 +177,85 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").map(PathBuf::from)
 }
 
+/// Resolve the scope of the same uninstall command the rule generated. Bind the tool's
+/// home explicitly; an uninstall must not retarget when the tool's defaults change.
+pub(crate) fn cleanup_scope(id: &str, path: &Path, command: &str) -> Option<(Vec<PathBuf>, Vec<(&'static str, PathBuf)>, String)> {
+    cleanup_scope_in(id, path, command, android_sdk)
+}
+
+fn cleanup_scope_in(id: &str, path: &Path, command: &str, sdk_root: impl FnOnce() -> Option<PathBuf>) -> Option<(Vec<PathBuf>, Vec<(&'static str, PathBuf)>, String)> {
+    let name = path.file_name()?.to_str()?.to_string();
+    let parent = path.parent()?;
+    if !plain(&name) { return None; }
+    let mut roots = vec![path.to_path_buf()];
+    let mut run = command.to_owned();
+    let mut env = Vec::new();
+    match id {
+        "versions.rust" => {
+            let root = parent.parent()?;
+            let (channel, target) = name.split_once('-')?;
+            let target = if matches!(channel, "nightly" | "beta") { target.get(11..)? } else { target };
+            if !parent.file_name()?.eq_ignore_ascii_case("toolchains")
+                || command != format!("rustup toolchain uninstall {}", ps_quote(&name))
+                // Only fully scoped names; rustup resolves partial names using its default host.
+                || !target.split_once("-pc-windows-").is_some_and(|(arch, abi)|
+                    matches!(arch, "i686" | "x86_64" | "aarch64" | "arm64ec") && matches!(abi, "msvc" | "gnu" | "gnullvm")) { return None; }
+            // A legacy rustup layout can remove *all* toolchains during data migration.
+            let settings = bounded_text(&root.join("settings.toml"), 256 << 10).ok()?;
+            let settings = settings.parse::<toml::Table>().ok()?;
+            if settings.get("version")?.as_str()? != "12" { return None; }
+            roots.extend([root.join("update-hashes").join(&name), root.join("tmp")]);
+            env.push(("RUSTUP_HOME", root.to_path_buf()));
+        }
+        "versions.nvm" | "versions.fnm" => {
+            let ver = name.strip_prefix('v')?;
+            if ver.split('.').count() != 3 || numbers(ver)?.len() != 3 { return None; }
+            if id == "versions.nvm" {
+                if command != format!("nvm uninstall {}", ps_quote(ver)) { return None; }
+                let text = bounded_text(&parent.join("settings.txt"), 64 << 10).ok()?;
+                let setting = |key: &str| {
+                    let mut values = text.lines().filter_map(|l| l.split_once(':'))
+                        .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key)).map(|(_, v)| PathBuf::from(v.trim()));
+                    let value = values.next()?;
+                    (value.is_absolute() && values.next().is_none()).then_some(value)
+                };
+                let root = setting("root")?;
+                let link = setting("path")?;
+                if !crate::clean::same_path(parent, &root) { return None; }
+                // nvm can also remove its active-version link if the selection changed.
+                roots.push(link.clone());
+                env.extend([("NVM_HOME", parent.to_path_buf()), ("NVM_SYMLINK", link)]);
+            } else {
+                if !parent.file_name()?.eq_ignore_ascii_case("node-versions")
+                    || command != format!("fnm uninstall {}", ps_quote(ver)) { return None; }
+                let root = parent.parent()?;
+                roots.push(root.join("aliases"));
+                env.push(("FNM_DIR", root.to_path_buf()));
+            }
+        }
+        "versions.android" => {
+            let sdk = sdk_root()?;
+            let tool = sdkmanager(&sdk)?;
+            if !crate::finding::within(path, &sdk) { return None; }
+            let parts: Vec<_> = path.iter().skip(sdk.iter().count()).map(|s| s.to_str().filter(|s| plain(s))).collect::<Option<_>>()?;
+            match parts.as_slice() {
+                ["build-tools" | "ndk", ver] if numbers(ver).is_some() => {}
+                ["platforms", ver] if ver.strip_prefix("android-").and_then(numbers).is_some() => {}
+                ["system-images", api, _, _] if api.strip_prefix("android-").and_then(numbers).is_some() => {}
+                _ => return None,
+            }
+            let pkg = parts.join(";");
+            if command != format!("& {} --uninstall {}", ps_quote(tool.to_str()?), ps_quote(&pkg)) { return None; }
+            // SDK Manager's temporary operation data is also inside this SDK.
+            roots.push(sdk.join(".temp"));
+            run.push_str(r#" "--sdk_root=$env:SPRAWL_TOOL_DIR""#);
+            env.push(("SPRAWL_TOOL_DIR", sdk));
+        }
+        _ => return None,
+    }
+    Some((roots, env, run))
+}
+
 /// Everything F2 finds in `tree` (empty when the toolchains' folders aren't in it). `apps`
 /// are the installed apps, for the versions only their uninstaller removes (.NET, Python).
 pub fn find(tree: &Tree, projects: &[crate::projects::Project], apps: &[crate::facts::App]) -> Vec<Finding> {
@@ -198,6 +277,61 @@ fn android_sdk() -> Option<PathBuf> {
         .iter()
         .find_map(|v| std::env::var_os(v).map(PathBuf::from))
         .or_else(|| std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("Android").join("Sdk")))
+}
+
+#[cfg(test)]
+mod cleanup_scope_tests {
+    use super::*;
+
+    #[test]
+    fn version_removal_checks_the_named_home_and_its_auxiliary_paths() {
+        let tmp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-version-scope").unwrap();
+        let rust = tmp.path().join("rustup");
+        std::fs::create_dir(&rust).unwrap();
+        let name = "1.91.0-x86_64-pc-windows-msvc";
+        let rust_scope = |name| cleanup_scope("versions.rust", &rust.join("toolchains").join(name), &format!("rustup toolchain uninstall {}", ps_quote(name)));
+        std::fs::write(rust.join("settings.toml"), "version = '12'\n").unwrap();
+        let (paths, env, _) = rust_scope(name).unwrap();
+        assert_eq!(paths, [rust.join("toolchains").join(name), rust.join("update-hashes").join(name), rust.join("tmp")]);
+        assert_eq!(env, [("RUSTUP_HOME", rust.clone())]);
+        assert!(rust_scope("1.91.0").is_none(), "rustup may resolve a partial name to a different directory");
+        std::fs::write(rust.join("settings.toml"), "version = '2'\n").unwrap();
+        assert!(rust_scope(name).is_none(), "legacy metadata migration can remove all toolchains");
+
+        let nvm = tmp.path().join("nvm");
+        std::fs::create_dir(&nvm).unwrap();
+        let link = tmp.path().join("nodejs");
+        let nvm_scope = || cleanup_scope("versions.nvm", &nvm.join("v18.1.0"), "nvm uninstall '18.1.0'");
+        std::fs::write(nvm.join("settings.txt"), format!("root: {}\npath: {}\n", nvm.display(), link.display())).unwrap();
+        let (paths, env, _) = nvm_scope().unwrap();
+        assert_eq!(paths, [nvm.join("v18.1.0"), link.clone()]);
+        assert_eq!(env, [("NVM_HOME", nvm.clone()), ("NVM_SYMLINK", link)]);
+        std::fs::write(nvm.join("settings.txt"), format!("root: {}\npath: {}\n", tmp.path().display(), nvm.display())).unwrap();
+        assert!(nvm_scope().is_none());
+
+        let fnm = tmp.path().join("fnm");
+        let version = fnm.join(r"node-versions\v18.1.0");
+        let (paths, env, _) = cleanup_scope("versions.fnm", &version, "fnm uninstall '18.1.0'").unwrap();
+        assert_eq!(paths, [version, fnm.join("aliases")]);
+        assert_eq!(env, [("FNM_DIR", fnm)]);
+    }
+
+    #[test]
+    fn android_cleanup_binds_the_sdk_and_checks_the_generated_package_id() {
+        let tmp = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-android-scope").unwrap();
+        let sdk = tmp.path().join("Sdk");
+        let bin = sdk.join(r"cmdline-tools\latest\bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("sdkmanager.bat");
+        std::fs::write(&exe, b"fixture, not run").unwrap();
+        let package = sdk.join(r"system-images\android-35\google_apis\x86_64");
+        let cmd = format!("& {} --uninstall 'system-images;android-35;google_apis;x86_64'", ps_quote(exe.to_str().unwrap()));
+        let (paths, env, run) = cleanup_scope_in("versions.android", &package, &cmd, || Some(sdk.clone())).unwrap();
+        assert_eq!(paths, [package.clone(), sdk.join(".temp")]);
+        assert_eq!(env, [("SPRAWL_TOOL_DIR", sdk.clone())]);
+        assert!(run.ends_with(r#" "--sdk_root=$env:SPRAWL_TOOL_DIR""#));
+        assert!(cleanup_scope_in("versions.android", &package, &cmd.replace("android-35", "android-34"), || Some(sdk)).is_none());
+    }
 }
 
 /// The system images the emulators use: each AVD's config.ini names its image
@@ -968,4 +1102,3 @@ mod tests {
         assert_eq!(numbers("stable"), None);
     }
 }
-

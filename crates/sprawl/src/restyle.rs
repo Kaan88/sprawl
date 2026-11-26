@@ -241,7 +241,7 @@ impl State {
         // page made again shows it
         let settings_open = self.settings_shown();
         if settings_open {
-            self.prefs_harvest();
+            self.wizard_before_restyle();
         }
         let set_theme = |setting: Option<&str>| {
             crate::theme::init(setting);
@@ -326,6 +326,7 @@ impl State {
         // the Settings page again, as it was: its section, its picks, its unsaved changes, and
         // the focus it takes when it opens (the old page's controls are gone)
         if settings_open {
+            self.wizard_models();
             self.wizard_show();
             self.wizard_focus_arm(self.prefs.open_state == crate::bindings::Microsoft::UI::Xaml::FocusState::Keyboard);
         }

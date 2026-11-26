@@ -523,7 +523,7 @@ impl State {
         } else if self.advisor.cl.fetching.is_some() {
             "Fetching winapp2.ini and BleachBit's cleaners...".to_string()
         } else if st.fetched == 0 {
-            "winapp2.ini and BleachBit's cleaners are fetched from GitHub once a week (a plain download; nothing about this PC is sent).".to_string()
+            format!("Community cleaners are fetched from GitHub every {} days when due.", sprawl_advisor::tuning::get(&sprawl_advisor::tuning::COMMUNITY_DAYS))
         } else {
             let srcs: Vec<String> = st.sources.iter().map(|s| format!("{}: {} cleaners ({})", s.name, s.imported, s.licence)).collect();
             format!("{}. Fetched {}. Each is checked like your own rules, at least amber, and does nothing until you turn it on.", srcs.join(", "), crate::format::fmt_time(std::time::UNIX_EPOCH + std::time::Duration::from_secs(st.fetched)))
@@ -534,10 +534,10 @@ impl State {
         }
         let left: usize = st.sources.iter().map(|s| s.left_out.len()).sum();
         x += r##"<StackPanel Orientation="Horizontal" Spacing="8">"##;
-        if !off {
+        if !off && !sprawl_advisor::offline() {
             x += r##"<Button x:Name="AdvClUpd" Content="Fetch now"/>"##;
         }
-        x += &format!(r##"<Button x:Name="AdvClComm" Content="{}"/>"##, if off { "Turn on" } else { "Turn off" });
+        x += r##"<Button x:Name="AdvClComm" Content="Community download settings…"/>"##;
         if left > 0 && !off {
             x += &format!(
                 r##"<Button x:Name="AdvClLeft" Content="{}" Style="{{StaticResource SprawlSubtle}}"/>"##,
@@ -558,6 +558,7 @@ impl State {
 
     /// Fetch the community files again, off the UI thread.
     pub(crate) fn community_fetch(&mut self) {
+        if crate::settings::read_only() { return; }
         // the user's choice is in the memory: before it is read, `community_off` is a default
         self.advisor.memory_ready();
         if self.advisor.cl.fetching.is_some() || self.advisor.memory.community_off || sprawl_advisor::offline() {
@@ -1905,11 +1906,23 @@ impl State {
         self.settings.bool(sprawl_advisor::privacy::SETTING) == Some(true)
     }
 
+    pub(crate) fn privacy_settings_changed(&mut self) {
+        self.advisor.cleanup.clear_privacy_selection();
+        *self.advisor.cl.roots.borrow_mut() = None;
+        self.advisor.cl.own = None;
+        if let Some((progress, _)) = self.advisor.cl.own_reading.take() {
+            progress.cancel();
+        }
+        // advisor_start drops the previous receiver, so that report can't publish again.
+        self.advisor_start();
+        self.own_on_open();
+    }
+
     /// The Privacy group, after the space groups: one row per browser profile, by the name the
     /// browser gives it (its folder in the tooltip when they differ), each part with a tick of
     /// its own. No application tick, no size total. Nothing with the setting off.
     fn privacy_group(&self, r: &Report) -> String {
-        if !r.privacy_on {
+        if !self.privacy_on() || !r.privacy_on {
             return String::new();
         }
         let running = self.advisor.cleanup.running.is_some();

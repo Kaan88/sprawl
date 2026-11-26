@@ -45,7 +45,48 @@ pub const MAX_DELTAS: usize = 7;
 const MAX_CHAIN: usize = 64;
 
 pub fn base_dir() -> Option<PathBuf> {
+    if crate::read_only() { return None; }
     std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("Sprawl").join("snapshots"))
+}
+
+/// The same bounded retention policy for the GUI, the scheduled check and standalone MCP.
+#[derive(Clone, Copy)]
+pub struct Retention {
+    pub enabled: bool,
+    pub cap_mb: u32,
+    pub full_per_root: usize,
+}
+
+impl Retention {
+    pub const CAPS_MB: [u32; 4] = [500, 1024, 2048, 5120];
+
+    pub fn parse<'a>(get: impl Fn(&str) -> Option<&'a str>) -> Self {
+        let enabled = get("snapshots").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let cap_mb = get("snapshot_cap_mb").and_then(|v| v.parse().ok()).filter(|n| Self::CAPS_MB.contains(n)).unwrap_or(1024);
+        let k = &crate::tuning::KEEP_FULL;
+        let full_per_root = k.clamp(get(k.key).and_then(|s| s.parse().ok()).unwrap_or(k.default)) as usize;
+        Self { enabled, cap_mb, full_per_root }
+    }
+
+    pub fn load() -> Self {
+        let path = std::env::var_os("APPDATA").map(PathBuf::from);
+        let text = path.and_then(|p| sprawl_core::local::read_checked(&p, &["Sprawl"], "settings.ini", 1 << 20).ok().flatten())
+            .and_then(|b| String::from_utf8(b).ok()).unwrap_or_default();
+        Self::parse(|key| text.trim_start_matches('\u{feff}').lines().rev().filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key).map(|(_, v)| v.trim()))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn retention_uses_the_saved_bounds_and_fails_closed_without_opt_in() {
+    let settings = std::collections::BTreeMap::from([("snapshots", "true"), ("snapshot_cap_mb", "2048"), ("tuneKeepFull", "2")]);
+    let policy = Retention::parse(|key| settings.get(key).copied());
+    assert!(policy.enabled);
+    assert_eq!((policy.cap_mb, policy.full_per_root), (2048, 2));
+    let policy = Retention::parse(|key| (key == "snapshot_cap_mb").then_some("18446744073709551615"));
+    assert!(!policy.enabled);
+    assert_eq!(policy.cap_mb, 1024);
 }
 
 /// Collision-resistant identity of the root spelling, without probing that root on disk.
@@ -202,6 +243,16 @@ pub fn prepare(tree: &Tree, taken: SystemTime, full: bool) -> Pending {
 impl Pending {
     /// Write into `base` and apply the retention policy with a total cap.
     pub fn save(self, base: &Path, cap_bytes: u64) -> io::Result<()> {
+        self.save_bounded(base, cap_bytes, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize)
+    }
+
+    pub fn save_retained(self, base: &Path, policy: Retention) -> io::Result<()> {
+        if !policy.enabled { return Err(io::Error::other("Scan history is off")); }
+        self.save_bounded(base, u64::from(policy.cap_mb) << 20, policy.full_per_root)
+    }
+
+    fn save_bounded(self, base: &Path, cap_bytes: u64, full_per_root: usize) -> io::Result<()> {
+        crate::require_write()?;
         let identity = root_id(&self.root).ok_or_else(bad)?;
         // A scan of a folder a fresh scan above it already shows adds a duplicate point: see
         // [`covered_by_recent`]. Nothing is written, not even a bucket.
@@ -252,7 +303,8 @@ impl Pending {
                 write_atomic(dir, "last.txt", true, |file| write!(file, "{t} {}", self.size))?;
             }
         }
-        prune(&base.path, cap_bytes, SystemTime::now())
+        let entries = list(&base.path);
+        apply(&entries, &plan_bounded(&entries, cap_bytes, SystemTime::now(), full_per_root))
     }
 
     /// The delta that stands for this scan's folders-only tree, when the previous snapshot is
@@ -449,6 +501,10 @@ pub struct Plan {
 /// Which files the policy removes and which deltas it writes whole first, given every entry
 /// and the time now.
 pub fn plan(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Plan {
+    plan_bounded(entries, cap_bytes, now, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize)
+}
+
+fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_root: usize) -> Plan {
     let mut kill: Vec<PathBuf> = Vec::new();
     let mut roots: Vec<&PathBuf> = entries.iter().map(|e| &e.root).collect();
     roots.sort();
@@ -459,7 +515,7 @@ pub fn plan(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Plan {
         // full: newest 3
         let mut full: Vec<&&Entry> = mine.iter().filter(|e| e.full).collect();
         full.sort_by(|a, b| b.taken.cmp(&a.taken));
-        kill.extend(full.iter().skip(crate::tuning::get(&crate::tuning::KEEP_FULL) as usize).map(|e| e.file.clone()));
+        kill.extend(full.iter().skip(full_per_root).map(|e| e.file.clone()));
         // folders only: buckets by age
         let mut fo: Vec<&Entry> = mine.iter().copied().filter(|e| !e.full).collect();
         fo.sort_by(|a, b| b.taken.cmp(&a.taken)); // newest first
@@ -815,6 +871,7 @@ fn check_entry(e: &Entry, file: &fs::File) -> io::Result<()> {
 
 /// Delete only this listed History file, after revalidating its pinned bucket and identity.
 pub fn remove_entry(e: &Entry) -> io::Result<()> {
+    crate::require_write()?;
     let (_bucket, path) = entry_path(e)?;
     let file = fs::OpenOptions::new().access_mode(0x0001_0080).share_mode(1 | 2 | 4)
         .custom_flags(0x0020_0000 | 0x0010_0000).open(path)?;

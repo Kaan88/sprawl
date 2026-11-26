@@ -9,7 +9,7 @@ use windows_core::Interface;
 
 use sprawl_advisor::config::{self, AiConfig, Detected, Provider};
 
-use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
+use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, RangeBase, Selector};
 use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, Control, PasswordBox, TextBox, ToggleSwitch};
 use crate::bindings::Microsoft::UI::Xaml::Media::VisualTreeHelper;
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
@@ -20,13 +20,22 @@ use crate::ui;
 pub const PAGES: usize = WIZARD.len();
 
 /// Every control of the overlay that is wired once: buttons, then the sections.
-pub const BUTTONS: [&str; 15] = ["WizBack", "WizNext", "WizSkip", "WizLoadModels", "WizUseDetected", "PfSec0", "PfSec1", "PfSec2", "PfSec3", "PfSec4", "PfSec5", "PfSec6", "PfSec7", "PfSec8", "PfSec9"];
+pub const BUTTONS: [&str; 16] = ["WizBack", "WizNext", "WizSkip", "WizLoadModels", "WizUseDetected", "WizForgetKey", "WizRemoveAi", "PfSec0", "PfSec1", "PfSec2", "PfSec3", "PfSec4", "PfSec5", "PfSec6", "PfSec7", "PfSec8"];
+
+const LIST_ROWS: usize = 4;
+
+fn page_range(n: usize, page: usize) -> (std::ops::Range<usize>, usize) {
+    let start = page.min(n.saturating_sub(1) / LIST_ROWS) * LIST_ROWS;
+    (start..(start + LIST_ROWS).min(n), n.div_ceil(LIST_ROWS).max(1))
+}
 
 /// The overlay's state while it is open.
 #[derive(Default)]
 pub(crate) struct PrefUi {
     /// The Settings section shown.
     pub(crate) sec: usize,
+    group: usize,
+    list_page: usize,
     /// The values as chosen so far (key: value as text), and as they were when it opened.
     pub(crate) draft: HashMap<&'static str, String>,
     orig: HashMap<&'static str, String>,
@@ -35,7 +44,15 @@ pub(crate) struct PrefUi {
     /// The page's loaded content (its controls are found in it).
     pub(crate) fe: Option<FrameworkElement>,
     /// The fixed drives offered for Search, in the order shown.
-    drives: Vec<String>,
+    drives: Vec<(usize, String)>,
+    focus_name: Option<String>,
+    ai_orig: AiConfig,
+    ai_custom: String,
+    ai_customs: Vec<config::CustomAi>,
+    ai_efforts: std::collections::BTreeMap<String, String>,
+    ai_edited: bool,
+    ai_detected: Option<AiConfig>,
+    ai_forget_key: Option<(Provider, String)>,
     /// "Clear history" was pressed once: the next press clears.
     clear_armed: bool,
     /// What the last action said, shown at the top of the page.
@@ -60,6 +77,10 @@ pub(crate) struct PrefUi {
     registry_backups: Option<Vec<sprawl_advisor::regclean::BackupInfo>>,
 }
 
+fn labelled_row(name: &str, title: &str, field: &str) -> String {
+    format!(r##"<Grid ColumnSpacing="12" Margin="0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="205"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock x:Name="{name}_Label" Text="{}" FontSize="{{$fs13}}" TextWrapping="Wrap" VerticalAlignment="Center"/><Border Grid.Column="1">{field}</Border></Grid>"##, ui::esc(title))
+}
+
 fn label(t: &str) -> String {
     format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$label}}" Margin="0,8,0,2"/>"##, ui::esc(t))
 }
@@ -73,7 +94,19 @@ fn help(t: &str) -> String {
 
 fn combo(name: &str, items: &[&str], pick: usize) -> String {
     let items: String = items.iter().map(|i| format!(r##"<ComboBoxItem Content="{}"/>"##, ui::esc(i))).collect();
-    format!(r##"<ComboBox x:Name="{name}" HorizontalAlignment="Left" Width="420" SelectedIndex="{pick}">{items}</ComboBox>"##)
+    format!(r##"<ComboBox x:Name="{name}" AutomationProperties.LabeledBy="{{Binding ElementName={name}_Label}}" HorizontalAlignment="Stretch" MaxDropDownHeight="300" SelectedIndex="{pick}">{items}</ComboBox>"##)
+}
+
+fn page_controls(prefix: &str, n: usize, range: std::ops::Range<usize>, pages: usize, buttons: &mut Vec<String>) -> String {
+    if pages == 1 { return String::new(); }
+    let page = range.start / LIST_ROWS;
+    let mut nav = String::new();
+    for (step, title, enabled) in [("Prev", "Previous", page > 0), ("Next", "Next", page + 1 < pages)] {
+        let name = format!("PfB_page{step}{prefix}");
+        if enabled { buttons.push(name.clone()); }
+        nav += &format!(r##"<Button x:Name="{name}" IsEnabled="{enabled}" Content="{title}"/>"##);
+    }
+    format!(r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}–{} of {n}" VerticalAlignment="Center"/>{nav}</StackPanel>"##, range.start + 1, range.end)
 }
 
 fn button(name: &str, t: &str) -> String {
@@ -126,29 +159,29 @@ fn bullet(glyph: &str, title: &str, t: &str) -> String {
 /// their own events); everything else is built per page.
 pub fn xaml() -> String {
     let providers: Vec<&str> = Provider::ALL.iter().map(|p| p.label()).collect();
-    let ai_intro = ui::note_with("", "The built-in rules already find caches and leftovers.", "An AI can judge the rest: name unknown folders, suggest what to clean, and answer questions. It only suggests: nothing goes until you tick it, review it and confirm.");
-    let ai_privacy = ui::note_with(r#"Margin="0,10,0,0""#, "When the AI works,", "folder and file paths from your scan go to the provider as they are, and it can read small text files (readme, licence, manifest) to tell what a folder is. Each request is in the AI request log. With Claude Code, what it looks at afterwards runs in Sprawl itself, on this PC. The AI searches the web only if you switch that on, and asks each time.");
+    let ai_privacy = ui::note_with("", "AI is optional.", "The provider receives file and folder paths and may read small text files. It cannot approve a cleanup. See Logs and integrations for the request log.");
     let ai = format!(
         r##"<StackPanel x:Name="WizAi" Spacing="2" Visibility="Collapsed">
-        {ai_intro}
-        <Border Background="{{$accentwash}}" CornerRadius="{{$rc6}}" Padding="10,7" Margin="0,8,0,2"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE721;" FontSize="{{$fs13}}" Foreground="{{$link}}"/><TextBlock x:Name="WizDetected" Text=" " FontSize="{{$fs12}}" TextWrapping="Wrap" Foreground="{{$seltext}}" VerticalAlignment="Center" MaxWidth="460"/><Button x:Name="WizUseDetected" Content="Use it" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" Visibility="Collapsed"/></StackPanel></Border>
-        {}{}
+        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="WizDetected" Text="" FontSize="{{$fs12}}" TextWrapping="Wrap" Foreground="{{$text2}}" VerticalAlignment="Center"/><Button x:Name="WizUseDetected" Grid.Column="1" Content="Use detected" Visibility="Collapsed"/></Grid>
+        {}
+        <Border x:Name="WizSavedHost"/>
         <TextBlock x:Name="WizCodexRisk" Visibility="Collapsed" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" FontSize="{{$fs12}}" Foreground="{{$warn}}" Margin="0,4,0,2" Text="{}"/>
-        <StackPanel x:Name="WizKeyRow">{}<PasswordBox x:Name="WizKey" PlaceholderText="Paste your API key" MaxWidth="420" HorizontalAlignment="Left" Width="420"/></StackPanel>
-        <StackPanel x:Name="WizUrlRow">{}<Grid ColumnSpacing="8" MaxWidth="520" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" PlaceholderText="https://api.openai.com/v1"/>{}</Grid></StackPanel>
-        <StackPanel x:Name="WizModelRow" MaxWidth="520" HorizontalAlignment="Left" Width="520">{}<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" VerticalAlignment="Top" ToolTipService.ToolTip="Ask for the list of models, with the key typed above (or the saved one). A key goes only to the server it is for, and only over https (or to this PC)."/></Grid><TextBlock x:Name="WizModelNote" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
+        <StackPanel x:Name="WizUrlRow">{url}{nickname}</StackPanel>
+        <StackPanel x:Name="WizKeyRow">{key}</StackPanel>
+        <StackPanel x:Name="WizModelRow">{model}<TextBlock x:Name="WizModelNote" FontSize="{{$fs12}}" Foreground="{{$text3}}" TextWrapping="Wrap" Visibility="Collapsed"/></StackPanel>
+        <Border x:Name="WizEffortHost"/>
         {ai_privacy}
         </StackPanel>"##,
-        label("Provider"),
-        format!(r##"<ComboBox x:Name="WizProvider" HorizontalAlignment="Left" Width="420" SelectedIndex="0">{}</ComboBox>"##, providers.iter().map(|i| format!(r##"<ComboBoxItem Content="{i}"/>"##)).collect::<String>()),
+        labelled_row("WizProvider", "Provider", &combo("WizProvider", &providers, 0)),
         crate::ui::esc(sprawl_advisor::llm::codex::RISK),
-        label("API key (kept in Windows Credential Manager, not in a file)"),
-        label("Base URL"),
-        {
+        url = labelled_row("WizUrl", "Server address", &{
             let names = sprawl_advisor::llm::models::preset_names();
-            crate::models::combo("WizUrlPreset", &names, &names[0], 170).replacen("<ComboBox ", r##"<ComboBox Grid.Column="1" ToolTipService.ToolTip="Fill in the address of a well-known service. Then Load models." "##, 1)
-        },
-        label("Model"),
+            let preset = crate::models::combo("WizUrlPreset", &names, &names[0], 136).replacen("<ComboBox ", r##"<ComboBox Grid.Column="1" AutomationProperties.Name="Server preset" "##, 1);
+            format!(r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizUrl" AutomationProperties.LabeledBy="{{Binding ElementName=WizUrl_Label}}" PlaceholderText="https://api.openai.com/v1"/>{preset}</Grid>"##)
+        }),
+        nickname = labelled_row("WizAiName", "Saved provider name", r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="WizAiName" AutomationProperties.LabeledBy="{Binding ElementName=WizAiName_Label}" PlaceholderText="Optional" MaxLength="40"/><Button x:Name="WizRemoveAi" Grid.Column="1" Content="Remove" ToolTipService.ToolTip="Remove this name from Saved providers on Save. This leaves its server key and current connection alone."/></Grid>"##),
+        key = labelled_row("WizKey", "API key", r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><PasswordBox x:Name="WizKey" AutomationProperties.LabeledBy="{Binding ElementName=WizKey_Label}" PlaceholderText="Paste your API key" ToolTipService.ToolTip="Kept in Windows Credential Manager for this server only."/><Button x:Name="WizForgetKey" Grid.Column="1" Content="Forget key"/></Grid>"##),
+        model = labelled_row("WizModel", "Model", r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border x:Name="WizModelHost"/><TextBox x:Name="WizModel" AutomationProperties.LabeledBy="{Binding ElementName=WizModel_Label}" PlaceholderText="Model name"/><Button x:Name="WizLoadModels" Grid.Column="1" Content="Load models" VerticalAlignment="Top" ToolTipService.ToolTip="Ask the selected provider for its list of models, using the typed or saved key."/></Grid>"##),
     );
     let nav: String = Sec::ALL
         .iter()
@@ -178,9 +211,7 @@ pub fn xaml() -> String {
         <Grid Grid.Row="1" ColumnSpacing="18">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <StackPanel x:Name="PfNav" Width="200" Spacing="2" Visibility="Collapsed">{nav}</StackPanel>
-          <ScrollViewer x:Name="PfScroll" Grid.Column="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,12,0">
-            <StackPanel Spacing="8"><Border x:Name="PfTop"/>{ai}<Border x:Name="PfHost"/></StackPanel>
-          </ScrollViewer>
+          <StackPanel Grid.Column="1" Spacing="4"><Border x:Name="PfTop"/><Border x:Name="PfGroupHost"/>{ai}<Border x:Name="PfHost"/></StackPanel>
         </Grid>
         <Grid Grid.Row="2">
           <Button x:Name="WizSkip" Background="Transparent" BorderThickness="0" Foreground="{{$label}}"><TextBlock x:Name="WizSkipText" Text="Skip setup"/></Button>
@@ -244,6 +275,49 @@ fn on(v: &str) -> &'static str {
         "True"
     } else {
         "False"
+    }
+}
+
+fn choice_number(s: &str, min: u64, max: u64) -> Option<u64> {
+    let v = s.trim();
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    v.parse().ok().filter(|n| (min..=max).contains(n))
+}
+
+fn switch_draft(draft: &HashMap<&'static str, String>, key: &str) -> bool {
+    draft.get(key).is_some_and(|v| v == "1")
+}
+
+fn request_allowed(draft_offline: bool, saved_offline: bool) -> bool {
+    !draft_offline && !saved_offline
+}
+
+fn ai_needs_save(edited: bool, old_web: bool, web: bool, secret: &str) -> bool {
+    edited || old_web != web || !secret.trim().is_empty()
+}
+
+fn uninstaller_path(value: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let v = value.trim().trim_matches('"');
+    if v.is_empty() { return Ok(None); }
+    let path = std::path::PathBuf::from(v);
+    if path.is_absolute() && path.extension().is_some_and(|s| s.eq_ignore_ascii_case("exe")) && path.is_file() {
+        Ok(Some(path))
+    } else {
+        Err("Choose an existing .exe file or leave Uninstaller empty.".into())
+    }
+}
+
+fn map_animation_choice(saved: Option<bool>) -> usize {
+    match saved { None => 0, Some(true) => 1, Some(false) => 2 }
+}
+
+fn reset_draft(draft: &mut HashMap<&'static str, String>, sec: Option<Sec>, elevated: bool) {
+    for p in PREFS.iter().filter(|p| sec.is_none_or(|s| s == p.sec) && (elevated || !crate::admin::is_switch(p.key))) {
+        if let Some(v) = p.default_value() {
+            draft.insert(p.key, v);
+        } else if matches!(p.key, "searchDrivesOn" | "searchColumns") {
+            draft.insert(p.key, String::new());
+        }
     }
 }
 
@@ -325,6 +399,11 @@ impl State {
     /// wizard's pages have no list), then the wizard's own button. Empty until it is laid out.
     fn wizard_focus_targets(&self) -> Vec<UIElement> {
         let mut out: Vec<UIElement> = Vec::new();
+        if let Some(name) = self.prefs.focus_name.as_deref() {
+            if let Some(el) = self.prefs.fe.as_ref().and_then(|f| find::<UIElement>(f, name).ok()).or_else(|| find::<UIElement>(&self.root, name).ok()) {
+                out.push(el);
+            }
+        }
         if self.wizard_all {
             let sec = self.prefs.sec.min(Sec::ALL.len().saturating_sub(1));
             if let Ok(entry) = find::<UIElement>(&self.root, &format!("PfSec{sec}")) {
@@ -366,6 +445,27 @@ impl State {
         self.prefs.back_tries = 0;
     }
 
+    pub(crate) fn wizard_focus_control(&mut self, name: &str) {
+        let state = if crate::menu::key_recent() { FocusState::Keyboard } else { self.prefs.open_state };
+        self.prefs.focus_name = Some(name.to_string());
+        self.prefs.focus_in = Some((state, 12));
+    }
+
+    pub(crate) fn wizard_before_restyle(&mut self) {
+        let focused = self.root.cast::<UIElement>().ok().and_then(|r| crate::menu::focused(&r));
+        if let Some(f) = focused.filter(|f| self.in_overlay(f)) {
+            if let Ok(name) = f.cast::<FrameworkElement>().and_then(|f| f.Name()) {
+                let name = name.to_string_lossy();
+                if !name.is_empty() { self.wizard_focus_control(&name); }
+            }
+        }
+        // The dynamic model dropdown is not in the window's XAML namescope. Carry its value
+        // rather than its index: the service's list may have changed in the meantime.
+        let model = self.wizard_model();
+        set_field(self, "WizModel", &model);
+        self.prefs_harvest();
+    }
+
     /// Each frame while the overlay is open: the focus goes into it once it is laid out. The
     /// window in front, a focus still outside it is tried again (a focus given while the window
     /// was behind does not hold).
@@ -395,6 +495,7 @@ impl State {
         let took = self.wizard_focus_targets().into_iter().find(|t| t.Focus(state).unwrap_or(false));
         if let Some(target) = took {
             self.prefs.focus_in = None;
+            self.prefs.focus_name = None;
             let el = target.FocusState().unwrap_or(state);
             crate::state::timing(&format!("{} focus: {} ({})", if self.wizard_all { "Settings" } else { "Setup" }, focus_label(&target), state_name(el)), std::time::Instant::now());
         } else if tries > 1 {
@@ -449,6 +550,9 @@ impl State {
     /// The overlay closed by Cancel, Esc or its close button: the focus goes back (at the next
     /// frames, once it is gone), and the theme tried on its Theme page goes back too.
     fn wizard_hide(&mut self) {
+        self.wizard_discard_secret();
+        self.prefs.ai_forget_key = None;
+        self.prefs.focus_name = None;
         shown(self, "Wizard", false);
         self.prefs.fe = None;
         self.prefs.focus_in = None;
@@ -480,7 +584,7 @@ impl State {
         } else {
             // skip setup: don't ask again
             self.settings.set_bool("wizard_done", true);
-            self.settings.save();
+            self.persist_settings();
         }
         self.wizard_hide();
     }
@@ -504,6 +608,10 @@ impl State {
 
     /// Settings, at one section (`"ai"`, `"history"`...).
     pub(crate) fn settings_open_at(&mut self, section: &str) {
+        self.settings_open_group(section, 0);
+    }
+
+    pub(crate) fn settings_open_group(&mut self, section: &str, group: usize) {
         // the page saw a key just now: opened from the keyboard (Ctrl+Shift+S), it shows the
         // focus ring; a click opens it without one
         let keyboard = crate::menu::key_recent();
@@ -513,6 +621,8 @@ impl State {
         if self.wizard_shown() {
             self.prefs_harvest();
             self.prefs.sec = sec;
+            self.prefs.group = group;
+            self.prefs.list_page = 0;
             self.wizard_show();
             self.wizard_focus_arm(keyboard);
             return;
@@ -520,6 +630,8 @@ impl State {
         self.wizard_all = true;
         self.prefs_begin();
         self.prefs.sec = sec;
+        self.prefs.group = group;
+        self.prefs.list_page = 0;
         self.wizard_show();
         shown(self, "Wizard", true);
         self.wizard_focus_arm(keyboard);
@@ -527,6 +639,8 @@ impl State {
 
     /// Fill the draft from what is in use now, and the AI provider's controls.
     fn prefs_begin(&mut self) {
+        self.wizard_discard_secret();
+        self.prefs.ai_forget_key = None;
         let mut draft = HashMap::new();
         for p in PREFS.iter() {
             if let Some(v) = self.pref_value(p) {
@@ -542,20 +656,19 @@ impl State {
         self.prefs.registry_backups = None;
         self.theme_begin();
         // AI: what was saved (Off at first); what is installed is only offered, one click away
-        let det = Detected::probe();
-        let offer = det.suggest();
-        let summary = match offer.provider {
-            Provider::Off => det.summary(),
-            p => format!("{}. Suggested: {}. The AI stays off unless you choose it.", det.summary(), p.label()),
-        };
-        text(&self.root, "WizDetected", &summary);
-        shown(self, "WizUseDetected", offer.provider != Provider::Off);
+        self.prefs.ai_detected = None;
         let ai = AiConfig::load();
+        self.prefs.ai_orig = ai.clone();
+        self.prefs.ai_custom = ai.custom.clone();
+        self.prefs.ai_customs = ai.customs.clone();
+        self.prefs.ai_efforts = ai.efforts.clone();
         let pi = Provider::ALL.iter().position(|&p| p == ai.provider).unwrap_or(0);
         select(self, "WizProvider", pi);
         set_field(self, "WizUrl", &ai.base_url);
         set_field(self, "WizModel", &ai.model);
+        set_field(self, "WizAiName", &ai.custom);
         self.wizard_provider();
+        self.prefs.ai_edited = false;
     }
 
     /// The value of `p` in use now, as the draft holds it.
@@ -567,7 +680,10 @@ impl State {
             "units" => prefs::UNIT_ITEMS.iter().position(|u| checked(self, u)).unwrap_or(0).to_string(),
             "aa" => self.settings.get("aa").and_then(|a| prefs::AA_ITEMS.iter().position(|x| *x == a)).unwrap_or(2).to_string(),
             "palette" => crate::paint::palette().to_string(),
-            "animate" => b(self.map.scene.animate),
+            "animate" => map_animation_choice(self.settings.bool("animate")).to_string(),
+            "lift" => (self.map.scene.lift_scale * 100.0).round().to_string(),
+            "cushion" => (self.map.cushion_strength * 100.0).round().to_string(),
+            "tilt" => (self.map.scene.tilt_amount / 0.8 * 100.0).round().to_string(),
             "aiWebLookup" => b(AiConfig::load().web_lookup),
             "afterScan" => self.settings.num("afterScan").unwrap_or(0.0).clamp(0.0, 1.0).to_string(),
             "theme" => (self.settings.num("theme").unwrap_or(0.0).clamp(0.0, (crate::theme::CHOICES.len() - 1) as f64) as usize).to_string(),
@@ -581,6 +697,7 @@ impl State {
             "scanExclude" => self.settings.get("scanExclude").unwrap_or("").to_string(),
             "programFolders" => self.settings.get("programFolders").unwrap_or("").to_string(),
             "searchDrivesOn" => self.settings.get("searchDrivesOn").unwrap_or("").to_string(),
+            "searchColumns" => self.settings.get("searchColsHidden").unwrap_or("").to_string(),
             // the administrator switches: in the store only an administrator can write
             k if crate::admin::is_switch(k) => b(crate::admin::store::get(k)),
             k => match &p.kind {
@@ -591,7 +708,31 @@ impl State {
         })
     }
 
-    /// Put `v` (as the draft holds it) into use for `p`.
+    /// Translate the validated draft to the same persistent keys as the contextual controls.
+    fn stage_pref(s: &mut crate::settings::Settings, p: &Pref, v: &str) {
+        let idx = |n: usize| v.parse::<usize>().unwrap_or(0).min(n.saturating_sub(1));
+        match p.key {
+            "units" => s.set("units", prefs::UNIT_ITEMS[idx(prefs::UNIT_ITEMS.len())]),
+            "aa" => s.set("aa", prefs::AA_ITEMS[idx(prefs::AA_ITEMS.len())]),
+            "animate" if v == "0" => s.remove("animate"),
+            "animate" => s.set_bool("animate", v == "1"),
+            "lift" | "cushion" | "tilt" => s.set(p.key, v.parse::<f32>().unwrap_or(0.0) * if p.key == "tilt" { 0.008 } else { 0.01 }),
+            "snapshot_cap_mb" => s.set(p.key, prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),
+            "uninstaller" => s.set(p.key, v.trim().trim_matches('"')),
+            "scanExclude" | "programFolders" | "palette" | "theme" | "afterScan" | "startTab" | "alertFreeGb" | "alertGrowGb" => s.set(p.key, v.trim()),
+            "searchColumns" => s.set("searchColsHidden", v),
+            "searchDrivesOn" => { s.set(p.key, v); s.set("searchDrivesOff", ""); s.set_bool("oSearchDrives", false); }
+            "aiWebLookup" | "oExplorer" | "communityFetch" => {}
+            k if crate::admin::is_switch(k) => {}
+            _ => match p.kind {
+                Kind::Switch(_) => s.set_bool(p.key, v == "1"),
+                Kind::Number(k, _) => s.set(p.key, choice_number(v, k.floor, k.max).unwrap_or(k.default)),
+                _ => {}
+            },
+        }
+    }
+
+    /// Put the committed choice into use. Settings read by the operation need no side effect.
     fn pref_apply(&mut self, p: &Pref, v: &str) {
         let yes = v == "1";
         let idx = |n: usize| v.parse::<usize>().unwrap_or(0).min(n.saturating_sub(1));
@@ -610,28 +751,21 @@ impl State {
             }
             "palette" => {
                 let i = idx(crate::paint::PALETTES.len());
-                select(self, "PaletteBox", i);
-                self.tweak("PaletteBox", i as f64);
+                self.apply_map_setting("palette", i as f64);
             }
             "animate" => {
-                if let Ok(t) = find::<ToggleSwitch>(&self.root, "AnimSwitch") {
-                    let _ = t.SetIsOn(yes);
-                }
-                self.tweak("AnimSwitch", if yes { 1.0 } else { 0.0 });
+                let yes = match v { "1" => true, "2" => false, _ => crate::win32::animations_on() };
+                self.apply_map_setting("animate", if yes { 1.0 } else { 0.0 });
             }
-            "aiWebLookup" => {
-                let mut c = AiConfig::load();
-                c.web_lookup = yes;
-                let _ = c.save();
+            "lift" | "cushion" | "tilt" => {
+                let value = v.parse::<f64>().unwrap_or(0.0);
+                self.apply_map_setting(p.key, value);
             }
-            "afterScan" => self.settings.set("afterScan", idx(prefs::AFTER_SCAN.len())),
             // the page is made again for the new theme at the next frame (restyle.rs)
             "theme" => {
-                self.settings.set("theme", idx(crate::theme::CHOICES.len()));
                 crate::restyle::request();
             }
             "decimal" => {
-                self.settings.set_bool("decimal", yes);
                 crate::format::DECIMAL.store(yes, std::sync::atomic::Ordering::Relaxed);
                 self.refresh_rows();
                 self.refresh_exts();
@@ -640,30 +774,12 @@ impl State {
                 self.map.dirty = true;
                 self.map.views.stamp = 0;
             }
-            "startTab" => self.settings.set("startTab", idx(prefs::OPEN_ON.len())),
-            "alertFreeGb" => self.settings.set("alertFreeGb", idx(prefs::ALERT_AT.len())),
-            "alertGrowGb" => self.settings.set("alertGrowGb", idx(prefs::GROW_AT.len())),
-            "alertLow" | "alertGrowth" => {
-                self.settings.set_bool(p.key, yes);
-                // one task serves both; it goes when both are off
-                let want = self.settings.bool("alertLow") == Some(true) || self.settings.bool("alertGrowth") == Some(true);
-                if !crate::alert::schedule(want) && yes {
-                    self.settings.set_bool(p.key, false);
-                }
-            }
-            "snapshot_cap_mb" => self.settings.set("snapshot_cap_mb", prefs::CAPS_MB[idx(prefs::CAPS_MB.len())]),
-            "uninstaller" => self.settings.set("uninstaller", v.trim().trim_matches('"')),
-            "scanExclude" => self.settings.set("scanExclude", v.trim()),
             "programFolders" => {
                 let paths = sprawl_advisor::program_folders::parse(v).unwrap_or_default();
-                self.settings.set(sprawl_advisor::program_folders::SETTING, sprawl_advisor::program_folders::value(&paths));
                 sprawl_advisor::program_folders::replace(paths);
             }
-            "searchDrivesOn" => {
-                self.settings.set("searchDrivesOn", v);
-                self.settings.set("searchDrivesOff", "");
-                self.more_settings_changed();
-            }
+            "searchHistory" => self.search_history_changed(),
+            "searchColumns" => self.apply_search_columns(crate::search::hidden_from(v)),
             "communityFetch" => {
                 self.advisor.memory_ready();
                 self.advisor.memory.community_off = !yes;
@@ -671,18 +787,19 @@ impl State {
                 self.advisor_start();
             }
             "offline" => {
-                self.settings.set_bool("offline", yes);
                 sprawl_advisor::OFFLINE.store(yes, std::sync::atomic::Ordering::Relaxed);
+                if yes {
+                    self.wiz_models.reset();
+                    self.advisor_command("AdvStop");
+                    self.chat_reset();
+                }
             }
             // written by the save itself (wizard_finish), which says when a write fails
             k if crate::admin::is_switch(k) => {}
-            k => match &p.kind {
+            _ => match &p.kind {
                 Kind::Number(knob, _) => {
-                    let n = v.trim().replace([',', '.', ' '], "").parse::<u64>().unwrap_or(knob.default);
-                    let used = sprawl_advisor::tuning::set(knob, n);
-                    self.settings.set(k, used);
+                    sprawl_advisor::tuning::set(knob, choice_number(v, knob.floor, knob.max).unwrap_or(knob.default));
                 }
-                Kind::Switch(_) => self.settings.set_bool(k, yes),
                 _ => {}
             },
         }
@@ -731,11 +848,8 @@ impl State {
     pub(crate) fn prefs_render(&mut self) {
         let (top, keys): (String, Vec<&'static str>) = if self.wizard_all {
             let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
-            let mut keys: Vec<&'static str> = PREFS.iter().filter(|p| p.sec == sec && !p.advanced).chain(PREFS.iter().filter(|p| p.sec == sec && p.advanced)).map(|p| p.key).collect();
-            // the Theme page is built by themepage.rs, with its own controls
-            if sec == Sec::Theme {
-                keys.clear();
-            }
+            let groups = sec.groups();
+            let keys = groups.get(self.prefs.group.min(groups.len().saturating_sub(1))).map_or_else(Vec::new, |g| g.1.to_vec());
             (page_title(sec.glyph(), sec.title(), ""), keys)
         } else {
             let (title, glyph, sub, keys) = WIZARD[self.wizard_page.min(PAGES - 1)];
@@ -745,14 +859,40 @@ impl State {
         if let (Ok(host), Ok(el)) = (find::<Border>(&self.root, "PfTop"), load::<UIElement>(&top)) {
             let _ = host.SetChild(&el);
         }
+        if let Ok(host) = find::<Border>(&self.root, "PfGroupHost") {
+            let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
+            let groups: Vec<_> = sec.groups().iter().map(|g| g.0).collect();
+            let group = if self.wizard_all && groups.len() > 1 {
+                let x = labelled_row("PfGroup", "Section", &combo("PfGroup", &groups, self.prefs.group.min(groups.len() - 1)));
+                load::<FrameworkElement>(&x.replacen("<Grid ", &format!("<Grid {} ", ui::NS), 1)).ok()
+            } else { None };
+            let child = group.as_ref().and_then(|g| g.cast::<UIElement>().ok());
+            let _ = host.SetChild(child.as_ref());
+            if let Some(s) = group.and_then(|g| find::<Selector>(&g, "PfGroup").ok()) {
+                if let Ok(t) = s.SelectionChanged(|sel, _| {
+                    if let Some(i) = sel.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|c| c.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok()) {
+                        with(move |s| s.prefs_group(i));
+                    }
+                }) { keep(t); }
+            }
+        }
         // the Cleaning section's backup list, read once here, never per row or per render
-        if self.wizard_all && Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)] == Sec::Cleaning && self.prefs.registry_backups.is_none() {
+        if keys.contains(&"registryBackups") && self.prefs.registry_backups.is_none() && !crate::settings::read_only() {
             self.prefs.registry_backups = Some(sprawl_advisor::regclean::backups());
         }
         shown(self, "WizAi", keys.contains(&"ai"));
+        if keys.contains(&"ai") {
+            self.wizard_detect();
+            self.wizard_saved_providers();
+            self.wizard_local_models();
+        }
         let mut x = format!(r##"<StackPanel {} Spacing="4">"##, ui::NS);
         if let Some(n) = &self.prefs.note {
             x += &format!(r##"<Border Padding="10,6" CornerRadius="{{$rc6}}" Background="{{$goodwash}}"><TextBlock Text="{}" TextWrapping="Wrap" FontSize="{{$fs12}}"/></Border>"##, ui::esc(n));
+        }
+        if keys.contains(&"alertLow") || keys.contains(&"alertGrowth") {
+            let wanted = self.settings.bool("alertLow") == Some(true) || self.settings.bool("alertGrowth") == Some(true);
+            x += &help(crate::alert::task_status(wanted));
         }
         if !self.wizard_all && self.wizard_page == 0 {
             x += r##"<TextBlock TextWrapping="Wrap" FontSize="{$fs13}" Foreground="{$text1}" Margin="0,4,0,6" Text="A few choices before you start, all optional: nothing that sends or keeps data is on unless you choose it, and each one is in Settings (Ctrl+Shift+S) too."/>"##;
@@ -760,26 +900,20 @@ impl State {
                 x += &bullet(g, t, s);
             }
         }
-        let mut advanced_said = false;
         let mut buttons = Vec::new();
         for k in &keys {
             let Some(p) = prefs::get(k) else { continue };
             if p.key == "ai" {
                 continue;
             }
-            if p.advanced && !advanced_said {
-                advanced_said = true;
-                x += r##"<TextBlock Text="Advanced" FontSize="{$fs14}" FontWeight="SemiBold" Margin="0,14,0,0"/>"##;
-                x += &ui::note("Thresholds with a floor:", "none can make something look safer or be ticked for you.");
-            }
             x += &self.pref_row(p, &mut buttons);
         }
         let theme_page = self.wizard_all && Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)] == Sec::Theme;
         if theme_page {
-            let (tx, tb) = self.theme_page();
+            let (tx, tb) = self.prefs.theme.page();
             x += &tx;
             buttons.extend(tb);
-        } else if self.wizard_all {
+        } else if self.wizard_all && !keys.contains(&"ai") {
             x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,16,0,0">{}</StackPanel>"##, button("PfB_reset", "Reset this section"));
             buttons.push("PfB_reset".to_string());
         }
@@ -803,18 +937,43 @@ impl State {
             if theme_page {
                 self.theme_wire(fe);
             }
-            // "Work offline" greys what it stops, at once
-            if let Ok(t) = find::<ToggleSwitch>(fe, "Pf_offline") {
-                if let Ok(tok) = t.Toggled(|_, _| {
-                    with(|s| s.prefs_offline_shown());
-                }) {
-                    keep(tok);
+            // Update dependent controls as soon as their switch moves.
+            for name in ["Pf_offline", "Pf_alertGrowth"] {
+                if let Ok(t) = find::<ToggleSwitch>(fe, name) {
+                    if let Ok(tok) = t.Toggled(|_, _| { with(|s| s.prefs_offline_shown()); }) {
+                        keep(tok);
+                    }
                 }
             }
         }
         self.prefs.fe = fe;
         self.prefs_offline_shown();
         self.wizard_provider_rows();
+    }
+
+    /// Dev screenshot step: select a zero-based group in the open Settings section.
+    pub(crate) fn prefs_group_for_shot(&mut self, group: usize) {
+        if self.shot.is_none() || !self.wizard_all || !self.wizard_shown() { return; }
+        match Sec::ALL.get(self.prefs.sec).copied() {
+            Some(Sec::Theme) if group < crate::themepage::GROUPS.len() => self.prefs_button(&format!("TmTab{group}")),
+            Some(sec) if group < sec.groups().len() => self.prefs_group(group),
+            _ => {}
+        }
+    }
+
+    fn prefs_group(&mut self, group: usize) {
+        if self.prefs.group == group { return; }
+        self.prefs_harvest();
+        self.prefs.group = group;
+        self.prefs.list_page = 0;
+        self.prefs.note = None;
+        self.prefs.clear_armed = false;
+        self.prefs_render();
+        if let Ok(host) = find::<Border>(&self.root, "PfGroupHost") {
+            if let Ok(group) = host.Child().and_then(|p| p.cast::<FrameworkElement>()).and_then(|p| find::<UIElement>(&p, "PfGroup")) {
+                let _ = group.Focus(self.prefs.open_state);
+            }
+        }
     }
 
     /// One setting's row.
@@ -839,16 +998,28 @@ impl State {
         // greyed out unless elevated: the store they are kept in takes no other writer
         let enabled = if crate::admin::is_switch(p.key) && !sprawl_core::is_elevated() { r#" IsEnabled="False""# } else { "" };
         match &p.kind {
-            Kind::Switch(_) => format!("{admin_note}{}", row(format!(r##"<ToggleSwitch x:Name="{name}" Header="{}" IsOn="{}" FontSize="{{$fs13}}"{enabled}/>{}"##, ui::esc(p.label), on(&v), if p.help_line().is_empty() { String::new() } else { help(&p.help_line()) }))),
-            Kind::Number(_, unit) => row(format!(
-                r##"{}<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" Width="130" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></StackPanel>{}"##,
-                label(p.label),
-                ui::esc(&v),
-                ui::esc(unit),
-                help(&p.help_line())
-            )),
-            Kind::Choice(items, _) => row(format!("{}{}{}", label(p.label), combo(&name, items, v.parse().unwrap_or(0)), help(p.help))),
-            Kind::Text(ph) => row(format!(r##"{}<TextBox x:Name="{name}" Text="{}" PlaceholderText="{}" Width="520" HorizontalAlignment="Left"/>{}"##, label(p.label), ui::esc(&v), ui::esc(ph), help(p.help))),
+            Kind::Switch(_) => {
+                let note = if matches!(p.key, "oAlwaysAdmin" | "alertDailyScan" | "privacyCleaners" | "offline" | "searchHistory") { help(p.help) } else { String::new() };
+                format!("{admin_note}{}", row(format!("{}{note}", labelled_row(&name, p.label, &format!(r##"<ToggleSwitch x:Name="{name}" AutomationProperties.LabeledBy="{{Binding ElementName={name}_Label}}" ToolTipService.ToolTip="{}" OnContent="" OffContent="" IsOn="{}"{enabled}/>"##, ui::esc(p.help), on(&v))))))
+            }
+            Kind::Number(k, unit) => row(labelled_row(&name, p.label, &format!(
+                r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBox x:Name="{name}" AutomationProperties.LabeledBy="{{Binding ElementName={name}_Label}}" ToolTipService.ToolTip="{}" Width="96" MaxLength="15" Text="{}" InputScope="Number"/><TextBlock Text="{}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{{$text2}}"/></StackPanel>"##,
+                ui::esc(&format!("{}. Range: {}–{} {unit}", p.help_line(), k.floor, k.max)), ui::esc(&v), ui::esc(unit)
+            ))),
+            Kind::Choice(items, _) => {
+                let help = if matches!(p.key, "startTab" | "snapshot_cap_mb") { help(p.help) } else { String::new() };
+                let c = combo(&name, items, v.parse().unwrap_or(0)).replacen("<ComboBox ", &format!(r#"<ComboBox ToolTipService.ToolTip="{}" "#, ui::esc(p.help)), 1);
+                row(format!("{}{help}", labelled_row(&name, p.label, &c)))
+            }
+            Kind::Text(ph) => {
+                let field = format!(r##"<TextBox x:Name="{name}" AutomationProperties.LabeledBy="{{Binding ElementName={name}_Label}}" Text="{}" PlaceholderText="{}"/>"##, ui::esc(&v), ui::esc(ph));
+                let field = if p.key == "uninstaller" {
+                    buttons.push("PfB_uninstaller".into());
+                    format!(r##"<Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>{field}<Button Grid.Column="1" x:Name="PfB_uninstaller" Content="Browse…"/></Grid>"##)
+                } else { field };
+                row(format!("{}{}", labelled_row(&name, p.label, &field), help(p.help)))
+            }
+            Kind::Range(max, default) => row(labelled_row(&name, p.label, &format!(r##"<Slider x:Name="{name}" AutomationProperties.LabeledBy="{{Binding ElementName={name}_Label}}" Minimum="0" Maximum="{max}" StepFrequency="1" Value="{}"/>"##, v.parse::<u32>().unwrap_or(*default).min(*max)))),
             Kind::Custom => row(self.custom_row(p, &v, buttons)),
         }
     }
@@ -863,7 +1034,9 @@ impl State {
         match p.key {
             "dataFolder" => {
                 x += &help(p.help);
-                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8">{}{}</StackPanel>"##, b("PfB_data", "Open the data folder"), b("PfB_resetAll", "Reset everything"));
+                x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8">{}{}</StackPanel>"##, b("PfB_data", "Open Roaming data"), b("PfB_local", "Open Local data"));
+                x += &help("Restoring preferences preserves scan history, saved searches, Keep decisions, program folders, AI keys and saved providers. Administrator allowances can only be reset when elevated.");
+                x += &b("PfB_resetAll", "Restore preference defaults");
             }
             "aiLog" => {
                 x += &help(p.help);
@@ -878,14 +1051,18 @@ impl State {
             }
             "searchDrivesOn" => {
                 x += &help(p.help);
-                let on: Vec<String> = v.split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_lowercase).collect();
-                self.prefs.drives = State::fixed_drives_pub();
-                for (i, d) in self.prefs.drives.iter().enumerate() {
-                    x += &format!(r##"<ToggleSwitch x:Name="PfDrv{i}" OnContent="{0}" OffContent="{0}" IsOn="{1}" FontSize="{{$fs13}}"/>"##, ui::esc(d), if on.contains(&d.to_lowercase()) { "True" } else { "False" });
+                let enabled_drives: Vec<String> = v.split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_lowercase).collect();
+                let drives = State::fixed_drives_pub();
+                let (range, pages) = page_range(drives.len(), self.prefs.list_page);
+                self.prefs.drives = drives.iter().enumerate().skip(range.start).take(range.len()).map(|(i, d)| (i, d.clone())).collect();
+                for (i, d) in &self.prefs.drives {
+                    x += &format!(r##"<ToggleSwitch x:Name="PfDrv{i}" AutomationProperties.Name="{0}" OnContent="{0}" OffContent="{0}" IsOn="{1}" FontSize="{{$fs13}}"/>"##, ui::esc(d), on(if enabled_drives.contains(&d.to_lowercase()) { "1" } else { "0" }));
                 }
-                if self.prefs.drives.is_empty() {
+                if drives.is_empty() {
                     x += &help("No fixed drive found.");
                 }
+                drop(b);
+                x += &page_controls("Drive", drives.len(), range, pages, buttons);
             }
             "programFolders" => {
                 x += &help(p.help);
@@ -900,14 +1077,16 @@ impl State {
                     x += &help("Nothing added yet. Program Files is always checked.");
                 }
                 let add = b("PfB_progAdd", "Add folder...");
-                for (i, path) in paths.iter().enumerate() {
+                let (range, pages) = page_range(paths.len(), self.prefs.list_page);
+                for (i, path) in paths.iter().enumerate().skip(range.start).take(range.len()) {
                     x += &format!(
-                        r##"<Grid ColumnSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap" VerticalAlignment="Center" IsTextSelectionEnabled="True"/><Button x:Name="PfB_progDel{i}" Grid.Column="1" Content="Remove" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" VerticalAlignment="Top"/></Grid>"##,
+                        r##"<Grid ColumnSpacing="8" Margin="0,4,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{0}" ToolTipService.ToolTip="{0}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" IsTextSelectionEnabled="True"/><Button x:Name="PfB_progDel{i}" Grid.Column="1" AutomationProperties.Name="Remove {0}" Content="Remove" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}" VerticalAlignment="Top"/></Grid>"##,
                         ui::esc(&path.display().to_string())
                     );
                     buttons.push(format!("PfB_progDel{i}"));
                 }
                 x += &format!(r##"<StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">{add}</StackPanel>"##);
+                x += &page_controls("Prog", paths.len(), range, pages, buttons);
             }
             "neverTouch" => {
                 x += &help(p.help);
@@ -916,9 +1095,10 @@ impl State {
                 if kept.is_empty() {
                     x += &help("Nothing yet. Keep on a finding adds it here.");
                 }
-                for (i, k) in kept.iter().enumerate().take(200) {
+                let (range, pages) = page_range(kept.len(), self.prefs.list_page);
+                for (i, k) in kept.iter().enumerate().skip(range.start).take(range.len()) {
                     x += &format!(
-                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button x:Name="PfB_unkeep{i}" Grid.Column="1" Content="Remove" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/></Grid>"##,
+                        r##"<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{0}" ToolTipService.ToolTip="{0}" FontFamily="Consolas" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/><Button x:Name="PfB_unkeep{i}" Grid.Column="1" AutomationProperties.Name="Remove {0}" Content="Remove" Padding="8,1" FontSize="{{$fs12}}" CornerRadius="{{$rc4}}"/></Grid>"##,
                         ui::esc(&k.display().to_string())
                     );
                     buttons.push(format!("PfB_unkeep{i}"));
@@ -927,6 +1107,18 @@ impl State {
                     r##"<Grid ColumnSpacing="8" Margin="0,4,0,0" MaxWidth="560" HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="PfKeepPath" PlaceholderText="A folder or file to keep, like D:\Photos"/><Button x:Name="PfB_keepAdd" Grid.Column="1" Content="Add"/></Grid>"##
                 );
                 buttons.push("PfB_keepAdd".into());
+                x += &page_controls("Keep", kept.len(), range, pages, buttons);
+            }
+            "recentSearches" => {
+                x += &help(p.help);
+                x += &b("PfB_recentClear", "Clear recent searches");
+            }
+            "searchColumns" => {
+                x += &help(p.help);
+                let hidden = crate::search::hidden_from(v);
+                for (_, caption, i) in crate::search::COL_MENU {
+                    x += &format!(r##"<ToggleSwitch x:Name="PfCol{i}" Header="{}" IsOn="{}" OnContent="" OffContent=""/>"##, ui::esc(caption), if hidden & (1 << i) == 0 { "True" } else { "False" });
+                }
             }
             "mcp" => {
                 x += &help(p.help);
@@ -952,7 +1144,8 @@ impl State {
                 if list.is_empty() {
                     x += &help("No backups yet. They are made when you clean a registry list in Cleaners.");
                 }
-                for (i, bk) in list.iter().enumerate() {
+                let (range, pages) = page_range(list.len(), self.prefs.list_page);
+                for (i, bk) in list.iter().enumerate().skip(range.start).take(range.len()) {
                     // the date comes from the file name's own stamp; a stamp too far out is
                     // skipped, never made to panic
                     let Some(when) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(bk.when)).map(sprawl_core::local_time) else { continue };
@@ -963,6 +1156,8 @@ impl State {
                         b(&format!("PfB_regBack{i}"), "Put back")
                     );
                 }
+                x += &b("PfB_browserBackups", "Open browser backup folder");
+                x += &page_controls("Reg", list.len(), range, pages, buttons);
             }
             _ => {}
         }
@@ -978,10 +1173,23 @@ impl State {
             let v = match &p.kind {
                 Kind::Switch(_) => find::<ToggleSwitch>(&fe, &name).and_then(|t| t.IsOn()).ok().map(|b| if b { "1".to_string() } else { "0".to_string() }),
                 Kind::Number(..) | Kind::Text(_) => find::<TextBox>(&fe, &name).and_then(|t| t.Text()).ok().map(|h| h.to_string_lossy()),
+                Kind::Range(..) => find::<RangeBase>(&fe, &name).and_then(|r| r.Value()).ok().map(|v| v.round().to_string()),
                 Kind::Choice(..) => find::<Selector>(&fe, &name).and_then(|s| s.SelectedIndex()).ok().map(|i| i.max(0).to_string()),
                 Kind::Custom if k == "searchDrivesOn" => {
-                    let on: Vec<String> = self.prefs.drives.iter().enumerate().filter(|(i, _)| find::<ToggleSwitch>(&fe, &format!("PfDrv{i}")).and_then(|t| t.IsOn()).unwrap_or(false)).map(|(_, d)| d.clone()).collect();
-                    Some(on.join(","))
+                    let mut on: std::collections::BTreeSet<_> = self.prefs.draft.get(k).into_iter().flat_map(|s| s.split(',')).map(str::trim).filter(|d| !d.is_empty()).map(str::to_ascii_uppercase).collect();
+                    for (i, d) in &self.prefs.drives {
+                        if let Ok(value) = find::<ToggleSwitch>(&fe, &format!("PfDrv{i}")).and_then(|t| t.IsOn()) {
+                            if value { on.insert(d.clone()); } else { on.remove(d); }
+                        }
+                    }
+                    Some(on.into_iter().collect::<Vec<_>>().join(","))
+                }
+                Kind::Custom if k == "searchColumns" => {
+                    let mut hidden = 0;
+                    for (_, _, i) in crate::search::COL_MENU {
+                        if find::<ToggleSwitch>(&fe, &format!("PfCol{i}")).and_then(|t| t.IsOn()) == Ok(false) { hidden |= 1 << i; }
+                    }
+                    Some(crate::search::hidden_to(hidden))
                 }
                 Kind::Custom => None,
             };
@@ -991,14 +1199,18 @@ impl State {
         }
     }
 
-    /// "Work offline" stops the network switches and the AI provider: shown greyed.
-    fn prefs_offline_shown(&self) {
-        let off = self
+    fn draft_offline(&self) -> bool {
+        let on_screen = self
             .prefs
             .fe
             .as_ref()
-            .and_then(|fe| find::<ToggleSwitch>(fe, "Pf_offline").and_then(|t| t.IsOn()).ok())
-            .unwrap_or_else(|| self.prefs.draft.get("offline").is_some_and(|v| v == "1"));
+            .and_then(|fe| find::<ToggleSwitch>(fe, "Pf_offline").and_then(|t| t.IsOn()).ok());
+        on_screen.unwrap_or_else(|| switch_draft(&self.prefs.draft, "offline"))
+    }
+
+    /// Read-only, the saved gate and the draft each veto a request from the editor.
+    fn prefs_offline_shown(&self) {
+        let off = self.draft_offline();
         if let Some(fe) = &self.prefs.fe {
             for n in ["Pf_oUpdates", "Pf_communityFetch", "Pf_aiWebLookup"] {
                 if let Ok(c) = find::<Control>(fe, n) {
@@ -1006,8 +1218,16 @@ impl State {
                 }
             }
         }
-        if let Ok(c) = find::<Control>(&self.root, "WizProvider") {
-            let _ = c.SetIsEnabled(!off);
+        for n in ["WizLoadModels", "WizUseDetected"] {
+            if let Ok(c) = find::<Control>(&self.root, n) {
+                let _ = c.SetIsEnabled(self.wizard_request_allowed());
+            }
+        }
+        if let Some(fe) = &self.prefs.fe {
+            let daily = find::<ToggleSwitch>(fe, "Pf_alertGrowth").and_then(|t| t.IsOn()).unwrap_or(false) && switch_draft(&self.prefs.draft, "snapshots");
+            if let Ok(c) = find::<Control>(fe, "Pf_alertDailyScan") {
+                let _ = c.SetIsEnabled(daily);
+            }
         }
     }
 
@@ -1020,27 +1240,45 @@ impl State {
         }
         match name {
             n if n.starts_with("Tm") => self.theme_button(n),
+            n if n.starts_with("PfB_pageNext") => self.prefs.list_page += 1,
+            n if n.starts_with("PfB_pagePrev") => self.prefs.list_page = self.prefs.list_page.saturating_sub(1),
+            n if crate::settings::read_only() && matches!(n, "PfB_data" | "PfB_local" | "PfB_browserBackups" | "PfB_logOpen" | "PfB_logClear" | "PfB_aiForget" | "PfB_histClear" | "PfB_keepAdd" | "PfB_recentClear")
+                || crate::settings::read_only() && (n.starts_with("PfB_regBack") || n.starts_with("PfB_unkeep")) => {
+                self.prefs.note = Some("Screenshot mode cannot change or open profile data.".into());
+            }
             "PfB_reset" | "PfB_resetAll" => {
                 let sec = Sec::ALL[self.prefs.sec.min(Sec::ALL.len() - 1)];
-                // the administrator switches only change where they can be saved: elevated
-                for p in PREFS.iter().filter(|p| name == "PfB_resetAll" || p.sec == sec).filter(|p| !crate::admin::is_switch(p.key) || sprawl_core::is_elevated()) {
-                    if let Some(d) = p.default_value() {
-                        self.prefs.draft.insert(p.key, d);
-                    }
-                }
+                let elevated = sprawl_core::is_elevated();
+                reset_draft(&mut self.prefs.draft, (name != "PfB_resetAll").then_some(sec), elevated);
                 if name == "PfB_resetAll" {
                     self.theme_reset();
                 }
                 if name == "PfB_resetAll" || sec == Sec::Ai {
                     select(self, "WizProvider", 0);
+                    self.wizard_discard_secret();
+                    self.prefs.ai_forget_key = None;
+                    self.prefs.ai_edited = true;
                     self.wizard_provider();
                 }
-                self.prefs.note = Some(if name == "PfB_resetAll" { "Everything is back to its default. Press Save to keep that, or Cancel." } else { "This section is back to its defaults. Press Save to keep that, or Cancel." }.into());
+                let admin = if !elevated && (name == "PfB_resetAll" || sec == Sec::Scanning) {
+                    " Administrator permissions are unchanged unless Sprawl runs as administrator."
+                } else { "" };
+                self.prefs.note = Some(format!("Defaults are staged. Save applies them; Cancel keeps your preferences.{admin}"));
             }
-            "PfB_data" => {
-                if let Some(d) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Sprawl")) {
-                    let _ = std::fs::create_dir_all(&d);
+            "PfB_data" | "PfB_local" | "PfB_browserBackups" => {
+                let var = if name == "PfB_data" { "APPDATA" } else { "LOCALAPPDATA" };
+                let mut path = std::env::var_os(var).map(|a| std::path::PathBuf::from(a).join("Sprawl"));
+                if name == "PfB_browserBackups" {
+                    path = path.map(|p| p.join("backups").join("privacy"));
+                }
+                if let Some(d) = path.filter(|p| p.is_dir()) {
                     crate::win32::reveal(&d);
+                } else { self.prefs.note = Some("That folder does not exist yet.".into()); }
+            }
+            "PfB_recentClear" => self.clear_recent_searches(),
+            "PfB_uninstaller" => {
+                if let Some(p) = crate::dialogs::pick_uninstaller(self.hwnd) {
+                    self.prefs.draft.insert("uninstaller", p.to_string_lossy().into_owned());
                 }
             }
             "PfB_logOpen" => match sprawl_advisor::llm::request_log_path().filter(|p| p.is_file()) {
@@ -1215,9 +1453,7 @@ impl State {
         // a key typed for one provider never goes to another (Fable 1.0.4-1.0.5 P2-4)
         thread_local! { static TYPED_FOR: std::cell::Cell<Option<Provider>> = const { std::cell::Cell::new(None) }; }
         if TYPED_FOR.with(|t| t.replace(Some(p))).is_some_and(|q| q != p) {
-            if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
-                let _ = k.SetPassword(&"".into());
-            }
+            self.wizard_discard_secret();
         }
         shown(self, "WizKeyRow", p.needs_key());
         shown(self, "WizUrlRow", p == Provider::OpenAi);
@@ -1230,23 +1466,106 @@ impl State {
         }
         shown(self, "WizCodexRisk", p == Provider::Codex);
         shown(self, "WizModelRow", p != Provider::Off);
+        if p != Provider::OpenAi { shown(self, "WizRemoveAi", false); }
         // an empty model, or another provider's default, becomes this provider's default
         let m = field(self, "WizModel").trim().to_string();
         if p != Provider::Off && (m.is_empty() || Provider::ALL.iter().any(|q| q.default_model() == m)) {
             set_field(self, "WizModel", p.default_model());
         }
-        if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
-            let hint = if p.needs_key() && config::has_key(p) { "A key is saved. Leave empty to keep it." } else { "Paste your API key" };
-            let _ = k.SetPlaceholderText(&hint.into());
-        }
+        self.wizard_key_hint(p);
         // the list of models for this provider; a text box until (and unless) it arrives. An
         // OpenAI-compatible address is asked only on "Load models", never while it is typed;
         // nothing is asked while working offline
-        if p != Provider::OpenAi && !sprawl_advisor::offline() {
-            self.wiz_models.want(p, &field(self, "WizUrl"), &typed_key(self));
-        }
+        if self.prefs.shown.contains(&"ai") { self.wizard_local_models(); }
         self.wizard_models();
         self.wizard_provider_rows();
+    }
+
+    fn wizard_detect(&mut self) {
+        if !self.wizard_request_allowed() {
+            shown(self, "WizDetected", false);
+            shown(self, "WizUseDetected", false);
+            return;
+        }
+        shown(self, "WizDetected", true);
+        if self.prefs.ai_detected.is_none() {
+            let found = Detected::probe();
+            text(&self.root, "WizDetected", &found.summary());
+            self.prefs.ai_detected = Some(found.suggest());
+        }
+        shown(self, "WizUseDetected", self.prefs.ai_detected.as_ref().is_some_and(|a| a.provider != Provider::Off));
+    }
+
+    fn wizard_request_allowed(&self) -> bool {
+        !crate::settings::read_only() && request_allowed(self.draft_offline(), sprawl_advisor::offline())
+    }
+
+    fn wizard_local_models(&mut self) {
+        let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+        if self.wizard_request_allowed() && matches!(p, Provider::ClaudeCode | Provider::Codex) {
+            self.wiz_models.want(p, "", "");
+        }
+    }
+
+    pub(crate) fn wizard_discard_secret(&mut self) {
+        if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
+            let _ = k.SetPassword(&"".into());
+        }
+        self.wiz_models.reset();
+    }
+
+    pub(crate) fn wizard_ai_changed(&mut self, address: bool) {
+        self.prefs.ai_edited = true;
+        if address {
+            self.wizard_discard_secret();
+            let provider = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+            self.wizard_key_hint(provider);
+            self.wizard_models();
+        }
+    }
+
+    fn wizard_key_hint(&self, p: Provider) {
+        let url = field(self, "WizUrl");
+        let has = if p == Provider::OpenAi { sprawl_advisor::llm::agent::saved_key_for(&url) } else { p.needs_key() && config::has_key(p) };
+        let forget = self.prefs.ai_forget_key.as_ref().is_some_and(|(provider, addr)| *provider == p && addr == &url);
+        if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
+            let hint = if forget { "Key will be removed on Save" } else if has { "Saved key; leave empty to keep it" } else { "Paste an API key" };
+            let _ = k.SetPlaceholderText(&hint.into());
+        }
+        shown(self, "WizForgetKey", has && !forget);
+        shown(self, "WizRemoveAi", p == Provider::OpenAi && !self.prefs.ai_custom.is_empty());
+    }
+
+    fn wizard_saved_providers(&self) {
+        let Ok(host) = find::<Border>(&self.root, "WizSavedHost") else { return };
+        if self.prefs.ai_customs.is_empty() {
+            let _ = host.SetChild(None::<&UIElement>);
+            return;
+        }
+        let mut names = vec!["Choose a saved provider…"];
+        names.extend(self.prefs.ai_customs.iter().map(|a| a.name.as_str()));
+        let i = names.iter().position(|n| *n == self.prefs.ai_custom).unwrap_or(0);
+        let x = labelled_row("WizSavedAi", "Saved providers", &combo("WizSavedAi", &names, i));
+        let Ok(fe) = load::<FrameworkElement>(&x.replacen("<Grid ", &format!("<Grid {} ", ui::NS), 1)) else { return };
+        let _ = host.SetChild(&fe);
+        if let Ok(s) = find::<Selector>(&fe, "WizSavedAi") {
+            if let Ok(t) = s.SelectionChanged(|sel, _| {
+                if let Some(i) = sel.as_ref().and_then(|p| p.cast::<Selector>().ok()).and_then(|p| p.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok()) {
+                    with(move |st| st.wizard_saved_provider(i));
+                }
+            }) { keep(t); }
+        }
+    }
+
+    fn wizard_saved_provider(&mut self, index: usize) {
+        let Some(a) = index.checked_sub(1).and_then(|i| self.prefs.ai_customs.get(i)).cloned() else { return };
+        self.wizard_ai_changed(true);
+        self.prefs.ai_custom = a.name.clone();
+        set_field(self, "WizAiName", &a.name);
+        set_field(self, "WizUrl", &a.base_url);
+        set_field(self, "WizModel", &a.model);
+        select(self, "WizProvider", Provider::ALL.iter().position(|p| *p == Provider::OpenAi).unwrap_or(0));
+        self.wizard_provider();
     }
 
     /// A well-known service picked beside Base URL: its address in the box. Its models are asked
@@ -1254,6 +1573,7 @@ impl State {
     pub(crate) fn wizard_preset(&mut self) {
         let Some(url) = sprawl_advisor::llm::models::preset_url(selected(self, "WizUrlPreset")) else { return };
         if field(self, "WizUrl").trim() != url {
+            self.wizard_ai_changed(true);
             set_field(self, "WizUrl", url);
             self.wiz_models.reset();
             self.wizard_models();
@@ -1284,7 +1604,11 @@ impl State {
                 self.wizard_show();
             }
             "WizUseDetected" => {
-                let ai = Detected::probe().suggest();
+                if !self.wizard_request_allowed() { return; }
+                let Some(ai) = self.prefs.ai_detected.clone() else { return; };
+                self.wizard_ai_changed(true);
+                self.prefs.ai_custom.clear();
+                set_field(self, "WizAiName", "");
                 let pi = Provider::ALL.iter().position(|&p| p == ai.provider).unwrap_or(0);
                 select(self, "WizProvider", pi);
                 set_field(self, "WizUrl", &ai.base_url);
@@ -1292,7 +1616,7 @@ impl State {
                 self.wizard_provider();
             }
             "WizLoadModels" => {
-                if sprawl_advisor::offline() {
+                if !self.wizard_request_allowed() {
                     return;
                 }
                 let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
@@ -1300,11 +1624,29 @@ impl State {
                 self.wiz_models.want(p, &field(self, "WizUrl"), &typed_key(self));
                 self.wizard_models();
             }
+            "WizForgetKey" if !crate::settings::read_only() => {
+                let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+                if p.needs_key() {
+                    self.wizard_discard_secret();
+                    self.prefs.ai_forget_key = Some((p, field(self, "WizUrl")));
+                    self.wizard_key_hint(p);
+                }
+            }
+            "WizRemoveAi" => {
+                let name = std::mem::take(&mut self.prefs.ai_custom);
+                self.prefs.ai_customs.retain(|a| a.name != name);
+                self.prefs.ai_edited = true;
+                set_field(self, "WizAiName", "");
+                shown(self, "WizRemoveAi", false);
+                self.wizard_saved_providers();
+            }
             n if n.starts_with("PfSec") => {
                 self.prefs_harvest();
                 self.prefs.note = None;
                 self.prefs.clear_armed = false;
                 self.prefs.sec = n[5..].parse().unwrap_or(0);
+                self.prefs.group = 0;
+                self.prefs.list_page = 0;
                 self.wizard_show();
             }
             "WizNext" if self.wizard_all => self.wizard_finish(),
@@ -1324,45 +1666,12 @@ impl State {
     /// Apply what changed, through the same paths the menus use.
     fn wizard_finish(&mut self) {
         self.prefs_harvest();
+        if crate::settings::read_only() {
+            self.prefs.note = Some("Screenshot mode does not save preferences.".into());
+            self.wizard_show();
+            return;
+        }
         let mut notes: Vec<String> = Vec::new();
-        if let Err(e) = sprawl_advisor::exclusions::parse(self.prefs.draft.get("scanExclude").map_or("", String::as_str)) {
-            self.prefs.note = Some(e);
-            self.wizard_show();
-            return;
-        }
-        if let Err(e) = sprawl_advisor::program_folders::parse(self.prefs.draft.get("programFolders").map_or("", String::as_str)) {
-            self.prefs.note = Some(e);
-            self.wizard_show();
-            return;
-        }
-        let p = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
-        let web = self.prefs.draft.get("aiWebLookup").is_some_and(|v| v == "1");
-        // the effort picked per model is set in the Advisor's AI settings, and kept here
-        let old = AiConfig::load();
-        let base_url = field(self, "WizUrl").trim().to_string();
-        // the custom AIs are named in the Advisor's AI settings; the one in use keeps its name
-        // while its address stays
-        let custom = if p == Provider::OpenAi && base_url == old.base_url { old.custom.clone() } else { String::new() };
-        let ai = AiConfig { provider: p, model: self.wizard_model(), base_url, web_lookup: web, efforts: old.efforts.clone(), custom, customs: old.customs.clone() };
-        // a chat under way was started with the old AI settings (provider, model, web lookup):
-        // the next question starts a new one, so a change takes effect at once, without a restart
-        let ai_changed = AiConfig::load() != ai;
-        if ai.save().is_err() {
-            notes.push("couldn't save the AI settings".into());
-        }
-        let key = find::<PasswordBox>(&self.root, "WizKey").and_then(|k| k.Password()).map(|h| h.to_string_lossy()).unwrap_or_default();
-        if let Some(w) = (p == Provider::OpenAi && key.trim().is_empty()).then(|| sprawl_advisor::llm::agent::key_elsewhere(&ai.base_url)).flatten() {
-            notes.push(w);
-        }
-        if p.needs_key() && !key.trim().is_empty() {
-            if !config::set_key(p, &key, &ai.base_url) {
-                notes.push("couldn't store the API key".into());
-            }
-            if let Ok(k) = find::<PasswordBox>(&self.root, "WizKey") {
-                let _ = k.SetPassword(&"".into());
-            }
-        }
-        // what changed, and only that ("aiWebLookup" went with the AI settings above)
         let changed: Vec<(&'static Pref, String)> = PREFS
             .iter()
             .filter(|p| p.key != "aiWebLookup")
@@ -1371,8 +1680,75 @@ impl State {
                 (self.prefs.orig.get(p.key) != Some(v)).then(|| (p, v.clone()))
             })
             .collect();
+        for (p, v) in &changed {
+            let error = match p.key {
+                "scanExclude" => sprawl_advisor::exclusions::parse(v).err(),
+                "programFolders" => sprawl_advisor::program_folders::parse(v).err(),
+                "uninstaller" => uninstaller_path(v).err(),
+                _ => match p.kind {
+                    Kind::Number(k, unit) if choice_number(v, k.floor, k.max).is_none() => Some(format!("{}: enter a whole number from {} to {} {unit}.", p.label, k.floor, k.max)),
+                    _ => None,
+                },
+            };
+            if let Some(e) = error {
+                self.pref_error(p.key, e);
+                return;
+            }
+        }
+        let web = switch_draft(&self.prefs.draft, "aiWebLookup");
+        let key = typed_key(self);
+        let name: String = field(self, "WizAiName").trim().chars().filter(|c| !c.is_control()).take(40).collect();
+        let ai_edit = ai_needs_save(self.prefs.ai_edited || name != self.prefs.ai_orig.custom, self.prefs.ai_orig.web_lookup, web, &key);
+        let mut ai = self.prefs.ai_orig.clone();
+        if ai_edit {
+            ai.provider = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+            ai.web_lookup = web;
+            ai.model = self.wizard_model();
+            ai.base_url = field(self, "WizUrl").trim().to_string();
+            ai.custom = if ai.provider == Provider::OpenAi { name } else { String::new() };
+            ai.customs = self.prefs.ai_customs.clone();
+            ai.efforts = self.prefs.ai_efforts.clone();
+            if ai.provider == Provider::OpenAi && !ai.base_url.is_empty() && sprawl_advisor::llm::agent::host_of(&ai.base_url).is_none() {
+                self.pref_error("ai", "Enter a valid server address, or choose a service from the dropdown.".into());
+                return;
+            }
+            if !ai.keep_custom(&self.prefs.ai_custom) {
+                self.pref_error("ai", "Another saved provider already has that name.".into());
+                return;
+            }
+        }
+        let mut staged = self.settings.clone();
+        for (p, v) in &changed {
+            Self::stage_pref(&mut staged, p, v);
+        }
+        self.theme_stage(&mut staged);
+        staged.set_bool("wizard_done", true);
+        if let Err(e) = staged.save() {
+            self.prefs.note = Some(format!("Couldn't save Settings: {e}. Your draft is still open."));
+            self.wizard_show();
+            return;
+        }
+        self.settings = staged;
+        let ai_changed = ai_edit && ai != self.prefs.ai_orig;
+        if ai_changed {
+            if let Err(e) = ai.save() { notes.push(format!("AI settings not saved: {e}")); }
+        }
+        if ai_edit && ai.provider.needs_key() && !key.trim().is_empty() {
+            let addr = if ai.provider == Provider::OpenAi && ai.base_url.is_empty() { "https://api.openai.com/v1" } else { &ai.base_url };
+            if !config::set_key(ai.provider, &key, addr) { notes.push("couldn't store the API key".into()); }
+        }
+        if let Some((provider, url)) = self.prefs.ai_forget_key.take() {
+            let addr = if provider == Provider::OpenAi && url.is_empty() { "https://api.openai.com/v1" } else { &url };
+            if (provider != ai.provider || url != ai.base_url || key.is_empty()) && !config::set_key(provider, "", addr) {
+                notes.push("couldn't remove the saved API key".into());
+            }
+        }
         // the administrator switches as they are before this save, to tell a real change
         let lists_changed = changed.iter().any(|(p, _)| p.key == "scanExclude" || p.key == "programFolders");
+        let privacy_changed = changed.iter().any(|(p, _)| p.key == "privacyCleaners");
+        let search_scope_changed = changed.iter().any(|(p, _)| matches!(p.key, "searchDrivesOn" | "searchSnapshots" | "snapshots"));
+        let alert_changed = changed.iter().any(|(p, _)| matches!(p.key, "alertLow" | "alertGrowth"));
+        if let Some((p, v)) = changed.iter().find(|(p, _)| p.key == "offline") { self.pref_apply(p, v); }
         let admin_before: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         for (p, v) in changed {
             // into their store; a write that fails is said in the message, never "saved"
@@ -1382,20 +1758,24 @@ impl State {
                 }
                 continue;
             }
-            if let Kind::Number(knob, unit) = &p.kind {
-                let n = v.trim().replace([',', '.', ' '], "").parse::<u64>();
-                match n {
-                    Ok(n) if knob.clamp(n) != n => notes.push(format!("{} was held at {} {unit}", p.label.to_lowercase(), knob.clamp(n))),
-                    Err(_) => notes.push(format!("{} wasn't a number, so it stays {} {unit}", p.label.to_lowercase(), knob.default)),
-                    _ => {}
+            if p.key == "oExplorer" {
+                if !crate::dialogs::set_explorer_menu(v == "1") {
+                    notes.push("couldn't change Explorer's menu".into());
                 }
+                let _ = crate::menubar::set_checked(&self.root, p.key, crate::dialogs::explorer_menu_installed());
+                continue;
             }
-            self.pref_apply(p, &v);
+            if p.key != "offline" { self.pref_apply(p, &v); }
         }
         self.theme_commit();
-        self.settings.set_bool("wizard_done", true);
-        self.settings.save();
-        if lists_changed { self.advisor_refresh(); }
+        if alert_changed {
+            let want = self.settings.bool("alertLow") == Some(true) || self.settings.bool("alertGrowth") == Some(true);
+            if !crate::alert::schedule(want) {
+                notes.push(if want { "Windows couldn't schedule the alert task; it will be retried next launch".into() } else { "Windows couldn't remove the alert task; the check exits with both alerts off".into() });
+            }
+        }
+        if search_scope_changed { self.more_settings_changed(); }
+        if privacy_changed { self.privacy_settings_changed(); } else if lists_changed { self.advisor_refresh(); }
         // the administrator switches take effect now, not at the next start
         let admin_after: Vec<bool> = [&crate::admin::CLAUDE_CODE, &crate::admin::USER_TOOLS].iter().map(|l| crate::admin::store::get(l.key)).collect();
         let admin_changed = admin_before != admin_after;
@@ -1409,8 +1789,26 @@ impl State {
             }
         }
         self.wizard_hide();
-        let msg = if notes.is_empty() { "Settings saved. Change them any time under Options > Settings (Ctrl+Shift+S).".to_string() } else { format!("Settings saved; {}.", notes.join("; ")) };
+        let msg = if notes.is_empty() { "Settings saved.".to_string() } else { format!("Not all settings could be applied: {}.", notes.join("; ")) };
         text(&self.root, "FootLeft", &msg);
+    }
+
+    fn pref_error(&mut self, key: &str, message: String) {
+        if self.wizard_all {
+            for (sec, s) in Sec::ALL.into_iter().enumerate() {
+                if let Some(group) = s.groups().iter().position(|g| g.1.contains(&key)) {
+                    self.prefs.sec = sec;
+                    self.prefs.group = group;
+                    break;
+                }
+            }
+        } else if let Some(i) = WIZARD.iter().position(|p| p.3.contains(&key)) {
+            self.wizard_page = i;
+        }
+        self.prefs.note = Some(message);
+        self.prefs.focus_name = Some(if key == "ai" { "WizUrl".into() } else { format!("Pf_{key}") });
+        self.wizard_show();
+        self.wizard_focus_arm(true);
     }
 }
 
@@ -1418,22 +1816,69 @@ impl State {
     /// Show the Model dropdown if the list is here, else the text box (and why).
     pub(crate) fn wizard_models(&mut self) {
         let current = field(self, "WizModel");
-        let choices = self.wiz_models.choices(&current);
+        let choices = self.wizard_choices(&current);
         if let Ok(host) = find::<Border>(&self.root, "WizModelHost") {
-            let combo = choices.as_ref().and_then(|list| crate::state::load::<UIElement>(&crate::models::combo("WizModelPick", list, &current, 0).replacen("<ComboBox ", &format!("<ComboBox {} HorizontalAlignment=\"Stretch\" ", crate::ui::NS), 1).replace(" Width=\"0\"", "")).ok());
+            let display = |s: &str| if s.is_empty() { "Provider default".to_string() } else { s.to_string() };
+            let combo = choices.as_ref().and_then(|list| {
+                let list: Vec<_> = list.iter().map(|s| display(s)).collect();
+                load::<UIElement>(&crate::models::combo("WizModelPick", &list, &display(&current), 0)
+                    .replacen("<ComboBox ", &format!(r#"<ComboBox {} AutomationProperties.Name="Model" HorizontalAlignment="Stretch" "#, ui::NS), 1)
+                    .replace(" Width=\"0\"", "")).ok()
+            });
             let _ = host.SetChild(combo.as_ref());
+            if let Some(sel) = combo.and_then(|c| c.cast::<Selector>().ok()) {
+                if let Ok(t) = sel.SelectionChanged(|_, _| { with(|s| { s.prefs.ai_edited = true; s.wizard_effort(); }); }) { keep(t); }
+            }
         }
         shown(self, "WizModel", choices.is_none());
         let note = self.wiz_models.note();
         text(&self.root, "WizModelNote", note.as_deref().unwrap_or(""));
         shown(self, "WizModelNote", note.is_some());
+        self.wizard_effort();
+    }
+
+    fn wizard_choices(&self, current: &str) -> Option<Vec<String>> {
+        let mut list = self.wiz_models.choices(current)?;
+        if current.is_empty() { list.insert(0, String::new()); }
+        Some(list)
+    }
+
+    fn wizard_effort(&self) {
+        let Ok(host) = find::<Border>(&self.root, "WizEffortHost") else { return };
+        let provider = Provider::ALL[selected(self, "WizProvider").min(Provider::ALL.len() - 1)];
+        let model = self.wizard_model();
+        let levels = sprawl_advisor::llm::effort::levels(provider, &field(self, "WizUrl"), &model);
+        if levels.is_empty() {
+            let _ = host.SetChild(None::<&UIElement>);
+            return;
+        }
+        let default = sprawl_advisor::llm::effort::sprawl_default(provider, &levels)
+            .map_or_else(|| "Default (provider)".to_string(), |d| format!("Default ({d})"));
+        let mut names = vec![default.as_str()];
+        names.extend(levels.iter().map(String::as_str));
+        let pick = self.prefs.ai_efforts.get(&model).and_then(|v| levels.iter().position(|l| l == v)).map_or(0, |i| i + 1);
+        let x = labelled_row("WizEffort", "Reasoning effort", &combo("WizEffort", &names, pick));
+        let Ok(fe) = load::<FrameworkElement>(&x.replacen("<Grid ", &format!("<Grid {} ", ui::NS), 1)) else { return };
+        let _ = host.SetChild(&fe);
+        if let Ok(sel) = find::<Selector>(&fe, "WizEffort") {
+            if let Ok(t) = sel.SelectionChanged(move |s, _| {
+                if let Some(i) = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|s| s.SelectedIndex().ok()).and_then(|i| usize::try_from(i).ok()) {
+                    let model = model.clone();
+                    let level = i.checked_sub(1).and_then(|i| levels.get(i)).cloned();
+                    with(move |st| {
+                        st.prefs.ai_edited = true;
+                        if let Some(level) = level { st.prefs.ai_efforts.insert(model, level); } else { st.prefs.ai_efforts.remove(&model); }
+                    });
+                }
+            }) { keep(t); }
+        }
     }
 
     /// The model chosen: the dropdown's entry, or what is typed.
     fn wizard_model(&self) -> String {
         let typed = field(self, "WizModel").trim().to_string();
         let pick = find::<Border>(&self.root, "WizModelHost").ok().and_then(|h| h.Child().ok()).and_then(|c| windows_core::Interface::cast::<Selector>(&c).ok()).and_then(|s| s.SelectedIndex().ok());
-        match (pick, self.wiz_models.choices(&typed)) {
+        match (pick, self.wizard_choices(&typed)) {
             (Some(i), Some(list)) => usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).unwrap_or(typed),
             _ => typed,
         }
@@ -1444,6 +1889,61 @@ impl State {
 mod card_tests {
     use super::{card_size, focus_state, xaml};
     use crate::bindings::Microsoft::UI::Xaml::FocusState;
+
+    #[test]
+    fn numeric_edits_reject_punctuation_overflow_and_out_of_range_input() {
+        use super::choice_number as read;
+        assert_eq!(read(" 15 ", 1, 30), Some(15));
+        for invalid in ["1.5", "1,5", "1e1", "-1", " ", "0", "31", "18446744073709551616"] {
+            assert_eq!(read(invalid, 1, 30), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn unrelated_settings_do_not_write_ai_but_key_and_web_changes_do() {
+        use super::ai_needs_save as needs;
+        assert!(!needs(false, false, false, " "));
+        assert!(!needs(false, true, true, ""));
+        assert!(needs(true, false, false, ""));
+        assert!(needs(false, false, true, ""));
+        assert!(needs(false, false, false, "fixture key"));
+    }
+
+    #[test]
+    fn either_saved_or_draft_offline_blocks_a_request() {
+        use super::request_allowed as allowed;
+        assert!(allowed(false, false));
+        assert!(!allowed(true, false));
+        assert!(!allowed(false, true));
+        assert!(!allowed(true, true));
+    }
+
+    #[test]
+    fn reset_all_restores_windows_motion_and_respects_admin_permissions() {
+        use super::{map_animation_choice, reset_draft};
+        let draft = [("searchDrivesOn", "D:\\"), ("searchColumns", "size"), ("oHeader", "0"),
+            ("animate", "1"), ("adminMcpDisk", "1"), ("adminUserTools", "1"), ("neverTouch", "C:\\Fixture")];
+        for elevated in [false, true] {
+            let mut d = draft.into_iter().map(|(k, v)| (k, v.to_string())).collect();
+            reset_draft(&mut d, None, elevated);
+            assert_eq!((&*d["searchDrivesOn"], &*d["searchColumns"], &*d["oHeader"]), ("", "", "1"));
+            assert_eq!(d["animate"], map_animation_choice(None).to_string());
+            assert_eq!(d["adminMcpDisk"], if elevated { "0" } else { "1" });
+            assert_eq!(d["adminUserTools"], if elevated { "0" } else { "1" });
+            assert_eq!(d["neverTouch"], "C:\\Fixture", "Reset does not clear protected folders");
+        }
+    }
+
+    #[test]
+    fn the_last_keep_page_still_contains_every_entry() {
+        let n = 213;
+        let (first, pages) = super::page_range(n, 0);
+        assert!(pages > 1 && first.start == 0);
+        let all: Vec<_> = (0..pages).flat_map(|i| super::page_range(n, i).0).collect();
+        assert_eq!(all, (0..n).collect::<Vec<_>>());
+        assert_eq!(super::page_range(n, pages).0.end, n);
+        assert!(!xaml().contains("<ScrollViewer"));
+    }
 
     #[test]
     fn the_card_keeps_its_size_with_room_and_shrinks_without() {

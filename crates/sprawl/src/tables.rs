@@ -11,7 +11,7 @@ use crate::bindings::Microsoft::UI::Xaml::Controls::{Border, ScrollViewer};
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, FrameworkElement, UIElement, Visibility};
 use crate::bindings::Windows::Foundation::Point;
 use crate::format::{file_type, fmt_time, thousands};
-use crate::state::{find, load, text, State, View, ROW_H};
+use crate::state::{find, load, row_height, text, State, View};
 use crate::{paint, ui};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -591,7 +591,7 @@ impl State {
         let vh = if vh > 0.0 { vh } else { 900.0 };
         let g = Rows { count, off, vh };
         let first = (g.top().floor().max(0.0) as usize).min(count);
-        let last = ((g.top() + vh / ROW_H).ceil().max(0.0) as usize).min(count);
+        let last = ((g.top() + vh / row_height()).ceil().max(0.0) as usize).min(count);
         let span = if which == Which::Main { self.tables.main_span } else { self.tables.ext_span };
         if span.2 == count && span.0 <= first && last <= span.1 {
             // a long list's rows move with the scroll (see Rows): the loaded ones are moved
@@ -710,7 +710,10 @@ impl State {
         };
         let name = if node.is_compressed() { format!("{} · compressed", label(n)) } else if self.advisor.memory.compressed.iter().any(|c| crate::cleanup::key(std::path::Path::new(&c.path)) == crate::cleanup::key(&t.path_of(n))) { format!("{} · compressed by Sprawl (record)", label(n)) } else { label(n) };
         format!(
-            r##"<Grid x:Name="TRow{n}" Height="24" Background="{bg}">{cols}{sel_bar}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="12"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="{{$fs12}}" Width="12" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="{{$fs14}}" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid x:Name="TRow{n}" Height="{height}" Background="{bg}">{cols}{sel_bar}<Grid ColumnSpacing="6" Margin="{indent},0,6,0" ToolTipService.ToolTip="{name}"><Grid.ColumnDefinitions><ColumnDefinition Width="{chevron_width}"/><ColumnDefinition Width="{icon_width}"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="{chevron}" FontSize="{{$fs12}}" Width="{chevron_width}" Foreground="{{$text3}}"/><FontIcon Grid.Column="1" Glyph="{glyph}" FontSize="{{$fs14}}" Foreground="{gc}" Opacity="{op}"/><TextBlock Grid.Column="2" Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{fg}" TextTrimming="CharacterEllipsis"/></Grid>{bar}{c2}{c3}{c4}{c5}{c6}</Grid>"##,
+            height = row_height(),
+            chevron_width = crate::tokens::current().row_glyph_width(12.0),
+            icon_width = crate::tokens::current().row_glyph_width(16.0),
             cols = col_defs(&self.main_cols().0),
             indent = 8 + d * 16,
             op = if hidden { "0.55" } else { "1" },
@@ -743,7 +746,8 @@ impl State {
         let modified = node.modified.map(fmt_time).unwrap_or_default();
         let folder = node.parent.map(|p| t.path_of(p).display().to_string()).unwrap_or_default();
         format!(
-            r##"<Grid x:Name="FRow{n}" Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="{{$fs13}}" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid x:Name="FRow{n}" Height="{height}" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0"><FontIcon Glyph="&#xE7C3;" FontSize="{{$fs13}}" Foreground="{fc}"/><TextBlock Text="{name}" VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis"/></StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            height = row_height(),
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = col_defs(FILES),
             fc = self.ext_colour_hex(&node.extension()),
@@ -761,7 +765,8 @@ impl State {
         let (bg, sel_bar) = (self.row_bg(k, sel), row_bar(sel));
         let shown = if e.ext == "(none)" { String::new() } else { format!(".{}", e.ext) };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<Border Width="12" Height="12" CornerRadius="{{$rc3}}" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="{{$fs12}}" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
+            r##"<Grid Height="{height}" Background="{bg}">{cols}{sel_bar}<Border Width="12" Height="12" CornerRadius="{{$rc3}}" Background="{c}" Margin="8,0,0,0"/><TextBlock Grid.Column="1" Text="{ext}" FontSize="{{$fs12}}" VerticalAlignment="Center" Margin="8,0,0,0" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="2" Text="{kind}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis"/>{bar}{c4}{c5}{c6}</Grid>"##,
+            height = row_height(),
             cols = col_defs(EXTS),
             c = self.ext_colour_hex(&e.ext),
             ext = ui::esc(&shown),
@@ -1059,8 +1064,9 @@ impl State {
         }
         let r = Rows { off: r.off_to_show(k).unwrap_or(r.off), ..r };
         let y = r.y_of(k);
-        let at = Point { X: 32.0, Y: (y - r.off + ROW_H) as f32 };
-        self.row_menu(y + ROW_H / 2.0, at, true);
+        let height = row_height();
+        let at = Point { X: 32.0, Y: (y - r.off + height) as f32 };
+        self.row_menu(y + height / 2.0, at, true);
     }
 
     /// Arrow keys and friends in the main table. Returns true when the key was used.
@@ -1846,13 +1852,13 @@ mod tests {
         // rows stay a row apart on screen, and a tap finds the row drawn there
         let mid = Rows { count: n, off: 400_000.0, vh: 300.0 };
         let k = mid.at(mid.off + 100.0);
-        assert!((mid.y_of(k + 1) - mid.y_of(k) - ROW_H).abs() < 1e-6);
+        assert!((mid.y_of(k + 1) - mid.y_of(k) - row_height()).abs() < 1e-6);
         assert_eq!(mid.at(mid.y_of(k) + 1.0), k);
         // scrolling to a row puts it in view
         let to = mid.off_to_show(123_456).unwrap();
         let there = Rows { off: to, ..mid };
         let y = there.y_of(123_456);
-        assert!(y >= there.off - 1e-6 && y + ROW_H <= there.off + there.vh + 1e-6, "{y} in {}..{}", there.off, there.off + there.vh);
+        assert!(y >= there.off - 1e-6 && y + row_height() <= there.off + there.vh + 1e-6, "{y} in {}..{}", there.off, there.off + there.vh);
     }
 
     #[test]
@@ -1971,20 +1977,20 @@ pub(crate) struct Rows {
 
 impl Rows {
     pub(crate) fn scaled(&self) -> bool {
-        self.count as f64 * ROW_H > MAX_BODY
+        self.count as f64 * row_height() > MAX_BODY
     }
 
     /// The height of the scrolled content.
     pub(crate) fn body(&self) -> f64 {
-        (self.count as f64 * ROW_H).clamp(1.0, MAX_BODY)
+        (self.count as f64 * row_height()).clamp(1.0, MAX_BODY)
     }
 
     /// Rows per pixel of scrolling.
     fn ratio(&self) -> f64 {
         if self.scaled() {
-            (self.count as f64 - self.vh / ROW_H) / (MAX_BODY - self.vh).max(1.0)
+            (self.count as f64 - self.vh / row_height()) / (MAX_BODY - self.vh).max(1.0)
         } else {
-            1.0 / ROW_H
+            1.0 / row_height()
         }
     }
 
@@ -1995,17 +2001,17 @@ impl Rows {
 
     /// Where row `k` is drawn.
     pub(crate) fn y_of(&self, k: usize) -> f64 {
-        self.off + (k as f64 - self.top()) * ROW_H
+        self.off + (k as f64 - self.top()) * row_height()
     }
 
     /// The row drawn at `y`.
     pub(crate) fn at(&self, y: f64) -> usize {
-        (self.top() + (y - self.off) / ROW_H).floor().max(0.0) as usize
+        (self.top() + (y - self.off) / row_height()).floor().max(0.0) as usize
     }
 
     /// The scroll that shows row `k` with the least movement; None when it is in view.
     pub(crate) fn off_to_show(&self, k: usize) -> Option<f64> {
-        let rows_in_view = self.vh / ROW_H;
+        let rows_in_view = self.vh / row_height();
         let top = self.top();
         let want = if (k as f64) < top {
             k as f64

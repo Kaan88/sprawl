@@ -2,9 +2,8 @@
 //! one, changing width as it goes (the mockup's `.uline`, docs/mockups/polish-2026-11-21:
 //! `transition: left, width` over the motion time and its easing).
 //!
-//! A [`Row`] says which row it is: the main page tabs ([`MAIN`]) and the Theme page's groups
-//! ([`THEME`], whose page is made again on each switch, so its new line starts where the old one
-//! was). The XAML has an empty border, `TabLine`, along the bottom of the tab row (`TabRow`). Once the
+//! [`MAIN`] describes the main page tabs. The XAML has an empty border, `TabLine`, along
+//! the bottom of the tab row (`TabRow`). Once the
 //! row is in the window the line is made as that border's child visual: a `ShapeVisual` holding
 //! one rounded rectangle. Opening a tab ([`select`], from `paint_tabs`) starts two Composition
 //! animations on that rectangle, its `Offset` and its geometry's `Size`, from where the line is
@@ -33,17 +32,13 @@ pub(crate) struct Row {
     host: &'static str,
     tabs: &'static [&'static str],
     inset: f32,
-    /// The row is made again with its page (Settings' sub-tabs are): a line made again starts
+    /// When a row carries its position across a rebuild, a line made again starts
     /// where the old one was, and slides from there when another tab is lit.
     carry: bool,
 }
 
 /// The main page tabs (Tree View ... About).
 pub(crate) static MAIN: Row = Row { host: "TabLine", tabs: &["TabTree", "TabFiles", "TabAdvisor", "TabCleaners", "TabSearch", "TabAbout"], inset: 14.0, carry: false };
-/// The Theme page's four groups (Colour ... Text and space); its page is made again on each switch.
-pub(crate) static THEME: Row = Row { host: "TmTabLine", tabs: &["TmTab0", "TmTab1", "TmTab2", "TmTab3"], inset: THEME_INSET, carry: true };
-/// The Theme sub-tabs' left and right padding.
-pub(crate) const THEME_INSET: f32 = 12.0;
 const HEIGHT: f32 = 3.0;
 
 /// A cubic bezier easing, CSS's `cubic-bezier(x1, y1, x2, y2)`.
@@ -268,18 +263,6 @@ fn settle(row: &'static Row) {
     });
 }
 
-/// Forget `row`'s line and lit tab: its page is new (Settings was opened again), so the line
-/// starts on its tab, with no slide from where it was last time.
-pub(crate) fn forget(row: &'static Row) {
-    SLOTS.with(|l| {
-        if let Ok(mut l) = l.try_borrow_mut() {
-            let s = slot(&mut l, row);
-            s.lit = None;
-            s.line = None;
-        }
-    });
-}
-
 /// Open the tab named `lit` (None: no tab is lit) in `row`: the line slides to it. The line is
 /// made at the first call for a page, and a page made again (a new theme or look) gets a new
 /// one, put straight on its tab; a row that `carry`s starts its new line where the old one was,
@@ -331,15 +314,11 @@ mod tests {
         assert!((0..=100).any(|i| ease(lively, i as f32 / 100.0) > 1.05), "it passes the mark");
     }
 
-    /// The Theme row names one button per group, and the page's tabs are the names it holds.
     #[test]
-    fn the_theme_row_has_a_tab_per_group() {
-        assert_eq!(THEME.tabs.len(), crate::themepage::GROUPS.len());
-        for (g, n) in THEME.tabs.iter().enumerate() {
-            assert_eq!(*n, format!("TmTab{g}"));
-        }
-        assert_eq!((MAIN.host, THEME.host), ("TabLine", "TmTabLine"));
-        assert!(THEME.carry && !MAIN.carry && THEME.inset == THEME_INSET);
+    fn main_tab_line_reserves_its_position_for_the_installed_page() {
+        assert_eq!(MAIN.host, "TabLine");
+        assert_eq!(MAIN.tabs, ["TabTree", "TabFiles", "TabAdvisor", "TabCleaners", "TabSearch", "TabAbout"]);
+        assert!(!MAIN.carry);
     }
 
     #[test]

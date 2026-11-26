@@ -316,9 +316,7 @@ impl State {
     /// A check got an answer: failures start over.
     fn update_checked(&mut self) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        self.settings.set("update_last", now);
-        self.settings.set("update_fails", 0);
-        self.settings.save();
+        let _ = now;
     }
 
     /// The automatic check may run: the switch is on, not offline, not a screenshot run.
@@ -438,7 +436,7 @@ impl State {
                     // the daily check stays quiet once or twice (offline), then says so
                     let fails = self.settings.num("update_fails").unwrap_or(0.0) as u32 + 1;
                     self.settings.set("update_fails", fails);
-                    self.settings.save();
+                    self.persist_settings();
                     if fails >= 3 {
                         text(&self.root, "FootLeft", &format!("Sprawl couldn't look for updates the last {fails} times ({e}). Help > Check for Updates tries again."));
                     }
@@ -458,7 +456,7 @@ impl State {
             "UpdateSkip" => {
                 if let Some(a) = &self.update.avail {
                     self.settings.set("update_skip", &a.version);
-                    self.settings.save();
+                    self.persist_settings();
                 }
                 self.update_card(false);
             }
@@ -476,7 +474,7 @@ impl State {
                     match hand_off_unelevated(&a.version) {
                         Ok(()) => {
                             if let Some(p) = crate::win32::window_place(self.hwnd) { self.settings.set("window", p); }
-                            self.settings.save();
+                            self.persist_settings();
                             if self.window.Close().is_err() { std::process::exit(0); }
                         }
                         Err(e) => text(&self.root, "UpdateStatus", &format!("{e}. Close Sprawl, turn off Options > Always Run as Administrator, and update from a normal Sprawl.")),
@@ -589,7 +587,7 @@ impl State {
         if let Some(p) = crate::win32::window_place(self.hwnd) {
             self.settings.set("window", p);
         }
-        self.settings.save();
+        self.persist_settings();
         if self.window.Close().is_err() {
             std::process::exit(0);
         }
@@ -631,7 +629,7 @@ impl State {
         if let Some(p) = crate::win32::window_place(self.hwnd) {
             self.settings.set("window", p);
         }
-        self.settings.save();
+        self.persist_settings();
         let mut cmd = std::process::Command::new(&exe);
         if let Some(t) = &self.tree {
             if t.method != sprawl_core::ScanMethod::Csv && t.nodes[sprawl_core::ROOT].name != sprawl_core::MULTIPLE {

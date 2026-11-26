@@ -144,15 +144,6 @@ fn is_network_drive(_: &str) -> bool {
     false
 }
 
-/// The app's History settings: whether it keeps History, and its cap in bytes.
-fn history_settings() -> (bool, u64) {
-    let text = std::env::var_os("APPDATA").and_then(|a| std::fs::read_to_string(PathBuf::from(a).join("Sprawl").join("settings.ini")).ok()).unwrap_or_default();
-    let get = |k: &str| text.trim_start_matches('\u{feff}').lines().filter_map(|l| l.split_once('=')).find(|(a, _)| a.trim() == k).map(|(_, v)| v.trim().to_string());
-    let on = get("snapshots").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let mb = get("snapshot_cap_mb").and_then(|v| v.parse::<f64>().ok()).unwrap_or(1024.0);
-    (on, (mb * 1024.0 * 1024.0) as u64)
-}
-
 /// A tree this process holds: one it scanned, or one loaded from History.
 pub struct Held {
     pub root: PathBuf,
@@ -369,13 +360,13 @@ impl Index {
             // the folder walk, never the MFT: only what the user's own rights can list
             let tree = sprawl_core::walk::walk(&r, &p).map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
             // into History as the app saves its own scans, when the user keeps History
-            let (on, cap) = history_settings();
-            let history = match (on, base) {
+            let policy = crate::history::Retention::load();
+            let history = match (policy.enabled, base) {
                 (true, Some(base)) => {
                     sv.store(true, Ordering::Relaxed);
                     // folders only (Fable AI review P3-10): small, and the first to go when History is over
                     // its cap, so a scan the AI asked for doesn't push out the user's own snapshots
-                    match crate::history::prepare(&tree, taken, false).save(&base, cap) {
+                    match crate::history::prepare(&tree, taken, false).save_retained(&base, policy) {
                         Ok(()) => "Saved in Sprawl's History (folders only).".to_string(),
                         Err(e) => format!("Not saved in History: {e}."),
                     }
@@ -516,7 +507,8 @@ mod tests {
     fn refuses_what_it_shouldnt_scan() {
         assert!(refusal(Path::new("relative\\dir")).is_some_and(|r| r.contains("full path")));
         assert!(refusal(Path::new(r"\\server\share")).is_some_and(|r| r.contains("network")));
-        assert!(refusal(Path::new(r"C:\no such folder here 7f3a")).is_some_and(|r| r.contains("can open")));
+        let absent = std::env::temp_dir().join(format!("sprawl-absent-{}", crate::store::nonce()));
+        assert!(refusal(&absent).is_some_and(|r| r.contains("can open")));
         assert!(refusal(&std::env::temp_dir()).is_none());
     }
 

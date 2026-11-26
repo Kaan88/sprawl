@@ -138,9 +138,7 @@ fn uncompress_scope(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy:
             }
             Ok(pinned)
         }).collect::<Result<_, _>>()?;
-        let args = work[offset..end].iter().map(|(p, _)| ps_quote(&p.display().to_string())).collect::<Vec<_>>().join(" ");
-        let command = format!("compact.exe /u /a /i /q {}{args}", if dir { "" } else { "/exe " });
-        let result = crate::clean::run(path, &Action::Tool { command }, &crate::clean::Spare::default(), &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
+        let result = crate::clean::uncompress_batch(&pins, dir);
         drop(pins);
         if result.stopped || !result.problems.is_empty() || result.more_problems != 0 { return Err(result.problems.join("; ")); }
         offset = end;

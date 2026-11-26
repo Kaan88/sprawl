@@ -69,6 +69,10 @@ pub(crate) fn windows_accent() -> &'static Accent {
 
 /// Windows' accent palette, lightest first: Light3, Light2, Light1, the accent, Dark1, Dark2,
 /// Dark3 (WinUI's accent fills and text are made from these).
+#[cfg(test)]
+fn palette() -> Option<[[u8; 3]; 7]> { None }
+
+#[cfg(not(test))]
 fn palette() -> Option<[[u8; 3]; 7]> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::ERROR_SUCCESS;

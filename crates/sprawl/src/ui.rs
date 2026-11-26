@@ -987,32 +987,7 @@ pub fn page(drives: &[String]) -> String {
     };
     let version = env!("CARGO_PKG_VERSION");
     let (logo_small, logo_big) = (logo(46), logo(96));
-    // Colours and Tweaks act on the treemap only: its button is in the map bar, shown with it
-    note_shortcut("Colours and Tweaks", "T", "Control");
-    let palettes: String = crate::paint::PALETTES.iter().map(|p| format!(r##"<ComboBoxItem Content="{p}"/>"##)).collect();
-    let tweaks = format!(r##"
-    <Border x:Name="Tweaks" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Width="300" CornerRadius="{{$rc10}}" Padding="16,10,4,10" BorderBrush="{{$line2}}" BorderThickness="1" Background="{{$popup}}" Visibility="Collapsed">
-      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <Grid Margin="0,0,12,0">
-          <TextBlock Text="Colours and Tweaks" FontSize="{{$fs13}}" FontWeight="SemiBold" VerticalAlignment="Center"/>
-          <Button x:Name="TweaksClose" HorizontalAlignment="Right" Padding="6" Background="Transparent" BorderThickness="0"><FontIcon Glyph="&#xE711;" FontSize="{{$fs12}}"/></Button>
-        </Grid>
-      <!-- a short map scrolls the panel rather than cutting off its last switch -->
-      <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Padding="0,0,12,0">
-      <StackPanel Spacing="4">
-        <ToggleSwitch x:Name="AnimSwitch" Header="Animations" IsOn="True" FontSize="{{$fs12}}" Margin="0,2,0,0"/>
-        <TextBlock Text="Colours" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,4,0,0"/>
-        <ComboBox x:Name="PaletteBox" HorizontalAlignment="Stretch" SelectedIndex="0">{palettes}</ComboBox>
-        <TextBlock Text="Tile height when hovered" FontSize="{{$fs12}}" Foreground="{{$text3}}" Margin="0,8,0,0"/>
-        <Slider x:Name="LiftSlider" Minimum="0" Maximum="250" Value="100" StepFrequency="5"/>
-        <TextBlock Text="Cushion shading" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>
-        <Slider x:Name="CushionSlider" Minimum="0" Maximum="200" Value="100" StepFrequency="5"/>
-        <TextBlock Text="Tilt" FontSize="{{$fs12}}" Foreground="{{$text3}}"/>
-        <Slider x:Name="TiltSlider" Minimum="0" Maximum="100" Value="55" StepFrequency="1"/>
-      </StackPanel>
-      </ScrollViewer>
-      </Grid>
-    </Border>"##);
+    note_shortcut("Treemap settings", "T", "Control");
 
     format!(
         r##"<Grid {NS} x:Name="Root" RequestedTheme="Dark" Background="{{$ground}}">
@@ -1192,7 +1167,7 @@ pub fn page(drives: &[String]) -> String {
       <Button x:Name="ViewOnly" Visibility="Collapsed" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Waffle: show every type, or only what can be won back"><TextBlock x:Name="ViewOnlyText" Text="Showing: everything" FontSize="{{$fs12}}"/></Button>
       <DropDownButton x:Name="ViewPaint" {drop_off} Padding="10,3,4,3" CornerRadius="{{$rc4}}" ToolTipService.ToolTip="What the colours show"><TextBlock x:Name="ViewPaintText" Text="Colour: Types" FontSize="{{$fs12}}"/>
         <DropDownButton.Flyout>{paint_menu}</DropDownButton.Flyout></DropDownButton>
-      <Button x:Name="MapTweaks" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Colours and Tweaks: the treemap's palette, tile lift, shading and tilt (Ctrl+T)"><Button.KeyboardAccelerators><KeyboardAccelerator Key="T" Modifiers="Control"/></Button.KeyboardAccelerators><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE790;" FontSize="{{$fs12}}"/><TextBlock Text="Tweaks" FontSize="{{$fs12}}"/></StackPanel></Button>
+      <Button x:Name="MapTweaks" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="Open Treemap settings (Ctrl+T)"><Button.KeyboardAccelerators><KeyboardAccelerator Key="T" Modifiers="Control"/></Button.KeyboardAccelerators><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE790;" FontSize="{{$fs12}}"/><TextBlock Text="Tweaks" FontSize="{{$fs12}}"/></StackPanel></Button>
     </StackPanel>
     <Button x:Name="ModeHist" Grid.Column="2" HorizontalAlignment="Right" {mode_off} CornerRadius="{{$rc4}}" ToolTipService.ToolTip="History: compare with earlier scans, or play them as a time-lapse"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE81C;" FontSize="{{$fs12}}"/><TextBlock Text="History" FontSize="{{$fs12}}"/></StackPanel></Button>
     <TextBlock x:Name="MapPath" Grid.Column="1" Text=" " HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="{{$fs12}}" Foreground="{{$text2}}" TextTrimming="CharacterEllipsis"/>
@@ -1203,7 +1178,6 @@ pub fn page(drives: &[String]) -> String {
     <TextBlock x:Name="MapCaption" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,10,14,0" MaxWidth="720" TextWrapping="Wrap" FontSize="{{$fs12}}" Foreground="{{$text1}}"/>
     <Border x:Name="MapKey" IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Padding="10,6" CornerRadius="{{$rc6}}" Background="#B314161E"/>
     {hud}
-    {tweaks}
     {hist}
   </Grid>
 

@@ -258,6 +258,7 @@ pub fn advisor_dir() -> Option<PathBuf> {
 }
 
 pub fn request_log_path() -> Option<PathBuf> {
+    if crate::read_only() { return None; }
     advisor_dir().map(|d| d.join("requests.log"))
 }
 
@@ -266,6 +267,7 @@ pub fn request_log_path() -> Option<PathBuf> {
 /// opened as itself (a link at its name is refused, never followed) with one name only, and
 /// it is renamed through its handle.
 pub(crate) fn log_request(what: &str, body: &str) {
+    if crate::read_only() { return; }
     let Some(d) = advisor_dir() else { return };
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let _ = crate::store::append_checked(&d, "requests.log", 20 << 20, "requests.log.old", |f| {
@@ -275,6 +277,7 @@ pub(crate) fn log_request(what: &str, body: &str) {
 
 /// Empty the request log (and its older halves) through checked handles.
 pub fn clear_request_log() -> std::io::Result<()> {
+    crate::require_write()?;
     let Some(d) = advisor_dir() else { return Ok(()) };
     let mut result = Ok(());
     for name in ["requests.log", "requests.log.old", "requests.old"] {

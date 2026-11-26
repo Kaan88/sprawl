@@ -256,6 +256,7 @@ pub fn rules_dir() -> Option<PathBuf> {
 
 /// Written next to the target and renamed over it, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    crate::require_write()?;
     crate::write_local(path, text.as_bytes(), true)
 }
 
@@ -547,6 +548,7 @@ impl Memory {
     /// is left exactly as it is (the app then writes nothing over it and holds clean-ups, since
     /// its Keep list is unknown).
     pub fn load_app() -> std::io::Result<Memory> {
+        if crate::read_only() { return Ok(Self::fresh()); }
         let appdata = std::env::var_os("APPDATA").ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Sprawl's settings folder is unknown (APPDATA is not set)"))?;
         Self::read_from(Path::new(&appdata), &["Sprawl", "advisor"]).map(|m| m.unwrap_or_else(Memory::fresh))
     }
@@ -616,6 +618,7 @@ impl Memory {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        crate::require_write()?;
         let f = file().ok_or_else(|| std::io::Error::other("APPDATA is not set"))?;
         write_atomic(&f, &toml::to_string(self).map_err(std::io::Error::other)?)
     }

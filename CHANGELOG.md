@@ -3,6 +3,16 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## Unreleased
+
+- Settings: nine sections share one editor with setup, Search, Treemap and Advisor. Program folders stays next to Folders to skip. Long lists have pages and counts; Theme has a preset dropdown, a custom accent colour, text size and table density.
+- Theme: the colour picker has its own Custom accent group so it isn't cut off below the Colour options.
+- Settings: only changed INI keys are saved, errors are reported, and window placement alone no longer enables history or other-drive search. Screenshot mode skips profile migrations and blocks settings writes and related actions.
+- Cleaning: turning privacy cleaners off drops their existing picks and blocks stale cleanup requests. A program's own cleanup command is held back if Sprawl can't verify its scope or if it overlaps a kept path or skipped folder. The review says why. Compress and shrink are unchanged.
+- Cleaning: the review shows the scope for built-in Windows, Git and version-manager commands before they run. Disk Cleanup still lets you choose what to remove in its own window.
+- Search: scope changes rebuild results, and turning recent searches off clears the saved list.
+- History and alerts: all snapshot writers use the same retention limits. Settings reports task scheduling errors without turning the alerts back off.
+
 ## 1.0.9 — 2026-11-24
 
 - Advisor: Compress can find programs and games in libraries outside Program Files and Steam. In Settings, add a library under "Program folders" to check the folders directly inside it even when they have no .exe. Protected folders are still left alone.

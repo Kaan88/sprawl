@@ -323,6 +323,22 @@ impl State {
         self.settings.bool("searchHistory") != Some(false)
     }
 
+    pub(crate) fn search_history_changed(&mut self) {
+        if !self.search_keeps_history() {
+            self.clear_recent_searches();
+        } else {
+            self.search_saved_state();
+        }
+    }
+
+    pub(crate) fn clear_recent_searches(&mut self) {
+        if crate::settings::read_only() { return; }
+        let h = self.search.history.get_or_insert_with(sq::history_load);
+        h.recent.clear();
+        sq::history_save(h);
+        self.search_saved_state();
+    }
+
     /// A search was used (Enter to the results, a result opened or shown in the tree): it
     /// goes first among the recent ones, unless the history is off.
     pub(crate) fn search_note(&mut self) {
@@ -344,7 +360,8 @@ impl State {
         }
         let Ok(host) = find::<Border>(&self.root, "SearchSaved") else { return };
         let keep_on = self.search_keeps_history();
-        let h = self.search.history.get_or_insert_with(sq::history_load).clone();
+        let mut h = self.search.history.get_or_insert_with(sq::history_load).clone();
+        if !keep_on { h.recent.clear(); }
         let q = self.search.query.trim().to_string();
         let pinned = h.is_pinned(&q);
         let shape = format!("{}|{}|{}|{keep_on}", h.to_text(), q.is_empty(), pinned);
@@ -430,6 +447,17 @@ impl State {
     }
 
     fn search_saved_pick(&mut self, act: SavedAct) {
+        if matches!(act, SavedAct::Clear) {
+            return self.clear_recent_searches();
+        }
+        if matches!(act, SavedAct::Keep) {
+            let mut staged = self.settings.clone();
+            staged.set_bool("searchHistory", !self.search_keeps_history());
+            return match staged.save() {
+                Ok(()) => { self.settings = staged; self.search_history_changed(); }
+                Err(e) => text(&self.root, "SearchInfo", &format!("Couldn't save search history preference: {e}")),
+            };
+        }
         let h = self.search.history.get_or_insert_with(sq::history_load);
         match act {
             SavedAct::Use(q) => {
@@ -439,17 +467,7 @@ impl State {
             }
             SavedAct::Pin(q) => h.pin(&q),
             SavedAct::Unpin(q) => h.unpin(&q),
-            SavedAct::Clear => h.recent.clear(),
-            SavedAct::Keep => {
-                let on = !self.search_keeps_history();
-                self.settings.set_bool("searchHistory", on);
-                self.settings.save();
-                // switched off: what was kept goes (pinned searches stay)
-                if !on {
-                    let h = self.search.history.get_or_insert_with(sq::history_load);
-                    h.recent.clear();
-                }
-            }
+            SavedAct::Clear | SavedAct::Keep => return,
             SavedAct::Nothing => return,
         }
         if let Some(h) = &self.search.history {

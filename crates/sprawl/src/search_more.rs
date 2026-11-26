@@ -370,7 +370,26 @@ pub(crate) fn drives_to_read(fixed: &[String], cur: Option<&str>, every: bool, o
 }
 
 fn set_list(s: &str) -> BTreeSet<String> {
-    s.split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_string).collect()
+    s.split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_ascii_uppercase).collect()
+}
+
+/// Reconcile the data already held by Search before starting new work. Dropping a saved
+/// scan's receiver ensures an old load cannot publish after a scope change.
+fn reconcile_scope(m: &mut More, on: BTreeSet<String>, off: BTreeSet<String>) {
+    let disabled: Vec<_> = m.drives_on.difference(&on).cloned().collect();
+    for d in disabled { more_drop_drive(m, &d); }
+    m.drives_on = on;
+    m.drives_off = off;
+    m.reading.retain(|r| r.drive.is_some());
+    for p in &mut m.places {
+        if p.as_ref().is_some_and(|p| p.drive.is_none()) { *p = None; }
+    }
+    m.snapshots_tried = false;
+    m.running = None;
+    m.hits.clear();
+    m.all = Arc::new(Vec::new());
+    m.total = 0;
+    m.bump();
 }
 
 impl State {
@@ -388,27 +407,24 @@ impl State {
         Self::fixed_drives()
     }
 
-    /// Settings changed the drives Search may read: read them again when Search opens next.
+    /// The Settings dialog and the Search menu both reconcile the same live scope.
     pub(crate) fn more_settings_changed(&mut self) {
-        self.search.more.remembered = false;
-        if self.view == crate::state::View::Search {
+        let on = set_list(self.settings.get("searchDrivesOn").unwrap_or(""));
+        let off = set_list(self.settings.get("searchDrivesOff").unwrap_or(""));
+        self.search.more.remembered = true;
+        reconcile_scope(&mut self.search.more, on, off);
+        self.search.stamp += 1;
+        self.cancel_prep();
+        if self.view == crate::state::View::Search && !crate::settings::read_only() {
             self.more_open();
+            self.search_run();
         }
-    }
-
-    fn more_remember(&mut self) {
-        let m = &self.search.more;
-        let on: Vec<&str> = m.drives_on.iter().map(String::as_str).collect();
-        let off: Vec<&str> = m.drives_off.iter().map(String::as_str).collect();
-        let (on, off) = (on.join(","), off.join(","));
-        self.settings.set("searchDrivesOn", on);
-        self.settings.set("searchDrivesOff", off);
-        self.settings.save();
     }
 
     /// The tab opened: read the drives switched on, and load the saved scans (once a session)
     /// that the current scan and those drives don't cover.
     pub(crate) fn more_open(&mut self) {
+        if crate::settings::read_only() { return; }
         if !self.search.more.remembered {
             self.search.more.remembered = true;
             let m = &mut self.search.more;
@@ -417,7 +433,8 @@ impl State {
         }
         self.more_forget_covered();
         self.more_all_drives();
-        if self.search.more.snapshots_tried || self.settings.bool("snapshots") != Some(true) {
+        let count = sprawl_advisor::tuning::get(&sprawl_advisor::tuning::SEARCH_SNAPSHOTS) as usize;
+        if self.search.more.snapshots_tried || self.settings.bool("snapshots") != Some(true) || count == 0 {
             self.search.more.snapshots_tried = true;
             self.render_more();
             return;
@@ -441,7 +458,7 @@ impl State {
             }
             newest.push(e);
         }
-        newest.truncate(sprawl_advisor::tuning::get(&sprawl_advisor::tuning::SEARCH_SNAPSHOTS) as usize);
+        newest.truncate(count);
         for e in newest {
             let (tx, rx) = channel();
             let label = format!("{} (saved {})", e.root.display(), fmt_time(e.taken));
@@ -501,21 +518,23 @@ impl State {
     /// A drive toggle: switched on, it is read; switched off, its read stops (what it would
     /// have found is dropped) and its place goes.
     pub(crate) fn more_drive(&mut self, letter: char) {
+        if crate::settings::read_only() { return; }
         let root = format!("{letter}:\\");
-        let m = &mut self.search.more;
-        if m.drives_on.remove(&root) {
-            m.drives_off.insert(root.clone());
-            more_drop_drive(m, &root);
-            self.search.stamp += 1;
-            self.more_remember();
-            self.search_run();
-            self.render_more();
-            return;
+        let mut on = self.search.more.drives_on.clone();
+        let mut off = self.search.more.drives_off.clone();
+        if on.remove(&root) {
+            off.insert(root);
+        } else {
+            off.remove(&root);
+            on.insert(root);
         }
-        m.drives_off.remove(&root);
-        m.drives_on.insert(root.clone());
-        self.more_remember();
-        self.more_read(root);
+        let mut staged = self.settings.clone();
+        staged.set("searchDrivesOn", on.into_iter().collect::<Vec<_>>().join(","));
+        staged.set("searchDrivesOff", off.into_iter().collect::<Vec<_>>().join(","));
+        match staged.save() {
+            Ok(()) => { self.settings = staged; self.more_settings_changed(); }
+            Err(e) => crate::state::text(&self.root, "SearchInfo", &format!("Couldn't save Search scope: {e}")),
+        }
     }
 
     /// Read a drive again (Refresh, or Try again after a failure).
@@ -876,7 +895,8 @@ impl State {
             None => String::new(),
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="{height}" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{saved}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            height = crate::state::row_height(),
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = crate::tables::col_defs(&self.search_cols()),
             runs = self.name_runs(&name),
@@ -1128,6 +1148,25 @@ mod tests {
 
     fn place(t: &Tree, drive: &str) -> Option<Arc<Place>> {
         Some(Arc::new(Place { ix: Arc::new(CompactIndex::build(t)), as_of: None, read_at: SystemTime::now(), errors: 0, drive: Some(drive.into()) }))
+    }
+
+    #[test]
+    fn a_scope_change_cancels_removed_drives_and_discards_old_saved_scans() {
+        let t = tree("D:\\", &[("one", false, 1, 1)]);
+        let mut m = More::default();
+        m.drives_on = set_list("d:\\,E:\\");
+        m.places = vec![place(&t, "D:\\"), place(&t, "E:\\")];
+        let (tx, rx) = channel();
+        let (saved_tx, saved_rx) = channel();
+        let progress = sprawl_core::Progress::new();
+        m.reading.push(Reading { label: "D".into(), drive: Some("D:\\".into()), progress: Some(progress.clone()), rx });
+        m.reading.push(Reading { label: "Saved".into(), drive: None, progress: None, rx: saved_rx });
+        m.snapshots_tried = true;
+        reconcile_scope(&mut m, set_list("E:\\"), set_list("D:\\"));
+        assert!(progress.is_cancelled() && m.places[0].is_none() && m.places[1].is_some());
+        assert!(!m.snapshots_tried && m.reading.is_empty());
+        assert!(tx.send(Err("old drive".into())).is_err());
+        assert!(saved_tx.send(Err("old snapshot".into())).is_err());
     }
 
     #[test]

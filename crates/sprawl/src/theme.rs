@@ -40,6 +40,10 @@ pub(crate) fn light() -> bool {
 /// Windows' "Choose your app mode" (Settings > Personalisation > Colours), read through the
 /// registry API: no program is started for it (a `reg.exe` beside a per-user copy run as
 /// administrator would have been; Fable 1.0.4-1.0.5 P3-5), and the value itself is read.
+#[cfg(test)]
+fn windows_uses_light() -> bool { false }
+
+#[cfg(not(test))]
 fn windows_uses_light() -> bool {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::ERROR_SUCCESS;

@@ -35,6 +35,7 @@ pub(crate) struct Look {
     pub small_text: SmallText,
     pub ticks: Ticks,
     pub text: TextSizes,
+    pub density: Density,
     pub backdrop: Backdrop,
     pub strength: Strength,
     pub risks: Risks,
@@ -57,6 +58,7 @@ pub(crate) enum Accent {
     Iris,
     Violet,
     Sunset,
+    Custom(u32),
 }
 
 /// The page's surfaces: an opaque ground, a card above it, a row inside the card and a popup
@@ -310,7 +312,19 @@ pub(crate) enum TextSizes {
     /// Today's sizes, kept as they are.
     #[default]
     AsWritten,
+    Large,
+    ExtraLarge,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Density {
+    #[default]
+    Compact,
+    Comfortable,
+    Roomy,
+}
+
+named!(Density { Compact => "compact", Comfortable => "comfortable", Roomy => "roomy" });
 
 /// A token's name, what it stands for, and its value on each page: `value` for dark, `light`
 /// for the light page.
@@ -602,6 +616,7 @@ impl Accent {
             Accent::Iris => if light { 0xFF4F_46E5 } else { 0xFFA5_B4FC },
             Accent::Violet => if light { 0xFF7C_3AED } else { 0xFFC4_A5FF },
             Accent::Sunset => if light { 0xFFC2_410C } else { 0xFFFF_B38A },
+            Accent::Custom(rgb) => 0xFF00_0000 | (rgb & 0x00FF_FFFF),
         }
     }
 
@@ -613,6 +628,7 @@ impl Accent {
             Accent::Iris => "iris",
             Accent::Violet => "violet",
             Accent::Sunset => "sunset",
+            Accent::Custom(_) => "custom",
         }
     }
 
@@ -623,8 +639,14 @@ impl Accent {
             "iris" => Accent::Iris,
             "violet" => Accent::Violet,
             "sunset" => Accent::Sunset,
-            _ => return None,
+            _ => return Self::from_rgb(name),
         })
+    }
+
+    pub(crate) fn from_rgb(value: &str) -> Option<Self> {
+        let h = value.strip_prefix('#')?;
+        if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+        Some(Self::Custom(u32::from_str_radix(h, 16).ok()?))
     }
 }
 
@@ -965,18 +987,35 @@ impl TextSizes {
     fn name(self) -> &'static str {
         match self {
             TextSizes::AsWritten => "aswritten",
+            TextSizes::Large => "110",
+            TextSizes::ExtraLarge => "125",
         }
     }
 
     fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "aswritten" => TextSizes::AsWritten,
+            "110" => TextSizes::Large,
+            "125" => TextSizes::ExtraLarge,
             _ => return None,
         })
+    }
+
+    fn scale(self) -> f64 {
+        match self { Self::AsWritten => 1.0, Self::Large => 1.10, Self::ExtraLarge => 1.25 }
     }
 }
 
 impl Look {
+    pub(crate) fn row_height(&self) -> f64 {
+        let base: f64 = match self.density { Density::Compact => 24.0, Density::Comfortable => 28.0, Density::Roomy => 32.0 };
+        (base * self.text.scale()).ceil()
+    }
+
+    pub(crate) fn row_glyph_width(&self, width: f64) -> f64 {
+        (width * self.text.scale()).ceil()
+    }
+
     /// Sprawl's own look before the user chose a new default (2026-11-23): the tests that check
     /// one option's values start from it, so they keep checking what they were written for.
     #[cfg(test)]
@@ -990,8 +1029,8 @@ impl Look {
     /// The options as one line, for Copy theme: `accent=iris;surfaces=slate;...`, lowercase.
     pub(crate) fn to_kv(&self) -> String {
         format!(
-            "accent={};surfaces={};contrast={};folders={};corners={};motion={};bars={};smalltext={};ticks={};text={};backdrop={};strength={};risks={};chips={};tabs={};controls={};selection={};press={};finish={}",
-            self.accent.name(),
+            "accent={};surfaces={};contrast={};folders={};corners={};motion={};bars={};smalltext={};ticks={};text={};backdrop={};strength={};risks={};chips={};tabs={};controls={};selection={};press={};finish={};density={}",
+            match self.accent { Accent::Custom(rgb) => format!("#{:06x}", rgb & 0x00FF_FFFF), other => other.name().to_string() },
             self.surfaces.name(),
             self.contrast.name(),
             self.folders.name(),
@@ -1010,6 +1049,7 @@ impl Look {
             self.selection.name(),
             self.press.name(),
             self.finish.name(),
+            self.density.name(),
         )
     }
 
@@ -1070,6 +1110,9 @@ impl Look {
                     if let Some(v) = TextSizes::from_name(value) {
                         look.text = v;
                     }
+                }
+                "density" => {
+                    if let Some(v) = Density::from_name(value) { look.density = v; }
                 }
                 "backdrop" => {
                     if let Some(v) = Backdrop::from_name(value) {
@@ -1259,6 +1302,11 @@ pub(crate) fn table(look: &Look, light: bool) -> HashMap<&'static str, String> {
     for token in TOKENS {
         if let Some(n) = look.corners.of(token.name) {
             t.insert(token.name, n.to_string());
+        }
+        if look.text != TextSizes::AsWritten && token.name.starts_with("fs") {
+            if let Ok(n) = token.value.parse::<f64>() {
+                t.insert(token.name, format!("{:.2}", n * look.text.scale()));
+            }
         }
     }
     // a chip's corner: the pill, a soft corner, or the control's own (all of them square when
@@ -1875,7 +1923,7 @@ mod tests {
     fn a_look_survives_a_round_trip_and_ignores_junk() {
         assert_eq!(
             Look::default().to_kv(),
-            "accent=windows;surfaces=tinted;contrast=normal;folders=classic;corners=six10;motion=subtle;bars=solid;smalltext=grey12;ticks=square;text=aswritten;backdrop=solid;strength=aswindows;risks=standard;chips=rect;tabs=underline;controls=outlined;selection=fill;press=liftsink;finish=flat"
+            "accent=windows;surfaces=tinted;contrast=normal;folders=classic;corners=six10;motion=subtle;bars=solid;smalltext=grey12;ticks=square;text=aswritten;backdrop=solid;strength=aswindows;risks=standard;chips=rect;tabs=underline;controls=outlined;selection=fill;press=liftsink;finish=flat;density=compact"
         );
         for accent in [Accent::Windows, Accent::Azure, Accent::Iris, Accent::Violet, Accent::Sunset] {
             for surfaces in [Surfaces::Ink, Surfaces::Graphite, Surfaces::Tinted, Surfaces::Black, Surfaces::Slate, Surfaces::WarmGrey] {
@@ -1925,6 +1973,22 @@ mod tests {
             got,
             Look { strength: Strength::Stronger, risks: Risks::Safe, chips: Chips::Rect, tabs: Tabs::Pills, controls: Controls::Stock, selection: Selection::Both, press: Press::Fade, finish: Finish::Flat, ..Look::default() }
         );
+    }
+
+    #[test]
+    fn custom_colour_type_and_density_round_trip_without_moving_defaults() {
+        let base = Look::from_kv("accent=windows;text=aswritten");
+        assert_eq!((base.row_height(), base.row_glyph_width(12.0)), (24.0, 12.0));
+        let look = Look::from_kv("accent=#1964b2;text=125;density=comfortable");
+        assert_eq!(look.accent, Accent::Custom(0x1964b2));
+        assert_eq!(Look::from_kv(&look.to_kv()), look);
+        assert_eq!(look.row_height(), 35.0);
+        for light in [false, true] {
+            assert_eq!(table(&base, light)["fs12"], "12");
+            assert_eq!(table(&look, light)["fs12"], "15.00");
+            assert_eq!(table(&look, light)["accent"], "#FF1964B2");
+        }
+        assert_eq!(Look::from_kv("accent=#1964b266").accent, Accent::Windows);
     }
 
     /// The gradient's far stop is six digits: the light page's rewrite leaves it alone.

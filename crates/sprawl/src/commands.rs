@@ -6,8 +6,7 @@ use std::path::PathBuf;
 use sprawl_core::ROOT;
 
 use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::Selector;
-use crate::bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
-use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition, ToggleSwitch};
+use crate::bindings::Microsoft::UI::Xaml::Controls::{ColumnDefinition, RowDefinition};
 use crate::bindings::Microsoft::UI::Xaml::{FocusState, GridLength, GridUnitType, UIElement, Visibility};
 use crate::format::{file_type, stamp, user_dir};
 use crate::state::{find, text, State, Units, View};
@@ -246,13 +245,7 @@ impl State {
             }
             "ModeHist" | "mHistory" => self.hist_toggle(),
             "mTweaks" | "MapTweaks" => {
-                if !self.tweaks_apply() {
-                    return;
-                }
-                if let Ok(p) = find::<UIElement>(&self.root, "Tweaks") {
-                    let shown = p.Visibility().map(|v| v == Visibility::Visible).unwrap_or(false);
-                    let _ = p.SetVisibility(if shown { Visibility::Collapsed } else { Visibility::Visible });
-                }
+                self.settings_open_at("map");
             }
             "mAdmin" if self.advisor.cleanup.running.is_some() => text(&self.root, "FootLeft", "A clean-up is running: restart as administrator when it has finished."),
             "mAdmin" => {
@@ -585,7 +578,7 @@ impl State {
                 }
                 self.render_map();
                 self.settings.set("aa", name);
-                self.settings.save();
+                self.persist_settings();
             }
             "oPulses" => {
                 self.pulses_on = crate::menubar::checked(&self.root, name).unwrap_or(true);
@@ -610,7 +603,7 @@ impl State {
                     self.wizard_open();
                 } else {
                     self.settings.set_bool("wizard_done", true);
-                    self.settings.save();
+                    self.persist_settings();
                     text(&self.root, "FootLeft", "You can set things up any time under Options > Settings.");
                 }
             }
@@ -622,7 +615,7 @@ impl State {
                 };
                 self.set_mode(mode);
                 self.settings.set("view", name);
-                self.settings.save();
+                self.persist_settings();
             }
             "TabTree" => self.set_view(View::Tree),
             "TabFiles" => self.set_view(View::Files),
@@ -647,28 +640,25 @@ impl State {
             "TabAbout" => self.set_view(View::About),
             _ => {}
         }
-        if name.starts_with('o') || name.starts_with('u') {
-            self.save_settings();
+        if TOGGLES.contains(&name) {
+            if let Ok(on) = crate::menubar::checked(&self.root, name) {
+                self.settings.set_bool(name, on);
+                self.persist_settings();
+            }
+        } else if UNITS.contains(&name) {
+            self.settings.set("units", name);
+            self.persist_settings();
         }
     }
 
     // ------------------------------------------------------------ settings
 
-    pub(crate) fn save_settings(&mut self) {
-        for &t in TOGGLES {
-            if let Ok(on) = crate::menubar::checked(&self.root, t) {
-                self.settings.set_bool(t, on);
-            }
+    pub(crate) fn persist_settings(&mut self) {
+        if crate::settings::read_only() { return; }
+        if let Err(e) = self.settings.save() {
+            eprintln!("Couldn't save Settings: {e}");
+            text(&self.root, "FootLeft", &format!("Couldn't save Settings: {e}"));
         }
-        if let Some(u) = UNITS.iter().find(|u| crate::menubar::checked(&self.root, u).unwrap_or(false)) {
-            self.settings.set("units", u);
-        }
-        self.settings.set("palette", paint::palette());
-        self.settings.set("lift", self.map.scene.lift_scale);
-        self.settings.set("cushion", self.map.cushion_strength);
-        self.settings.set("tilt", self.map.scene.tilt_amount);
-        self.settings.set_bool("animate", self.map.scene.animate);
-        self.settings.save();
     }
 
     /// Put the saved options back (at start-up).
@@ -678,15 +668,6 @@ impl State {
         sprawl_advisor::OFFLINE.store(self.settings.bool("offline") == Some(true), std::sync::atomic::Ordering::Relaxed);
         // the administrator switches, as their store says now
         self.admin_flags();
-        // privacy cleaners switched on or off: the report and the tab's own read again
-        let privacy = self.privacy_on();
-        if self.advisor.report.as_ref().is_some_and(|r| r.privacy_on != privacy) || self.advisor.cl.own.as_ref().is_some_and(|o| o.report.privacy_on != privacy) {
-            *self.advisor.cl.roots.borrow_mut() = None;
-            self.advisor.cl.own = None;
-            if self.tree.is_some() {
-                self.advisor_start();
-            }
-        }
         for k in sprawl_advisor::tuning::ALL {
             if let Some(v) = self.settings.num(k.key).filter(|v| v.is_finite() && *v >= 0.0) {
                 sprawl_advisor::tuning::set(k, v as u64);
@@ -694,18 +675,8 @@ impl State {
         }
         // "Search every drive when Search opens" (before 0.2.6) became the drives ticked in
         // Settings > Search: on, it ticks every fixed drive not turned off, once
-        if self.settings.bool("oSearchDrives") == Some(true) {
-            let list = |k: &str| self.settings.get(k).unwrap_or("").split(',').map(str::trim).filter(|d| !d.is_empty()).map(str::to_string).collect::<Vec<_>>();
-            let off = list("searchDrivesOff");
-            let mut on = list("searchDrivesOn");
-            for d in State::fixed_drives_pub() {
-                if !off.contains(&d) && !on.contains(&d) {
-                    on.push(d);
-                }
-            }
-            self.settings.set("searchDrivesOn", on.join(","));
-            self.settings.set_bool("oSearchDrives", false);
-            self.settings.save();
+        if !crate::settings::read_only() && self.settings.migrate_search(State::fixed_drives_pub) {
+            self.persist_settings();
         }
         let s = &self.settings;
         let lift = s.num("lift").unwrap_or(1.0) as f32;
@@ -722,20 +693,6 @@ impl State {
         self.map.scene.tilt_amount = tilt;
         self.map.scene.animate = animate;
         paint::set_palette(palette);
-        let set_range = |name: &str, v: f64| {
-            if let Ok(r) = find::<RangeBase>(&self.root, name) {
-                let _ = r.SetValue(v);
-            }
-        };
-        set_range("LiftSlider", lift as f64 * 100.0);
-        set_range("CushionSlider", cushion as f64 * 100.0);
-        set_range("TiltSlider", tilt as f64 / 0.8 * 100.0);
-        if let Ok(t) = find::<ToggleSwitch>(&self.root, "AnimSwitch") {
-            let _ = t.SetIsOn(animate);
-        }
-        if let Ok(b) = find::<Selector>(&self.root, "PaletteBox") {
-            let _ = b.SetSelectedIndex(palette as i32);
-        }
         for (t, on) in toggles {
             if let Ok(was) = crate::menubar::checked(&self.root, t) {
                 if was != on {
@@ -765,18 +722,17 @@ impl State {
         }
     }
 
-    /// A slider, switch or list in the Colours and Tweaks panel changed.
-    pub(crate) fn tweak(&mut self, name: &str, v: f64) {
+    pub(crate) fn apply_map_setting(&mut self, name: &str, v: f64) {
         match name {
-            "LiftSlider" => self.map.scene.lift_scale = (v / 100.0) as f32,
-            "CushionSlider" => {
+            "lift" => self.map.scene.lift_scale = (v / 100.0) as f32,
+            "cushion" => {
                 self.map.cushion_strength = (v / 100.0) as f32;
                 let on = crate::menubar::checked(&self.root, "oCushion").unwrap_or(true);
                 self.map.scene.cushion = if on { self.map.cushion_strength } else { 0.0 };
             }
-            "TiltSlider" => self.map.scene.tilt_amount = (v / 100.0 * 0.8) as f32,
-            "AnimSwitch" => self.map.scene.animate = v > 0.5,
-            "PaletteBox" => {
+            "tilt" => self.map.scene.tilt_amount = (v / 100.0 * 0.8) as f32,
+            "animate" => self.map.scene.animate = v > 0.5,
+            "palette" => {
                 paint::set_palette(v as usize);
                 // Colours are baked into the tiles and the tables.
                 self.map.scene.clear();
@@ -786,7 +742,6 @@ impl State {
             _ => return,
         }
         self.render_map();
-        self.save_settings();
     }
 
     pub(crate) fn save_text(&self, base: &str, s: &str) {
@@ -962,7 +917,7 @@ impl State {
     pub(crate) fn save_window_place(&mut self) {
         if let Some(p) = win32::window_place(self.hwnd) {
             self.settings.set("window", p);
-            self.settings.save();
+            self.persist_settings();
         }
     }
 

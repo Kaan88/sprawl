@@ -11,7 +11,7 @@
 //! - anything created or changed after the scan stays ([`Spare::since`]), and so does anything
 //!   the user chose to keep ([`Spare::keep`]), at any depth; both are counted.
 //!
-//! Tool commands (npm, pip, DISM...) run as a hidden process from System32, their output kept.
+//! External clean-ups require a built-in rule and a reviewed, checked scope.
 
 use std::io::Seek;
 use std::path::{Path, PathBuf};
@@ -23,12 +23,16 @@ use crate::Finding;
 
 pub use crate::finding::Action;
 
+#[path = "external_tool.rs"]
+mod external_tool;
+pub use external_tool::{review_external, run_reviewed_external, ReviewedExternal};
+
 /// A finding's action, and whether it needs administrator rights. The action is the one the
 /// code that wrote the finding gave it ([`Finding::set_action`]); command text is never read
 /// back. A tool command runs only when it comes from the built-in pack.
 pub fn action(f: &Finding) -> Option<(Action, bool)> {
     let a = f.action.clone()?;
-    if matches!(a, Action::Tool { .. }) && !(f.trusted && f.builtin) {
+    if matches!(a, Action::Tool { .. }) && !(f.trusted && f.builtin && matches!(f.source, crate::finding::Source::Rule(_))) {
         return None;
     }
     // a privacy part's set: only as the privacy module made it, for its own part
@@ -190,8 +194,8 @@ pub struct Outcome {
     pub registry: Option<crate::regclean::Done>,
 }
 
-/// What a clean-up leaves alone besides the never-list. Tool commands can't honour it: the
-/// program decides what it removes.
+/// What a clean-up leaves alone besides the never-list. External clean-ups can't spare
+/// individual files, so their entire scope must be clear of kept and skipped paths.
 #[derive(Clone, Default)]
 pub struct Spare {
     /// When the scan began: anything created or changed after it stays.
@@ -420,46 +424,7 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
                 }
             }
         }
-        // git's clean-ups: the repository's config checked again, and the command exactly the
-        // one Sprawl builds for this folder (Fable 1.0.4-1.0.5 P1-2)
-        Action::Tool { command } if crate::devgit::is_git_command(command) => match crate::devgit::recheck(path, command) {
-            Ok(()) => tool(command, stop, &mut o),
-            Err(why) => o.problem(path, format!("left alone: {why}")),
-        },
-        Action::Tool { command } => match package_tool(command) {
-            None => tool(command, stop, &mut o),
-            Some(Err(why)) => o.problem(path, format!("left alone: {why}")),
-            Some(Ok(scoped)) => 'tool: {
-                // the reviewed folder, and the folder in it the tool writes to while it is asked
-                // (npm's logs), held through both commands (Astra 1.0.2 round 4, S1 #4)
-                let before = match hold_before(path, &scoped) {
-                    Ok(h) => h,
-                    Err(why) => {
-                        o.problem(path, format!("left alone: {why}"));
-                        break 'tool;
-                    }
-                };
-                let env = scoped.env(path);
-                let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
-                let mut asked = Outcome::default();
-                let answer = tool_with(scoped.probe, stop, &mut asked, &env);
-                if asked.stopped {
-                    o.stopped = true;
-                } else if let Some(why) = asked.problems.first() {
-                    o.problem(path, format!("left alone: where it keeps its cache couldn't be asked ({why})"));
-                } else {
-                    match answer.ok_or_else(|| "its answer about where it keeps its cache was too long or couldn't be read whole".to_string())
-                        .and_then(|text| scope_matches(path, &scoped, &text.lines().map(str::to_string).collect::<Vec<_>>())) {
-                        Ok(held) => {
-                            tool_with(scoped.run, stop, &mut o, &env);
-                            drop(held);
-                        }
-                        Err(why) => o.problem(path, format!("left alone: {why}")),
-                    }
-                }
-                drop(before);
-            }
-        },
+        Action::Tool { .. } => o.problem(path, "left alone: an external cleanup needs its built-in rule and a reviewed scope"),
         Action::Set { part, files } => match (crate::privacy::part(part), crate::privacy::Places::current()) {
             (Some(p), Some(places)) if same_path(path, files.first().map_or(Path::new(""), |f| f.as_path())) => {
                 let now = crate::procs::running();
@@ -490,6 +455,94 @@ pub fn run_with(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mu
         o.stopped = true;
     }
     o
+}
+
+/// A program's own clean-up, not either of the in-place remedies.
+pub fn is_external_cleanup(action: &Action) -> bool {
+    matches!(action, Action::Tool { .. }) && !crate::remedies::in_place(action)
+}
+
+/// A snapshot of the two user protections. Add what was already kept at review/start:
+/// another window can add protection but can't make this run forget protections it saw.
+pub struct ToolProtection {
+    kept: Vec<PathBuf>,
+    skipped: Vec<PathBuf>,
+}
+
+impl ToolProtection {
+    pub fn load(kept: &[PathBuf]) -> Result<Self, String> {
+        crate::require_write().map_err(|e| e.to_string())?;
+        let memory = crate::memory::Memory::load_checked()
+            .map_err(|e| format!("your Keep list couldn't be read ({e})"))?;
+        let mut kept = [kept, &memory.kept_paths()].concat();
+        kept.sort_unstable();
+        kept.dedup();
+        let skipped = crate::exclusions::for_external_cleanup()
+            .map_err(|e| format!("Folders to skip couldn't be read ({e})"))?;
+        Ok(Self { kept, skipped })
+    }
+
+    fn check(&self, root: &Path) -> Result<(), String> {
+        let scope = tool_path(root);
+        if let Some(kept) = self.kept.iter().find(|p| {
+            let p = tool_path(p);
+            if !p.is_absolute() || p.components().any(|part| part == std::path::Component::ParentDir) { return true; }
+            // Hold the containing scope at the first ambiguous spelling rather than ignoring
+            // the Keep (e.g. an 8.3 alias, a stream name, or a trailing dot/space).
+            let mut prefix = PathBuf::new();
+            for part in p.components() {
+                if let std::path::Component::Normal(s) = part {
+                    let s = s.to_string_lossy();
+                    if s.contains(['~', ':']) || s.ends_with(['.', ' ']) { break; }
+                }
+                prefix.push(part.as_os_str());
+            }
+            crate::finding::within(&scope, &prefix) || crate::finding::within(&prefix, &scope)
+        }) {
+            return Err(format!("the clean-up could reach a path on your Keep list: {}", kept.display()));
+        }
+        if crate::exclusions::intersects(&scope, &self.skipped) {
+            return Err("the clean-up could reach a folder in Settings > Scanning > Folders to skip".into());
+        }
+        Ok(())
+    }
+
+    fn check_cache(&self, root: &Path) -> Result<(), String> {
+        self.check(root)?;
+        let (held, _) = hold_place(root).map_err(|e| format!("Sprawl couldn't verify the clean-up folder ({e})"))?;
+        self.check(&held.path)
+    }
+}
+
+fn tool_path(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy().replace('/', "\\");
+    // Normalize verbatim local paths without stripping the drive root's separator.
+    PathBuf::from(s.strip_prefix(r"\\?\").filter(|p| p.as_bytes().get(1..3) == Some(b":\\")).unwrap_or(&s))
+}
+
+fn run_package(
+    path: &Path, binding: PackageTool, stop: &AtomicBool, out: &mut Outcome,
+    mut policy: impl FnMut() -> Result<ToolProtection, String>,
+    mut invoke: impl FnMut(&str, &AtomicBool, &mut Outcome, &[(&str, &std::ffi::OsStr)]) -> Option<String>,
+) -> Result<(), String> {
+    if stop.load(Ordering::Relaxed) { return Ok(()); }
+    // Before even asking the tool: npm writes its logs as it starts, including in the probe.
+    let before = hold_before(path, &binding, &policy()?)?;
+    let root = &before[0].0.path;
+    let vars = binding.env(root);
+    let env: Vec<_> = vars.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
+    let mut asked = Outcome::default();
+    let answer = invoke(binding.probe, stop, &mut asked, &env);
+    if asked.stopped || stop.load(Ordering::Relaxed) { out.stopped = true; return Ok(()); }
+    if let Some(why) = asked.problems.first() { return Err(format!("Sprawl couldn't check where the program keeps its cache ({why})")); }
+    let answer = answer.ok_or("Sprawl couldn't read the program's full answer about where it keeps its cache")?;
+    let held = scope_matches(root, &binding, &answer.lines().map(str::to_string).collect::<Vec<_>>())?;
+    // Read both protections again at the launch boundary; a probe can take a while.
+    let current = policy()?;
+    current.check(path)?;
+    for (dir, _) in before.iter().chain(&held) { current.check(&dir.path)?; }
+    if !stop.load(Ordering::Relaxed) { invoke(binding.run, stop, out, &env); }
+    Ok(())
 }
 
 /// A package manager's clean-up command, with how to ask it where its cache is. Both commands
@@ -583,10 +636,12 @@ fn hold_place(place: &Path) -> std::io::Result<Held> {
 
 /// The reviewed folder, and the folder in it the tool writes to while it is asked (made when
 /// it isn't there: a plain folder Sprawl made can't lead elsewhere), each held as itself.
-fn hold_before(path: &Path, tool: &PackageTool) -> Result<Vec<Held>, String> {
+fn hold_before(path: &Path, tool: &PackageTool, policy: &ToolProtection) -> Result<Vec<Held>, String> {
+    policy.check(path)?;
     let mut held = vec![hold_place(path).map_err(|e| format!("the folder reviewed couldn't be held ({e})"))?];
+    policy.check(&held[0].0.path)?;
     if let Some(name) = tool.writes {
-        let inner = path.join(name);
+        let inner = held[0].0.path.join(name);
         match std::fs::create_dir(&inner) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -598,8 +653,8 @@ fn hold_before(path: &Path, tool: &PackageTool) -> Result<Vec<Held>, String> {
 }
 
 /// Whether the place the tool says it would clear (its whole answer) is the reviewed folder
-/// `path` (or inside it, where that is the tool's layout), local, not skipped in Settings, and
-/// no link. That place, held (see [`hold_place`]).
+/// `path`, local, and not a link. Return that place held (see [`hold_place`]);
+/// the caller checks the current Keep and skip policy on the held path.
 fn scope_matches(path: &Path, tool: &PackageTool, output: &[String]) -> Result<Vec<Held>, String> {
     let lines: Vec<&str> = output.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
     let unknown = || "where it keeps its cache couldn't be told from its answer".to_string();
@@ -613,13 +668,11 @@ fn scope_matches(path: &Path, tool: &PackageTool, output: &[String]) -> Result<V
             _ => return Err(unknown()),
         },
     };
-    let skipped = crate::exclusions::configured();
     let reviewed = lower(path);
     let mut held = Vec::new();
     for place in &places {
         if !place.is_absolute() { return Err(unknown()); }
         if let Err(e) = sprawl_core::local::lexical(place) { return Err(format!("its cache is at {} ({e})", place.display())); }
-        if crate::exclusions::intersects(place, &skipped) { return Err(format!("its cache at {} is in a folder skipped in Settings > Scanning", place.display())); }
         let here = lower(place);
         if here != reviewed { return Err(format!("it keeps its cache at {}, not in the folder reviewed", place.display())); }
         // the place itself: every folder down to it opened as itself (no link, no share), held
@@ -2681,6 +2734,21 @@ fn tool(command: &str, stop: &AtomicBool, o: &mut Outcome) {
     tool_with(command, stop, o, &[]);
 }
 
+/// Uncompress only these exact targets, already pinned by the in-place remedy.
+/// It cannot use the generic external cleanup branch or pass an arbitrary command.
+pub(crate) fn uncompress_batch(pinned: &[sprawl_core::local::Directory], directories: bool) -> Outcome {
+    let mut out = Outcome::default();
+    let Some(first) = pinned.first() else { return out; };
+    if let Err(e) = crate::require_write() {
+        out.problem(&first.path, e);
+        return out;
+    }
+    let args = pinned.iter().map(|p| crate::rules::ps_quote(&p.path.display().to_string())).collect::<Vec<_>>().join(" ");
+    let command = format!("compact.exe /u /a /i /q {}{args}", if directories { "" } else { "/exe " });
+    tool(&command, &AtomicBool::new(false), &mut out);
+    out
+}
+
 /// The most output a tool's answer is read whole up to.
 const TOOL_OUTPUT: usize = 1 << 20;
 
@@ -2749,6 +2817,13 @@ fn run_powershell(command: &str, sys: &Path, elevated: bool, stop: &AtomicBool, 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    if command.starts_with("git ") {
+        // GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, injected configs, and other inherited
+        // Git overrides can redirect maintenance outside the reviewed repository.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") { cmd.env_remove(key); }
+        }
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -3753,7 +3828,8 @@ mod tests {
         // round 4, S1 #4: npm writes its logs while it is asked: the cache and a plain `_logs`
         // in it (made when missing) are held from before the question
         assert!(npm.writes == Some("_logs"));
-        let before = hold_before(&cache, &npm).unwrap();
+        let policy = ToolProtection { kept: vec![], skipped: vec![] };
+        let before = hold_before(&cache, &npm, &policy).unwrap();
         assert!(cache.join("_logs").is_dir(), "made");
         assert!(std::fs::rename(cache.join("_logs"), cache.join("_old")).is_err(), "held");
         assert!(std::fs::rename(&cache, base.join("moved")).is_err(), "held");
@@ -3761,7 +3837,7 @@ mod tests {
         std::fs::remove_dir(cache.join("_logs")).unwrap();
         std::fs::create_dir_all(base.join("elsewhere")).unwrap();
         if std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(cache.join("_logs")).arg(base.join("elsewhere")).output().is_ok_and(|o| o.status.success()) {
-            assert!(hold_before(&cache, &npm).is_err(), "a `_logs` that is a link is refused");
+            assert!(hold_before(&cache, &npm, &policy).is_err(), "a `_logs` that is a link is refused");
             std::fs::remove_dir(cache.join("_logs")).unwrap();
         }
         // a folder skipped in Settings, or not there at all
@@ -3784,6 +3860,77 @@ mod tests {
         let text = run_powershell(r#"Write-Output "$env:SPRAWL_TOOL_DIR""#, &sys, false, &stop, &mut o, &[("SPRAWL_TOOL_DIR", dir.as_os_str())], Duration::from_secs(3600), false).unwrap();
         assert_eq!(text.trim(), r"C:\Reviewed\cache");
         drop(owned);
+    }
+
+    #[test]
+    fn package_cleanup_uses_the_bound_root_and_refuses_keep_and_skip() {
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-external-policy").unwrap();
+        let root = owned.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let npm = package_tool("npm cache clean --force").unwrap().unwrap();
+        let stop = AtomicBool::new(false);
+        let run = |kept: Vec<PathBuf>, skipped: Vec<PathBuf>| {
+            let policy = ToolProtection { kept, skipped };
+            let review = policy.check_cache(&root);
+            let mut calls = Vec::new();
+            let result = run_package(&root, npm, &stop, &mut Outcome::default(),
+                || Ok(ToolProtection { kept: policy.kept.clone(), skipped: policy.skipped.clone() }),
+                |script, _, _, env| {
+                    calls.push(script.to_string());
+                    let bound = env.iter().find(|(name, _)| *name == "SPRAWL_TOOL_DIR").unwrap().1;
+                    assert!(same_path(Path::new(bound), &root));
+                    Some(Path::new(bound).display().to_string())
+                });
+            assert_eq!(result.is_ok(), review.is_ok());
+            (result, calls)
+        };
+        let (result, calls) = run(vec![root.join("mine")], vec![]);
+        assert!(result.unwrap_err().contains("Keep list"));
+        assert!(calls.is_empty() && !root.join("_logs").exists(), "the probe also writes logs");
+        let (result, calls) = run(vec![], vec![root.join("private")]);
+        assert!(result.unwrap_err().contains("Folders to skip"));
+        assert!(calls.is_empty() && !root.join("_logs").exists());
+        let (result, calls) = run(vec![owned.path().join("cache-other").join("mine")], vec![]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(calls, [npm.probe, npm.run]);
+    }
+
+    #[test]
+    fn external_cleanup_never_runs_after_a_bad_probe_or_new_protection() {
+        let owned = sprawl_core::local::OwnedDir::create_in(&std::env::temp_dir(), "sprawl-external-recheck").unwrap();
+        let root = owned.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        for (answer, updated) in [(Some(root.join("other")), false), (None, false), (Some(root.clone()), true)] {
+            let mut reads = 0;
+            let mut calls = Vec::new();
+            let result = run_package(&root, package_tool("pip cache purge").unwrap().unwrap(), &AtomicBool::new(false), &mut Outcome::default(),
+                || {
+                    reads += 1;
+                    let skipped = if updated && reads > 1 { vec![root.join("keep-now")] } else { vec![] };
+                    Ok(ToolProtection { kept: vec![], skipped })
+                },
+                |script, _, _, _| { calls.push(script.to_string()); answer.as_ref().map(|p| p.display().to_string()) });
+            assert!(result.is_err(), "bad scope/protection update must stop the cleanup");
+            assert_eq!(calls, [package_tool("pip cache purge").unwrap().unwrap().probe]);
+            assert_eq!(reads, if updated { 2 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn external_scope_comparison_covers_ancestors_case_and_verbatim_paths() {
+        let root = Path::new(r"C:\Cache\Tool");
+        for kept in [r"C:\CACHE", r"\\?\c:\cache\tool\file", r"c:/Cache/Tool/", r"C:\CACHE\TOOL~1\file", r"C:\Cache\Tool.\file"] {
+            let policy = ToolProtection { kept: vec![kept.into()], skipped: vec![] };
+            assert!(policy.check(root).is_err(), "{kept}");
+        }
+        let policy = ToolProtection { kept: vec![], skipped: vec![r"C:\Cache".into()] };
+        assert!(policy.check(root).is_err());
+        for command in [
+            format!("{}xpress8k 'C:\\Cache\\*'", crate::remedies::COMPRESS),
+            format!("{}# fixture", crate::remedies::SHRINK),
+        ] {
+            assert!(!is_external_cleanup(&Action::Tool { command }), "in-place remedies use their existing branches");
+        }
     }
 
     #[test]

@@ -134,7 +134,9 @@ impl Job {
     }
 }
 
-pub(crate) const ROW_H: f64 = 24.0;
+pub(crate) fn row_height() -> f64 {
+    crate::tokens::current().row_height()
+}
 
 pub(crate) struct State {
     /// Sprawl's own question boxes waiting (the first is on screen).
@@ -526,10 +528,11 @@ impl State {
                         timing("scan: own_on_open", t);
                         timing("scan: the window's work on the result", t_ui);
                         timing("scan: from Scan to done", job.started);
-                        // Settings > Scanning, "After a scan": open the Advisor (not for a
+                        // Settings > General, "After a scan": open the Advisor (not for a
                         // stopped scan, nor in a screenshot run)
-                        if self.settings.num("afterScan") == Some(1.0) && !job.progress.is_cancelled() && self.shot.is_none() && self.view != View::Advisor {
-                            self.set_view(View::Advisor);
+                        if self.settings.num("afterScan") == Some(1.0) && !job.progress.is_cancelled() && self.shot.is_none()
+                            && (self.view != View::Advisor || self.advisor.cleaners_tab_on()) {
+                            self.command("TabAdvisor");
                         }
                     }
                     Err(e) => {
@@ -967,8 +970,9 @@ impl State {
                         let k: usize = c[4..].parse().unwrap_or(0);
                         let r = self.rows_now(crate::tables::Which::Main);
                         let y = r.y_of(k);
-                        let at = crate::bindings::Windows::Foundation::Point { X: 60.0, Y: (y - r.off + ROW_H / 2.0) as f32 };
-                        self.row_menu(y + ROW_H / 2.0, at, false);
+                        let height = row_height();
+                        let at = crate::bindings::Windows::Foundation::Point { X: 60.0, Y: (y - r.off + height / 2.0) as f32 };
+                        self.row_menu(y + height / 2.0, at, false);
                     }
                     "ctxkey" => self.row_menu_by_key(),
                     m if m.starts_with("mapctx=") => {
@@ -1171,6 +1175,12 @@ impl State {
                     a if a.starts_with("Adv") => self.advisor_command(a),
                     // dev: the Theme page in a state (ThemeMore, ThemeTab=1, ThemePre=2, ThemeDrop=accent)
                     t if t.starts_with("Theme") => self.theme_dev(t),
+                    // dev: select a group in the open Settings section, including Theme (PfGroup=0 is first)
+                    p if p.starts_with("PfGroup=") => {
+                        if let Ok(i) = p["PfGroup=".len()..].parse() {
+                            self.prefs_group_for_shot(i);
+                        }
+                    }
                     // dev: a Settings section or a wizard button
                     w if w.starts_with("PfSec") || w.starts_with("Wiz") => self.wizard_command(w),
                     _ => self.command(&c),

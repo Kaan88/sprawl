@@ -25,6 +25,29 @@ pub fn configured() -> Vec<PathBuf> {
     configured_at(&PathBuf::from(base).join("Sprawl/settings.ini"))
 }
 
+/// At the external-tool boundary, a missing file is an empty policy; a linked,
+/// unreadable or malformed settings file is not. Keep the same aliases as scanning.
+pub(crate) fn for_external_cleanup() -> Result<Vec<PathBuf>, String> {
+    let base = std::env::var_os("APPDATA").ok_or("the Settings folder is unknown")?;
+    let bytes = sprawl_core::local::read_checked(Path::new(&base), &["Sprawl"], "settings.ini", 1 << 20)
+        .map_err(|e| e.to_string())?;
+    let Some(bytes) = bytes else { return Ok(Vec::new()); };
+    let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    let paths = parse(cleanup_setting(text)?)?;
+    Ok(if paths.is_empty() { paths } else { with_aliases_mapped(paths, &mapped_drives()) })
+}
+
+fn cleanup_setting(text: &str) -> Result<&str, &'static str> {
+    let mut value = "";
+    for line in text.trim_start_matches('\u{feff}').lines().map(str::trim) {
+        if line.is_empty() || line.starts_with(['#', ';']) { continue; }
+        let (key, v) = line.split_once('=').filter(|(key, _)| !key.trim().is_empty())
+            .ok_or("Settings contains a malformed line")?;
+        if key.trim() == "scanExclude" { value = v; }
+    }
+    Ok(value)
+}
+
 /// The list couldn't be read: every drive, and every network path, counts as skipped.
 fn refuse_all() -> Vec<PathBuf> {
     (b'A'..=b'Z').map(|drive| PathBuf::from(format!("{}:\\", drive as char))).chain(std::iter::once(PathBuf::from(sprawl_core::progress::UNREADABLE_POLICY))).collect()
@@ -215,6 +238,12 @@ pub fn intersects(path: &Path, excluded: &[PathBuf]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_external_cleanup_never_treats_a_malformed_ini_as_no_skips() {
+        assert!(cleanup_setting("snapshots=0\nscanExclude C:\\private").is_err());
+        assert_eq!(cleanup_setting("\u{feff}# comment\r\nscanExclude=C:\\one\r\nscanExclude=C:\\two"), Ok(r"C:\two"));
+    }
+
     #[test]
     fn exact_scopes_and_validation() {
         let paths = parse(r"C:\Data\skip; D:\Games").unwrap();

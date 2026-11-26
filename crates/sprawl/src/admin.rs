@@ -81,6 +81,7 @@ pub(crate) mod store {
 
     /// Whether switch `name` is on for this account.
     pub(crate) fn get(name: &str) -> bool {
+        if crate::settings::read_only() { return false; }
         let Some(p) = path() else { return false };
         let mut v = 0u32;
         let mut n = 4u32;
@@ -92,6 +93,7 @@ pub(crate) mod store {
 
     /// Turn switch `name` on or off for this account: only an elevated Sprawl can.
     pub(crate) fn set(name: &str, on: bool) -> Result<(), String> {
+        sprawl_advisor::require_write().map_err(|e| e.to_string())?;
         if !sprawl_core::is_elevated() {
             return Err("only Sprawl running as administrator can change this".into());
         }

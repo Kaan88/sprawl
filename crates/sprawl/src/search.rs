@@ -508,15 +508,17 @@ impl State {
         if i == 0 || i >= COL_KEYS.len() || self.search_col_shown(i) == shown {
             return;
         }
-        if shown {
-            self.search.cols_hidden &= !(1 << i);
-        } else {
-            self.search.cols_hidden |= 1 << i;
-        }
-        self.search_sort_visible();
-        let v = hidden_to(self.search.cols_hidden);
+        let hidden = if shown { self.search.cols_hidden & !(1 << i) } else { self.search.cols_hidden | (1 << i) };
+        let v = hidden_to(hidden);
         self.settings.set("searchColsHidden", v);
-        self.settings.save();
+        self.persist_settings();
+        self.apply_search_columns(hidden);
+    }
+
+    pub(crate) fn apply_search_columns(&mut self, hidden: u8) {
+        self.search.cols_loaded = true;
+        self.search.cols_hidden = hidden;
+        self.search_sort_visible();
         if self.view == View::Search {
             // the folder paths take the width the shown columns leave
             if let Some(w) = find::<crate::bindings::Microsoft::UI::Xaml::Controls::ScrollViewer>(&self.root, "TreeScroll").ok().and_then(|s| s.ViewportWidth().ok()).filter(|w| *w > 0.0) {
@@ -563,7 +565,7 @@ impl State {
             let note = if m.is_reading() {
                 "Reading your drives; results come in as each one is ready."
             } else if !m.has_places() {
-                "Scan a folder, or turn on Options > Search Every Drive When Search Opens."
+                "Scan a folder, or choose drives from Search in or Settings > Search."
             } else if self.search.query.trim().is_empty() {
                 "Type to search every drive."
             } else {
@@ -1048,7 +1050,8 @@ impl State {
             ""
         };
         format!(
-            r##"<Grid Height="24" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            r##"<Grid Height="{height}" Background="{bg}">{cols}{sel_bar}<StackPanel Orientation="Horizontal" Spacing="8" Margin="10,0,0,0" ToolTipService.ToolTip="{full}"><FontIcon Glyph="{glyph}" FontSize="{{$fs13}}" Foreground="{gc}"/><TextBlock VerticalAlignment="Center" FontSize="{{$fs12}}" TextTrimming="CharacterEllipsis">{runs}</TextBlock>{changed}</StackPanel>{c1}{c2}{c3}<TextBlock Grid.Column="4" Visibility="{fv}" Text="{short}" FontSize="{{$fs12}}" Foreground="{{$text3}}" VerticalAlignment="Center" Margin="10,0" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{folder}"/></Grid>"##,
+            height = crate::state::row_height(),
             short = ui::esc(&crate::format::mid_path(&folder, self.tables.folder_chars)),
             cols = crate::tables::col_defs(&self.search_cols()),
             fv = if self.search_col_shown(4) { "Visible" } else { "Collapsed" },

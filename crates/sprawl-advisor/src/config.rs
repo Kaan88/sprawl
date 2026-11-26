@@ -141,6 +141,7 @@ impl AiConfig {
 }
 
 fn dir() -> Option<PathBuf> {
+    if crate::read_only() { return None; }
     std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Sprawl").join("advisor"))
 }
 
@@ -153,6 +154,7 @@ impl AiConfig {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        crate::require_write()?;
         let d = dir().ok_or_else(|| std::io::Error::other("APPDATA is not set"))?;
         let text = toml::to_string(self).map_err(std::io::Error::other)?;
         crate::write_local(&d.join("ai.toml"), text.as_bytes(), true)
@@ -219,6 +221,7 @@ mod cred {
 /// Store (or with an empty string, remove) the API key for a provider, for the server at
 /// `base_url` (OpenAI-compatible: the key is only ever sent to that host).
 pub fn set_key(p: Provider, key: &str, base_url: &str) -> bool {
+    if crate::read_only() { return false; }
     let key = key.trim();
     if p == Provider::OpenAi {
         // one key per server, under its host: several custom AIs keep their own
@@ -259,6 +262,7 @@ fn host_credential(host: &str) -> String {
 
 /// The key saved for the OpenAI-compatible server at `host`.
 pub fn key_for_host(host: &str) -> Option<String> {
+    if crate::read_only() { return None; }
     cred::read(&host_credential(host)).filter(|k| !k.trim().is_empty())
 }
 
@@ -271,6 +275,7 @@ pub fn key_for_host(host: &str) -> Option<String> {
 /// that isn't the scheme's own). A key under the bare host is moved to each saved address on
 /// that host with its own port, and removed when no saved address uses the host as it is.
 pub fn record_key_host() {
+    if crate::read_only() { return; }
     let p = Provider::OpenAi;
     let cfg = AiConfig::load();
     let servers: Vec<String> = std::iter::once(cfg.base_url.as_str()).chain(cfg.customs.iter().map(|c| c.base_url.as_str())).filter_map(crate::llm::agent::host_of).collect();
@@ -318,10 +323,12 @@ fn bare_host(server: &str) -> String {
 
 /// The host a provider's key was saved for, when that was recorded.
 pub fn key_host(p: Provider) -> Option<String> {
+    if crate::read_only() { return None; }
     cred::read(&format!("{}/host", p.credential())).filter(|h| !h.is_empty())
 }
 
 pub fn key(p: Provider) -> Option<String> {
+    if crate::read_only() { return None; }
     if let Some(k) = cred::read(p.credential()) {
         return Some(k);
     }
@@ -336,6 +343,7 @@ pub fn key(p: Provider) -> Option<String> {
 /// The app was called DiskTree before 0.1.0: move its settings, advisor config and scan history
 /// to the new folders, unless the new ones already exist.
 pub fn migrate_old_folders() {
+    if crate::read_only() { return; }
     for var in ["APPDATA", "LOCALAPPDATA"] {
         let Some(base) = std::env::var_os(var).map(PathBuf::from) else { continue };
         let (old, new) = (base.join("DiskTree"), base.join("Sprawl"));

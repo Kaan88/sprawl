@@ -401,7 +401,7 @@ impl State {
         if let Some(k) = k {
             if let Some(cmd) = ALL.iter().find(|a| a.0 == k).map(|a| a.1) {
                 self.settings.set("view", cmd);
-                self.settings.save();
+                self.persist_settings();
             }
         }
         self.map.drawn_once = false;
@@ -414,7 +414,7 @@ impl State {
         text(&self.root, "ViewPaintText", &format!("Colour: {}", PAINTS.iter().find(|x| x.0 == p).map_or("", |x| x.2)));
         if let Some(cmd) = PAINTS.iter().find(|x| x.0 == p).map(|x| x.1) {
             self.settings.set("paint", cmd);
-            self.settings.save();
+            self.persist_settings();
         }
         self.map.drawn_once = false;
         self.render_map();

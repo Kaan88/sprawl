@@ -33,6 +33,8 @@ pub(crate) struct Cleanup {
     pub pending_left: usize,
     /// The review panel is open.
     pub review: bool,
+    /// External commands shown as runnable in the review, not just ticked.
+    reviewed_tools: std::cell::RefCell<std::collections::HashMap<(PathBuf, String), clean::ReviewedExternal>>,
     /// "These are my own files and I want them gone" is ticked.
     pub own_ok: bool,
     /// The ticks are the ones Sprawl chose.
@@ -82,11 +84,21 @@ impl SelectionContext {
 }
 
 impl Cleanup {
+    pub(crate) fn clear_privacy_selection(&mut self) {
+        self.privacy_ticked.clear();
+        self.privacy_ok = false;
+        self.review = false;
+        self.reviewed_tools.get_mut().clear();
+        self.confirmation_selection = None;
+        self.measuring = None;
+    }
+
     fn sync_confirmation_selection(&mut self) -> bool {
         let next = (self.ticked.clone(), self.privacy_ticked.clone(), self.single.clone());
         if self.confirmation_selection.as_ref() == Some(&next) { return false; }
         self.own_ok = false;
         self.privacy_ok = false;
+        self.reviewed_tools.get_mut().clear();
         self.confirmation_selection = Some(next);
         true
     }
@@ -121,6 +133,17 @@ impl Cleanup {
         self.context = next;
         true
     }
+}
+
+#[cfg(test)]
+#[test]
+fn revoking_privacy_keeps_normal_ticks_but_closes_the_review() {
+    let mut c = Cleanup { privacy_ok: true, review: true, ..Cleanup::default() };
+    c.privacy_ticked.insert("private item".into());
+    c.ticked.insert("space item".into());
+    c.clear_privacy_selection();
+    assert!(!c.privacy_ok && !c.review && c.privacy_ticked.is_empty());
+    assert!(c.ticked.contains("space item"));
 }
 
 pub(crate) struct Item {
@@ -704,6 +727,7 @@ impl State {
 
     /// The ticked privacy parts of the report on screen. Never for a one-row review.
     pub(crate) fn ticked_privacy(&self) -> Vec<Finding> {
+        if !self.privacy_on() { return Vec::new(); }
         let Some(r) = self.advice() else { return Vec::new() };
         if self.advisor.cleanup.single.is_some() {
             return Vec::new();
@@ -713,6 +737,7 @@ impl State {
 
     /// Tick or untick privacy part `i` (the user's own tick: the only way one is ticked).
     pub(crate) fn privacy_toggle(&mut self, i: usize) {
+        if !self.privacy_on() { return; }
         let Some(k) = self.advice().and_then(|r| r.privacy.get(i)).map(|f| key(&f.path)) else { return };
         let c = &mut self.advisor.cleanup;
         if !c.privacy_ticked.remove(&k) {
@@ -831,7 +856,7 @@ impl State {
 
     /// Start cleaning what is ticked: each item is checked again first.
     pub(crate) fn cleanup_start(&mut self) {
-        if self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying {
+        if crate::settings::read_only() || self.advisor.cleanup.running.is_some() || self.advisor.file_op() || self.job.is_some() || self.update.applying {
             return;
         }
         if self.cleanup_context_sync() {
@@ -848,6 +873,12 @@ impl State {
         let Some(t) = self.active_tree() else { return };
         let picked = self.ticked_findings();
         let privacy = self.ticked_privacy();
+        if !privacy.is_empty() && !crate::settings::Settings::disk_enabled(sprawl_advisor::privacy::SETTING) {
+            self.advisor.cleanup.clear_privacy_selection();
+            self.adv_say("Privacy cleaners are off or their setting couldn't be read. Review the remaining items again.");
+            self.render_advisor();
+            return;
+        }
         if picked.is_empty() && privacy.is_empty() {
             return;
         }
@@ -867,6 +898,19 @@ impl State {
                 self.adv_say(&format!("Nothing was cleaned: your Keep list couldn't be read just now ({e}). Try again."));
                 return;
             }
+        };
+        // A command held back on screen cannot become runnable behind that review, even if
+        // another instance removed a protection. The executor also checks current protections.
+        let (picked, mut held) = {
+            let reviewed = self.advisor.cleanup.reviewed_tools.borrow();
+            let mut held = Vec::new();
+            let picked: Vec<_> = picked.into_iter().filter(|(_, f)| {
+                let Some(command) = external_command(f) else { return true; };
+                if self.advisor.cleanup.review && reviewed.get(&(f.path.clone(), command)).is_some_and(|r| r.matches_finding(f)) { return true; }
+                held.push(format!("{}: not cleaned, the external command wasn't shown as runnable in this review", f.title));
+                false
+            }).collect();
+            (picked, held)
         };
         let needs_ok = picked.iter().any(|(_, f)| f.risk >= Risk::Orange);
         if needs_ok && !self.advisor.cleanup.own_ok {
@@ -888,9 +932,8 @@ impl State {
         self.cleaner_procs(true);
         self.remember_usual(&picked.iter().map(|(_, f)| f.clone()).collect::<Vec<_>>());
         let bin_on = self.recycle_on();
-        let mut work: Vec<(PathBuf, Action, Option<(String, Vec<String>)>, bool)> = Vec::new();
+        let mut work = Vec::new();
         let mut items = Vec::new();
-        let mut held = Vec::new();
         // the privacy sets after the rest, checked the same way (their own set checks inside)
         for f in picked.into_iter().map(|(_, f)| f).chain(privacy) {
             if let Some(why) = self.held_here(&f) {
@@ -924,6 +967,14 @@ impl State {
                 held.push(format!("{}: not cleaned, its command is not one Sprawl can run", f.title));
                 continue;
             };
+            let reviewed = if let Some(command) = external_command(&f) {
+                let tools = self.advisor.cleanup.reviewed_tools.borrow();
+                let Some(receipt) = tools.get(&(f.path.clone(), command)).filter(|r| r.matches_finding(&f)) else {
+                    held.push(format!("{}: not cleaned, review the external command again", f.title));
+                    continue;
+                };
+                Some(receipt.clone())
+            } else { None };
             // its application must be closed: checked now, and again just before it runs
             let gate = self.part_gate(&f);
             if let Some((app, Closed::Must)) = self.app_open(&f) {
@@ -931,7 +982,7 @@ impl State {
                 continue;
             }
             let recycle = goes_to_bin(&f, bin_on);
-            work.push((f.path.clone(), action, gate, recycle));
+            work.push((f.path.clone(), action, gate, recycle, f.privacy(), reviewed));
             items.push(Item {
                 path: f.path.clone(),
                 title: f.title.clone(),
@@ -970,11 +1021,17 @@ impl State {
         std::thread::spawn(move || {
             // each volume's Recycle Bin, found once; what this run sends counts against its room
             let mut bins: std::collections::HashMap<String, Result<sprawl_advisor::recycle::Bin, String>> = Default::default();
-            for (i, (path, action, gate, recycle)) in work.into_iter().enumerate() {
+            for (i, (path, action, gate, recycle, privacy, reviewed)) in work.into_iter().enumerate() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
                 }
                 let _ = tx.send(Msg::Start(i));
+                if privacy && !crate::settings::Settings::disk_enabled(sprawl_advisor::privacy::SETTING) {
+                    let mut out = Outcome::default();
+                    out.problems.push("Privacy cleaners are off or their setting couldn't be read.".into());
+                    let _ = tx.send(Msg::Finished(i, out, None));
+                    continue;
+                }
                 // an application that must be closed: the process list and the files' users,
                 // just before; an answer Windows can't give counts as open
                 if let Some((app, exes)) = &gate {
@@ -998,12 +1055,16 @@ impl State {
                 let before = if compress { None }
                     else if in_place { sprawl_advisor::remedies::on_disk(&path) }
                     else if tool { complete_size(rescan_after(&path, false, None).as_ref()) } else { None };
-                let mut out = clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
-                    if last.elapsed().as_millis() >= 200 {
-                        last = Instant::now();
-                        let _ = tx.send(Msg::Progress(i, freed));
-                    }
-                });
+                let mut out = if let Some(reviewed) = &reviewed {
+                    clean::run_reviewed_external(reviewed, &spare, &stop2)
+                } else {
+                    clean::run_with(&path, &action, &spare, bin, &stop2, &mut |freed| {
+                        if last.elapsed().as_millis() >= 200 {
+                            last = Instant::now();
+                            let _ = tx.send(Msg::Progress(i, freed));
+                        }
+                    })
+                };
                 // what is there now, for the tree
                 let _ = tx.send(Msg::Measuring(i));
                 let now = rescan_after(&path, compress, Some(&stop2));
@@ -1520,8 +1581,22 @@ impl State {
     pub(crate) fn cleanup_review_xaml(&self) -> String {
         let all = self.ticked_findings();
         // what the run will hold back is shown with its reason, and not counted
-        let held: Vec<(Finding, String)> = all.iter().filter_map(|(_, f)| self.held_here(f).map(|why| (f.clone(), why))).collect();
-        let picked: Vec<(usize, Finding)> = all.into_iter().filter(|(_, f)| self.held_here(f).is_none()).collect();
+        let policy = all.iter().any(|(_, f)| external_command(f).is_some())
+            .then(|| clean::ToolProtection::load(&self.advisor.memory.kept_paths()));
+        let mut held = Vec::new();
+        let mut picked = Vec::new();
+        let mut reviewed = std::collections::HashMap::new();
+        for (i, f) in all {
+            let tool = external_command(&f);
+            let scope = tool.as_ref().zip(policy.as_ref()).map(|(_, policy)|
+                policy.as_ref().map_err(String::clone).and_then(|policy| clean::review_external(&f, policy))).transpose();
+            if let Some(why) = scope.as_ref().err().cloned().or_else(|| self.held_here(&f)) {
+                held.push((f, why));
+            } else {
+                if let (Some(command), Ok(Some(receipt))) = (tool, scope) { reviewed.insert((f.path.clone(), command), receipt); }
+                picked.push((i, f));
+            }
+        }
         let privacy = self.ticked_privacy();
         let bytes: u64 = picked.iter().map(|(_, f)| self.review_size(f).0).sum();
         let up_to = picked.iter().any(|(_, f)| self.review_size(f).1);
@@ -1563,21 +1638,17 @@ impl State {
             // the same outcome list as the groups and the button
             ui::esc(&lead_line(&picked.iter().map(|(_, f)| outcome(f, bin_on)).collect::<Vec<_>>(), privacy.len())),
             ui::esc(&{
-                let tools = picked.iter().filter(|(_, f)| matches!(clean::action(f), Some((Action::Tool { .. }, _)))).count();
+                let tools = picked.iter().filter(|(_, f)| external_command(f).is_some()).count();
+                let in_place = picked.iter().filter(|(_, f)| sprawl_advisor::remedies::compresses(f) || sprawl_advisor::remedies::shrinks(f)).count();
                 let own = format!(
                     "Sprawl removes them itself. Links inside are never followed: deleted for good, a link is removed as a link; with the Recycle Bin it stays where it is (what it points to stays either way). Files a program has locked are skipped, and anything created or changed since the scan began ({}) is left alone, as is anything you chose to keep.",
                     sprawl_core::local_time(self.active_began())
                 );
-                let tool = "Each item with a program of its own runs that program's clean-up command, shown below, without a window. The program decides what goes: files new since the scan, or ones you chose to keep, may go too.";
-                if picked.is_empty() {
-                    String::new()
-                } else if tools == picked.len() {
-                    tool.to_string()
-                } else if tools > 0 {
-                    format!("{own} {tool}")
-                } else {
-                    own
-                }
+                let tool = "Sprawl checks the program's cleanup scope again before launching it. An unknown scope or one that reaches a kept path or skipped folder is held back. Inside an allowed scope the program decides what goes, including files new since the scan.";
+                let mut text = Vec::new();
+                if tools + in_place < picked.len() { text.push(own.as_str()); }
+                if tools > 0 { text.push(tool); }
+                text.join(" ")
             })
         );
         // only privacy items: no space lines, no space list
@@ -1613,7 +1684,10 @@ impl State {
                 crate::advisor::risk_mark(f.risk, 8, ""),
                 ui::esc(&f.title),
                 ui::esc(&match clean::action(f) {
-                    Some((Action::Tool { command }, _)) => format!("{what} · runs: {command}"),
+                    Some((Action::Tool { command }, _)) => match reviewed.get(&(f.path.clone(), command.clone())) {
+                        Some(receipt) => format!("{what} · {}", receipt.description()),
+                        None => format!("{what} · runs: {command}"),
+                    },
                     Some((Action::Link { keep, copies }, _)) => format!("{} to {}, compared again first", if copies.len() == 1 { "1 copy made a link".to_string() } else { format!("{} copies made links", copies.len()) }, keep.display()),
                     // not "gone for good": the bin can give it back (its group says so)
                     _ if goes_to_bin(f, bin_on) => {
@@ -1632,6 +1706,7 @@ impl State {
         if !held.is_empty() {
             x += &format!(r##"<TextBlock Text="{}" FontSize="{{$fs12}}" FontWeight="SemiBold" Foreground="{{$text3}}" Margin="0,4,0,0"/>"##, ui::esc(&format!("Held back, not run · {}", if held.len() == 1 { "1 item".to_string() } else { format!("{} items", held.len()) })));
         }
+        *self.advisor.cleanup.reviewed_tools.borrow_mut() = reviewed;
         for (f, why) in &held {
             x += &format!(
                 r##"<Grid ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><FontIcon Glyph="&#xE7BA;" FontSize="{{$fs10}}" Foreground="{{$warn}}"/><StackPanel Grid.Column="1"><TextBlock Text="{}" ToolTipService.ToolTip="{0}" FontSize="{{$fs13}}" TextTrimming="CharacterEllipsis" Foreground="{{$text3}}"/><TextBlock Text="Held back: {}" FontSize="{{$fs12}}" Foreground="{{$warn}}" TextWrapping="Wrap"/></StackPanel><TextBlock Grid.Column="2" Text="not run" FontSize="{{$fs13}}" VerticalAlignment="Center" Foreground="{{$text3}}"/></Grid>"##,
@@ -1727,6 +1802,12 @@ impl State {
         x += "</StackPanel></Border>";
         x
     }
+}
+
+fn external_command(f: &Finding) -> Option<String> {
+    let (action, _) = clean::action(f)?;
+    if !clean::is_external_cleanup(&action) { return None; }
+    match action { Action::Tool { command } => Some(command), _ => None }
 }
 
 /// What a clean-up does to one item, as the review groups them: the order is the review's.

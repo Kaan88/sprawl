@@ -77,6 +77,33 @@ pub fn pick_csv(owner: isize) -> Option<PathBuf> {
     open_dialog(owner, "Open a CSV file exported by WizTree or Sprawl", false, false, true).into_iter().next()
 }
 
+pub fn pick_uninstaller(owner: isize) -> Option<PathBuf> {
+    open_dialog(owner, "Choose an uninstaller executable (.exe)", false, false, false).into_iter().next()
+}
+
+/// The stock Windows colour dialog. The theme is not changed unless the user confirms.
+pub(crate) fn pick_colour(owner: isize, initial_rgb: u32) -> Option<u32> {
+    #[repr(C)]
+    struct ChooseColour {
+        size: u32,
+        owner: isize,
+        instance: isize,
+        result: u32,
+        custom: *mut u32,
+        flags: u32,
+        data: isize,
+        hook: usize,
+        template: *const u16,
+    }
+    #[link(name = "comdlg32")]
+    unsafe extern "system" { fn ChooseColorW(c: *mut ChooseColour) -> i32; }
+    let swap = |c: u32| ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
+    let mut custom = [0x00FF_FFFF; 16];
+    let mut c = ChooseColour { size: std::mem::size_of::<ChooseColour>() as u32, owner, instance: 0,
+        result: swap(initial_rgb), custom: custom.as_mut_ptr(), flags: 3, data: 0, hook: 0, template: std::ptr::null() };
+    (unsafe { ChooseColorW(&mut c) } != 0).then(|| swap(c.result))
+}
+
 /// Start this program again elevated (the UAC prompt appears) with `args`. False when the
 /// user declined or it failed.
 pub fn restart_elevated(owner: isize, args: &str) -> bool {
@@ -124,6 +151,7 @@ fn create(path: &str) -> Option<HKEY> {
 
 /// Add or remove "Scan with Sprawl" on folders and drives in Explorer.
 pub fn set_explorer_menu(on: bool) -> bool {
+    if crate::settings::read_only() { return false; }
     if !on {
         for k in MENU_KEYS {
             unsafe {
@@ -153,6 +181,7 @@ pub fn set_explorer_menu(on: bool) -> bool {
 
 /// Move a "Scan with DiskTree" entry left by the app's old name over to the new name.
 pub fn migrate_explorer_menu() {
+    if crate::settings::read_only() { return; }
     let old = r"Software\Classes\Directory\shell\DiskTree";
     let mut key = HKEY::default();
     if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(old), None, KEY_READ, &mut key) } != ERROR_SUCCESS {
@@ -168,6 +197,7 @@ pub fn migrate_explorer_menu() {
 }
 
 pub fn explorer_menu_installed() -> bool {
+    if crate::settings::read_only() { return false; }
     let mut key = HKEY::default();
     let r = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(MENU_KEYS[0]), None, KEY_READ, &mut key) };
     if r == ERROR_SUCCESS {
@@ -179,4 +209,3 @@ pub fn explorer_menu_installed() -> bool {
         false
     }
 }
-

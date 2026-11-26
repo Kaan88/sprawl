@@ -543,6 +543,10 @@ impl Never {
 
 /// Read current redirected paths without creating or verifying any folder (including UNC).
 /// IDs and flags: https://learn.microsoft.com/windows/win32/shell/knownfolderid
+#[cfg(test)]
+fn personal_places() -> Result<Vec<String>, ()> { Ok(Vec::new()) }
+
+#[cfg(not(test))]
 fn personal_places() -> Result<Vec<String>, ()> {
     #[repr(C)]
     struct Guid { a: u32, b: u16, c: u16, d: [u8; 8] }
@@ -602,6 +606,7 @@ enum UncPlace {
     Unknown,
 }
 
+#[cfg(not(test))]
 fn unc_place(text: &str) -> UncPlace {
     unc_place_with(text, &this_pc_names(), own_addresses().as_deref(), &share_folder)
 }

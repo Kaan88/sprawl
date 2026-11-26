@@ -67,7 +67,22 @@ pub mod recycle;
 pub static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// What a refused request says while working offline.
-pub const OFFLINE_MSG: &str = "Sprawl is working offline (Settings > Network): nothing is sent.";
+pub const OFFLINE_MSG: &str = "Sprawl is working offline (Settings > AI and connections).";
+
+static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_read_only(on: bool) {
+    READ_ONLY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn read_only() -> bool {
+    READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn require_write() -> std::io::Result<()> {
+    if read_only() { return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Screenshot runs cannot change data")); }
+    Ok(())
+}
 
 /// Whether "Work offline" is on.
 /// Running as administrator, the user allowed Claude Code (Settings > Scanning, kept where only
@@ -77,7 +92,7 @@ pub static ELEVATED_CLAUDE_CODE: std::sync::atomic::AtomicBool = std::sync::atom
 pub static ELEVATED_USER_TOOLS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn offline() -> bool {
-    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+    read_only() || OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
 }
 #[cfg(windows)]
 pub(crate) mod reg;
@@ -95,6 +110,7 @@ use sprawl_core::{Tree, MULTIPLE, ROOT};
 /// at the temporary name or at `path` is never followed. `replace: false` refuses a name that
 /// already exists.
 pub fn write_local(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<()> {
+    require_write()?;
     use std::io::Write;
     let parent = store::ensure_dir(path.parent().ok_or_else(|| std::io::Error::other("No folder to write in"))?)?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| std::io::Error::other("Invalid file name"))?;
@@ -105,6 +121,7 @@ pub fn write_local(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<
 /// opened as itself (a link at its name, or a file with other names, is left and refused).
 /// Nothing there is not an error.
 pub fn remove_local(path: &Path) -> std::io::Result<()> {
+    require_write()?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| std::io::Error::other("Invalid file name"))?;
     store::remove_checked(path.parent().ok_or_else(|| std::io::Error::other("No folder"))?, name)
 }

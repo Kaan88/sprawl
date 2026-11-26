@@ -231,35 +231,30 @@ pub fn worktree_command(main: &Path, wt: &Path) -> String {
 
 /// Git's packing of the repository at `repo`.
 pub fn gc_command(repo: &Path) -> String {
-    format!("git {HARDEN_CMD} -C {} gc --quiet", ps_quote(&repo.display().to_string()))
+    format!("git {HARDEN_CMD} -c gc.autoDetach=false -C {} gc --quiet", ps_quote(&repo.display().to_string()))
 }
 
-/// Just before a clean-up runs `command` on `path` (a worktree, or a `.git` folder): the same
-/// config checks again, and the command exactly the one Sprawl builds for that path now.
-pub fn recheck(path: &Path, command: &str) -> Result<(), String> {
+/// The exact command and the metadata directory it acts on; worktree removal also
+/// removes the finding's own worktree. A linked gitdir must still name this repository.
+pub(crate) fn cleanup_metadata(id: &str, path: &Path, command: &str) -> Result<PathBuf, String> {
     let changed = "the repository's git settings or folders changed since the scan, or name programs; scan again";
-    let expected = if path.file_name().is_some_and(|n| n.eq_ignore_ascii_case(".git")) {
-        let repo = path.parent().ok_or(changed)?;
-        if !repo_ok(repo) {
-            return Err(changed.into());
+    let (main, expected) = match id {
+        GIT_GC if path.file_name().is_some_and(|n| n.eq_ignore_ascii_case(".git")) => {
+            let repo = path.parent().ok_or(changed)?;
+            (repo.to_path_buf(), gc_command(repo))
         }
-        gc_command(repo)
-    } else {
-        let main = worktree_main(path).ok_or(changed)?;
-        if !repo_ok(&main) {
-            return Err(changed.into());
+        WORKTREE => {
+            let main = worktree_main(path).ok_or(changed)?;
+            let expected = worktree_command(&main, path);
+            (main, expected)
         }
-        worktree_command(&main, path)
+        _ => return Err(changed.into()),
     };
+    if !repo_ok(&main) { return Err(changed.into()); }
     if expected != command {
         return Err("not the git command Sprawl builds for this folder".into());
     }
-    Ok(())
-}
-
-/// Whether a clean-up command is one of these git ones.
-pub fn is_git_command(command: &str) -> bool {
-    command.starts_with("git ")
+    Ok(main.join(".git"))
 }
 
 /// A remote git clone can fetch from again: a server URL, not a folder or a `file://` path.
@@ -584,8 +579,8 @@ mod tests {
         let Some(Action::Tool { command }) = &wt[0].action else { panic!() };
         assert_eq!(command, &worktree_command(&main, &base.join("wt")));
         assert!(command.contains("core.hooksPath=NUL") && command.contains(&ps_quote(&main.display().to_string())));
-        assert_eq!(recheck(&base.join("wt"), command), Ok(()));
-        assert!(recheck(&base.join("wt"), &command.replace("worktree remove", "worktree remove --force")).is_err());
+        assert_eq!(cleanup_metadata(WORKTREE, &base.join("wt"), command), Ok(main.join(".git")));
+        assert!(cleanup_metadata(WORKTREE, &base.join("wt"), &command.replace("worktree remove", "worktree remove --force")).is_err());
         assert!(wt[0].evidence[1].contains("merged"), "{:?}", wt[0].evidence);
         let gc = by(GIT_GC);
         assert_eq!((gc.len(), gc[0].path.clone(), gc[0].gain), (1, main.join(".git"), Some(2 << 20)));

@@ -307,6 +307,7 @@ pub(crate) fn backups_in(dir: &Path) -> Vec<BackupInfo> {
 /// value that is still exactly what was backed up. Nothing is deleted when any of that fails.
 /// Returns what went (None when nothing did) and the problems, in plain words.
 pub fn remove(id: &str) -> (Option<Done>, Vec<String>) {
+    if let Err(e) = crate::require_write() { return (None, vec![e.to_string()]); }
     let Some(p) = part(id) else {
         return (None, vec!["not a registry part Sprawl knows".into()]);
     };
@@ -391,6 +392,7 @@ pub(crate) fn remove_in(part: &RegPart, root: &str, dir: &Path) -> (Option<Done>
 /// name too. Refuses a backup that isn't in Sprawl's own list with the hash it recorded, that
 /// names a key outside the list, or that holds a type Sprawl doesn't write.
 pub fn restore(path: &Path, expect: Option<&str>) -> Result<usize, String> {
+    crate::require_write().map_err(|e| e.to_string())?;
     restore_in(path, "", expect)
 }
 

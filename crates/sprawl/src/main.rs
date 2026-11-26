@@ -73,7 +73,7 @@ use bindings::Microsoft::UI::Xaml::Controls::Primitives::{ButtonBase, Selector};
 use bindings::Windows::Foundation::Point;
 use tables::Which;
 use bindings::Microsoft::UI::Xaml::Controls::Primitives::RangeBase;
-use bindings::Microsoft::UI::Xaml::Controls::{ScrollViewer, SwapChainPanel, TextBox, ToggleSwitch};
+use bindings::Microsoft::UI::Xaml::Controls::{ScrollViewer, SwapChainPanel, TextBox};
 use bindings::Microsoft::UI::Xaml::Media::CompositionTarget;
 use bindings::Microsoft::UI::Xaml::{Application, ApplicationInitializationCallback, ApplicationTheme, FrameworkElement, UIElement, Window};
 use bindings::Windows::Graphics::SizeInt32;
@@ -196,8 +196,7 @@ pub(crate) fn launch() -> windows_core::Result<()> {
             }
         }
     }
-    let mut settings = settings::Settings::load();
-    settings.keep_old_defaults();
+    let settings = settings::Settings::load();
     // once, before any rule runs: the compression rule reads this snapshot, never the file
     sprawl_advisor::program_folders::load(settings.get(sprawl_advisor::program_folders::SETTING).unwrap_or(""));
     // Setup runs as administrator, and when Sprawl itself started it (an update, or Install for
@@ -295,7 +294,6 @@ pub(crate) fn launch() -> windows_core::Result<()> {
         }
     }
     if a.shot.is_some() {
-        crate::settings::READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
         // dev: SPRAWL_FRONT=1 shows the window in front, to click through a change by hand
         // (screenshot mode doesn't elevate, so it can be driven where a normal start can't)
         if std::env::var_os("SPRAWL_FRONT").is_some() {
@@ -480,11 +478,16 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
         })?);
     }
     keep(find::<Selector>(root, "WizProvider")?.SelectionChanged(|_, _| {
-        with(|s| s.wizard_provider());
+        with(|s| { s.wizard_ai_changed(false); s.wizard_provider(); });
     })?);
     keep(find::<Selector>(root, "WizUrlPreset")?.SelectionChanged(|_, _| {
         with(|s| s.wizard_preset());
     })?);
+    for (name, address) in [("WizModel", false), ("WizUrl", true)] {
+        keep(find::<TextBox>(root, name)?.TextChanged(move |_, _| {
+            with(|s| s.wizard_ai_changed(address));
+        })?);
+    }
     keep(find::<ButtonBase>(root, "HistGrowth")?.Click(|_, _| {
         with(|s| {
             s.command("TabAdvisor");
@@ -685,28 +688,11 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
             let _ = e.SetHandled(true);
         }
     })?);
-    // Filter box and the Colours and Tweaks panel.
+    // Filter box.
     keep(find::<TextBox>(root, "FilterBox")?.TextChanged(|s, _| {
         let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) else { return };
         let v = t.Text().map(|h| h.to_string_lossy()).unwrap_or_default();
         with(|st| st.filter_changed(v));
-    })?);
-    for name in ["LiftSlider", "CushionSlider", "TiltSlider"] {
-        keep(find::<RangeBase>(root, name)?.ValueChanged(move |_, e| {
-            let Some(v) = e.as_ref().and_then(|e| e.NewValue().ok()) else { return };
-            with(|st| st.tweak(name, v));
-        })?);
-    }
-    keep(find::<ToggleSwitch>(root, "AnimSwitch")?.Toggled(|s, _| {
-        let on = s.as_ref().and_then(|s| s.cast::<ToggleSwitch>().ok()).and_then(|t| t.IsOn().ok()).unwrap_or(true);
-        with(|st| st.tweak("AnimSwitch", if on { 1.0 } else { 0.0 }));
-    })?);
-    keep(find::<Selector>(root, "PaletteBox")?.SelectionChanged(|s, _| {
-        let i = s.as_ref().and_then(|s| s.cast::<Selector>().ok()).and_then(|b| b.SelectedIndex().ok()).unwrap_or(0);
-        with(|st| st.tweak("PaletteBox", i.max(0) as f64));
-    })?);
-    keep(find::<ButtonBase>(root, "TweaksClose")?.Click(|_, _| {
-        with(|st| st.command("mTweaks"));
     })?);
 
     // The row menu's items reuse the File menu's commands.
@@ -721,16 +707,19 @@ pub(crate) fn bind(root: &FrameworkElement) -> windows_core::Result<SwapChainPan
 }
 
 fn main() {
+    let screenshot = crate::args().shot.is_some();
+    settings::READ_ONLY.store(screenshot, std::sync::atomic::Ordering::Relaxed);
+    sprawl_advisor::set_read_only(screenshot);
     // `sprawl --mcp`: an MCP server on stdin and stdout for Claude Code, no window
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
-    if args.first().map(String::as_str) == Some("--mcp") {
+    if !screenshot && args.first().map(String::as_str) == Some("--mcp") {
         let settings = settings::Settings::load();
         sprawl_advisor::program_folders::load(settings.get(sprawl_advisor::program_folders::SETTING).unwrap_or(""));
         sprawl_advisor::mcp::main(&args);
         return;
     }
     // `sprawl --check`: the low-space check a scheduled task runs while the setting is on
-    if args.first().map(String::as_str) == Some("--check") {
+    if !screenshot && args.first().map(String::as_str) == Some("--check") {
         alert::check();
         return;
     }
@@ -739,7 +728,7 @@ fn main() {
         return;
     }
     // `sprawl --uninstall`: from Settings > Apps
-    if args.first().map(String::as_str) == Some("--uninstall") {
+    if !screenshot && args.first().map(String::as_str) == Some("--uninstall") {
         sprawl_install::setup::uninstall(args.iter().any(|a| a == "/S"));
         return;
     }
@@ -747,10 +736,12 @@ fn main() {
     if let Ok(exe) = std::env::current_exe() {
         sprawl_advisor::llm::set_mcp_exe(exe);
     }
-    bridge::start();
-    sprawl_advisor::config::migrate_old_folders();
-    // a key from before hosts were recorded stays with the server it was saved for
-    sprawl_advisor::config::record_key_host();
+    if !screenshot {
+        bridge::start();
+        sprawl_advisor::config::migrate_old_folders();
+        // a key from before hosts were recorded stays with the server it was saved for
+        sprawl_advisor::config::record_key_host();
+    }
     // A panic inside a XAML callback aborts the process with no message; keep a note of it.
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("{info}

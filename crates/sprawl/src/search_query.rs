@@ -702,6 +702,7 @@ pub(crate) fn history_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn history_load() -> History {
+    if crate::settings::read_only() { return History::default(); }
     history_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| History::parse(&t)).unwrap_or_default()
 }
 

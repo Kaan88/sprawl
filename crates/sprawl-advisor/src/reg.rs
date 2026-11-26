@@ -26,6 +26,26 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// A machine setting used to locate a cleanup scope. Missing isn't the same as unreadable,
+/// and variables must be expanded by the caller against the actual Windows installation.
+pub(crate) fn checked_machine_string(key: &str, name: &str) -> std::io::Result<Option<String>> {
+    let (key, name) = (wide(key), wide(name));
+    let mut buf = [0u16; 4096];
+    let mut bytes = std::mem::size_of_val(&buf) as u32;
+    const FLAGS: u32 = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | 0x1000_0000 | 0x0001_0000; // no expand, 64-bit view
+    let status = unsafe { RegGetValueW(HKLM, key.as_ptr(), name.as_ptr(), FLAGS, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut bytes) };
+    match status {
+        2 | 3 => Ok(None),
+        0 if bytes >= 2 && bytes % 2 == 0 && bytes as usize <= std::mem::size_of_val(&buf) => {
+            let text = &buf[..bytes as usize / 2 - 1];
+            if text.contains(&0) || buf[text.len()] != 0 { return Err(std::io::Error::other("invalid registry string")); }
+            String::from_utf16(text).map(Some).map_err(std::io::Error::other)
+        }
+        0 => Err(std::io::Error::other("invalid registry string")),
+        code => Err(std::io::Error::from_raw_os_error(code as i32)),
+    }
+}
+
 /// Which registry view a 64-bit process reads under HKLM\SOFTWARE.
 #[derive(Clone, Copy)]
 pub enum View {
