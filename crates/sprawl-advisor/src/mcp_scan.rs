@@ -12,8 +12,8 @@
 //! Every tool here stays read-only: a scan reads names and sizes, nothing else.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
@@ -24,9 +24,12 @@ use crate::finding::Finding;
 use crate::llm::tools::Tools;
 use crate::llm::ToolSpec;
 use crate::memory::Memory;
+use crate::mcp_cancel::Cancel;
 
 /// The longest `wait_seconds` honoured: MCP clients give up on a call after about a minute.
-const MAX_WAIT: u64 = 50;
+pub const MAX_WAIT: u64 = 50;
+const PREPARE_LIMIT: Duration = Duration::from_secs(10);
+const SCAN_LIMIT: Duration = Duration::from_secs(600);
 /// Trees this process scanned that it keeps (a whole drive can take a few hundred MB).
 const KEEP_SCANS: usize = 3;
 /// Older than this, an answer suggests scanning again.
@@ -101,27 +104,27 @@ pub fn path_of(input: &Value) -> Option<PathBuf> {
     (!p.is_empty()).then(|| PathBuf::from(p))
 }
 
-/// Why `path` can't be scanned, if it can't.
-fn refusal(path: &Path) -> Option<String> {
+/// Pin a plain local folder and refuse paths the MCP is not allowed to scan.
+fn checked_root(path: &Path) -> Result<sprawl_core::local::Directory, String> {
     if !path.is_absolute() {
-        return Some(format!("{} isn't a full path: give one such as D:\\ or C:\\Users\\me\\Projects.", path.display()));
+        return Err(format!("{} isn't a full path: give one such as D:\\ or C:\\Users\\me\\Projects.", path.display()));
     }
     let pinned = match sprawl_core::local::directory(path) {
         Ok(p) => p,
-        Err(e) => return Some(format!("{} isn't a plain local folder Sprawl can open; network, device and redirected paths are refused: {e}", path.display())),
+        Err(e) => return Err(format!("{} isn't a plain local folder Sprawl can open; network, device and redirected paths are refused: {e}", path.display())),
     };
-    let root = pinned.path.clone();
+    let root = &pinned.path;
     let s = root.to_string_lossy();
     if s.starts_with(r"\\") && !s.starts_with(r"\\?\Volume") {
-        return Some(format!("{} is a network path: Sprawl doesn't scan those.", path.display()));
+        return Err(format!("{} is a network path: Sprawl doesn't scan those.", path.display()));
     }
     if is_network_drive(&s) {
-        return Some(format!("{} is on a network drive: Sprawl doesn't scan those.", path.display()));
+        return Err(format!("{} is on a network drive: Sprawl doesn't scan those.", path.display()));
     }
     if !root.is_dir() {
-        return Some(format!("{} isn't a folder or drive Sprawl can open.", path.display()));
+        return Err(format!("{} isn't a folder or drive Sprawl can open.", path.display()));
     }
-    None
+    Ok(pinned)
 }
 
 #[cfg(windows)]
@@ -151,20 +154,20 @@ pub struct Held {
     /// History's file it was loaded from; `None` for a scan made here.
     file: Option<PathBuf>,
     tree: Tree,
-    facts: Option<Facts>,
-    found: Option<Vec<Finding>>,
+    facts: OnceLock<Facts>,
+    found: OnceLock<Vec<Finding>>,
     /// Scanned by the running app (in the background), not by the server's own process.
     in_app: bool,
 }
 
 impl Held {
     fn new(tree: Tree, taken: SystemTime, file: Option<PathBuf>, in_app: bool) -> Held {
-        Held { root: tree.root_path.clone(), taken, file, tree, facts: None, found: None, in_app }
+        Held { root: tree.root_path.clone(), taken, file, tree, facts: OnceLock::new(), found: OnceLock::new(), in_app }
     }
 
-    fn facts(&mut self) -> &Facts {
+    fn facts(&self) -> &Facts {
         let tree = &self.tree;
-        self.facts.get_or_insert_with(|| {
+        self.facts.get_or_init(|| {
             let mut f = Facts::gather();
             f.attach_usage(tree);
             f
@@ -186,18 +189,20 @@ impl Held {
         s + ")\n\n"
     }
 
-    fn call(&mut self, name: &str, input: &Value, memory: &Memory, app_running: bool) -> Result<String, String> {
+    fn call(&self, name: &str, input: &Value, memory: &Memory, app_running: bool, cancel: &Cancel) -> Result<String, String> {
         let note = self.note(app_running);
-        self.facts();
-        let facts = self.facts.as_ref().expect("made above");
+        cancel.check()?;
+        let facts = self.facts();
+        cancel.check()?;
         let answer = match name {
             "scan_report" | "findings" => {
-                let found = self.found.get_or_insert_with(|| crate::mcp::rules_for(&self.tree, facts));
+                let found = self.found.get_or_init(|| crate::mcp::rules_for(&self.tree, facts));
+                cancel.check()?;
                 Ok(if name == "findings" { crate::mcp::findings_list(found) } else { crate::llm::report::build(&self.tree, facts, Some(found), None, None, &memory.labels) })
             }
             "cleaners" | "set_filter" if app_running => Err(format!("That works only for the scan open in Sprawl; {} isn't in it.", self.root.display())),
             "cleaners" | "set_filter" => Err("That needs Sprawl open: start Sprawl and ask again.".to_string()),
-            _ => Tools::new(&self.tree, facts, "claude-code", &[], memory).at_scan(self.taken).call(name, input),
+            _ => Tools::new(&self.tree, facts, "claude-code", &[], memory).at_scan(self.taken).call_cancellable(name, input, cancel.flag()),
         };
         match answer {
             Ok(t) => Ok(note + &t),
@@ -208,9 +213,8 @@ impl Held {
 
 enum JobState {
     Running {
-        progress: Arc<Progress>,
-        saving: Arc<AtomicBool>,
-        handle: std::thread::JoinHandle<Result<(Tree, String), String>>,
+        work: Arc<ScanWork>,
+        handle: std::thread::JoinHandle<Result<ScanResult, String>>,
     },
     Done {
         files: u64,
@@ -220,12 +224,38 @@ enum JobState {
         history: String,
     },
     Failed(String),
+    Reused(String),
+}
+
+enum ScanResult {
+    Tree(Tree, String, f64),
+    Reused(String),
+}
+
+struct ScanWork {
+    cancel: Arc<Cancel>,
+    progress: OnceLock<Arc<Progress>>,
+    saving: AtomicBool,
+    started: Instant,
+}
+
+impl ScanWork {
+    fn limit(&self) -> Option<&'static str> {
+        if self.started.elapsed() >= SCAN_LIMIT { Some("The scan exceeded its 10-minute limit.") }
+        else if self.progress.get().is_none() && self.started.elapsed() >= PREPARE_LIMIT {
+            Some("Sprawl couldn't check the path and folders to skip within 10 s.")
+        } else { None }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if let Some(reason) = self.limit() { return Err(reason.into()); }
+        self.cancel.check()
+    }
 }
 
 struct Job {
     id: u64,
     root: PathBuf,
-    started: Instant,
     taken: SystemTime,
     state: JobState,
 }
@@ -233,140 +263,127 @@ struct Job {
 /// This process's scans and the trees it answers from.
 #[derive(Default)]
 pub struct Index {
+    state: Mutex<ScanState>,
+    history: Mutex<Option<Arc<Held>>>,
+    in_app: bool,
+}
+
+#[derive(Default)]
+struct ScanState {
     jobs: Vec<Job>,
-    /// Scans made here (newest last), then at most one tree loaded from History.
-    held: Vec<Held>,
-    next: u64,
+    /// Scans made here, newest last. Whole-tree answers use these outside the state lock.
+    held: Vec<Arc<Held>>,
     /// Tests and screenshot runs: History is neither read nor written.
     no_history: bool,
-    /// Kept by the running app for every server that asks it (its scans use the app's rights,
-    /// the MFT when it runs as administrator, and stay off the user's screen).
-    in_app: bool,
-    /// The app's own scan is running: a second one waits for it.
+    /// The app's own scan is running: don't start a second one.
     busy: bool,
 }
 
-impl Index {
-    /// The app's index: `history` false in a screenshot run, which writes nothing.
-    pub fn for_app(history: bool) -> Index {
-        Index { no_history: !history, in_app: true, ..Default::default() }
-    }
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ScanReply {
+    pub text: String,
+    pub job: Option<u64>,
+    pub running: bool,
+    pub started: bool,
+    pub failed: bool,
+}
 
-    /// Before each request the app says whether its own scan is running (`scan_path` waits
-    /// for it) and whether it may write History (not in a screenshot run).
-    pub fn set_app_state(&mut self, busy: bool, history: bool) {
-        self.busy = busy;
-        self.no_history = !history;
-    }
+/// Odd IDs belong to the GUI; even IDs belong to this MCP process. Include a per-process
+/// seed so a restarted GUI doesn't mistake a previous GUI's job for one of its own.
+pub(crate) fn app_job(id: u64) -> bool { id % 2 == 1 }
 
-    fn base(&self) -> Option<PathBuf> {
-        if self.no_history { None } else { crate::history::base_dir() }
-    }
+fn job_id(in_app: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    static NEXT: OnceLock<AtomicU64> = OnceLock::new();
+    let next = NEXT.get_or_init(|| {
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        crate::store::nonce().hash(&mut hash);
+        AtomicU64::new((hash.finish() & ((1 << 39) - 1)) << 12)
+    });
+    2 * next.fetch_add(1, Ordering::Relaxed) + u64::from(in_app)
+}
 
+impl ScanState {
     /// A finished scan becomes a held tree. Called before every answer.
-    fn poll(&mut self) {
+    fn poll(&mut self, in_app: bool) {
         for j in &mut self.jobs {
             let JobState::Running { handle, .. } = &j.state else { continue };
             if !handle.is_finished() {
                 continue;
             }
-            let JobState::Running { progress, handle, .. } = std::mem::replace(&mut j.state, JobState::Failed(String::new())) else { unreachable!() };
+            let JobState::Running { handle, .. } = std::mem::replace(&mut j.state, JobState::Failed(String::new())) else { unreachable!() };
             j.state = match handle.join() {
-                Ok(Ok((tree, history))) => {
-                    let s = progress.snapshot();
-                    let done = JobState::Done { files: s.files, bytes: s.bytes, secs: j.started.elapsed().as_secs_f64(), method: tree.method.label(), history };
+                Ok(Ok(ScanResult::Tree(tree, history, secs))) => {
+                    let s = &tree.nodes[sprawl_core::ROOT];
+                    let done = JobState::Done { files: s.files, bytes: s.size, secs, method: tree.method.label(), history };
                     // a scan of the same root replaces the older one
-                    self.held.retain(|h| !(h.file.is_none() && h.root == tree.root_path));
-                    let at = self.held.iter().take_while(|h| h.file.is_none()).count();
-                    self.held.insert(at, Held::new(tree, j.taken, None, self.in_app));
-                    let scans = self.held.iter().filter(|h| h.file.is_none()).count();
-                    if scans > KEEP_SCANS {
+                    self.held.retain(|h| h.root != tree.root_path);
+                    j.root = tree.root_path.clone();
+                    self.held.push(Arc::new(Held::new(tree, j.taken, None, in_app)));
+                    if self.held.len() > KEEP_SCANS {
                         self.held.remove(0);
                     }
                     done
                 }
+                Ok(Ok(ScanResult::Reused(text))) => JobState::Reused(text),
                 Ok(Err(e)) => JobState::Failed(e),
                 Err(_) => JobState::Failed("the scan stopped with an internal error".into()),
             };
         }
+        // Keep status for recent jobs without growing forever during a long GUI session.
+        if self.jobs.len() > 64 { self.jobs.drain(..self.jobs.len() - 64); }
     }
 
     fn running(&self) -> Option<&Job> {
         self.jobs.iter().find(|j| matches!(j.state, JobState::Running { .. }))
     }
 
-    /// Answer `scan_path`, `scan_status` or `list_scans`. `as_admin`: the app may scan with
-    /// administrator rights for this client (an elevated client, or the user's switch).
-    pub fn scan_call(&mut self, name: &str, input: &Value, as_admin: bool) -> Result<String, String> {
-        if !is_scan_tool(name) { return Err(format!("there is no tool called {name}")); }
-        // an app running as administrator (or that can't tell) would scan with its rights:
-        // unless that is allowed, the server does it with its own
-        if self.in_app && !as_admin && !sprawl_core::elevation().is_ok_and(|elevated| !elevated) {
-            return Err(PASS_TO_SERVER.into());
-        }
-        self.poll();
-        let wait = input["wait_seconds"].as_u64().unwrap_or(0).min(MAX_WAIT);
-        match name {
-            "scan_path" => {
-                let path = path_of(input).ok_or("give a `path`: a drive such as D:\\ or a folder")?;
-                if let Some(r) = refusal(&path) {
-                    return Err(r);
-                }
-                let pinned = sprawl_core::local::directory(&path).map_err(|e| format!("The scan root changed or cannot be opened: {e}"))?;
-                let root = pinned.path.clone();
-                if let Some(j) = self.running() {
-                    if j.root == root {
-                        let id = j.id;
-                        return Ok(self.wait_for(id, wait));
-                    }
-                    return Err(format!("Scan {} of {} is still running; one scan at a time. Follow it with scan_status.", j.id, j.root.display()));
-                }
-                if self.busy {
-                    return Err("Sprawl is scanning on its screen right now; one scan at a time. Ask again when it has finished.".into());
-                }
-                if input["rescan"].as_bool() != Some(true) {
-                    if let Some(h) = self.held.iter().rfind(|h| h.file.is_none() && covers(&h.root, &root)) {
-                        return Ok(format!("{} is in the scan of {} made {}; the other tools answer from it. Pass rescan: true to scan again.", root.display(), h.root.display(), age(h.taken)));
-                    }
-                }
-                let id = self.start(root);
-                Ok(self.wait_for(id, wait))
-            }
-            "scan_status" => {
-                let id = match input["job"].as_u64() {
-                    Some(id) => id,
-                    None => self.jobs.last().map(|j| j.id).ok_or("No scan has been started here: call scan_path.")?,
-                };
-                if !self.jobs.iter().any(|j| j.id == id) {
-                    return Err(format!("There is no scan {id}."));
-                }
-                Ok(self.wait_for(id, wait))
-            }
-            "list_scans" => Ok(self.list()),
-            _ => Err(format!("there is no tool called {name}")),
-        }
-    }
-
-    fn start(&mut self, root: PathBuf) -> u64 {
-        self.next += 1;
-        let id = self.next;
-        let progress = crate::exclusions::progress();
-        let saving = Arc::new(AtomicBool::new(false));
-        let (p, sv, r) = (progress.clone(), saving.clone(), root.clone());
+    fn start(&mut self, in_app: bool, root: PathBuf, rescan: bool, cancel: Arc<Cancel>, prepare_policy: impl FnOnce() -> Arc<Progress> + Send + 'static) -> Result<u64, String> {
+        let id = job_id(in_app);
+        let work = Arc::new(ScanWork { cancel, progress: OnceLock::new(), saving: AtomicBool::new(false), started: Instant::now() });
+        let (w, r) = (work.clone(), root.clone());
         let taken = SystemTime::now();
-        let base = self.base();
         let quiet = self.no_history;
-        let handle = std::thread::spawn(move || {
+        let known: Vec<_> = self.held.iter().rev().map(|h| (h.root.clone(), h.taken)).collect();
+        let handle = std::thread::Builder::new().spawn(move || {
+            w.check()?;
+            let pinned = checked_root(&r)?;
+            let root = &pinned.path;
+            w.check()?;
+            if !rescan {
+                if let Some((path, when)) = known.iter().find(|(path, _)| covers(path, root)) {
+                    return Ok(ScanResult::Reused(format!("{} is in the scan of {} made {}; the other tools answer from it. Pass rescan: true to scan again.", root.display(), path.display(), age(*when))));
+                }
+            }
+            let p = prepare_policy();
+            w.check()?;
+            let _ = w.progress.set(p.clone());
+            // Don't poll the cross-process event on every file in a large directory.
+            let next_check = AtomicU64::new(0);
+            let stop = || {
+                let ms = w.started.elapsed().as_millis() as u64;
+                let next = next_check.load(Ordering::Relaxed);
+                if ms >= next && next_check.compare_exchange(next, ms + 25, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                    if w.check().is_err() { p.cancel(); }
+                }
+                p.is_cancelled()
+            };
             // the folder walk, never the MFT: only what the user's own rights can list
-            let tree = sprawl_core::walk::walk(&r, &p).map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
+            let walked = sprawl_core::walk::walk_local_until(pinned, &p, &stop);
+            w.check()?;
+            let tree = walked.map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
             // into History as the app saves its own scans, when the user keeps History
+            let base = if quiet { None } else { crate::history::base_dir() };
             let policy = crate::history::Retention::load();
+            w.check()?;
             let history = match (policy.enabled, base) {
                 (true, Some(base)) => {
-                    sv.store(true, Ordering::Relaxed);
+                    w.saving.store(true, Ordering::Relaxed);
                     // folders only (Fable AI review P3-10): small, and the first to go when History is over
                     // its cap, so a scan the AI asked for doesn't push out the user's own snapshots
-                    match crate::history::prepare(&tree, taken, false).save_retained(&base, policy) {
+                    let prepared = crate::history::prepare(&tree, taken, false);
+                    w.check()?;
+                    match prepared.save_retained(&base, policy) {
                         Ok(()) => "Saved in Sprawl's History (folders only).".to_string(),
                         Err(e) => format!("Not saved in History: {e}."),
                     }
@@ -375,37 +392,32 @@ impl Index {
                 (true, None) if quiet => "Not saved in History (this run of Sprawl writes nothing).".to_string(),
                 (true, None) => "Not saved in History (no place for it).".to_string(),
             };
-            Ok((tree, history))
-        });
-        self.jobs.push(Job { id, root, started: Instant::now(), taken, state: JobState::Running { progress, saving, handle } });
-        id
+            w.check()?;
+            Ok(ScanResult::Tree(tree, history, w.started.elapsed().as_secs_f64()))
+        }).map_err(|e| format!("Sprawl couldn't start a scan worker: {e}"))?;
+        self.jobs.push(Job { id, root, taken, state: JobState::Running { work, handle } });
+        Ok(id)
     }
 
-    /// The state of job `id`, after waiting up to `wait` seconds for it to finish.
-    fn wait_for(&mut self, id: u64, wait: u64) -> String {
-        let until = Instant::now() + Duration::from_secs(wait);
-        loop {
-            self.poll();
-            let running = self.jobs.iter().any(|j| j.id == id && matches!(j.state, JobState::Running { .. }));
-            if !running || Instant::now() >= until {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let Some(j) = self.jobs.iter().find(|j| j.id == id) else { return format!("There is no scan {id}.") };
+    fn status(&self, id: u64, started: bool) -> Result<ScanReply, String> {
+        let j = self.jobs.iter().find(|j| j.id == id).ok_or_else(|| format!("There is no scan {id}."))?;
         let head = format!("Scan {} of {}: ", j.id, j.root.display());
-        match &j.state {
-            JobState::Running { progress, saving, .. } => {
-                let s = progress.snapshot();
-                let stage = if saving.load(Ordering::Relaxed) { "saving to History" } else if s.phase.is_empty() { "starting" } else { s.phase };
-                let frac = s.fraction.map(|f| format!(", about {:.0}% done", f * 100.0)).unwrap_or_default();
+        let mut running = false;
+        let text = match &j.state {
+            JobState::Running { work, .. } => {
+                if let Err(reason) = work.check() {
+                    return Ok(ScanReply { text: format!("{head}stopping. {reason}"), job: Some(id), running: false, started, failed: true });
+                }
+                running = true;
+                let details = if let Some(progress) = work.progress.get() {
+                    let s = progress.snapshot();
+                    let stage = if work.saving.load(Ordering::Relaxed) { "saving to History" } else if s.phase.is_empty() { "starting" } else { s.phase };
+                    let frac = s.fraction.map(|f| format!(", about {:.0}% done", f * 100.0)).unwrap_or_default();
+                    format!("{stage}{frac}, {}: {} files, {} folders, {} so far", s.method.label(), s.files, s.folders, sprawl_core::format_size(s.bytes))
+                } else { "checking the path and folders to skip".into() };
                 format!(
-                    "{head}running ({stage}{frac}, {}): {} files, {} folders, {} so far, {:.0} s. Call scan_status with job {} (and wait_seconds) to follow it.",
-                    s.method.label(),
-                    s.files,
-                    s.folders,
-                    sprawl_core::format_size(s.bytes),
-                    j.started.elapsed().as_secs_f64(),
+                    "{head}still scanning ({details}; {:.0} s). Call scan_status with job {} (and wait_seconds) to follow it.",
+                    work.started.elapsed().as_secs_f64(),
                     j.id
                 )
             }
@@ -415,18 +427,80 @@ impl Index {
                 j.root.display()
             ),
             JobState::Failed(e) => format!("{head}failed. {e}"),
-        }
+            JobState::Reused(text) => text.clone(),
+        };
+        Ok(ScanReply { text, job: Some(id), running, started, failed: matches!(j.state, JobState::Failed(_)) })
     }
 
     fn list(&self) -> String {
         let mut s = String::new();
-        for h in self.held.iter().filter(|h| h.file.is_none()) {
+        for h in &self.held {
             s += &format!("- {} (scanned here {}): {}\n", h.root.display(), age(h.taken), sprawl_core::format_size(h.tree.nodes[sprawl_core::ROOT].size));
         }
         if let Some(j) = self.running() {
             s += &format!("- {} (scan {} running)\n", j.root.display(), j.id);
         }
-        let base = self.base();
+        s
+    }
+}
+
+impl Index {
+    /// The app's index: `history` false in a screenshot run, which writes nothing.
+    pub fn for_app(history: bool) -> Index {
+        Index { state: Mutex::new(ScanState { no_history: !history, ..Default::default() }), in_app: true, ..Default::default() }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, ScanState> { self.state.lock().unwrap_or_else(|e| e.into_inner()) }
+
+    pub fn set_app_state(&self, busy: bool, history: bool) {
+        let mut state = self.state();
+        state.busy = busy;
+        state.no_history = !history;
+    }
+
+    /// Only a snapshot; waiting never holds the index or occupies the GUI pipe.
+    pub(crate) fn scan_now(&self, name: &str, input: &Value, as_admin: bool, cancel: Arc<Cancel>) -> Result<ScanReply, String> {
+        cancel.check()?;
+        if self.in_app && !as_admin && !sprawl_core::elevation().is_ok_and(|elevated| !elevated) {
+            return Err(PASS_TO_SERVER.into());
+        }
+        if name == "list_scans" {
+            return Ok(ScanReply { text: self.list(), job: None, running: false, started: false, failed: false });
+        }
+        let mut state = self.state();
+        state.poll(self.in_app);
+        cancel.check()?;
+        match name {
+            "scan_path" => {
+                let path = path_of(input).ok_or("give a `path`: a drive such as D:\\ or a folder")?;
+                if !path.is_absolute() {
+                    return Err(format!("{} isn't a full path: give one such as D:\\ or C:\\Users\\me\\Projects.", path.display()));
+                }
+                if let Some(job) = state.running() {
+                    return if job.root == path { state.status(job.id, false) }
+                        else { Err(format!("Scan {} of {} is still active; one scan at a time. Follow it with scan_status.", job.id, job.root.display())) };
+                }
+                if state.busy {
+                    return Err("Sprawl is scanning on its screen right now; one scan at a time. Ask again when it has finished.".into());
+                }
+                let id = state.start(self.in_app, path, input["rescan"].as_bool() == Some(true), cancel, crate::exclusions::progress)?;
+                state.status(id, true)
+            }
+            "scan_status" => {
+                let id = input["job"].as_u64().or_else(|| state.jobs.last().map(|j| j.id)).ok_or("No scan has been started here: call scan_path.")?;
+                state.status(id, false)
+            }
+            _ => Err(format!("there is no tool called {name}")),
+        }
+    }
+
+    fn list(&self) -> String {
+        let (mut s, no_history) = {
+            let mut state = self.state();
+            state.poll(self.in_app);
+            (state.list(), state.no_history)
+        };
+        let base = if no_history { None } else { crate::history::base_dir() };
         let saved = base.as_deref().map(crate::history::last_scans).unwrap_or_default();
         if !saved.is_empty() {
             s += "In History (the newest saved scan of each folder):\n";
@@ -443,59 +517,55 @@ impl Index {
     }
 
     /// A scan made here that holds `path`, the newest first.
-    pub fn has_scan_for(&mut self, path: &Path) -> bool {
-        self.poll();
-        self.held.iter().any(|h| h.file.is_none() && covers(&h.root, path))
+    pub fn has_scan_for(&self, path: &Path) -> bool {
+        let mut state = self.state();
+        state.poll(self.in_app);
+        state.held.iter().any(|h| covers(&h.root, path))
     }
 
     /// Answer a query tool from the freshest tree that holds the call's path (any tree when it
     /// names none): a scan made here, or History's newest full snapshot.
-    pub fn answer(&mut self, name: &str, input: &Value, memory: &Memory, app_running: bool) -> Result<String, String> {
+    pub fn answer(&self, name: &str, input: &Value, memory: &Memory, app_running: bool) -> Result<String, String> {
+        self.answer_cancellable(name, input, memory, app_running, &Cancel::default())
+    }
+
+    pub(crate) fn answer_cancellable(&self, name: &str, input: &Value, memory: &Memory, app_running: bool, cancel: &Cancel) -> Result<String, String> {
         if !crate::mcp::bridge_specs().iter().any(|t| t.name == name) {
             return Err(format!("there is no tool called {name}"));
         }
-        self.poll();
+        cancel.check()?;
         let path = path_of(input);
-        let i = self.pick(path.as_deref()).ok_or_else(|| match &path {
+        let held = self.pick(path.as_deref()).ok_or_else(|| match &path {
             Some(p) => format!("{} isn't in any scan Sprawl has: call scan_path with it (seconds for a folder, minutes for a whole drive).", p.display()),
             None if app_running => format!("{NO_SCAN_OPEN} Call scan_path with a drive or folder."),
             None => "Sprawl isn't running and has no saved scan yet: call scan_path with a drive or folder.".into(),
         })?;
-        self.held[i].call(name, input, memory, app_running)
+        held.call(name, input, memory, app_running, cancel)
     }
 
-    /// The index in `held` of the tree to answer from, loading it from History when that is
+    /// The tree to answer from, loading it from History when that is
     /// the freshest.
-    fn pick(&mut self, path: Option<&Path>) -> Option<usize> {
-        let ours = self.held.iter().enumerate().filter(|(_, h)| h.file.is_none() && path.is_none_or(|p| covers(&h.root, p))).max_by_key(|(_, h)| h.taken).map(|(i, h)| (i, h.taken));
-        let saved = self.base().and_then(|base| {
+    fn pick(&self, path: Option<&Path>) -> Option<Arc<Held>> {
+        let (ours, no_history) = {
+            let mut state = self.state();
+            state.poll(self.in_app);
+            (state.held.iter().filter(|h| path.is_none_or(|p| covers(&h.root, p))).max_by_key(|h| h.taken).cloned(), state.no_history)
+        };
+        let saved = (!no_history).then(crate::history::base_dir).flatten().and_then(|base| {
             let list = match path {
                 Some(p) => crate::history::covering(&base, p),
                 None => crate::history::list(&base),
             };
             list.into_iter().filter(|e| e.full).max_by_key(|e| e.taken)
         });
-        match (ours, saved) {
-            (Some((i, t)), Some(e)) if t >= e.taken => Some(i),
-            (Some((i, _)), None) => Some(i),
-            (_, Some(e)) => {
-                if let Some(i) = self.held.iter().position(|h| h.file.as_ref() == Some(&e.file)) {
-                    return Some(i);
-                }
-                // a History scan saved by this process is the scan made here: same moment
-                if let Some((i, t)) = ours {
-                    if t == e.taken {
-                        return Some(i);
-                    }
-                }
-                let tree = crate::history::load(&e).ok()?;
-                // one tree from History at a time
-                self.held.retain(|h| h.file.is_none());
-                self.held.push(Held::new(tree, e.taken, Some(e.file.clone()), self.in_app));
-                Some(self.held.len() - 1)
-            }
-            (None, None) => None,
+        let Some(e) = saved.filter(|e| ours.as_ref().is_none_or(|h| h.taken < e.taken)) else { return ours; };
+        if let Some(h) = self.history.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|h| h.file.as_ref() == Some(&e.file)).cloned() {
+            return Some(h);
         }
+        let tree = crate::history::load(&e).ok()?;
+        let held = Arc::new(Held::new(tree, e.taken, Some(e.file), self.in_app));
+        *self.history.lock().unwrap_or_else(|e| e.into_inner()) = Some(held.clone());
+        Some(held)
     }
 }
 
@@ -505,11 +575,11 @@ mod tests {
 
     #[test]
     fn refuses_what_it_shouldnt_scan() {
-        assert!(refusal(Path::new("relative\\dir")).is_some_and(|r| r.contains("full path")));
-        assert!(refusal(Path::new(r"\\server\share")).is_some_and(|r| r.contains("network")));
+        assert!(checked_root(Path::new("relative\\dir")).err().is_some_and(|r| r.contains("full path")));
+        assert!(checked_root(Path::new(r"\\server\share")).err().is_some_and(|r| r.contains("network")));
         let absent = std::env::temp_dir().join(format!("sprawl-absent-{}", crate::store::nonce()));
-        assert!(refusal(&absent).is_some_and(|r| r.contains("can open")));
-        assert!(refusal(&std::env::temp_dir()).is_none());
+        assert!(checked_root(&absent).err().is_some_and(|r| r.contains("can open")));
+        assert!(checked_root(&std::env::temp_dir()).is_ok());
     }
 
     #[test]
@@ -525,12 +595,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sprawl-mcp-scan-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("inner")).unwrap();
         std::fs::write(dir.join("inner").join("a.bin"), vec![0u8; 5000]).unwrap();
-        let mut ix = Index { no_history: true, ..Default::default() };
+        let ix = Index { state: Mutex::new(ScanState { no_history: true, ..Default::default() }), ..Default::default() };
         let p = dir.to_string_lossy().to_string();
-        let first = ix.scan_call("scan_path", &json!({"path": p, "wait_seconds": 30}), false).unwrap();
+        let ask = |name, input: Value| ix.scan_now(name, &input, false, Arc::new(Cancel::default())).unwrap();
+        let wait = |mut reply: ScanReply| {
+            let until = Instant::now() + Duration::from_secs(10);
+            while reply.running {
+                assert!(Instant::now() < until, "{}", reply.text);
+                std::thread::sleep(Duration::from_millis(20));
+                reply = ask("scan_status", json!({"job": reply.job}));
+            }
+            reply.text
+        };
+        let first = wait(ask("scan_path", json!({"path": p})));
         assert!(first.contains("done"), "{first}");
         assert!(first.contains("Not saved in History"), "{first}");
-        let again = ix.scan_call("scan_path", &json!({"path": format!("{p}\\inner")}), false).unwrap();
+        let again = wait(ask("scan_path", json!({"path": format!("{p}\\inner")})));
         assert!(again.contains("rescan"), "{again}");
         assert!(ix.has_scan_for(&dir.join("inner")));
         let memory = Memory::default();
@@ -538,7 +618,41 @@ mod tests {
         assert!(kids.contains("a.bin") && kids.contains("made through this server"), "{kids}");
         let none = ix.answer("list_children", &json!({"path": r"Q:\elsewhere"}), &memory, false).unwrap_err();
         assert!(none.contains("call scan_path"), "{none}");
-        assert!(ix.scan_call("list_scans", &json!({}), false).unwrap().contains(&p));
+        assert!(ask("list_scans", json!({})).text.contains(&p));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blocked_scan_preflight_leaves_status_responsive_and_can_be_cancelled() {
+        let dir = std::env::temp_dir().join(format!("sprawl-mcp-preflight-{}", crate::store::nonce()));
+        std::fs::create_dir(&dir).unwrap();
+        let index = Index::for_app(false);
+        let client = Cancel::default();
+        let cancel = Arc::new(Cancel::import(&client.export().unwrap()).unwrap());
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, done) = std::sync::mpsc::channel();
+        let job = index.state().start(true, dir.clone(), true, cancel, move || {
+            entered.send(()).unwrap();
+            let _ = done.recv_timeout(Duration::from_secs(5));
+            Progress::new()
+        }).unwrap();
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let status = || index.scan_now("scan_status", &json!({"job": job}), true, Arc::new(Cancel::default())).unwrap();
+        let first = status();
+        assert!(app_job(job) && first.running);
+        assert!(first.text.contains("still scanning") && first.text.contains("folders to skip"), "{}", first.text);
+        client.stop();
+        let stopping = status();
+        assert!(!stopping.running && stopping.text.contains("cancelled"), "{}", stopping.text);
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            let final_status = status();
+            if final_status.text.contains("failed") { break; }
+            assert!(Instant::now() < until, "{}", final_status.text);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!index.has_scan_for(&dir));
+        std::fs::remove_dir(&dir).unwrap();
     }
 }

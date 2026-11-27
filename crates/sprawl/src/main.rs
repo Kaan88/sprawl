@@ -713,9 +713,10 @@ fn main() {
     // `sprawl --mcp`: an MCP server on stdin and stdout for Claude Code, no window
     let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     if !screenshot && args.first().map(String::as_str) == Some("--mcp") {
-        let settings = settings::Settings::load();
-        sprawl_advisor::program_folders::load(settings.get(sprawl_advisor::program_folders::SETTING).unwrap_or(""));
-        sprawl_advisor::mcp::main(&args);
+        sprawl_advisor::mcp::main(&args, || {
+            let settings = settings::Settings::load();
+            sprawl_advisor::program_folders::load(settings.get(sprawl_advisor::program_folders::SETTING).unwrap_or(""));
+        });
         return;
     }
     // `sprawl --check`: the low-space check a scheduled task runs while the setting is on

@@ -49,10 +49,17 @@ pub(crate) fn last_name(name: &str) -> &str {
 impl Index {
     /// Build the index of `tree` (about 0.2 s for 3.7 million names; run it off the UI thread).
     pub fn build(tree: &Tree) -> Index {
+        Self::build_until(tree, &AtomicBool::new(false)).expect("index build was not cancelled")
+    }
+
+    pub fn build_until(tree: &Tree, cancel: &AtomicBool) -> Option<Index> {
+        let stopped = || cancel.load(Ordering::Relaxed);
+        if stopped() { return None; }
         let n = tree.nodes.len();
         let mut blob = Vec::with_capacity(n * 24);
         let mut starts = Vec::with_capacity(n + 1);
-        for node in &tree.nodes {
+        for (i, node) in tree.nodes.iter().enumerate() {
+            if i % 256 == 0 && stopped() { return None; }
             starts.push(blob.len() as u32);
             let name = last_name(&node.name);
             if name.is_ascii() {
@@ -67,6 +74,7 @@ impl Index {
         if n > 0 {
             let mut stack = vec![(ROOT, 1u8)];
             while let Some((i, d)) = stack.pop() {
+                if stopped() { return None; }
                 if i < n && depth[i] == 0 {
                     depth[i] = d;
                     let next = d.saturating_add(1);
@@ -74,7 +82,7 @@ impl Index {
                 }
             }
         }
-        Index { blob, starts, depth }
+        Some(Index { blob, starts, depth })
     }
 
     pub fn len(&self) -> usize {

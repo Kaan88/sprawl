@@ -40,6 +40,7 @@ pub mod inuse;
 pub mod installers;
 pub mod llm;
 pub mod mcp;
+pub mod mcp_cancel;
 pub mod mcp_scan;
 pub mod memory;
 pub mod overwrite;

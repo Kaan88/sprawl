@@ -98,6 +98,12 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
     walk_with(path, progress, worker_count())
 }
 
+/// Detailed walk of an already pinned local folder, with a stop signal checked during enumeration.
+pub fn walk_local_until(root: crate::local::Directory, progress: &Progress, stop: &(dyn Fn() -> bool + Sync)) -> io::Result<Tree> {
+    let scan = crate::local::ScanRoot { path: root.path.clone(), pinned: Some(root) };
+    walk_root(scan, progress, worker_count(), true, Some(stop))
+}
+
 /// Fast inventory for interactive scans and Cleaner discovery. Directory entries already
 /// contain the size, attributes and time; do not open every plain file just to discover
 /// WOF compression hidden by Windows. Visible compression tags are still recorded.
@@ -122,9 +128,15 @@ pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result
 }
 
 fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool, stop: Option<&(dyn Fn() -> bool + Sync)>) -> io::Result<Tree> {
-    let interrupted = || io::Error::new(io::ErrorKind::Interrupted, "scan cancelled");
     if progress.is_cancelled() || stop.is_some_and(|stop| stop()) { return Err(interrupted()); }
     let scan = crate::local::scan_root(path, true)?;
+    walk_root(scan, progress, threads, detect_wof, stop)
+}
+
+fn interrupted() -> io::Error { io::Error::new(io::ErrorKind::Interrupted, "scan cancelled") }
+
+fn walk_root(scan: crate::local::ScanRoot, progress: &Progress, threads: usize, detect_wof: bool, stop: Option<&(dyn Fn() -> bool + Sync)>) -> io::Result<Tree> {
+    if progress.is_cancelled() || stop.is_some_and(|stop| stop()) { return Err(interrupted()); }
     let path = &scan.path;
     progress.note_root(path, scan.on_network());
     // WOF is local NTFS: a network share is listed only, never probed.
