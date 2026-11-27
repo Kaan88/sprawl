@@ -410,6 +410,12 @@ fn check_time(until: Instant, cancel: &AtomicBool) -> std::io::Result<()> {
 /// An authenticated fake peer on a unique pipe, serving just one test request.
 #[cfg(test)]
 pub(crate) fn test_peer(answer: impl FnOnce(String) -> Option<String> + Send + 'static) -> (String, std::thread::JoinHandle<()>) {
+    let mut answer = Some(answer);
+    test_peer_requests(1, move |line| answer.take().unwrap()(line))
+}
+
+#[cfg(test)]
+pub(crate) fn test_peer_requests(count: usize, mut answer: impl FnMut(String) -> Option<String> + Send + 'static) -> (String, std::thread::JoinHandle<()>) {
     use std::os::windows::io::FromRawHandle;
     let name = format!(r"\\.\pipe\sprawl-test-{}", crate::store::nonce());
     let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
@@ -417,17 +423,21 @@ pub(crate) fn test_peer(answer: impl FnOnce(String) -> Option<String> + Send + '
     assert_ne!(h, -1);
     let thread = std::thread::spawn(move || {
         let file = unsafe { std::fs::File::from_raw_handle(h as _) };
-        let deadline = Arc::new(Deadline { due: Mutex::new(Some(Instant::now() + Duration::from_secs(5))), ..Default::default() });
-        let watch = Watch::start(deadline).unwrap();
-        let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
-        assert!(ok);
-        let mut line = String::new();
-        assert!(BufReader::new(&file).read_line(&mut line).unwrap() > 0);
-        drop(watch);
-        if let Some(out) = answer(line) {
-            let deadline = Arc::new(Deadline { due: Mutex::new(Some(Instant::now() + REQUEST_LIMIT)), ..Default::default() });
-            let _watch = Watch::start(deadline).unwrap();
-            if writeln!(&file, "{out}").is_ok() { unsafe { ffi::FlushFileBuffers(h); } }
+        let deadline = Arc::new(Deadline::default());
+        let _watch = Watch::start(deadline.clone()).unwrap();
+        for _ in 0..count {
+            *deadline.due.lock().unwrap() = Some(Instant::now() + REQUEST_LIMIT);
+            let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
+            assert!(ok);
+            let mut line = String::new();
+            assert!(BufReader::new(&file).read_line(&mut line).unwrap() > 0);
+            *deadline.due.lock().unwrap() = None;
+            if let Some(out) = answer(line) {
+                *deadline.due.lock().unwrap() = Some(Instant::now() + REQUEST_LIMIT);
+                if writeln!(&file, "{out}").is_ok() { unsafe { ffi::FlushFileBuffers(h); } }
+                *deadline.due.lock().unwrap() = None;
+            }
+            unsafe { ffi::DisconnectNamedPipe(h); }
         }
     });
     (name, thread)

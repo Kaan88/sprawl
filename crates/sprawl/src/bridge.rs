@@ -3,7 +3,6 @@
 //! queued for the UI thread, which applies it as if typed.
 
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::sync::mpsc;
 use std::time::Instant;
 
 use sprawl_advisor::facts::Facts;
@@ -68,12 +67,15 @@ fn shared() -> &'static Mutex<Shared> {
 /// Serve the pipe on its own thread (a second Sprawl window just doesn't get it).
 pub(crate) fn start() {
     std::thread::spawn(|| {
-        use sprawl_advisor::mcp::{bridge_request_options, wait_for_bridge_reply, BridgeKind, Workers};
+        use sprawl_advisor::mcp::{bridge_request_options, bridge_work, BridgeKind, Workers};
         let facts = Arc::new(Mutex::new(FactsCache::default()));
-        let index = Arc::new(sprawl_advisor::mcp_scan::Index::for_app(false));
+        // Eight bridge task threads at most: four queries (also History lists), two reserved
+        // scan controls, and two facts preparers shared by on- and off-screen trees. Scan
+        // traversal has its own separately bounded lifecycle.
         let workers = Workers::new(4);
         let controls = Workers::new(2);
         let preparers = Workers::new(2);
+        let index = Arc::new(sprawl_advisor::mcp_scan::Index::for_app(false).with_facts_workers(preparers.clone()));
         let error = |text: &str| serde_json::json!({"ok": false, "text": text}).to_string();
         let served = sprawl_advisor::pipe::serve(|line, client_elevated| {
             let received = Instant::now();
@@ -81,32 +83,27 @@ pub(crate) fn start() {
             let until = received + wait;
             if Instant::now() >= until { return error("Sprawl's window ran out of time answering; try again."); }
             if cancel.stopped() { return error("Sprawl cancelled the request."); }
-            // The same live elevation gate applies before any unpublished facts are reserved.
-            let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
-            let view = (kind == BridgeKind::Query).then(View::current);
-            let cached = match &view {
-                Some(view) if disk && view.facts.is_none() => match FactsCache::reserve(&facts, view.tree.as_ref()) {
-                    Ok(Some(FactsPrep::Ready(facts))) => Some(facts),
-                    Ok(Some(FactsPrep::Gather(job))) => {
-                        // Don't hold the single pipe while facts are prepared: scan control and
-                        // retries can connect even while the first gather is stuck in Windows.
-                        if let Err(e) = preparers.spawn(move || { job.gather(); }) { return error(&e); }
-                        return error(GATHERING_FACTS);
-                    }
-                    Ok(None) => None,
-                    Err(e) => return error(e), // followers do not take a worker
-                },
-                _ => None,
-            };
-            let (send, recv) = mpsc::channel();
-            let (line, index, work) = (line.to_string(), index.clone(), cancel.clone());
+            let (line, index, facts, preparers) = (line.to_string(), index.clone(), facts.clone(), preparers.clone());
             let pool = if kind == BridgeKind::ScanControl { &controls } else { &workers };
-            if let Err(e) = pool.spawn(move || {
-                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| answer(&line, disk, view, &index, cached, work)))
-                    .unwrap_or_else(|_| error("Sprawl hit an internal error answering that."));
-                let _ = send.send((Instant::now(), out));
-            }) { return error(&e); }
-            wait_for_bridge_reply(&cancel, until, recv).unwrap_or_else(|e| error(&e))
+            bridge_work(pool, cancel, until,
+                move || client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key),
+                move |disk, work| {
+                    let view = (kind == BridgeKind::Query).then(View::current);
+                    let cached = match &view {
+                        Some(view) if disk && view.facts.is_none() => match FactsCache::reserve(&facts, view.tree.as_ref()) {
+                            Ok(Some(FactsPrep::Ready(facts))) => Some(facts),
+                            Ok(Some(FactsPrep::Gather(job))) => {
+                                // Never hold a query/control worker or the pipe during the gather.
+                                if let Err(e) = preparers.spawn(move || { job.gather(); }) { return error(&e); }
+                                return error(GATHERING_FACTS);
+                            }
+                            Ok(None) => None,
+                            Err(e) => return error(e),
+                        },
+                        _ => None,
+                    };
+                    answer(&line, disk, view, &index, cached, work)
+                }).unwrap_or_else(|e| error(&e))
         });
         // the pipe's name was taken: by another Sprawl window (normal), or by a program of
         // another account that made it first (clients refuse that server; Fable AI review
@@ -129,7 +126,7 @@ struct FactsCache {
 
 enum FactsPrep { Ready(Arc<Facts>), Gather(FactsJob) }
 
-const GATHERING_FACTS: &str = "Sprawl is still gathering facts for this scan; try again shortly.";
+use sprawl_advisor::mcp_scan::GATHERING_FACTS;
 
 impl FactsCache {
     fn reserve(cache: &Arc<Mutex<Self>>, tree: Option<&Arc<Tree>>) -> Result<Option<FactsPrep>, &'static str> {

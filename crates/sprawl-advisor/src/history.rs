@@ -321,7 +321,8 @@ impl Pending {
         }
         check()?;
         let entries = list(&base.path);
-        apply_checked(&entries, &plan_bounded(&entries, cap_bytes, SystemTime::now(), full_per_root), check)
+        let plan = plan_checked(&entries, cap_bytes, SystemTime::now(), full_per_root, check)?;
+        apply_checked(&entries, &plan, check)
     }
 
     /// The delta that stands for this scan's folders-only tree, when the previous snapshot is
@@ -351,27 +352,49 @@ fn base_of<'a>(entries: &'a [Entry], e: &'a Entry) -> Option<&'a Entry> {
 
 /// How many deltas deep `e` is (0 for a keyframe); `None` when its chain is broken.
 fn depth(entries: &[Entry], e: &Entry) -> Option<usize> {
-    let (mut n, mut cur) = (0, e);
-    while cur.delta {
-        if n > MAX_CHAIN { return None; }
-        cur = base_of(entries, cur)?;
-        n += 1;
-    }
-    Some(n)
+    Some(walk_bases(e, |cur| base_of(entries, cur), &|| Ok(())).ok()??.len() - 1)
 }
 
 /// The files `e` is built from, oldest first: the keyframe and the deltas after it, each
 /// named by the base its own header stores. A missing or misnamed base breaks the chain.
 fn chain<'a>(entries: &'a [Entry], e: &'a Entry) -> Option<Vec<&'a Entry>> {
-    let mut out = vec![e];
-    let mut cur = e;
-    while cur.delta {
-        if out.len() > MAX_CHAIN { return None; }
-        cur = base_of(entries, cur)?;
-        out.push(cur);
-    }
+    let mut out = walk_bases(e, |cur| base_of(entries, cur), &|| Ok(())).ok()??;
     out.reverse();
     Some(out)
+}
+
+/// Walk a chain tip-first. Equal timestamps are valid, but revisiting a file, missing a
+/// base, or exceeding the depth bound means the chain cannot be safely pruned.
+fn walk_bases<'a>(e: &'a Entry, base: impl Fn(&'a Entry) -> Option<&'a Entry>, check: &dyn Fn() -> io::Result<()>) -> io::Result<Option<Vec<&'a Entry>>> {
+    let mut out: Vec<&Entry> = Vec::new();
+    let mut cur = e;
+    loop {
+        check()?;
+        if out.len() > MAX_CHAIN || out.iter().any(|old| old.file == cur.file) { return Ok(None); }
+        out.push(cur);
+        if !cur.delta { return Ok(Some(out)); }
+        let Some(parent) = base(cur) else { return Ok(None); };
+        cur = parent;
+    }
+}
+
+type Bases<'a> = HashMap<(&'a Path, &'a std::ffi::OsStr), &'a Entry>;
+
+fn index_bases<'a>(entries: &'a [Entry], check: &dyn Fn() -> io::Result<()>) -> io::Result<Bases<'a>> {
+    let mut bases = HashMap::new();
+    for e in entries {
+        check()?;
+        if let (false, Some(dir), Some(name)) = (e.full, e.file.parent(), e.file.file_name()) {
+            bases.entry((dir, name)).or_insert(e);
+        }
+    }
+    Ok(bases)
+}
+
+fn indexed_base<'a>(bases: &Bases<'a>, e: &Entry) -> Option<&'a Entry> {
+    let dir = e.file.parent()?;
+    let name = e.delta_base.as_deref()?.file_name()?;
+    bases.get(&(dir, name)).copied().filter(|base| base.taken <= e.taken)
 }
 
 /// True when a snapshot of a folder above `root` taken within the last day already shows it,
@@ -518,16 +541,23 @@ pub struct Plan {
 /// Which files the policy removes and which deltas it writes whole first, given every entry
 /// and the time now.
 pub fn plan(entries: &[Entry], cap_bytes: u64, now: SystemTime) -> Plan {
-    plan_bounded(entries, cap_bytes, now, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize)
+    plan_checked(entries, cap_bytes, now, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize, &|| Ok(())).unwrap_or_default()
 }
 
-fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_root: usize) -> Plan {
+fn plan_checked(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<Plan> {
+    let bases = index_bases(entries, check)?;
+    let mut chains = HashMap::new();
+    for e in entries.iter().filter(|e| e.delta) {
+        let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(Plan::default()); };
+        chains.insert(e.file.as_path(), links);
+    }
     let mut kill: Vec<PathBuf> = Vec::new();
     let mut roots: Vec<&PathBuf> = entries.iter().map(|e| &e.root).collect();
     roots.sort();
     roots.dedup();
     let now_s = secs(now);
     for root in roots {
+        check()?;
         let mine: Vec<&Entry> = entries.iter().filter(|e| &e.root == root).collect();
         // full: newest 3
         let mut full: Vec<&&Entry> = mine.iter().filter(|e| e.full).collect();
@@ -538,6 +568,7 @@ fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
         fo.sort_by(|a, b| b.taken.cmp(&a.taken)); // newest first
         let mut seen = std::collections::HashSet::new();
         for e in fo {
+            check()?;
             let age = now_s.saturating_sub(secs(e.taken));
             let bucket = if age <= 30 * DAY {
                 None
@@ -559,6 +590,7 @@ fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
     let mut whole: HashSet<PathBuf> = HashSet::new();
     let mut promote: Vec<PathBuf> = Vec::new();
     for e in entries {
+        check()?;
         if kill.contains(&e.file) {
             continue;
         }
@@ -566,26 +598,24 @@ fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
             whole.insert(e.file.clone());
             continue;
         }
-        match base_of(entries, e) {
-            Some(b) if whole.contains(&b.file) && !kill.contains(&b.file) => { whole.insert(e.file.clone()); }
-            Some(_) => {
-                promote.push(e.file.clone());
-                whole.insert(e.file.clone());
-            }
-            // already broken (its base is gone): there is nothing to write it whole from
-            None => {}
+        let base = chains[e.file.as_path()][1];
+        if !whole.contains(&base.file) || kill.contains(&base.file) {
+            promote.push(e.file.clone());
         }
+        whole.insert(e.file.clone());
     }
     // The cap: whole chains (a keyframe and the deltas built on it) and full snapshots go as
     // units, folders-only first at the same moment, oldest first, but never the unit holding a
     // root's newest snapshot. A chain is a unit because dropping its keyframe while keeping a
     // delta would mean writing that delta whole, which costs more than the keyframe it
     // replaces. A promoted delta counts at the size it will have.
-    let size = |e: &Entry| if promote.contains(&e.file) { keyframe_bytes(entries, e) } else { e.bytes };
+    let keyframe = |e: &Entry| chains.get(e.file.as_path()).and_then(|links| links.last().copied());
+    let size = |e: &Entry| if promote.contains(&e.file) { keyframe(e).map_or(e.bytes, |base| base.bytes) } else { e.bytes };
     let mut total: u64 = entries.iter().filter(|e| !kill.contains(&e.file)).map(size).sum();
     if total > cap_bytes {
         let mut newest: HashMap<&PathBuf, &Entry> = HashMap::new();
         for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
+            check()?;
             let best = newest.entry(&e.root).or_insert(e);
             if (e.taken, e.full, &e.file) > (best.taken, best.full, &best.file) {
                 *best = e;
@@ -594,10 +624,12 @@ fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
         let mut units: Vec<((bool, SystemTime, PathBuf), Vec<&Entry>)> = Vec::new();
         let mut groups: HashMap<PathBuf, Vec<&Entry>> = HashMap::new();
         for e in entries.iter().filter(|e| !kill.contains(&e.file)) {
+            check()?;
             if e.full {
                 units.push(((true, e.taken, e.file.clone()), vec![e]));
             } else {
-                groups.entry(chain_root(entries, e)).or_default().push(e);
+                let root = keyframe(e).map_or(&e.file, |base| &base.file);
+                groups.entry(root.clone()).or_default().push(e);
             }
         }
         for (root, mut g) in groups {
@@ -607,6 +639,7 @@ fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
         }
         units.sort_by(|a, b| a.0.cmp(&b.0));
         for (_, members) in units {
+            check()?;
             if total <= cap_bytes {
                 break;
             }
@@ -624,51 +657,14 @@ fn plan_bounded(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
     // Nothing kept may end up without what it is built on: a promotion that cannot happen
     // leaves the bases in place, and the cap may then stay over, as one snapshot per root
     // already can.
-    protect_bases(entries, &mut kill, &promote);
-    Plan { remove: kill, promote }
-}
-
-/// The bases of any kept delta that is not being promoted stay. The plan above makes that
-/// unnecessary; this is the last guard that a kept snapshot is never left unreadable.
-fn protect_bases(entries: &[Entry], kill: &mut Vec<PathBuf>, promote: &[PathBuf]) {
     let live: Vec<&Entry> = entries.iter().filter(|e| e.delta && !kill.contains(&e.file) && !promote.contains(&e.file)).collect();
     for e in live {
-        let mut cur = e;
-        while let Some(b) = base_of(entries, cur) {
+        for b in chains[e.file.as_path()].iter().skip(1) {
+            check()?;
             kill.retain(|k| k != &b.file);
-            cur = b;
-            if !cur.delta { break; }
         }
     }
-}
-
-/// The keyframe a folders-only snapshot is built from (or the top of a broken chain, which is
-/// one group until it is removed).
-fn chain_root(entries: &[Entry], e: &Entry) -> PathBuf {
-    let (mut cur, mut n) = (e, 0);
-    while cur.delta {
-        match base_of(entries, cur) {
-            Some(b) if n < MAX_CHAIN => { cur = b; n += 1; }
-            _ => break,
-        }
-    }
-    cur.file.clone()
-}
-
-/// A whole-snapshot size for a delta that will be written whole: the keyframe its chain starts
-/// at (the tree is much the same, so the sizes are).
-fn keyframe_bytes(entries: &[Entry], e: &Entry) -> u64 {
-    let (mut cur, mut n) = (e, 0);
-    while cur.delta && n < MAX_CHAIN {
-        match base_of(entries, cur) {
-            Some(b) => {
-                cur = b;
-                n += 1;
-            }
-            None => break,
-        }
-    }
-    if cur.delta || cur.file == e.file { e.bytes } else { cur.bytes }
+    Ok(Plan { remove: kill, promote })
 }
 
 /// Write a delta whole, in place: its own name and time, so the deltas written after it still
@@ -694,27 +690,34 @@ pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
 }
 
 fn apply_checked(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
+    apply_with(entries, plan, check, promote).map(|_| ())
+}
+
+/// Returns false if a broken chain prevented pruning.
+fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>, promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<bool> {
+    check()?;
+    if plan.remove.is_empty() && plan.promote.is_empty() { return Ok(true); }
+    let bases = index_bases(entries, check)?;
     let mut spared: HashSet<PathBuf> = HashSet::new();
     for path in &plan.promote {
         check()?;
         let Some(e) = entries.iter().find(|e| &e.file == path) else { continue };
         if let Err(err) = promote(e, check) {
-            let mut cur = e;
-            while let Some(b) = base_of(entries, cur) {
-                spared.insert(b.file.clone());
-                if !b.delta {
-                    break;
-                }
-                cur = b;
-            }
+            let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(false); };
+            spared.extend(links.iter().skip(1).map(|b| b.file.clone()));
             eprintln!("history: {} stays as changes ({err}); the snapshots it is built on stay", e.file.display());
         }
     }
+    // Plans can also be supplied by callers, independently of `plan_checked`.
+    for e in entries.iter().filter(|e| e.delta) {
+        if walk_bases(e, |cur| indexed_base(&bases, cur), check)?.is_none() { return Ok(false); }
+    }
     for e in entries.iter().filter(|e| plan.remove.contains(&e.file) && !spared.contains(&e.file)) {
         check()?;
-        let _ = remove_entry(e);
+        let _ = remove_entry_checked(e, check);
+        check()?;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
@@ -894,11 +897,16 @@ fn check_entry(e: &Entry, file: &fs::File) -> io::Result<()> {
 
 /// Delete only this listed History file, after revalidating its pinned bucket and identity.
 pub fn remove_entry(e: &Entry) -> io::Result<()> {
+    remove_entry_checked(e, &|| Ok(()))
+}
+
+pub(crate) fn remove_entry_checked(e: &Entry, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
     crate::require_write()?;
     let (_bucket, path) = entry_path(e)?;
     let file = fs::OpenOptions::new().access_mode(0x0001_0080).share_mode(1 | 2 | 4)
         .custom_flags(0x0020_0000 | 0x0010_0000).open(path)?;
     check_entry(e, &file)?;
+    check()?;
     delete(&file)
 }
 
@@ -1487,6 +1495,48 @@ mod tests {
 
     fn chain_entry(root: &str, at: SystemTime, name: &str, base: Option<&str>, bytes: u64) -> Entry {
         Entry { root: root.into(), taken: at, file: PathBuf::from(name), full: false, delta: base.is_some(), bytes, delta_base: base.map(PathBuf::from), base: PathBuf::new(), identity: Identity::Legacy(0, 0), modified: None }
+    }
+
+    #[test]
+    fn cyclic_delta_chains_skip_planning_and_failed_promotion_pruning() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        for (name, base) in [("first", "first"), ("first", "second")] {
+            let entries = [
+                chain_entry("C", now, "keyframe", None, 100),
+                chain_entry("C", now, name, Some(base), 100),
+                chain_entry("C", now, "second", Some("first"), 100),
+            ];
+            let check = || Ok(());
+            assert_eq!(plan_checked(&entries, 1, now, 3, &check).unwrap(), Plan::default());
+            let forced = Plan { remove: vec!["keyframe".into()], promote: vec![name.into()] };
+            let tried = std::cell::Cell::new(false);
+            let pruned = apply_with(&entries, &forced, &check, |entry, _| {
+                assert_eq!(entry.file, Path::new(name));
+                tried.set(true);
+                Err(io::Error::other("injected failed promotion"))
+            }).unwrap();
+            assert!(tried.get() && !pruned, "a corrupt chain must leave all snapshots alone");
+        }
+    }
+
+    #[test]
+    fn a_base_walk_checks_for_cancellation_and_limits_depth() {
+        let now = UNIX_EPOCH;
+        let mut entries = vec![chain_entry("C", now, "0", None, 1)];
+        for i in 1..=MAX_CHAIN + 1 {
+            entries.push(chain_entry("C", now, &i.to_string(), Some(&(i - 1).to_string()), 1));
+        }
+        let bases = index_bases(&entries, &|| Ok(())).unwrap();
+        let last = entries.last().unwrap();
+        let next = |e: &Entry| indexed_base(&bases, e);
+        assert!(walk_bases(last, next, &|| Ok(())).unwrap().is_none());
+        let checks = std::cell::Cell::new(0);
+        let interrupted = walk_bases(last, next, &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 3 { return Err(io::ErrorKind::Interrupted.into()); }
+            Ok(())
+        });
+        assert_eq!(interrupted.unwrap_err().kind(), io::ErrorKind::Interrupted);
     }
 
     #[test]

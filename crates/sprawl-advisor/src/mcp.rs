@@ -319,7 +319,7 @@ struct Request {
     wait: Duration,
     limit: Duration,
     // The latest usable status, if the budget expires while waiting for another snapshot.
-    status: Mutex<Option<String>>,
+    status: Mutex<Option<(Instant, String)>>,
     // An acknowledgement sequence number and owner bit for a scan that can outlive its reply.
     background: AtomicU64,
     finished: Mutex<Option<(Instant, Result<String, String>)>>,
@@ -343,8 +343,15 @@ impl Request {
 
     fn time_left(&self) -> Duration { self.deadline.saturating_duration_since(Instant::now()) }
 
+    fn observe_status(&self, observed_at: Instant, text: &str) {
+        if observed_at <= self.deadline {
+            *self.status.lock().unwrap_or_else(|e| e.into_inner()) = Some((observed_at, text.to_string()));
+        }
+    }
+
     fn timed_out(&self) -> Result<String, String> {
-        if let Some(text) = self.status.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if let Some((_, text)) = self.status.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .filter(|(observed_at, _)| *observed_at <= self.deadline).cloned() {
             return Ok(text);
         }
         self.cancel.stop();
@@ -603,6 +610,8 @@ impl User {
                 }
             },
         };
+        let mut observed_at = Instant::now();
+        if observed_at > request.deadline { return request.timed_out(); }
         if name == "scan_path" {
             if let Some(job) = answer.job {
                 *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
@@ -612,7 +621,7 @@ impl User {
             }
         }
         while let Some(job) = answer.job.filter(|_| answer.running && !request.wait.is_zero()) {
-            *request.status.lock().unwrap_or_else(|e| e.into_inner()) = Some(answer.text.clone());
+            request.observe_status(observed_at, &answer.text);
             let left = request.time_left();
             std::thread::sleep(SCAN_POLL.min(left));
             if request.time_left().is_zero() { break; }
@@ -628,6 +637,8 @@ impl User {
             } else {
                 local("scan_status", &input)?
             };
+            observed_at = Instant::now();
+            if observed_at > request.deadline { return request.timed_out(); }
         }
         if name == "scan_path" && answer.failed { Err(answer.text) } else { Ok(answer.text) }
     }
@@ -879,6 +890,28 @@ pub fn wait_for_bridge_reply(cancel: &Cancel, until: Instant, recv: mpsc::Receiv
     }
 }
 
+/// Run the live permission gate only after admission. A gate that returns after its request
+/// expired cannot start privileged work, and it never holds the single pipe past the deadline.
+pub fn bridge_work(pool: &Workers, cancel: Arc<Cancel>, until: Instant,
+    gate: impl FnOnce() -> bool + Send + 'static,
+    answer: impl FnOnce(bool, Arc<Cancel>) -> String + Send + 'static) -> Result<String, String> {
+    let (send, recv) = mpsc::channel();
+    let work = cancel.clone();
+    let timeout = || "Sprawl's window ran out of time answering; try again.".to_string();
+    pool.spawn(move || {
+        let out = guarded(|| {
+            work.check()?;
+            if Instant::now() >= until { return Err(timeout()); }
+            let disk = gate();
+            work.check()?;
+            if Instant::now() >= until { return Err(timeout()); }
+            Ok(answer(disk, work))
+        }).unwrap_or_else(|e| json!({"ok": false, "text": e}).to_string());
+        let _ = send.send((Instant::now(), out));
+    })?;
+    wait_for_bridge_reply(&cancel, until, recv)
+}
+
 /// The MCP config for a driven `claude -p` run: only this server, with the tree and an out file.
 pub fn driven_config(exe: &Path, tree_file: &Path, out_file: &Path, model: &str) -> String {
     json!({"mcpServers": {"sprawl": {"command": exe, "args": ["--mcp", "--tree", tree_file, "--out", out_file, "--model", model]}}}).to_string()
@@ -1050,7 +1083,7 @@ mod tests {
         assert!(late.settle(after).unwrap().unwrap_err().contains("within 25 s"));
         assert!(late.cancel.stopped());
         let scan = Request::new("scan_path", &json!({}), now);
-        *scan.status.lock().unwrap() = Some("still scanning".into());
+        scan.observe_status(scan.deadline, "still scanning");
         *scan.finished.lock().unwrap() = Some((after, Ok("too late".into())));
         assert_eq!(scan.settle(after).unwrap().unwrap(), "still scanning");
         assert!(!scan.cancel.stopped());
@@ -1064,6 +1097,72 @@ mod tests {
         let past = now - Duration::from_millis(1);
         send.send((past, "on-time GUI result".into())).unwrap();
         assert_eq!(wait_for_bridge_reply(&Cancel::default(), past, recv).unwrap(), "on-time GUI result");
+    }
+
+    #[test]
+    fn a_poll_observed_after_the_deadline_cannot_replace_an_on_time_status() {
+        let input = json!({"wait_seconds": 1});
+        let request = Request::new("scan_status", &input, Instant::now());
+        let on_time = request.deadline;
+        let late = on_time + Duration::from_millis(1);
+        request.observe_status(on_time, "on-time scan status");
+        request.observe_status(late, "late scan status");
+        assert_eq!(request.settle(late).unwrap().unwrap(), "on-time scan status");
+        assert!(!request.cancel.stopped());
+
+        let late_only = Request::new("scan_status", &input, on_time - Duration::from_secs(1));
+        late_only.observe_status(late, "late scan status");
+        assert!(late_only.settle(late).unwrap().unwrap_err().contains("within 1 s"));
+        assert!(late_only.cancel.stopped());
+    }
+
+    #[test]
+    fn a_stalled_gui_permission_gate_releases_the_pipe_and_grants_no_late_access() {
+        struct Report(Option<mpsc::Sender<bool>>);
+        impl Drop for Report {
+            fn drop(&mut self) { if let Some(send) = self.0.take() { let _ = send.send(false); } }
+        }
+        let (entered, ready) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let (proof, admitted) = mpsc::channel();
+        let (mut resume, mut probe) = (Some(resume), Some(Report(Some(proof))));
+        let pool = Workers::new(2);
+        let (name, peer) = crate::pipe::test_peer_requests(2, move |line| {
+            let (cancel, _, wait) = bridge_request_options(&line).unwrap();
+            let first = resume.take();
+            let gate_entered = entered.clone();
+            let late = probe.take();
+            let result = bridge_work(&pool, cancel, Instant::now() + wait, move || {
+                if let Some(resume) = first {
+                    gate_entered.send(()).unwrap();
+                    let _ = resume.recv_timeout(Duration::from_secs(5));
+                }
+                true
+            }, move |disk, _| {
+                if let Some(mut late) = late { late.0.take().unwrap().send(true).unwrap(); }
+                json!({"ok": disk, "text": "second request answered"}).to_string()
+            });
+            Some(result.unwrap_or_else(|e| json!({"ok": false, "text": e}).to_string()))
+        });
+        let call = |name: &str, wait| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let cancel = Cancel::default();
+            let pipe = crate::pipe::Client::connect_to(name, deadline, cancel.flag()).unwrap().unwrap();
+            let result = pipe.ask(&json!({"tool": "largest", "input": {}, "timeout_ms": wait}).to_string(), deadline, cancel.flag()).unwrap();
+            serde_json::from_str::<Value>(&result).unwrap()
+        };
+        let first_name = name.clone();
+        let first = std::thread::spawn(move || call(&first_name, 300));
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let second = call(&name, 2000);
+        assert_eq!(second["text"], "second request answered");
+        assert!(matches!(admitted.try_recv(), Err(mpsc::TryRecvError::Empty)), "the first gate is still paused");
+        let expired = first.join().unwrap();
+        assert_eq!(expired["ok"], false);
+        assert!(expired["text"].as_str().unwrap().contains("ran out of time"));
+        release.send(()).unwrap();
+        assert!(!admitted.recv_timeout(Duration::from_secs(2)).unwrap(), "the late gate must not start privileged work");
+        peer.join().unwrap();
     }
 
     #[test]

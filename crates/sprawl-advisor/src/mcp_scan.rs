@@ -24,6 +24,7 @@ use crate::finding::Finding;
 use crate::llm::tools::Tools;
 use crate::llm::ToolSpec;
 use crate::memory::Memory;
+use crate::mcp::Workers;
 use crate::mcp_cancel::Cancel;
 
 /// The longest `wait_seconds` honoured: MCP clients give up on a call after about a minute.
@@ -44,6 +45,7 @@ pub const PASS_TO_SERVER: &str = "Sprawl runs as administrator, so the server sc
 
 /// The app's answer when it has no tree open.
 pub const NO_SCAN_OPEN: &str = "No scan is open in Sprawl yet.";
+pub const GATHERING_FACTS: &str = "Sprawl is still gathering facts for this scan; try again shortly.";
 
 pub fn scan_specs() -> Vec<ToolSpec> {
     vec![
@@ -157,6 +159,7 @@ pub struct Held {
     file: Option<PathBuf>,
     tree: Tree,
     facts: OnceLock<Facts>,
+    gathering: AtomicBool,
     found: OnceLock<Vec<Finding>>,
     /// Scanned by the running app (in the background), not by the server's own process.
     in_app: bool,
@@ -164,16 +167,25 @@ pub struct Held {
 
 impl Held {
     fn new(tree: Tree, taken: SystemTime, file: Option<PathBuf>, in_app: bool) -> Held {
-        Held { root: tree.root_path.clone(), taken, file, tree, facts: OnceLock::new(), found: OnceLock::new(), in_app }
+        Held { root: tree.root_path.clone(), taken, file, tree, facts: OnceLock::new(), gathering: AtomicBool::new(false), found: OnceLock::new(), in_app }
     }
 
-    fn facts(&self) -> &Facts {
-        let tree = &self.tree;
-        self.facts.get_or_init(|| {
-            let mut f = Facts::gather();
-            f.attach_usage(tree);
-            f
-        })
+    fn facts_with(self: &Arc<Self>, workers: &Workers, gather: impl FnOnce(&Tree) -> Facts + Send + 'static) -> Result<&Facts, String> {
+        if let Some(facts) = self.facts.get() { return Ok(facts); }
+        if self.gathering.swap(true, Ordering::AcqRel) {
+            return Err(GATHERING_FACTS.into());
+        }
+        struct Gathering(Arc<Held>);
+        impl Drop for Gathering {
+            fn drop(&mut self) { self.0.gathering.store(false, Ordering::Release); }
+        }
+        let job = Gathering(self.clone());
+        if let Some(facts) = self.facts.get() { return Ok(facts); }
+        workers.spawn(move || {
+            let facts = gather(&job.0.tree);
+            let _ = job.0.facts.set(facts);
+        })?;
+        Err(GATHERING_FACTS.into())
     }
 
     /// The first line of every answer from this tree: where it is from and how old.
@@ -191,10 +203,14 @@ impl Held {
         s + ")\n\n"
     }
 
-    fn call(&self, name: &str, input: &Value, memory: &Memory, app_running: bool, cancel: &Cancel) -> Result<String, String> {
+    fn call(self: &Arc<Self>, name: &str, input: &Value, memory: &Memory, app_running: bool, cancel: &Cancel, preparers: &Workers) -> Result<String, String> {
         let note = self.note(app_running);
         cancel.check()?;
-        let facts = self.facts();
+        let facts = self.facts_with(preparers, |tree| {
+            let mut f = Facts::gather();
+            f.attach_usage(tree);
+            f
+        })?;
         cancel.check()?;
         let answer = match name {
             "scan_report" | "findings" => {
@@ -269,11 +285,17 @@ struct Job {
 }
 
 /// This process's scans and the trees it answers from.
-#[derive(Default)]
 pub struct Index {
     state: Mutex<ScanState>,
     history: Mutex<Option<Arc<Held>>>,
     in_app: bool,
+    preparers: Workers,
+}
+
+impl Default for Index {
+    fn default() -> Self {
+        Self { state: Mutex::default(), history: Mutex::default(), in_app: false, preparers: Workers::new(2) }
+    }
 }
 
 #[derive(Default)]
@@ -482,6 +504,12 @@ impl Index {
         Index { state: Mutex::new(ScanState { no_history: !history, ..Default::default() }), in_app: true, ..Default::default() }
     }
 
+    /// The GUI shares its facts worker budget with the on-screen tree.
+    pub fn with_facts_workers(mut self, workers: Workers) -> Self {
+        self.preparers = workers;
+        self
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, ScanState> { self.state.lock().unwrap_or_else(|e| e.into_inner()) }
 
     pub fn set_app_state(&self, busy: bool, history: bool) {
@@ -572,7 +600,7 @@ impl Index {
             None if app_running => format!("{NO_SCAN_OPEN} Call scan_path with a drive or folder."),
             None => "Sprawl isn't running and has no saved scan yet: call scan_path with a drive or folder.".into(),
         })?;
-        held.call(name, input, memory, app_running, cancel)
+        held.call(name, input, memory, app_running, cancel, &self.preparers)
     }
 
     /// The tree to answer from, loading it from History when that is
@@ -596,7 +624,9 @@ impl Index {
         }
         let tree = crate::history::load(&e).ok()?;
         let held = Arc::new(Held::new(tree, e.taken, Some(e.file), self.in_app));
-        *self.history.lock().unwrap_or_else(|e| e.into_inner()) = Some(held.clone());
+        let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(same) = history.as_ref().filter(|h| h.file == held.file) { return Some(same.clone()); }
+        *history = Some(held.clone());
         Some(held)
     }
 }
@@ -623,6 +653,67 @@ mod tests {
     }
 
     #[test]
+    fn held_tree_returns_retry_without_waiting_for_a_single_facts_gather() {
+        let tree = Tree { volumes: Vec::new(), root_path: r"C:\fixture".into(), nodes: Vec::new(), errors: 0, method: sprawl_core::ScanMethod::Walk };
+        let held = Arc::new(Held::new(tree, SystemTime::now(), None, true));
+        let workers = Workers::new(1);
+        let (enter, started) = std::sync::mpsc::channel();
+        let (release, done) = std::sync::mpsc::channel();
+        assert!(matches!(held.facts_with(&workers, move |_| {
+            enter.send(()).unwrap();
+            done.recv_timeout(Duration::from_secs(3)).unwrap();
+            Facts::default()
+        }), Err(e) if e == GATHERING_FACTS));
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..6 {
+            assert!(matches!(held.facts_with(&workers, |_| panic!("duplicate facts gather")), Err(e) if e == GATHERING_FACTS));
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while held.facts_with(&workers, |_| panic!("ready facts should be reused")).is_err() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn retired_scan_cannot_delete_a_snapshot_after_validation_resumes() {
+        let dir = std::env::temp_dir().join(format!("sprawl-mcp-delete-{}", crate::store::nonce()));
+        let root = dir.join("data");
+        let base = dir.join("history");
+        std::fs::create_dir_all(&root).unwrap();
+        let tree = sprawl_core::scan(&root, |_| {}).unwrap();
+        crate::history::prepare(&tree, SystemTime::now(), false).save(&base, u64::MAX).unwrap();
+        let entry = crate::history::list(&base).pop().unwrap();
+        let file = entry.file.clone();
+        let index = Index::for_app(false);
+        let cancel = Arc::new(Cancel::default());
+        let work = cancel.clone();
+        let (entered, validated) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let (send, outcome) = std::sync::mpsc::channel();
+        let id = index.state().start(true, root, true, cancel.clone(), move || {
+            let result = crate::history::remove_entry_checked(&entry, &|| {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                work.check().map_err(|_| std::io::ErrorKind::Interrupted.into())
+            });
+            send.send(result).unwrap();
+            Progress::new()
+        }).unwrap();
+        validated.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancel.stop();
+        let status = index.scan_now("scan_status", &json!({"job": id}), true, Arc::new(Cancel::default())).unwrap();
+        assert!(status.failed && !status.running);
+        assert_eq!(index.state().retired.len(), 1);
+        release.send(()).unwrap();
+        assert_eq!(outcome.recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+        assert!(file.is_file(), "a retired scan must leave the validated snapshot alone");
+        for handle in index.state().retired.drain(..) { assert!(handle.join().unwrap().is_err()); }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn scans_a_folder_and_answers_from_it() {
         let dir = std::env::temp_dir().join(format!("sprawl-mcp-scan-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("inner")).unwrap();
@@ -646,7 +737,13 @@ mod tests {
         assert!(again.contains("rescan"), "{again}");
         assert!(ix.has_scan_for(&dir.join("inner")));
         let memory = Memory::default();
-        let kids = ix.answer("list_children", &json!({"path": format!("{p}\\inner")}), &memory, false).unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        let kids = loop {
+            match ix.answer("list_children", &json!({"path": format!("{p}\\inner")}), &memory, false) {
+                Err(e) if e == GATHERING_FACTS && Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+                result => break result.unwrap(),
+            }
+        };
         assert!(kids.contains("a.bin") && kids.contains("made through this server"), "{kids}");
         let none = ix.answer("list_children", &json!({"path": r"Q:\elsewhere"}), &memory, false).unwrap_err();
         assert!(none.contains("call scan_path"), "{none}");
