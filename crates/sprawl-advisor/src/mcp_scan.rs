@@ -50,7 +50,7 @@ pub const PASS_TO_SERVER: &str = "Sprawl runs as administrator, so the server sc
 pub const NO_SCAN_OPEN: &str = "No scan is open in Sprawl yet.";
 pub const GATHERING_FACTS: &str = "Sprawl is still gathering facts for this scan; try again shortly.";
 const PREPARING_FINDINGS: &str = "Sprawl is still preparing findings for this scan; try again shortly.";
-const PREPARATION_FAILED: &str = "Sprawl hit an internal error preparing this scan.";
+pub const PREPARATION_FAILED: &str = "Sprawl hit an internal error preparing this scan.";
 
 pub fn scan_specs() -> Vec<ToolSpec> {
     vec![
@@ -490,7 +490,14 @@ impl ScanState {
                     let prepared = crate::history::prepare(&tree, taken, false);
                     w.check()?;
                     match prepared.save_retained_until(&base, policy, &|| w.limit().is_some() || w.cancel.stopped()) {
-                        Ok(()) => "Saved in Sprawl's History (folders only).".to_string(),
+                        Ok(report) => {
+                            let mut text = "Saved in Sprawl's History (folders only).".to_string();
+                            if let Some(warning) = report.warning() {
+                                text.push(' ');
+                                text.push_str(&warning);
+                            }
+                            text
+                        }
                         Err(e) => format!("Not saved in History: {e}."),
                     }
                 }

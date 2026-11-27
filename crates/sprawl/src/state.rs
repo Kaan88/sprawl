@@ -434,6 +434,7 @@ impl State {
         if self.wiz_models.poll() {
             self.wizard_models();
         }
+        self.prefs_history_poll();
         let Some(job) = &self.job else { return };
         let done = job.result.lock().unwrap().take();
         match done {

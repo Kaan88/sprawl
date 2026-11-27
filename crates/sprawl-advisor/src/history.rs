@@ -247,38 +247,53 @@ pub fn prepare(tree: &Tree, taken: SystemTime, full: bool) -> Pending {
     Pending { size: tree.nodes[sprawl_core::ROOT].size, root: tree.root_path.clone(), taken, folders, folders_body, full }
 }
 
+/// A successful publication or pruning pass can leave History over its cap.
+#[derive(Debug, Default)]
+pub struct RetentionReport {
+    // Keep the first failure in memory. Never send diagnostics while holding the store lock.
+    promotion_failure: Option<(PathBuf, io::Error)>,
+}
+
+impl RetentionReport {
+    pub fn warning(&self) -> Option<String> {
+        let (file, err) = self.promotion_failure.as_ref()?;
+        Some(format!("History retention couldn't rewrite {} ({err}); the snapshots it is built on were kept.", file.display()))
+    }
+}
+
 impl Pending {
     /// Write into `base` and apply the retention policy with a total cap.
-    pub fn save(self, base: &Path, cap_bytes: u64) -> io::Result<()> {
+    pub fn save(self, base: &Path, cap_bytes: u64) -> io::Result<RetentionReport> {
         self.save_bounded(base, cap_bytes, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize)
     }
 
-    pub fn save_retained(self, base: &Path, policy: Retention) -> io::Result<()> {
+    pub fn save_retained(self, base: &Path, policy: Retention) -> io::Result<RetentionReport> {
         self.save_retained_until(base, policy, &|| false)
     }
 
-    pub(crate) fn save_retained_until(self, base: &Path, policy: Retention, stop: &dyn Fn() -> bool) -> io::Result<()> {
+    pub(crate) fn save_retained_until(self, base: &Path, policy: Retention, stop: &dyn Fn() -> bool) -> io::Result<RetentionReport> {
         if !policy.enabled { return Err(io::Error::other("Scan history is off")); }
         self.save_checked(base, u64::from(policy.cap_mb) << 20, policy.full_per_root, &|| {
             if stop() { Err(io::Error::new(io::ErrorKind::Interrupted, "scan stopped before saving History")) } else { Ok(()) }
         })
     }
 
-    fn save_bounded(self, base: &Path, cap_bytes: u64, full_per_root: usize) -> io::Result<()> {
+    fn save_bounded(self, base: &Path, cap_bytes: u64, full_per_root: usize) -> io::Result<RetentionReport> {
         self.save_checked(base, cap_bytes, full_per_root, &|| Ok(()))
     }
 
-    fn save_checked(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
-        self.save_with(base, cap_bytes, full_per_root, check, |_| {})
+    fn save_checked(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<RetentionReport> {
+        self.save_with(base, cap_bytes, full_per_root, check, |_| {}, promote)
     }
 
-    fn save_with(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>, selected: impl FnOnce(&Entry)) -> io::Result<()> {
+    fn save_with(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>, selected: impl FnOnce(&Entry),
+        promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<RetentionReport> {
         check()?;
         crate::require_write()?;
         let identity = root_id(&self.root).ok_or_else(bad)?;
         // A scan of a folder a fresh scan above it already shows adds a duplicate point: see
         // [`covered_by_recent`]. Nothing is written, not even a bucket.
-        if covered_by_recent(base, &self.root, self.taken) { return Ok(()); }
+        if covered_by_recent(base, &self.root, self.taken) { return Ok(RetentionReport::default()); }
         let base = ensure_dir(base)?;
         check()?;
         let held = ensure_dir(&base.path.join(key(&self.root)))?;
@@ -349,7 +364,7 @@ impl Pending {
         if previous.is_none_or(|previous| t >= previous) {
             write_atomic_until(dir, "last.txt", true, check, |file| write!(file, "{t} {}", self.size))?;
         }
-        let result = prune_locked(&base, cap_bytes, SystemTime::now(), full_per_root, check);
+        let result = prune_locked(&base, cap_bytes, SystemTime::now(), full_per_root, check, promote);
         drop(turn);
         result
     }
@@ -742,9 +757,10 @@ fn promote(e: &Entry, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
 /// keeps its bases. Returns the removal count, or None if a broken chain prevented deletion.
 fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>,
     promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>,
-    remove: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<Option<usize>> {
+    remove: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<(Option<usize>, RetentionReport)> {
     check()?;
-    if plan.remove.is_empty() && plan.promote.is_empty() { return Ok(Some(0)); }
+    let mut report = RetentionReport::default();
+    if plan.remove.is_empty() && plan.promote.is_empty() { return Ok((Some(0), report)); }
     let bases = index_bases(entries, check)?;
     let doomed: HashSet<&Path> = plan.remove.iter().map(PathBuf::as_path).collect();
     let mut promoted = HashSet::new();
@@ -752,7 +768,7 @@ fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>
         check()?;
         let Some(e) = entries.iter().find(|e| &e.file == path) else { continue };
         if let Err(err) = promote(e, check) {
-            eprintln!("history: {} stays as changes ({err}); the snapshots it is built on stay", e.file.display());
+            if report.promotion_failure.is_none() { report.promotion_failure = Some((e.file.clone(), err)); }
         } else {
             promoted.insert(e.file.as_path());
         }
@@ -762,7 +778,7 @@ fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>
     let mut pending = Vec::new();
     for e in entries {
         // Validate even chains not named by the plan. A damaged listing never authorises deletion.
-        let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(None); };
+        let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok((None, report)); };
         if doomed.contains(e.file.as_path()) {
             pending.push(links);
         } else {
@@ -787,7 +803,7 @@ fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>
         }
         check()?;
     }
-    Ok(Some(removed))
+    Ok((Some(removed), report))
 }
 
 fn spare_bases<'a>(links: &[&'a Entry], promoted: &HashSet<&Path>, spared: &mut HashSet<&'a Path>) {
@@ -798,11 +814,11 @@ fn spare_bases<'a>(links: &[&'a Entry], promoted: &HashSet<&Path>, spared: &mut 
     }
 }
 
-pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
+pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<RetentionReport> {
     crate::require_write()?;
-    let Some(base) = existing_store(base)? else { return Ok(()); };
+    let Some(base) = existing_store(base)? else { return Ok(RetentionReport::default()); };
     let _turn = lock(&base.path)?;
-    prune_locked(&base, cap_bytes, now, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize, &|| Ok(()))
+    prune_locked(&base, cap_bytes, now, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize, &|| Ok(()), promote)
 }
 
 fn existing_store(base: &Path) -> io::Result<Option<sprawl_core::local::Directory>> {
@@ -813,13 +829,14 @@ fn existing_store(base: &Path) -> io::Result<Option<sprawl_core::local::Director
     }
 }
 
-fn prune_locked(base: &sprawl_core::local::Directory, cap_bytes: u64, now: SystemTime, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
+fn prune_locked(base: &sprawl_core::local::Directory, cap_bytes: u64, now: SystemTime, full_per_root: usize, check: &dyn Fn() -> io::Result<()>,
+    promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<RetentionReport> {
     let entries = inventory(base, check).and_then(|rows| rows.into_iter().collect::<io::Result<Vec<_>>>());
     check()?;
-    let Ok(mut entries) = entries else { return Ok(()); }; // An incomplete listing never authorises deletion.
+    let Ok(mut entries) = entries else { return Ok(RetentionReport::default()); }; // An incomplete listing never authorises deletion.
     entries.sort_by(|a, b| (a.taken, &a.file).cmp(&(b.taken, &b.file)));
     let plan = plan_checked(&entries, cap_bytes, now, full_per_root, check)?;
-    apply_with(&entries, &plan, check, promote, remove_entry_checked).map(|_| ())
+    apply_with(&entries, &plan, check, promote, remove_entry_checked).map(|(_, report)| report)
 }
 
 /// Clear History without stranding a dependent. Returns (deleted, not cleared).
@@ -835,7 +852,7 @@ pub fn clear(base: &Path) -> io::Result<(usize, usize)> {
     let total = rows.len();
     let Ok(entries) = rows.into_iter().collect::<io::Result<Vec<_>>>() else { return Ok((0, total)); };
     let plan = Plan { remove: entries.iter().map(|e| e.file.clone()).collect(), promote: Vec::new() };
-    let deleted = apply_with(&entries, &plan, &check, promote, remove_entry_checked)?.unwrap_or(0);
+    let deleted = apply_with(&entries, &plan, &check, promote, remove_entry_checked)?.0.unwrap_or(0);
     Ok((deleted, total - deleted))
 }
 
@@ -1572,7 +1589,7 @@ mod tests {
             earlier.save_with(&base_for_worker, u64::MAX, KEEP_FULL, &|| Ok(()), |e| {
                 selected.send(e.file.clone()).unwrap();
                 released.recv_timeout(Duration::from_secs(10)).unwrap();
-            })
+            }, promote)
         });
         assert_eq!(selection.recv_timeout(Duration::from_secs(5)).unwrap(), original.file);
         later.save(&base, 0).unwrap();
@@ -1589,6 +1606,56 @@ mod tests {
         assert!(!resumed.delta && resumed.file.to_string_lossy().ends_with(".fo.dtsn"));
         let expected = snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&older), t1)).unwrap().0;
         assert_same(&load(resumed).unwrap(), &expected);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_blocked_promotion_error_formatter_does_not_hold_the_store_lock() {
+        #[derive(Debug)]
+        struct BlockingDiagnostic {
+            reporting: std::sync::mpsc::Sender<()>,
+            resume: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl std::fmt::Display for BlockingDiagnostic {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.reporting.send(()).unwrap();
+                self.resume.lock().unwrap().recv_timeout(Duration::from_secs(15)).unwrap();
+                f.write_str("injected promotion failure")
+            }
+        }
+        impl std::error::Error for BlockingDiagnostic {}
+        let (dir, base) = scratch("promotion-diagnostic");
+        let root = dir.join("data").display().to_string();
+        let week = 7 * DAY;
+        // Two points in the same retention week; the newer delta needs promotion.
+        let t0 = UNIX_EPOCH + Duration::from_secs((secs(SystemTime::now()) / week - 6) * week + DAY);
+        let t1 = t0 + Duration::from_secs(60);
+        let tree = round(&root, 0);
+        prepare(&tree, t0, false).save(&base, u64::MAX).unwrap();
+        let (reporting, blocked) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let (saved, completed) = std::sync::mpsc::channel();
+        let saver_base = base.clone();
+        let saver = std::thread::spawn(move || {
+            let diagnostic = Mutex::new(Some(BlockingDiagnostic { reporting, resume: Mutex::new(resume) }));
+            let report = prepare(&tree, t1, false).save_with(&saver_base, u64::MAX, KEEP_FULL, &|| Ok(()), |_| {}, |e, _| {
+                assert!(e.delta && e.taken == t1);
+                Err(io::Error::other(diagnostic.lock().unwrap().take().unwrap()))
+            }).unwrap();
+            saved.send(()).unwrap();
+            report.warning().expect("the completed save reports the failure")
+        });
+        completed.recv_timeout(Duration::from_secs(5)).unwrap();
+        blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+        let kept = list(&base);
+        assert_eq!(kept.len(), 2);
+        assert!(kept[1].delta && kept.iter().all(|e| load(e).is_ok()));
+        assert!(try_lock(&base).is_ok(), "the completed save already released the store");
+        let other = dir.join("other");
+        prepare(&round(&other.display().to_string(), 0), SystemTime::now(), false).save(&base, u64::MAX).unwrap();
+        assert!(list(&base).iter().any(|e| e.root == other));
+        release.send(()).unwrap();
+        assert!(saver.join().unwrap().contains("injected promotion failure"));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1762,12 +1829,13 @@ mod tests {
             assert_eq!(plan_checked(&entries, 1, now, 3, &check).unwrap(), Plan::default());
             let forced = Plan { remove: vec!["keyframe".into()], promote: vec![name.into()] };
             let tried = std::cell::Cell::new(false);
-            let pruned = apply_with(&entries, &forced, &check, |entry, _| {
+            let (pruned, report) = apply_with(&entries, &forced, &check, |entry, _| {
                 assert_eq!(entry.file, Path::new(name));
                 tried.set(true);
                 Err(io::Error::other("injected failed promotion"))
             }, |_, _| panic!("a corrupt chain must not delete anything")).unwrap();
             assert!(tried.get() && pruned.is_none(), "a corrupt chain must leave all snapshots alone");
+            assert!(report.warning().unwrap().contains("injected failed promotion"));
         }
     }
 

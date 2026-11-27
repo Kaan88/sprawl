@@ -123,8 +123,12 @@ impl State {
             drop(t);
             let policy = history::Retention::load();
             if !policy.enabled { return; }
-            if let Err(e) = pending.save_retained(&base, policy) {
-                eprintln!("snapshot: {e}");
+            // The save has released History's store lock before any diagnostic is written.
+            match pending.save_retained(&base, policy) {
+                Ok(report) => {
+                    if let Some(warning) = report.warning() { eprintln!("snapshot: {warning}"); }
+                }
+                Err(e) => eprintln!("snapshot: {e}"),
             }
         });
     }

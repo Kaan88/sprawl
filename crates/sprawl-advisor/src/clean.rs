@@ -1544,6 +1544,8 @@ impl Publishing {
     /// of the two always sees the other (sequential consistency on both).
     fn begin() -> Option<Publishing> {
         PUBLISHING.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        PUBLISHING_HERE.with(|n| n.set(n.get() + 1));
         let held = Publishing;
         (!CLOSING.load(Ordering::SeqCst)).then_some(held)
     }
@@ -1552,7 +1554,16 @@ impl Publishing {
 impl Drop for Publishing {
     fn drop(&mut self) {
         PUBLISHING.fetch_sub(1, Ordering::SeqCst);
+        #[cfg(test)]
+        PUBLISHING_HERE.with(|n| n.set(n.get() - 1));
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// This thread's share of [`PUBLISHING`]: tests run in parallel, and other tests' links
+    /// move the process-wide count.
+    static PUBLISHING_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Wait, at most `limit`, while any copy is between its two names, and stop any further copy
@@ -2971,10 +2982,10 @@ mod tests {
         let inside = std::sync::atomic::AtomicUsize::new(0);
         let mut o = Outcome::default();
         link_with(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {},
-            &mut |_| { inside.store(PUBLISHING.load(Ordering::SeqCst), Ordering::SeqCst); }, &mut |_| {});
+            &mut |_| { inside.store(PUBLISHING_HERE.with(|n| n.get()), Ordering::SeqCst); }, &mut |_| {});
         assert_eq!(o.files, 1, "{:?}", o.problems);
         assert!(inside.load(Ordering::SeqCst) >= 1, "the guard must be up while the copy has no name of its own");
-        assert_eq!(PUBLISHING.load(Ordering::SeqCst), 0, "and down once the link is published");
+        assert_eq!(PUBLISHING_HERE.with(|n| n.get()), 0, "and down once the link is published");
         // a marked difference keeps a copy, and never reaches the window at all
         let other = root.join("hidden.bin");
         std::fs::write(&other, b"same bytes").unwrap();

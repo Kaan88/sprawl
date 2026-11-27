@@ -4,6 +4,7 @@
 //! same paths the menus use.
 
 use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use windows_core::Interface;
 
@@ -56,6 +57,7 @@ pub(crate) struct PrefUi {
     ai_forget_key: Option<config::CredentialTarget>,
     /// "Clear history" was pressed once: the next press clears.
     clear_armed: bool,
+    history_disk: HistoryDiskUi,
     /// What the last action said, shown at the top of the page.
     pub(crate) note: Option<String>,
     /// The Theme page's picks (themepage.rs).
@@ -76,6 +78,72 @@ pub(crate) struct PrefUi {
     /// The registry backups, read once when the Cleaning section opens (and after a put back);
     /// None until then, so a render never reads the folder.
     registry_backups: Option<Vec<sprawl_advisor::regclean::BackupInfo>>,
+}
+
+#[derive(Default)]
+struct HistoryDiskUi {
+    summary: Option<Result<(usize, u64), String>>,
+    job: Option<(bool, Receiver<HistoryDiskUpdate>)>,
+    note: Option<String>,
+}
+
+struct HistoryDiskUpdate {
+    summary: (usize, u64),
+    note: Option<String>,
+}
+
+impl HistoryDiskUi {
+    fn can_clear(&self) -> bool {
+        self.job.is_none() && matches!(self.summary, Some(Ok((n, _))) if n > 0)
+    }
+
+    fn clearing(&self) -> bool {
+        self.job.as_ref().is_some_and(|(clearing, _)| *clearing)
+    }
+
+    fn start(&mut self, clear: bool) {
+        self.start_with(clear, move || {
+            let base = sprawl_advisor::history::base_dir();
+            let note = clear.then(|| {
+                let cleared = base.as_deref().map_or(Ok((0, 0)), sprawl_advisor::history::clear);
+                match cleared {
+                    Ok((n, 0)) => format!("Deleted {n} snapshots of History."),
+                    Ok((n, left)) => format!("Deleted {n} snapshots of History. Could not clear {left}."),
+                    Err(e) => format!("No snapshots were cleared: {e}"),
+                }
+            });
+            let entries = base.as_deref().map(sprawl_advisor::history::list).unwrap_or_default();
+            HistoryDiskUpdate { summary: (entries.len(), entries.iter().map(|e| e.bytes).sum()), note }
+        });
+    }
+
+    fn start_with(&mut self, clear: bool, work: impl FnOnce() -> HistoryDiskUpdate + Send + 'static) {
+        if self.job.is_some() { return; }
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new().spawn(move || { let _ = tx.send(work()); }) {
+            Ok(_) => {
+                self.job = Some((clear, rx));
+                if clear { self.note = None; }
+            }
+            Err(e) if clear => self.note = Some(format!("Couldn't start clearing History: {e}")),
+            Err(e) => self.summary = Some(Err(format!("Couldn't read History: {e}"))),
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        let Some((clear, rx)) = &self.job else { return false; };
+        match rx.try_recv() {
+            Ok(update) => {
+                self.summary = Some(Ok(update.summary));
+                if let Some(note) = update.note { self.note = Some(note); }
+            }
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) if *clear => self.note = Some("The History clear worker stopped before reporting a result.".into()),
+            Err(TryRecvError::Disconnected) => self.summary = Some(Err("The History count couldn't be read.".into())),
+        }
+        self.job = None;
+        true
+    }
 }
 
 fn labelled_row(name: &str, title: &str, field: &str) -> String {
@@ -654,6 +722,7 @@ impl State {
         self.prefs.draft = draft;
         self.prefs.note = None;
         self.prefs.clear_armed = false;
+        if self.prefs.history_disk.job.is_none() { self.prefs.history_disk.summary = None; }
         self.prefs.registry_backups = None;
         self.theme_begin();
         // AI: what was saved (Off at first); what is installed is only offered, one click away
@@ -886,6 +955,9 @@ impl State {
         if keys.contains(&"registryBackups") && self.prefs.registry_backups.is_none() && !crate::settings::read_only() {
             self.prefs.registry_backups = Some(sprawl_advisor::regclean::backups());
         }
+        if keys.contains(&"historyDisk") && self.prefs.history_disk.summary.is_none() && self.prefs.history_disk.job.is_none() {
+            self.prefs.history_disk.start(false);
+        }
         shown(self, "WizAi", keys.contains(&"ai"));
         if keys.contains(&"ai") {
             self.wizard_detect();
@@ -955,6 +1027,13 @@ impl State {
         self.prefs.fe = fe;
         self.prefs_offline_shown();
         self.wizard_provider_rows();
+    }
+
+    pub(crate) fn prefs_history_poll(&mut self) {
+        if self.prefs.history_disk.poll() && self.wizard_shown() && self.prefs.shown.contains(&"historyDisk") {
+            self.prefs_harvest();
+            self.prefs_render();
+        }
     }
 
     /// Dev screenshot step: select a zero-based group in the open Settings section.
@@ -1136,13 +1215,22 @@ impl State {
             }
             "historyDisk" => {
                 x += &help(p.help);
-                let (n, bytes) = sprawl_advisor::history::base_dir().map(|d| sprawl_advisor::history::list(&d)).map_or((0, 0), |l| (l.len(), l.iter().map(|e| e.bytes).sum::<u64>()));
-                let armed = self.prefs.clear_armed;
+                let disk = &self.prefs.history_disk;
+                let summary = match &disk.summary {
+                    Some(Ok((n, bytes))) => format!("{n} snapshots, {}", self.size(*bytes)),
+                    Some(Err(e)) => e.clone(),
+                    None => "Checking History...".into(),
+                };
+                let clear = if disk.clearing() {
+                    r#"<Button x:Name="PfB_histClear" Content="Clearing..." IsEnabled="False"/>"#.into()
+                } else if disk.can_clear() {
+                    b("PfB_histClear", if self.prefs.clear_armed { "Press again to delete them all" } else { "Clear" })
+                } else { String::new() };
                 x += &format!(
                     r##"<StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{}" FontSize="{{$fs12}}" Foreground="{{$text2}}" VerticalAlignment="Center"/>{}</StackPanel>"##,
-                    ui::esc(&format!("{n} snapshots, {}", self.size(bytes))),
-                    if n > 0 { b("PfB_histClear", if armed { "Press again to delete them all" } else { "Clear" }) } else { String::new() }
+                    ui::esc(&summary), clear
                 );
+                if let Some(note) = &disk.note { x += &help(note); }
             }
             "registryBackups" => {
                 x += &help(p.help);
@@ -1239,6 +1327,7 @@ impl State {
 
     /// A button inside a page.
     pub(crate) fn prefs_button(&mut self, name: &str) {
+        if name == "PfB_histClear" && !self.prefs.history_disk.can_clear() { return; }
         self.prefs_harvest();
         self.prefs.note = None;
         if name != "PfB_histClear" {
@@ -1317,12 +1406,7 @@ impl State {
             "PfB_histClear" if !self.prefs.clear_armed => self.prefs.clear_armed = true,
             "PfB_histClear" => {
                 self.prefs.clear_armed = false;
-                let cleared = sprawl_advisor::history::base_dir().map_or(Ok((0, 0)), |base| sprawl_advisor::history::clear(&base));
-                self.prefs.note = Some(match cleared {
-                    Ok((n, 0)) => format!("Deleted {n} snapshots of History."),
-                    Ok((n, left)) => format!("Deleted {n} snapshots of History. Could not clear {left}."),
-                    Err(e) => format!("No snapshots were cleared: {e}"),
-                });
+                self.prefs.history_disk.start(true);
             }
             "PfB_progAdd" => {
                 if let Some(picked) = crate::dialogs::pick_setting_folder(self.hwnd, "Select a program folder") {
@@ -1906,6 +1990,34 @@ impl State {
 mod card_tests {
     use super::{card_size, focus_state, xaml};
     use crate::bindings::Microsoft::UI::Xaml::FocusState;
+
+    #[test]
+    fn history_clear_stays_disabled_until_its_worker_posts_the_result() {
+        use super::{HistoryDiskUi, HistoryDiskUpdate};
+        use std::time::{Duration, Instant};
+        let mut disk = HistoryDiskUi { summary: Some(Ok((4, 400))), ..Default::default() };
+        assert!(disk.can_clear());
+        let (started, entered) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        disk.start_with(true, move || {
+            started.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            HistoryDiskUpdate { summary: (3, 300), note: Some("Deleted 1 snapshot. Could not clear 3.".into()) }
+        });
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(disk.clearing() && !disk.can_clear() && !disk.poll());
+        assert_eq!(disk.summary.as_ref().unwrap().as_ref().unwrap(), &(4, 400));
+        disk.start_with(true, || unreachable!("a clear is already running"));
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while !disk.poll() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!disk.clearing() && disk.can_clear());
+        assert_eq!(disk.summary.as_ref().unwrap().as_ref().unwrap(), &(3, 300));
+        assert!(disk.note.as_deref().unwrap().contains("Could not clear 3"));
+    }
 
     #[test]
     fn numeric_edits_reject_punctuation_overflow_and_out_of_range_input() {

@@ -120,20 +120,20 @@ pub(crate) fn start() {
 
 #[derive(Default)]
 struct FactsCache {
-    ready: Option<(Weak<Tree>, Arc<Facts>)>,
+    ready: Option<(Weak<Tree>, Result<Arc<Facts>, &'static str>)>,
     gathering: Vec<Weak<Tree>>,
 }
 
 enum FactsPrep { Ready(Arc<Facts>), Gather(FactsJob) }
 
-use sprawl_advisor::mcp_scan::GATHERING_FACTS;
+use sprawl_advisor::mcp_scan::{GATHERING_FACTS, PREPARATION_FAILED};
 
 impl FactsCache {
     fn reserve(cache: &Arc<Mutex<Self>>, tree: Option<&Arc<Tree>>) -> Result<Option<FactsPrep>, &'static str> {
         let Some(tree) = tree else { return Ok(None); };
         let mut state = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, facts)) = state.ready.as_ref().filter(|(weak, _)| same_tree(weak, Some(tree))) {
-            return Ok(Some(FactsPrep::Ready(facts.clone())));
+        if let Some((_, result)) = state.ready.as_ref().filter(|(weak, _)| same_tree(weak, Some(tree))) {
+            return result.clone().map(|facts| Some(FactsPrep::Ready(facts)));
         }
         let weak = Arc::downgrade(tree);
         if state.gathering.iter().any(|pending| pending.ptr_eq(&weak)) {
@@ -147,16 +147,22 @@ impl FactsCache {
 struct FactsJob { tree: Arc<Tree>, cache: Arc<Mutex<FactsCache>> }
 
 impl FactsJob {
-    fn gather(self) -> Arc<Facts> {
-        let mut f = Facts::gather();
-        f.attach_usage(&self.tree);
-        let facts = Arc::new(f);
-        // An old worker must not evict the current tree's prepared facts on late completion.
-        let view = shared().lock().unwrap_or_else(|e| e.into_inner());
+    fn gather(self) {
+        self.gather_with(shared(), |tree| {
+            let mut facts = Facts::gather();
+            facts.attach_usage(tree);
+            facts
+        });
+    }
+
+    fn gather_with(self, view: &Mutex<Shared>, gather: impl FnOnce(&Tree) -> Facts) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gather(&self.tree)))
+            .map(Arc::new).map_err(|_| PREPARATION_FAILED);
+        // An old worker must not evict the current tree's facts (or error) on late completion.
+        let view = view.lock().unwrap_or_else(|e| e.into_inner());
         if same_tree(&view.tree, Some(&self.tree)) {
-            self.cache.lock().unwrap_or_else(|e| e.into_inner()).ready = Some((Arc::downgrade(&self.tree), facts.clone()));
+            self.cache.lock().unwrap_or_else(|e| e.into_inner()).ready = Some((Arc::downgrade(&self.tree), result));
         }
-        facts
     }
 }
 
@@ -271,6 +277,32 @@ mod context_tests {
         assert!(matches!(FactsCache::reserve(&cache, Some(&b)), Err(GATHERING_FACTS)));
         drop(other);
         assert!(FactsCache::reserve(&cache, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn displayed_facts_panic_is_cached_only_for_the_current_tree() {
+        let cache = Arc::new(Mutex::new(FactsCache::default()));
+        let view = Arc::new(Mutex::new(Shared::default()));
+        let (a, b, c) = (tree(), tree(), tree());
+        let now = std::time::SystemTime::now();
+        let show = |tree| { view.lock().unwrap().tree(Some(tree), now, Some(tree)); };
+        let reserve = |tree| {
+            let Some(FactsPrep::Gather(job)) = FactsCache::reserve(&cache, Some(tree)).unwrap() else { panic!("expected a new gather"); };
+            job
+        };
+        show(&a);
+        let job = reserve(&a);
+        let worker_view = view.clone();
+        std::thread::spawn(move || job.gather_with(&worker_view, |_| panic!("injected facts panic"))).join().unwrap();
+        for _ in 0..4 {
+            assert!(matches!(FactsCache::reserve(&cache, Some(&a)), Err(PREPARATION_FAILED)));
+        }
+        show(&b);
+        let old_job = reserve(&b);
+        show(&c);
+        reserve(&c).gather_with(&view, |_| Facts::default());
+        old_job.gather_with(&view, |_| panic!("a stale worker panicked"));
+        assert!(matches!(FactsCache::reserve(&cache, Some(&c)), Ok(Some(FactsPrep::Ready(_)))));
     }
 
     #[test]
