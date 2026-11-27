@@ -101,7 +101,7 @@ pub fn walk(path: &Path, progress: &Progress) -> io::Result<Tree> {
 /// Detailed walk of an already pinned local folder, with a stop signal checked during enumeration.
 pub fn walk_local_until(root: crate::local::Directory, progress: &Progress, stop: &(dyn Fn() -> bool + Sync)) -> io::Result<Tree> {
     let scan = crate::local::ScanRoot { path: root.path.clone(), pinned: Some(root) };
-    walk_root(scan, progress, worker_count(), true, Some(stop))
+    walk_root(scan, progress, worker_count(), true, Some(stop), true)
 }
 
 /// Fast inventory for interactive scans and Cleaner discovery. Directory entries already
@@ -130,12 +130,12 @@ pub fn walk_with(path: &Path, progress: &Progress, threads: usize) -> io::Result
 fn walk_mode(path: &Path, progress: &Progress, threads: usize, detect_wof: bool, stop: Option<&(dyn Fn() -> bool + Sync)>) -> io::Result<Tree> {
     if progress.is_cancelled() || stop.is_some_and(|stop| stop()) { return Err(interrupted()); }
     let scan = crate::local::scan_root(path, true)?;
-    walk_root(scan, progress, threads, detect_wof, stop)
+    walk_root(scan, progress, threads, detect_wof, stop, false)
 }
 
 fn interrupted() -> io::Error { io::Error::new(io::ErrorKind::Interrupted, "scan cancelled") }
 
-fn walk_root(scan: crate::local::ScanRoot, progress: &Progress, threads: usize, detect_wof: bool, stop: Option<&(dyn Fn() -> bool + Sync)>) -> io::Result<Tree> {
+fn walk_root(scan: crate::local::ScanRoot, progress: &Progress, threads: usize, detect_wof: bool, stop: Option<&(dyn Fn() -> bool + Sync)>, interrupt_io: bool) -> io::Result<Tree> {
     if progress.is_cancelled() || stop.is_some_and(|stop| stop()) { return Err(interrupted()); }
     let path = &scan.path;
     progress.note_root(path, scan.on_network());
@@ -197,8 +197,25 @@ fn walk_root(scan: crate::local::ScanRoot, progress: &Progress, threads: usize, 
         detect_wof,
         verify,
     };
+    let io_threads = Mutex::new(Vec::new());
     let results: Vec<Vec<(u32, Vec<Entry>)>> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..threads.max(1)).map(|_| s.spawn(|| worker(&shared))).collect();
+        use std::os::windows::io::AsRawHandle;
+        let handles: Vec<_> = (0..threads.max(1)).map(|_| s.spawn(|| {
+            if interrupt_io {
+                if let Some(thread) = worker_io_handle() { io_threads.lock().unwrap_or_else(|e| e.into_inner()).push(thread); }
+            }
+            worker(&shared)
+        })).collect();
+        if interrupt_io {
+            while handles.iter().any(|h| !h.is_finished()) {
+                if shared.cancelled() {
+                    for thread in &*io_threads.lock().unwrap_or_else(|e| e.into_inner()) {
+                        unsafe { windows_sys::Win32::System::IO::CancelSynchronousIo(thread.as_raw_handle()); }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
         handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
     });
     if shared.cancelled() {
@@ -253,6 +270,18 @@ fn walk_root(scan: crate::local::ScanRoot, progress: &Progress, threads: usize, 
     progress.top_reset(top_of(&tree));
     progress.set_phase("Done");
     Ok(tree)
+}
+
+fn worker_io_handle() -> Option<std::os::windows::io::OwnedHandle> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread};
+    let mut handle = std::ptr::null_mut();
+    unsafe {
+        let process = GetCurrentProcess();
+        (DuplicateHandle(process, GetCurrentThread(), process, &mut handle, 0, 0, DUPLICATE_SAME_ACCESS) != 0)
+            .then(|| OwnedHandle::from_raw_handle(handle))
+    }
 }
 
 /// Holds the `pending` count of the job a worker is listing. A panicking worker loses its

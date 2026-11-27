@@ -91,6 +91,46 @@ fn this_thread() -> std::io::Result<isize> {
     Ok(out)
 }
 
+/// Best-effort interruption of this thread's synchronous Windows I/O. Some drivers can't
+/// cancel a pending call, so callers must still bound how long they wait for the thread.
+pub(crate) struct SyncIo(std::os::windows::io::OwnedHandle);
+
+impl SyncIo {
+    pub(crate) fn current() -> std::io::Result<Self> {
+        use std::os::windows::io::FromRawHandle;
+        Ok(Self(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(this_thread()? as _) }))
+    }
+
+    pub(crate) fn cancel(&self) {
+        use std::os::windows::io::AsRawHandle;
+        unsafe { ffi::CancelSynchronousIo(self.0.as_raw_handle() as isize); }
+    }
+}
+
+/// While a scan is running, interrupt its coordinator's blocking opens/reads/writes on stop.
+pub(crate) fn watch_current_io(stop: impl Fn() -> bool + Send + 'static) -> std::io::Result<impl Drop> {
+    struct WatchThread(Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>);
+    impl Drop for WatchThread {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+            if let Some(thread) = self.1.take() {
+                thread.thread().unpark();
+                let _ = thread.join();
+            }
+        }
+    }
+    let io = SyncIo::current()?;
+    let done = Arc::new(AtomicBool::new(false));
+    let finished = done.clone();
+    let thread = std::thread::Builder::new().spawn(move || {
+        while !finished.load(Ordering::Relaxed) {
+            if stop() { io.cancel(); }
+            std::thread::park_timeout(Duration::from_millis(25));
+        }
+    })?;
+    Ok(WatchThread(done, Some(thread)))
+}
+
 /// `\\.\pipe\sprawl-mcp-<user>`: one per Windows user.
 pub fn name() -> std::io::Result<String> {
     Ok(format!(r"\\.\pipe\sprawl-mcp-{}", sprawl_core::identity::account_sid()?))

@@ -34,7 +34,9 @@ use sprawl_core::{Tree, ROOT};
 use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, GetFileInformationByHandleEx, FileIdInfo, BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO};
 
 use crate::snapshot::{self, FILES_HERE};
-use crate::store::{ensure_dir, nonce, delete, write_atomic, lock};
+use crate::store::{ensure_dir, nonce, delete, write_atomic_until, lock};
+#[cfg(test)]
+use crate::store::write_atomic;
 
 pub const KEEP_FULL: usize = 3;
 const DAY: u64 = 86_400;
@@ -247,17 +249,29 @@ impl Pending {
     }
 
     pub fn save_retained(self, base: &Path, policy: Retention) -> io::Result<()> {
+        self.save_retained_until(base, policy, &|| false)
+    }
+
+    pub(crate) fn save_retained_until(self, base: &Path, policy: Retention, stop: &dyn Fn() -> bool) -> io::Result<()> {
         if !policy.enabled { return Err(io::Error::other("Scan history is off")); }
-        self.save_bounded(base, u64::from(policy.cap_mb) << 20, policy.full_per_root)
+        self.save_checked(base, u64::from(policy.cap_mb) << 20, policy.full_per_root, &|| {
+            if stop() { Err(io::Error::new(io::ErrorKind::Interrupted, "scan stopped before saving History")) } else { Ok(()) }
+        })
     }
 
     fn save_bounded(self, base: &Path, cap_bytes: u64, full_per_root: usize) -> io::Result<()> {
+        self.save_checked(base, cap_bytes, full_per_root, &|| Ok(()))
+    }
+
+    fn save_checked(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
+        check()?;
         crate::require_write()?;
         let identity = root_id(&self.root).ok_or_else(bad)?;
         // A scan of a folder a fresh scan above it already shows adds a duplicate point: see
         // [`covered_by_recent`]. Nothing is written, not even a bucket.
         if covered_by_recent(base, &self.root, self.taken) { return Ok(()); }
         let base = ensure_dir(base)?;
+        check()?;
         let held = ensure_dir(&base.path.join(key(&self.root)))?;
         let dir = &held.path;
         {
@@ -265,14 +279,14 @@ impl Pending {
             match text(&dir.join("root.txt"), 128 << 10) {
                 Ok(stored) if root_id(Path::new(&stored)).as_ref() == Some(&identity) => {},
                 Ok(_) => return Err(bad()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(dir, "root.txt", false, |f| f.write_all(self.root.to_string_lossy().as_bytes()))?,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic_until(dir, "root.txt", false, check, |f| f.write_all(self.root.to_string_lossy().as_bytes()))?,
                 Err(e) => return Err(e),
             }
         }
         let t = secs(self.taken);
         let unique = nonce();
         let write = |name: &str, whole: bool, body: &[u8], base_name: Option<&str>| -> io::Result<()> {
-            write_atomic(dir, name, false, |file| {
+            write_atomic_until(dir, name, false, check, |file| {
                 let mut buffered = io::BufWriter::new(file);
                 match base_name {
                     Some(b) => snapshot::write_delta_body(body, b, 9, &mut buffered)?,
@@ -288,10 +302,12 @@ impl Pending {
             write(&format!("{t}.{unique}.full.dtsn"), true, full, None)?;
         }
         let entries = list(&base.path);
+        check()?;
         match self.delta_for(&entries, dir) {
             Some((body, base_name)) => write(&format!("{t}.{unique}.df.dtsn"), false, &body, Some(&base_name))?,
             None => write(&format!("{t}.{unique}.fo.dtsn"), true, &self.folders_body, None)?,
         }
+        check()?;
         {
             let _lock = lock(dir)?;
             let previous = match text(&dir.join("last.txt"), 1024) {
@@ -300,11 +316,12 @@ impl Pending {
                 Err(e) => return Err(e),
             };
             if previous.is_none_or(|previous| t >= previous) {
-                write_atomic(dir, "last.txt", true, |file| write!(file, "{t} {}", self.size))?;
+                write_atomic_until(dir, "last.txt", true, check, |file| write!(file, "{t} {}", self.size))?;
             }
         }
+        check()?;
         let entries = list(&base.path);
-        apply(&entries, &plan_bounded(&entries, cap_bytes, SystemTime::now(), full_per_root))
+        apply_checked(&entries, &plan_bounded(&entries, cap_bytes, SystemTime::now(), full_per_root), check)
     }
 
     /// The delta that stands for this scan's folders-only tree, when the previous snapshot is
@@ -656,13 +673,13 @@ fn keyframe_bytes(entries: &[Entry], e: &Entry) -> u64 {
 
 /// Write a delta whole, in place: its own name and time, so the deltas written after it still
 /// find it. The swap is atomic, so a reader sees the old file or the whole one, never half.
-fn promote(e: &Entry) -> io::Result<()> {
+fn promote(e: &Entry, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
     let tree = load(e)?;
     let (_held, path) = entry_path(e)?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(bad)?;
     let dir = path.parent().ok_or_else(bad)?;
     let body = snapshot::encode_ordered(&tree, e.taken);
-    write_atomic(dir, name, true, |file| {
+    write_atomic_until(dir, name, true, check, |file| {
         let mut buffered = io::BufWriter::new(file);
         snapshot::write_body(&body, 9, &mut buffered)?;
         buffered.flush()
@@ -673,10 +690,15 @@ fn promote(e: &Entry) -> io::Result<()> {
 /// cannot be written (a damaged file) keeps the snapshots it is built on: the plan is over the
 /// cap rather than a kept snapshot unreadable.
 pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
+    apply_checked(entries, plan, &|| Ok(()))
+}
+
+fn apply_checked(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
     let mut spared: HashSet<PathBuf> = HashSet::new();
     for path in &plan.promote {
+        check()?;
         let Some(e) = entries.iter().find(|e| &e.file == path) else { continue };
-        if let Err(err) = promote(e) {
+        if let Err(err) = promote(e, check) {
             let mut cur = e;
             while let Some(b) = base_of(entries, cur) {
                 spared.insert(b.file.clone());
@@ -689,6 +711,7 @@ pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
         }
     }
     for e in entries.iter().filter(|e| plan.remove.contains(&e.file) && !spared.contains(&e.file)) {
+        check()?;
         let _ = remove_entry(e);
     }
     Ok(())
@@ -1119,6 +1142,27 @@ mod tests {
         assert!(result.is_err());
         assert!(!moved.exists() && !base.join("never-published").exists());
         assert_eq!(fs::read(occupied.unwrap()).unwrap(), b"unrelated arrival");
+        drop(held);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cancelled_history_write_cannot_replace_an_existing_result() {
+        let (dir, base, _) = fixture("write-cancel");
+        let held = ensure_dir(&base).unwrap();
+        fs::write(base.join("existing"), b"keep").unwrap();
+        let cancelled = std::cell::Cell::new(false);
+        let check = || {
+            if cancelled.get() { Err(io::ErrorKind::Interrupted.into()) } else { Ok(()) }
+        };
+        let result = write_atomic_until(&base, "existing", true, &check, |file| {
+            file.write_all(b"late result")?;
+            cancelled.set(true);
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(fs::read(base.join("existing")).unwrap(), b"keep");
+        assert!(!fs::read_dir(&base).unwrap().any(|e| e.unwrap().path().extension().is_some_and(|ext| ext == "tmp")));
         drop(held);
         fs::remove_dir_all(dir).unwrap();
     }

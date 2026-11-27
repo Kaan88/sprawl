@@ -30,6 +30,8 @@ use crate::mcp_cancel::Cancel;
 pub const MAX_WAIT: u64 = 50;
 const PREPARE_LIMIT: Duration = Duration::from_secs(10);
 const SCAN_LIMIT: Duration = Duration::from_secs(600);
+/// A Windows driver may not unwind after cancellation. Never accumulate more stuck scans.
+const MAX_RETIRED: usize = 2;
 /// Trees this process scanned that it keeps (a whole drive can take a few hundred MB).
 const KEEP_SCANS: usize = 3;
 /// Older than this, an answer suggests scanning again.
@@ -237,14 +239,18 @@ struct ScanWork {
     progress: OnceLock<Arc<Progress>>,
     saving: AtomicBool,
     started: Instant,
+    prepare_by: Instant,
+    expired: OnceLock<&'static str>,
 }
 
 impl ScanWork {
     fn limit(&self) -> Option<&'static str> {
-        if self.started.elapsed() >= SCAN_LIMIT { Some("The scan exceeded its 10-minute limit.") }
-        else if self.progress.get().is_none() && self.started.elapsed() >= PREPARE_LIMIT {
+        if let Some(reason) = self.expired.get() { return Some(*reason); }
+        let expired = if self.started.elapsed() >= SCAN_LIMIT { Some("The scan exceeded its 10-minute limit.") }
+        else if self.progress.get().is_none() && Instant::now() >= self.prepare_by {
             Some("Sprawl couldn't check the path and folders to skip within 10 s.")
-        } else { None }
+        } else { None };
+        expired.map(|reason| *self.expired.get_or_init(|| reason)).or_else(|| self.expired.get().copied())
     }
 
     fn check(&self) -> Result<(), String> {
@@ -252,6 +258,8 @@ impl ScanWork {
         self.cancel.check()
     }
 }
+
+type ScanThread = std::thread::JoinHandle<Result<ScanResult, String>>;
 
 struct Job {
     id: u64,
@@ -271,6 +279,8 @@ pub struct Index {
 #[derive(Default)]
 struct ScanState {
     jobs: Vec<Job>,
+    /// Retired threads are never polled for a result or associated with another job.
+    retired: Vec<ScanThread>,
     /// Scans made here, newest last. Whole-tree answers use these outside the state lock.
     held: Vec<Arc<Held>>,
     /// Tests and screenshot runs: History is neither read nor written.
@@ -306,9 +316,16 @@ fn job_id(in_app: bool) -> u64 {
 impl ScanState {
     /// A finished scan becomes a held tree. Called before every answer.
     fn poll(&mut self, in_app: bool) {
+        self.retired.retain(|handle| !handle.is_finished());
         for j in &mut self.jobs {
-            let JobState::Running { handle, .. } = &j.state else { continue };
+            let JobState::Running { work, handle } = &j.state else { continue };
             if !handle.is_finished() {
+                if let Err(reason) = work.check() {
+                    work.cancel.stop();
+                    if let Some(p) = work.progress.get() { p.cancel(); }
+                    let JobState::Running { handle, .. } = std::mem::replace(&mut j.state, JobState::Failed(reason)) else { unreachable!() };
+                    self.retired.push(handle);
+                }
                 continue;
             }
             let JobState::Running { handle, .. } = std::mem::replace(&mut j.state, JobState::Failed(String::new())) else { unreachable!() };
@@ -339,13 +356,31 @@ impl ScanState {
     }
 
     fn start(&mut self, in_app: bool, root: PathBuf, rescan: bool, cancel: Arc<Cancel>, prepare_policy: impl FnOnce() -> Arc<Progress> + Send + 'static) -> Result<u64, String> {
+        self.start_with(in_app, root, rescan, cancel, PREPARE_LIMIT, prepare_policy)
+    }
+
+    fn start_with(&mut self, in_app: bool, root: PathBuf, rescan: bool, cancel: Arc<Cancel>, prepare_limit: Duration, prepare_policy: impl FnOnce() -> Arc<Progress> + Send + 'static) -> Result<u64, String> {
+        self.retired.retain(|handle| !handle.is_finished());
+        if self.retired.len() >= MAX_RETIRED {
+            return Err("Sprawl can't start another scan: too many stopped scans are still waiting for Windows I/O. Try again when one has cleared.".into());
+        }
         let id = job_id(in_app);
-        let work = Arc::new(ScanWork { cancel, progress: OnceLock::new(), saving: AtomicBool::new(false), started: Instant::now() });
+        let started = Instant::now();
+        let work = Arc::new(ScanWork { cancel, progress: OnceLock::new(), saving: AtomicBool::new(false),
+            started, prepare_by: started + prepare_limit, expired: OnceLock::new() });
         let (w, r) = (work.clone(), root.clone());
         let taken = SystemTime::now();
         let quiet = self.no_history;
         let known: Vec<_> = self.held.iter().rev().map(|h| (h.root.clone(), h.taken)).collect();
         let handle = std::thread::Builder::new().spawn(move || {
+            let watched = w.clone();
+            let _watch = crate::pipe::watch_current_io(move || {
+                let stop = watched.limit().is_some() || watched.cancel.stopped();
+                if stop {
+                    if let Some(p) = watched.progress.get() { p.cancel(); }
+                }
+                stop
+            }).ok();
             w.check()?;
             let pinned = checked_root(&r)?;
             let root = &pinned.path;
@@ -374,7 +409,7 @@ impl ScanState {
             let tree = walked.map_err(|e| format!("The scan of {} failed: {e}", r.display()))?;
             // into History as the app saves its own scans, when the user keeps History
             let base = if quiet { None } else { crate::history::base_dir() };
-            let policy = crate::history::Retention::load();
+            let policy = if quiet { crate::history::Retention::parse(|_| None) } else { crate::history::Retention::load() };
             w.check()?;
             let history = match (policy.enabled, base) {
                 (true, Some(base)) => {
@@ -383,13 +418,13 @@ impl ScanState {
                     // its cap, so a scan the AI asked for doesn't push out the user's own snapshots
                     let prepared = crate::history::prepare(&tree, taken, false);
                     w.check()?;
-                    match prepared.save_retained(&base, policy) {
+                    match prepared.save_retained_until(&base, policy, &|| w.limit().is_some() || w.cancel.stopped()) {
                         Ok(()) => "Saved in Sprawl's History (folders only).".to_string(),
                         Err(e) => format!("Not saved in History: {e}."),
                     }
                 }
+                (_, None) if quiet => "Not saved in History (this run of Sprawl writes nothing).".to_string(),
                 (false, _) => "Not saved in History (History is off in Sprawl's settings).".to_string(),
-                (true, None) if quiet => "Not saved in History (this run of Sprawl writes nothing).".to_string(),
                 (true, None) => "Not saved in History (no place for it).".to_string(),
             };
             w.check()?;
@@ -405,9 +440,6 @@ impl ScanState {
         let mut running = false;
         let text = match &j.state {
             JobState::Running { work, .. } => {
-                if let Err(reason) = work.check() {
-                    return Ok(ScanReply { text: format!("{head}stopping. {reason}"), job: Some(id), running: false, started, failed: true });
-                }
                 running = true;
                 let details = if let Some(progress) = work.progress.get() {
                     let s = progress.snapshot();
@@ -623,15 +655,18 @@ mod tests {
     }
 
     #[test]
-    fn blocked_scan_preflight_leaves_status_responsive_and_can_be_cancelled() {
+    fn expired_preflight_releases_the_slot_while_the_worker_is_still_blocked() {
         let dir = std::env::temp_dir().join(format!("sprawl-mcp-preflight-{}", crate::store::nonce()));
-        std::fs::create_dir(&dir).unwrap();
+        let first_root = dir.join("first");
+        let second_root = dir.join("second");
+        std::fs::create_dir_all(&first_root).unwrap();
+        std::fs::create_dir(&second_root).unwrap();
         let index = Index::for_app(false);
         let client = Cancel::default();
         let cancel = Arc::new(Cancel::import(&client.export().unwrap()).unwrap());
         let (entered, waiting) = std::sync::mpsc::channel();
         let (release, done) = std::sync::mpsc::channel();
-        let job = index.state().start(true, dir.clone(), true, cancel, move || {
+        let job = index.state().start_with(true, first_root.clone(), true, cancel, Duration::from_millis(500), move || {
             entered.send(()).unwrap();
             let _ = done.recv_timeout(Duration::from_secs(5));
             Progress::new()
@@ -641,18 +676,62 @@ mod tests {
         let first = status();
         assert!(app_job(job) && first.running);
         assert!(first.text.contains("still scanning") && first.text.contains("folders to skip"), "{}", first.text);
-        client.stop();
-        let stopping = status();
-        assert!(!stopping.running && stopping.text.contains("cancelled"), "{}", stopping.text);
-        release.send(()).unwrap();
         let until = Instant::now() + Duration::from_secs(2);
         loop {
-            let final_status = status();
-            if final_status.text.contains("failed") { break; }
-            assert!(Instant::now() < until, "{}", final_status.text);
+            let expired = status();
+            if !expired.running {
+                assert!(expired.failed && expired.text.contains("folders to skip within"), "{}", expired.text);
+                break;
+            }
+            assert!(Instant::now() < until, "{}", expired.text);
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!index.has_scan_for(&dir));
+        assert_eq!(index.state().retired.len(), 1);
+        // Use the normal scan_path path while the first worker still has not returned.
+        let next = index.scan_now("scan_path", &json!({"path": second_root}), true, Arc::new(Cancel::default())).unwrap();
+        assert_ne!(next.job, Some(job));
+        assert!(next.started && !next.failed, "{}", next.text);
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while index.scan_now("scan_status", &json!({"job": next.job}), true, Arc::new(Cancel::default())).unwrap().running
+            || !index.state().retired.is_empty() {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!index.has_scan_for(&first_root) && index.has_scan_for(&second_root));
+        assert!(status().failed, "late worker exit did not alter the retired job");
+        std::fs::remove_dir(&first_root).unwrap();
+        std::fs::remove_dir(&second_root).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn cancelled_scan_workers_are_capped_until_their_io_unwinds() {
+        let dir = std::env::temp_dir().join(format!("sprawl-mcp-retired-{}", crate::store::nonce()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut state = ScanState { no_history: true, ..Default::default() };
+        let mut releases = Vec::new();
+        for _ in 0..MAX_RETIRED {
+            let client = Cancel::default();
+            let cancel = Arc::new(Cancel::import(&client.export().unwrap()).unwrap());
+            let (ready, entered) = std::sync::mpsc::channel();
+            let (release, done) = std::sync::mpsc::channel();
+            let job = state.start(true, dir.clone(), true, cancel, move || {
+                ready.send(()).unwrap();
+                let _ = done.recv_timeout(Duration::from_secs(5));
+                Progress::new()
+            }).unwrap();
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            client.stop();
+            state.poll(true);
+            let status = state.status(job, false).unwrap();
+            assert!(status.failed && status.text.contains("cancelled"));
+            releases.push(release);
+        }
+        let e = state.start(true, dir.clone(), true, Arc::new(Cancel::default()), Progress::new).unwrap_err();
+        assert!(e.contains("too many stopped scans"), "{e}");
+        for release in releases { release.send(()).unwrap(); }
+        for handle in state.retired { assert!(handle.join().unwrap().is_err()); }
         std::fs::remove_dir(&dir).unwrap();
     }
 }

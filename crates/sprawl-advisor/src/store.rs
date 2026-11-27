@@ -59,11 +59,17 @@ pub(crate) fn delete(file: &fs::File) -> io::Result<()> {
 }
 
 pub(crate) fn write_atomic(dir: &Path, name: &str, replace: bool, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<()> {
+    write_atomic_until(dir, name, replace, &|| Ok(()), write)
+}
+
+pub(crate) fn write_atomic_until(dir: &Path, name: &str, replace: bool, check: &dyn Fn() -> io::Result<()>, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<()> {
+    check()?;
     let tmp = dir.join(format!("{}.tmp", nonce()));
     let mut file = fs::OpenOptions::new().read(true).write(true).access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000)
         .share_mode(1 | 4).create_new(true).custom_flags(0x0020_0000 | 0x0010_0000).open(&tmp)?;
-    let result = write(&mut file).and_then(|_| file.sync_all()).and_then(|_| {
+    let result = write(&mut file).and_then(|_| check()).and_then(|_| file.sync_all()).and_then(|_| {
         for _ in 0..20 {
+            check()?;
             match rename(&file, &dir.join(name), replace) {
                 Ok(()) => return Ok(()),
                 Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(5)),
@@ -198,4 +204,3 @@ pub(crate) fn lock(dir: &Path) -> io::Result<fs::File> {
     }
     Err(io::Error::new(io::ErrorKind::WouldBlock, "Local metadata is busy"))
 }
-

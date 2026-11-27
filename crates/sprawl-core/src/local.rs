@@ -27,6 +27,12 @@ impl std::fmt::Display for NonLocalDrive {
 impl std::error::Error for NonLocalDrive {}
 
 pub fn lexical(path: &Path) -> io::Result<PathBuf> {
+    lexical_with_drive_type(path, |root| unsafe { GetDriveTypeW(root.as_ptr()) })
+}
+
+/// The same spelling checks with a supplied Windows drive-type query.
+#[doc(hidden)]
+pub fn lexical_with_drive_type(path: &Path, drive_type: impl FnOnce(&[u16; 4]) -> u32) -> io::Result<PathBuf> {
     let raw = path.to_str().ok_or_else(|| io::Error::other("The path isn't valid Unicode"))?;
     let raw = if let Some(rest) = raw.strip_prefix(r"\\?\") {
         let b = rest.as_bytes();
@@ -45,7 +51,7 @@ pub fn lexical(path: &Path) -> io::Result<PathBuf> {
     }
     let root = [b[0] as u16, b':' as u16, b'\\' as u16, 0];
     // A drive-letter query only; never probe a UNC or a mapped remote filesystem.
-    let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
+    let kind = drive_type(&root);
     if !matches!(kind, 2 | 3 | 5 | 6) { return Err(io::Error::other(NonLocalDrive(path))); }
     Ok(path)
 }

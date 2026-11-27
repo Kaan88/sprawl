@@ -12,7 +12,7 @@
 //! Every tool is read-only. Nothing here deletes or runs anything.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -28,6 +28,9 @@ use crate::llm::ToolSpec;
 use crate::memory::Memory;
 use crate::mcp_cancel::Cancel;
 use crate::mcp_scan::{Index, ScanReply};
+
+#[path = "mcp_stdio.rs"]
+mod stdio;
 
 /// How the server was started.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -319,6 +322,7 @@ struct Request {
     status: Mutex<Option<String>>,
     // An acknowledgement sequence number and owner bit for a scan that can outlive its reply.
     background: AtomicU64,
+    finished: Mutex<Option<(Instant, Result<String, String>)>>,
 }
 
 impl Request {
@@ -329,7 +333,7 @@ impl Request {
         let limit = if scan && !wait.is_zero() { wait } else if scan { PIPE_LIMIT }
             else if name == "web_lookup" { WEB_CONSENT_LIMIT } else { TOOL_LIMIT };
         Self { cancel: Arc::new(Cancel::default()), deadline: received + limit, wait, limit,
-            status: Mutex::new(None), background: AtomicU64::new(0) }
+            status: Mutex::new(None), background: AtomicU64::new(0), finished: Mutex::new(None) }
     }
 
     fn keep_background(&self, in_app: bool) {
@@ -346,60 +350,87 @@ impl Request {
         self.cancel.stop();
         Err(format!("Sprawl didn't finish the request within {} s; try again.", self.limit.as_secs()))
     }
+
+    fn settle(&self, now: Instant) -> Option<Result<String, String>> {
+        let result = self.finished.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match result {
+            Some((finished, result)) if finished <= self.deadline => Some(result),
+            Some(_) => Some(self.timed_out()),
+            None if now >= self.deadline => Some(self.timed_out()),
+            None => None,
+        }
+    }
 }
 
 enum Event {
-    Line(String, Instant),
-    Finished(Value, Arc<Request>, Result<String, String>),
+    Line(Vec<u8>, Instant),
+    BadLine,
+    Finished(Value, Arc<Request>),
     Closed,
 }
 
 type Call = dyn Fn(&str, &Value, &Request) -> Result<String, String> + Send + Sync;
 
-fn dispatch(specs: &[ToolSpec], call: Arc<Call>, events: mpsc::Sender<Event>, incoming: mpsc::Receiver<Event>, mut reply: impl FnMut(Value)) {
+fn dispatch(specs: &[ToolSpec], call: Arc<Call>, events: mpsc::SyncSender<Event>, incoming: mpsc::Receiver<Event>,
+    output_open: impl Fn() -> bool, mut reply: impl FnMut(Value) -> bool) {
     let workers = Workers::new(8);
     let mut active: HashMap<Value, Arc<Request>> = HashMap::new();
     let mut background: [Option<(Value, Arc<Request>)>; 2] = [None, None];
     // Dispatch only controls here. No disk reads, tool code, pipe waits or stdout writes.
     let mut shutdown = None;
-    loop {
+    let mut output_ok = true;
+    let parse_error = || json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}});
+    'dispatch: while output_open() {
+        macro_rules! respond {
+            ($reply:expr) => {
+                if !reply($reply) { output_ok = false; break 'dispatch; }
+            };
+        }
         let now = Instant::now();
         active.retain(|id, request| {
-            if request.deadline > now { return true; }
+            if !output_ok { return true; }
+            let Some(result) = request.settle(now) else { return true; };
             keep_scan(&mut background, id, request);
-            reply(tool_reply(id.clone(), request.timed_out()));
+            output_ok = reply(tool_reply(id.clone(), result));
             false
         });
-        let next = active.values().map(|r| r.deadline.saturating_duration_since(Instant::now())).min();
-        let event = match next {
-            Some(next) => match incoming.recv_timeout(next) {
-                Ok(event) => event,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(_) => break,
-            },
-            None => match incoming.recv() { Ok(event) => event, Err(_) => break },
+        if !output_ok { break; }
+        // Even with a full input queue or a silent stdin, notice an output failure promptly.
+        let next = active.values().map(|r| r.time_left()).fold(stdio::CHECK_OUTPUT, Duration::min);
+        let event = match incoming.recv_timeout(next) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => break,
         };
         match event {
             Event::Closed => break,
-            Event::Finished(id, request, result) => {
+            Event::BadLine => { respond!(parse_error()); }
+            Event::Finished(id, request) => {
                 if active.get(&id).is_some_and(|r| Arc::ptr_eq(r, &request)) {
-                    active.remove(&id);
-                    keep_scan(&mut background, &id, &request);
-                    reply(tool_reply(id, result));
+                    if let Some(result) = request.settle(Instant::now()) {
+                        active.remove(&id);
+                        keep_scan(&mut background, &id, &request);
+                        respond!(tool_reply(id, result));
+                    }
                 }
             }
             Event::Line(line, received) => {
-                if line.trim().is_empty() { continue; }
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                    reply(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}}));
+                if line.iter().all(u8::is_ascii_whitespace) { continue; }
+                let Ok(msg) = serde_json::from_slice::<Value>(&line) else {
+                    respond!(parse_error());
                     continue;
                 };
-                match (msg["method"].as_str(), msg.get("id")) {
+                let id = msg.get("id");
+                if let Some(id) = id.filter(|id| active.contains_key(*id)) {
+                    respond!(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": "id already in use"}}));
+                    continue;
+                }
+                match (msg["method"].as_str(), id) {
                     (Some("notifications/cancelled"), None) => {
                         let id = &msg["params"]["requestId"];
                         if let Some(request) = active.remove(id) {
                             request.cancel.stop();
-                            reply(tool_reply(id.clone(), Err("Sprawl cancelled the request.".into())));
+                            respond!(tool_reply(id.clone(), Err("Sprawl cancelled the request.".into())));
                         } else {
                             for (_, request) in background.iter().flatten().filter(|(key, _)| key == id) {
                                 request.cancel.stop();
@@ -411,10 +442,9 @@ fn dispatch(specs: &[ToolSpec], call: Arc<Call>, events: mpsc::Sender<Event>, in
                         break;
                     }
                     (Some("tools/call"), Some(id)) => {
-                        if active.contains_key(id) { continue; }
                         let name = msg["params"]["name"].as_str().unwrap_or("");
                         if !specs.iter().any(|t| t.name == name) {
-                            reply(tool_reply(id.clone(), Err(format!("there is no tool called {name}"))));
+                            respond!(tool_reply(id.clone(), Err(format!("there is no tool called {name}"))));
                             continue;
                         }
                         let input = msg["params"].get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -426,13 +456,15 @@ fn dispatch(specs: &[ToolSpec], call: Arc<Call>, events: mpsc::Sender<Event>, in
                                 if worker.time_left().is_zero() { return worker.timed_out(); }
                                 call(&name, &input, &worker)
                             });
-                            let _ = events.send(Event::Finished(worker_id, worker, result));
+                            *worker.finished.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), result));
+                            // The dispatcher checks completions even if its bounded queue is full.
+                            let _ = events.try_send(Event::Finished(worker_id, worker));
                         }) {
                             Ok(()) => { active.insert(id.clone(), request); }
-                            Err(e) => reply(tool_reply(id.clone(), Err(e))),
+                            Err(e) => { respond!(tool_reply(id.clone(), Err(e))); }
                         }
                     }
-                    _ => if let Some(r) = handle(&msg, specs, &mut |_, _| unreachable!()) { reply(r); },
+                    _ => if let Some(r) = handle(&msg, specs, &mut |_, _| unreachable!()) { respond!(r); },
                 }
             }
         }
@@ -440,8 +472,13 @@ fn dispatch(specs: &[ToolSpec], call: Arc<Call>, events: mpsc::Sender<Event>, in
     for request in active.values().chain(background.iter().flatten().map(|(_, r)| r)) {
         request.cancel.stop();
     }
-    if let Some(id) = shutdown { reply(json!({"jsonrpc": "2.0", "id": id, "result": null})); }
-    for (id, _) in active { reply(tool_reply(id, Err("Sprawl is shutting down.".into()))); }
+    if !output_ok || !output_open() { return; }
+    if let Some(id) = shutdown {
+        if !reply(json!({"jsonrpc": "2.0", "id": id, "result": null})) { return; }
+    }
+    for (id, _) in active {
+        if !reply(tool_reply(id, Err("Sprawl is shutting down.".into()))) { break; }
+    }
 }
 
 fn keep_scan(background: &mut [Option<(Value, Arc<Request>)>; 2], id: &Value, request: &Arc<Request>) {
@@ -456,31 +493,7 @@ fn keep_scan(background: &mut [Option<(Value, Arc<Request>)>; 2], id: &Value, re
 /// stdin can block even after shutdown; stdout can block if the client stops reading.
 /// Neither blocks the dispatcher, and neither is joined indefinitely.
 fn serve(specs: Vec<ToolSpec>, call: impl Fn(&str, &Value, &Request) -> Result<String, String> + Send + Sync + 'static) {
-    let (events, incoming) = mpsc::channel();
-    let reader = events.clone();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            if reader.send(Event::Line(line, Instant::now())).is_err() { return; }
-        }
-        let _ = reader.send(Event::Closed);
-    });
-    let (replies, outgoing) = mpsc::channel::<Value>();
-    let (flushed, done) = mpsc::channel();
-    let writer = events.clone();
-    std::thread::spawn(move || {
-        let mut stdout = std::io::stdout().lock();
-        for r in outgoing {
-            if writeln!(stdout, "{r}").and_then(|_| stdout.flush()).is_err() {
-                let _ = writer.send(Event::Closed);
-                break;
-            }
-        }
-        let _ = flushed.send(());
-    });
-    dispatch(&specs, Arc::new(call), events, incoming, |r| { let _ = replies.send(r); });
-    drop(replies);
-    let _ = done.recv_timeout(Duration::from_millis(250));
+    stdio::serve_io(&specs, Arc::new(call), std::io::BufReader::new(std::io::stdin()), std::io::stdout(), stdio::WRITE_LIMIT);
 }
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -519,7 +532,7 @@ fn ask_pipe(name: &str, input: &Value, deadline: Instant, cancel: &Cancel,
     // Scan requests over the pipe are non-waiting dispatch/status snapshots. Ordinary tools
     // may need to work over the full tree, but never get a fresh budget after connecting.
     let until = if scan_dispatch(name) { connect_until } else { deadline };
-    let key = cancel.export().ok();
+    let key = pipe_cancel_key(name, cancel.export())?;
     let left = until.saturating_duration_since(Instant::now());
     let line = pipe_request(name, input, left, key);
     let answer = client.ask(&line.to_string(), until, cancel.flag()).map_err(|e| match e.kind() {
@@ -528,6 +541,14 @@ fn ask_pipe(name: &str, input: &Value, deadline: Instant, cancel: &Cancel,
     })?;
     serde_json::from_str(&answer).map(BridgeAnswer).map(Some)
         .map_err(|_| "Sprawl's window returned an invalid answer; try again.".into())
+}
+
+fn pipe_cancel_key(name: &str, key: std::io::Result<String>) -> Result<Option<String>, String> {
+    match key {
+        Ok(key) => Ok(Some(key)),
+        Err(e) if name == "scan_path" => Err(format!("Sprawl couldn't start a cancellable scan in its window: {e}. Try again.")),
+        Err(_) => Ok(None),
+    }
 }
 
 fn pipe_error(e: std::io::Error) -> String {
@@ -819,7 +840,10 @@ pub fn with_bridge_request<T>(line: &str, answer: impl FnOnce() -> T) -> Result<
 
 /// Called only after the named pipe has authenticated the peer. The event is not authority to
 /// query anything; the usual tool allowlist and disk/elevation gate still apply.
-pub fn bridge_request_options(line: &str) -> Result<(Arc<Cancel>, bool, Duration), String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BridgeKind { ScanControl, ScanList, Query }
+
+pub fn bridge_request_options(line: &str) -> Result<(Arc<Cancel>, BridgeKind, Duration), String> {
     let req = bridge_request(line)?;
     let name = req["tool"].as_str().unwrap_or("");
     let limit = if scan_dispatch(name) { PIPE_LIMIT } else { GUI_MAX_WAIT };
@@ -830,24 +854,27 @@ pub fn bridge_request_options(line: &str) -> Result<(Arc<Cancel>, bool, Duration
     let cancel = match req.get("cancel") {
         Some(key) => Cancel::import(key.as_str().ok_or("bad cancellation signal")?)
             .map_err(|_| "Sprawl couldn't open the request's cancellation signal.")?,
+        None if name == "scan_path" => return Err("A scan in Sprawl's window needs a cancellation signal.".into()),
         None => Cancel::default(),
     };
-    Ok((Arc::new(cancel), crate::mcp_scan::is_scan_tool(name), wait))
+    let kind = if scan_dispatch(name) { BridgeKind::ScanControl }
+        else if name == "list_scans" { BridgeKind::ScanList } else { BridgeKind::Query };
+    Ok((Arc::new(cancel), kind, wait))
 }
 
 /// Wait off the GUI thread. Poll imported cancellation so search sees it during traversal.
-pub fn wait_for_bridge_reply(cancel: &Cancel, until: Instant, recv: mpsc::Receiver<String>) -> Result<String, String> {
+pub fn wait_for_bridge_reply(cancel: &Cancel, until: Instant, recv: mpsc::Receiver<(Instant, String)>) -> Result<String, String> {
     loop {
         cancel.check()?;
         let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            cancel.stop();
-            return Err("Sprawl's window ran out of time answering; try again.".into());
-        }
         match recv.recv_timeout(left.min(Duration::from_millis(20))) {
-            Ok(out) => return Ok(out),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("Sprawl's window stopped answering; try again.".into()),
+            Ok((finished, out)) if finished <= until => return Ok(out),
+            Err(mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) if !left.is_zero() => return Err("Sprawl's window stopped answering; try again.".into()),
+            _ => {
+                cancel.stop();
+                return Err("Sprawl's window ran out of time answering; try again.".into());
+            }
         }
     }
 }
@@ -871,21 +898,21 @@ mod tests {
     use super::*;
 
     struct Session {
-        events: mpsc::Sender<Event>,
+        events: mpsc::SyncSender<Event>,
         replies: mpsc::Receiver<Value>,
     }
 
     impl Session {
         fn new(call: impl Fn(&str, &Value, &Request) -> Result<String, String> + Send + Sync + 'static) -> Self {
-            let (events, incoming) = mpsc::channel();
+            let (events, incoming) = mpsc::sync_channel(8);
             let (out, replies) = mpsc::channel();
             let workers = events.clone();
-            std::thread::spawn(move || dispatch(&user_specs(), Arc::new(call), workers, incoming, |r| { let _ = out.send(r); }));
+            std::thread::spawn(move || dispatch(&user_specs(), Arc::new(call), workers, incoming, || true, |r| out.send(r).is_ok()));
             Self { events, replies }
         }
 
         fn send(&self, msg: Value) {
-            self.events.send(Event::Line(msg.to_string(), Instant::now())).unwrap();
+            self.events.send(Event::Line(msg.to_string().into_bytes(), Instant::now())).unwrap();
         }
 
         fn tool(&self, id: Value, name: &str, arguments: Value) {
@@ -933,15 +960,15 @@ mod tests {
         let (ready, accepted) = mpsc::channel();
         let (release, done) = mpsc::channel();
         let (name, peer) = crate::pipe::test_peer(move |line| {
-            let (cancel, scan, wait) = bridge_request_options(&line).unwrap();
-            assert!(!scan && wait > PIPE_LIMIT && wait <= TOOL_LIMIT, "{wait:?}");
+            let (cancel, kind, wait) = bridge_request_options(&line).unwrap();
+            assert!(kind == BridgeKind::Query && wait > PIPE_LIMIT && wait <= TOOL_LIMIT, "{wait:?}");
             let until = Instant::now() + wait;
             let (send, recv) = mpsc::channel();
             std::thread::spawn(move || {
                 if done.recv_timeout(Duration::from_secs(10)).is_ok() {
                     // Finish past the old 5 s cutoff, not right on it.
                     std::thread::sleep(Duration::from_millis(100));
-                    let _ = send.send(json!({"ok": true, "text": "slow report"}).to_string());
+                    let _ = send.send((Instant::now(), json!({"ok": true, "text": "slow report"}).to_string()));
                 }
             });
             ready.send(()).unwrap();
@@ -973,13 +1000,70 @@ mod tests {
     fn bridge_budgets_are_clamped_and_a_cancel_key_is_optional() {
         let line = pipe_request("search", &json!({}), Duration::from_millis(9123), None);
         assert!(line.get("cancel").is_none());
-        let (cancel, scan, wait) = bridge_request_options(&line.to_string()).unwrap();
-        assert!(!cancel.stopped() && !scan);
+        let (cancel, kind, wait) = bridge_request_options(&line.to_string()).unwrap();
+        assert!(!cancel.stopped() && kind == BridgeKind::Query);
         assert_eq!(wait, Duration::from_millis(9123));
         for (tool, limit) in [("largest", GUI_MAX_WAIT), ("scan_path", PIPE_LIMIT), ("scan_status", PIPE_LIMIT)] {
-            let line = json!({"tool": tool, "input": {}, "timeout_ms": u64::MAX});
+            let line = json!({"tool": tool, "input": {}, "timeout_ms": u64::MAX, "cancel": cancel.export().unwrap()});
             assert_eq!(bridge_request_options(&line.to_string()).unwrap().2, limit);
         }
+    }
+
+    #[test]
+    fn gui_scan_dispatch_requires_a_cancel_key_but_queries_do_not() {
+        let failed = || std::io::Error::other("simulated event failure");
+        assert!(pipe_cancel_key("scan_path", Err(failed())).is_err());
+        assert!(pipe_cancel_key("search", Err(failed())).unwrap().is_none());
+        let line = pipe_request("scan_path", &json!({}), PIPE_LIMIT, None);
+        assert!(matches!(bridge_request_options(&line.to_string()), Err(e) if e.contains("needs a cancellation signal")));
+    }
+
+    #[test]
+    fn duplicate_active_ids_are_refused_before_any_method_runs() {
+        let (ready, started) = mpsc::channel();
+        let (release, done) = mpsc::channel();
+        let done = Mutex::new(done);
+        let session = Session::new(move |_, _, _| {
+            ready.send(()).unwrap();
+            done.lock().unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+            Ok("original".into())
+        });
+        session.tool(json!(1), "search", json!({}));
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        for method in ["ping", "tools/list", "tools/call", "shutdown"] {
+            session.send(json!({"id": 1, "method": method}));
+            assert_eq!(session.reply()["error"], json!({"code": -32600, "message": "id already in use"}));
+        }
+        release.send(()).unwrap();
+        assert_eq!(session.reply()["result"]["content"][0]["text"], "original");
+    }
+
+    #[test]
+    fn completion_time_decides_the_reply_even_if_the_receiver_is_delayed() {
+        let now = Instant::now();
+        let early = Request::new("search", &json!({}), now);
+        let after = early.deadline + Duration::from_millis(1);
+        *early.finished.lock().unwrap() = Some((early.deadline, Ok("on time".into())));
+        assert_eq!(early.settle(after).unwrap().unwrap(), "on time");
+        let late = Request::new("search", &json!({}), now);
+        *late.finished.lock().unwrap() = Some((after, Ok("too late".into())));
+        assert!(late.settle(after).unwrap().unwrap_err().contains("within 25 s"));
+        assert!(late.cancel.stopped());
+        let scan = Request::new("scan_path", &json!({}), now);
+        *scan.status.lock().unwrap() = Some("still scanning".into());
+        *scan.finished.lock().unwrap() = Some((after, Ok("too late".into())));
+        assert_eq!(scan.settle(after).unwrap().unwrap(), "still scanning");
+        assert!(!scan.cancel.stopped());
+
+        let (send, recv) = mpsc::channel();
+        let cancel = Cancel::default();
+        send.send((after, "late GUI result".into())).unwrap();
+        assert!(wait_for_bridge_reply(&cancel, early.deadline, recv).unwrap_err().contains("ran out of time"));
+        assert!(cancel.stopped());
+        let (send, recv) = mpsc::channel();
+        let past = now - Duration::from_millis(1);
+        send.send((past, "on-time GUI result".into())).unwrap();
+        assert_eq!(wait_for_bridge_reply(&Cancel::default(), past, recv).unwrap(), "on-time GUI result");
     }
 
     #[test]

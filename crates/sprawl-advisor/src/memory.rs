@@ -1108,18 +1108,15 @@ mod keep_store_tests {
 
     #[test]
     fn a_saved_non_local_keep_still_protects_its_plain_spelling() {
-        // No filesystem access: the resolver simulates an unmapped or remote drive letter.
+        // Exercise the production verbatim-to-plain conversion without looking up a real drive.
         let path = Path::new(r"\\?\Z:\TV Shows\Friends (1994)");
         let plain = PathBuf::from(r"Z:\TV Shows\Friends (1994)");
         let local = PathBuf::from(r"D:\Games\Kept Game");
-        let resolve = |p: &Path| {
-            if p == path || p == plain {
-                Err(std::io::Error::other(sprawl_core::local::NonLocalDrive(plain.clone())))
-            } else {
-                assert_eq!(p, local);
-                Ok(p.to_path_buf())
-            }
-        };
+        let resolve = |p: &Path| sprawl_core::local::lexical_with_drive_type(p, |root| match String::from_utf16_lossy(&root[..3]).as_str() {
+            "Z:\\" => 4, // DRIVE_REMOTE
+            "D:\\" => 3, // DRIVE_FIXED
+            other => panic!("unexpected drive query: {other}"),
+        });
         let mut saved = Memory::fresh();
         saved.decide(path, "remote or missing drive", Verdict::Keep);
         let mut seen = vec![local.clone()];
@@ -1133,6 +1130,7 @@ mod keep_store_tests {
         assert_eq!(seen, vec![local, plain.clone()]);
         let spare = crate::clean::Spare { keep: seen, ..Default::default() };
         assert!(spare.keeps(&plain.join("episode.mkv")));
+        assert!(!spare.keeps(Path::new(r"Z:\TV Shows\Friends (1994) extras")));
         assert!(!spare.keeps(Path::new(r"D:\Games\Other Game")));
     }
 

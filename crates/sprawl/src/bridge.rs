@@ -68,22 +68,43 @@ fn shared() -> &'static Mutex<Shared> {
 /// Serve the pipe on its own thread (a second Sprawl window just doesn't get it).
 pub(crate) fn start() {
     std::thread::spawn(|| {
-        use sprawl_advisor::mcp::{bridge_request_options, wait_for_bridge_reply, Workers};
-        let facts = Arc::new(Mutex::new(None));
+        use sprawl_advisor::mcp::{bridge_request_options, wait_for_bridge_reply, BridgeKind, Workers};
+        let facts = Arc::new(Mutex::new(FactsCache::default()));
         let index = Arc::new(sprawl_advisor::mcp_scan::Index::for_app(false));
         let workers = Workers::new(4);
+        let controls = Workers::new(2);
+        let preparers = Workers::new(2);
         let error = |text: &str| serde_json::json!({"ok": false, "text": text}).to_string();
         let served = sprawl_advisor::pipe::serve(|line, client_elevated| {
             let received = Instant::now();
-            let (cancel, scan_tool, wait) = match bridge_request_options(line) { Ok(req) => req, Err(e) => return error(&e) };
+            let (cancel, kind, wait) = match bridge_request_options(line) { Ok(req) => req, Err(e) => return error(&e) };
             let until = received + wait;
             if Instant::now() >= until { return error("Sprawl's window ran out of time answering; try again."); }
+            if cancel.stopped() { return error("Sprawl cancelled the request."); }
+            // The same live elevation gate applies before any unpublished facts are reserved.
+            let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
+            let view = (kind == BridgeKind::Query).then(View::current);
+            let cached = match &view {
+                Some(view) if disk && view.facts.is_none() => match FactsCache::reserve(&facts, view.tree.as_ref()) {
+                    Ok(Some(FactsPrep::Ready(facts))) => Some(facts),
+                    Ok(Some(FactsPrep::Gather(job))) => {
+                        // Don't hold the single pipe while facts are prepared: scan control and
+                        // retries can connect even while the first gather is stuck in Windows.
+                        if let Err(e) = preparers.spawn(move || { job.gather(); }) { return error(&e); }
+                        return error(GATHERING_FACTS);
+                    }
+                    Ok(None) => None,
+                    Err(e) => return error(e), // followers do not take a worker
+                },
+                _ => None,
+            };
             let (send, recv) = mpsc::channel();
-            let (line, index, facts, work) = (line.to_string(), index.clone(), facts.clone(), cancel.clone());
-            if let Err(e) = workers.spawn(move || {
-                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| answer(&line, client_elevated, scan_tool, &index, &facts, work)))
+            let (line, index, work) = (line.to_string(), index.clone(), cancel.clone());
+            let pool = if kind == BridgeKind::ScanControl { &controls } else { &workers };
+            if let Err(e) = pool.spawn(move || {
+                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| answer(&line, disk, view, &index, cached, work)))
                     .unwrap_or_else(|_| error("Sprawl hit an internal error answering that."));
-                let _ = send.send(out);
+                let _ = send.send((Instant::now(), out));
             }) { return error(&e); }
             wait_for_bridge_reply(&cancel, until, recv).unwrap_or_else(|e| error(&e))
         });
@@ -100,36 +121,85 @@ pub(crate) fn start() {
     });
 }
 
-type FactsCache = Mutex<Option<(Weak<Tree>, Arc<Facts>)>>;
+#[derive(Default)]
+struct FactsCache {
+    ready: Option<(Weak<Tree>, Arc<Facts>)>,
+    gathering: Vec<Weak<Tree>>,
+}
 
-fn answer(line: &str, client_elevated: bool, scan_tool: bool, index: &sprawl_advisor::mcp_scan::Index, facts: &FactsCache, cancel: Arc<sprawl_advisor::mcp_cancel::Cancel>) -> String {
+enum FactsPrep { Ready(Arc<Facts>), Gather(FactsJob) }
+
+const GATHERING_FACTS: &str = "Sprawl is still gathering facts for this scan; try again shortly.";
+
+impl FactsCache {
+    fn reserve(cache: &Arc<Mutex<Self>>, tree: Option<&Arc<Tree>>) -> Result<Option<FactsPrep>, &'static str> {
+        let Some(tree) = tree else { return Ok(None); };
+        let mut state = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, facts)) = state.ready.as_ref().filter(|(weak, _)| same_tree(weak, Some(tree))) {
+            return Ok(Some(FactsPrep::Ready(facts.clone())));
+        }
+        let weak = Arc::downgrade(tree);
+        if state.gathering.iter().any(|pending| pending.ptr_eq(&weak)) {
+            return Err(GATHERING_FACTS);
+        }
+        state.gathering.push(weak);
+        Ok(Some(FactsPrep::Gather(FactsJob { tree: tree.clone(), cache: cache.clone() })))
+    }
+}
+
+struct FactsJob { tree: Arc<Tree>, cache: Arc<Mutex<FactsCache>> }
+
+impl FactsJob {
+    fn gather(self) -> Arc<Facts> {
+        let mut f = Facts::gather();
+        f.attach_usage(&self.tree);
+        let facts = Arc::new(f);
+        // An old worker must not evict the current tree's prepared facts on late completion.
+        let view = shared().lock().unwrap_or_else(|e| e.into_inner());
+        if same_tree(&view.tree, Some(&self.tree)) {
+            self.cache.lock().unwrap_or_else(|e| e.into_inner()).ready = Some((Arc::downgrade(&self.tree), facts.clone()));
+        }
+        facts
+    }
+}
+
+impl Drop for FactsJob {
+    fn drop(&mut self) {
+        let weak = Arc::downgrade(&self.tree);
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).gathering.retain(|pending| !pending.ptr_eq(&weak));
+    }
+}
+
+struct View {
+    tree: Option<Arc<Tree>>,
+    revision: u64,
+    scan_before: Option<std::time::SystemTime>,
+    findings: String,
+    found: Option<Arc<Vec<sprawl_advisor::finding::Finding>>>,
+    facts: Option<Arc<Facts>>,
+    memory: Memory,
+}
+
+impl View {
+    fn current() -> Self {
+        let s = shared().lock().unwrap_or_else(|e| e.into_inner());
+        Self { tree: s.tree.upgrade(), revision: s.revision, scan_before: s.scan_before,
+            findings: s.findings.clone(), found: s.found.clone(), facts: s.facts.clone(), memory: s.memory.clone() }
+    }
+}
+
+fn answer(line: &str, disk: bool, view: Option<View>, index: &sprawl_advisor::mcp_scan::Index, cached: Option<Arc<Facts>>, cancel: Arc<sprawl_advisor::mcp_cancel::Cancel>) -> String {
     use sprawl_advisor::mcp::answer_bridge_cancellable;
-    // An elevated app reads the disk for an unelevated client only when the user allowed
-    // it; an elevation Windows can't confirm counts as elevated.
-    let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
-    if scan_tool {
+    let Some(View { tree, revision, scan_before, findings, found, facts: report_facts, memory }) = view else {
         let scanning = shared().lock().unwrap_or_else(|e| e.into_inner()).scanning;
         index.set_app_state(scanning, !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed));
         return answer_bridge_cancellable(line, None, None, None, &Memory::default(), "", None, index, disk, &mut |_| {}, cancel);
-    }
-    let (tree, revision, scan_before, findings, found, report_facts, memory) = {
-        let s = shared().lock().unwrap_or_else(|e| e.into_inner());
-        (s.tree.upgrade(), s.revision, s.scan_before, s.findings.clone(), s.found.clone(), s.facts.clone(), s.memory.clone())
     };
     // A restricted client still sees only what the app has already published about this tree.
     let gathered;
     let scoped;
     let f = if disk {
-        gathered = report_facts.or_else(|| {
-            let cached = facts.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-                .filter(|(weak, _)| same_tree(weak, tree.as_ref())).map(|(_, f)| f.clone());
-            if cached.is_some() || cancel.stopped() { return cached; }
-            let mut f = if tree.is_some() { Facts::gather() } else { Facts::default() };
-            if let Some(t) = &tree { f.attach_usage(t); }
-            let f = Arc::new(f);
-            *facts.lock().unwrap_or_else(|e| e.into_inner()) = Some((tree.as_ref().map(Arc::downgrade).unwrap_or_default(), f.clone()));
-            Some(f)
-        });
+        gathered = report_facts.or(cached);
         gathered.as_deref()
     } else {
         scoped = report_facts.as_deref().zip(tree.as_deref()).map(|(f, t)| f.scoped_to(t));
@@ -187,6 +257,24 @@ pub(crate) fn take_filters(map: Option<&Arc<Tree>>) -> Vec<String> {
 mod context_tests {
     use super::*;
     fn tree() -> Arc<Tree> { Arc::new(Tree { volumes: Vec::new(), root_path: r"C:\Data".into(), nodes: vec![sprawl_core::Node { is_dir: true, ..Default::default() }], errors: 0, method: sprawl_core::ScanMethod::Walk }) }
+
+    #[test]
+    fn facts_reservation_is_single_flight_per_tree_and_clears_on_exit() {
+        let cache = Arc::new(Mutex::new(FactsCache::default()));
+        let (a, b) = (tree(), tree());
+        let first = FactsCache::reserve(&cache, Some(&a)).unwrap();
+        assert!(matches!(first.as_ref(), Some(FactsPrep::Gather(_))));
+        for _ in 0..6 {
+            assert!(matches!(FactsCache::reserve(&cache, Some(&a)), Err(GATHERING_FACTS)));
+        }
+        let other = FactsCache::reserve(&cache, Some(&b)).unwrap();
+        assert!(matches!(other.as_ref(), Some(FactsPrep::Gather(_))), "same path isn't the same tree");
+        drop(first);
+        assert!(matches!(FactsCache::reserve(&cache, Some(&a)), Ok(Some(FactsPrep::Gather(_)))));
+        assert!(matches!(FactsCache::reserve(&cache, Some(&b)), Err(GATHERING_FACTS)));
+        drop(other);
+        assert!(FactsCache::reserve(&cache, None).unwrap().is_none());
+    }
 
     #[test]
     fn switching_source_drops_reports_and_filters() {
