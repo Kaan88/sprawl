@@ -136,7 +136,7 @@ pub(crate) fn kept_refusal(path: &Path, kept: &[PathBuf]) -> Option<String> {
             let b = norm(k);
             !b.is_empty() && within(&b, &a)
         })
-        .map(|k| format!("You told Sprawl to Keep {}, which this is or holds. A rename would leave the Keep naming a path that is gone, and clean-ups would no longer spare the item. Forget that Keep first.", k.display()))
+        .map(|k| format!("A rename would leave the Keep naming a path that is gone. {}.", sprawl_advisor::memory::keep_reason(k)))
 }
 
 /// Every path the user chose to Keep (saved, and decided since); Err when the saved list can't
@@ -567,7 +567,8 @@ mod tests {
         let kept = vec![PathBuf::from(r"D:\Projects\old-build")];
         // the kept folder, and one above it (which holds it)
         for p in [r"D:\Projects\old-build", r"d:\projects"] {
-            assert!(kept_refusal(Path::new(p), &kept).is_some(), "{p}");
+            let why = kept_refusal(Path::new(p), &kept).unwrap();
+            assert!(why.contains(r"D:\Projects\old-build") && why.contains(sprawl_advisor::memory::KEEP_LIST_SETTINGS), "{why}");
         }
         // beside it, or a name that merely starts alike
         // (an item inside the kept folder is spared by prefix, so it may be renamed)

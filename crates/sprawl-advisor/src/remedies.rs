@@ -97,8 +97,11 @@ fn uncompress_dispatch(reviewed: &ReviewedUndo, keep: &[PathBuf], refresh: impl 
 }
 
 fn uncompress_current(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy: &CompactPolicy) -> Result<(), String> {
-    if crate::exclusions::intersects(path, excluded) || keep.iter().any(|p| within(path, p) || within(p, path)) {
-        return Err("This scope is excluded or kept.".into());
+    if crate::exclusions::intersects(path, excluded) {
+        return Err("This scope is excluded.".into());
+    }
+    if let Some(k) = crate::memory::overlapping_keep(path, keep) {
+        return Err(format!("Nothing was uncompressed. {}.", crate::memory::keep_reason(k)));
     }
     let scope = policy.scope(path)?;
     if !live_eligible(path, scope.origin, policy, excluded, &AtomicBool::new(false), &mut CompressionBatch::default()) {
@@ -191,9 +194,11 @@ fn uncompress_scope(path: &Path, keep: &[PathBuf], excluded: &[PathBuf], policy:
     let mut work = Vec::new();
     for (n, node) in tree.nodes.iter().enumerate() {
         let p = tree.path_of(n);
-        if crate::exclusions::intersects(&p, excluded) || keep.iter().any(|k| within(&p, k) || within(k, &p))
-            || unsafe_compression_attributes(node) || live_blocked_child(&p, &tails) {
-            return Err("A protected, kept, excluded, cloud or linked item is inside this scope; nothing was uncompressed.".into());
+        if let Some(k) = crate::memory::overlapping_keep(&p, keep) {
+            return Err(format!("Nothing was uncompressed. {}.", crate::memory::keep_reason(k)));
+        }
+        if crate::exclusions::intersects(&p, excluded) || unsafe_compression_attributes(node) || live_blocked_child(&p, &tails) {
+            return Err("A protected, excluded, cloud or linked item is inside this scope; nothing was uncompressed.".into());
         }
         // WOF files can appear as ordinary Archive files through the filter. Every plain
         // file in this explicitly approved scope is therefore an exact uncompress target.
@@ -1332,7 +1337,8 @@ mod compress_tests {
             seen.push(game.join("new-keep"));
             Ok(())
         }, |root, keep| uncompress_current(&root.path, keep, &[], &policy));
-        assert!(checked.unwrap_err().contains("kept"));
+        let why = checked.unwrap_err();
+        assert!(why.contains(&*game.join("new-keep").to_string_lossy()) && why.contains(crate::memory::KEEP_LIST_SETTINGS), "{why}");
         assert!(uncompress_dispatch(&reviewed, &[], |_| Err("unreadable".into()), |_, _| panic!("Undo ran without a known Keep list")).is_err());
     }
 

@@ -13,6 +13,19 @@ extern "system" {
     fn WofIsExternalFile(path: *const u16, external: *mut i32, provider: *mut u32, info: *mut core::ffi::c_void, len: *mut u32) -> i32;
 }
 
+/// The spelling passed `lexical`'s path checks, but its drive letter isn't local right now.
+/// Carries the plain absolute spelling without opening anything on that drive.
+#[derive(Debug)]
+pub struct NonLocalDrive(pub PathBuf);
+
+impl std::fmt::Display for NonLocalDrive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The drive isn't a known local drive")
+    }
+}
+
+impl std::error::Error for NonLocalDrive {}
+
 pub fn lexical(path: &Path) -> io::Result<PathBuf> {
     let raw = path.to_str().ok_or_else(|| io::Error::other("The path isn't valid Unicode"))?;
     let raw = if let Some(rest) = raw.strip_prefix(r"\\?\") {
@@ -33,7 +46,7 @@ pub fn lexical(path: &Path) -> io::Result<PathBuf> {
     let root = [b[0] as u16, b':' as u16, b'\\' as u16, 0];
     // A drive-letter query only; never probe a UNC or a mapped remote filesystem.
     let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
-    if !matches!(kind, 2 | 3 | 5 | 6) { return Err(io::Error::other("The drive isn't a known local drive")); }
+    if !matches!(kind, 2 | 3 | 5 | 6) { return Err(io::Error::other(NonLocalDrive(path))); }
     Ok(path)
 }
 

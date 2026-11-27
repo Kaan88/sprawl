@@ -68,12 +68,19 @@ pub struct Outcome {
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
     pub kept_chosen: u64,
+    /// The first Keep (or scan exclusion supplied as a Keep) that spared an item.
+    pub first_kept_path: Option<PathBuf>,
     /// Items left because they are on the never-list.
     pub kept_protected: u64,
     pub stopped: bool,
 }
 
 impl Outcome {
+    fn kept(&mut self, keep: &Path) {
+        self.kept_chosen += 1;
+        self.first_kept_path.get_or_insert_with(|| keep.to_path_buf());
+    }
+
     fn problem(&mut self, p: &Path, why: impl std::fmt::Display) {
         if self.problems.len() < 8 {
             self.problems.push(format!("{}: {why}", p.display()));
@@ -135,8 +142,8 @@ pub fn run(path: &Path, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnM
         o.problem(path, "skipped, its name ends in a dot or space");
         return o;
     }
-    if spare.keeps(path) {
-        o.kept_chosen += 1;
+    if let Some(keep) = spare.kept_path(path) {
+        o.kept(keep);
         return o;
     }
     // one handle for every check; a picked file goes through exactly the same ones as a file
@@ -231,8 +238,8 @@ pub fn run(path: &Path, spare: &Spare, stop: &AtomicBool, progress: &mut dyn FnM
             top.left = true;
             continue;
         }
-        if spare.keeps(&k) {
-            o.kept_chosen += 1;
+        if let Some(keep) = spare.kept_path(&k) {
+            o.kept(keep);
             top.left = true;
             continue;
         }
@@ -1431,6 +1438,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let o = run(&root, &spare, &stop, &mut |_| {});
         assert_eq!((o.files, o.kept_chosen), (1, 1), "{:?}", o.problems);
+        assert_eq!(o.first_kept_path.as_ref(), Some(&stay));
         assert_eq!(std::fs::read(&stay).unwrap(), b"mine");
         assert!(root.exists(), "the folder stays, holding the kept file");
     }

@@ -255,21 +255,44 @@ pub fn keep_path(path: &Path) -> std::io::Result<PathBuf> {
     checked_keep_path(path, false, |p| sprawl_core::local::storage(p).map(|held| held.path))
 }
 
+pub const KEEP_LIST_SETTINGS: &str = "Settings > Cleaning > Keep list";
+
+/// The saved path to remove when it blocks an operation.
+pub fn keep_reason(path: &Path) -> String {
+    format!("{} is on your Keep list. To remove this Keep, go to {KEEP_LIST_SETTINGS}", path.display())
+}
+
+/// The Keep a whole-scope operation could reach, either above or inside its target.
+pub fn overlapping_keep<'a>(path: &Path, kept: &'a [PathBuf]) -> Option<&'a Path> {
+    use crate::finding::within;
+    kept.iter().find(|k| within(path, k) || within(k, path)).map(PathBuf::as_path)
+}
+
 fn checked_keep_path(path: &Path, saved: bool, resolve: impl FnOnce(&Path) -> std::io::Result<PathBuf>) -> std::io::Result<PathBuf> {
     use std::path::Component;
-    if !path.is_absolute() || path.components().any(|c| match c {
+    let bad = || std::io::Error::other("a Keep must name a plain, absolute local path");
+    let raw = path.to_str().ok_or_else(bad)?;
+    // Check components as they will be read after `lexical` strips a verbatim drive prefix.
+    let plain = raw.strip_prefix(r"\\?\").unwrap_or(raw);
+    let spelling = Path::new(plain);
+    if !path.is_absolute() || plain.contains(['\0', '\r', '\n', '*', '?']) || spelling.components().any(|c| match c {
         Component::ParentDir => true,
         Component::Normal(n) => n.to_str().is_none_or(|n| n.ends_with(['.', ' ']) || n.contains(':')),
         _ => false,
     }) {
-        return Err(std::io::Error::other("a Keep must name a plain, absolute local path"));
+        return Err(bad());
     }
-    // Do not drop an ordinary spelling just because the item is currently gone. A missing
-    // name that could be an 8.3 alias, however, tells us nothing about the long path to spare.
-    match resolve(path) {
-        Err(e) if saved && e.kind() == std::io::ErrorKind::NotFound
-            && !path.components().any(|c| matches!(c, Component::Normal(n) if n.to_string_lossy().contains('~'))) =>
-            sprawl_core::local::lexical(path),
+    let result = resolve(path);
+    // New Keeps need an existing local item; an unresolved 8.3 name can't protect a long name.
+    if !saved || spelling.components().any(|c| matches!(c, Component::Normal(n) if n.to_string_lossy().contains('~'))) {
+        return result;
+    }
+    match result {
+        // An ordinary name that is gone still counts on a local drive.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => sprawl_core::local::lexical(path),
+        // Only the drive check can return this: storage actions reject the same drives, so
+        // keep the spelling without probing a share or forgetting it if the letter returns.
+        Err(e) => e.downcast::<sprawl_core::local::NonLocalDrive>().map(|e| e.0),
         result => result,
     }
 }
@@ -287,9 +310,9 @@ fn refresh_keeps_with(
     let saved = read().map_err(|e| format!("your Keep list couldn't be read ({e})"))?.kept_paths();
     let mut next = Vec::new();
     for path in seen.iter().chain(&saved) {
-        let long = checked_keep_path(path, true, &resolve)
-            .map_err(|e| format!("the kept path {} couldn't be resolved ({e})", path.display()))?;
-        next.push(long);
+        let checked = checked_keep_path(path, true, &resolve)
+            .map_err(|e| format!("the kept path {} couldn't be resolved ({e}). To remove this Keep, go to {KEEP_LIST_SETTINGS}", path.display()))?;
+        next.push(checked);
     }
     next.sort_unstable();
     next.dedup();
@@ -1081,6 +1104,81 @@ mod keep_store_tests {
         let spare = crate::clean::Spare { keep, ..Default::default() };
         assert!(spare.keeps(&long.join("protected.txt")));
         println!("native 8.3 fixture exercised");
+    }
+
+    #[test]
+    fn a_saved_non_local_keep_still_protects_its_plain_spelling() {
+        // No filesystem access: the resolver simulates an unmapped or remote drive letter.
+        let path = Path::new(r"\\?\Z:\TV Shows\Friends (1994)");
+        let plain = PathBuf::from(r"Z:\TV Shows\Friends (1994)");
+        let local = PathBuf::from(r"D:\Games\Kept Game");
+        let resolve = |p: &Path| {
+            if p == path || p == plain {
+                Err(std::io::Error::other(sprawl_core::local::NonLocalDrive(plain.clone())))
+            } else {
+                assert_eq!(p, local);
+                Ok(p.to_path_buf())
+            }
+        };
+        let mut saved = Memory::fresh();
+        saved.decide(path, "remote or missing drive", Verdict::Keep);
+        let mut seen = vec![local.clone()];
+        refresh_keeps_with(&mut seen, || Ok(saved), resolve).unwrap();
+        // Removal from disk doesn't remove protection from a run that already saw it.
+        refresh_keeps_with(&mut seen, || Ok(Memory::fresh()), resolve).unwrap();
+        assert!(checked_keep_path(path, false, resolve).is_err(), "new Keeps must be local");
+        // The first dispatch after it returns uses the local resolution again.
+        let resolved_local = |p: &Path| Ok(p.to_path_buf());
+        refresh_keeps_with(&mut seen, || Ok(Memory::fresh()), resolved_local).unwrap();
+        assert_eq!(seen, vec![local, plain.clone()]);
+        let spare = crate::clean::Spare { keep: seen, ..Default::default() };
+        assert!(spare.keeps(&plain.join("episode.mkv")));
+        assert!(!spare.keeps(Path::new(r"D:\Games\Other Game")));
+    }
+
+    #[test]
+    fn a_non_local_short_alias_still_refuses_refresh() {
+        let short = Path::new(r"Z:\FRIEND~1\Videos");
+        let mut saved = Memory::fresh();
+        saved.decide(short, "legacy short name", Verdict::Keep);
+        let mut seen = Vec::new();
+        let why = refresh_keeps_with(&mut seen, || Ok(saved), |p| {
+            Err(std::io::Error::other(sprawl_core::local::NonLocalDrive(p.to_path_buf())))
+        }).unwrap_err();
+        assert!(why.contains(short.to_str().unwrap()) && why.contains(KEEP_LIST_SETTINGS), "{why}");
+        assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_spelling_is_not_accepted_for_an_unavailable_drive() {
+        for bad in [r"Z:relative", r"Z:\dir\..\keep", r"Z:\keep:stream", r"Z:\keep.\file", r"Z:\keep \file", r"Z:\keep*", r"\\?\Z:\keep./file"] {
+            let mut saved = Memory::fresh();
+            saved.decide(Path::new(bad), "invalid Keep", Verdict::Keep);
+            assert!(refresh_keeps_with(&mut Vec::new(), || Ok(saved), |_| panic!("invalid spelling reached the resolver")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn other_keep_resolution_errors_still_refuse_refresh() {
+        let path = Path::new(r"Z:\TV Shows\Friends (1994)");
+        for error in [
+            std::io::ErrorKind::PermissionDenied.into(),
+            std::io::Error::other("A scanned folder or ancestor is a junction or reparse point"),
+            std::io::Error::other("The opened folder resolved elsewhere"),
+            std::io::Error::other("The drive isn't a known local drive"), // text alone is not proof
+        ] {
+            let mut saved = Memory::fresh();
+            saved.decide(path, "saved Keep", Verdict::Keep);
+            let before = vec![PathBuf::from(r"D:\Games\Kept Game")];
+            let mut seen = before.clone();
+            let detail = error.to_string();
+            let error = std::cell::Cell::new(Some(error));
+            let why = refresh_keeps_with(&mut seen, || Ok(saved), |p| {
+                if p == path { Err(error.take().unwrap()) } else { Ok(p.to_path_buf()) }
+            }).unwrap_err();
+            assert!(why.contains(path.to_str().unwrap()) && why.contains(&detail), "{why}");
+            assert_eq!(seen, before);
+        }
     }
 
     #[test]

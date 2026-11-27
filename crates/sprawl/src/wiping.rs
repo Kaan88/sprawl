@@ -239,6 +239,9 @@ impl State {
                 before += outcome.bytes;
                 damaged.extend(outcome.damaged);
                 notes.extend(outcome.problems);
+                if let Some(keep) = &outcome.first_kept_path {
+                    notes.push(crate::commands::spared_path_note(keep, &kept_seen));
+                }
                 if outcome.more_problems > 0 {
                     notes.push(format!("and {} more were left alone", outcome.more_problems));
                 }

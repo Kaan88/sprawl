@@ -1149,6 +1149,9 @@ impl State {
                 });
                 before += outcome.freed + outcome.recycled;
                 notes.extend(outcome.problems);
+                if let Some(keep) = &outcome.first_kept_path {
+                    notes.push(spared_path_note(keep, &kept_seen));
+                }
                 if outcome.kept_new + outcome.kept_chosen + outcome.kept_protected > 0 {
                     notes.push(format!("{}: kept {} new, {} chosen and {} protected items", path.display(), outcome.kept_new, outcome.kept_chosen, outcome.kept_protected));
                 }
@@ -1301,6 +1304,15 @@ fn notes_text(notes: Vec<String>) -> String {
         text.push_str(&format!("\n...and {more} more"));
     }
     text
+}
+
+/// The delete and overwrite workers put Keeps and scan exclusions in the same Spare.
+pub(crate) fn spared_path_note(path: &std::path::Path, kept: &[PathBuf]) -> String {
+    if kept.iter().any(|k| k == path) {
+        format!("{}.", sprawl_advisor::memory::keep_reason(path))
+    } else {
+        format!("{} is skipped in Settings > Scanning > Folders to skip.", path.display())
+    }
 }
 
 /// Why `path` may not be deleted whatever it is: inside a folder skipped in Settings >

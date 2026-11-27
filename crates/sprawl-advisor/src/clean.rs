@@ -193,6 +193,8 @@ pub struct Outcome {
     pub kept_new: u64,
     /// Items left because the user chose to keep them.
     pub kept_chosen: u64,
+    /// The first Keep (or scan exclusion supplied as a Keep) that spared an item.
+    pub first_kept_path: Option<PathBuf>,
     /// Items left because they are on the never-list (a mail store, a disk image).
     pub kept_protected: u64,
     /// Bytes sent to the Recycle Bin (freed only when the bin is emptied), and their files.
@@ -290,8 +292,13 @@ impl std::fmt::Debug for Spare {
 impl Spare {
     /// `p` is one of the kept paths, or inside one.
     pub fn keeps(&self, p: &Path) -> bool {
+        self.kept_path(p).is_some()
+    }
+
+    /// The saved path that protects `p`.
+    pub fn kept_path(&self, p: &Path) -> Option<&Path> {
         let p = lower(p);
-        self.keep.iter().any(|k| p.starts_with(lower(k)))
+        self.keep.iter().find(|k| p.starts_with(lower(k))).map(PathBuf::as_path)
     }
 
     /// The item at `p` was created or changed after the scan (by its open handle's times), or
@@ -345,6 +352,11 @@ fn filetime(t: SystemTime) -> i64 {
 }
 
 impl Outcome {
+    fn kept(&mut self, keep: &Path) {
+        self.kept_chosen += 1;
+        self.first_kept_path.get_or_insert_with(|| keep.to_path_buf());
+    }
+
     pub(crate) fn problem(&mut self, p: &Path, why: impl std::fmt::Display) {
         if self.problems.len() < 8 {
             self.problems.push(format!("{}: {why}", p.display()));
@@ -535,7 +547,7 @@ impl ToolProtection {
             }
             crate::finding::within(&scope, &prefix) || crate::finding::within(&prefix, &scope)
         }) {
-            return Err(format!("the clean-up could reach a path on your Keep list: {}", kept.display()));
+            return Err(format!("the clean-up could reach a kept path. {}", crate::memory::keep_reason(kept)));
         }
         if crate::exclusions::intersects(&scope, &self.skipped) {
             return Err("the clean-up could reach a folder in Settings > Scanning > Folders to skip".into());
@@ -1086,9 +1098,9 @@ pub(crate) fn set(
     if let Some(gone) = files.iter().find(|f| std::fs::symlink_metadata(f).is_err()) {
         return o.problem(gone, format!("no longer there, so the set changed since the scan; {whole}"));
     }
-    if let Some(k) = members.iter().find(|m| spare.keeps(m)) {
+    if let Some((m, keep)) = members.iter().find_map(|m| spare.kept_path(m).map(|k| (m, k))) {
         o.kept_chosen += 1;
-        return o.problem(k, format!("you chose to keep it; {whole}"));
+        return o.problem(m, format!("{}. {whole}", crate::memory::keep_reason(keep)));
     }
     if let Some(m) = members.iter().find(|m| has_link_above(m, places)) {
         return o.problem(m, format!("a folder above it is a junction or link; {whole}"));
@@ -1188,8 +1200,8 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
     if odd_name(path) {
         return o.problem(path, "skipped, its name ends in a dot or space");
     }
-    if spare.keeps(path) {
-        o.kept_chosen += 1;
+    if let Some(keep) = spare.kept_path(path) {
+        o.kept(keep);
         return;
     }
     let (h, info) = match win::open(path) {
@@ -1299,8 +1311,8 @@ fn tree(path: &Path, action: &Action, spare: &Spare, mut bin: Option<&mut Result
             o.kept_protected += 1;
             continue;
         }
-        if spare.keeps(&k) {
-            o.kept_chosen += 1;
+        if let Some(keep) = spare.kept_path(&k) {
+            o.kept(keep);
             continue;
         }
         let (h, info) = match win::open(&k) {
@@ -1583,7 +1595,7 @@ fn link_with(keep: &Path, copies: &[PathBuf], spare: &Spare, stop: &AtomicBool, 
     }
     for c in copies {
         if stop.load(Ordering::Relaxed) { o.stopped = true; return; }
-        if spare.keeps(c) { o.kept_chosen += 1; continue; }
+        if let Some(keep) = spare.kept_path(c) { o.kept(keep); continue; }
         if odd_name(c) || never().path_hit(c).is_some() { o.problem(c, "left alone: protected or ambiguous name"); continue; }
         let _cp = match pin_parent(c) { Ok(p) => p, Err(e) => { o.problem(c, e); continue; } };
         // DELETE access is ours, but no other handle may write, rename or unlink this file.
@@ -3452,6 +3464,7 @@ mod tests {
         // and a target that is itself kept is not touched
         let o = run(&temp.join("MyTool"), &Action::Remove, &spare, &AtomicBool::new(false), &mut |_| {});
         assert_eq!((o.freed, o.kept_chosen), (0, 1));
+        assert_eq!(o.first_kept_path.as_ref(), spare.keep.first(), "report the matching Keep, not just the target");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -3881,13 +3894,20 @@ mod tests {
             assert_eq!(result.is_ok(), review.is_ok());
             (result, calls)
         };
-        let (result, calls) = run(vec![root.join("mine")], vec![]);
-        assert!(result.unwrap_err().contains("Keep list"));
+        let keep = root.join("mine");
+        let (result, calls) = run(vec![keep.clone()], vec![]);
+        let why = result.unwrap_err();
+        assert!(why.contains(&*keep.to_string_lossy()) && why.contains(crate::memory::KEEP_LIST_SETTINGS), "{why}");
         assert!(calls.is_empty() && !root.join("_logs").exists(), "the probe also writes logs");
         let (result, calls) = run(vec![], vec![root.join("private")]);
         assert!(result.unwrap_err().contains("Folders to skip"));
         assert!(calls.is_empty() && !root.join("_logs").exists());
         let (result, calls) = run(vec![owned.path().join("cache-other").join("mine")], vec![]);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(calls, [npm.probe, npm.run]);
+        // A Keep on a different letter is compared by spelling, not opened or pinned.
+        let unrelated = if root.to_string_lossy().starts_with(['Z', 'z']) { r"Y:\Unavailable\keep" } else { r"Z:\Unavailable\keep" };
+        let (result, calls) = run(vec![unrelated.into()], vec![]);
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(calls, [npm.probe, npm.run]);
     }

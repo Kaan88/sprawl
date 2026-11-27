@@ -3313,9 +3313,10 @@ impl State {
             self.adv_say(&format!("Nothing was exported: {e}."));
             return;
         }
-        let (owned, guesses, keeping) = script_items(ticked.into_iter().map(|(_, f)| f).collect(), &kept);
+        let (owned, guesses, keeping, first_keep) = script_items(ticked.into_iter().map(|(_, f)| f).collect(), &kept);
+        let keep_note = first_keep.map_or_else(String::new, |k| format!(" {}.", sprawl_advisor::memory::keep_reason(k)));
         if owned.is_empty() {
-            self.adv_say("Nothing to export: what is ticked was found by its shape only, or holds something you chose to keep, so clean it here, where it is checked again first.");
+            self.adv_say(&format!("Nothing to export: the ticked items aren't eligible for a script. Review them inside Sprawl.{keep_note}"));
             return;
         }
         let list: Vec<&Finding> = owned.iter().collect();
@@ -3331,7 +3332,7 @@ impl State {
                 crate::win32::reveal(&file);
                 let mut left = if guesses > 0 { format!(" {guesses} ticked item(s) found by shape only were left out: clean those here.") } else { String::new() };
                 if keeping > 0 {
-                    left += &format!(" {keeping} ticked item(s) held by Keep, protection, scan exclusions or the recycle-only policy were left out. Review them inside Sprawl.");
+                    left += &format!(" {keeping} ticked item(s) held by Keep, protection, scan exclusions or the recycle-only policy were left out. Review them inside Sprawl.{keep_note}");
                 }
                 self.adv_say(&format!("Script saved with the {} ticked item(s). Read it, then run it in PowerShell: as it is, it only measures.{left}", owned.len()));
                 self.advisor.exported = Some(Exported { file, items, verify: None });
@@ -4463,18 +4464,27 @@ pub(crate) fn direct_delete(f: &Finding, runnable: bool) -> bool {
 
 /// What "Save as a script" writes: the ticked findings with a command, never a guess by shape
 /// (the script has fewer checks than Sprawl's own clean-up), and how many guesses were left out.
-/// The ticked findings a script may hold, and how many were left out: (items, guesses by
-/// shape, items with something kept inside). The script can't spare a kept folder or a
+/// The ticked findings a script may hold, counts of guesses and protected findings left out,
+/// and the first matching Keep. The script can't spare a kept folder or a
 /// protected item (a mail store) inside an item, so such an item stays out; it is cleaned in
 /// Sprawl, which does.
-pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Finding>, usize, usize) {
+pub(crate) fn script_items(ticked: Vec<Finding>, kept: &[PathBuf]) -> (Vec<Finding>, usize, usize, Option<&std::path::Path>) {
     let guesses = ticked.iter().filter(|f| f.heuristic()).count();
     let excluded = sprawl_advisor::exclusions::configured();
-    let holds_kept = |f: &Finding| f.forced_from.is_some() || matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::clean::RECYCLE_BIN_RULE)
-        || !f.carved.is_empty() || sprawl_advisor::exclusions::intersects(&f.path, &excluded)
-        || kept.iter().any(|k| sprawl_advisor::finding::within(k, &f.path) || sprawl_advisor::finding::within(&f.path, k));
-    let keeping = ticked.iter().filter(|f| !f.heuristic() && holds_kept(f)).count();
-    (ticked.into_iter().filter(|f| !f.heuristic() && f.command.is_some() && !holds_kept(f)).collect(), guesses, keeping)
+    let mut keeping = 0;
+    let mut first_keep = None;
+    let items = ticked.into_iter().filter(|f| {
+        if f.heuristic() { return false; }
+        let keep = sprawl_advisor::memory::overlapping_keep(&f.path, kept);
+        first_keep = first_keep.or(keep);
+        if keep.is_some() || f.forced_from.is_some() || matches!(&f.source, Source::Rule(id) if id == sprawl_advisor::clean::RECYCLE_BIN_RULE)
+            || !f.carved.is_empty() || sprawl_advisor::exclusions::intersects(&f.path, &excluded) {
+            keeping += 1;
+            return false;
+        }
+        f.command.is_some()
+    }).collect();
+    (items, guesses, keeping, first_keep)
 }
 
 #[cfg(test)]
@@ -4534,10 +4544,12 @@ mod script_tests {
         let mut carved = mk(r"C:\d", "r.d");
         carved.carved.push(sprawl_advisor::finding::Carve { path: r"C:\d\mail.pst".into(), bytes: 1, rule: r"?:\**\*.pst".into() });
         ticked.push(carved);
-        let (out, guesses, keeping) = script_items(ticked, &[PathBuf::from(r"C:\c\mine")]);
+        let kept = [PathBuf::from(r"C:\c\mine"), PathBuf::from(r"Z:\Unavailable\keep")];
+        let (out, guesses, keeping, first_keep) = script_items(ticked, &kept);
         assert_eq!(out.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), vec![r"C:\a"]);
         assert_eq!(guesses, 1);
         assert_eq!(keeping, 2, "a folder the user keeps is inside C:\\c, a mail store in C:\\d: the script can't spare them");
+        assert_eq!(first_keep, Some(kept[0].as_path()));
         assert!(script_items(Vec::new(), &[]).0.is_empty(), "nothing ticked: nothing written");
         assert!(script_items(vec![mk(r"C:\kept\child", "r")], &[r"C:\kept".into()]).0.is_empty(), "a kept ancestor also blocks scripts");
         let mut forced = mk(r"C:\recycle-only", "r");

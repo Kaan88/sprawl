@@ -739,9 +739,9 @@ pub(crate) fn run(
     if m.side.is_some() || m.file != 0 || part.files.len() != 1 {
         return o.problem(file, format!("not the one database this part edits; {whole}"));
     }
-    if spare.keeps(file) {
+    if let Some(keep) = spare.kept_path(file) {
         o.kept_chosen += 1;
-        return o.problem(file, format!("you chose to keep it; {whole}"));
+        return o.problem(file, format!("{}. {whole}", crate::memory::keep_reason(keep)));
     }
     if crate::clean::has_link_above(file, places) {
         return o.problem(file, format!("a folder above it is a junction or link; {whole}"));

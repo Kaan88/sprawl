@@ -234,6 +234,7 @@ pub(crate) struct Done {
     pub kept_new: u64,
     pub kept_chosen: u64,
     pub kept_protected: u64,
+    pub first_kept_path: Option<PathBuf>,
     pub problems: Vec<String>,
     pub stopped: bool,
     pub output: Vec<String>,
@@ -921,8 +922,8 @@ impl State {
                 held.push(format!("{}: not cleaned, {why}", f.title));
                 continue;
             }
-            if spare.keeps(&f.path) {
-                held.push(format!("{}: not cleaned, you chose to keep it", f.title));
+            if let Some(keep) = spare.kept_path(&f.path) {
+                held.push(format!("{}: not cleaned. {}", f.title, sprawl_advisor::memory::keep_reason(keep)));
                 continue;
             }
             // the same checks as when it was found, against this scan; a registry part has no
@@ -1051,9 +1052,9 @@ impl State {
                     let _ = tx.send(Msg::Finished(i, out, None));
                     continue;
                 }
-                if spare.keeps(&path) {
+                if let Some(keep) = spare.kept_path(&path) {
                     let mut out = Outcome::default();
-                    out.problems.push("You chose to keep this path after review.".into());
+                    out.problems.push(format!("Not cleaned after review. {}.", sprawl_advisor::memory::keep_reason(keep)));
                     let _ = tx.send(Msg::Finished(i, out, None));
                     continue;
                 }
@@ -1308,6 +1309,9 @@ impl State {
                 done.kept_new += o.kept_new;
                 done.kept_chosen += o.kept_chosen;
                 done.kept_protected += o.kept_protected;
+                if done.first_kept_path.is_none() {
+                    done.first_kept_path.clone_from(&o.first_kept_path);
+                }
                 done.problems.extend(o.problems.iter().take(3).cloned());
                 if o.more_problems > 0 || o.problems.len() > 3 {
                     done.problems.push(format!("{}: and {} more", it.title, o.more_problems + o.problems.len().saturating_sub(3) as u64));
@@ -1499,6 +1503,9 @@ impl State {
                     parts.push(format!("{} protected (mail stores, disk images and the like)", d.kept_protected));
                 }
                 x += &format!(r##"<TextBlock Text="Left alone: {}." FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(&parts.join(", ")));
+            }
+            if let Some(keep) = &d.first_kept_path {
+                x += &format!(r##"<TextBlock Text="{}." FontSize="{{$fs12}}" Foreground="{{$text2}}" TextWrapping="Wrap"/>"##, ui::esc(&sprawl_advisor::memory::keep_reason(keep)));
             }
             if !d.output.is_empty() {
                 x += &format!(
@@ -2166,6 +2173,9 @@ fn log_run(items: &[Item], held: &[String], stopped: bool) {
                 }
                 if o.kept_chosen > 0 {
                     s += &format!("\t  left {} items you chose to keep\r\n", o.kept_chosen);
+                }
+                if let Some(keep) = &o.first_kept_path {
+                    s += &format!("\t  {}.\r\n", sprawl_advisor::memory::keep_reason(keep));
                 }
                 for pr in &o.problems {
                     s += &format!("\t  not removed: {pr}\r\n");
