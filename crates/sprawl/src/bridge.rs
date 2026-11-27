@@ -70,7 +70,7 @@ pub(crate) fn start() {
         use sprawl_advisor::mcp::{bridge_request_options, bridge_work, BridgeKind, Workers};
         let facts = Arc::new(Mutex::new(FactsCache::default()));
         // Eight bridge task threads at most: four queries (also History lists), two reserved
-        // scan controls, and two facts preparers shared by on- and off-screen trees. Scan
+        // scan controls, and two facts/findings preparers shared by on- and off-screen trees. Scan
         // traversal has its own separately bounded lifecycle.
         let workers = Workers::new(4);
         let controls = Workers::new(2);

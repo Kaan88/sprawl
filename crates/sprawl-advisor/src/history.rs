@@ -476,7 +476,7 @@ fn bucket_entries(base: &Path, dir: &Path) -> Vec<Entry> {
 /// What a snapshot file holds, from its own header: a delta and the file it continues, or a
 /// whole tree. A delta written whole when history is thinned keeps its file name (the deltas
 /// after it name that file), so the name no longer says which: the header does. A header that
-/// can't be read makes it a delta with no base: listed, so pruning can remove it, never shown.
+/// can't be read makes it a delta with no base: the slider hides it and pruning skips the pass.
 fn kind(file: &mut fs::File) -> (bool, Option<PathBuf>) {
     match snapshot::read_header(&mut io::BufReader::new(file)) {
         Ok((true, Some(base))) => (true, Some(PathBuf::from(base))),
@@ -584,25 +584,15 @@ fn plan_checked(entries: &[Entry], cap_bytes: u64, now: SystemTime, full_per_roo
         }
     }
     // A delta still kept while the snapshot it continues goes is written whole first: the point
-    // stays, its base can go. One pass in time order is enough (a base always comes before what
-    // continues it), and a promoted delta is whole from then on, so nothing after it needs a
-    // rewrite either.
-    let mut whole: HashSet<PathBuf> = HashSet::new();
+    // stays, its base can go. Only the direct dependencies matter here: a kept base will
+    // either still have its own base or be promoted before any deletion takes place.
     let mut promote: Vec<PathBuf> = Vec::new();
-    for e in entries {
+    for e in entries.iter().filter(|e| e.delta) {
         check()?;
-        if kill.contains(&e.file) {
-            continue;
-        }
-        if !e.delta {
-            whole.insert(e.file.clone());
-            continue;
-        }
         let base = chains[e.file.as_path()][1];
-        if !whole.contains(&base.file) || kill.contains(&base.file) {
+        if !kill.contains(&e.file) && kill.contains(&base.file) {
             promote.push(e.file.clone());
         }
-        whole.insert(e.file.clone());
     }
     // The cap: whole chains (a keyframe and the deltas built on it) and full snapshots go as
     // units, folders-only first at the same moment, oldest first, but never the unit holding a
@@ -690,34 +680,63 @@ pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
 }
 
 fn apply_checked(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
-    apply_with(entries, plan, check, promote).map(|_| ())
+    apply_with(entries, plan, check, promote, remove_entry_checked).map(|_| ())
 }
 
 /// Returns false if a broken chain prevented pruning.
-fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>, promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<bool> {
+fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>,
+    promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>,
+    remove: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<bool> {
     check()?;
     if plan.remove.is_empty() && plan.promote.is_empty() { return Ok(true); }
     let bases = index_bases(entries, check)?;
-    let mut spared: HashSet<PathBuf> = HashSet::new();
+    let doomed: HashSet<&Path> = plan.remove.iter().map(PathBuf::as_path).collect();
+    let mut promoted = HashSet::new();
     for path in &plan.promote {
         check()?;
         let Some(e) = entries.iter().find(|e| &e.file == path) else { continue };
         if let Err(err) = promote(e, check) {
-            let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(false); };
-            spared.extend(links.iter().skip(1).map(|b| b.file.clone()));
             eprintln!("history: {} stays as changes ({err}); the snapshots it is built on stay", e.file.display());
+        } else {
+            promoted.insert(e.file.as_path());
         }
     }
-    // Plans can also be supplied by callers, independently of `plan_checked`.
-    for e in entries.iter().filter(|e| e.delta) {
-        if walk_bases(e, |cur| indexed_base(&bases, cur), check)?.is_none() { return Ok(false); }
+
+    let mut spared = HashSet::new();
+    let mut pending = Vec::new();
+    for e in entries {
+        // Validate even chains not named by the plan. A damaged listing never authorises deletion.
+        let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(false); };
+        if doomed.contains(e.file.as_path()) {
+            pending.push(links);
+        } else {
+            // A failed promotion is still a delta. It protects its surviving bases too.
+            spare_bases(&links, &promoted, &mut spared);
+        }
     }
-    for e in entries.iter().filter(|e| plan.remove.contains(&e.file) && !spared.contains(&e.file)) {
+
+    // Every dependent is strictly deeper than its bases, even at the same timestamp.
+    // If we stop mid-pass, only leaves of the remaining chains have disappeared.
+    pending.sort_by_key(|links| std::cmp::Reverse(links.len()));
+    for links in pending {
         check()?;
-        let _ = remove_entry_checked(e, check);
+        let e = links[0];
+        if spared.contains(e.file.as_path()) { continue; }
+        if remove(e, check).is_err() {
+            // A sharing violation (or any other failure) leaves this dependent in place.
+            spare_bases(&links, &promoted, &mut spared);
+        }
         check()?;
     }
     Ok(true)
+}
+
+fn spare_bases<'a>(links: &[&'a Entry], promoted: &HashSet<&Path>, spared: &mut HashSet<&'a Path>) {
+    if promoted.contains(links[0].file.as_path()) { return; }
+    for base in links.iter().skip(1) {
+        spared.insert(base.file.as_path());
+        if promoted.contains(base.file.as_path()) { break; }
+    }
 }
 
 pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
@@ -1340,6 +1359,81 @@ mod tests {
         (dir, base)
     }
 
+    fn same_second_pruning_fixture(tag: &str) -> (PathBuf, PathBuf, Vec<Entry>, PathBuf, u64, SystemTime) {
+        let (dir, base) = scratch(tag);
+        let root = dir.join("data");
+        let held = ensure_dir(&base.join(key(&root))).unwrap();
+        fs::write(held.path.join("root.txt"), root.display().to_string()).unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()));
+        let taken = now - Duration::from_secs(60);
+        let names = [
+            format!("{}.a-base.fo.dtsn", secs(taken)),
+            format!("{}.z-middle.df.dtsn", secs(taken)),
+            format!("{}.b-tip.df.dtsn", secs(taken)),
+            format!("{}.newest.fo.dtsn", secs(now)),
+        ];
+        // In listing order K, tip, middle: neither timestamp nor filename order is a
+        // dependency order. All three old snapshots are selected together by the cap.
+        let trees: Vec<_> = (0..4).map(|i| snapshot::folders_only(&build(
+            &root.display().to_string(), &[("folder", &[("file", 1 + i)])],
+        ))).collect();
+        for i in 0..4 {
+            let mut file = fs::File::create(held.path.join(&names[i])).unwrap();
+            if matches!(i, 1 | 2) {
+                let body = snapshot::encode_delta(&trees[i - 1], &trees[i], taken).unwrap();
+                snapshot::write_delta_body(&body, &names[i - 1], 3, &mut file).unwrap();
+            } else {
+                let body = snapshot::encode_ordered(&trees[i], if i == 0 { taken } else { now });
+                snapshot::write_body(&body, 3, &mut file).unwrap();
+            }
+        }
+        let entries = list(&base);
+        assert_eq!(entries.len(), 4);
+        assert!(entries.iter().all(|e| load(e).is_ok()));
+        let tip = held.path.join(&names[2]);
+        assert_eq!(entries[1].file, tip);
+        let cap = entries[3].bytes;
+        (dir, base, entries, tip, cap, now)
+    }
+
+    #[test]
+    fn pruning_interrupted_after_one_deletion_leaves_a_valid_chain_and_can_resume() {
+        let (dir, base, entries, tip, cap, now) = same_second_pruning_fixture("prune-interrupted");
+        let plan = plan_checked(&entries, cap, now, 3, &|| Ok(())).unwrap();
+        assert_eq!(plan.remove.len(), 3);
+        let stopped = std::cell::Cell::new(false);
+        let check = || if stopped.get() { Err(io::ErrorKind::Interrupted.into()) } else { Ok(()) };
+        let result = apply_with(&entries, &plan, &check, promote, |e, check| {
+            remove_entry_checked(e, check)?;
+            assert_eq!(e.file, tip, "the tip is the only safe first deletion");
+            stopped.set(true);
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        let rest = list(&base);
+        assert_eq!(rest.len(), 3);
+        assert!(rest.iter().any(|e| e.delta));
+        assert!(rest.iter().filter(|e| e.delta).all(|e| load(e).is_ok()));
+        prune(&base, cap, now).unwrap();
+        assert_eq!(list(&base), vec![entries[3].clone()], "the next pass still enforces the cap");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_dependent_blocked_by_windows_sharing_keeps_its_bases() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (dir, base, entries, tip, cap, now) = same_second_pruning_fixture("prune-sharing");
+        let share = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&tip).unwrap();
+        assert_eq!(remove_entry(&entries[1]).unwrap_err().raw_os_error(), Some(32)); // ERROR_SHARING_VIOLATION
+        prune(&base, cap, now).unwrap();
+        assert_eq!(list(&base), entries, "the blocked tip and both its bases stay");
+        drop(share);
+        assert!(list(&base).iter().filter(|e| e.delta).all(|e| load(e).is_ok()));
+        prune(&base, cap, now).unwrap();
+        assert_eq!(list(&base), vec![entries[3].clone()]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_chain_of_deltas_rebuilds_every_snapshot_and_keeps_a_keyframe_every_eight() {
         let (dir, base) = scratch("chain");
@@ -1514,7 +1608,7 @@ mod tests {
                 assert_eq!(entry.file, Path::new(name));
                 tried.set(true);
                 Err(io::Error::other("injected failed promotion"))
-            }).unwrap();
+            }, |_, _| panic!("a corrupt chain must not delete anything")).unwrap();
             assert!(tried.get() && !pruned, "a corrupt chain must leave all snapshots alone");
         }
     }

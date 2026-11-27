@@ -11,6 +11,7 @@
 //!
 //! Every tool here stays read-only: a scan reads names and sizes, nothing else.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -35,6 +36,8 @@ const SCAN_LIMIT: Duration = Duration::from_secs(600);
 const MAX_RETIRED: usize = 2;
 /// Trees this process scanned that it keeps (a whole drive can take a few hundred MB).
 const KEEP_SCANS: usize = 3;
+/// Full History trees retain their facts and findings across alternating queries.
+const KEEP_HISTORY: usize = 3;
 /// Older than this, an answer suggests scanning again.
 const STALE_SECS: u64 = 86_400;
 
@@ -46,6 +49,7 @@ pub const PASS_TO_SERVER: &str = "Sprawl runs as administrator, so the server sc
 /// The app's answer when it has no tree open.
 pub const NO_SCAN_OPEN: &str = "No scan is open in Sprawl yet.";
 pub const GATHERING_FACTS: &str = "Sprawl is still gathering facts for this scan; try again shortly.";
+const PREPARING_FINDINGS: &str = "Sprawl is still preparing findings for this scan; try again shortly.";
 
 pub fn scan_specs() -> Vec<ToolSpec> {
     vec![
@@ -158,34 +162,55 @@ pub struct Held {
     /// History's file it was loaded from; `None` for a scan made here.
     file: Option<PathBuf>,
     tree: Tree,
-    facts: OnceLock<Facts>,
-    gathering: AtomicBool,
-    found: OnceLock<Vec<Finding>>,
+    facts: Preparation<Facts>,
+    found: Preparation<Vec<Finding>>,
     /// Scanned by the running app (in the background), not by the server's own process.
     in_app: bool,
 }
 
+struct Preparation<T> {
+    ready: OnceLock<T>,
+    running: AtomicBool,
+}
+
+impl<T> Default for Preparation<T> {
+    fn default() -> Self { Self { ready: OnceLock::new(), running: AtomicBool::new(false) } }
+}
+
 impl Held {
     fn new(tree: Tree, taken: SystemTime, file: Option<PathBuf>, in_app: bool) -> Held {
-        Held { root: tree.root_path.clone(), taken, file, tree, facts: OnceLock::new(), gathering: AtomicBool::new(false), found: OnceLock::new(), in_app }
+        Held { root: tree.root_path.clone(), taken, file, tree, facts: Preparation::default(), found: Preparation::default(), in_app }
+    }
+
+    fn prepare<T: Send + Sync + 'static>(self: &Arc<Self>, workers: &Workers, select: fn(&Held) -> &Preparation<T>, retry: &str,
+        make: impl FnOnce(&Held) -> T + Send + 'static) -> Result<&T, String> {
+        let slot = select(self);
+        if let Some(result) = slot.ready.get() { return Ok(result); }
+        if slot.running.swap(true, Ordering::AcqRel) {
+            return Err(retry.into());
+        }
+        struct Running<T>(Arc<Held>, fn(&Held) -> &Preparation<T>);
+        impl<T> Drop for Running<T> {
+            fn drop(&mut self) { (self.1)(&self.0).running.store(false, Ordering::Release); }
+        }
+        let job = Running(self.clone(), select);
+        if let Some(result) = slot.ready.get() { return Ok(result); }
+        workers.spawn(move || {
+            let result = make(&job.0);
+            let _ = (job.1)(&job.0).ready.set(result);
+        })?;
+        Err(retry.into())
     }
 
     fn facts_with(self: &Arc<Self>, workers: &Workers, gather: impl FnOnce(&Tree) -> Facts + Send + 'static) -> Result<&Facts, String> {
-        if let Some(facts) = self.facts.get() { return Ok(facts); }
-        if self.gathering.swap(true, Ordering::AcqRel) {
-            return Err(GATHERING_FACTS.into());
-        }
-        struct Gathering(Arc<Held>);
-        impl Drop for Gathering {
-            fn drop(&mut self) { self.0.gathering.store(false, Ordering::Release); }
-        }
-        let job = Gathering(self.clone());
-        if let Some(facts) = self.facts.get() { return Ok(facts); }
-        workers.spawn(move || {
-            let facts = gather(&job.0.tree);
-            let _ = job.0.facts.set(facts);
-        })?;
-        Err(GATHERING_FACTS.into())
+        self.prepare(workers, |held| &held.facts, GATHERING_FACTS, move |held| gather(&held.tree))
+    }
+
+    fn findings_with(self: &Arc<Self>, workers: &Workers, evaluate: impl FnOnce(&Tree, &Facts) -> Vec<Finding> + Send + 'static) -> Result<&[Finding], String> {
+        self.facts.ready.get().ok_or(GATHERING_FACTS)?;
+        self.prepare(workers, |held| &held.found, PREPARING_FINDINGS, move |held| {
+            evaluate(&held.tree, held.facts.ready.get().expect("facts are already published"))
+        }).map(Vec::as_slice)
     }
 
     /// The first line of every answer from this tree: where it is from and how old.
@@ -214,7 +239,7 @@ impl Held {
         cancel.check()?;
         let answer = match name {
             "scan_report" | "findings" => {
-                let found = self.found.get_or_init(|| crate::mcp::rules_for(&self.tree, facts));
+                let found = self.findings_with(preparers, crate::mcp::rules_for)?;
                 cancel.check()?;
                 Ok(if name == "findings" { crate::mcp::findings_list(found) } else { crate::llm::report::build(&self.tree, facts, Some(found), None, None, &memory.labels) })
             }
@@ -287,9 +312,25 @@ struct Job {
 /// This process's scans and the trees it answers from.
 pub struct Index {
     state: Mutex<ScanState>,
-    history: Mutex<Option<Arc<Held>>>,
+    history: Mutex<HistoryCache>,
     in_app: bool,
     preparers: Workers,
+}
+
+#[derive(Default)]
+struct HistoryCache {
+    recent: VecDeque<(crate::history::Entry, Arc<Held>)>,
+}
+
+impl HistoryCache {
+    fn get(&mut self, entry: &crate::history::Entry) -> Option<Arc<Held>> {
+        // Entry equality includes the native file identity and metadata, not just the path.
+        let at = self.recent.iter().position(|(key, _)| key == entry)?;
+        let pair = self.recent.remove(at).expect("position in this cache");
+        let held = pair.1.clone();
+        self.recent.push_back(pair);
+        Some(held)
+    }
 }
 
 impl Default for Index {
@@ -619,14 +660,21 @@ impl Index {
             list.into_iter().filter(|e| e.full).max_by_key(|e| e.taken)
         });
         let Some(e) = saved.filter(|e| ours.as_ref().is_none_or(|h| h.taken < e.taken)) else { return ours; };
-        if let Some(h) = self.history.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|h| h.file.as_ref() == Some(&e.file)).cloned() {
+        self.history_tree(e)
+    }
+
+    fn history_tree(&self, entry: crate::history::Entry) -> Option<Arc<Held>> {
+        if let Some(h) = self.history.lock().unwrap_or_else(|e| e.into_inner()).get(&entry) {
             return Some(h);
         }
-        let tree = crate::history::load(&e).ok()?;
-        let held = Arc::new(Held::new(tree, e.taken, Some(e.file), self.in_app));
+        let tree = crate::history::load(&entry).ok()?;
+        let held = Arc::new(Held::new(tree, entry.taken, Some(entry.file.clone()), self.in_app));
         let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(same) = history.as_ref().filter(|h| h.file == held.file) { return Some(same.clone()); }
-        *history = Some(held.clone());
+        if let Some(same) = history.get(&entry) { return Some(same); }
+        let evicted = (history.recent.len() >= KEEP_HISTORY).then(|| history.recent.pop_front());
+        history.recent.push_back((entry, held.clone()));
+        drop(history);
+        drop(evicted);
         Some(held)
     }
 }
@@ -674,6 +722,88 @@ mod tests {
             assert!(Instant::now() < until);
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn report_and_findings_retry_without_waiting_for_the_same_rule_evaluation() {
+        let tree = Tree { volumes: Vec::new(), root_path: r"C:\fixture".into(), nodes: Vec::new(), errors: 0, method: sprawl_core::ScanMethod::Walk };
+        let held = Arc::new(Held::new(tree, SystemTime::now(), None, true));
+        assert!(held.facts.ready.set(Facts::default()).is_ok());
+        let workers = Workers::new(1);
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        assert!(matches!(held.findings_with(&workers, move |_, _| {
+            entered.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(3)).unwrap();
+            Vec::new()
+        }), Err(e) if e == PREPARING_FINDINGS));
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let memory = Memory::default();
+        let call = |name| held.call(name, &json!({}), &memory, true, &Cancel::default(), &workers);
+        for name in ["scan_report", "findings", "scan_report", "findings"] {
+            assert_eq!(call(name).unwrap_err(), PREPARING_FINDINGS);
+        }
+        release.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match call("findings") {
+                Ok(text) => { assert!(text.contains("none matched")); break; }
+                Err(e) => { assert_eq!(e, PREPARING_FINDINGS); assert!(Instant::now() < until); }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn alternating_history_queries_reuse_preparations_and_answer() {
+        let dir = std::env::temp_dir().join(format!("sprawl-mcp-history-{}", crate::store::nonce()));
+        let base = dir.join("history");
+        let taken = SystemTime::now();
+        for folder in ["alpha", "beta"] {
+            let root = dir.join(folder);
+            std::fs::create_dir_all(&root).unwrap();
+            let tree = sprawl_core::scan(&root, |_| {}).unwrap();
+            crate::history::prepare(&tree, taken, true).save(&base, u64::MAX).unwrap();
+        }
+        let mut entries: Vec<_> = crate::history::list(&base).into_iter().filter(|e| e.full).collect();
+        entries.sort_by(|a, b| a.root.cmp(&b.root));
+        assert_eq!(entries.len(), 2);
+        let index = Index::for_app(false);
+        let memory = Memory::default();
+        let mut first_trees = Vec::new();
+        for e in &entries {
+            let held = index.history_tree(e.clone()).unwrap();
+            assert!(matches!(held.facts_with(&index.preparers, |_| Facts::default()), Err(e) if e == GATHERING_FACTS));
+            first_trees.push(held);
+        }
+        let until = Instant::now() + Duration::from_secs(3);
+        while first_trees.iter().any(|h| h.facts.ready.get().is_none()) {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for held in &first_trees {
+            loop {
+                match held.findings_with(&index.preparers, |_, _| Vec::new()) {
+                    Ok(_) => break,
+                    Err(_) => assert!(Instant::now() < until),
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        for (entry, original) in entries.iter().zip(&first_trees) {
+            let held = index.history_tree(entry.clone()).unwrap();
+            assert!(Arc::ptr_eq(&held, original), "A/B/A/B must not recreate a held tree");
+            let answer = held.call("findings", &json!({}), &memory, true, &Cancel::default(), &index.preparers).unwrap();
+            assert!(answer.contains(&entry.root.display().to_string()) && answer.contains("none matched"), "{answer}");
+        }
+        // The same filename with a different native identity must not get the old preparation.
+        let copy = entries[0].file.with_extension("old");
+        std::fs::rename(&entries[0].file, &copy).unwrap();
+        std::fs::copy(&copy, &entries[0].file).unwrap();
+        let replacement = crate::history::list(&base).into_iter().find(|e| e.file == entries[0].file).unwrap();
+        let held = index.history_tree(replacement).unwrap();
+        assert!(!Arc::ptr_eq(&held, &first_trees[0]) && held.facts.ready.get().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
