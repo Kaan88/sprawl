@@ -414,6 +414,11 @@ impl<'a> Tools<'a> {
 
     /// Run one tool. `Err` is sent back to the model as an error result.
     pub fn call(&mut self, name: &str, input: &Value) -> Result<String, String> {
+        self.call_cancellable(name, input, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub(crate) fn call_cancellable(&mut self, name: &str, input: &Value, cancel: &std::sync::atomic::AtomicBool) -> Result<String, String> {
+        super::more_tools::check_cancel(cancel)?;
         if self.allowed.as_ref().is_some_and(|a| !a.contains(&name)) {
             return Err(format!("there is no tool called {name} here"));
         }
@@ -421,7 +426,7 @@ impl<'a> Tools<'a> {
             "search" => {
                 // a restricted client may only see the scan: nothing is read for dates
                 let mut access = self.accessed();
-                super::more_tools::search(self.tree, self.facts, input, &mut access)
+                super::more_tools::search_cancellable(self.tree, self.facts, input, &mut access, cancel)
             }
             "growth" => super::more_tools::growth(self.tree, input, self.scan_before.ok_or("This scan's capture time is unavailable; make a fresh scan before comparing History.")?),
             "list_children" => {
@@ -461,6 +466,7 @@ impl<'a> Tools<'a> {
                 let mut found: Vec<(u64, usize)> = Vec::new();
                 let mut stack = self.tree.nodes[n].children.clone();
                 while let Some(k) = stack.pop() {
+                    super::more_tools::check_cancel(cancel)?;
                     let node = &self.tree.nodes[k];
                     if node.is_dir == folders {
                         found.push((node.size, k));
@@ -474,6 +480,7 @@ impl<'a> Tools<'a> {
                 let mut access = self.accessed();
                 let (mut unread, mut unknown) = (0, 0);
                 for &(_, k) in found.iter().take(max) {
+                    super::more_tools::check_cancel(cancel)?;
                     let a = access.time(&self.tree.path_of(k), &mut unread, &mut unknown);
                     let _ = writeln!(s, "- {}  {}", self.tree.path_of(k).display(), node_line_at(self.tree, self.facts, k, a));
                 }

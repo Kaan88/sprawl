@@ -3,6 +3,8 @@
 //! queued for the UI thread, which applies it as if typed.
 
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::mpsc;
+use std::time::Instant;
 
 use sprawl_advisor::facts::Facts;
 use sprawl_advisor::memory::Memory;
@@ -21,7 +23,7 @@ struct Shared {
     facts: Option<Arc<Facts>>,
     memory: Memory,
     filters: Vec<(u64, Weak<Tree>, String)>,
-    /// The app's own scan is running (a server's scan waits for it).
+    /// The app's own scan is running (don't start a second one).
     scanning: bool,
 }
 
@@ -66,50 +68,24 @@ fn shared() -> &'static Mutex<Shared> {
 /// Serve the pipe on its own thread (a second Sprawl window just doesn't get it).
 pub(crate) fn start() {
     std::thread::spawn(|| {
-        // app facts are gathered once per scan, on first use
-        let mut facts: Option<(Weak<Tree>, Facts)> = None;
-        // scans servers ask for, kept on this thread, saved to History as the app's own are
-        let mut index = sprawl_advisor::mcp_scan::Index::for_app(false);
+        use sprawl_advisor::mcp::{bridge_request_options, wait_for_bridge_reply, Workers};
+        let facts = Arc::new(Mutex::new(None));
+        let index = Arc::new(sprawl_advisor::mcp_scan::Index::for_app(false));
+        let workers = Workers::new(4);
+        let error = |text: &str| serde_json::json!({"ok": false, "text": text}).to_string();
         let served = sprawl_advisor::pipe::serve(|line, client_elevated| {
-            // an elevated app reads the disk for a client that isn't only when the user allowed
-            // it (an elevation Windows can't confirm counts as elevated)
-            let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
-            sprawl_advisor::mcp::with_bridge_request(line, || {
-            let (tree, revision, scan_before, findings, found, report_facts, memory, scanning) = {
-                let s = shared().lock().unwrap_or_else(|e| e.into_inner());
-                (s.tree.upgrade(), s.revision, s.scan_before, s.findings.clone(), s.found.clone(), s.facts.clone(), s.memory.clone(), s.scanning)
-            };
-            // a screenshot run writes nothing; its flag is set after this thread starts
-            index.set_app_state(scanning, !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed));
-            // A client that may only see the scan on screen gets what the app has published,
-            // cut down to that tree: no app facts, recent items or program starts are read for
-            // it (they would be, with the app's rights, before anything else was decided).
-            let scoped;
-            let f: Option<&Facts> = if disk {
-                if report_facts.is_none() && facts.as_ref().is_none_or(|(weak, _)| !same_tree(weak, tree.as_ref())) {
-                    let mut f = if tree.is_some() { Facts::gather() } else { Facts::default() };
-                    if let Some(t) = &tree {
-                        f.attach_usage(t);
-                    }
-                    facts = Some((tree.as_ref().map(Arc::downgrade).unwrap_or_default(), f));
-                }
-                Some(report_facts.as_deref().unwrap_or_else(|| &facts.as_ref().expect("made for an unfinished report").1))
-            } else {
-                scoped = report_facts.as_deref().zip(tree.as_deref()).map(|(f, t)| f.scoped_to(t));
-                scoped.as_ref()
-            };
-            let mut wanted = None;
-            // a panic answers an error and leaves the pipe working
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sprawl_advisor::mcp::answer_bridge(line, tree.as_deref(), scan_before, f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), &mut index, disk, &mut |x| wanted = Some(x))))
-                .unwrap_or_else(|_| r#"{"ok":false,"text":"Sprawl hit an internal error answering that."}"#.to_string());
-            if let Some(x) = wanted {
-                let mut s = shared().lock().unwrap_or_else(|e| e.into_inner());
-                if !s.queue_filter(revision, tree.as_ref(), x) {
-                    return r#"{"ok":false,"text":"That scan changed or is not the tree displayed on the map; no filter was applied."}"#.into();
-                }
-            }
-            out
-            }).unwrap_or_else(|error| serde_json::json!({"ok": false, "text": error}).to_string())
+            let received = Instant::now();
+            let (cancel, scan_tool, wait) = match bridge_request_options(line) { Ok(req) => req, Err(e) => return error(&e) };
+            let until = received + wait;
+            if Instant::now() >= until { return error("Sprawl's window ran out of time answering; try again."); }
+            let (send, recv) = mpsc::channel();
+            let (line, index, facts, work) = (line.to_string(), index.clone(), facts.clone(), cancel.clone());
+            if let Err(e) = workers.spawn(move || {
+                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| answer(&line, client_elevated, scan_tool, &index, &facts, work)))
+                    .unwrap_or_else(|_| error("Sprawl hit an internal error answering that."));
+                let _ = send.send(out);
+            }) { return error(&e); }
+            wait_for_bridge_reply(&cancel, until, recv).unwrap_or_else(|e| error(&e))
         });
         // the pipe's name was taken: by another Sprawl window (normal), or by a program of
         // another account that made it first (clients refuse that server; Fable AI review
@@ -122,6 +98,53 @@ pub(crate) fn start() {
             }
         }
     });
+}
+
+type FactsCache = Mutex<Option<(Weak<Tree>, Arc<Facts>)>>;
+
+fn answer(line: &str, client_elevated: bool, scan_tool: bool, index: &sprawl_advisor::mcp_scan::Index, facts: &FactsCache, cancel: Arc<sprawl_advisor::mcp_cancel::Cancel>) -> String {
+    use sprawl_advisor::mcp::answer_bridge_cancellable;
+    // An elevated app reads the disk for an unelevated client only when the user allowed
+    // it; an elevation Windows can't confirm counts as elevated.
+    let disk = client_elevated || !sprawl_core::elevation().unwrap_or(true) || crate::admin::store::get(crate::admin::MCP_DISK.key);
+    if scan_tool {
+        let scanning = shared().lock().unwrap_or_else(|e| e.into_inner()).scanning;
+        index.set_app_state(scanning, !crate::settings::READ_ONLY.load(std::sync::atomic::Ordering::Relaxed));
+        return answer_bridge_cancellable(line, None, None, None, &Memory::default(), "", None, index, disk, &mut |_| {}, cancel);
+    }
+    let (tree, revision, scan_before, findings, found, report_facts, memory) = {
+        let s = shared().lock().unwrap_or_else(|e| e.into_inner());
+        (s.tree.upgrade(), s.revision, s.scan_before, s.findings.clone(), s.found.clone(), s.facts.clone(), s.memory.clone())
+    };
+    // A restricted client still sees only what the app has already published about this tree.
+    let gathered;
+    let scoped;
+    let f = if disk {
+        gathered = report_facts.or_else(|| {
+            let cached = facts.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .filter(|(weak, _)| same_tree(weak, tree.as_ref())).map(|(_, f)| f.clone());
+            if cached.is_some() || cancel.stopped() { return cached; }
+            let mut f = if tree.is_some() { Facts::gather() } else { Facts::default() };
+            if let Some(t) = &tree { f.attach_usage(t); }
+            let f = Arc::new(f);
+            *facts.lock().unwrap_or_else(|e| e.into_inner()) = Some((tree.as_ref().map(Arc::downgrade).unwrap_or_default(), f.clone()));
+            Some(f)
+        });
+        gathered.as_deref()
+    } else {
+        scoped = report_facts.as_deref().zip(tree.as_deref()).map(|(f, t)| f.scoped_to(t));
+        scoped.as_ref()
+    };
+    let mut wanted = None;
+    let out = answer_bridge_cancellable(line, tree.as_deref(), scan_before, f, &memory, &findings, found.as_deref().map(|v| v.as_slice()), index, disk, &mut |x| wanted = Some(x), cancel.clone());
+    if let Some(x) = wanted {
+        let mut s = shared().lock().unwrap_or_else(|e| e.into_inner());
+        if cancel.stopped() { return r#"{"ok":false,"text":"Sprawl cancelled the request."}"#.into(); }
+        if !s.queue_filter(revision, tree.as_ref(), x) {
+            return r#"{"ok":false,"text":"That scan changed or is not the tree displayed on the map; no filter was applied."}"#.into();
+        }
+    }
+    out
 }
 
 /// Called every frame with the tree on screen (cheap: only a change is stored).

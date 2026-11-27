@@ -16,6 +16,7 @@ const REQUEST_LIMIT: Duration = Duration::from_secs(5);
 struct Deadline {
     due: Mutex<Option<Instant>>,
     stop: AtomicBool,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 /// Cancels the serving thread's blocking read once the deadline passes, so a client that sends
@@ -31,16 +32,47 @@ struct Deadline {
 #[cfg(windows)]
 fn watchdog(thread: usize, deadline: Arc<Deadline>) {
     while !deadline.stop.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(200));
-        let mut due = deadline.due.lock().unwrap_or_else(|e| e.into_inner());
-        if due.is_some_and(|t| Instant::now() >= t) {
+        std::thread::park_timeout(Duration::from_millis(20));
+        if deadline.stop.load(Ordering::Relaxed) { break; }
+        let due = deadline.due.lock().unwrap_or_else(|e| e.into_inner());
+        if due.is_some_and(|t| Instant::now() >= t || deadline.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))) {
             // SAFETY: the thread handle is this process's own, duplicated for the watchdog and
             // open for as long as it runs. A cancel that found nothing to cancel (the read has
-            // just ended) fails with ERROR_NOT_FOUND and changes nothing; only one that worked
-            // clears the deadline, so a failure is simply tried again.
-            if unsafe { ffi::CancelSynchronousIo(thread as isize) } != 0 {
-                *due = None;
-            }
+            // just ended) fails with ERROR_NOT_FOUND and changes nothing. Keep trying until
+            // the exchange clears its deadline, including across write and flush.
+            unsafe { ffi::CancelSynchronousIo(thread as isize); }
+        }
+    }
+    unsafe { ffi::CloseHandle(thread as isize); }
+}
+
+/// Until dropped, interrupt this exchange's synchronous read or write at its deadline. The
+/// caller owns the pipe and drops it after an interrupted exchange; no stale reply is reused.
+#[cfg(windows)]
+struct Watch {
+    deadline: Arc<Deadline>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Watch {
+    fn start(deadline: Arc<Deadline>) -> std::io::Result<Self> {
+        let handle = this_thread()? as usize;
+        let watched = deadline.clone();
+        match std::thread::Builder::new().spawn(move || watchdog(handle, watched)) {
+            Ok(thread) => Ok(Self { deadline, thread: Some(thread) }),
+            Err(e) => { unsafe { ffi::CloseHandle(handle as isize); } Err(e) }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.deadline.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
         }
     }
 }
@@ -136,12 +168,10 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
         return Err(error.unwrap());
     }
     let deadline = Arc::new(Deadline::default());
-    // The reads below all happen on this thread, so the watchdog is given this thread, not the
-    // pipe. A thread handle Windows won't give up is not fatal: the limit is simply not kept.
-    if let Ok(thread) = this_thread() {
-        let (thread, deadline) = (thread as usize, deadline.clone());
-        std::thread::spawn(move || watchdog(thread, deadline));
-    }
+    let _watch = match Watch::start(deadline.clone()) {
+        Ok(watch) => watch,
+        Err(e) => { unsafe { ffi::CloseHandle(h); } return Err(e); }
+    };
     loop {
         let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
         let client = if ok { peer(h, false) } else { None };
@@ -172,10 +202,13 @@ pub fn serve(mut answer: impl FnMut(&str, bool) -> String) -> std::io::Result<()
                 }
                 .replace(['\r', '\n'], " ");
                 out.push('\n');
-                let _ = (&*file).write_all(out.as_bytes());
-            }
-            unsafe {
-                ffi::FlushFileBuffers(h);
+                *deadline.due.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + REQUEST_LIMIT);
+                if (&*file).write_all(out.as_bytes()).is_ok() {
+                    // The client must consume the answer before disconnect; one that doesn't
+                    // read must not hold the only instance in WriteFile or FlushFileBuffers.
+                    unsafe { ffi::FlushFileBuffers(h); }
+                }
+                *deadline.due.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
         }
         unsafe {
@@ -274,9 +307,13 @@ unsafe fn token_identity(token: isize) -> Option<(String, bool)> {
 }
 
 impl Client {
-    /// `None` when the app isn't running, or when whatever holds the pipe isn't this same
-    /// program (another process could have taken the name first).
-    pub fn connect() -> Option<Client> {
+    /// `None` means no authenticated app, not a busy pipe. Only the latter is retried, and
+    /// only before delivering the request: never repeat a call whose answer may have been lost.
+    pub fn connect(until: Instant, cancel: &AtomicBool) -> std::io::Result<Option<Client>> {
+        Self::connect_to(&name()?, until, cancel)
+    }
+
+    pub(crate) fn connect_to(name: &str, until: Instant, cancel: &AtomicBool) -> std::io::Result<Option<Client>> {
         let mut o = std::fs::OpenOptions::new();
         o.read(true).write(true);
         #[cfg(windows)]
@@ -286,36 +323,74 @@ impl Client {
         }
         // the app serves one client at a time: while it answers another, the pipe is busy
         // (ERROR_PIPE_BUSY) for a moment, which isn't the same as the app being gone
-        let mut tries = 0;
         let f = loop {
-            match o.open(name().ok()?) {
+            check_time(until, cancel)?;
+            match o.open(name) {
                 Ok(f) => break f,
-                Err(e) if e.raw_os_error() == Some(231) && tries < 40 => {
-                    tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                Err(e) if e.raw_os_error() == Some(231) => {
+                    std::thread::sleep(Duration::from_millis(20).min(until.saturating_duration_since(Instant::now())));
                 }
-                Err(_) => return None,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e),
             }
         };
         #[cfg(windows)]
         if !server_is_us(&f) {
-            return None;
+            return Ok(None);
         }
-        let writer = f.try_clone().ok()?;
-        Some(Client { reader: BufReader::new(f), writer })
+        let writer = f.try_clone()?;
+        Ok(Some(Client { reader: BufReader::new(f), writer }))
     }
 
-    pub fn ask(&mut self, request: &str) -> std::io::Result<String> {
+    pub fn ask(mut self, request: &str, until: Instant, cancel: &Arc<AtomicBool>) -> std::io::Result<String> {
+        check_time(until, cancel)?;
+        let _watch = Watch::start(Arc::new(Deadline { due: Mutex::new(Some(until)), stop: AtomicBool::new(false), cancel: Some(cancel.clone()) }))?;
         let mut line = request.replace(['\r', '\n'], " ");
         line.push('\n');
-        self.writer.write_all(line.as_bytes())?;
-        let mut out = String::new();
-        self.reader.read_line(&mut out)?;
-        if out.is_empty() {
-            return Err(std::io::Error::other("the app closed the connection"));
-        }
-        Ok(out.trim().to_string())
+        let result = (|| {
+            self.writer.write_all(line.as_bytes())?;
+            check_time(until, cancel)?;
+            let mut out = String::new();
+            (&mut self.reader).take(1 << 20).read_line(&mut out)?;
+            if !out.ends_with('\n') { return Err(std::io::Error::other("the app didn't send a complete answer")); }
+            Ok(out.trim().to_string())
+        })();
+        check_time(until, cancel)?;
+        result
     }
+}
+
+fn check_time(until: Instant, cancel: &AtomicBool) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    if cancel.load(Ordering::Relaxed) { Err(Error::new(ErrorKind::Interrupted, "request cancelled")) }
+    else if Instant::now() >= until { Err(Error::new(ErrorKind::TimedOut, "pipe deadline expired")) }
+    else { Ok(()) }
+}
+
+/// An authenticated fake peer on a unique pipe, serving just one test request.
+#[cfg(test)]
+pub(crate) fn test_peer(answer: impl FnOnce(String) -> Option<String> + Send + 'static) -> (String, std::thread::JoinHandle<()>) {
+    use std::os::windows::io::FromRawHandle;
+    let name = format!(r"\\.\pipe\sprawl-test-{}", crate::store::nonce());
+    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let h = unsafe { ffi::CreateNamedPipeW(wide.as_ptr(), ffi::ACCESS_DUPLEX | ffi::FIRST_INSTANCE, ffi::REJECT_REMOTE, 1, 4096, 4096, 0, std::ptr::null()) };
+    assert_ne!(h, -1);
+    let thread = std::thread::spawn(move || {
+        let file = unsafe { std::fs::File::from_raw_handle(h as _) };
+        let deadline = Arc::new(Deadline { due: Mutex::new(Some(Instant::now() + Duration::from_secs(5))), ..Default::default() });
+        let watch = Watch::start(deadline).unwrap();
+        let ok = unsafe { ffi::ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || std::io::Error::last_os_error().raw_os_error() == Some(ffi::ERROR_PIPE_CONNECTED);
+        assert!(ok);
+        let mut line = String::new();
+        assert!(BufReader::new(&file).read_line(&mut line).unwrap() > 0);
+        drop(watch);
+        if let Some(out) = answer(line) {
+            let deadline = Arc::new(Deadline { due: Mutex::new(Some(Instant::now() + REQUEST_LIMIT)), ..Default::default() });
+            let _watch = Watch::start(deadline).unwrap();
+            if writeln!(&file, "{out}").is_ok() { unsafe { ffi::FlushFileBuffers(h); } }
+        }
+    });
+    (name, thread)
 }
 
 #[cfg(test)]

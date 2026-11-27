@@ -3,7 +3,7 @@
 
 use std::fmt::Write;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
@@ -64,6 +64,17 @@ fn within(tree: &Tree, mut n: usize, top: usize) -> bool {
 }
 
 pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::used::Accessed) -> Result<String, String> {
+    search_cancellable(tree, facts, input, access, &AtomicBool::new(false))
+}
+
+const SEARCH_CANCELLED: &str = "Sprawl cancelled the request.";
+
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
+    if cancel.load(Ordering::Relaxed) { Err(SEARCH_CANCELLED.into()) } else { Ok(()) }
+}
+
+pub(crate) fn search_cancellable(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::used::Accessed, cancel: &AtomicBool) -> Result<String, String> {
+    check_cancel(cancel)?;
     let text = input["query"].as_str().map(str::trim).filter(|q| !q.is_empty()).ok_or("give a `query`, e.g. ext:iso >1gb")?;
     // `dc:` and `da:` aren't in the scan: taken out here, and only the matches the other words
     // leave are read (a time is read per path, never scanned)
@@ -81,9 +92,13 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     }
     let top = node_or_root(tree, input)?;
     let max = input["limit"].as_u64().unwrap_or(30).clamp(1, 100) as usize;
-    let index = sprawl_core::search::Index::build(tree);
-    let hits = sprawl_core::search::search(tree, &index, &q, &AtomicBool::new(false)).unwrap_or_default();
-    let mut hits: Vec<usize> = hits.into_iter().filter(|&n| n != top && within(tree, n, top)).collect();
+    let index = sprawl_core::search::Index::build_until(tree, cancel).ok_or(SEARCH_CANCELLED)?;
+    let matches = sprawl_core::search::search(tree, &index, &q, cancel).ok_or(SEARCH_CANCELLED)?;
+    let mut hits = Vec::new();
+    for n in matches {
+        check_cancel(cancel)?;
+        if n != top && within(tree, n, top) { hits.push(n); }
+    }
     // `dc:`: each match's creation time, read for the matches the other words left
     let mut created_notes: Vec<String> = Vec::new();
     // matches the other words left, and how many of them no time could be read for (times-20)
@@ -103,7 +118,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
         let mut born = crate::born::Created::new();
         let mut unread = 0usize;
         let mut unknown_made = 0usize;
-        hits.retain(|&n| match born.of(&tree.path_of(n)) {
+        hits.retain(|&n| !cancel.load(Ordering::Relaxed) && match born.of(&tree.path_of(n)) {
             crate::born::Born::At(t) => {
                 let s = sprawl_core::query::unix_secs(t);
                 from <= s && s < to
@@ -118,6 +133,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
                 false
             }
         });
+        check_cancel(cancel)?;
         created_missed = unread + unknown_made;
         if unread > 0 {
             created_notes.push(format!("{unread} matches not checked for created: the reading limit ran out."));
@@ -131,7 +147,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     let (mut unread, mut unknown, mut partial) = (0usize, 0usize, 0usize);
     if let Some((from, to)) = dates.accessed {
         by_time = true;
-        let (kept, left_out, not_full, no_times) = accessed_hits(tree, hits, from, to, access)?;
+        let (kept, left_out, not_full, no_times) = accessed_hits(tree, hits, from, to, access, cancel)?;
         timed = kept;
         unread = left_out;
         partial = not_full;
@@ -166,7 +182,11 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
     timed.sort_by_key(|&(n, _)| std::cmp::Reverse(tree.nodes[n].size));
     // a folder's total holds its matching children's: the total counts outermost matches
     let hit_set: std::collections::HashSet<usize> = hits.iter().copied().collect();
-    let total: u64 = hits.iter().filter(|&&n| !has_hit_ancestor(&hit_set, tree, n)).map(|&n| tree.nodes[n].size).sum();
+    let mut total = 0;
+    for &n in &hits {
+        check_cancel(cancel)?;
+        if !has_hit_ancestor(&hit_set, tree, n) { total += tree.nodes[n].size; }
+    }
     let mut s = format!("{} matches for {text} in {}, {} in all. Biggest first:\n", hits.len(), tree.path_of(top).display(), format_size(total));
     if by_time {
         for &(n, a) in timed.iter().take(max) {
@@ -175,6 +195,7 @@ pub fn search(tree: &Tree, facts: &Facts, input: &Value, access: &mut crate::use
         }
     } else {
         for &n in hits.iter().take(max) {
+            check_cancel(cancel)?;
             let kind = if tree.nodes[n].is_dir { "folder" } else { "file" };
             let a = access.time(&tree.path_of(n), &mut unread, &mut unknown);
             let _ = writeln!(s, "- {} [{kind}] {}", tree.path_of(n).display(), node_line_at(tree, facts, n, a));
@@ -224,6 +245,7 @@ fn accessed_hits(
     from: i64,
     to: i64,
     access: &mut crate::used::Accessed,
+    cancel: &AtomicBool,
 ) -> Result<(Vec<(usize, (SystemTime, bool))>, usize, usize, usize), String> {
     use crate::used::LastOpened;
     if let Some(unseen) = access.unseen() {
@@ -237,6 +259,7 @@ fn accessed_hits(
     }
     let (mut kept, mut unread, mut partial, mut unknown) = (Vec::new(), 0, 0, 0);
     for n in hits {
+        check_cancel(cancel)?;
         match access.of(&tree.path_of(n)) {
             LastOpened::At(t, true) => {
                 let s = sprawl_core::query::unix_secs(t);
