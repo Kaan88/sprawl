@@ -3,6 +3,12 @@
 Each release of Sprawl is listed here, newest first. The section for a version is what the
 in-app updater shows.
 
+## 1.0.11 — 2026-11-27
+
+- Keep list: a Keep on a network drive, or on a drive letter that isn't there right now, no longer blocks every Delete, rename, clean-up and wipe on other drives. It stays on the list and still protects that path if the drive comes back as a local one. Any other problem with a Keep still stops the action, and a refusal caused by one Keep names it and points to Settings > Cleaning > Keep list.
+- MCP server: Claude sessions no longer hang on Sprawl's tools. Each tool call has a time limit (25 s for most tools, the scan's wait time for scans) and ends with its answer or a clear error, and pings, cancellation and shutdown are answered while a call is still working. A client that stops reading Sprawl's replies is disconnected instead of piling them up. Scans and searches stop when the request is cancelled, scan_status finds a scan whether Sprawl's window or the server started it, and an internal error in a tool returns an error instead of ending the server.
+- History: trimming old snapshots never leaves a newer one without the snapshot it builds on, even when it's interrupted, a file is in use or two scans save at once. Trimming is skipped when History can't verify which snapshots depend on which. Clear History runs in the background and reports how many snapshots remain, or why it couldn't clear them.
+
 ## 1.0.10 — 2026-11-26
 
 - Advisor: suggestions with no clean-up of their own (moves, notes, guesses) have a Delete... button, the tree's own Delete to the Recycle Bin with the same checks and question, in place of Show in tree.

@@ -2982,7 +2982,10 @@ mod tests {
         let inside = std::sync::atomic::AtomicUsize::new(0);
         let mut o = Outcome::default();
         link_with(&keep, &[copy.clone()], &Spare::default(), &AtomicBool::new(false), &mut o, &mut |_| {},
-            &mut |_| { inside.store(PUBLISHING_HERE.with(|n| n.get()), Ordering::SeqCst); }, &mut |_| {});
+            &mut |_| {
+                assert!(PUBLISHING.load(Ordering::SeqCst) >= 1, "the process-wide guard is up too");
+                inside.store(PUBLISHING_HERE.with(|n| n.get()), Ordering::SeqCst);
+            }, &mut |_| {});
         assert_eq!(o.files, 1, "{:?}", o.problems);
         assert!(inside.load(Ordering::SeqCst) >= 1, "the guard must be up while the copy has no name of its own");
         assert_eq!(PUBLISHING_HERE.with(|n| n.get()), 0, "and down once the link is published");
