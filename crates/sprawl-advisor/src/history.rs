@@ -34,7 +34,7 @@ use sprawl_core::{Tree, ROOT};
 use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, GetFileInformationByHandleEx, FileIdInfo, BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO};
 
 use crate::snapshot::{self, FILES_HERE};
-use crate::store::{ensure_dir, nonce, delete, write_atomic_until, lock};
+use crate::store::{ensure_dir, nonce, delete, write_atomic_until, lock, stage_write, try_lock};
 #[cfg(test)]
 use crate::store::write_atomic;
 
@@ -184,11 +184,16 @@ fn text(path: &Path, max: u64) -> io::Result<String> {
 
 fn bucket(path: &Path) -> io::Result<(sprawl_core::local::Directory, PathBuf)> {
     let held = sprawl_core::local::directory(path)?;
+    let root = bucket_root(&held)?;
+    Ok((held, root))
+}
+
+fn bucket_root(held: &sprawl_core::local::Directory) -> io::Result<PathBuf> {
     let root = PathBuf::from(text(&held.path.join("root.txt"), 128 << 10)?);
     root_id(&root).ok_or_else(bad)?;
     let name = held.path.file_name().ok_or_else(bad)?.to_string_lossy();
     if name != key(&root) && name != folded_key(&root) && name != legacy_key(&root) { return Err(bad()); }
-    Ok((held, root))
+    Ok(root)
 }
 
 fn stamp(name: &str) -> Option<(SystemTime, bool, bool)> {
@@ -264,6 +269,10 @@ impl Pending {
     }
 
     fn save_checked(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
+        self.save_with(base, cap_bytes, full_per_root, check, |_| {})
+    }
+
+    fn save_with(self, base: &Path, cap_bytes: u64, full_per_root: usize, check: &dyn Fn() -> io::Result<()>, selected: impl FnOnce(&Entry)) -> io::Result<()> {
         check()?;
         crate::require_write()?;
         let identity = root_id(&self.root).ok_or_else(bad)?;
@@ -274,68 +283,102 @@ impl Pending {
         check()?;
         let held = ensure_dir(&base.path.join(key(&self.root)))?;
         let dir = &held.path;
-        {
-            let _lock = lock(dir)?;
-            match text(&dir.join("root.txt"), 128 << 10) {
-                Ok(stored) if root_id(Path::new(&stored)).as_ref() == Some(&identity) => {},
-                Ok(_) => return Err(bad()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic_until(dir, "root.txt", false, check, |f| f.write_all(self.root.to_string_lossy().as_bytes()))?,
-                Err(e) => return Err(e),
-            }
+        let root_exists = || match text(&dir.join("root.txt"), 128 << 10) {
+            Ok(stored) if root_id(Path::new(&stored)).as_ref() == Some(&identity) => Ok(true),
+            Ok(_) => Err(bad()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = root_exists() {
+            if !matches!(e.raw_os_error(), Some(32 | 33)) { return Err(e); }
+            let _turn = lock(&base.path)?;
+            root_exists()?;
         }
         let t = secs(self.taken);
         let unique = nonce();
-        let write = |name: &str, whole: bool, body: &[u8], base_name: Option<&str>| -> io::Result<()> {
-            write_atomic_until(dir, name, false, check, |file| {
+        let stage = |body: &[u8], base_name: Option<&str>| {
+            stage_write(dir, check, |file| {
                 let mut buffered = io::BufWriter::new(file);
                 match base_name {
                     Some(b) => snapshot::write_delta_body(body, b, 9, &mut buffered)?,
-                    None if whole => snapshot::write_body(body, 9, &mut buffered)?,
-                    None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "a snapshot is either whole or a delta")),
+                    None => snapshot::write_body(body, 9, &mut buffered)?,
                 }
                 buffered.flush()?;
                 if buffered.get_ref().metadata()?.len() > snapshot::MAX_FILE { return Err(io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds the supported file size")); }
                 Ok(())
             })
         };
-        if let Some(full) = &self.full {
-            write(&format!("{t}.{unique}.full.dtsn"), true, full, None)?;
-        }
-        let entries = list(&base.path);
+        let entries = bucket_entries(&base.path, dir);
         check()?;
-        match self.delta_for(&entries, dir) {
-            Some((body, base_name)) => write(&format!("{t}.{unique}.df.dtsn"), false, &body, Some(&base_name))?,
-            None => write(&format!("{t}.{unique}.fo.dtsn"), true, &self.folders_body, None)?,
-        }
-        check()?;
-        {
-            let _lock = lock(dir)?;
-            let previous = match text(&dir.join("last.txt"), 1024) {
-                Ok(last) => last.split_whitespace().next().and_then(|t| t.parse::<u64>().ok()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-                Err(e) => return Err(e),
-            };
-            if previous.is_none_or(|previous| t >= previous) {
-                write_atomic_until(dir, "last.txt", true, check, |file| write!(file, "{t} {}", self.size))?;
+        let delta = self.delta_for(&entries, dir);
+        if let Some((_, links)) = &delta { selected(links[0]); }
+        let full = self.full.as_deref().map(|body| stage(body, None)).transpose()?;
+        let (mut staged, mut suffix) = match &delta {
+            Some((body, links)) => {
+                let name = links[0].file.file_name().and_then(|n| n.to_str()).ok_or_else(bad)?;
+                (stage(body, Some(name))?, "df")
+            }
+            None => (stage(&self.folders_body, None)?, "fo"),
+        };
+
+        // Retention spans every bucket, so all publishers, pruning and Clear History use
+        // the same store-wide lock. The potentially slow encoding and flush above do not.
+        let mut turn = lock(&base.path)?;
+        if let Some((_, links)) = &delta {
+            if !same_chain(links, check)? {
+                drop(turn);
+                drop(staged);
+                staged = stage(&self.folders_body, None)?;
+                suffix = "fo";
+                turn = lock(&base.path)?;
             }
         }
         check()?;
-        let entries = list(&base.path);
-        let plan = plan_checked(&entries, cap_bytes, SystemTime::now(), full_per_root, check)?;
-        apply_checked(&entries, &plan, check)
+        if !root_exists()? {
+            write_atomic_until(dir, "root.txt", false, check, |f| f.write_all(self.root.to_string_lossy().as_bytes()))?;
+        }
+        if let Some(full) = full {
+            full.publish(&format!("{t}.{unique}.full.dtsn"), false, check)?;
+        }
+        staged.publish(&format!("{t}.{unique}.{suffix}.dtsn"), false, check)?;
+        let previous = match text(&dir.join("last.txt"), 1024) {
+            Ok(last) => last.split_whitespace().next().and_then(|t| t.parse::<u64>().ok()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        if previous.is_none_or(|previous| t >= previous) {
+            write_atomic_until(dir, "last.txt", true, check, |file| write!(file, "{t} {}", self.size))?;
+        }
+        let result = prune_locked(&base, cap_bytes, SystemTime::now(), full_per_root, check);
+        drop(turn);
+        result
     }
 
     /// The delta that stands for this scan's folders-only tree, when the previous snapshot is
     /// readable and the chain short enough and the delta under half a whole one.
-    fn delta_for(&self, entries: &[Entry], dir: &Path) -> Option<(Vec<u8>, String)> {
+    fn delta_for<'a>(&self, entries: &'a [Entry], dir: &Path) -> Option<(Vec<u8>, Vec<&'a Entry>)> {
         let prev = previous(entries, dir, self.taken)?;
-        if depth(entries, prev).is_none_or(|d| d >= MAX_DELTAS) { return None; }
+        let links = walk_bases(prev, |cur| base_of(entries, cur), &|| Ok(())).ok()??;
+        if links.len() > MAX_DELTAS { return None; }
         // reading the base also proves its own chain: a gap in it writes a keyframe
         let old = load(prev).ok()?;
         let body = snapshot::encode_delta(&old, &self.folders, self.taken)?;
         if body.len().saturating_mul(2) > self.folders_body.len() { return None; }
-        Some((body, prev.file.file_name()?.to_str()?.to_string()))
+        Some((body, links))
     }
+}
+
+/// The exact files used to encode this delta must still be present under the publish lock.
+fn same_chain(links: &[&Entry], check: &dyn Fn() -> io::Result<()>) -> io::Result<bool> {
+    for entry in links {
+        check()?;
+        let matches = entry_path(entry).and_then(|(_held, path)| {
+            let file = sprawl_core::local::file(&path, snapshot::MAX_FILE)?;
+            check_entry(entry, &file.file)
+        });
+        if matches.is_err() { return Ok(false); }
+    }
+    Ok(true)
 }
 
 /// The snapshot of `dir` taken at or before `taken` (the one to build a delta on).
@@ -348,11 +391,6 @@ fn previous<'a>(entries: &'a [Entry], dir: &Path, taken: SystemTime) -> Option<&
 fn base_of<'a>(entries: &'a [Entry], e: &'a Entry) -> Option<&'a Entry> {
     let name = e.delta_base.as_ref()?.file_name()?;
     entries.iter().find(|x| !x.full && x.file.parent() == e.file.parent() && x.file.file_name() == Some(name) && x.taken <= e.taken)
-}
-
-/// How many deltas deep `e` is (0 for a keyframe); `None` when its chain is broken.
-fn depth(entries: &[Entry], e: &Entry) -> Option<usize> {
-    Some(walk_bases(e, |cur| base_of(entries, cur), &|| Ok(())).ok()??.len() - 1)
 }
 
 /// The files `e` is built from, oldest first: the keyframe and the deltas after it, each
@@ -444,11 +482,8 @@ pub fn list(base: &Path) -> Vec<Entry> {
         let Ok(files) = fs::read_dir(&held.path) else { continue };
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            let Some((taken, full, named_delta)) = stamp(&name) else { continue; };
-            let Ok(mut file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
-            let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
-            let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
-            out.push(Entry { root: root.clone(), taken, file: f.path(), full, delta, bytes: meta.len(), delta_base, base: base.path.clone(), identity, modified: meta.modified().ok() });
+            let Some(stamp) = stamp(&name) else { continue; };
+            if let Ok(entry) = listed_entry(&base.path, &root, f.path(), stamp) { out.push(entry); }
         }
     }
     out.sort_by(|a, b| a.taken.cmp(&b.taken).then_with(|| a.file.cmp(&b.file)));
@@ -463,14 +498,45 @@ fn bucket_entries(base: &Path, dir: &Path) -> Vec<Entry> {
     let mut out = Vec::new();
     for f in files.flatten() {
         let name = f.file_name().to_string_lossy().into_owned();
-        let Some((taken, full, named_delta)) = stamp(&name) else { continue; };
-        let Ok(mut file) = sprawl_core::local::file(&f.path(), snapshot::MAX_FILE) else { continue; };
-        let (Ok(meta), Ok(identity)) = (file.file.metadata(), file_id(&file.file)) else { continue; };
-        let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
-        out.push(Entry { root: root.clone(), taken, file: f.path(), full, delta, bytes: meta.len(), delta_base, base: base.to_path_buf(), identity, modified: meta.modified().ok() });
+        let Some(stamp) = stamp(&name) else { continue; };
+        if let Ok(entry) = listed_entry(base, &root, f.path(), stamp) { out.push(entry); }
     }
     out.sort_by(|a, b| a.taken.cmp(&b.taken).then_with(|| a.file.cmp(&b.file)));
     out
+}
+
+fn listed_entry(base: &Path, root: &Path, path: PathBuf, (taken, full, named_delta): (SystemTime, bool, bool)) -> io::Result<Entry> {
+    let mut file = sprawl_core::local::file(&path, snapshot::MAX_FILE)?;
+    let meta = file.file.metadata()?;
+    let identity = file_id(&file.file)?;
+    let (delta, delta_base) = if named_delta { kind(&mut file.file) } else { (false, None) };
+    Ok(Entry { root: root.to_path_buf(), taken, file: path, full, delta, bytes: meta.len(), delta_base, base: base.to_path_buf(), identity, modified: meta.modified().ok() })
+}
+
+/// A deletion pass must account for every snapshot. Remember failed opens as occupied
+/// slots so Clear History can still report a count; directory errors make the count unknown.
+fn inventory(base: &sprawl_core::local::Directory, check: &dyn Fn() -> io::Result<()>) -> io::Result<Vec<io::Result<Entry>>> {
+    let mut out = Vec::new();
+    for d in fs::read_dir(&base.path)? {
+        check()?;
+        let d = d?;
+        if !d.file_type()?.is_dir() { continue; }
+        let held = sprawl_core::local::directory(&d.path())?;
+        let mut root = None;
+        for f in fs::read_dir(&held.path)? {
+            check()?;
+            let f = f?;
+            let name = f.file_name();
+            let Some(stamp) = name.to_str().and_then(stamp) else { continue; };
+            // An empty bucket (or one with only staging files) has no dependencies.
+            let root = match &mut root {
+                Some(root) => root,
+                slot => slot.insert(bucket_root(&held)?),
+            };
+            out.push(listed_entry(&base.path, root, f.path(), stamp));
+        }
+    }
+    Ok(out)
 }
 
 /// What a snapshot file holds, from its own header: a delta and the file it continues, or a
@@ -528,7 +594,7 @@ pub fn earlier(base: &Path, root: &Path, scan_before: SystemTime) -> Vec<Entry> 
 }
 
 /// What pruning will do. Pruning is two steps because a delta that is kept while an earlier
-/// snapshot goes must be written whole first: [`plan`] decides (no I/O), [`apply`] does it.
+/// snapshot goes must be written whole first: [`plan`] decides (no I/O), pruning applies it.
 #[derive(Debug, Default, PartialEq)]
 pub struct Plan {
     /// Snapshot files to remove.
@@ -672,23 +738,13 @@ fn promote(e: &Entry, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
     })
 }
 
-/// Carry out a plan: write the deltas whole first, then remove what it names. A delta that
-/// cannot be written (a damaged file) keeps the snapshots it is built on: the plan is over the
-/// cap rather than a kept snapshot unreadable.
-pub fn apply(entries: &[Entry], plan: &Plan) -> io::Result<()> {
-    apply_checked(entries, plan, &|| Ok(()))
-}
-
-fn apply_checked(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
-    apply_with(entries, plan, check, promote, remove_entry_checked).map(|_| ())
-}
-
-/// Returns false if a broken chain prevented pruning.
+/// Write the deltas whole first, then remove what the plan names. A failed promotion
+/// keeps its bases. Returns the removal count, or None if a broken chain prevented deletion.
 fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>,
     promote: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>,
-    remove: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<bool> {
+    remove: impl Fn(&Entry, &dyn Fn() -> io::Result<()>) -> io::Result<()>) -> io::Result<Option<usize>> {
     check()?;
-    if plan.remove.is_empty() && plan.promote.is_empty() { return Ok(true); }
+    if plan.remove.is_empty() && plan.promote.is_empty() { return Ok(Some(0)); }
     let bases = index_bases(entries, check)?;
     let doomed: HashSet<&Path> = plan.remove.iter().map(PathBuf::as_path).collect();
     let mut promoted = HashSet::new();
@@ -706,7 +762,7 @@ fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>
     let mut pending = Vec::new();
     for e in entries {
         // Validate even chains not named by the plan. A damaged listing never authorises deletion.
-        let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(false); };
+        let Some(links) = walk_bases(e, |cur| indexed_base(&bases, cur), check)? else { return Ok(None); };
         if doomed.contains(e.file.as_path()) {
             pending.push(links);
         } else {
@@ -718,6 +774,7 @@ fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>
     // Every dependent is strictly deeper than its bases, even at the same timestamp.
     // If we stop mid-pass, only leaves of the remaining chains have disappeared.
     pending.sort_by_key(|links| std::cmp::Reverse(links.len()));
+    let mut removed = 0;
     for links in pending {
         check()?;
         let e = links[0];
@@ -725,10 +782,12 @@ fn apply_with(entries: &[Entry], plan: &Plan, check: &dyn Fn() -> io::Result<()>
         if remove(e, check).is_err() {
             // A sharing violation (or any other failure) leaves this dependent in place.
             spare_bases(&links, &promoted, &mut spared);
+        } else {
+            removed += 1;
         }
         check()?;
     }
-    Ok(true)
+    Ok(Some(removed))
 }
 
 fn spare_bases<'a>(links: &[&'a Entry], promoted: &HashSet<&Path>, spared: &mut HashSet<&'a Path>) {
@@ -740,9 +799,44 @@ fn spare_bases<'a>(links: &[&'a Entry], promoted: &HashSet<&Path>, spared: &mut 
 }
 
 pub fn prune(base: &Path, cap_bytes: u64, now: SystemTime) -> io::Result<()> {
-    let entries = list(base);
-    let plan = plan(&entries, cap_bytes, now);
-    apply(&entries, &plan)
+    crate::require_write()?;
+    let Some(base) = existing_store(base)? else { return Ok(()); };
+    let _turn = lock(&base.path)?;
+    prune_locked(&base, cap_bytes, now, crate::tuning::get(&crate::tuning::KEEP_FULL) as usize, &|| Ok(()))
+}
+
+fn existing_store(base: &Path) -> io::Result<Option<sprawl_core::local::Directory>> {
+    match sprawl_core::local::directory(base) {
+        Ok(base) => Ok(Some(base)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn prune_locked(base: &sprawl_core::local::Directory, cap_bytes: u64, now: SystemTime, full_per_root: usize, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
+    let entries = inventory(base, check).and_then(|rows| rows.into_iter().collect::<io::Result<Vec<_>>>());
+    check()?;
+    let Ok(mut entries) = entries else { return Ok(()); }; // An incomplete listing never authorises deletion.
+    entries.sort_by(|a, b| (a.taken, &a.file).cmp(&(b.taken, &b.file)));
+    let plan = plan_checked(&entries, cap_bytes, now, full_per_root, check)?;
+    apply_with(&entries, &plan, check, promote, remove_entry_checked).map(|_| ())
+}
+
+/// Clear History without stranding a dependent. Returns (deleted, not cleared).
+pub fn clear(base: &Path) -> io::Result<(usize, usize)> {
+    crate::require_write()?;
+    let Some(base) = existing_store(base)? else { return Ok((0, 0)); };
+    let _turn = try_lock(&base.path).map_err(|e| match e.raw_os_error() {
+        Some(32 | 33) => io::Error::new(io::ErrorKind::WouldBlock, "History is busy; try again shortly."),
+        _ => e,
+    })?;
+    let check = || Ok(());
+    let rows = inventory(&base, &check)?;
+    let total = rows.len();
+    let Ok(entries) = rows.into_iter().collect::<io::Result<Vec<_>>>() else { return Ok((0, total)); };
+    let plan = Plan { remove: entries.iter().map(|e| e.file.clone()).collect(), promote: Vec::new() };
+    let deleted = apply_with(&entries, &plan, &check, promote, remove_entry_checked)?.unwrap_or(0);
+    Ok((deleted, total - deleted))
 }
 
 /// Rebuilt trees kept for the slider: a chain is rebuilt once and moving the slider back and
@@ -1428,9 +1522,73 @@ mod tests {
         prune(&base, cap, now).unwrap();
         assert_eq!(list(&base), entries, "the blocked tip and both its bases stay");
         drop(share);
+
+        // This time the ordinary listing can't even see the tip. In particular, its
+        // absence must not make the keyframe and middle look disposable.
+        let no_read = fs::OpenOptions::new().read(true).share_mode(0).open(&tip).unwrap();
+        assert_eq!(list(&base).len(), entries.len() - 1);
+        prune(&base, cap, now).unwrap();
+        assert!(entries.iter().all(|e| e.file.is_file()));
+        assert_eq!(clear(&base).unwrap(), (0, 4), "all four remain when a dependent cannot be identified");
+        drop(no_read);
         assert!(list(&base).iter().filter(|e| e.delta).all(|e| load(e).is_ok()));
         prune(&base, cap, now).unwrap();
         assert_eq!(list(&base), vec![entries[3].clone()]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn clear_reports_a_blocked_delta_and_the_bases_it_keeps() {
+        let (dir, base, entries, tip, _, _) = same_second_pruning_fixture("clear-sharing");
+        let open = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(tip).unwrap();
+        assert_eq!(clear(&base).unwrap(), (1, 3), "the unrelated keyframe can go, but the chain must stay");
+        drop(open);
+        let kept = list(&base);
+        assert_eq!(kept, entries[..3]);
+        assert!(kept.iter().all(|e| load(e).is_ok()));
+        assert_eq!(clear(&base).unwrap(), (3, 0));
+        assert!(list(&base).is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_whose_selected_base_is_pruned_publishes_a_keyframe() {
+        let (dir, base) = scratch("publish-after-prune");
+        let root = dir.join("data").display().to_string();
+        let t0 = UNIX_EPOCH + Duration::from_secs(secs(SystemTime::now()) - 180);
+        let t1 = t0 + Duration::from_secs(60);
+        let t2 = t1 + Duration::from_secs(60);
+        let older = round(&root, 0);
+        prepare(&older, t0, false).save(&base, u64::MAX).unwrap();
+        let original = list(&base).pop().unwrap();
+        assert!(!original.delta);
+        let earlier = prepare(&older, t1, false);
+        let later = prepare(&build(&root, &[("unrelated", &[("file", 1)])]), t2, false);
+        assert!(later.delta_for(std::slice::from_ref(&original), original.file.parent().unwrap()).is_none());
+        let (selected, selection) = std::sync::mpsc::channel();
+        let (resume, released) = std::sync::mpsc::channel();
+        let base_for_worker = base.clone();
+        let save = std::thread::spawn(move || {
+            earlier.save_with(&base_for_worker, u64::MAX, KEEP_FULL, &|| Ok(()), |e| {
+                selected.send(e.file.clone()).unwrap();
+                released.recv_timeout(Duration::from_secs(10)).unwrap();
+            })
+        });
+        assert_eq!(selection.recv_timeout(Duration::from_secs(5)).unwrap(), original.file);
+        later.save(&base, 0).unwrap();
+        let remaining = list(&base);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].taken, t2);
+        assert!(!original.file.exists(), "the competing saver prunes the selected keyframe");
+        resume.send(()).unwrap();
+        save.join().unwrap().unwrap();
+        let entries = list(&base);
+        assert_eq!(entries.len(), 2);
+        let resumed = &entries[0];
+        assert_eq!(resumed.taken, t1);
+        assert!(!resumed.delta && resumed.file.to_string_lossy().ends_with(".fo.dtsn"));
+        let expected = snapshot::decode(&snapshot::encode_ordered(&snapshot::folders_only(&older), t1)).unwrap().0;
+        assert_same(&load(resumed).unwrap(), &expected);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1609,7 +1767,7 @@ mod tests {
                 tried.set(true);
                 Err(io::Error::other("injected failed promotion"))
             }, |_, _| panic!("a corrupt chain must not delete anything")).unwrap();
-            assert!(tried.get() && !pruned, "a corrupt chain must leave all snapshots alone");
+            assert!(tried.get() && pruned.is_none(), "a corrupt chain must leave all snapshots alone");
         }
     }
 

@@ -1317,16 +1317,12 @@ impl State {
             "PfB_histClear" if !self.prefs.clear_armed => self.prefs.clear_armed = true,
             "PfB_histClear" => {
                 self.prefs.clear_armed = false;
-                let mut n = 0;
-                if let Some(base) = sprawl_advisor::history::base_dir() {
-                    for e in sprawl_advisor::history::list(&base) {
-                        // only History's own files, in its own folder
-                        if sprawl_advisor::history::remove_entry(&e).is_ok() {
-                            n += 1;
-                        }
-                    }
-                }
-                self.prefs.note = Some(format!("Deleted {n} snapshots of History."));
+                let cleared = sprawl_advisor::history::base_dir().map_or(Ok((0, 0)), |base| sprawl_advisor::history::clear(&base));
+                self.prefs.note = Some(match cleared {
+                    Ok((n, 0)) => format!("Deleted {n} snapshots of History."),
+                    Ok((n, left)) => format!("Deleted {n} snapshots of History. Could not clear {left}."),
+                    Err(e) => format!("No snapshots were cleared: {e}"),
+                });
             }
             "PfB_progAdd" => {
                 if let Some(picked) = crate::dialogs::pick_setting_folder(self.hwnd, "Select a program folder") {

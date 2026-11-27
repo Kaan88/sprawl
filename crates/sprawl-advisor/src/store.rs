@@ -63,23 +63,46 @@ pub(crate) fn write_atomic(dir: &Path, name: &str, replace: bool, write: impl Fn
 }
 
 pub(crate) fn write_atomic_until(dir: &Path, name: &str, replace: bool, check: &dyn Fn() -> io::Result<()>, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<()> {
+    stage_write(dir, check, write)?.publish(name, replace, check)
+}
+
+/// An owned temporary file, fully written and flushed before the caller takes a publish lock.
+pub(crate) struct StagedWrite<'a> {
+    dir: &'a Path,
+    file: fs::File,
+    published: bool,
+}
+
+pub(crate) fn stage_write<'a>(dir: &'a Path, check: &dyn Fn() -> io::Result<()>, write: impl FnOnce(&mut fs::File) -> io::Result<()>) -> io::Result<StagedWrite<'a>> {
     check()?;
     let tmp = dir.join(format!("{}.tmp", nonce()));
-    let mut file = fs::OpenOptions::new().read(true).write(true).access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000)
+    let file = fs::OpenOptions::new().read(true).write(true).access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000)
         .share_mode(1 | 4).create_new(true).custom_flags(0x0020_0000 | 0x0010_0000).open(&tmp)?;
-    let result = write(&mut file).and_then(|_| check()).and_then(|_| file.sync_all()).and_then(|_| {
+    let mut staged = StagedWrite { dir, file, published: false };
+    write(&mut staged.file)?;
+    check()?;
+    staged.file.sync_all()?;
+    Ok(staged)
+}
+
+impl StagedWrite<'_> {
+    pub(crate) fn publish(mut self, name: &str, replace: bool, check: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
         for _ in 0..20 {
             check()?;
-            match rename(&file, &dir.join(name), replace) {
-                Ok(()) => return Ok(()),
+            match rename(&self.file, &self.dir.join(name), replace) {
+                Ok(()) => { self.published = true; return Ok(()); }
                 Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(5)),
                 Err(e) => return Err(e),
             }
         }
         Err(io::Error::new(io::ErrorKind::WouldBlock, "Local metadata is being read"))
-    });
-    if result.is_err() { let _ = delete(&file); }
-    result
+    }
+}
+
+impl Drop for StagedWrite<'_> {
+    fn drop(&mut self) {
+        if !self.published { let _ = delete(&self.file); }
+    }
 }
 
 /// Open `name` in the held folder `dir` through its handle, as itself: a plain file with one
@@ -184,22 +207,24 @@ fn the_log_is_appended_and_removed_only_as_itself() {
     drop(owned);
 }
 
-pub(crate) fn lock(dir: &Path) -> io::Result<fs::File> {
+pub(crate) fn try_lock(dir: &Path) -> io::Result<fs::File> {
     use std::os::windows::fs::MetadataExt;
+    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).share_mode(0)
+        .custom_flags(0x0020_0000 | 0x0010_0000).open(dir.join(".save.lock"))?;
+    let m = file.metadata()?;
+    if !m.is_file() || m.len() != 0 || m.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 { return Err(bad()); }
+    Ok(file)
+}
+
+pub(crate) fn lock(dir: &Path) -> io::Result<fs::File> {
     // up to about 10 s: History saves run off the window's thread, and several at once (each
     // flushing to disk) took longer than 2 s on a busy PC, losing a snapshot
     let start = std::time::Instant::now();
     for attempt in 0u64.. {
         if start.elapsed() > Duration::from_secs(10) { break; }
-        match fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).share_mode(0)
-            .custom_flags(0x0020_0000 | 0x0010_0000).open(dir.join(".save.lock")) {
-            Ok(file) => {
-                let m = file.metadata()?;
-                if !m.is_file() || m.len() != 0 || m.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 { return Err(bad()); }
-                return Ok(file);
-            }
+        match try_lock(dir) {
             Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => std::thread::sleep(Duration::from_millis(10 + 10 * attempt.min(9))),
-            Err(e) => return Err(e),
+            result => return result,
         }
     }
     Err(io::Error::new(io::ErrorKind::WouldBlock, "Local metadata is busy"))

@@ -50,6 +50,7 @@ pub const PASS_TO_SERVER: &str = "Sprawl runs as administrator, so the server sc
 pub const NO_SCAN_OPEN: &str = "No scan is open in Sprawl yet.";
 pub const GATHERING_FACTS: &str = "Sprawl is still gathering facts for this scan; try again shortly.";
 const PREPARING_FINDINGS: &str = "Sprawl is still preparing findings for this scan; try again shortly.";
+const PREPARATION_FAILED: &str = "Sprawl hit an internal error preparing this scan.";
 
 pub fn scan_specs() -> Vec<ToolSpec> {
     vec![
@@ -169,12 +170,18 @@ pub struct Held {
 }
 
 struct Preparation<T> {
-    ready: OnceLock<T>,
+    ready: OnceLock<Result<T, &'static str>>,
     running: AtomicBool,
 }
 
 impl<T> Default for Preparation<T> {
     fn default() -> Self { Self { ready: OnceLock::new(), running: AtomicBool::new(false) } }
+}
+
+impl<T> Preparation<T> {
+    fn result(&self) -> Option<Result<&T, &'static str>> {
+        self.ready.get().map(|r| r.as_ref().map_err(|e| *e))
+    }
 }
 
 impl Held {
@@ -185,7 +192,7 @@ impl Held {
     fn prepare<T: Send + Sync + 'static>(self: &Arc<Self>, workers: &Workers, select: fn(&Held) -> &Preparation<T>, retry: &str,
         make: impl FnOnce(&Held) -> T + Send + 'static) -> Result<&T, String> {
         let slot = select(self);
-        if let Some(result) = slot.ready.get() { return Ok(result); }
+        if let Some(result) = slot.result() { return Ok(result?); }
         if slot.running.swap(true, Ordering::AcqRel) {
             return Err(retry.into());
         }
@@ -194,9 +201,10 @@ impl Held {
             fn drop(&mut self) { (self.1)(&self.0).running.store(false, Ordering::Release); }
         }
         let job = Running(self.clone(), select);
-        if let Some(result) = slot.ready.get() { return Ok(result); }
+        if let Some(result) = slot.result() { return Ok(result?); }
         workers.spawn(move || {
-            let result = make(&job.0);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| make(&job.0)))
+                .map_err(|_| PREPARATION_FAILED);
             let _ = (job.1)(&job.0).ready.set(result);
         })?;
         Err(retry.into())
@@ -207,9 +215,9 @@ impl Held {
     }
 
     fn findings_with(self: &Arc<Self>, workers: &Workers, evaluate: impl FnOnce(&Tree, &Facts) -> Vec<Finding> + Send + 'static) -> Result<&[Finding], String> {
-        self.facts.ready.get().ok_or(GATHERING_FACTS)?;
+        self.facts.result().ok_or(GATHERING_FACTS)??;
         self.prepare(workers, |held| &held.found, PREPARING_FINDINGS, move |held| {
-            evaluate(&held.tree, held.facts.ready.get().expect("facts are already published"))
+            evaluate(&held.tree, held.facts.result().expect("facts are already published").expect("facts succeeded"))
         }).map(Vec::as_slice)
     }
 
@@ -728,7 +736,7 @@ mod tests {
     fn report_and_findings_retry_without_waiting_for_the_same_rule_evaluation() {
         let tree = Tree { volumes: Vec::new(), root_path: r"C:\fixture".into(), nodes: Vec::new(), errors: 0, method: sprawl_core::ScanMethod::Walk };
         let held = Arc::new(Held::new(tree, SystemTime::now(), None, true));
-        assert!(held.facts.ready.set(Facts::default()).is_ok());
+        assert!(held.facts.ready.set(Ok(Facts::default())).is_ok());
         let workers = Workers::new(1);
         let (entered, started) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel();
@@ -752,6 +760,48 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn preparation_panics_are_replied_to_once_per_tree_and_a_new_tree_recovers() {
+        let tree = Tree { volumes: Vec::new(), root_path: r"C:\fixture".into(), nodes: Vec::new(), errors: 0, method: sprawl_core::ScanMethod::Walk };
+        let bad_facts = Arc::new(Held::new(tree.clone(), SystemTime::now(), None, true));
+        let bad_findings = Arc::new(Held::new(tree.clone(), SystemTime::now(), None, true));
+        let fresh = Arc::new(Held::new(tree, SystemTime::now(), None, true));
+        let workers = Workers::new(3);
+        assert!(matches!(bad_facts.facts_with(&workers, |_| panic!("facts panic")), Err(e) if e == GATHERING_FACTS));
+        assert!(bad_findings.facts.ready.set(Ok(Facts::default())).is_ok());
+        assert!(matches!(bad_findings.findings_with(&workers, |_, _| panic!("findings panic")), Err(e) if e == PREPARING_FINDINGS));
+        let until = Instant::now() + Duration::from_secs(3);
+        let wait = |ready: &dyn Fn() -> bool| {
+            while !ready() {
+                assert!(Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        wait(&|| bad_facts.facts.result().is_some() && bad_findings.found.result().is_some());
+        let specs = crate::mcp::user_specs();
+        let memory = Memory::default();
+        let reply = |held: &Arc<Held>, name| crate::mcp::handle(
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name}}),
+            &specs,
+            &mut |name, args| held.call(name, args, &memory, true, &Cancel::default(), &workers),
+        ).unwrap();
+        for held in [&bad_facts, &bad_findings] {
+            for name in ["findings", "scan_report", "findings"] {
+                let result = reply(held, name);
+                assert_eq!(result["result"]["isError"], true);
+                assert_eq!(result["result"]["content"][0]["text"], PREPARATION_FAILED);
+            }
+        }
+        assert!(bad_facts.found.result().is_none());
+        assert!(matches!(fresh.facts_with(&workers, |_| Facts::default()), Err(e) if e == GATHERING_FACTS));
+        wait(&|| fresh.facts.result().is_some());
+        assert!(matches!(fresh.findings_with(&workers, |_, _| Vec::new()), Err(e) if e == PREPARING_FINDINGS));
+        wait(&|| fresh.found.result().is_some());
+        let result = reply(&fresh, "findings");
+        assert_eq!(result["result"]["isError"], false);
+        assert!(result["result"]["content"][0]["text"].as_str().unwrap().contains("none matched"));
     }
 
     #[test]
