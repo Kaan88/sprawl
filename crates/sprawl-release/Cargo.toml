@@ -8,6 +8,6 @@ description = "Builds, signs and publishes a Sprawl release (run from the reposi
 
 [dependencies]
 sprawl-install = { path = "../sprawl-install" }
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 getrandom = "0.2"
 serde_json = "1"
